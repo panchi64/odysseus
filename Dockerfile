@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# uv — Python dependency manager (installs deps from pyproject.toml + uv.lock)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # System deps. tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
 # downloads, and serves from Docker installs.
@@ -22,9 +25,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python deps first (layer cache)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python deps first (layer cache). uv builds /app/.venv from the lockfile.
+# UV_PYTHON_DOWNLOADS=never → use the image's interpreter; PATH puts the venv first
+# so `uvicorn`/`python` in the entrypoint resolve to it.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/app/.venv/bin:$PATH"
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # Copy app code
 COPY . .

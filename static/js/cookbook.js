@@ -656,7 +656,7 @@ async function _fetchDependencies() {
       const it = document.createElement('div');
       it.className = 'dropdown-item-compact';
       it.innerHTML = `<span class="dropdown-icon">${upIco}</span><span>Update</span>`;
-      it.title = `Update ${pkgName} to the latest version (pip install -U)`;
+      it.title = `Update ${pkgName} to the latest version (uv pip install -U)`;
       it.addEventListener('click', async (e) => {
         e.stopPropagation();
         dropdown.remove();

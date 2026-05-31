@@ -351,12 +351,12 @@ def setup_cookbook_routes() -> APIRouter:
         # is fast but flaky on large files — it tends to crash near the end at high
         # throughput. Retries set disable_hf_transfer to fall back to the plain,
         # slower-but-reliable downloader (resumes cleanly from the .incomplete files).
-        lines.append("command -v hf >/dev/null 2>&1 || pip install --user --break-system-packages -q -U huggingface_hub 2>/dev/null || pip install -q -U huggingface_hub 2>/dev/null")
+        lines.append("command -v hf >/dev/null 2>&1 || (command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q -U huggingface_hub 2>/dev/null) || pip install --user --break-system-packages -q -U huggingface_hub 2>/dev/null || pip install -q -U huggingface_hub 2>/dev/null")
         if req.disable_hf_transfer:
             lines.append("export HF_HUB_ENABLE_HF_TRANSFER=0")
             lines.append("export HF_HUB_DOWNLOAD_MAX_WORKERS=4")
         else:
-            lines.append("python3 -c 'import hf_transfer' 2>/dev/null || pip install --user --break-system-packages -q hf_transfer 2>/dev/null || pip install -q hf_transfer 2>/dev/null")
+            lines.append("python3 -c 'import hf_transfer' 2>/dev/null || (command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q hf_transfer 2>/dev/null) || pip install --user --break-system-packages -q hf_transfer 2>/dev/null || pip install -q hf_transfer 2>/dev/null")
             lines.append("python3 -c 'import hf_transfer' 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1")
             lines.append("export HF_HUB_DOWNLOAD_MAX_WORKERS=8")
 
@@ -449,8 +449,8 @@ def setup_cookbook_routes() -> APIRouter:
             runner_lines.append('export PATH="$HOME/.local/bin:$PATH"')
             # Install hf CLI + hf_transfer best-effort so future runs get the fast path.
             # Use --break-system-packages on PEP-668 systems (Arch, newer Debian) so it doesn't bail.
-            runner_lines.append("command -v hf >/dev/null 2>&1 || pip install --user --break-system-packages -q -U huggingface_hub 2>/dev/null || pip install -q -U huggingface_hub 2>/dev/null")
-            runner_lines.append("python3 -c 'import hf_transfer' 2>/dev/null || pip install --user --break-system-packages -q hf_transfer 2>/dev/null || pip install -q hf_transfer 2>/dev/null")
+            runner_lines.append("command -v hf >/dev/null 2>&1 || (command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q -U huggingface_hub 2>/dev/null) || pip install --user --break-system-packages -q -U huggingface_hub 2>/dev/null || pip install -q -U huggingface_hub 2>/dev/null")
+            runner_lines.append("python3 -c 'import hf_transfer' 2>/dev/null || (command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q hf_transfer 2>/dev/null) || pip install --user --break-system-packages -q hf_transfer 2>/dev/null || pip install -q hf_transfer 2>/dev/null")
             runner_lines.append("python3 -c 'import hf_transfer' 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1")
             runner_lines.append("export HF_HUB_DOWNLOAD_MAX_WORKERS=8")
             # Surface whether the HF token actually reached THIS server, so a gated
@@ -466,8 +466,8 @@ def setup_cookbook_routes() -> APIRouter:
             runner_lines.append(f'  python3 -c "import os; from huggingface_hub import snapshot_download; snapshot_download(\'{req.repo_id}\'{_dl_pyarg}, max_workers=8)"')
             runner_lines.append('else')
             runner_lines.append('  echo "Installing huggingface-hub and dependencies..."')
-            runner_lines.append('  pip install --no-deps -q huggingface-hub 2>/dev/null')
-            runner_lines.append('  pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests hf_transfer 2>/dev/null')
+            runner_lines.append('  { command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages--no-deps -q huggingface-hub 2>/dev/null; } || pip install --no-deps -q huggingface-hub 2>/dev/null')
+            runner_lines.append('  { command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q filelock fsspec packaging pyyaml tqdm typer httpx requests hf_transfer 2>/dev/null; } || pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests hf_transfer 2>/dev/null')
             runner_lines.append("  python3 -c 'import hf_transfer' 2>/dev/null && export HF_HUB_ENABLE_HF_TRANSFER=1")
             runner_lines.append(f'  python3 -c "import os; from huggingface_hub import snapshot_download; snapshot_download(\'{req.repo_id}\'{_dl_pyarg}, max_workers=8)"')
             runner_lines.append('fi')
@@ -769,6 +769,35 @@ def setup_cookbook_routes() -> APIRouter:
         remote = req.remote_host
         is_windows = req.platform == "windows"
 
+        # Dependency installs: prefer uv on the target host (faster), falling back
+        # to the original pip invocation when uv is absent or the install fails.
+        # Only the venv case is rewritten — the runner activates the venv via
+        # env_prefix, so `uv pip install` targets $VIRTUAL_ENV. System / PEP-668
+        # installs keep pip's `--user --break-system-packages` (uv has no `--user`
+        # equivalent, and the installed console-scripts must land on the runner's
+        # $HOME/.local/bin PATH). Bash path only; Windows stays on pip. req.cmd was
+        # validated above, so the post-validation rewrite (leading `command -v` +
+        # `&&`/`||`) is safe; the membership checks below (vllm/llama_cpp/ollama/
+        # docker) never match a pip-install command.
+        if is_pip_install and not is_windows:
+            import shlex as _shlex
+            try:
+                _toks = _shlex.split(req.cmd)
+            except ValueError:
+                _toks = []
+            if "install" in _toks:
+                _after = _toks[_toks.index("install") + 1:]
+                _system = ("--user" in _after) or ("--break-system-packages" in _after)
+                _upgrade = ("-U" in _after) or ("--upgrade" in _after)
+                _pkgs = [p for p in _after if not p.startswith("-")]
+                if _pkgs and not _system:
+                    _uv_cmd = " ".join(
+                        ["uv", "pip", "install"]
+                        + (["--upgrade"] if _upgrade else [])
+                        + [_shlex.quote(p) for p in _pkgs]
+                    )
+                    req.cmd = f"command -v uv >/dev/null 2>&1 && {_uv_cmd} || {req.cmd}"
+
         if not is_windows and not await _binary_available("tmux", remote, req.ssh_port):
             return {
                 "ok": False,
@@ -859,7 +888,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('  # Termux: no native build — use the Python bindings (CPU).')
                 runner_lines.append('  if ! python3 -c "import llama_cpp" 2>/dev/null; then')
                 runner_lines.append('    pkg install -y cmake 2>/dev/null')
-                runner_lines.append('    pip install numpy diskcache jinja2 2>/dev/null')
+                runner_lines.append('    { command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packagesnumpy diskcache jinja2 2>/dev/null; } || pip install numpy diskcache jinja2 2>/dev/null')
                 runner_lines.append('    CMAKE_ARGS="-DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF" pip install llama-cpp-python --no-build-isolation --no-cache-dir 2>&1 || true')
                 runner_lines.append('  fi')
                 runner_lines.append('elif ! command -v llama-server &>/dev/null; then')
@@ -873,7 +902,7 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('  # If the native build failed, fall back to the Python bindings.')
                 runner_lines.append('  if ! command -v llama-server &>/dev/null && ! python3 -c "import llama_cpp" 2>/dev/null; then')
                 runner_lines.append('    echo "llama-server build failed — installing Python bindings as fallback..."')
-                runner_lines.append('    pip install --user --break-system-packages -q llama-cpp-python 2>/dev/null || pip install -q llama-cpp-python 2>/dev/null || true')
+                runner_lines.append('    (command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q llama-cpp-python 2>/dev/null) || pip install --user --break-system-packages -q llama-cpp-python 2>/dev/null || pip install -q llama-cpp-python 2>/dev/null || true')
                 runner_lines.append('  fi')
                 runner_lines.append('fi')
             elif "vllm serve" in req.cmd:
@@ -1014,8 +1043,8 @@ def setup_cookbook_routes() -> APIRouter:
         elif platform == "termux":
             setup_script = (
                 "pkg install -y python tmux 2>/dev/null; "
-                "pip install --no-deps -q huggingface-hub 2>/dev/null; "
-                "pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null; "
+                "{ command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages--no-deps -q huggingface-hub 2>/dev/null; } || pip install --no-deps -q huggingface-hub 2>/dev/null; "
+                "{ command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null; } || pip install -q filelock fsspec packaging pyyaml tqdm typer httpx requests 2>/dev/null; "
                 "python3 -c 'from huggingface_hub import snapshot_download; print(\"OK\")'"
             )
             cmd = f"ssh {pf}{host} '{setup_script}'"
@@ -1034,7 +1063,9 @@ def setup_cookbook_routes() -> APIRouter:
                 "  fi; "
                 "fi; "
                 "command -v tmux >/dev/null 2>&1 || echo 'WARNING: tmux missing and auto-install failed (need passwordless sudo). Install manually.'; "
-                # Install Python bits. Try system install first; fall back to --user --break-system-packages on PEP 668 systems.
+                # Install Python bits. Prefer uv when present, then system pip, then
+                # fall back to --user --break-system-packages on PEP 668 systems.
+                "(command -v uv >/dev/null 2>&1 && uv pip install --system --break-system-packages-q huggingface_hub hf_transfer 2>/dev/null) || "
                 "pip install -q huggingface_hub hf_transfer 2>/dev/null || "
                 "pip install --user --break-system-packages -q huggingface_hub hf_transfer 2>/dev/null || "
                 "pip3 install --user --break-system-packages -q huggingface_hub hf_transfer 2>/dev/null; "

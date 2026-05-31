@@ -9,7 +9,8 @@ Type=simple
 # CHANGE THESE to match your user and install path:
 User=YOURUSER
 WorkingDirectory=/home/YOURUSER/odysseus-ui
-ExecStart=/home/YOURUSER/odysseus-ui/venv/bin/uvicorn app:app --port 8000 --host 0.0.0.0
+# The venv is created by `uv sync` in the WorkingDirectory (./.venv).
+ExecStart=/home/YOURUSER/odysseus-ui/.venv/bin/uvicorn app:app --port 8000 --host 0.0.0.0
 Restart=always
 RestartSec=3
 EnvironmentFile=-/home/YOURUSER/odysseus-ui/.env

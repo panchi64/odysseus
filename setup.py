@@ -72,7 +72,7 @@ def create_default_admin():
         print(f"        ** Change it after first login. Set ODYSSEUS_ADMIN_PASSWORD to choose your own. **")
     except ImportError:
         print("  [warn] bcrypt not installed — skipping admin user creation")
-        print("         Run: pip install bcrypt")
+        print("         Run: uv pip install bcrypt")
 
 
 def create_env():
@@ -101,7 +101,7 @@ def check_deps():
             missing.append(mod)
     if missing:
         print(f"\n  [warn] Missing packages: {', '.join(missing)}")
-        print(f"         Run: pip install -r requirements.txt")
+        print(f"         Run: uv sync")
     else:
         print("  [ok] All core dependencies installed")
 

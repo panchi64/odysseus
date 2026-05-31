@@ -77,7 +77,7 @@ export const ERROR_PATTERNS = [
         const task = taskEl ? _loadTasks().find(t => t.sessionId === taskEl.dataset.taskId) : null;
         const host = task?.remoteHost || '';
         const prefix = _buildEnvPrefix();
-        const pipCmd = prefix ? prefix + ' pip install -U vllm' : 'pip install -U vllm';
+        const pipCmd = prefix ? prefix + ' uv pip install -U vllm' : 'uv pip install -U vllm';
         const cmd = host ? _sshCmd(host, pipCmd) : pipCmd;
         _launchServeTask('update-vllm', 'pip-update', cmd);
       }},
@@ -228,7 +228,7 @@ export const ERROR_PATTERNS = [
     pattern: /sglang.*command not found|No module named sglang|SGLang is not installed/i,
     message: 'SGLang is not installed or not in PATH. Open Cookbook → Dependencies and install sglang on this server.',
     fixes: [
-      { label: 'Copy install command', action: () => _copyText('python3 -m pip install "sglang[all]"') },
+      { label: 'Copy install command', action: () => _copyText('uv pip install "sglang[all]"') },
     ],
   },
   {
@@ -285,7 +285,7 @@ export const ERROR_PATTERNS = [
         const task = taskEl ? _loadTasks().find(t => t.sessionId === taskEl.dataset.taskId) : null;
         const host = task?.remoteHost || '';
         const prefix = _buildEnvPrefix();
-        const pipCmd = prefix ? prefix + ' pip install -U vllm transformers' : 'pip install -U vllm transformers';
+        const pipCmd = prefix ? prefix + ' uv pip install -U vllm transformers' : 'uv pip install -U vllm transformers';
         const cmd = host ? _sshCmd(host, pipCmd) : pipCmd;
         // Run in tmux so it doesn't timeout
         const name = 'update-vllm';
@@ -302,16 +302,16 @@ export const ERROR_PATTERNS = [
   },
   {
     pattern: /llama-server.*command not found|llama\.cpp.*not found|No module named.*llama_cpp|No module named 'starlette_context'/i,
-    message: 'llama-cpp-python server is not installed. Run: pip install "llama-cpp-python[server]"',
+    message: 'llama-cpp-python server is not installed. Run: uv pip install "llama-cpp-python[server]"',
     fixes: [
-      { label: 'Copy install command', action: () => _copyText('pip install "llama-cpp-python[server]"') },
+      { label: 'Copy install command', action: () => _copyText('uv pip install "llama-cpp-python[server]"') },
     ],
   },
   {
     pattern: /diffusers.*No module named|diffusers.*command not found/i,
-    message: 'Diffusers is not installed. Run: pip install diffusers transformers accelerate',
+    message: 'Diffusers is not installed. Run: uv pip install diffusers transformers accelerate',
     fixes: [
-      { label: 'Copy install command', action: () => _copyText('pip install diffusers transformers accelerate') },
+      { label: 'Copy install command', action: () => _copyText('uv pip install diffusers transformers accelerate') },
     ],
   },
   {
@@ -323,7 +323,7 @@ export const ERROR_PATTERNS = [
         const task = taskEl ? _loadTasks().find(t => t.sessionId === taskEl.dataset.taskId) : null;
         const host = task?.remoteHost || '';
         const prefix = _buildEnvPrefix();
-        const pipCmd = prefix ? prefix + ' pip install -U triton triton-kernels' : 'pip install -U triton triton-kernels';
+        const pipCmd = prefix ? prefix + ' uv pip install -U triton triton-kernels' : 'uv pip install -U triton triton-kernels';
         const cmd = host ? _sshCmd(host, pipCmd) : pipCmd;
         _launchServeTask('update-triton', 'pip-update', cmd);
       }},
@@ -352,7 +352,7 @@ export const ERROR_PATTERNS = [
         const task = taskEl ? _loadTasks().find(t => t.sessionId === taskEl.dataset.taskId) : null;
         const host = task?.remoteHost || '';
         const prefix = _buildEnvPrefix();
-        const pipCmd = prefix ? prefix + ' pip install -U vllm' : 'pip install -U vllm';
+        const pipCmd = prefix ? prefix + ' uv pip install -U vllm' : 'uv pip install -U vllm';
         const cmd = host ? _sshCmd(host, pipCmd) : pipCmd;
         _launchServeTask('update-vllm', 'pip-update', cmd);
       }},

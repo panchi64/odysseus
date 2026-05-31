@@ -596,7 +596,16 @@ def setup_shell_routes() -> APIRouter:
         }
         if pip_name not in known:
             return {"ok": False, "error": f"Unknown package: {pip_name}"}
-        cmd = [_sys.executable, "-m", "pip", "install", pip_name]
+        # Prefer uv (faster resolver/installer) only when this interpreter is a
+        # venv — `uv pip install --python <bare system python>` refuses on PEP-668
+        # hosts, where the old `python -m pip` path still worked. Fall back to pip
+        # otherwise.
+        import shutil as _shutil
+        _in_venv = _sys.prefix != _sys.base_prefix
+        if _in_venv and _shutil.which("uv"):
+            cmd = ["uv", "pip", "install", "--python", _sys.executable, pip_name]
+        else:
+            cmd = [_sys.executable, "-m", "pip", "install", pip_name]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )

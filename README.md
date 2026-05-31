@@ -82,8 +82,12 @@ The Cookbook model catalog check should print a non-zero count. If it prints
 `0`, rebuild the Odysseus image with `docker compose build --no-cache odysseus`.
 
 ### Option 2: Manual install — Linux / macOS
-**Requirements:** Python 3.11+. On Linux/Termux, Cookbook also requires `tmux`
-for background model downloads and serves.
+**Requirements:** Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`). On Linux/Termux, Cookbook also
+requires `tmux` for background model downloads and serves.
+
+> Optional features are extras: `uv sync --extra search-ddg --extra pdf-forms`
+> (PyMuPDF is AGPL-3.0 — see ACKNOWLEDGMENTS.md).
 
 Install system packages first:
 ```bash
@@ -101,22 +105,18 @@ Then install Odysseus:
 ```bash
 git clone <your-odysseus-repo-url>
 cd odysseus
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python setup.py            # creates data dirs and prints an initial admin password
-uvicorn app:app --host 0.0.0.0 --port 7000
+uv sync                    # creates .venv and installs dependencies
+uv run python setup.py     # creates data dirs and prints an initial admin password
+uv run uvicorn app:app --host 0.0.0.0 --port 7000
 ```
 
 ### Option 3: Manual install — Windows (PowerShell)
 ```powershell
 git clone <your-odysseus-repo-url>
 cd odysseus
-python -m venv venv
-venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python setup.py
-uvicorn app:app --host 0.0.0.0 --port 7000
+uv sync
+uv run python setup.py
+uv run uvicorn app:app --host 0.0.0.0 --port 7000
 ```
 
 Open `http://localhost:7000`, log in with the generated admin password,
