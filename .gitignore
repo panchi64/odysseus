@@ -81,3 +81,7 @@ dev-docs/
 compound.config.json
 *.error.log
 _scratch/
+
+# LLM files
+CLAUDE.md
+AGENTS.md
