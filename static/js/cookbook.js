@@ -50,6 +50,21 @@ if (typeof window !== 'undefined' && !window._tagScrollGuardWired) {
   });
 }
 
+// A dependency install finishes in the Running tab (cookbookRunning.js), but the
+// "Installed" badge comes from a live server probe (/api/cookbook/packages) that
+// only runs when the Dependencies tab is opened or the server dropdown changes —
+// so a just-installed package keeps showing "Install". Re-fetch when an install
+// task completes. Event-based (not a direct call) because cookbook.js already
+// imports from cookbookRunning.js, so the reverse import would be circular.
+// Only re-fetch when the tab is visible, to avoid needless remote SSH probes.
+if (typeof window !== 'undefined' && !window._cookbookDepInstalledWired) {
+  window._cookbookDepInstalledWired = true;
+  window.addEventListener('ge:dep-installed', () => {
+    const group = document.querySelector('[data-backend-group="Dependencies"]');
+    if (group && !group.classList.contains('hidden')) _fetchDependencies();
+  });
+}
+
 // Radio-style check marking which model directory is a server's download target.
 // OFF = hollow circle (pickable); ON = checked circle (accent-tinted via CSS).
 export const _MODELDIR_CHECK_OFF = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/></svg>';

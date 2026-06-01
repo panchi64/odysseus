@@ -1982,8 +1982,13 @@ async function _reconnectTask(el, task) {
             const _byteMatches = [...snapshot.matchAll(/([\d.]+\s?[KMGT])B?\s*\/\s*[\d.]+\s?[KMGT]B?/gi)];
             const _bytes = _byteMatches.length ? _byteMatches[_byteMatches.length - 1][1].replace(/\s/g, '') : null;
             const curProgress = _bytes || (_dlAgg != null ? String(_dlAgg) : (lastPct || '0'));
-            if (!el._lastProgress) { el._lastProgress = curProgress; el._lastProgressTime = Date.now(); }
-            if (curProgress !== el._lastProgress) {
+            // Stale-detection auto-restarts via /api/model/download (an HF repo
+            // fetch). A _dep is a pip/uv install reusing the download UI — that
+            // restart path is wrong for it, and a slow compile can sit with
+            // static output past the stale timeout, so skip it for _dep tasks.
+            if (task.payload?._dep) { /* no stale-restart for dependency installs */ }
+            else if (!el._lastProgress) { el._lastProgress = curProgress; el._lastProgressTime = Date.now(); }
+            else if (curProgress !== el._lastProgress) {
               el._lastProgress = curProgress;
               el._lastProgressTime = Date.now();
             } else if (Date.now() - (el._lastProgressTime || 0) > _STALE_TIMEOUT && task._autoRestarted) {
@@ -2307,6 +2312,17 @@ async function _reconnectTask(el, task) {
           _updateTask(task.sessionId, { status });
           const badge = el.querySelector('.cookbook-task-status');
           if (badge) { badge.textContent = status; badge.className = `cookbook-task-status cookbook-task-${status}`; }
+          // A dependency install just succeeded — its "Installed" badge in the
+          // Dependencies tab is driven by a live server probe that won't re-run
+          // on its own, so nudge cookbook.js to re-fetch the package list.
+          // Fire ONCE: this block re-runs every poll (the _dep runner keeps the
+          // pane alive via `exec bash`, so the exit line persists in every
+          // snapshot) and _fetchDependencies re-spins/re-probes on each call.
+          if (status === 'done' && task.payload?._dep && !task._depDoneFired) {
+            task._depDoneFired = true;
+            _updateTask(task.sessionId, { _depDoneFired: true });
+            window.dispatchEvent(new CustomEvent('ge:dep-installed', { detail: { repo_id: task.payload.repo_id, remoteHost: task.remoteHost || '' } }));
+          }
           _renderRunningTab();
         }
         _updateTask(task.sessionId, { output: snapshot.slice(-5000) });
