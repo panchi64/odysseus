@@ -13,7 +13,6 @@ class ResearchSource:
     url: str
     title: str
     snippet: str
-    relevance: float = 0.0
 
 
 @dataclass
@@ -22,8 +21,6 @@ class ResearchResult:
     query: str
     summary: str
     sources: List[ResearchSource] = field(default_factory=list)
-    sections: List[str] = field(default_factory=list)
-    tokens_used: int = 0
     duration_seconds: float = 0.0
 
 
@@ -65,33 +62,40 @@ class ResearchService:
         import time
         start = time.time()
 
-        result = await self.handler.call_research_service(
+        # call_research_service returns the formatted markdown report (a str),
+        # and stashes the live DeepResearcher in the entry we pass so we can pull
+        # the per-source findings back out for the structured result.
+        entry: dict = {}
+        report = await self.handler.call_research_service(
             topic,
             llm_endpoint,
             llm_model,
             max_time=max_time,
             progress_callback=on_progress,
+            _task_entry=entry,
         )
 
         duration = time.time() - start
 
-        # Parse result into structured format
+        researcher = entry.get("researcher")
+        raw_findings = (
+            self.handler._extract_raw_findings(researcher.findings)
+            if researcher and researcher.findings
+            else []
+        )
         sources = [
             ResearchSource(
-                url=s.get("url", ""),
-                title=s.get("title", ""),
-                snippet=s.get("snippet", ""),
-                relevance=s.get("relevance", 0.0),
+                url=f.get("url", ""),
+                title=f.get("title", ""),
+                snippet=f.get("summary", ""),
             )
-            for s in result.get("sources", [])
+            for f in raw_findings
         ]
 
         return ResearchResult(
             query=topic,
-            summary=result.get("summary", result.get("answer", "")),
+            summary=report,
             sources=sources,
-            sections=result.get("sections", []),
-            tokens_used=result.get("tokens_used", 0),
             duration_seconds=duration,
         )
 

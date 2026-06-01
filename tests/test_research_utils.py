@@ -77,5 +77,26 @@ class TestIsLowQuality:
     def test_case_insensitive(self):
         assert is_low_quality("UNABLE TO EXTRACT any data") is True
 
-    def test_copyright_marker(self):
-        assert is_low_quality("Just a copyright notice at the bottom.") is True
+    def test_does_not_contain_relevant_marker(self):
+        assert is_low_quality("This page does not contain relevant information.") is True
+
+    def test_not_relevant_to_goal_marker(self):
+        assert is_low_quality("The text is not relevant to the goal of the query.") is True
+
+    # Regression: bare topic words ("cookie", "copyright", "footer") must NOT
+    # trip the filter. They previously discarded legitimate findings whenever the
+    # subject matter happened to mention them (e.g. cookie law, copyright reform).
+    def test_cookie_topic_not_filtered(self):
+        assert is_low_quality(
+            "The EU cookie law requires consent banners for tracking cookies."
+        ) is False
+
+    def test_copyright_topic_not_filtered(self):
+        assert is_low_quality(
+            "The 2024 copyright reform extended protection terms to 70 years."
+        ) is False
+
+    def test_footer_topic_not_filtered(self):
+        assert is_low_quality(
+            "Site footer links improved navigation and reduced bounce rate."
+        ) is False

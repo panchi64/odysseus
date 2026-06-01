@@ -19,7 +19,6 @@ function _loadDismissed() {
 function _saveDismissed(set) {
   try { localStorage.setItem(_DISMISSED_KEY, JSON.stringify([...set])); } catch {}
 }
-function _isDismissed(id) { return _loadDismissed().has(id); }
 function _markDismissed(ids) {
   const set = _loadDismissed();
   for (const id of ids) set.add(id);
@@ -205,6 +204,10 @@ export function formatPhase(progress, maxRounds) {
     case 'reading': return `${rn}Reading ${p.total_sources || 0} sources`;
     case 'analyzing': return `${rn}Analyzing ${p.total_findings || 0} findings`;
     case 'writing': return `Writing report -- ${p.total_sources || 0} sources`;
+    // Mid-stream warning/error events carry the reason in `message`. Surface it
+    // instead of rendering the bare word "warning"/"error" with no context.
+    case 'warning': return p.message ? `⚠ ${p.message}` : 'Warning';
+    case 'error': return p.message ? `Error: ${p.message}` : 'Error';
     default: return p.phase;
   }
 }
@@ -261,16 +264,27 @@ function _connectStream(job) {
   const es = new EventSource(`${_apiBase}/api/research/stream/${job.id}`);
   job._es = es;
 
-  es.onmessage = (evt) => {
+  es.onmessage = async (evt) => {
     try {
       const d = JSON.parse(evt.data);
-      if (d.status === 'not_found') { _finishJob(job, 'error'); return; }
+      if (d.status === 'not_found') {
+        // The task wasn't found server-side — usually because it already
+        // finished (and possibly got consumed) while the stream was (re)connecting,
+        // NOT because it failed. Check for a real result before declaring an error.
+        if (job._es) { job._es.close(); job._es = null; }
+        await _recoverOrFail(job);
+        return;
+      }
       job.progress = d;
       if (d.model && !job.modelName) job.modelName = d.model;
       if (d.final) {
         if (d.error) job.errorMsg = d.error;
-        _finishJob(job, d.status === 'done' ? 'done' : d.status === 'cancelled' ? 'cancelled' : 'error');
-        if (d.status === 'done') _fetchResult(job);
+        const status = d.status === 'done' ? 'done' : d.status === 'cancelled' ? 'cancelled' : 'error';
+        // Fetch the result BEFORE flipping the card to "done" so it renders
+        // with real sources — otherwise it briefly shows 0 sources and gets
+        // mislabeled "no results" until the async fetch lands.
+        if (status === 'done') await _fetchResult(job);
+        _finishJob(job, status);
         return;
       }
       _notify();
@@ -287,17 +301,26 @@ async function _pollFallback(job) {
   if (job.status !== 'running') return;
   try {
     const res = await fetch(`${_apiBase}/api/research/status/${job.id}`, { credentials: 'same-origin' });
-    if (!res.ok) { _finishJob(job, 'error'); return; }
+    if (!res.ok) { await _recoverOrFail(job); return; }
     const d = await res.json();
     job.progress = d.progress || {};
     if (d.avg_duration) job.avgDuration = d.avg_duration;
     if (d.status !== 'running') {
+      if (d.status === 'done') await _fetchResult(job);
       _finishJob(job, d.status === 'done' ? 'done' : 'error');
-      if (d.status === 'done') _fetchResult(job);
       return;
     }
     setTimeout(() => _pollFallback(job), 2000);
-  } catch { _finishJob(job, 'error'); }
+  } catch { await _recoverOrFail(job); }
+}
+
+/** Last-ditch: the task vanished from the server. If a finished result is still
+ *  retrievable, treat the job as done; otherwise mark it errored. Avoids
+ *  flagging an already-completed research as failed on a late/lost connection. */
+async function _recoverOrFail(job) {
+  if (job.status !== 'running') return;
+  const d = await _fetchResult(job);
+  _finishJob(job, (d && d.result) ? 'done' : 'error');
 }
 
 function _finishJob(job, status) {
@@ -317,19 +340,31 @@ function _finishJob(job, status) {
 let _onCompleteCb = null;
 export function onComplete(cb) { _onCompleteCb = cb; }
 
+/** Fetch a completed research result without clearing it, retrying once on a
+ *  transient failure. Returns the parsed payload, or null if it never arrived.
+ *  Exported so the panel's lazy-load path shares the same retry behaviour. */
+export async function peekResult(jobId) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`${_apiBase}/api/research/result-peek/${jobId}`, {
+        method: 'POST', credentials: 'same-origin',
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    if (attempt === 0) await new Promise(r => setTimeout(r, 800));
+  }
+  return null;
+}
+
 async function _fetchResult(job) {
-  try {
-    const res = await fetch(`${_apiBase}/api/research/result-peek/${job.id}`, {
-      method: 'POST', credentials: 'same-origin',
-    });
-    if (!res.ok) return;
-    const d = await res.json();
-    job.result = d.result;
-    job.sources = d.sources;
-    job.findings = d.raw_findings;
-    if (d.category && !job.category) job.category = d.category;
-    _notify();
-  } catch {}
+  const d = await peekResult(job.id);
+  if (!d) return null;
+  job.result = d.result;
+  job.sources = d.sources;
+  job.findings = d.raw_findings;
+  if (d.category && !job.category) job.category = d.category;
+  _notify();
+  return d;
 }
 
 function _notify() { if (_renderCb) _renderCb(); }

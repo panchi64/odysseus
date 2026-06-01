@@ -240,16 +240,15 @@ class DeepResearcher:
         findings: List[Dict] = list(prior_findings) if prior_findings else []
         report = prior_report or ""
 
-        # PLAN: Analyze the question and create a research strategy
-        if not prior_report:
-            self._emit(phase="planning")
-            self.research_plan = await self._create_plan(question)
-            logger.info(f"Research plan: {self.research_plan[:200]}")
-        else:
-            # Continuation — plan around the follow-up
-            self._emit(phase="planning")
-            self.research_plan = await self._create_plan(question)
-            logger.info(f"Continuation plan: {self.research_plan[:200]}")
+        # PLAN: Analyze the question and create a research strategy. For a
+        # continuation this plans around the follow-up; the call is identical
+        # either way, only the log label differs.
+        self._emit(phase="planning")
+        self.research_plan = await self._create_plan(question)
+        logger.info(
+            f"{'Continuation' if prior_report else 'Research'} plan: "
+            f"{self.research_plan[:200]}"
+        )
         if not self.category and not prior_report:
             self.category = await self._classify_category(question)
             if self.category:
@@ -473,8 +472,11 @@ class DeepResearcher:
         search_tasks = [self._search(q) for q in queries]
         search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        # Collect URLs to fetch from all search results
+        # Collect URLs to fetch from all search results, capped across ALL
+        # result lists (the cap check has to break the OUTER loop too, or each
+        # additional search result slips one more URL past the limit).
         urls_to_fetch = []
+        url_cap = self.max_urls_per_round * len(queries)
         for result in search_results:
             if isinstance(result, Exception):
                 logger.warning(f"Search error: {result}")
@@ -486,8 +488,10 @@ class DeepResearcher:
                 if url and url not in self.urls_fetched:
                     urls_to_fetch.append(r)
                     self.urls_fetched.add(url)
-                if len(urls_to_fetch) >= self.max_urls_per_round * len(queries):
+                if len(urls_to_fetch) >= url_cap:
                     break
+            if len(urls_to_fetch) >= url_cap:
+                break
 
         if self._cancelled or self._time_exceeded():
             return all_findings

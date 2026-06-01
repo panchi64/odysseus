@@ -1120,16 +1120,11 @@ function _renderResult(job) {
 
 async function _ensureResult(job) {
   if (job.result) return;
-  try {
-    const res = await fetch(`${_apiBase}/api/research/result-peek/${job.id}`, {
-      method: 'POST', credentials: 'same-origin',
-    });
-    if (!res.ok) return;
-    const d = await res.json();
-    job.result = d.result;
-    job.sources = d.sources;
-    job.findings = d.raw_findings;
-  } catch {}
+  const d = await jobs.peekResult(job.id);
+  if (!d) return;
+  job.result = d.result;
+  job.sources = d.sources;
+  job.findings = d.raw_findings;
 }
 
 async function _copyResult(job, btn) {

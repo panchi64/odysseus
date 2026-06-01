@@ -27,21 +27,25 @@ def strip_thinking(text):
 # Source quality filtering
 # ---------------------------------------------------------------------------
 
-# Markers indicating extracted content is boilerplate, error text, or empty.
-# If any marker is found (case-insensitive), the content is filtered out.
+# Markers indicating the EXTRACTION failed — i.e. the LLM reported the page had
+# nothing useful, rather than returning real content. If any marker is found
+# (case-insensitive), the finding is filtered out.
+#
+# These must be phrases that read as meta-commentary about a failed extraction,
+# NOT bare topic words. Earlier versions listed single nouns like "cookie" and
+# "copyright", which silently discarded perfectly good findings whenever the
+# subject matter happened to mention HTTP cookies, the EU cookie law, copyright
+# reform, page footers, etc. Keep this list to failure-signal phrases only.
 LOW_QUALITY_MARKERS = [
     "insufficient to",
     "content is insufficient",
     "no substantive data",
-    "does not contain",
-    "not relevant to",
+    "does not contain relevant",
+    "not relevant to the goal",
     "no relevant information",
     "unable to extract",
     "completely unrelated",
     "boilerplate",
-    "cookie",
-    "footer text",
-    "copyright",
 ]
 
 

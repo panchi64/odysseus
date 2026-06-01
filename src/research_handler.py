@@ -271,7 +271,6 @@ class ResearchHandler:
 
     def get_status(self, session_id: str) -> Optional[dict]:
         """Get current research status for a session."""
-        avg = self.get_avg_duration()
         if session_id in self._active_tasks:
             entry = self._active_tasks[session_id]
             result = {
@@ -280,6 +279,10 @@ class ResearchHandler:
                 "query": entry["query"],
                 "started_at": entry["started_at"],
             }
+            # avg_duration is only meaningful as an ETA hint for a running task,
+            # so only pay the disk scan here — NOT on the disk-fallback path that
+            # the SSE stream hits every 1.5s for already-finished research.
+            avg = self.get_avg_duration()
             if avg is not None:
                 result["avg_duration"] = round(avg, 1)
             return result
@@ -408,7 +411,16 @@ class ResearchHandler:
             return []
 
     def get_avg_duration(self) -> Optional[float]:
-        """Compute average research duration from completed results on disk."""
+        """Compute average research duration from completed results on disk.
+
+        Cached for a short TTL — a running job's status is polled every ~1.5s,
+        and the average across all completed reports barely moves between polls,
+        so we avoid re-globbing/parsing the whole research directory each time.
+        """
+        now = time.time()
+        cached = getattr(self, "_avg_cache", None)
+        if cached is not None and (now - cached[0]) < 30:
+            return cached[1]
         durations = []
         try:
             for p in RESEARCH_DATA_DIR.glob("*.json"):
@@ -423,9 +435,9 @@ class ResearchHandler:
                     continue
         except Exception:
             pass
-        if durations:
-            return sum(durations) / len(durations)
-        return None
+        avg = (sum(durations) / len(durations)) if durations else None
+        self._avg_cache = (now, avg)
+        return avg
 
     def clear_result(self, session_id: str):
         """Mark result as consumed so it won't be re-rendered on refresh.
