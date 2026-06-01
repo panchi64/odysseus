@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import uuid
 from pathlib import Path
 
@@ -801,6 +802,16 @@ def setup_cookbook_routes() -> APIRouter:
         # validated above; pip_install only wraps the already-validated package
         # names in shell plumbing. Windows stays on pip (handled separately).
         #
+        # LOCAL deps (no remote host, no user env_prefix) are installed for the
+        # Odysseus server to `import` — and the "Installed" badge is a live
+        # in-process importlib probe under THIS process's interpreter. The serve
+        # runner would otherwise scrub our uv venv and install into the system
+        # python, so the install succeeds (exit 0 → "finished") but the probe,
+        # looking inside the venv, never sees it. Pin the install to
+        # `sys.executable` so it lands exactly where the probe looks. (Remote /
+        # env_prefix installs keep the PATH-relative target — there the probe
+        # runs over SSH inside that same env.)
+        #
         # pip_install only models the flags the Dependencies UI emits
         # (-U/--upgrade, --user, --break-system-packages, --no-deps, -q). If a
         # (non-UI / manual API) caller passes anything else — e.g. --index-url,
@@ -819,10 +830,12 @@ def setup_cookbook_routes() -> APIRouter:
                 _modeled = {"-U", "--upgrade", "--user", "--break-system-packages", "--no-deps", "-q", "--quiet"}
                 _custom = [f for f in _after if f.startswith("-") and f not in _modeled]
                 if _pkgs and not _custom:
+                    _pin = sys.executable if (not remote and not req.env_prefix) else None
                     req.cmd = pip_install(
                         _pkgs,
                         upgrade=("-U" in _after) or ("--upgrade" in _after),
                         no_deps=("--no-deps" in _after),
+                        python=_pin,
                     )
 
         if not is_windows and not await _binary_available("tmux", remote, req.ssh_port):

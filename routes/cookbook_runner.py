@@ -160,7 +160,7 @@ def ensure_uv_lines(local_uv: str | None = None) -> list[str]:
     ]
 
 
-def pip_install(pkgs, *, upgrade: bool = False, no_deps: bool = False, quiet: bool = True) -> str:
+def pip_install(pkgs, *, upgrade: bool = False, no_deps: bool = False, quiet: bool = True, python: str | None = None) -> str:
     """The ONE canonical install command for a bash runner.
 
     uv-first, with a pip safety net. Assumes the runner already ran
@@ -168,8 +168,20 @@ def pip_install(pkgs, *, upgrade: bool = False, no_deps: bool = False, quiet: bo
     handled the interpreter target via `venv_scrub_lines()` or an `env_prefix`
     (so `$(command -v python3)` is the intended interpreter).
 
+    `python` pins the install to an ABSOLUTE interpreter path instead of the
+    runner's `$(command -v python3)`. This is required for a LOCAL Cookbook
+    dependency install (rembg, diffusers, hf_transfer, …): those packages exist
+    for the Odysseus server to `import`, and the "Installed" badge is a live
+    in-process `importlib` probe running under the server's own interpreter
+    (`sys.executable`). Without pinning, the runner scrubs the server's uv venv
+    and installs into the system python — the install succeeds but the probe,
+    looking inside the venv, never sees it. Pinning to `sys.executable` makes
+    the install land exactly where the probe looks. uv installs into any target
+    interpreter without needing pip there, so this works even though Odysseus's
+    uv venv ships no pip.
+
     Resolution order in the emitted shell:
-      1. uv → the active venv / scrubbed system python (`--python`,
+      1. uv → the pinned/active venv / scrubbed system python (`--python`,
          `--break-system-packages` for PEP-668 hosts)
       2. `python3 -m pip --user --break-system-packages` (PEP-668 systems
          without uv)
@@ -194,6 +206,17 @@ def pip_install(pkgs, *, upgrade: bool = False, no_deps: bool = False, quiet: bo
         flags.append("--no-deps")
     flagstr = (" ".join(flags) + " ") if flags else ""
     spec = " ".join(shlex.quote(p) for p in pkgs)
+    if python:
+        # Pinned-interpreter install (local dependency for the Odysseus server).
+        # uv targets the exact interpreter; the single pip fallback uses the same
+        # absolute python so a host without uv still installs into the right env.
+        # No --user (invalid inside a venv) and no PATH-relative `python3`.
+        py = shlex.quote(python)
+        return (
+            f'{{ command -v uv >/dev/null 2>&1 && uv pip install --python {py} '
+            f'{flagstr}{spec} 2>/dev/null; }} '
+            f'|| {py} -m pip install {flagstr}{spec} 2>/dev/null'
+        )
     return (
         f'{{ command -v uv >/dev/null 2>&1 && uv pip install --python "$(command -v python3)" '
         f'--break-system-packages {flagstr}{spec} 2>/dev/null; }} '
