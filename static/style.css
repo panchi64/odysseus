@@ -8177,6 +8177,20 @@ body.hide-thinking .thinking-section { display: none !important; }
 .msg.msg-continuation {
   margin-top: 2px;
 }
+/* Back-to-back rounds of one assistant turn read as a single turn, not separate
+   messages: the model header shows once (on the turn's first bubble), and each
+   continuation bubble is indented into the same left column as .agent-thread and
+   carries a red left-border that lines up with the thread rail — so prose bubbles
+   and tool timelines share one continuous "spine" down the turn. */
+.msg-ai.msg-continuation {
+  margin-left: 33px;                 /* border-box left edge lands at 33px — same x as the .agent-thread rail */
+  width: calc(85% - 25px);           /* same width basis as the head bubble, shifted right so the right edge still aligns */
+  border-left: 2px solid color-mix(in srgb, var(--red) 18%, transparent);  /* the rail: same token as .agent-thread, same idiom as the left-accent banners */
+  border-top-left-radius: 0;         /* square the left so the rail reads as one straight line (bottom-left is already 0 on .msg-ai) */
+}
+.msg-ai.msg-continuation > .role {
+  display: none;                     /* header already shown on the turn's first bubble */
+}
 
 /* ===== AGENT THREAD TIMELINE ===== */
 .agent-thread {
@@ -8415,6 +8429,15 @@ body.hide-thinking .thinking-section { display: none !important; }
     margin-left: 16px;
     padding-left: 18px;
     max-width: calc(90% - 16px);
+  }
+  .msg-ai.msg-continuation {
+    /* .msg-ai is forced to width:100% here, so there's no room to indent into a
+       rail column. Drop the spine and let the hidden header + tight spacing carry
+       the grouping, rather than leaving an orphaned left stripe + squared corner. */
+    margin-left: 0;
+    border-left-width: 1px;
+    border-left-color: var(--bubble-border, var(--border));
+    border-top-left-radius: 18px;
   }
   .agent-thread-cmd {
     font-size: 0.78em;
