@@ -44,6 +44,29 @@ interpreter (the activated venv, or the scrubbed system python).
 """
 
 import shlex
+import sys
+
+
+def server_interpreter() -> str:
+    """Absolute path to the interpreter the Odysseus server runs under.
+
+    THE single source of truth for "where do LOCAL Cookbook dependencies live".
+    Two sites must agree on this answer or the "Installed" badge silently lies:
+
+      - the INSTALL site — `pip_install(..., python=server_interpreter())` for a
+        local dep — puts the package into this interpreter's environment, and
+      - the PROBE site — `/api/cookbook/packages` — decides "Installed" with an
+        in-process `importlib` call, which by definition inspects THIS
+        interpreter.
+
+    The original bug: the serve runner scrubbed Odysseus's own uv venv and
+    installed into the system python instead, so installs succeeded (exit 0)
+    but the in-process probe, looking inside the venv, never saw them. Anchoring
+    both sides to this one value is what prevents that drift from coming back —
+    a new install path should pin to `server_interpreter()`, never re-derive an
+    interpreter of its own."""
+    return sys.executable
+
 
 # Official uv installer. Kept as a module constant so the URL lives in one place
 # (and is easy to audit / pin). The installer drops the `uv` binary into

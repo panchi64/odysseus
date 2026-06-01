@@ -479,8 +479,17 @@ def setup_shell_routes() -> APIRouter:
         (vllm, sglang, llama_cpp, diffusers, hf_transfer) are checked on the SELECTED
         server over SSH, inside its venv — otherwise installing on a remote box
         never reflected because the check only ever looked at the local host.
+
+        The in-process check inspects THIS interpreter — the same one a local
+        dependency install is pinned to (cookbook_runner.server_interpreter()).
+        That shared anchor is what keeps "installed" and "detected" in sync.
         """
         import importlib, shlex, json as _json
+        # A dependency may have been installed into this interpreter moments ago
+        # (the Cookbook install path pins local deps to server_interpreter()).
+        # Drop the import-system's cached directory listings so a freshly added
+        # package is found on this very call instead of after a server restart.
+        importlib.invalidate_caches()
         packages = [
             # ── System ── OS binaries, not pip packages
             {"name": "tmux", "pip": "", "desc": "Required for Linux/Termux Cookbook background downloads and serves", "category": "System", "target": "remote", "kind": "system", "install_hint": "Run Cookbook server setup, or install tmux with apt/pacman/dnf/apk/zypper."},
@@ -579,39 +588,11 @@ def setup_shell_routes() -> APIRouter:
                 pkg["installed"] = False
         return {"packages": packages}
 
-    @router.post("/api/cookbook/packages/install")
-    async def install_package(request: Request):
-        """Install a package via pip. Admin only — pip install is effectively code exec."""
-        _require_admin(request)
-        import sys as _sys
-        body = await request.json()
-        pip_name = body.get("pip")
-        if not pip_name:
-            return {"ok": False, "error": "No package specified"}
-        # Validate against known packages to prevent arbitrary pip install
-        known = {
-            "rembg[gpu]", "hf_transfer", "llama-cpp-python[server]", "sglang[all]", "diffusers",
-            "TTS", "bark", "faster-whisper", "playwright", "realesrgan", "gfpgan",
-            "insightface", "onnxruntime-gpu", "onnxruntime", "hdbscan",
-        }
-        if pip_name not in known:
-            return {"ok": False, "error": f"Unknown package: {pip_name}"}
-        # Prefer uv (faster resolver/installer) only when this interpreter is a
-        # venv — `uv pip install --python <bare system python>` refuses on PEP-668
-        # hosts, where the old `python -m pip` path still worked. Fall back to pip
-        # otherwise.
-        import shutil as _shutil
-        _in_venv = _sys.prefix != _sys.base_prefix
-        if _in_venv and _shutil.which("uv"):
-            cmd = ["uv", "pip", "install", "--python", _sys.executable, pip_name]
-        else:
-            cmd = [_sys.executable, "-m", "pip", "install", pip_name]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode == 0:
-            return {"ok": True, "output": stdout.decode()[-200:]}
-        return {"ok": False, "error": stderr.decode()[-300:]}
+    # NOTE: there is intentionally no second "install a package" endpoint here.
+    # Cookbook dependency installs go through the single tmux-backed path in
+    # cookbook_routes (`/api/model/serve` with a pip command), which streams
+    # progress and supports remote hosts. A local dep is pinned to
+    # `cookbook_runner.server_interpreter()` — the same interpreter this probe
+    # inspects — so install and detection can't drift apart.
 
     return router
