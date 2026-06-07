@@ -1,0 +1,86 @@
+/* ============================================================================
+   DESIGN TOKENS — the single source of truth for every value in the system.
+   Nothing outside this file should declare a raw hex color or off-grid size.
+
+   - Mode-INVARIANT tokens (grid, type, borders) live in :root.
+   - Color tokens are scoped per theme mode: Phosphor (dark) is the default in
+     :root; Paper (light) overrides under [data-theme="paper"].
+
+   Reference: docs/terminal-hud-design-system.md §2–§4.
+   ========================================================================== */
+
+:root {
+  /* ---- grid & spacing (4px base) ---- */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- corners & borders ---- */
+  --radius-0: 0;
+  --radius-1: 2px; /* interactive controls only */
+  --line-w: 1px; /* hairline */
+  --line-emphasis: 2px; /* selected / primary region */
+
+  /* ---- typefaces ---- */
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  --font-display: "Oswald", "Helvetica Neue", system-ui, sans-serif;
+
+  /* ---- type scale (size / line-height, snapped to 4px) ---- */
+  --type-micro-size: 10px;
+  --type-micro-lh: 12px;
+  --type-label-size: 11px;
+  --type-label-lh: 16px;
+  --type-body-size: 13px;
+  --type-body-lh: 16px;
+  --type-readout-size: 20px;
+  --type-readout-lh: 24px;
+  --type-readout-lg-size: 32px;
+  --type-readout-lg-lh: 36px;
+  --type-display-size: 48px;
+  --type-display-lh: 48px;
+  --tracking-label: 0.08em;
+
+  /* ---- motion (instant / mechanical, <=120ms) ---- */
+  --motion-fast: 80ms;
+  --motion-base: 120ms;
+
+  /* ========================================================================
+     COLOR — PHOSPHOR mode (dark, default)
+     ====================================================================== */
+  --bg: #0a0c0b;
+  --surface: #121514;
+  --surface-raised: #1a1e1c;
+  --line: #2a2f2c;
+  --text-dim: #5a635e;
+  --text: #a8b3ad;
+  --text-bright: #e6ede9;
+
+  --accent-nominal: #5bd47e;
+  --accent-warn: #ffb020;
+  --accent-alert: #ff3b3b;
+  --accent-info: #3ba9ff;
+}
+
+/* ==========================================================================
+   COLOR — PAPER mode (light). Monochrome at rest, but semantic accents are
+   real colors (darkened for legibility on a light surface, ~WCAG AA on white)
+   so state reads as clearly as it does in Phosphor.
+   ========================================================================== */
+[data-theme="paper"] {
+  --bg: #f4f4f2;
+  --surface: #ffffff;
+  --surface-raised: #eceae6;
+  --line: #d2d2cd;
+  --text-dim: #8a8a84;
+  --text: #34342f;
+  --text-bright: #0a0a0a;
+
+  --accent-nominal: #1f7a43;
+  --accent-warn: #9a6a00;
+  --accent-alert: #c2261d;
+  --accent-info: #1a5fb4;
+}

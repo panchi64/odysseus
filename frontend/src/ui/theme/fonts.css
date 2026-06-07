@@ -1,0 +1,8 @@
+/* Self-hosted fonts (bundled via @fontsource).
+   Mono: JetBrains Mono (primary — tabular figures).
+   Display: Oswald (heavy condensed grotesque, titles only). */
+
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/700.css";
+@import "@fontsource/oswald/700.css";

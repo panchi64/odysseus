@@ -1,0 +1,96 @@
+import type { Calendar, CalendarEvent } from "./model";
+
+export const mockCalendars: Calendar[] = [
+  {
+    id: "cal-1",
+    name: "Personal",
+    tone: "nominal",
+    synced: true,
+    syncUrl: "caldav.icloud.com",
+  },
+  {
+    id: "cal-2",
+    name: "Work",
+    tone: "info",
+    synced: true,
+    syncUrl: "caldav.company.dev",
+  },
+  { id: "cal-3", name: "Ops / On-call", tone: "alert", synced: false },
+];
+
+export const mockEvents: CalendarEvent[] = [
+  {
+    id: "evt-1",
+    calendarId: "cal-2",
+    title: "Sprint 24 Planning",
+    start: "2026-06-08T14:00:00Z",
+    end: "2026-06-08T15:30:00Z",
+    location: "Zoom — link in description",
+    recurrence: "none",
+    description:
+      "Review sprint 24 backlog and assign story points. Sarah to drive.",
+  },
+  {
+    id: "evt-2",
+    calendarId: "cal-1",
+    title: "Dentist",
+    start: "2026-06-09T10:00:00Z",
+    end: "2026-06-09T11:00:00Z",
+    location: "Clínica Dental Pérez, Calle Mayor 14",
+    recurrence: "none",
+  },
+  {
+    id: "evt-3",
+    calendarId: "cal-2",
+    title: "API Rate Limiter — Sign-off",
+    start: "2026-06-10T09:00:00Z",
+    end: "2026-06-10T09:30:00Z",
+    recurrence: "none",
+    description: "Final sign-off meeting before production rollout.",
+  },
+  {
+    id: "evt-4",
+    calendarId: "cal-1",
+    title: "Weekly Workout",
+    start: "2026-06-07T07:00:00Z",
+    end: "2026-06-07T08:00:00Z",
+    recurrence: "weekly",
+    location: "Home gym",
+  },
+  {
+    id: "evt-5",
+    calendarId: "cal-3",
+    title: "On-call Shift",
+    start: "2026-06-09T00:00:00Z",
+    end: "2026-06-09T23:59:00Z",
+    allDay: true,
+    recurrence: "none",
+    description: "Primary on-call for API gateway.",
+  },
+  {
+    id: "evt-6",
+    calendarId: "cal-2",
+    title: "1:1 with Sarah",
+    start: "2026-06-11T15:00:00Z",
+    end: "2026-06-11T15:30:00Z",
+    recurrence: "weekly",
+  },
+  {
+    id: "evt-7",
+    calendarId: "cal-1",
+    title: "Deep work block",
+    start: "2026-06-12T09:00:00Z",
+    end: "2026-06-12T12:00:00Z",
+    recurrence: "weekdays",
+    description: "No meetings, no Slack. Focus on Odysseus agent loop.",
+  },
+  {
+    id: "evt-8",
+    calendarId: "cal-2",
+    title: "Post-mortem — June 7 Incident",
+    start: "2026-06-08T10:00:00Z",
+    end: "2026-06-08T11:00:00Z",
+    location: "Google Meet",
+    recurrence: "none",
+  },
+];

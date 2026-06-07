@@ -1,0 +1,94 @@
+/**
+ * Public surface of the design system. Everything outside `src/ui` imports
+ * components and types from here (`~/ui`), never from deep paths.
+ *
+ * Rules (see src/ui/CLAUDE.md):
+ *  - tokens.css is the single source of truth for colors/spacing/type.
+ *  - Cosmetic differences are variant props, never forked components.
+ *  - No spinners — use LoadingText / EmptyState.
+ */
+
+// utils
+export { cx, type ClassValue } from "./cx";
+
+// theme
+export {
+  theme,
+  setTheme,
+  toggleTheme,
+  applyTheme,
+  DEFAULT_THEME,
+  THEME_STORAGE_KEY,
+  type ThemeMode,
+} from "./theme/theme-store";
+export { useTheme } from "./theme/useTheme";
+export { ThemeProvider } from "./theme/ThemeProvider";
+
+// primitives
+export { Box } from "./primitives/Box";
+export {
+  Text,
+  type TextProps,
+  type TextVariant,
+  type TextTone,
+} from "./primitives/Text";
+export { Stack, type StackProps, type GapStep } from "./primitives/Stack";
+export { Row, type RowProps } from "./primitives/Row";
+export { Icon, type IconProps } from "./primitives/Icon";
+export { type IconName } from "./icons/registry";
+
+// spec components
+export { Panel, type PanelProps, type PanelState } from "./components/Panel";
+export { Field, type FieldProps } from "./components/Field";
+export { Readout, type ReadoutProps } from "./components/Readout";
+export {
+  StatusFlag,
+  type StatusFlagProps,
+  type Status,
+} from "./components/StatusFlag";
+export {
+  InstrumentBand,
+  type InstrumentBandProps,
+  type BandCell,
+} from "./components/InstrumentBand";
+export { Tile, type TileProps } from "./components/Tile";
+export { ListRow, type ListRowProps } from "./components/ListRow";
+export {
+  RegistrationFrame,
+  type RegistrationFrameProps,
+} from "./components/RegistrationFrame";
+
+// controls
+export {
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  type ButtonSize,
+} from "./components/Button";
+export { Input, type InputProps } from "./components/Input";
+export { Textarea, type TextareaProps } from "./components/Textarea";
+export { Markdown, type MarkdownProps } from "./components/Markdown";
+export {
+  Select,
+  type SelectProps,
+  type SelectOption,
+} from "./components/Select";
+export { Checkbox, type CheckboxProps } from "./components/Checkbox";
+export { Toggle, type ToggleProps } from "./components/Toggle";
+export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";
+export { Modal, type ModalProps } from "./components/Modal";
+export { Drawer, type DrawerProps } from "./components/Drawer";
+export { Tooltip, type TooltipProps } from "./components/Tooltip";
+export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
+export { ThemeToggle } from "./components/ThemeToggle";
+
+// state / utility
+export { LoadingText, type LoadingTextProps } from "./components/LoadingText";
+export { EmptyState, type EmptyStateProps } from "./components/EmptyState";
+export {
+  ForbiddenView,
+  type ForbiddenViewProps,
+} from "./components/ForbiddenView";
+export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
+export { Divider, type DividerProps } from "./components/Divider";
+export { PageHeader, type PageHeaderProps } from "./components/PageHeader";

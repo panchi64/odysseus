@@ -1,0 +1,52 @@
+import type { Integration } from "./model";
+
+export const mockIntegrations: Integration[] = [
+  {
+    id: "int-searxng",
+    name: "SearXNG",
+    type: "WEB SEARCH",
+    baseUrl: "http://localhost:8080",
+    configured: true,
+    status: "ok",
+    lastTestedAt: "2026-06-07T13:58:00Z",
+    description: "Self-hosted metasearch engine for web queries.",
+  },
+  {
+    id: "int-ntfy",
+    name: "ntfy",
+    type: "PUSH NOTIFICATIONS",
+    baseUrl: "https://ntfy.sh",
+    configured: true,
+    status: "ok",
+    lastTestedAt: "2026-06-07T12:00:00Z",
+    description: "Push notification delivery for alerts and completions.",
+  },
+  {
+    id: "int-github",
+    name: "GitHub",
+    type: "CODE HOST",
+    baseUrl: "https://api.github.com",
+    configured: false,
+    status: "untested",
+    description: "Repository browsing and issue management.",
+  },
+  {
+    id: "int-jira",
+    name: "Jira",
+    type: "PROJECT MGMT",
+    baseUrl: "https://yourorg.atlassian.net",
+    configured: false,
+    status: "untested",
+    description: "Issue tracking and sprint management.",
+  },
+  {
+    id: "int-s3",
+    name: "S3-Compatible Storage",
+    type: "OBJECT STORE",
+    baseUrl: "https://s3.amazonaws.com",
+    configured: true,
+    status: "error",
+    lastTestedAt: "2026-06-07T09:00:00Z",
+    description: "Document and media object storage.",
+  },
+];

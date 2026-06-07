@@ -1,0 +1,198 @@
+/* ============================================================================
+   TAILWIND v4 THEME MAPPING.
+
+   `@theme inline` makes each generated utility reference our own token variable
+   (e.g. `bg-surface` -> `background: var(--surface)`) instead of freezing the
+   value at build time. That is what lets a single [data-theme] swap on <html>
+   re-color the entire app at runtime — the utilities resolve the live token.
+
+   tokens.css owns the values; this file only wires them to utility names.
+   ========================================================================== */
+
+@theme inline {
+  /* ---- colors -> bg-*, text-*, border-* ---- */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-line: var(--line);
+  --color-dim: var(--text-dim);
+  --color-text: var(--text);
+  --color-bright: var(--text-bright);
+  --color-nominal: var(--accent-nominal);
+  --color-warn: var(--accent-warn);
+  --color-alert: var(--accent-alert);
+  --color-info: var(--accent-info);
+
+  /* ---- spacing base (p-1=4px, p-2=8px, p-4=16px, p-6=24px, p-8=32px) ---- */
+  --spacing: var(--space-1);
+
+  /* ---- radius -> rounded-ctl (controls only; panels stay square) ---- */
+  --radius-ctl: var(--radius-1);
+
+  /* ---- fonts -> font-mono / font-display ---- */
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+
+  /* ---- letter spacing -> tracking-label ---- */
+  --tracking-label: var(--tracking-label);
+
+  /* ---- type scale -> text-micro / text-label / ... (size + line-height) ---- */
+  --text-micro: var(--type-micro-size);
+  --text-micro--line-height: var(--type-micro-lh);
+  --text-label: var(--type-label-size);
+  --text-label--line-height: var(--type-label-lh);
+  --text-body: var(--type-body-size);
+  --text-body--line-height: var(--type-body-lh);
+  --text-readout: var(--type-readout-size);
+  --text-readout--line-height: var(--type-readout-lh);
+  --text-readout-lg: var(--type-readout-lg-size);
+  --text-readout-lg--line-height: var(--type-readout-lg-lh);
+  --text-display: var(--type-display-size);
+  --text-display--line-height: var(--type-display-lh);
+}
+
+/* ==========================================================================
+   RESTING-STATE DEFAULTS. A screen at rest is monochrome mono on bg.
+   ========================================================================== */
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  /* tabular + lining figures so every number aligns in columns */
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+  font-variant-numeric: tabular-nums lining-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-lh);
+}
+
+/* Mechanical motion: no decorative transitions slower than the base tempo. */
+:where(button, a, [role="button"], input, select, textarea) {
+  transition-duration: var(--motion-fast);
+}
+
+/* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
+@keyframes ody-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.ody-caret {
+  animation: ody-blink 1s steps(1, end) infinite;
+}
+
+/* Rendered prose (markdown) — structured assistant/report/doc text. Styled from
+   tokens so it inherits the mono, monochrome, grid-aligned look. */
+.ody-prose {
+  font-size: var(--type-body-size);
+  /* Looser than data line-height (16px) — prose needs room to breathe. */
+  line-height: 20px;
+  color: var(--text);
+}
+/* Default rhythm between blocks. */
+.ody-prose > * + * {
+  margin-top: var(--space-4);
+}
+.ody-prose > :first-child {
+  margin-top: 0;
+}
+.ody-prose h1,
+.ody-prose h2,
+.ody-prose h3,
+.ody-prose h4 {
+  color: var(--text-bright);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+}
+/* Headings are section breaks: extra space above, tight to the content below. */
+.ody-prose h1 {
+  font-size: var(--type-readout-size);
+  line-height: var(--type-readout-lh);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ody-prose :is(h1, h2, h3, h4) + * {
+  margin-top: var(--space-2);
+}
+.ody-prose * + h1 {
+  margin-top: var(--space-8);
+}
+.ody-prose * + h2 {
+  margin-top: var(--space-6);
+}
+.ody-prose * + :is(h3, h4) {
+  margin-top: var(--space-6);
+}
+.ody-prose h2 {
+  font-size: var(--type-body-size);
+}
+.ody-prose h3,
+.ody-prose h4 {
+  font-size: var(--type-label-size);
+  color: var(--text-dim);
+}
+.ody-prose strong {
+  color: var(--text-bright);
+  font-weight: 700;
+}
+.ody-prose em {
+  font-style: italic;
+}
+.ody-prose a {
+  color: var(--accent-info);
+  text-decoration: underline;
+}
+.ody-prose ul,
+.ody-prose ol {
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ody-prose li {
+  padding-left: var(--space-1);
+}
+.ody-prose ul {
+  list-style: square;
+}
+.ody-prose ol {
+  list-style: decimal;
+}
+.ody-prose li::marker {
+  color: var(--text-dim);
+}
+.ody-prose code {
+  font-family: var(--font-mono);
+  background: var(--surface-raised);
+  border: var(--line-w) solid var(--line);
+  padding: 0 var(--space-1);
+  color: var(--text-bright);
+}
+.ody-prose pre {
+  background: var(--surface-raised);
+  border: var(--line-w) solid var(--line);
+  padding: var(--space-3);
+  overflow-x: auto;
+}
+.ody-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.ody-prose blockquote {
+  border-left: var(--line-emphasis) solid var(--line);
+  padding-left: var(--space-3);
+  color: var(--text-dim);
+}

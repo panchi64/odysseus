@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "allowJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // skipLibCheck: SolidStart's server runtime (srvx/h3) ships .d.ts that
+    // declare Node+Deno+Bun+Cloudflare types at once — unsatisfiable in a
+    // browser tsconfig. This skips checking dependency .d.ts INTERNALS only;
+    // our own src/ code is still fully type-checked. (TS team's tsc --init
+    // default.)
+    "skipLibCheck": true,
+    "types": ["vite/client"],
+    "isolatedModules": true,
+    "paths": {
+      "~/*": ["./src/*"]
+    }
+  },
+  // Typecheck our app code only — not vite.config.ts / build tooling.
+  "include": ["src"]
+}
