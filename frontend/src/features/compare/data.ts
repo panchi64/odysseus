@@ -106,6 +106,20 @@ export function createCompareRun() {
     );
   }
 
+  /** Cancel an in-progress run without clearing the prompt. */
+  function stop() {
+    timers.forEach(clearTimeout);
+    timers.length = 0;
+    setActive(false);
+    setRun(
+      produce((r) => {
+        r.candidates.forEach((c) => {
+          c.streaming = false;
+        });
+      }),
+    );
+  }
+
   function reset() {
     timers.forEach(clearTimeout);
     timers.length = 0;
@@ -123,5 +137,5 @@ export function createCompareRun() {
 
   onCleanup(() => timers.forEach(clearTimeout));
 
-  return { run, active, start, vote, reset };
+  return { run, active, start, vote, stop, reset };
 }

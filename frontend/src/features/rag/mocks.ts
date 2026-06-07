@@ -28,6 +28,7 @@ export const mockRagSources: RagSource[] = [
     docCount: 0,
     status: "error",
     lastIndexedAt: "2026-06-01T09:15:00Z",
+    errorHint: "PATH NOT FOUND",
   },
 ];
 

@@ -52,4 +52,5 @@ export const mockIndexStats: IndexStats = {
   throughputDocsSec: 80,
   lastIndexedAt: "2026-06-07T11:40:00Z",
   requiresReindex: false,
+  isReindexing: false,
 };

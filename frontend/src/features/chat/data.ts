@@ -9,12 +9,17 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import type { ChatMessage, ChatSession, ChatSummary } from "./model";
 import { mockSession, mockSessions, mockStreamingReply } from "./mocks";
 
+/* ── Mutable session list (Phase-1 local state) ──────────────────────────── */
+
+/** Writable signal so UI can remove or mutate session summaries optimistically. */
+const [_sessions, _setSessions] = createSignal<ChatSummary[]>(mockSessions);
+
 /* ── Read accessors (the seam) ───────────────────────────────────────────────
    Phase 1: resolve from fixtures. Phase 2: swap the bodies for api calls in
    ~/lib/api — the return types are unchanged, so screens don't change. */
 
 async function fetchSessions(): Promise<ChatSummary[]> {
-  return mockSessions;
+  return _sessions();
 }
 
 async function fetchSession(_id: string): Promise<ChatSession> {
@@ -22,7 +27,7 @@ async function fetchSession(_id: string): Promise<ChatSession> {
 }
 
 export function useChatSessions(): Resource<ChatSummary[]> {
-  const [data] = createResource(fetchSessions);
+  const [data] = createResource(_sessions, fetchSessions);
   return data;
 }
 
@@ -128,7 +133,36 @@ export function createChatStream(initial: () => ChatMessage[] | undefined) {
     });
   }
 
+  function deleteLastMessage(): ChatMessage | undefined {
+    const last = messages[messages.length - 1];
+    if (!last) return undefined;
+    setMessages(produce((m) => m.pop()));
+    return last;
+  }
+
+  function restoreMessage(msg: ChatMessage) {
+    setMessages(produce((m) => m.push(msg)));
+  }
+
+  function clearMessages(): ChatMessage[] {
+    const snapshot = messages.slice();
+    setMessages(reconcile([]));
+    return snapshot;
+  }
+
+  function restoreMessages(snapshot: ChatMessage[]) {
+    setMessages(reconcile(snapshot));
+  }
+
   onCleanup(() => timers.forEach(clearTimeout));
 
-  return { messages, sending, send };
+  return {
+    messages,
+    sending,
+    send,
+    deleteLastMessage,
+    restoreMessage,
+    clearMessages,
+    restoreMessages,
+  };
 }

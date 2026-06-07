@@ -13,12 +13,22 @@ async function fetchServices(): Promise<ServiceHealth[]> {
   return mockServices;
 }
 
-export function useSystemBand(): Resource<SystemStat[]> {
-  const [data] = createResource(fetchSystemBand);
-  return data;
+export interface UseSystemBandResult {
+  data: Resource<SystemStat[]>;
+  refetch: () => void;
 }
 
-export function useServices(): Resource<ServiceHealth[]> {
-  const [data] = createResource(fetchServices);
-  return data;
+export function useSystemBand(): UseSystemBandResult {
+  const [data, { refetch }] = createResource(fetchSystemBand);
+  return { data, refetch };
+}
+
+export interface UseServicesResult {
+  data: Resource<ServiceHealth[]>;
+  refetch: () => void;
+}
+
+export function useServices(): UseServicesResult {
+  const [data, { refetch }] = createResource(fetchServices);
+  return { data, refetch };
 }

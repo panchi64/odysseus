@@ -9,16 +9,20 @@ import {
 import { createStore } from "solid-js/store";
 import {
   Button,
+  Drawer,
   EmptyState,
   InstrumentBand,
   ListRow,
   LoadingText,
+  Menu,
+  type MenuItem,
   PageHeader,
   Panel,
   Row,
   Stack,
   StatusFlag,
   Text,
+  toast,
   type Status,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
@@ -29,13 +33,69 @@ const healthTone: Record<HealthStatus, string> = {
   nominal: "bg-nominal",
   warn: "bg-warn",
   alert: "bg-alert",
+  timeout: "bg-warn",
+  partial: "bg-info",
 };
 
 const healthFlagStatus: Record<HealthStatus, Status> = {
   nominal: "nominal",
   warn: "warn",
   alert: "alert",
+  timeout: "warn",
+  partial: "info",
 };
+
+/** Maps HealthStatus to the nearest TextTone for InstrumentBand cells. */
+const healthTextTone: Record<
+  HealthStatus,
+  "nominal" | "warn" | "alert" | "info" | "dim"
+> = {
+  nominal: "nominal",
+  warn: "warn",
+  alert: "alert",
+  timeout: "warn",
+  partial: "info",
+};
+
+/** Service-specific recovery actions for Phase 1 (toasts as feedback, Phase 2 wires to backend). */
+function getServiceActions(
+  svc: ServiceStatus,
+  onAction: (label: string) => void,
+) {
+  const base: MenuItem[] = [
+    {
+      label: "VIEW LOGS",
+      icon: "note" as const,
+      onSelect: () => onAction(`Viewing logs for ${svc.name}`),
+    },
+  ];
+
+  if (svc.status === "alert" || svc.status === "timeout") {
+    base.unshift({
+      label: "RETRY CONNECTION",
+      icon: "refresh" as const,
+      onSelect: () => onAction(`Retrying connection for ${svc.name}`),
+    });
+  }
+
+  if (svc.id === "svc-embed") {
+    base.unshift({
+      label: "REINDEX",
+      icon: "database" as const,
+      onSelect: () => onAction(`Reindex queued for ${svc.name}`),
+    });
+  }
+
+  if (svc.status === "partial") {
+    base.unshift({
+      label: "RETRY PARTIAL",
+      icon: "refresh" as const,
+      onSelect: () => onAction(`Retry queued for ${svc.name}`),
+    });
+  }
+
+  return base;
+}
 
 function HistoryBar(props: { history: HealthStatus[] }): JSX.Element {
   return (
@@ -55,6 +115,92 @@ function HistoryBar(props: { history: HealthStatus[] }): JSX.Element {
   );
 }
 
+/** Drawer showing detail and recovery actions for a single service. */
+function ServiceDrawer(props: {
+  svc: ServiceStatus | null;
+  onClose: () => void;
+}): JSX.Element {
+  function handleAction(label: string) {
+    props.onClose();
+    toast.info(`${label} — available in Phase 2`, { duration: 3500 });
+  }
+
+  return (
+    <Drawer
+      open={props.svc !== null}
+      onClose={props.onClose}
+      title={props.svc?.name ?? ""}
+    >
+      <Show when={props.svc}>
+        {(svc) => (
+          <Stack gap={4}>
+            <Row gap={2} align="center">
+              <StatusFlag status={healthFlagStatus[svc().status]}>
+                {svc().status.toUpperCase()}
+              </StatusFlag>
+              <Text variant="body" tone="dim">
+                {svc().detail}
+              </Text>
+            </Row>
+
+            <Show when={svc().degradationNote}>
+              <Panel label="DEGRADATION NOTE" state="alert">
+                <Text
+                  variant="body"
+                  tone={svc().status === "alert" ? "alert" : "warn"}
+                >
+                  {svc().degradationNote}
+                </Text>
+              </Panel>
+            </Show>
+
+            <Stack gap={2}>
+              <Text variant="label" tone="dim">
+                RECOVERY ACTIONS
+              </Text>
+              <For each={getServiceActions(svc(), handleAction)}>
+                {(action) => (
+                  <Button
+                    variant="ghost"
+                    leading={action.icon}
+                    onClick={action.onSelect}
+                    class="w-full justify-start"
+                  >
+                    {action.label}
+                  </Button>
+                )}
+              </For>
+              <Show
+                when={
+                  svc().status === "nominal" &&
+                  getServiceActions(svc(), handleAction).length <= 1
+                }
+              >
+                <Text variant="micro" tone="dim">
+                  No recovery actions needed — service is healthy.
+                </Text>
+              </Show>
+            </Stack>
+
+            <Stack gap={1}>
+              <Text variant="label" tone="dim">
+                HISTORY (LAST 10)
+              </Text>
+              <HistoryBar history={svc().history} />
+            </Stack>
+
+            <Show when={svc().latencyMs > 0}>
+              <Text variant="micro" tone="dim">
+                LATENCY: {svc().latencyMs}MS
+              </Text>
+            </Show>
+          </Stack>
+        )}
+      </Show>
+    </Drawer>
+  );
+}
+
 export function HealthScreen(): JSX.Element {
   const overallResource = useOverallHealth();
   const servicesResource = useServiceStatuses();
@@ -62,6 +208,7 @@ export function HealthScreen(): JSX.Element {
   const [seeded, setSeeded] = createSignal(false);
   const [refreshing, setRefreshing] = createSignal(false);
   const [lastRefresh, setLastRefresh] = createSignal(new Date().toISOString());
+  const [drawerSvc, setDrawerSvc] = createSignal<ServiceStatus | null>(null);
   const timers: ReturnType<typeof setTimeout>[] = [];
 
   onCleanup(() => timers.forEach(clearTimeout));
@@ -77,18 +224,47 @@ export function HealthScreen(): JSX.Element {
 
   function refresh() {
     if (refreshing()) return;
+
+    const prevDegradedIds = new Set(
+      services.filter((s) => s.degradationNote).map((s) => s.id),
+    );
+
     setRefreshing(true);
     timers.push(
       setTimeout(() => {
         setRefreshing(false);
-        setLastRefresh(new Date().toISOString());
+        const now = new Date();
+        setLastRefresh(now.toISOString());
+
+        // Determine if any degradations resolved since last check.
+        const resolvedCount = services.filter(
+          (s) => prevDegradedIds.has(s.id) && !s.degradationNote,
+        ).length;
+
+        const timeStr = now.toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+        if (resolvedCount > 0) {
+          toast.success(
+            `${resolvedCount} issue${resolvedCount > 1 ? "s" : ""} resolved — checked at ${timeStr}`,
+          );
+        } else {
+          toast.success(`Status checked — ${timeStr}`);
+        }
       }, 1100),
     );
   }
 
   const overall = () => overallResource();
   const alertCount = () => services.filter((s) => s.status === "alert").length;
-  const warnCount = () => services.filter((s) => s.status === "warn").length;
+  const warnCount = () =>
+    services.filter(
+      (s) =>
+        s.status === "warn" || s.status === "timeout" || s.status === "partial",
+    ).length;
 
   return (
     <Stack gap={6}>
@@ -128,7 +304,7 @@ export function HealthScreen(): JSX.Element {
                 {
                   label: "OVERALL",
                   value: o().status.toUpperCase(),
-                  tone: o().status,
+                  tone: healthTextTone[o().status],
                 },
                 {
                   label: "UP",
@@ -165,6 +341,7 @@ export function HealthScreen(): JSX.Element {
                   <ListRow
                     label={svc.name}
                     leading="activity"
+                    onClick={() => setDrawerSvc(svc)}
                     right={
                       <Row gap={3} align="center">
                         <Show when={svc.degradationNote}>
@@ -180,10 +357,15 @@ export function HealthScreen(): JSX.Element {
                           {svc.detail}
                         </Text>
                         <Show
-                          when={svc.status !== "alert"}
+                          when={
+                            svc.status !== "alert" && svc.status !== "timeout"
+                          }
                           fallback={
-                            <Text variant="micro" tone="alert">
-                              OFFLINE
+                            <Text
+                              variant="micro"
+                              tone={svc.status === "timeout" ? "warn" : "alert"}
+                            >
+                              {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
                             </Text>
                           }
                         >
@@ -195,6 +377,28 @@ export function HealthScreen(): JSX.Element {
                         <StatusFlag status={healthFlagStatus[svc.status]}>
                           {svc.status.toUpperCase()}
                         </StatusFlag>
+                        <Show
+                          when={
+                            svc.status === "alert" ||
+                            svc.status === "warn" ||
+                            svc.status === "timeout" ||
+                            svc.status === "partial"
+                          }
+                        >
+                          <Menu
+                            trigger={
+                              <Button variant="ghost" size="sm">
+                                ACTIONS
+                              </Button>
+                            }
+                            items={getServiceActions(svc, (label) => {
+                              toast.info(`${label} — available in Phase 2`, {
+                                duration: 3500,
+                              });
+                            })}
+                            align="right"
+                          />
+                        </Show>
                       </Row>
                     }
                   />
@@ -226,6 +430,8 @@ export function HealthScreen(): JSX.Element {
           </Stack>
         </Panel>
       </Show>
+
+      <ServiceDrawer svc={drawerSvc()} onClose={() => setDrawerSvc(null)} />
     </Stack>
   );
 }

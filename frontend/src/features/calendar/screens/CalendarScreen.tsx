@@ -1,6 +1,7 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
+  EmptyState,
   Field,
   Input,
   InstrumentBand,
@@ -15,9 +16,17 @@ import {
   StatusFlag,
   Tabs,
   Text,
+  confirm,
+  toast,
 } from "~/ui";
 import { date } from "~/lib/format";
-import { useCalendars, useCalendarEvents } from "../data";
+import {
+  useCalendars,
+  useCalendarEvents,
+  useLocalEvents,
+  addLocalEvent,
+  removeLocalEvent,
+} from "../data";
 import type { CalendarEvent } from "../model";
 
 const DAYS_OF_WEEK = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
@@ -87,7 +96,10 @@ const MONTH_NAMES = [
 
 export function CalendarScreen(): JSX.Element {
   const calendars = useCalendars();
-  const events = useCalendarEvents();
+  // Seed local events from the resource; use local signal as the live list.
+  useCalendarEvents();
+  // useLocalEvents() returns the localEvents signal accessor directly.
+  const events = useLocalEvents();
 
   const today = new Date();
   const [viewYear, setViewYear] = createSignal(today.getUTCFullYear());
@@ -100,23 +112,28 @@ export function CalendarScreen(): JSX.Element {
   const [newEventOpen, setNewEventOpen] = createSignal(false);
   const [quickAdd, setQuickAdd] = createSignal("");
 
+  // Sync state
+  const [syncing, setSyncing] = createSignal(false);
+
   // New event form state
   const [newTitle, setNewTitle] = createSignal("");
+  const [newTitleError, setNewTitleError] = createSignal("");
   const [newStart, setNewStart] = createSignal("");
   const [newEnd, setNewEnd] = createSignal("");
   const [newLocation, setNewLocation] = createSignal("");
   const [newRecurrence, setNewRecurrence] = createSignal("none");
+  const [newCalendarId, setNewCalendarId] = createSignal("");
 
   const days = () => getDaysInMonth(viewYear(), viewMonth());
 
   const eventsForDay = (d: Date) =>
-    (events() ?? []).filter((evt) => sameDay(new Date(evt.start), d));
+    events().filter((evt) => sameDay(new Date(evt.start), d));
 
   const calendarForEvent = (evt: CalendarEvent) =>
     (calendars() ?? []).find((c) => c.id === evt.calendarId);
 
   const eventsThisMonth = () =>
-    (events() ?? []).filter((evt) => {
+    events().filter((evt) => {
       const d = new Date(evt.start);
       return (
         d.getUTCFullYear() === viewYear() && d.getUTCMonth() === viewMonth()
@@ -151,6 +168,84 @@ export function CalendarScreen(): JSX.Element {
     setEventModalOpen(true);
   }
 
+  // Sync button handler: mock a brief async sync, then confirm success.
+  async function handleSync() {
+    setSyncing(true);
+    await new Promise<void>((r) => setTimeout(r, 1200));
+    setSyncing(false);
+    toast.success("SYNC COMPLETE");
+  }
+
+  // Delete event with confirm guard + undo toast.
+  async function handleDeleteEvent() {
+    const evt = selectedEvent();
+    if (!evt) return;
+    const ok = await confirm({
+      title: `DELETE EVENT: "${evt.title}"?`,
+      detail: "This cannot be undone.",
+      confirmLabel: "DELETE",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+    if (!ok) return;
+    const snapshot = evt;
+    removeLocalEvent(evt.id);
+    setEventModalOpen(false);
+    setSelectedEvent(null);
+    toast.success("Event deleted", {
+      action: {
+        label: "UNDO",
+        onClick: () => {
+          addLocalEvent(snapshot);
+          toast.info("Event restored");
+        },
+      },
+    });
+  }
+
+  // Create event with validation + local state mutation.
+  function handleCreateEvent() {
+    const title = newTitle().trim();
+    if (!title) {
+      setNewTitleError("TITLE IS REQUIRED");
+      return;
+    }
+    setNewTitleError("");
+
+    const calId = newCalendarId() || calendars()?.[0]?.id || "cal-1";
+    const id = `evt-new-${Date.now()}`;
+    const startIso = newStart()
+      ? new Date(newStart()).toISOString()
+      : new Date().toISOString();
+    const endIso = newEnd()
+      ? new Date(newEnd()).toISOString()
+      : new Date(Date.now() + 3600_000).toISOString();
+
+    addLocalEvent({
+      id,
+      calendarId: calId,
+      title,
+      start: startIso,
+      end: endIso,
+      location: newLocation() || undefined,
+      recurrence: newRecurrence() as CalendarEvent["recurrence"],
+    });
+
+    // Reset form
+    setNewTitle("");
+    setNewStart("");
+    setNewEnd("");
+    setNewLocation("");
+    setNewRecurrence("none");
+    setNewCalendarId("");
+    setNewEventOpen(false);
+    toast.success(`Event "${title}" created`);
+  }
+
+  // Initialise newCalendarId when calendars resolve.
+  const resolvedCalendarId = () =>
+    newCalendarId() || (calendars()?.[0]?.id ?? "");
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -159,8 +254,14 @@ export function CalendarScreen(): JSX.Element {
         assetId="COMM-CAL-01.0"
         actions={
           <Row gap={2}>
-            <Button variant="ghost" leading="refresh" size="sm">
-              SYNC
+            <Button
+              variant="ghost"
+              leading="refresh"
+              size="sm"
+              disabled={syncing()}
+              onClick={handleSync}
+            >
+              {syncing() ? "SYNCING…" : "SYNC"}
             </Button>
             <Button
               variant="primary"
@@ -184,12 +285,16 @@ export function CalendarScreen(): JSX.Element {
             { label: "CALENDARS", value: String(calendars()?.length ?? 0) },
             {
               label: "SYNC STATUS",
-              value: (calendars() ?? []).every((c) => c.synced)
-                ? "ALL SYNCED"
-                : "PARTIAL",
-              tone: (calendars() ?? []).every((c) => c.synced)
-                ? "nominal"
-                : "warn",
+              value: syncing()
+                ? "SYNCING…"
+                : (calendars() ?? []).every((c) => c.synced)
+                  ? "ALL SYNCED"
+                  : "PARTIAL",
+              tone: syncing()
+                ? "info"
+                : (calendars() ?? []).every((c) => c.synced)
+                  ? "nominal"
+                  : "warn",
             },
           ]}
         />
@@ -206,21 +311,33 @@ export function CalendarScreen(): JSX.Element {
                 </div>
               }
             >
-              <For each={calendars()}>
-                {(cal) => (
-                  <ListRow
-                    label={cal.name}
-                    right={
-                      <StatusFlag
-                        status={cal.synced ? TONE_STATUS[cal.tone] : "warn"}
-                        dot={cal.synced}
-                      >
-                        {cal.synced ? "SYNC" : "LOCAL"}
-                      </StatusFlag>
-                    }
-                  />
-                )}
-              </For>
+              <Show
+                when={(calendars()?.length ?? 0) > 0}
+                fallback={
+                  <div class="p-3">
+                    <EmptyState
+                      message="NO CALENDARS CONNECTED"
+                      hint="Link or sync a calendar to get started."
+                    />
+                  </div>
+                }
+              >
+                <For each={calendars()}>
+                  {(cal) => (
+                    <ListRow
+                      label={cal.name}
+                      right={
+                        <StatusFlag
+                          status={cal.synced ? TONE_STATUS[cal.tone] : "warn"}
+                          dot={cal.synced}
+                        >
+                          {cal.synced ? "SYNC" : "LOCAL"}
+                        </StatusFlag>
+                      }
+                    />
+                  )}
+                </For>
+              </Show>
             </Suspense>
           </Panel>
 
@@ -234,13 +351,18 @@ export function CalendarScreen(): JSX.Element {
               }
             >
               <For
-                each={(events() ?? [])
+                each={events()
                   .filter((e) => new Date(e.start) >= today)
                   .sort(
                     (a, b) =>
                       new Date(a.start).getTime() - new Date(b.start).getTime(),
                   )
                   .slice(0, 5)}
+                fallback={
+                  <div class="p-3">
+                    <EmptyState message="NO UPCOMING EVENTS" />
+                  </div>
+                }
               >
                 {(evt) => (
                   <ListRow
@@ -327,68 +449,111 @@ export function CalendarScreen(): JSX.Element {
               </div>
 
               {/* Day cells */}
-              <div class="grid grid-cols-7">
-                <For each={days()}>
-                  {(day) => {
-                    const isCurrentMonth = () =>
-                      day.getUTCMonth() === viewMonth();
-                    const isToday = () => sameDay(day, today);
-                    const dayEvents = () => eventsForDay(day);
-                    return (
-                      <div
-                        class="min-h-20 border-b border-r border-line p-1 last:border-r-0 transition-colors hover:bg-raised"
-                        classList={{
-                          "bg-raised": isToday(),
-                        }}
-                      >
-                        <Text
-                          variant="label"
-                          tone={
-                            isToday()
-                              ? "bright"
-                              : isCurrentMonth()
-                                ? "default"
-                                : "dim"
-                          }
-                          class="mb-1"
-                        >
-                          {isToday()
-                            ? `[${day.getUTCDate()}]`
-                            : String(day.getUTCDate())}
-                        </Text>
-                        <Stack gap={0}>
-                          <For each={dayEvents().slice(0, 3)}>
-                            {(evt) => {
-                              const cal = () => calendarForEvent(evt);
-                              return (
-                                <button
-                                  type="button"
-                                  class="mb-0.5 w-full truncate px-1 py-0.5 text-left text-label font-mono uppercase tracking-label transition-colors hover:bg-raised"
-                                  classList={{
-                                    "text-nominal": cal()?.tone === "nominal",
-                                    "text-info": cal()?.tone === "info",
-                                    "text-warn": cal()?.tone === "warn",
-                                    "text-alert": cal()?.tone === "alert",
-                                    "text-dim": !cal()?.tone,
-                                  }}
-                                  onClick={() => openEvent(evt)}
-                                >
-                                  {evt.title}
-                                </button>
-                              );
-                            }}
-                          </For>
-                          <Show when={dayEvents().length > 3}>
-                            <Text variant="micro" tone="dim">
-                              +{dayEvents().length - 3} MORE
+              <Show
+                when={eventsThisMonth() > 0}
+                fallback={
+                  <div class="grid grid-cols-7">
+                    <For each={days()}>
+                      {(day) => {
+                        const isCurrentMonth = () =>
+                          day.getUTCMonth() === viewMonth();
+                        const isToday = () => sameDay(day, today);
+                        return (
+                          <div
+                            class="min-h-20 border-b border-r border-line p-1 last:border-r-0 transition-colors hover:bg-raised"
+                            classList={{ "bg-raised": isToday() }}
+                          >
+                            <Text
+                              variant="label"
+                              tone={
+                                isToday()
+                                  ? "bright"
+                                  : isCurrentMonth()
+                                    ? "default"
+                                    : "dim"
+                              }
+                              class="mb-1"
+                            >
+                              {isToday()
+                                ? `[${day.getUTCDate()}]`
+                                : String(day.getUTCDate())}
                             </Text>
-                          </Show>
-                        </Stack>
-                      </div>
-                    );
-                  }}
-                </For>
-              </div>
+                          </div>
+                        );
+                      }}
+                    </For>
+                    <div class="col-span-7 py-8">
+                      <EmptyState
+                        message="NO EVENTS THIS MONTH"
+                        hint="Use NEW EVENT to schedule something."
+                      />
+                    </div>
+                  </div>
+                }
+              >
+                <div class="grid grid-cols-7">
+                  <For each={days()}>
+                    {(day) => {
+                      const isCurrentMonth = () =>
+                        day.getUTCMonth() === viewMonth();
+                      const isToday = () => sameDay(day, today);
+                      const dayEvents = () => eventsForDay(day);
+                      return (
+                        <div
+                          class="min-h-20 border-b border-r border-line p-1 last:border-r-0 transition-colors hover:bg-raised"
+                          classList={{
+                            "bg-raised": isToday(),
+                          }}
+                        >
+                          <Text
+                            variant="label"
+                            tone={
+                              isToday()
+                                ? "bright"
+                                : isCurrentMonth()
+                                  ? "default"
+                                  : "dim"
+                            }
+                            class="mb-1"
+                          >
+                            {isToday()
+                              ? `[${day.getUTCDate()}]`
+                              : String(day.getUTCDate())}
+                          </Text>
+                          <Stack gap={0}>
+                            <For each={dayEvents().slice(0, 3)}>
+                              {(evt) => {
+                                const cal = () => calendarForEvent(evt);
+                                return (
+                                  <button
+                                    type="button"
+                                    class="mb-0.5 w-full truncate px-1 py-0.5 text-left text-label font-mono uppercase tracking-label transition-colors hover:bg-raised"
+                                    classList={{
+                                      "text-nominal": cal()?.tone === "nominal",
+                                      "text-info": cal()?.tone === "info",
+                                      "text-warn": cal()?.tone === "warn",
+                                      "text-alert": cal()?.tone === "alert",
+                                      "text-dim": !cal()?.tone,
+                                    }}
+                                    onClick={() => openEvent(evt)}
+                                  >
+                                    {evt.title}
+                                  </button>
+                                );
+                              }}
+                            </For>
+                            <Show when={dayEvents().length > 3}>
+                              <Text variant="micro" tone="dim">
+                                +{dayEvents().length - 3} MORE
+                              </Text>
+                            </Show>
+                          </Stack>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
             </Panel>
           </Suspense>
         </div>
@@ -409,7 +574,11 @@ export function CalendarScreen(): JSX.Element {
                 >
                   CLOSE
                 </Button>
-                <Button variant="danger" leading="trash">
+                <Button
+                  variant="danger"
+                  leading="trash"
+                  onClick={handleDeleteEvent}
+                >
                   DELETE
                 </Button>
                 <Button variant="primary" leading="edit">
@@ -470,7 +639,7 @@ export function CalendarScreen(): JSX.Element {
             <Button
               variant="primary"
               leading="plus"
-              onClick={() => setNewEventOpen(false)}
+              onClick={handleCreateEvent}
             >
               CREATE
             </Button>
@@ -481,8 +650,13 @@ export function CalendarScreen(): JSX.Element {
           <Input
             label="TITLE"
             value={newTitle()}
-            onInput={(e) => setNewTitle(e.currentTarget.value)}
+            onInput={(e) => {
+              setNewTitle(e.currentTarget.value);
+              if (newTitleError()) setNewTitleError("");
+            }}
             placeholder="Event title"
+            invalid={!!newTitleError()}
+            hint={newTitleError() || undefined}
           />
           <Input
             label="START"
@@ -516,8 +690,8 @@ export function CalendarScreen(): JSX.Element {
           />
           <Select
             label="CALENDAR"
-            value="cal-1"
-            onChange={() => {}}
+            value={resolvedCalendarId()}
+            onChange={setNewCalendarId}
             options={(calendars() ?? []).map((c) => ({
               value: c.id,
               label: c.name,

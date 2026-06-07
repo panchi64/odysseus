@@ -25,6 +25,8 @@ import {
   Tabs,
   Text,
   Textarea,
+  confirm,
+  toast,
 } from "~/ui";
 import { relativeTime, date } from "~/lib/format";
 import { useNotes } from "../data";
@@ -70,6 +72,16 @@ export function NotesScreen(): JSX.Element {
   const [formDue, setFormDue] = createSignal("");
   const [formChecklist, setFormChecklist] = createSignal("");
 
+  // Dirty tracking — true once any field has changed since the form was opened
+  const [dirty, setDirty] = createSignal(false);
+
+  function markDirty<T>(setter: (v: T) => void) {
+    return (v: T) => {
+      setter(v);
+      setDirty(true);
+    };
+  }
+
   const filtered = createMemo(() => {
     const lf = labelFilter();
     return notes.filter((n) => lf === "all" || n.label === lf);
@@ -111,6 +123,7 @@ export function NotesScreen(): JSX.Element {
     setFormDue("");
     setFormChecklist("");
     setEditingNote(null);
+    setDirty(false);
     setNewNoteOpen(true);
   }
 
@@ -121,7 +134,48 @@ export function NotesScreen(): JSX.Element {
     setFormDue(note.dueAt ? note.dueAt.slice(0, 16) : "");
     setFormChecklist(note.checklist?.map((c) => c.text).join("\n") ?? "");
     setEditingNote(note);
+    setDirty(false);
     setNewNoteOpen(true);
+  }
+
+  async function handleCancel() {
+    if (dirty()) {
+      const ok = await confirm({
+        title: "Discard changes?",
+        detail: "Your unsaved edits will be lost.",
+        confirmLabel: "DISCARD",
+        cancelLabel: "KEEP EDITING",
+        tone: "alert",
+      });
+      if (!ok) return;
+    }
+    setNewNoteOpen(false);
+  }
+
+  async function deleteNote(note: Note) {
+    const ok = await confirm({
+      title: `Delete "${note.title}"?`,
+      detail: "This cannot be undone.",
+      confirmLabel: "DELETE",
+      tone: "alert",
+    });
+    if (!ok) return;
+
+    const snapshot = notes.slice();
+    const idx = notes.findIndex((n) => n.id === note.id);
+    if (idx < 0) return;
+
+    setNotes(produce((ns) => ns.splice(idx, 1)));
+
+    toast.success("Note deleted", {
+      action: {
+        label: "UNDO",
+        onClick: () =>
+          setNotes(
+            produce((ns) => ns.splice(idx, 0, ...snapshot.slice(idx, idx + 1))),
+          ),
+      },
+    });
   }
 
   function saveNote() {
@@ -179,7 +233,9 @@ export function NotesScreen(): JSX.Element {
         }),
       );
     }
+    const wasEditing = editingNote() !== null;
     setNewNoteOpen(false);
+    toast.success(wasEditing ? "Note updated" : "Note saved");
   }
 
   return (
@@ -247,6 +303,7 @@ export function NotesScreen(): JSX.Element {
                         onToggleItem={toggleChecklistItem}
                         onPin={togglePin}
                         onEdit={openEdit}
+                        onDelete={deleteNote}
                       />
                     )}
                   </For>
@@ -273,6 +330,7 @@ export function NotesScreen(): JSX.Element {
                         onToggleItem={toggleChecklistItem}
                         onPin={togglePin}
                         onEdit={openEdit}
+                        onDelete={deleteNote}
                       />
                     )}
                   </For>
@@ -286,12 +344,12 @@ export function NotesScreen(): JSX.Element {
       {/* New / edit note modal */}
       <Modal
         open={newNoteOpen()}
-        onClose={() => setNewNoteOpen(false)}
+        onClose={handleCancel}
         title={editingNote() ? "EDIT NOTE" : "NEW NOTE"}
         class="max-w-xl"
         footer={
           <Row gap={2}>
-            <Button variant="ghost" onClick={() => setNewNoteOpen(false)}>
+            <Button variant="ghost" onClick={handleCancel}>
               CANCEL
             </Button>
             <Button variant="primary" leading="check" onClick={saveNote}>
@@ -304,20 +362,20 @@ export function NotesScreen(): JSX.Element {
           <Input
             label="TITLE"
             value={formTitle()}
-            onInput={(e) => setFormTitle(e.currentTarget.value)}
+            onInput={(e) => markDirty(setFormTitle)(e.currentTarget.value)}
             placeholder="Note title"
           />
           <Textarea
             label="BODY"
             rows={6}
             value={formBody()}
-            onInput={(e) => setFormBody(e.currentTarget.value)}
+            onInput={(e) => markDirty(setFormBody)(e.currentTarget.value)}
           />
           <Row gap={4}>
             <Input
               label="LABEL"
               value={formLabel()}
-              onInput={(e) => setFormLabel(e.currentTarget.value)}
+              onInput={(e) => markDirty(setFormLabel)(e.currentTarget.value)}
               placeholder="e.g. engineering"
               class="flex-1"
             />
@@ -325,7 +383,7 @@ export function NotesScreen(): JSX.Element {
               label="DUE DATE"
               type="datetime-local"
               value={formDue()}
-              onInput={(e) => setFormDue(e.currentTarget.value)}
+              onInput={(e) => markDirty(setFormDue)(e.currentTarget.value)}
               class="flex-1"
             />
           </Row>
@@ -333,7 +391,7 @@ export function NotesScreen(): JSX.Element {
             label="CHECKLIST ITEMS (one per line)"
             rows={4}
             value={formChecklist()}
-            onInput={(e) => setFormChecklist(e.currentTarget.value)}
+            onInput={(e) => markDirty(setFormChecklist)(e.currentTarget.value)}
           />
         </Stack>
       </Modal>
@@ -346,6 +404,7 @@ interface NoteCardProps {
   onToggleItem: (noteId: string, itemId: string) => void;
   onPin: (noteId: string) => void;
   onEdit: (note: Note) => void;
+  onDelete: (note: Note) => void;
 }
 
 function NoteCard(props: NoteCardProps): JSX.Element {
@@ -391,6 +450,12 @@ function NoteCard(props: NoteCardProps): JSX.Element {
             size="sm"
             leading={note.pinned ? "minus" : "plus"}
             onClick={() => props.onPin(note.id)}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            leading="trash"
+            onClick={() => props.onDelete(note)}
           />
         </Row>
       </Row>

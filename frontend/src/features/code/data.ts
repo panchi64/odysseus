@@ -33,8 +33,10 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
   const [lastDuration, setLastDuration] = createSignal<number | null>(null);
   const [history, setHistory] = createSignal<CodeRun[]>([]);
 
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
+  const [cancelled, setCancelled] = createSignal(false);
+
+  const intervals: ReturnType<typeof setInterval>[] = [];
+  onCleanup(() => intervals.forEach(clearInterval));
 
   // Seed history once from the (async) resource
   let seeded = false;
@@ -66,7 +68,14 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
     const lines = mock.output.split("\n").filter(Boolean);
     let i = 0;
 
+    setCancelled(false);
+
     const iv = setInterval(() => {
+      if (cancelled()) {
+        clearInterval(iv);
+        setRunning(false);
+        return;
+      }
       if (i < lines.length) {
         setOutputLines((prev) => [...prev, lines[i]]);
         i++;
@@ -88,7 +97,19 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
         setHistory((prev) => [newRun, ...prev]);
       }
     }, 120);
-    timers.push(iv);
+    intervals.push(iv);
+  }
+
+  function cancelRun() {
+    if (!running()) return;
+    setCancelled(true);
+  }
+
+  function resetToTemplate() {
+    setSource(starterCode[language()]);
+    setOutputLines([]);
+    setLastStatus(null);
+    setLastDuration(null);
   }
 
   return {
@@ -102,5 +123,7 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
     lastDuration,
     history,
     runCode,
+    cancelRun,
+    resetToTemplate,
   };
 }

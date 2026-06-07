@@ -14,7 +14,8 @@ const statusFlag: Record<
 
 /** Inline record of a single tool invocation inside an assistant message. */
 export function ToolCallCard(props: { tool: ToolInvocation }): JSX.Element {
-  const [open, setOpen] = createSignal(false);
+  // Auto-expand error cards so the reason is immediately visible.
+  const [open, setOpen] = createSignal(props.tool.status === "error");
   const flag = () => statusFlag[props.tool.status];
   return (
     <div class="border border-line bg-bg">
@@ -46,14 +47,41 @@ export function ToolCallCard(props: { tool: ToolInvocation }): JSX.Element {
           <StatusFlag status={flag().status}>{flag().label}</StatusFlag>
         </span>
       </button>
-      <Show when={open() && props.tool.result}>
+      <Show when={open() && (props.tool.result || props.tool.error)}>
         <div class="border-t border-line px-2 py-1.5">
-          <Text
-            variant="micro"
-            tone="dim"
-            class="whitespace-pre-wrap break-words"
+          <Show
+            when={props.tool.status === "error" && props.tool.error}
+            fallback={
+              <Text
+                variant="micro"
+                tone="dim"
+                class="whitespace-pre-wrap break-words"
+              >
+                {props.tool.result}
+              </Text>
+            }
           >
-            {props.tool.result}
+            <Text
+              variant="micro"
+              tone="alert"
+              class="whitespace-pre-wrap break-words"
+            >
+              {props.tool.error}
+            </Text>
+          </Show>
+        </div>
+      </Show>
+      <Show
+        when={
+          open() &&
+          props.tool.status === "error" &&
+          !props.tool.error &&
+          !props.tool.result
+        }
+      >
+        <div class="border-t border-line px-2 py-1.5">
+          <Text variant="micro" tone="alert">
+            Tool failed with no additional detail.
           </Text>
         </div>
       </Show>

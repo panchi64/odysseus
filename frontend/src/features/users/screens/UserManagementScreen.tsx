@@ -5,6 +5,7 @@ import {
   Checkbox,
   Divider,
   Drawer,
+  EmptyState,
   Input,
   ListRow,
   LoadingText,
@@ -17,6 +18,8 @@ import {
   StatusFlag,
   Text,
   Toggle,
+  confirm,
+  toast,
   type Status,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
@@ -39,23 +42,48 @@ export function UserManagementScreen(): JSX.Element {
 
   // Drawer: privilege editor
   const [drawerUser, setDrawerUser] = createSignal<ManagedUser | null>(null);
+  // Track privileges at the time the drawer was opened so REVERT works
+  const [savedPrivileges, setSavedPrivileges] = createSignal<Privilege[]>([]);
 
   // Modal: create user
   const [createOpen, setCreateOpen] = createSignal(false);
   const [newName, setNewName] = createSignal("");
   const [newPassword, setNewPassword] = createSignal("");
   const [newIsAdmin, setNewIsAdmin] = createSignal(false);
-
-  // Modal: delete confirm
-  const [deleteTarget, setDeleteTarget] = createSignal<ManagedUser | null>(
-    null,
-  );
+  const [createError, setCreateError] = createSignal<string | null>(null);
+  const [createPending, setCreatePending] = createSignal(false);
 
   function seed(list: ManagedUser[]) {
     if (!seeded) {
       seeded = true;
       setUsers(list.map((u) => ({ ...u })));
     }
+  }
+
+  function openDrawer(user: ManagedUser) {
+    const snapshot = { ...user, privileges: [...user.privileges] };
+    setDrawerUser(snapshot);
+    setSavedPrivileges([...user.privileges]);
+  }
+
+  function closeDrawer() {
+    setDrawerUser(null);
+    setSavedPrivileges([]);
+  }
+
+  function revertPrivileges() {
+    const u = drawerUser();
+    if (!u) return;
+    // Restore in-store privileges to the saved snapshot
+    setUsers(
+      (x) => x.id === u.id,
+      produce((x) => {
+        x.privileges = [...savedPrivileges()];
+      }),
+    );
+    // Update the drawer view
+    setDrawerUser({ ...u, privileges: [...savedPrivileges()] });
+    toast.info("PRIVILEGES REVERTED");
   }
 
   function togglePrivilege(userId: string, priv: Privilege) {
@@ -72,12 +100,28 @@ export function UserManagementScreen(): JSX.Element {
     if (updated) setDrawerUser({ ...updated });
   }
 
-  function createUser() {
-    if (!newName().trim()) return;
+  function hasUnsavedPrivilegeChanges(): boolean {
+    const u = drawerUser();
+    if (!u) return false;
+    const saved = savedPrivileges();
+    if (u.privileges.length !== saved.length) return true;
+    return u.privileges.some((p) => !saved.includes(p));
+  }
+
+  async function createUser() {
+    const name = newName().trim();
+    if (!name) {
+      setCreateError("USERNAME IS REQUIRED");
+      return;
+    }
+    setCreateError(null);
+    setCreatePending(true);
+    // Phase 1: simulate async work
+    await Promise.resolve();
     const id = `u-${String(users.length + 1).padStart(3, "0")}`;
     const user: ManagedUser = {
       id,
-      name: newName().toUpperCase(),
+      name: name.toUpperCase(),
       isAdmin: newIsAdmin(),
       lastActiveAt: new Date().toISOString(),
       privileges: [],
@@ -87,21 +131,53 @@ export function UserManagementScreen(): JSX.Element {
     setNewName("");
     setNewPassword("");
     setNewIsAdmin(false);
+    setCreatePending(false);
     setCreateOpen(false);
+    toast.success(`CREATED USER ${user.name}`);
   }
 
-  function deleteUser(id: string) {
-    setUsers((u) => u.filter((x) => x.id !== id));
-    setDeleteTarget(null);
+  async function handleDeleteUser(user: ManagedUser) {
+    const ok = await confirm({
+      title: `DELETE "${user.name}"?`,
+      detail:
+        "This action cannot be undone. All user data and sessions will be removed.",
+      confirmLabel: "DELETE",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+    if (!ok) return;
+    const deleted = { ...user };
+    setUsers((u) => u.filter((x) => x.id !== deleted.id));
+    toast.success(`DELETED USER ${deleted.name}`, {
+      action: {
+        label: "UNDO",
+        onClick: () => {
+          setUsers((u) => [...u, deleted]);
+          toast.info(`RESTORED USER ${deleted.name}`);
+        },
+      },
+    });
   }
 
-  function toggleUserStatus(id: string) {
+  function toggleUserStatus(user: ManagedUser) {
+    const nextStatus = user.status === "active" ? "disabled" : "active";
     setUsers(
-      (u) => u.id === id,
+      (u) => u.id === user.id,
       produce((u) => {
-        u.status = u.status === "active" ? "disabled" : "active";
+        u.status = nextStatus;
       }),
     );
+    toast.success(
+      `USER ${user.name} ${nextStatus === "active" ? "ENABLED" : "DISABLED"}`,
+    );
+  }
+
+  function handleCloseCreateModal() {
+    setCreateError(null);
+    setNewName("");
+    setNewPassword("");
+    setNewIsAdmin(false);
+    setCreateOpen(false);
   }
 
   return (
@@ -161,7 +237,7 @@ export function UserManagementScreen(): JSX.Element {
                       {
                         label: "EDIT PRIVILEGES",
                         icon: "key",
-                        onSelect: () => setDrawerUser({ ...user }),
+                        onSelect: () => openDrawer(user),
                       },
                       {
                         label:
@@ -169,13 +245,13 @@ export function UserManagementScreen(): JSX.Element {
                             ? "DISABLE USER"
                             : "ENABLE USER",
                         icon: user.status === "active" ? "close" : "check",
-                        onSelect: () => toggleUserStatus(user.id),
+                        onSelect: () => toggleUserStatus(user),
                       },
                       {
                         label: "DELETE USER",
                         icon: "trash",
                         danger: true,
-                        onSelect: () => setDeleteTarget(user),
+                        onSelect: () => handleDeleteUser(user),
                       },
                     ]}
                   />
@@ -185,23 +261,26 @@ export function UserManagementScreen(): JSX.Element {
           )}
         </For>
         <Show when={users.length === 0}>
-          <div class="p-4">
-            <Text variant="body" tone="dim">
-              No users registered.
-            </Text>
-          </div>
+          <EmptyState message="NO USERS REGISTERED" />
         </Show>
       </Panel>
 
       {/* ── PRIVILEGE EDITOR DRAWER ──────────────────────────── */}
       <Drawer
         open={drawerUser() !== null}
-        onClose={() => setDrawerUser(null)}
+        onClose={closeDrawer}
         title={`PRIVILEGES · ${drawerUser()?.name ?? ""}`}
         footer={
-          <Button variant="primary" onClick={() => setDrawerUser(null)}>
-            CLOSE
-          </Button>
+          <Row gap={2} justify="between">
+            <Show when={hasUnsavedPrivilegeChanges()}>
+              <Button variant="ghost" onClick={revertPrivileges}>
+                REVERT
+              </Button>
+            </Show>
+            <Button variant="primary" onClick={closeDrawer}>
+              CLOSE
+            </Button>
+          </Row>
         }
       >
         <Show when={drawerUser()} keyed>
@@ -242,28 +321,42 @@ export function UserManagementScreen(): JSX.Element {
       {/* ── CREATE USER MODAL ────────────────────────────────── */}
       <Modal
         open={createOpen()}
-        onClose={() => setCreateOpen(false)}
+        onClose={handleCloseCreateModal}
         title="CREATE USER"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setCreateOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={handleCloseCreateModal}
+              disabled={createPending()}
+            >
               CANCEL
             </Button>
             <Button
               variant="primary"
               onClick={createUser}
-              disabled={!newName().trim()}
+              disabled={!newName().trim() || createPending()}
             >
-              CREATE
+              {createPending() ? "CREATING…" : "CREATE"}
             </Button>
           </>
         }
       >
         <Stack gap={3}>
+          <Show when={createError()}>
+            {(msg) => (
+              <Text variant="micro" tone="alert">
+                {msg()}
+              </Text>
+            )}
+          </Show>
           <Input
             label="USERNAME"
             value={newName()}
-            onInput={(e) => setNewName(e.currentTarget.value)}
+            onInput={(e) => {
+              setNewName(e.currentTarget.value);
+              if (createError()) setCreateError(null);
+            }}
             placeholder="NEWUSER"
           />
           <Input
@@ -278,40 +371,6 @@ export function UserManagementScreen(): JSX.Element {
             checked={newIsAdmin()}
             onChange={setNewIsAdmin}
           />
-        </Stack>
-      </Modal>
-
-      {/* ── DELETE CONFIRM MODAL ─────────────────────────────── */}
-      <Modal
-        open={deleteTarget() !== null}
-        onClose={() => setDeleteTarget(null)}
-        title="DELETE USER"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>
-              CANCEL
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => deleteTarget() && deleteUser(deleteTarget()!.id)}
-            >
-              DELETE
-            </Button>
-          </>
-        }
-      >
-        <Stack gap={2}>
-          <Text variant="body" tone="default">
-            Permanently delete{" "}
-            <Text as="span" tone="bright">
-              {deleteTarget()?.name}
-            </Text>
-            ?
-          </Text>
-          <Text variant="micro" tone="dim">
-            This action cannot be undone. All user data and sessions will be
-            removed.
-          </Text>
         </Stack>
       </Modal>
     </Stack>

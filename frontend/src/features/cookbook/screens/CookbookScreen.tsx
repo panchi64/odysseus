@@ -1,4 +1,5 @@
 import {
+  createEffect,
   createSignal,
   For,
   Show,
@@ -10,6 +11,7 @@ import { createStore, produce } from "solid-js/store";
 import {
   Button,
   EmptyState,
+  ErrorState,
   InstrumentBand,
   ListRow,
   LoadingText,
@@ -21,10 +23,17 @@ import {
   StatusFlag,
   Tabs,
   Text,
+  confirm,
+  toast,
   type Status,
 } from "~/ui";
 import { bytes } from "~/lib/format";
-import { useHardware, useCookbookModels, useRemoteEndpoints } from "../data";
+import {
+  useHardware,
+  useCookbookModels,
+  useRunningServers,
+  useRemoteEndpoints,
+} from "../data";
 import type { ModelEntry, RunningServer, ServerStatus } from "../model";
 
 const suitabilityStatus: Record<string, Status> = {
@@ -37,17 +46,28 @@ const serverStatusFlag: Record<ServerStatus, Status> = {
   running: "nominal",
   stopped: "idle",
   starting: "info",
+  error: "alert",
 };
 
 function DownloadRow(props: { model: ModelEntry }): JSX.Element {
   const [progress, setProgress] = createSignal<number | null>(null);
   const [done, setDone] = createSignal(props.model.downloaded);
+  const [hasError, setHasError] = createSignal(false);
   const timers: ReturnType<typeof setTimeout>[] = [];
 
   onCleanup(() => timers.forEach(clearTimeout));
 
+  function cancelDownload() {
+    timers.forEach(clearTimeout);
+    timers.length = 0;
+    setProgress(null);
+    setHasError(false);
+    toast.warn(`Download cancelled — ${props.model.name}`);
+  }
+
   function startDownload() {
     if (progress() !== null || done()) return;
+    setHasError(false);
     setProgress(0);
     let p = 0;
     const tick = () => {
@@ -58,6 +78,7 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
           setTimeout(() => {
             setDone(true);
             setProgress(null);
+            toast.success(`${props.model.name} ready`);
           }, 500),
         );
       } else {
@@ -86,7 +107,18 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
             <Show when={done()}>
               <StatusFlag status="nominal">READY</StatusFlag>
             </Show>
-            <Show when={!done() && progress() === null}>
+            <Show when={hasError()}>
+              <StatusFlag status="alert">ERROR</StatusFlag>
+              <Button
+                size="sm"
+                variant="ghost"
+                leading="refresh"
+                onClick={startDownload}
+              >
+                RETRY
+              </Button>
+            </Show>
+            <Show when={!done() && !hasError() && progress() === null}>
               <Button
                 size="sm"
                 variant="ghost"
@@ -94,6 +126,16 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
                 onClick={startDownload}
               >
                 GET
+              </Button>
+            </Show>
+            <Show when={progress() !== null && !done()}>
+              <Button
+                size="sm"
+                variant="ghost"
+                leading="close"
+                onClick={cancelDownload}
+              >
+                CANCEL
               </Button>
             </Show>
           </Row>
@@ -111,6 +153,7 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
 function ServerRow(props: {
   server: RunningServer;
   onToggle: (id: string) => void;
+  onRetry: (id: string) => void;
 }): JSX.Element {
   return (
     <ListRow
@@ -132,27 +175,39 @@ function ServerRow(props: {
           >
             {props.server.status.toUpperCase()}
           </StatusFlag>
-          <Show
-            when={props.server.status === "running"}
-            fallback={
-              <Button
-                size="sm"
-                variant="default"
-                leading="play"
-                onClick={() => props.onToggle(props.server.id)}
-              >
-                START
-              </Button>
-            }
-          >
+          <Show when={props.server.status === "error"}>
             <Button
               size="sm"
-              variant="danger"
-              leading="stop"
-              onClick={() => props.onToggle(props.server.id)}
+              variant="default"
+              leading="refresh"
+              onClick={() => props.onRetry(props.server.id)}
             >
-              STOP
+              RETRY
             </Button>
+          </Show>
+          <Show when={props.server.status !== "error"}>
+            <Show
+              when={props.server.status === "running"}
+              fallback={
+                <Button
+                  size="sm"
+                  variant="default"
+                  leading="play"
+                  onClick={() => props.onToggle(props.server.id)}
+                >
+                  START
+                </Button>
+              }
+            >
+              <Button
+                size="sm"
+                variant="danger"
+                leading="stop"
+                onClick={() => props.onToggle(props.server.id)}
+              >
+                STOP
+              </Button>
+            </Show>
           </Show>
         </Row>
       }
@@ -163,49 +218,83 @@ function ServerRow(props: {
 export function CookbookScreen(): JSX.Element {
   const hardware = useHardware();
   const models = useCookbookModels();
+  const serversResource = useRunningServers();
   const remoteEndpoints = useRemoteEndpoints();
   const [tab, setTab] = createSignal("local");
-  const [servers, setServers] = createStore<RunningServer[]>([
-    {
-      id: "srv-1",
-      model: "qwen2.5-32b-q4",
-      port: 11434,
-      status: "running",
-      tokensPerSec: 82.4,
-      contextLen: 32768,
-    },
-    {
-      id: "srv-2",
-      model: "qwen2.5-coder-32b-q4",
-      port: 11435,
-      status: "stopped",
-    },
-  ]);
+  const [servers, setServers] = createStore<RunningServer[]>([]);
 
-  function toggleServer(id: string) {
+  // Seed local mutable store from data layer once resource resolves.
+  // Phase 2: only fetchServers() body changes — store/screen stay stable.
+  createEffect(() => {
+    const data = serversResource();
+    if (data) setServers(data.map((s) => ({ ...s })));
+  });
+
+  async function toggleServer(id: string) {
+    const srv = servers.find((x) => x.id === id);
+    if (!srv) return;
+
+    if (srv.status === "running") {
+      const ok = await confirm({
+        title: `Stop server ${srv.model} on :${srv.port}?`,
+        detail: "This will disconnect active sessions using this model.",
+        confirmLabel: "STOP SERVER",
+        tone: "alert",
+      });
+      if (!ok) return;
+
+      setServers(
+        produce((s) => {
+          const target = s.find((x) => x.id === id);
+          if (!target) return;
+          target.status = "stopped";
+          target.tokensPerSec = undefined;
+        }),
+      );
+      toast.success(`Server stopped — ${srv.model}`);
+    } else {
+      setServers(
+        produce((s) => {
+          const target = s.find((x) => x.id === id);
+          if (target) target.status = "starting";
+        }),
+      );
+      setTimeout(() => {
+        setServers(
+          produce((s) => {
+            const target = s.find((x) => x.id === id);
+            if (target) {
+              target.status = "running";
+              target.tokensPerSec = 74.1;
+            }
+          }),
+        );
+        toast.success(`Server started — ${srv.model}`);
+      }, 1200);
+    }
+  }
+
+  function retryServer(id: string) {
+    const srv = servers.find((x) => x.id === id);
+    if (!srv) return;
     setServers(
       produce((s) => {
-        const srv = s.find((x) => x.id === id);
-        if (!srv) return;
-        if (srv.status === "running") {
-          srv.status = "stopped";
-          srv.tokensPerSec = undefined;
-        } else {
-          srv.status = "starting";
-          setTimeout(() => {
-            setServers(
-              produce((s2) => {
-                const s = s2.find((x) => x.id === id);
-                if (s) {
-                  s.status = "running";
-                  s.tokensPerSec = 74.1;
-                }
-              }),
-            );
-          }, 1200);
-        }
+        const target = s.find((x) => x.id === id);
+        if (target) target.status = "starting";
       }),
     );
+    setTimeout(() => {
+      setServers(
+        produce((s) => {
+          const target = s.find((x) => x.id === id);
+          if (target) {
+            target.status = "running";
+            target.tokensPerSec = 74.1;
+          }
+        }),
+      );
+      toast.success(`Server recovered — ${srv.model}`);
+    }, 1200);
   }
 
   return (
@@ -265,14 +354,22 @@ export function CookbookScreen(): JSX.Element {
                 </div>
               }
             >
+              <Show when={models.error}>
+                <ErrorState
+                  message="FAILED TO LOAD MODELS"
+                  hint={String(models.error)}
+                />
+              </Show>
               <Show
-                when={(models() ?? []).length}
+                when={!models.error && (models() ?? []).length}
                 fallback={
-                  <EmptyState
-                    icon="layers"
-                    message="NO MODELS"
-                    hint="No models found in registry."
-                  />
+                  <Show when={!models.error}>
+                    <EmptyState
+                      icon="layers"
+                      message="NO MODELS"
+                      hint="No models found in registry."
+                    />
+                  </Show>
                 }
               >
                 <For each={models()}>{(m) => <DownloadRow model={m} />}</For>
@@ -289,20 +386,42 @@ export function CookbookScreen(): JSX.Element {
             }
             flush
           >
-            <Show
-              when={servers.length}
+            <Suspense
               fallback={
-                <EmptyState
-                  icon="cpu"
-                  message="NO SERVERS"
-                  hint="No model servers configured."
-                />
+                <div class="p-3">
+                  <LoadingText />
+                </div>
               }
             >
-              <For each={servers}>
-                {(srv) => <ServerRow server={srv} onToggle={toggleServer} />}
-              </For>
-            </Show>
+              <Show when={serversResource.error}>
+                <ErrorState
+                  message="FAILED TO LOAD SERVERS"
+                  hint={String(serversResource.error)}
+                />
+              </Show>
+              <Show when={!serversResource.error}>
+                <Show
+                  when={servers.length}
+                  fallback={
+                    <EmptyState
+                      icon="cpu"
+                      message="NO SERVERS"
+                      hint="No model servers configured."
+                    />
+                  }
+                >
+                  <For each={servers}>
+                    {(srv) => (
+                      <ServerRow
+                        server={srv}
+                        onToggle={toggleServer}
+                        onRetry={retryServer}
+                      />
+                    )}
+                  </For>
+                </Show>
+              </Show>
+            </Suspense>
           </Panel>
         </Stack>
       </Show>
@@ -316,14 +435,22 @@ export function CookbookScreen(): JSX.Element {
               </div>
             }
           >
+            <Show when={remoteEndpoints.error}>
+              <ErrorState
+                message="FAILED TO LOAD ENDPOINTS"
+                hint={String(remoteEndpoints.error)}
+              />
+            </Show>
             <Show
-              when={(remoteEndpoints() ?? []).length}
+              when={!remoteEndpoints.error && (remoteEndpoints() ?? []).length}
               fallback={
-                <EmptyState
-                  icon="link"
-                  message="NO ENDPOINTS"
-                  hint="Add a remote model API endpoint."
-                />
+                <Show when={!remoteEndpoints.error}>
+                  <EmptyState
+                    icon="link"
+                    message="NO ENDPOINTS"
+                    hint="Add a remote model API endpoint."
+                  />
+                </Show>
               }
             >
               <For each={remoteEndpoints()}>

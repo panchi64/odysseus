@@ -22,10 +22,13 @@ import {
   Tabs,
   Text,
   Toggle,
+  toast,
 } from "~/ui";
 import { usePreferences, useTwoFactorState } from "../data";
 import { MODEL_OPTIONS, LANGUAGE_OPTIONS } from "../mocks";
 import type { SettingsTab } from "../model";
+
+const DISPLAY_NAME_MAX = 50;
 
 export function SettingsScreen(): JSX.Element {
   const prefs = usePreferences();
@@ -42,51 +45,155 @@ export function SettingsScreen(): JSX.Element {
   const [rememberSearches, setRememberSearches] = createSignal(true);
   const [cacheEnabled, setCacheEnabled] = createSignal(true);
   const [prefsSaved, setPrefsSaved] = createSignal(false);
+  const [prefsSaving, setPrefsSaving] = createSignal(false);
 
   // Security / 2FA state
+  // twoFAEnabled tracks the committed (saved) state
   const [twoFAEnabled, setTwoFAEnabled] = createSignal(false);
+  const [twoFAInitialized, setTwoFAInitialized] = createSignal(false);
   const [showConfirmModal, setShowConfirmModal] = createSignal(false);
   const [confirmPassword, setConfirmPassword] = createSignal("");
+  const [disableConfirmText, setDisableConfirmText] = createSignal("");
+  const [twoFAPending, setTwoFAPending] = createSignal<
+    "enabled" | "disabled" | null
+  >(null);
   const [codesRegenerated, setCodesRegenerated] = createSignal(false);
 
   // Account state
   const [displayName, setDisplayName] = createSignal("");
   const [accountSaved, setAccountSaved] = createSignal(false);
 
+  // Track whether local state has unsaved changes
+  function prefsChanged() {
+    const p = prefs();
+    if (!p) return false;
+    return (
+      model() !== p.model ||
+      language() !== p.language ||
+      rememberSearches() !== p.rememberSearches ||
+      cacheEnabled() !== p.cacheEnabled
+    );
+  }
+
+  function accountChanged() {
+    const p = prefs();
+    if (!p) return false;
+    const loaded = p.displayName ?? "";
+    const current = displayName() !== "" ? displayName() : loaded;
+    return current !== loaded;
+  }
+
   function initPrefs(p: typeof prefs extends () => infer T ? T : never) {
     if (!p) return;
     if (!model()) setModel(p.model);
     if (!language()) setLanguage(p.language);
+    setRememberSearches(p.rememberSearches);
+    setCacheEnabled(p.cacheEnabled);
   }
 
   function initTwoFactor(
     t: typeof twoFactor extends () => infer T ? T : never,
   ) {
     if (!t) return;
-    setTwoFAEnabled(t.enabled);
+    if (!twoFAInitialized()) {
+      setTwoFAEnabled(t.enabled);
+      setTwoFAInitialized(true);
+    }
+  }
+
+  function resetPrefs() {
+    const p = prefs();
+    if (!p) return;
+    setModel(p.model);
+    setLanguage(p.language);
+    setRememberSearches(p.rememberSearches);
+    setCacheEnabled(p.cacheEnabled);
+    toast.info("Changes discarded.");
+  }
+
+  function resetAccount() {
+    const p = prefs();
+    if (!p) return;
+    setDisplayName(p.displayName ?? "");
+    toast.info("Changes discarded.");
   }
 
   function savePrefs() {
-    setPrefsSaved(true);
-    timers.push(setTimeout(() => setPrefsSaved(false), 2000));
+    setPrefsSaving(true);
+    timers.push(
+      setTimeout(() => {
+        setPrefsSaving(false);
+        setPrefsSaved(true);
+        toast.success("Preferences saved.");
+        timers.push(setTimeout(() => setPrefsSaved(false), 2000));
+      }, 600),
+    );
   }
 
   function saveAccount() {
+    const name = displayName() || prefs()?.displayName || "";
+    if (!name.trim()) {
+      toast.error("Display name cannot be empty.");
+      return;
+    }
+    if (name.length > DISPLAY_NAME_MAX) {
+      toast.error(
+        `Display name must be ${DISPLAY_NAME_MAX} characters or fewer.`,
+      );
+      return;
+    }
     setAccountSaved(true);
+    toast.success("Account saved.");
     timers.push(setTimeout(() => setAccountSaved(false), 2000));
+  }
+
+  // Open 2FA modal — do NOT flip twoFAEnabled yet. It will only flip on confirm.
+  function handleToggle2FA() {
+    setConfirmPassword("");
+    setDisableConfirmText("");
+    setShowConfirmModal(true);
+    setTwoFAPending(null);
+  }
+
+  // Shared close/cancel for modal — always restores UI to committed state
+  function closeModal() {
+    setShowConfirmModal(false);
+    setConfirmPassword("");
+    setDisableConfirmText("");
+    setTwoFAPending(null);
   }
 
   function confirmToggle2FA() {
     if (!confirmPassword()) return;
-    setTwoFAEnabled((v) => !v);
-    setConfirmPassword("");
-    setShowConfirmModal(false);
+    const enabling = !twoFAEnabled();
+    if (!enabling && disableConfirmText().toUpperCase() !== "DISABLE") return;
+
+    // Commit the toggle
+    setTwoFAEnabled(enabling);
+    setTwoFAPending(enabling ? "enabled" : "disabled");
+    closeModal();
+
+    toast.success(
+      enabling ? "Two-factor auth enabled." : "Two-factor auth disabled.",
+    );
+
+    timers.push(setTimeout(() => setTwoFAPending(null), 2000));
   }
 
   function regenerateCodes() {
     setCodesRegenerated(true);
+    toast.success("Backup codes regenerated. Store them securely.");
     timers.push(setTimeout(() => setCodesRegenerated(false), 2000));
   }
+
+  // Whether the disable confirmation typed field is satisfied
+  function disableConfirmValid() {
+    return disableConfirmText().toUpperCase() === "DISABLE";
+  }
+
+  const currentDisplayName = () =>
+    displayName() !== "" ? displayName() : (prefs()?.displayName ?? "");
+  const displayNameLength = () => currentDisplayName().length;
 
   return (
     <Stack gap={6}>
@@ -135,13 +242,31 @@ export function SettingsScreen(): JSX.Element {
                 label="DEFAULT MODEL"
                 options={MODEL_OPTIONS}
                 value={model()}
-                onChange={setModel}
+                onChange={(v) => {
+                  setModel(v);
+                  setPrefsSaving(true);
+                  timers.push(
+                    setTimeout(() => {
+                      setPrefsSaving(false);
+                      toast.info("Model selection updated — save to persist.");
+                    }, 400),
+                  );
+                }}
+                disabled={prefsSaving()}
               />
+              <Show when={prefsSaving()}>
+                <Text variant="micro" tone="dim">
+                  UPDATING…
+                </Text>
+              </Show>
               <Select
                 label="LANGUAGE"
                 options={LANGUAGE_OPTIONS}
                 value={language()}
-                onChange={setLanguage}
+                onChange={(v) => {
+                  setLanguage(v);
+                }}
+                disabled={prefsSaving()}
               />
               <Field
                 label="THEME"
@@ -188,8 +313,26 @@ export function SettingsScreen(): JSX.Element {
                 SAVED
               </StatusFlag>
             </Show>
-            <Button variant="primary" onClick={savePrefs}>
-              SAVE PREFERENCES
+            <Show when={prefsChanged() && !prefsSaved()}>
+              <StatusFlag status="warn" dot>
+                UNSAVED
+              </StatusFlag>
+            </Show>
+            <Show when={prefsChanged()}>
+              <Button
+                variant="ghost"
+                onClick={resetPrefs}
+                disabled={prefsSaving()}
+              >
+                RESET
+              </Button>
+            </Show>
+            <Button
+              variant="primary"
+              onClick={savePrefs}
+              disabled={prefsSaving()}
+            >
+              {prefsSaving() ? "SAVING…" : "SAVE PREFERENCES"}
             </Button>
           </Row>
         </Stack>
@@ -201,9 +344,18 @@ export function SettingsScreen(): JSX.Element {
           <Panel
             label="TWO-FACTOR AUTHENTICATION"
             meta={
-              <StatusFlag status={twoFAEnabled() ? "nominal" : "idle"} dot>
-                {twoFAEnabled() ? "ENABLED" : "DISABLED"}
-              </StatusFlag>
+              <Show
+                when={twoFAPending() !== null}
+                fallback={
+                  <StatusFlag status={twoFAEnabled() ? "nominal" : "idle"} dot>
+                    {twoFAEnabled() ? "ENABLED" : "DISABLED"}
+                  </StatusFlag>
+                }
+              >
+                <StatusFlag status="nominal" dot>
+                  {twoFAPending() === "enabled" ? "ENABLED" : "DISABLED"}
+                </StatusFlag>
+              </Show>
             }
           >
             <Stack gap={4}>
@@ -251,11 +403,14 @@ export function SettingsScreen(): JSX.Element {
                 <Text variant="label" tone="default">
                   ENABLE TWO-FACTOR AUTH
                 </Text>
-                <Toggle
-                  checked={twoFAEnabled()}
-                  onChange={() => setShowConfirmModal(true)}
-                />
+                <Toggle checked={twoFAEnabled()} onChange={handleToggle2FA} />
               </Row>
+
+              <Show when={showConfirmModal()}>
+                <StatusFlag status="warn" dot>
+                  PENDING — confirm in dialog
+                </StatusFlag>
+              </Show>
             </Stack>
           </Panel>
 
@@ -300,12 +455,17 @@ export function SettingsScreen(): JSX.Element {
         <Stack gap={4}>
           <Panel label="PROFILE">
             <Stack gap={4}>
-              <Input
-                label="DISPLAY NAME"
-                value={displayName() || prefs()?.displayName || ""}
-                onInput={(e) => setDisplayName(e.currentTarget.value)}
-                placeholder="OPERATOR"
-              />
+              <Stack gap={1}>
+                <Input
+                  label="DISPLAY NAME"
+                  value={currentDisplayName()}
+                  onInput={(e) => setDisplayName(e.currentTarget.value)}
+                  placeholder="OPERATOR"
+                  maxlength={DISPLAY_NAME_MAX}
+                  invalid={displayNameLength() > DISPLAY_NAME_MAX}
+                  hint={`${displayNameLength()} / ${DISPLAY_NAME_MAX}`}
+                />
+              </Stack>
               <Suspense fallback={<LoadingText />}>
                 <Field label="USER ID" value={`u-001`} orientation="row" />
                 <Field label="ROLE" value="ADMINISTRATOR" orientation="row" />
@@ -319,6 +479,16 @@ export function SettingsScreen(): JSX.Element {
                 SAVED
               </StatusFlag>
             </Show>
+            <Show when={accountChanged() && !accountSaved()}>
+              <StatusFlag status="warn" dot>
+                UNSAVED
+              </StatusFlag>
+            </Show>
+            <Show when={accountChanged()}>
+              <Button variant="ghost" onClick={resetAccount}>
+                RESET
+              </Button>
+            </Show>
             <Button variant="primary" onClick={saveAccount}>
               SAVE ACCOUNT
             </Button>
@@ -329,30 +499,23 @@ export function SettingsScreen(): JSX.Element {
       {/* ── CONFIRM 2FA MODAL ────────────────────────────────── */}
       <Modal
         open={showConfirmModal()}
-        onClose={() => {
-          setShowConfirmModal(false);
-          setConfirmPassword("");
-        }}
+        onClose={closeModal}
         title={
           twoFAEnabled() ? "DISABLE TWO-FACTOR AUTH" : "ENABLE TWO-FACTOR AUTH"
         }
         footer={
           <>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setShowConfirmModal(false);
-                setConfirmPassword("");
-              }}
-            >
+            <Button variant="ghost" onClick={closeModal}>
               CANCEL
             </Button>
             <Button
               variant={twoFAEnabled() ? "danger" : "primary"}
               onClick={confirmToggle2FA}
-              disabled={!confirmPassword()}
+              disabled={
+                !confirmPassword() || (twoFAEnabled() && !disableConfirmValid())
+              }
             >
-              CONFIRM
+              {twoFAEnabled() ? "DISABLE 2FA" : "CONFIRM"}
             </Button>
           </>
         }
@@ -363,6 +526,20 @@ export function SettingsScreen(): JSX.Element {
               ? "Enter your password to disable two-factor authentication. This will reduce your account security."
               : "Enter your password to confirm enabling two-factor authentication."}
           </Text>
+          <Show when={twoFAEnabled()}>
+            <Text variant="micro" tone="alert">
+              This is a security-critical action. Type DISABLE below to confirm.
+            </Text>
+            <Input
+              label='TYPE "DISABLE" TO CONFIRM'
+              value={disableConfirmText()}
+              onInput={(e) => setDisableConfirmText(e.currentTarget.value)}
+              placeholder="DISABLE"
+              invalid={
+                disableConfirmText().length > 0 && !disableConfirmValid()
+              }
+            />
+          </Show>
           <Input
             label="CURRENT PASSWORD"
             type="password"

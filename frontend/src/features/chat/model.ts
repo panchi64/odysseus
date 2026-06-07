@@ -15,6 +15,8 @@ export interface ToolInvocation {
   status: ToolStatus;
   /** Result preview shown when expanded. */
   result?: string;
+  /** Error detail shown when status='error'. */
+  error?: string;
   elapsedMs?: number;
 }
 

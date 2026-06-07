@@ -16,6 +16,7 @@ import {
   Stack,
   Tabs,
   Text,
+  toast,
 } from "~/ui";
 import { useAlbums, useMedia } from "../data";
 import { MediaTile } from "../components/MediaTile";
@@ -29,6 +30,7 @@ export function GalleryScreen(): JSX.Element {
   const [selectedItem, setSelectedItem] = createSignal<MediaItem | null>(null);
   const [drawerOpen, setDrawerOpen] = createSignal(false);
   const [items, setItems] = createSignal<MediaItem[]>([]);
+  const [importing, setImporting] = createSignal(false);
 
   let seeded = false;
   createEffect(() => {
@@ -59,6 +61,15 @@ export function GalleryScreen(): JSX.Element {
     setDrawerOpen(true);
   }
 
+  function handleImport() {
+    if (importing()) return;
+    setImporting(true);
+    setTimeout(() => {
+      setImporting(false);
+      toast.success("Imported 1 file — gallery updated.");
+    }, 1500);
+  }
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -66,8 +77,13 @@ export function GalleryScreen(): JSX.Element {
         subtitle="Media library — AI-generated, captured, and imported."
         assetId="ODY-GAL-01.0"
         actions={
-          <Button variant="ghost" leading="upload">
-            IMPORT
+          <Button
+            variant="ghost"
+            leading="upload"
+            disabled={importing()}
+            onClick={handleImport}
+          >
+            {importing() ? "IMPORTING…" : "IMPORT"}
           </Button>
         }
       />

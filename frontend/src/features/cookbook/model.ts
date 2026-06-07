@@ -21,7 +21,7 @@ export interface ModelEntry {
   description: string;
 }
 
-export type ServerStatus = "running" | "stopped" | "starting";
+export type ServerStatus = "running" | "stopped" | "starting" | "error";
 
 export interface RunningServer {
   id: string;

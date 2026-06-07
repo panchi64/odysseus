@@ -1,6 +1,7 @@
 dist
 .wrangler
 .output
+.nitro
 .vercel
 .netlify
 .vinxi

@@ -1,6 +1,7 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
+  confirm,
   EmptyState,
   Field,
   InstrumentBand,
@@ -8,35 +9,62 @@ import {
   LoadingText,
   PageHeader,
   Panel,
+  ProgressBar,
+  Resource,
   Row,
   Stack,
   StatusFlag,
   Text,
+  toast,
 } from "~/ui";
 import { bytes, num, timestamp } from "~/lib/format";
-import { useEmbeddingModels, useIndexStats } from "../data";
+import {
+  cancelReindex,
+  reindexSignal,
+  startReindex,
+  useEmbeddingModels,
+  useIndexStats,
+} from "../data";
 import type { EmbeddingModel } from "../model";
 
 export function EmbeddingScreen(): JSX.Element {
   const models = useEmbeddingModels();
   const stats = useIndexStats();
   const [activeId, setActiveId] = createSignal("all-minilm-l6-v2");
-  const [pendingId, setPendingId] = createSignal<string | null>(null);
-  const [confirmOpen, setConfirmOpen] = createSignal(false);
 
   const activeModel = () => (models() ?? []).find((m) => m.id === activeId());
+  const reindex = reindexSignal;
 
-  function requestSwap(m: EmbeddingModel) {
+  async function requestSwap(m: EmbeddingModel) {
     if (m.id === activeId()) return;
-    setPendingId(m.id);
-    setConfirmOpen(true);
+    const currentName = activeModel()?.name ?? activeId();
+    const docCount = stats()?.indexedDocs ?? 0;
+
+    const ok = await confirm({
+      title: `Swap to ${m.name}?`,
+      detail: `Swap from ${currentName} to ${m.name}? This requires re-indexing all ${num(docCount, 0)} documents. Retrieval will be degraded until the re-index completes.`,
+      confirmLabel: "CONFIRM SWAP",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+
+    if (!ok) return;
+
+    setActiveId(m.id);
+    startReindex(docCount);
+    toast.info(`Re-indexing started — ${num(docCount, 0)} documents queued`);
   }
 
-  function confirmSwap() {
-    if (pendingId()) setActiveId(pendingId()!);
-    setPendingId(null);
-    setConfirmOpen(false);
+  function handleCancelReindex() {
+    cancelReindex();
+    toast.warn("Re-index cancelled — retrieval quality may be degraded");
   }
+
+  const reindexProgress = () => {
+    const s = reindex();
+    if (!s) return 0;
+    return Math.round((s.docsProcessed / s.totalDocs) * 100);
+  };
 
   return (
     <Stack gap={6}>
@@ -45,9 +73,18 @@ export function EmbeddingScreen(): JSX.Element {
         subtitle="Vector embedding configuration and index statistics."
         assetId="SYS-EMB-03.2"
         actions={
-          <Show when={stats()?.requiresReindex}>
-            <StatusFlag status="warn" dot>
-              REINDEX REQUIRED
+          <Show
+            when={reindex()}
+            fallback={
+              <Show when={stats()?.requiresReindex}>
+                <StatusFlag status="warn" dot>
+                  REINDEX REQUIRED
+                </StatusFlag>
+              </Show>
+            }
+          >
+            <StatusFlag status="info" dot>
+              REINDEX IN PROGRESS
             </StatusFlag>
           </Show>
         }
@@ -60,7 +97,12 @@ export function EmbeddingScreen(): JSX.Element {
               items={[
                 { label: "ACTIVE MODEL", value: activeModel()?.name ?? "—" },
                 { label: "DIMS", value: String(s().dims) },
-                { label: "INDEXED DOCS", value: String(s().indexedDocs) },
+                {
+                  label: "INDEXED DOCS",
+                  value: reindex()
+                    ? `${num(reindex()!.docsProcessed, 0)} / ${num(reindex()!.totalDocs, 0)}`
+                    : String(s().indexedDocs),
+                },
                 {
                   label: "THROUGHPUT",
                   value: `${num(s().throughputDocsSec, 0)} DOC/S`,
@@ -76,30 +118,29 @@ export function EmbeddingScreen(): JSX.Element {
         </Show>
       </Suspense>
 
-      <Show when={confirmOpen()}>
-        <Panel label="CONFIRM MODEL SWAP" state="alert">
-          <Stack gap={4}>
-            <Text variant="body" tone="warn">
-              Swapping the active embedding model requires a full re-index of
-              all {stats()?.indexedDocs ?? "?"} documents. Retrieval will be
-              degraded until the re-index completes.
-            </Text>
-            <Row gap={2}>
-              <Button variant="danger" onClick={confirmSwap}>
-                CONFIRM SWAP
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setConfirmOpen(false);
-                  setPendingId(null);
-                }}
-              >
-                CANCEL
-              </Button>
-            </Row>
-          </Stack>
-        </Panel>
+      <Show when={reindex()}>
+        {(r) => (
+          <Panel label="REINDEX IN PROGRESS">
+            <Stack gap={3}>
+              <ProgressBar
+                value={reindexProgress()}
+                label={`INDEXING DOCUMENTS — ${num(r().docsProcessed, 0)} / ${num(r().totalDocs, 0)} (${reindexProgress()}%)`}
+                tone="info"
+                showValue
+              />
+              <Show when={r().estimatedSecsRemaining > 0}>
+                <Text variant="micro" tone="dim">
+                  EST. TIME REMAINING: {r().estimatedSecsRemaining}S
+                </Text>
+              </Show>
+              <Row gap={2}>
+                <Button variant="ghost" onClick={handleCancelReindex}>
+                  CANCEL REINDEX
+                </Button>
+              </Row>
+            </Stack>
+          </Panel>
+        )}
       </Show>
 
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -135,18 +176,26 @@ export function EmbeddingScreen(): JSX.Element {
           flush
           class="lg:col-span-2"
         >
-          <Suspense
-            fallback={
+          <Resource
+            data={models}
+            loadingLabel="LOADING MODELS"
+            onRetry={models.refetch}
+            errorMessage="FAILED TO LOAD MODELS"
+            isEmpty={(v) => v.length === 0}
+            emptyMessage="NO MODELS"
+            empty={
+              <div class="p-3">
+                <EmptyState icon="database" message="NO MODELS" />
+              </div>
+            }
+            loading={
               <div class="p-3">
                 <LoadingText />
               </div>
             }
           >
-            <Show
-              when={(models() ?? []).length}
-              fallback={<EmptyState icon="database" message="NO MODELS" />}
-            >
-              <For each={models()}>
+            {(list) => (
+              <For each={list()}>
                 {(m) => (
                   <ListRow
                     label={m.name}
@@ -186,8 +235,8 @@ export function EmbeddingScreen(): JSX.Element {
                   />
                 )}
               </For>
-            </Show>
-          </Suspense>
+            )}
+          </Resource>
         </Panel>
       </div>
     </Stack>

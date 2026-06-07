@@ -12,6 +12,7 @@ import {
   StatusFlag,
   Text,
   Textarea,
+  toast,
 } from "~/ui";
 import { pct } from "~/lib/format";
 import { useLeaderboard, createCompareRun } from "../data";
@@ -23,7 +24,7 @@ import type { CompareSlot } from "../model";
 export function CompareScreen(): JSX.Element {
   const [prompt, setPrompt] = createSignal("");
   const leaderboard = useLeaderboard();
-  const { run, active, start, vote, reset } = createCompareRun();
+  const { run, active, start, vote, stop, reset } = createCompareRun();
 
   const bothDone = () =>
     run.candidates.length === 2 && run.candidates.every((c) => !c.streaming);
@@ -37,6 +38,12 @@ export function CompareScreen(): JSX.Element {
   const handleVote = (slot: CompareSlot) => {
     if (!bothDone()) return;
     vote(slot as "A" | "B");
+    toast.success("VOTE RECORDED");
+  };
+
+  const handleStop = () => {
+    stop();
+    toast.info("COMPARISON STOPPED");
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -85,16 +92,25 @@ export function CompareScreen(): JSX.Element {
             <Text variant="micro" tone="dim">
               Ctrl+Enter · responses are anonymized until you vote
             </Text>
-            <Button
-              variant="primary"
-              leading="compare"
-              disabled={
-                active() || !prompt().trim() || (run.id !== "" && !run.revealed)
-              }
-              onClick={handleStart}
-            >
-              COMPARE
-            </Button>
+            <Row gap={2}>
+              <Show when={active()}>
+                <Button variant="default" leading="stop" onClick={handleStop}>
+                  STOP
+                </Button>
+              </Show>
+              <Button
+                variant="primary"
+                leading="compare"
+                disabled={
+                  active() ||
+                  !prompt().trim() ||
+                  (run.id !== "" && !run.revealed)
+                }
+                onClick={handleStart}
+              >
+                COMPARE
+              </Button>
+            </Row>
           </div>
         </Stack>
       </Panel>

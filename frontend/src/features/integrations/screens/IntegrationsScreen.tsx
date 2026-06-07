@@ -21,6 +21,7 @@ import {
   Stack,
   StatusFlag,
   Text,
+  toast,
   type Status,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
@@ -79,6 +80,12 @@ export function IntegrationsScreen(): JSX.Element {
   function saveConfig() {
     const id = editing()?.id;
     if (!id) return;
+    if (testResult() === "error") {
+      toast.error(
+        "Fix the test failure before saving — re-test after correcting the credentials.",
+      );
+      return;
+    }
     setIntegrations(
       produce((s) => {
         const int = s.find((x) => x.id === id);
@@ -93,6 +100,7 @@ export function IntegrationsScreen(): JSX.Element {
       }),
     );
     setConfigOpen(false);
+    toast.success(`${editing()?.name ?? "Integration"} saved`);
   }
 
   const configuredCount = () => integrations.filter((i) => i.configured).length;
@@ -168,7 +176,11 @@ export function IntegrationsScreen(): JSX.Element {
             >
               {testing() ? "TESTING…" : "TEST"}
             </Button>
-            <Button variant="primary" onClick={saveConfig}>
+            <Button
+              variant="primary"
+              onClick={saveConfig}
+              disabled={testResult() === "error"}
+            >
               SAVE
             </Button>
           </Row>
@@ -191,14 +203,32 @@ export function IntegrationsScreen(): JSX.Element {
             label="API KEY / CREDENTIAL"
             type="password"
             value={editKey()}
-            onInput={(e) => setEditKey(e.currentTarget.value)}
+            onInput={(e) => {
+              setEditKey(e.currentTarget.value);
+              setTestResult(null);
+            }}
             placeholder="Leave blank to keep existing"
           />
 
-          <Show when={testResult()}>
-            <StatusFlag status={testResult() === "ok" ? "nominal" : "alert"}>
-              {testResult() === "ok" ? "TEST PASSED" : "TEST FAILED"}
-            </StatusFlag>
+          <Show when={testResult() === "ok"}>
+            <StatusFlag status="nominal">TEST PASSED</StatusFlag>
+          </Show>
+          <Show when={testResult() === "error"}>
+            <Panel
+              label={`CONFIGURE — ${editing()?.name ?? ""} [ERROR]`}
+              state="alert"
+            >
+              <Stack gap={2}>
+                <Text variant="micro" tone="alert">
+                  Connection test failed. Correct the base URL or credential and
+                  run TEST again before saving.
+                </Text>
+                <Text variant="micro" tone="dim">
+                  Common causes: wrong base URL, expired API key, or host
+                  unreachable from this server.
+                </Text>
+              </Stack>
+            </Panel>
           </Show>
 
           <Show when={editing()?.lastTestedAt}>

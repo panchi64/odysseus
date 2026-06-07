@@ -10,6 +10,7 @@ import { createStore, produce } from "solid-js/store";
 import {
   Button,
   Checkbox,
+  confirm,
   Input,
   ListRow,
   LoadingText,
@@ -18,15 +19,22 @@ import {
   PageHeader,
   Panel,
   Row,
+  Select,
   Stack,
   StatusFlag,
   Text,
   Tooltip,
+  toast,
 } from "~/ui";
 import { timestamp, relativeTime } from "~/lib/format";
 import { useTokens } from "../data";
-import type { ApiToken, TokenScope } from "../model";
-import { ALL_SCOPES } from "../model";
+import type { ApiToken, TokenScope, ExpiryOption } from "../model";
+import {
+  ALL_SCOPES,
+  EXPIRY_OPTIONS,
+  computeExpiresAt,
+  daysUntilExpiry,
+} from "../model";
 
 export function ApiTokensScreen(): JSX.Element {
   const tokensResource = useTokens();
@@ -41,13 +49,13 @@ export function ApiTokensScreen(): JSX.Element {
   const [issueOpen, setIssueOpen] = createSignal(false);
   const [newLabel, setNewLabel] = createSignal("");
   const [newScopes, setNewScopes] = createSignal<TokenScope[]>([]);
+  const [newExpiry, setNewExpiry] = createSignal<ExpiryOption>("90d");
+  const [issueError, setIssueError] = createSignal<string | null>(null);
+  const [issuing, setIssuing] = createSignal(false);
 
   // Reveal panel: shown once after issue
   const [revealedToken, setRevealedToken] = createSignal<string | null>(null);
   const [copied, setCopied] = createSignal(false);
-
-  // Revoke confirm
-  const [revokeTarget, setRevokeTarget] = createSignal<ApiToken | null>(null);
 
   function seed(list: ApiToken[]) {
     if (!seeded) {
@@ -62,33 +70,73 @@ export function ApiTokensScreen(): JSX.Element {
     );
   }
 
-  function issueToken() {
-    if (!newLabel().trim() || newScopes().length === 0) return;
-    const id = `tok-${String(tokens.length + 1).padStart(3, "0")}`;
-    const mockSecret = `ody_${Math.random().toString(36).slice(2, 6)}${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
-    const token: ApiToken = {
-      id,
-      label: newLabel(),
-      prefix: `${mockSecret.slice(0, 8)}…`,
-      scopes: newScopes(),
-      createdAt: new Date().toISOString(),
-      revoked: false,
-    };
-    setTokens((t) => [token, ...t]);
-    setRevealedToken(mockSecret);
+  function closeIssueModal() {
+    setIssueOpen(false);
     setNewLabel("");
     setNewScopes([]);
-    setIssueOpen(false);
+    setNewExpiry("90d");
+    setIssueError(null);
+    setIssuing(false);
   }
 
-  function revokeToken(id: string) {
-    setTokens(
-      (t) => t.id === id,
-      produce((t) => {
-        t.revoked = true;
-      }),
-    );
-    setRevokeTarget(null);
+  async function issueToken() {
+    const label = newLabel().trim();
+    if (!label || newScopes().length === 0) return;
+    setIssueError(null);
+    setIssuing(true);
+    try {
+      // Phase 1: mock async operation — simulates a real API call
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const id = `tok-${String(tokens.length + 1).padStart(3, "0")}`;
+      const mockSecret = `ody_${Math.random().toString(36).slice(2, 6)}${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      const token: ApiToken = {
+        id,
+        label,
+        prefix: `${mockSecret.slice(0, 8)}…`,
+        scopes: newScopes(),
+        createdAt: new Date().toISOString(),
+        expiresAt: computeExpiresAt(newExpiry()),
+        revoked: false,
+      };
+      setTokens((t) => [token, ...t]);
+      setRevealedToken(mockSecret);
+      closeIssueModal();
+      toast.success(`Token "${label}" issued — copy it now.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      setIssueError(`Failed to issue token: ${msg}. Please try again.`);
+    } finally {
+      setIssuing(false);
+    }
+  }
+
+  async function revokeToken(token: ApiToken) {
+    try {
+      // Phase 1: mock async operation
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      setTokens(
+        (t) => t.id === token.id,
+        produce((t) => {
+          t.revoked = true;
+        }),
+      );
+      toast.success(`Token "${token.label}" revoked.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Failed to revoke token: ${msg}. Please try again.`);
+    }
+  }
+
+  async function handleRevokeRequest(token: ApiToken) {
+    const ok = await confirm({
+      title: `Revoke "${token.label}"?`,
+      detail:
+        "ALL REQUESTS USING THIS TOKEN WILL IMMEDIATELY FAIL. This cannot be undone.",
+      confirmLabel: "REVOKE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    await revokeToken(token);
   }
 
   function copyToken() {
@@ -101,6 +149,41 @@ export function ApiTokensScreen(): JSX.Element {
   }
 
   const activeCount = () => tokens.filter((t) => !t.revoked).length;
+
+  /** Render expiry information for a token row. */
+  function ExpiryCell(props: { token: ApiToken }): JSX.Element {
+    const days = daysUntilExpiry(props.token);
+    if (days === null) {
+      return (
+        <Text variant="micro" tone="dim">
+          NO EXPIRY
+        </Text>
+      );
+    }
+    if (days <= 0) {
+      return (
+        <StatusFlag status="alert" dot>
+          EXPIRED
+        </StatusFlag>
+      );
+    }
+    if (days <= 7) {
+      return (
+        <Tooltip label={`Expires ${timestamp(props.token.expiresAt!)}`}>
+          <StatusFlag status="warn" dot>
+            {`EXPIRES IN ${days}D`}
+          </StatusFlag>
+        </Tooltip>
+      );
+    }
+    return (
+      <Tooltip label={`Expires ${timestamp(props.token.expiresAt!)}`}>
+        <Text variant="micro" tone="dim">
+          {days}D LEFT
+        </Text>
+      </Tooltip>
+    );
+  }
 
   return (
     <Stack gap={6}>
@@ -196,6 +279,9 @@ export function ApiTokensScreen(): JSX.Element {
                       {token.scopes.length !== 1 ? "S" : ""}
                     </Text>
                   </Tooltip>
+                  <Show when={!token.revoked}>
+                    <ExpiryCell token={token} />
+                  </Show>
                   <Text variant="micro" tone="dim">
                     {token.lastUsedAt
                       ? relativeTime(token.lastUsedAt)
@@ -214,7 +300,7 @@ export function ApiTokensScreen(): JSX.Element {
                           label: "REVOKE TOKEN",
                           icon: "close",
                           danger: true,
-                          onSelect: () => setRevokeTarget(token),
+                          onSelect: () => void handleRevokeRequest(token),
                         },
                       ]}
                     />
@@ -236,21 +322,19 @@ export function ApiTokensScreen(): JSX.Element {
       {/* ── ISSUE TOKEN MODAL ────────────────────────────────── */}
       <Modal
         open={issueOpen()}
-        onClose={() => {
-          setIssueOpen(false);
-          setNewLabel("");
-          setNewScopes([]);
-        }}
+        onClose={closeIssueModal}
         title="ISSUE API TOKEN"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setIssueOpen(false)}>
+            <Button variant="ghost" onClick={closeIssueModal}>
               CANCEL
             </Button>
             <Button
               variant="primary"
-              onClick={issueToken}
-              disabled={!newLabel().trim() || newScopes().length === 0}
+              onClick={() => void issueToken()}
+              disabled={
+                !newLabel().trim() || newScopes().length === 0 || issuing()
+              }
             >
               ISSUE
             </Button>
@@ -258,12 +342,22 @@ export function ApiTokensScreen(): JSX.Element {
         }
       >
         <Stack gap={4}>
+          {/* Inline error if issuance fails */}
+          <Show when={issueError()}>
+            <div class="border border-alert bg-surface px-3 py-2">
+              <Text variant="body" tone="alert">
+                {issueError()}
+              </Text>
+            </div>
+          </Show>
+
           <Input
             label="TOKEN LABEL"
             value={newLabel()}
             onInput={(e) => setNewLabel(e.currentTarget.value)}
             placeholder="My Automation Script"
           />
+
           <Stack gap={2}>
             <Text variant="label" tone="dim">
               SCOPES
@@ -278,44 +372,33 @@ export function ApiTokensScreen(): JSX.Element {
               )}
             </For>
           </Stack>
+
+          <Select
+            label="EXPIRES AFTER"
+            options={EXPIRY_OPTIONS}
+            value={newExpiry()}
+            onChange={(v) => setNewExpiry(v as ExpiryOption)}
+          />
+
+          {/* Scope summary — read-only review before issuing */}
+          <Show when={newScopes().length > 0}>
+            <Stack gap={1}>
+              <Text variant="label" tone="dim">
+                SELECTED SCOPES
+              </Text>
+              <Row gap={1} wrap>
+                <For each={newScopes()}>
+                  {(scope) => (
+                    <StatusFlag status="info">{scope.toUpperCase()}</StatusFlag>
+                  )}
+                </For>
+              </Row>
+            </Stack>
+          </Show>
+
           <Text variant="micro" tone="dim">
             The full token value will be displayed once after issuance. Store it
             securely.
-          </Text>
-        </Stack>
-      </Modal>
-
-      {/* ── REVOKE CONFIRM MODAL ─────────────────────────────── */}
-      <Modal
-        open={revokeTarget() !== null}
-        onClose={() => setRevokeTarget(null)}
-        title="REVOKE TOKEN"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setRevokeTarget(null)}>
-              CANCEL
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => revokeTarget() && revokeToken(revokeTarget()!.id)}
-            >
-              REVOKE
-            </Button>
-          </>
-        }
-      >
-        <Stack gap={2}>
-          <Text variant="body" tone="default">
-            Revoke{" "}
-            <Text as="span" tone="bright">
-              {revokeTarget()?.label}
-            </Text>
-            ?
-          </Text>
-          <Text variant="micro" tone="dim">
-            Created{" "}
-            {revokeTarget() ? timestamp(revokeTarget()!.createdAt) : "—"}. All
-            requests using this token will immediately fail.
           </Text>
         </Stack>
       </Modal>

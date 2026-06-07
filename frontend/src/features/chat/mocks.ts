@@ -65,6 +65,15 @@ export const mockSession: ChatSession = {
             "6 sources ranked; top: chromadb docs on collection.upsert + alias swap",
           elapsedMs: 1180,
         },
+        {
+          id: "t-3",
+          name: "memory.recall",
+          args: 'query="chroma migration notes"',
+          status: "error",
+          error:
+            "ChromaDB connection refused — service may be down (ECONNREFUSED 127.0.0.1:8000)",
+          elapsedMs: 32,
+        },
       ],
       content: `Migrate behind a **shadow collection** so the live index keeps serving reads the entire time.
 

@@ -1,12 +1,18 @@
-import { For, Show, Suspense, type JSX } from "solid-js";
+import { For, Show, Suspense, createSignal, type JSX } from "solid-js";
 import {
   Button,
+  Drawer,
   EmptyState,
+  Icon,
   ListRow,
   LoadingText,
+  Menu,
   Panel,
   StatusFlag,
   Text,
+  confirm,
+  toast,
+  type MenuItem,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import { useChatSession, useChatSessions, createChatStream } from "../data";
@@ -20,48 +26,118 @@ export function ChatRoomScreen(): JSX.Element {
   const session = useChatSession(() => "s-014");
   const stream = createChatStream(() => session()?.messages);
 
+  // Mobile session drawer
+  const [sessionsOpen, setSessionsOpen] = createSignal(false);
+
+  const handleDeleteLast = async () => {
+    const last = stream.messages[stream.messages.length - 1];
+    if (!last) return;
+    const label =
+      last.role === "user"
+        ? `"${last.content.slice(0, 48)}${last.content.length > 48 ? "…" : ""}"`
+        : "the last assistant message";
+    if (!(await confirm({ title: `Delete ${label}?`, tone: "alert" }))) return;
+    const removed = stream.deleteLastMessage();
+    if (removed) {
+      toast.success("Message deleted", {
+        action: {
+          label: "UNDO",
+          onClick: () => stream.restoreMessage(removed),
+        },
+      });
+    }
+  };
+
+  const handleClearSession = async () => {
+    if (stream.messages.length === 0) {
+      toast.info("Session is already empty.");
+      return;
+    }
+    if (
+      !(await confirm({
+        title: "Clear all messages?",
+        detail: "This removes the entire conversation from this session.",
+        confirmLabel: "CLEAR",
+        tone: "alert",
+      }))
+    )
+      return;
+    const snapshot = stream.clearMessages();
+    toast.success("Session cleared", {
+      action: {
+        label: "UNDO",
+        onClick: () => stream.restoreMessages(snapshot),
+      },
+    });
+  };
+
+  const sessionList = () => (
+    <Suspense
+      fallback={
+        <div class="p-3">
+          <LoadingText />
+        </div>
+      }
+    >
+      <For each={sessions()}>
+        {(s) => (
+          <ListRow
+            label={s.title}
+            selected={s.id === "s-014"}
+            href="/chat"
+            right={
+              <Text variant="micro" tone="dim">
+                {relativeTime(s.updatedAt)}
+              </Text>
+            }
+          />
+        )}
+      </For>
+    </Suspense>
+  );
+
   return (
     <div class="flex h-full min-h-0 gap-4">
-      {/* Session list */}
+      {/* Session list — desktop sidebar */}
       <aside class="hidden w-56 shrink-0 lg:block">
         <Panel label="SESSIONS" flush>
-          <Suspense
-            fallback={
-              <div class="p-3">
-                <LoadingText />
-              </div>
-            }
-          >
-            <For each={sessions()}>
-              {(s) => (
-                <ListRow
-                  label={s.title}
-                  selected={s.id === "s-014"}
-                  href="/chat"
-                  right={
-                    <Text variant="micro" tone="dim">
-                      {relativeTime(s.updatedAt)}
-                    </Text>
-                  }
-                />
-              )}
-            </For>
-          </Suspense>
+          {sessionList()}
         </Panel>
       </aside>
+
+      {/* Session list — mobile drawer */}
+      <Drawer
+        open={sessionsOpen()}
+        onClose={() => setSessionsOpen(false)}
+        title="SESSIONS"
+        side="left"
+      >
+        {sessionList()}
+      </Drawer>
 
       {/* Conversation */}
       <section class="flex min-h-full min-w-0 flex-1 flex-col">
         <header class="flex items-center justify-between gap-3 border-b border-line pb-3">
-          <div class="flex flex-col gap-0.5">
-            <Text variant="readout" tone="bright">
-              {session()?.title ?? "New session"}
-            </Text>
-            <Text variant="micro" tone="dim">
-              MODEL {session()?.model ?? "—"} · SESSION s-014
-            </Text>
+          <div class="flex min-w-0 items-center gap-2">
+            {/* Mobile: sessions trigger */}
+            <button
+              type="button"
+              class="shrink-0 text-dim transition-colors hover:text-bright lg:hidden"
+              aria-label="Open sessions"
+              onClick={() => setSessionsOpen(true)}
+            >
+              <Icon name="menu" size={16} />
+            </button>
+            <div class="flex min-w-0 flex-col gap-0.5">
+              <Text variant="readout" tone="bright">
+                {session()?.title ?? "New session"}
+              </Text>
+              <Text variant="micro" tone="dim">
+                MODEL {session()?.model ?? "—"} · SESSION s-014
+              </Text>
+            </div>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex shrink-0 items-center gap-2">
             <StatusFlag
               status={stream.sending() ? "info" : "idle"}
               dot={stream.sending()}
@@ -71,10 +147,35 @@ export function ChatRoomScreen(): JSX.Element {
             <Button variant="ghost" leading="plus">
               NEW
             </Button>
+            <Menu
+              trigger={
+                <Button variant="ghost" aria-label="Session actions">
+                  ···
+                </Button>
+              }
+              items={
+                [
+                  {
+                    label: "DELETE LAST MESSAGE",
+                    icon: "trash",
+                    danger: true,
+                    disabled: stream.messages.length === 0 || stream.sending(),
+                    onSelect: handleDeleteLast,
+                  },
+                  {
+                    label: "CLEAR SESSION",
+                    icon: "close",
+                    danger: true,
+                    disabled: stream.messages.length === 0 || stream.sending(),
+                    onSelect: handleClearSession,
+                  },
+                ] satisfies MenuItem[]
+              }
+            />
           </div>
         </header>
 
-        <div class="min-h-0 flex-1 py-2">
+        <div class="min-h-0 flex-1 overflow-y-auto py-2">
           <Show
             when={stream.messages.length}
             fallback={

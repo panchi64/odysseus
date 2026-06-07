@@ -4,11 +4,45 @@ import {
   onCleanup,
   type Resource,
 } from "solid-js";
+import { createStore, produce } from "solid-js/store";
 import type { DocumentDetail, DocumentSummary } from "./model";
 import { mockDocumentDetail, mockDocuments, mockAiSuggestion } from "./mocks";
 
+// ---------------------------------------------------------------------------
+// Mutable local store — mutated by library actions so Phase-1 changes show up
+// ---------------------------------------------------------------------------
+
+const [docStore, setDocStore] = createStore<{ items: DocumentSummary[] }>({
+  items: mockDocuments.map((d) => ({ ...d })),
+});
+
+/** Delete a document by id from local state. */
+export function deleteDocument(id: string): void {
+  setDocStore("items", (items) => items.filter((d) => d.id !== id));
+}
+
+/** Restore a deleted document back into local state (for undo). */
+export function restoreDocument(doc: DocumentSummary): void {
+  setDocStore(
+    produce((s) => {
+      // Only restore if not already present
+      if (!s.items.find((d) => d.id === doc.id)) {
+        s.items.push(doc);
+      }
+    }),
+  );
+}
+
+/** Toggle archive/active status for a document. */
+export function toggleArchiveDocument(
+  id: string,
+  status: "active" | "archived",
+): void {
+  setDocStore("items", (d) => d.id === id, "status", status);
+}
+
 async function fetchDocuments(): Promise<DocumentSummary[]> {
-  return mockDocuments;
+  return docStore.items;
 }
 
 async function fetchDocumentDetail(_id: string): Promise<DocumentDetail> {
@@ -18,6 +52,12 @@ async function fetchDocumentDetail(_id: string): Promise<DocumentDetail> {
 export function useDocuments(): Resource<DocumentSummary[]> {
   const [data] = createResource(fetchDocuments);
   return data;
+}
+
+/** Reactive accessor for the live document list (bypasses resource for
+ *  immediate reactivity on local mutations). */
+export function useDocumentList(): () => DocumentSummary[] {
+  return () => docStore.items;
 }
 
 export function useDocumentDetail(id: () => string): Resource<DocumentDetail> {

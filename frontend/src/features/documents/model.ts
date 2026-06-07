@@ -7,6 +7,8 @@ export interface DocVersion {
   label: string;
   author: string;
   createdAt: string;
+  /** Snapshot body text for restore/preview (Phase 1: mock content). */
+  body: string;
 }
 
 export interface DocumentSummary {

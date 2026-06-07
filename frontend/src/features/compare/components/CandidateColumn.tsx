@@ -1,5 +1,13 @@
 import { Show, type JSX } from "solid-js";
-import { Button, LoadingText, Panel, Stack, StatusFlag, Text } from "~/ui";
+import {
+  Button,
+  ErrorState,
+  LoadingText,
+  Panel,
+  Stack,
+  StatusFlag,
+  Text,
+} from "~/ui";
 import type { CompareCandidate, CompareSlot } from "../model";
 
 interface CandidateColumnProps {
@@ -7,6 +15,7 @@ interface CandidateColumnProps {
   revealed: boolean;
   winner?: CompareSlot;
   onVote: (slot: CompareSlot) => void;
+  onRetry?: (slot: CompareSlot) => void;
   disabled: boolean;
 }
 
@@ -37,12 +46,19 @@ export function CandidateColumn(props: CandidateColumnProps): JSX.Element {
         <Show
           when={props.revealed}
           fallback={
-            <StatusFlag
-              status={props.candidate.streaming ? "info" : "idle"}
-              dot={props.candidate.streaming}
+            <Show
+              when={props.candidate.error}
+              fallback={
+                <StatusFlag
+                  status={props.candidate.streaming ? "info" : "idle"}
+                  dot={props.candidate.streaming}
+                >
+                  {props.candidate.streaming ? "STREAMING" : "READY"}
+                </StatusFlag>
+              }
             >
-              {props.candidate.streaming ? "STREAMING" : "READY"}
-            </StatusFlag>
+              <StatusFlag status="alert">ERROR</StatusFlag>
+            </Show>
           }
         >
           <StatusFlag status={isWinner() ? "nominal" : "idle"}>
@@ -54,19 +70,35 @@ export function CandidateColumn(props: CandidateColumnProps): JSX.Element {
       <Stack gap={4}>
         <div class="min-h-32">
           <Show
-            when={props.candidate.response}
+            when={!props.candidate.error}
             fallback={
-              <Show when={props.candidate.streaming}>
-                <LoadingText label="GENERATING…" />
-              </Show>
+              <ErrorState
+                message={props.candidate.error}
+                hint="Model timed out or returned an error."
+                onRetry={
+                  props.onRetry
+                    ? () => props.onRetry!(props.candidate.slot)
+                    : undefined
+                }
+                retryLabel="RETRY"
+              />
             }
           >
-            <Text variant="body" tone={isLoser() ? "dim" : "default"}>
-              {props.candidate.response}
-              <Show when={props.candidate.streaming}>
-                <span class="animate-pulse text-info">▌</span>
-              </Show>
-            </Text>
+            <Show
+              when={props.candidate.response}
+              fallback={
+                <Show when={props.candidate.streaming}>
+                  <LoadingText label="GENERATING…" />
+                </Show>
+              }
+            >
+              <Text variant="body" tone={isLoser() ? "dim" : "default"}>
+                {props.candidate.response}
+                <Show when={props.candidate.streaming}>
+                  <span class="animate-pulse text-info">▌</span>
+                </Show>
+              </Text>
+            </Show>
           </Show>
         </div>
 

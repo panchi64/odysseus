@@ -21,10 +21,20 @@ import {
   Stack,
   StatusFlag,
   Text,
+  Tooltip,
+  confirm,
+  toast,
   type Status,
 } from "~/ui";
 import { relativeTime, timestamp } from "~/lib/format";
-import { useIndexStats, useRagSources } from "../data";
+import {
+  useRagSources,
+  useIndexStats,
+  addRagSource,
+  removeRagSource,
+  restoreRagSource,
+  createReindexController,
+} from "../data";
 import type { RagIndexStatus } from "../model";
 
 const indexStatusFlag: Record<RagIndexStatus, Status> = {
@@ -41,6 +51,8 @@ export function RagConfigScreen(): JSX.Element {
   const [rebuilding, setRebuilding] = createSignal(false);
   const [rebuildProgress, setRebuildProgress] = createSignal(0);
 
+  const { reindexingIds, reindex } = createReindexController();
+
   const timers: ReturnType<typeof setTimeout>[] = [];
   onCleanup(() => timers.forEach(clearTimeout));
 
@@ -54,7 +66,11 @@ export function RagConfigScreen(): JSX.Element {
         setTimeout(
           () => {
             setRebuildProgress(v);
-            if (v === 100) setTimeout(() => setRebuilding(false), 600);
+            if (v === 100)
+              setTimeout(() => {
+                setRebuilding(false);
+                toast.success("Index rebuild complete");
+              }, 600);
           },
           i * 500 + 300,
         ),
@@ -62,8 +78,46 @@ export function RagConfigScreen(): JSX.Element {
     );
   }
 
-  const errorCount = () =>
-    (sources() ?? []).filter((s) => s.status === "error").length;
+  function handleAddSource() {
+    const path = newPath().trim();
+    if (!path) return;
+    addRagSource(path);
+    setNewPath("");
+    toast.success(`Source added — indexing started`, {
+      duration: 5000,
+    });
+  }
+
+  async function handleRemove(id: string, path: string, docCount: number) {
+    const ok = await confirm({
+      title: `Remove source?`,
+      detail: `"${path}" (${docCount} docs) will be removed from the knowledge base. Indexed data will be lost and retrieval for dependent chats may degrade.`,
+      confirmLabel: "REMOVE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    const removed = removeRagSource(id);
+    toast.success(`Source removed`, {
+      action: removed
+        ? {
+            label: "UNDO",
+            onClick: () => {
+              restoreRagSource(removed);
+              toast.info("Source restored");
+            },
+          }
+        : undefined,
+    });
+  }
+
+  function handleReindex(id: string, path: string) {
+    reindex(id);
+    toast.info(`Reindexing ${path}…`);
+  }
+
+  const errorSources = () => sources().filter((s) => s.status === "error");
+  const healthySources = () =>
+    sources().filter((s) => s.status !== "indexed" && s.status !== "indexing");
 
   return (
     <Stack gap={6}>
@@ -73,8 +127,8 @@ export function RagConfigScreen(): JSX.Element {
         assetId="ODY-RAG-01.0"
         actions={
           <Row gap={2}>
-            <Show when={errorCount() > 0}>
-              <StatusFlag status="alert">{`${errorCount()} ERROR`}</StatusFlag>
+            <Show when={errorSources().length > 0}>
+              <StatusFlag status="alert">{`${errorSources().length} ERROR`}</StatusFlag>
             </Show>
             <Button
               variant={rebuilding() ? "default" : "primary"}
@@ -119,71 +173,78 @@ export function RagConfigScreen(): JSX.Element {
       </Show>
 
       <Panel label="INDEXED SOURCES" flush>
-        <Suspense
+        <Show
+          when={sources().length > 0}
           fallback={
-            <div class="p-4">
-              <LoadingText />
-            </div>
+            <EmptyState
+              icon="database"
+              message="NO SOURCES"
+              hint="Add a folder path to start indexing."
+            />
           }
         >
-          <Show
-            when={(sources() ?? []).length}
-            fallback={
-              <EmptyState
-                icon="database"
-                message="NO SOURCES"
-                hint="Add a folder path to start indexing."
+          <For each={sources()}>
+            {(source) => (
+              <ListRow
+                label={source.path}
+                leading="archive"
+                right={
+                  <span class="flex items-center gap-3 shrink-0">
+                    <Text variant="micro" tone="dim">
+                      {source.docCount} DOCS
+                    </Text>
+                    <Text variant="micro" tone="dim">
+                      {relativeTime(source.lastIndexedAt)}
+                    </Text>
+                    <Show
+                      when={reindexingIds().has(source.id)}
+                      fallback={
+                        <StatusFlag status={indexStatusFlag[source.status]}>
+                          {source.status.toUpperCase()}
+                        </StatusFlag>
+                      }
+                    >
+                      <StatusFlag status="info">INDEXING…</StatusFlag>
+                    </Show>
+                    <Menu
+                      trigger={
+                        <span class="px-1 text-dim hover:text-bright">
+                          <Text variant="micro">···</Text>
+                        </span>
+                      }
+                      items={[
+                        {
+                          label: reindexingIds().has(source.id)
+                            ? "REINDEXING…"
+                            : "REINDEX",
+                          icon: "refresh",
+                          onSelect: () => handleReindex(source.id, source.path),
+                        },
+                        {
+                          label: "VIEW DOCS",
+                          icon: "library",
+                          onSelect: () =>
+                            toast.info("Document browser coming in Phase 2"),
+                        },
+                        {
+                          label: "REMOVE",
+                          icon: "trash",
+                          danger: true,
+                          onSelect: () =>
+                            void handleRemove(
+                              source.id,
+                              source.path,
+                              source.docCount,
+                            ),
+                        },
+                      ]}
+                    />
+                  </span>
+                }
               />
-            }
-          >
-            <For each={sources() ?? []}>
-              {(source) => (
-                <ListRow
-                  label={source.path}
-                  leading="archive"
-                  right={
-                    <span class="flex items-center gap-3 shrink-0">
-                      <Text variant="micro" tone="dim">
-                        {source.docCount} DOCS
-                      </Text>
-                      <Text variant="micro" tone="dim">
-                        {relativeTime(source.lastIndexedAt)}
-                      </Text>
-                      <StatusFlag status={indexStatusFlag[source.status]}>
-                        {source.status.toUpperCase()}
-                      </StatusFlag>
-                      <Menu
-                        trigger={
-                          <span class="px-1 text-dim hover:text-bright">
-                            <Text variant="micro">···</Text>
-                          </span>
-                        }
-                        items={[
-                          {
-                            label: "REINDEX",
-                            icon: "refresh",
-                            onSelect: () => {},
-                          },
-                          {
-                            label: "VIEW DOCS",
-                            icon: "library",
-                            onSelect: () => {},
-                          },
-                          {
-                            label: "REMOVE",
-                            icon: "trash",
-                            danger: true,
-                            onSelect: () => {},
-                          },
-                        ]}
-                      />
-                    </span>
-                  }
-                />
-              )}
-            </For>
-          </Show>
-        </Suspense>
+            )}
+          </For>
+        </Show>
       </Panel>
 
       {/* Add source */}
@@ -196,6 +257,9 @@ export function RagConfigScreen(): JSX.Element {
                 placeholder="/home/user/documents"
                 value={newPath()}
                 onInput={(e) => setNewPath(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newPath().trim()) handleAddSource();
+                }}
                 type="text"
               />
             </div>
@@ -203,7 +267,7 @@ export function RagConfigScreen(): JSX.Element {
               variant="primary"
               leading="plus"
               disabled={!newPath().trim()}
-              onClick={() => setNewPath("")}
+              onClick={handleAddSource}
             >
               ADD
             </Button>
@@ -216,22 +280,14 @@ export function RagConfigScreen(): JSX.Element {
       </Panel>
 
       {/* Index health */}
-      <Show
-        when={(sources() ?? []).some(
-          (s) => s.status === "stale" || s.status === "error",
-        )}
-      >
+      <Show when={healthySources().length > 0}>
         <Panel label="INDEX HEALTH" state="alert">
           <Stack gap={2}>
             <Text variant="body" tone="warn">
               One or more sources are stale or unreachable. Retrieval quality
               may be degraded for affected collections.
             </Text>
-            <For
-              each={(sources() ?? []).filter(
-                (s) => s.status !== "indexed" && s.status !== "indexing",
-              )}
-            >
+            <For each={healthySources()}>
               {(source) => (
                 <Row gap={2} align="center">
                   <StatusFlag status={indexStatusFlag[source.status]}>
@@ -243,6 +299,35 @@ export function RagConfigScreen(): JSX.Element {
                   <Text variant="micro" tone="dim">
                     last: {timestamp(source.lastIndexedAt)}
                   </Text>
+                  <Show when={source.errorHint}>
+                    <Text variant="micro" tone="alert">
+                      {source.errorHint}
+                    </Text>
+                  </Show>
+                  <Show when={source.status === "error"}>
+                    <Tooltip label="Re-run indexing for this source" side="top">
+                      <Button
+                        variant="ghost"
+                        leading="refresh"
+                        onClick={() => handleReindex(source.id, source.path)}
+                      >
+                        RETRY
+                      </Button>
+                    </Tooltip>
+                    <Button
+                      variant="danger"
+                      leading="trash"
+                      onClick={() =>
+                        void handleRemove(
+                          source.id,
+                          source.path,
+                          source.docCount,
+                        )
+                      }
+                    >
+                      REMOVE
+                    </Button>
+                  </Show>
                 </Row>
               )}
             </For>

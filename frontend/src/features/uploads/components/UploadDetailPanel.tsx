@@ -1,4 +1,4 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import {
   Button,
   Field,
@@ -10,6 +10,7 @@ import {
   Tabs,
   Text,
   Textarea,
+  toast,
 } from "~/ui";
 import { bytes } from "~/lib/format";
 import type { Upload } from "../model";
@@ -28,6 +29,26 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
       (props.upload.formFields ?? []).map((f) => [f.name, f.value]),
     ),
   );
+
+  // Dirty-state tracking
+  const isTextDirty = createMemo(
+    () => extractedText() !== (props.upload.extractedText ?? ""),
+  );
+  const isFieldsDirty = createMemo(() => {
+    const original = Object.fromEntries(
+      (props.upload.formFields ?? []).map((f) => [f.name, f.value]),
+    );
+    const current = formValues();
+    return Object.keys(original).some((k) => current[k] !== original[k]);
+  });
+
+  function handleExport() {
+    toast.success(`Exported "${props.upload.name}" as text`);
+  }
+
+  function handleSaveFields() {
+    toast.success("Fields saved");
+  }
 
   return (
     <Panel
@@ -65,10 +86,20 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
         <Show when={tab() === "text"}>
           <Stack gap={2}>
             <Row gap={2} justify="between" align="center">
-              <Text variant="micro" tone="dim">
-                OCR output — edit to correct errors
-              </Text>
-              <Button variant="ghost" size="sm" leading="download">
+              <Row gap={2} align="center">
+                <Text variant="micro" tone="dim">
+                  OCR output — edit to correct errors
+                </Text>
+                <Show when={isTextDirty()}>
+                  <StatusFlag status="warn">UNSAVED</StatusFlag>
+                </Show>
+              </Row>
+              <Button
+                variant="ghost"
+                size="sm"
+                leading="download"
+                onClick={handleExport}
+              >
                 EXPORT
               </Button>
             </Row>
@@ -91,6 +122,14 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
             }
           >
             <Stack gap={2}>
+              <Show when={isFieldsDirty()}>
+                <Row gap={2} align="center">
+                  <StatusFlag status="warn">UNSAVED CHANGES</StatusFlag>
+                  <Text variant="micro" tone="dim">
+                    Save before navigating away.
+                  </Text>
+                </Row>
+              </Show>
               <For each={props.upload.formFields}>
                 {(field) => (
                   <Input
@@ -107,7 +146,11 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
                 )}
               </For>
               <Row justify="end">
-                <Button variant="primary" leading="check">
+                <Button
+                  variant="primary"
+                  leading="check"
+                  onClick={handleSaveFields}
+                >
                   SAVE FIELDS
                 </Button>
               </Row>

@@ -12,6 +12,8 @@ import {
   StatusFlag,
   Text,
   Textarea,
+  toast,
+  Tooltip,
 } from "~/ui";
 import { relativeTime, pad } from "~/lib/format";
 import { useCodeRuns, createCodeRunner } from "../data";
@@ -35,7 +37,26 @@ export function CodeScreen(): JSX.Element {
     lastDuration,
     history,
     runCode,
+    cancelRun,
+    resetToTemplate,
   } = createCodeRunner(runs);
+
+  function handleCopyError() {
+    const errorText = outputLines().join("\n");
+    void navigator.clipboard.writeText(errorText).then(() => {
+      toast.success("Error copied to clipboard");
+    });
+  }
+
+  function handleReset() {
+    resetToTemplate();
+    toast.info("Editor reset to template");
+  }
+
+  function handleCancel() {
+    cancelRun();
+    toast.warn("Execution cancelled");
+  }
 
   return (
     <Stack gap={6}>
@@ -62,14 +83,32 @@ export function CodeScreen(): JSX.Element {
                   value={language()}
                   onChange={setLanguage}
                 />
-                <Button
-                  variant="primary"
-                  leading="play"
-                  disabled={running()}
-                  onClick={runCode}
+                <Tooltip label="Reset editor to the starter template for this language">
+                  <Button
+                    variant="ghost"
+                    leading="refresh"
+                    disabled={running()}
+                    onClick={handleReset}
+                  >
+                    RESET
+                  </Button>
+                </Tooltip>
+                <Show
+                  when={running()}
+                  fallback={
+                    <Button variant="primary" leading="play" onClick={runCode}>
+                      RUN
+                    </Button>
+                  }
                 >
-                  {running() ? "RUNNING…" : "RUN"}
-                </Button>
+                  <Button
+                    variant="danger"
+                    leading="stop"
+                    onClick={handleCancel}
+                  >
+                    CANCEL
+                  </Button>
+                </Show>
               </Row>
             }
           >
@@ -97,6 +136,11 @@ export function CodeScreen(): JSX.Element {
                       {lastDuration()} MS
                     </Text>
                   </Show>
+                  <Show when={lastStatus() === "error"}>
+                    <Button variant="ghost" onClick={handleCopyError}>
+                      COPY ERROR
+                    </Button>
+                  </Show>
                 </Row>
               </Show>
             }
@@ -117,6 +161,11 @@ export function CodeScreen(): JSX.Element {
                   <LoadingText label="EXECUTING" />
                 </Show>
               </div>
+              <Show when={lastStatus() === "error"}>
+                <Text variant="micro" tone="dim" class="pt-2">
+                  Fix your code above and press RUN to try again.
+                </Text>
+              </Show>
             </Show>
           </Panel>
 

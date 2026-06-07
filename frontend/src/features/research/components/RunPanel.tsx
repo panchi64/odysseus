@@ -1,6 +1,7 @@
-import { Show, type JSX } from "solid-js";
+import { createSignal, Show, type JSX } from "solid-js";
 import {
   Button,
+  ErrorState,
   InstrumentBand,
   LoadingText,
   Panel,
@@ -11,7 +12,6 @@ import {
   Textarea,
 } from "~/ui";
 import { num } from "~/lib/format";
-import { createSignal } from "solid-js";
 import type { ResearchRunState, ResearchPhase } from "../model";
 import { PhaseTrack } from "./PhaseTrack";
 
@@ -44,6 +44,8 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
     }
   };
 
+  const hasError = () => Boolean(props.state.error);
+
   return (
     <Stack gap={4}>
       <Panel
@@ -51,14 +53,20 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         state={props.running ? "active" : "default"}
         meta={
           <StatusFlag
-            status={statusForPhase(props.state.phase, props.running)}
+            status={
+              hasError()
+                ? "alert"
+                : statusForPhase(props.state.phase, props.running)
+            }
             dot={props.running}
           >
-            {props.running
-              ? props.state.phase
-              : props.state.phase === "DONE"
-                ? "COMPLETE"
-                : "IDLE"}
+            {hasError()
+              ? "ERROR"
+              : props.running
+                ? props.state.phase
+                : props.state.phase === "DONE"
+                  ? "COMPLETE"
+                  : "IDLE"}
           </StatusFlag>
         }
       >
@@ -88,7 +96,22 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         </Stack>
       </Panel>
 
-      <Show when={props.running || props.state.phase === "DONE"}>
+      {/* Error state: shown when a run fails mid-synthesis */}
+      <Show when={hasError()}>
+        <Panel label="SYNTHESIS FAILED" state="default">
+          <ErrorState
+            message={`SYNTHESIS FAILED — ${props.state.error ?? "Unknown error"}`}
+            hint="The research run encountered an error. Retry the same query or modify it and try again."
+            onRetry={submit}
+            retryLabel="RETRY"
+          />
+        </Panel>
+      </Show>
+
+      {/* Progress panel: shown during run or after completion */}
+      <Show
+        when={(props.running || props.state.phase === "DONE") && !hasError()}
+      >
         <Panel
           label="LIVE PROGRESS"
           state={props.running ? "active" : "default"}

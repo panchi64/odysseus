@@ -1,6 +1,6 @@
 /** Health Dashboard feature data contracts. */
 
-export type HealthStatus = "nominal" | "warn" | "alert";
+export type HealthStatus = "nominal" | "warn" | "alert" | "timeout" | "partial";
 
 export interface ServiceStatus {
   id: string;

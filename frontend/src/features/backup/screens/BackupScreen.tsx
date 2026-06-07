@@ -10,6 +10,8 @@ import {
   Button,
   Checkbox,
   Divider,
+  EmptyState,
+  ErrorState,
   InstrumentBand,
   ListRow,
   LoadingText,
@@ -21,6 +23,8 @@ import {
   Stack,
   StatusFlag,
   Text,
+  confirm,
+  toast,
 } from "~/ui";
 import { bytes, timestamp, relativeTime } from "~/lib/format";
 import { useLastBackup } from "../data";
@@ -43,15 +47,24 @@ export function BackupScreen(): JSX.Element {
   ]);
   const [exportProgress, setExportProgress] = createSignal<number | null>(null);
   const [exportDone, setExportDone] = createSignal(false);
+  const [exportError, setExportError] = createSignal<string | null>(null);
+  const [exportBlob, setExportBlob] = createSignal<Blob | null>(null);
+  let exportInterval: ReturnType<typeof setInterval> | null = null;
 
   // Import state
   const [importFile, setImportFile] = createSignal<File | null>(null);
   const [importOpen, setImportOpen] = createSignal(false);
   const [importProgress, setImportProgress] = createSignal<number | null>(null);
   const [importDone, setImportDone] = createSignal(false);
+  const [importError, setImportError] = createSignal<string | null>(null);
+  let importInterval: ReturnType<typeof setInterval> | null = null;
 
   const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
+  onCleanup(() => {
+    timers.forEach(clearTimeout);
+    if (exportInterval) clearInterval(exportInterval);
+    if (importInterval) clearInterval(importInterval);
+  });
 
   function toggleInclude(item: BackupInclude) {
     setIncludes((s) =>
@@ -59,36 +72,106 @@ export function BackupScreen(): JSX.Element {
     );
   }
 
+  async function handleExportClick() {
+    if (includes().length === 0) return;
+
+    const selectedItems = includes();
+    const backupData = lastBackup();
+    const itemSummary = selectedItems
+      .map((key) => {
+        const found = backupData?.items.find((i) => i.name === key);
+        return `${key.toUpperCase()}: ${found ? `${found.count} items` : "all items"}`;
+      })
+      .join(", ");
+
+    const ok = await confirm({
+      title: "CONFIRM EXPORT",
+      detail: `Selected: ${itemSummary}. This will generate a JSON archive of your workspace data.`,
+      confirmLabel: "CONFIRM EXPORT",
+      cancelLabel: "CANCEL",
+    });
+    if (!ok) return;
+
+    runExport();
+  }
+
   function runExport() {
     setExportDone(false);
+    setExportError(null);
+    setExportBlob(null);
     setExportProgress(0);
     const steps = includes().length;
     let step = 0;
-    const interval = setInterval(() => {
+    exportInterval = setInterval(() => {
       step++;
       setExportProgress(Math.round((step / steps) * 100));
       if (step >= steps) {
-        clearInterval(interval);
+        if (exportInterval) clearInterval(exportInterval);
+        exportInterval = null;
         const t = setTimeout(() => {
           setExportProgress(null);
           setExportDone(true);
+          // Build mock blob for download
+          const mockPayload = {
+            createdAt: new Date().toISOString(),
+            includes: includes(),
+            data: Object.fromEntries(
+              includes().map((key) => [key, { exported: true }]),
+            ),
+          };
+          setExportBlob(
+            new Blob([JSON.stringify(mockPayload, null, 2)], {
+              type: "application/json",
+            }),
+          );
+          toast.success("Export complete — ready to download.");
         }, 400);
         timers.push(t);
       }
     }, 350);
-    timers.push(interval);
+  }
+
+  function cancelExport() {
+    if (exportInterval) {
+      clearInterval(exportInterval);
+      exportInterval = null;
+    }
+    setExportProgress(null);
+    setExportDone(false);
+    setExportError(null);
+    setExportBlob(null);
+    toast.info("Export cancelled.");
+  }
+
+  function retryExport() {
+    setExportError(null);
+    runExport();
+  }
+
+  function downloadBackup() {
+    const blob = exportBlob();
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "odysseus-backup.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Download started.");
   }
 
   function confirmImport() {
     setImportOpen(false);
     setImportDone(false);
+    setImportError(null);
     setImportProgress(0);
     let pct = 0;
-    const interval = setInterval(() => {
+    importInterval = setInterval(() => {
       pct += 10;
       setImportProgress(pct);
       if (pct >= 100) {
-        clearInterval(interval);
+        if (importInterval) clearInterval(importInterval);
+        importInterval = null;
         const t = setTimeout(() => {
           setImportProgress(null);
           setImportDone(true);
@@ -97,7 +180,22 @@ export function BackupScreen(): JSX.Element {
         timers.push(t);
       }
     }, 200);
-    timers.push(interval);
+  }
+
+  function cancelImport() {
+    if (importInterval) {
+      clearInterval(importInterval);
+      importInterval = null;
+    }
+    setImportProgress(null);
+    setImportDone(false);
+    setImportError(null);
+    toast.info("Import cancelled.");
+  }
+
+  function retryImport() {
+    setImportError(null);
+    confirmImport();
   }
 
   return (
@@ -121,7 +219,15 @@ export function BackupScreen(): JSX.Element {
 
       {/* ── LAST BACKUP BAND ─────────────────────────────────── */}
       <Suspense fallback={<LoadingText />}>
-        <Show when={lastBackup()}>
+        <Show
+          when={lastBackup()}
+          fallback={
+            <EmptyState
+              message="NO BACKUPS YET"
+              hint="Run your first export to get started. Select the categories below and click EXPORT BACKUP."
+            />
+          }
+        >
           {(b) => (
             <InstrumentBand
               items={[
@@ -160,12 +266,27 @@ export function BackupScreen(): JSX.Element {
             </Stack>
             <Divider />
             <Show when={exportProgress() !== null}>
-              <ProgressBar
-                label="EXPORTING…"
-                value={exportProgress()!}
-                tone="nominal"
-                showValue
-              />
+              <Stack gap={2}>
+                <ProgressBar
+                  label="EXPORTING…"
+                  value={exportProgress()!}
+                  tone="nominal"
+                  showValue
+                />
+                <Button variant="ghost" size="sm" onClick={cancelExport}>
+                  CANCEL
+                </Button>
+              </Stack>
+            </Show>
+            <Show when={exportError()}>
+              {(err) => (
+                <ErrorState
+                  message={err()}
+                  hint="Check your connection and try again."
+                  onRetry={retryExport}
+                  retryLabel="RETRY EXPORT"
+                />
+              )}
             </Show>
             <Show when={exportDone()}>
               <ListRow
@@ -177,7 +298,12 @@ export function BackupScreen(): JSX.Element {
                     <StatusFlag status="nominal" dot>
                       READY
                     </StatusFlag>
-                    <Button variant="ghost" size="sm" leading="download">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leading="download"
+                      onClick={downloadBackup}
+                    >
                       DOWNLOAD
                     </Button>
                   </Row>
@@ -187,8 +313,12 @@ export function BackupScreen(): JSX.Element {
             <Button
               variant="primary"
               leading="download"
-              onClick={runExport}
-              disabled={includes().length === 0 || exportProgress() !== null}
+              onClick={handleExportClick}
+              disabled={
+                includes().length === 0 ||
+                exportProgress() !== null ||
+                exportError() !== null
+              }
             >
               EXPORT BACKUP
             </Button>
@@ -246,24 +376,52 @@ export function BackupScreen(): JSX.Element {
             </label>
 
             <Show when={importProgress() !== null}>
-              <ProgressBar
-                label="RESTORING…"
-                value={importProgress()!}
-                tone="info"
-                showValue
-              />
+              <Stack gap={2}>
+                <ProgressBar
+                  label="RESTORING…"
+                  value={importProgress()!}
+                  tone="info"
+                  showValue
+                />
+                <Button variant="ghost" size="sm" onClick={cancelImport}>
+                  CANCEL
+                </Button>
+              </Stack>
+            </Show>
+            <Show when={importError()}>
+              {(err) => (
+                <ErrorState
+                  message={err()}
+                  hint="Ensure the file is a valid Odysseus backup archive."
+                  onRetry={retryImport}
+                  retryLabel="RETRY IMPORT"
+                />
+              )}
             </Show>
             <Show when={importDone()}>
-              <StatusFlag status="nominal" dot>
-                RESTORE COMPLETE
-              </StatusFlag>
+              <Stack gap={3}>
+                <StatusFlag status="nominal" dot>
+                  RESTORE COMPLETE
+                </StatusFlag>
+                <Button
+                  variant="primary"
+                  onClick={() => window.location.reload()}
+                >
+                  CLOSE &amp; REFRESH
+                </Button>
+              </Stack>
             </Show>
 
             <Button
               variant="default"
               leading="upload"
               onClick={() => setImportOpen(true)}
-              disabled={!importFile() || importProgress() !== null}
+              disabled={
+                !importFile() ||
+                importProgress() !== null ||
+                importDone() ||
+                importError() !== null
+              }
             >
               IMPORT BACKUP
             </Button>
@@ -282,7 +440,7 @@ export function BackupScreen(): JSX.Element {
               CANCEL
             </Button>
             <Button variant="danger" onClick={confirmImport}>
-              OVERWRITE & RESTORE
+              OVERWRITE &amp; RESTORE
             </Button>
           </>
         }

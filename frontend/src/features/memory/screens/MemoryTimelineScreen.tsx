@@ -16,11 +16,22 @@ import {
   StatusFlag,
   Tabs,
   Text,
+  Tooltip,
+  confirm,
+  toast,
   type Status,
 } from "~/ui";
 import { relativeTime, num } from "~/lib/format";
-import { useMemories, useDedupCandidates } from "../data";
-import type { MemoryType } from "../model";
+import {
+  useMemories,
+  useDedupCandidates,
+  togglePin,
+  deleteMemory,
+  restoreMemory,
+  mergePair,
+  dismissPair,
+} from "../data";
+import type { DedupCandidate, MemoryType } from "../model";
 
 const typeStatus: Record<MemoryType, Status> = {
   user: "info",
@@ -36,6 +47,60 @@ const TYPE_TABS = [
   { value: "project", label: "PROJECT" },
   { value: "reference", label: "REFERENCE" },
 ];
+
+async function handlePin(id: string) {
+  const next = togglePin(id);
+  toast.success(next ? "Memory pinned" : "Memory unpinned");
+}
+
+async function handleDelete(id: string, preview: string) {
+  const ok = await confirm({
+    title: "Delete memory?",
+    detail: `"${preview.length > 80 ? preview.slice(0, 80) + "…" : preview}" — this cannot be undone.`,
+    confirmLabel: "DELETE",
+    cancelLabel: "CANCEL",
+    tone: "alert",
+  });
+  if (!ok) return;
+
+  const removed = deleteMemory(id);
+  toast.success("Memory deleted", {
+    duration: 6000,
+    action: {
+      label: "UNDO",
+      onClick: () => {
+        if (removed) {
+          restoreMemory(removed);
+          toast.success("Memory restored");
+        }
+      },
+    },
+  });
+}
+
+async function handleMerge(pair: DedupCandidate) {
+  const previewA =
+    pair.a.text.length > 60 ? pair.a.text.slice(0, 60) + "…" : pair.a.text;
+  const previewB =
+    pair.b.text.length > 60 ? pair.b.text.slice(0, 60) + "…" : pair.b.text;
+
+  const ok = await confirm({
+    title: "Merge duplicate memories?",
+    detail: `Keep: "${previewA}"\nRemove: "${previewB}"`,
+    confirmLabel: "MERGE",
+    cancelLabel: "CANCEL",
+    tone: "alert",
+  });
+  if (!ok) return;
+
+  mergePair(pair);
+  toast.success(`Merged: kept "${previewA}", removed "${previewB}"`);
+}
+
+function handleKeepBoth(pair: DedupCandidate) {
+  dismissPair(pair);
+  toast.info("Kept both memories — pair dismissed from audit");
+}
 
 export function MemoryTimelineScreen(): JSX.Element {
   const memories = useMemories();
@@ -54,6 +119,8 @@ export function MemoryTimelineScreen(): JSX.Element {
   const byType = (t: MemoryType) =>
     (memories() ?? []).filter((m) => m.type === t).length;
 
+  const remainingPairs = () => (dedupCandidates() ?? []).length;
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -69,9 +136,11 @@ export function MemoryTimelineScreen(): JSX.Element {
             >
               DEDUP AUDIT
             </Button>
-            <Button variant="primary" leading="plus">
-              ADD MEMORY
-            </Button>
+            <Tooltip label="Available in Phase 2">
+              <Button variant="primary" leading="plus" disabled>
+                ADD MEMORY
+              </Button>
+            </Tooltip>
           </Row>
         }
       />
@@ -144,14 +213,19 @@ export function MemoryTimelineScreen(): JSX.Element {
                           {
                             label: mem.pinned ? "UNPIN" : "PIN",
                             icon: "lock",
-                            onSelect: () => {},
+                            onSelect: () => handlePin(mem.id),
                           },
-                          { label: "EDIT", icon: "edit", onSelect: () => {} },
+                          {
+                            label: "EDIT",
+                            icon: "edit",
+                            onSelect: () =>
+                              toast.info("Editing available in Phase 2"),
+                          },
                           {
                             label: "DELETE",
                             icon: "trash",
                             danger: true,
-                            onSelect: () => {},
+                            onSelect: () => handleDelete(mem.id, mem.text),
                           },
                         ]}
                       />
@@ -178,7 +252,7 @@ export function MemoryTimelineScreen(): JSX.Element {
       >
         <Suspense fallback={<LoadingText />}>
           <Show
-            when={(dedupCandidates() ?? []).length}
+            when={remainingPairs() > 0}
             fallback={
               <EmptyState
                 icon="check"
@@ -189,8 +263,8 @@ export function MemoryTimelineScreen(): JSX.Element {
           >
             <Stack gap={4}>
               <Text variant="body" tone="dim">
-                {(dedupCandidates() ?? []).length} candidate pair(s) detected
-                above similarity threshold.
+                {remainingPairs()} candidate pair(s) detected above similarity
+                threshold.
               </Text>
               <For each={dedupCandidates() ?? []}>
                 {(pair) => (
@@ -227,10 +301,19 @@ export function MemoryTimelineScreen(): JSX.Element {
                           </Text>
                         </div>
                         <Row gap={2}>
-                          <Button variant="danger" size="sm" leading="trash">
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            leading="trash"
+                            onClick={() => handleMerge(pair)}
+                          >
                             MERGE
                           </Button>
-                          <Button variant="ghost" size="sm">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleKeepBoth(pair)}
+                          >
                             KEEP BOTH
                           </Button>
                         </Row>

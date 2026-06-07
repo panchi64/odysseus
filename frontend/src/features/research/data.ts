@@ -33,6 +33,26 @@ export function useReport(id: () => string): Resource<ResearchReport> {
   return data;
 }
 
+/* ── Mutable summaries store (Phase-1 local state for library actions) ───── */
+
+type SummariesStore = { list: ResearchSummary[] };
+
+let summariesStore: ReturnType<typeof createStore<SummariesStore>> | null =
+  null;
+
+/** Returns the shared mutable list used by library action handlers.
+ *  Seeded lazily from mockReportSummaries on first call. */
+export function useSummariesStore(): ReturnType<
+  typeof createStore<SummariesStore>
+> {
+  if (!summariesStore) {
+    summariesStore = createStore<SummariesStore>({
+      list: mockReportSummaries.map((s) => ({ ...s })),
+    });
+  }
+  return summariesStore;
+}
+
 /* ── Live-run controller ────────────────────────────────────────────────────
    Drives the research phase progress display. Phase 2: replace timers with
    SSE events from the research engine endpoint; RunState shape is unchanged. */
@@ -73,6 +93,7 @@ export function createResearchRun() {
     findingsExtracted: 0,
     progress: 0,
     query: "",
+    error: null,
   });
 
   const timers: ReturnType<typeof setTimeout>[] = [];
@@ -89,6 +110,7 @@ export function createResearchRun() {
         s.sourcesFound = 0;
         s.findingsExtracted = 0;
         s.progress = 0;
+        s.error = null;
       }),
     );
 

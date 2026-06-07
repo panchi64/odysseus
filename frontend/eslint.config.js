@@ -6,6 +6,7 @@ export default tseslint.config(
     ignores: [
       "node_modules/**",
       ".vinxi/**",
+      ".nitro/**",
       ".output/**",
       "dist/**",
       "public/**",

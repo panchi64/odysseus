@@ -80,6 +80,9 @@ export const mockMcpServers: McpServer[] = [
     transport: "http",
     url: "http://localhost:7100/mcp",
     status: "error",
+    errorMessage:
+      "Connection refused — server not reachable at http://localhost:7100/mcp",
+    errorAt: "2026-06-07T08:14:22Z",
     tools: [
       {
         name: "image.generate",

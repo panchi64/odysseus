@@ -11,6 +11,8 @@ export interface CompareCandidate {
   response: string;
   /** True while tokens are streaming in. */
   streaming: boolean;
+  /** Set when inference fails; shown as an inline error in the column. */
+  error?: string;
 }
 
 export interface CompareRun {

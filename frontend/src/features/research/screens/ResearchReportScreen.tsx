@@ -13,9 +13,11 @@ import {
   Stack,
   StatusFlag,
   Text,
+  type Status,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import { useReport } from "../data";
+import type { ResearchStatus } from "../model";
 
 function formatDuration(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -28,6 +30,13 @@ function formatDuration(ms: number): string {
 function relevancePct(score: number): string {
   return `${Math.round(score * 100)}%`;
 }
+
+const statusMap: Record<ResearchStatus, { status: Status; label: string }> = {
+  complete: { status: "nominal", label: "COMPLETE" },
+  archived: { status: "idle", label: "ARCHIVED" },
+  error: { status: "alert", label: "ERROR" },
+  running: { status: "info", label: "RUNNING" },
+};
 
 /** Full synthesized report view with metadata, sections, and cited sources. */
 export function ResearchReportScreen(): JSX.Element {
@@ -49,18 +58,61 @@ export function ResearchReportScreen(): JSX.Element {
             icon="file"
             message="REPORT NOT FOUND"
             hint="The requested research report does not exist."
+            action={
+              <Button variant="default" leading="chevron-left" href="/research">
+                BACK TO LIBRARY
+              </Button>
+            }
           />
         }
       >
         {(r) => (
           <Stack gap={6}>
+            {/* Persistent return path to the library, regardless of status. */}
+            <Button
+              variant="ghost"
+              leading="chevron-left"
+              href="/research"
+              class="self-start"
+            >
+              BACK TO LIBRARY
+            </Button>
+
+            {/* Error state: report failed mid-synthesis */}
+            <Show when={r().status === "error"}>
+              <Panel state="alert">
+                <Stack gap={1}>
+                  <StatusFlag status="alert">SYNTHESIS FAILED</StatusFlag>
+                  <Text variant="body" tone="dim">
+                    This report encountered an error during synthesis. Some
+                    sections or sources may be missing or incomplete.
+                  </Text>
+                </Stack>
+              </Panel>
+            </Show>
+
+            {/* Archived banner */}
+            <Show when={r().status === "archived"}>
+              <Panel>
+                <Row gap={3} align="center">
+                  <StatusFlag status="idle">ARCHIVED</StatusFlag>
+                  <Text variant="body" tone="dim">
+                    This report is no longer active. It may contain outdated
+                    information.
+                  </Text>
+                </Row>
+              </Panel>
+            </Show>
+
             <PageHeader
               title={r().title}
               subtitle={r().query}
               assetId={`RES-${r().id.toUpperCase()}`}
               actions={
                 <div class="flex items-center gap-2">
-                  <StatusFlag status="nominal">COMPLETE</StatusFlag>
+                  <StatusFlag status={statusMap[r().status].status}>
+                    {statusMap[r().status].label}
+                  </StatusFlag>
                   <Button variant="ghost" leading="send" href="/chat">
                     FOLLOW-UP
                   </Button>
@@ -145,23 +197,25 @@ export function ResearchReportScreen(): JSX.Element {
               </For>
             </Panel>
 
-            {/* Follow-up action */}
-            <Panel>
-              <Row gap={3} align="center" justify="between">
-                <Stack gap={1}>
-                  <Text variant="label" tone="bright">
-                    START FOLLOW-UP CONVERSATION
-                  </Text>
-                  <Text variant="micro" tone="dim">
-                    Continue this research in a new chat session with the report
-                    loaded as context.
-                  </Text>
-                </Stack>
-                <Button variant="primary" leading="send" href="/chat">
-                  OPEN CHAT
-                </Button>
-              </Row>
-            </Panel>
+            {/* Follow-up action — only show for complete reports */}
+            <Show when={r().status === "complete"}>
+              <Panel>
+                <Row gap={3} align="center" justify="between">
+                  <Stack gap={1}>
+                    <Text variant="label" tone="bright">
+                      START FOLLOW-UP CONVERSATION
+                    </Text>
+                    <Text variant="micro" tone="dim">
+                      Continue this research in a new chat session with the
+                      report loaded as context.
+                    </Text>
+                  </Stack>
+                  <Button variant="primary" leading="send" href="/chat">
+                    OPEN CHAT
+                  </Button>
+                </Row>
+              </Panel>
+            </Show>
           </Stack>
         )}
       </Show>

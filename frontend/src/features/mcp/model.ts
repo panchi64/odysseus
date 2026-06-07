@@ -9,6 +9,16 @@ export interface McpTool {
   enabled: boolean;
 }
 
+export interface McpAuthCredentials {
+  method: "api_key" | "basic" | "bearer";
+  /** API key / bearer token value. */
+  token?: string;
+  /** Basic auth username. */
+  username?: string;
+  /** Basic auth password. */
+  password?: string;
+}
+
 export interface McpServer {
   id: string;
   name: string;
@@ -17,4 +27,10 @@ export interface McpServer {
   status: McpStatus;
   tools: McpTool[];
   authRequired?: boolean;
+  /** Last error message, set when status === "error". */
+  errorMessage?: string;
+  /** ISO timestamp of the last error. */
+  errorAt?: string;
+  /** Credentials provided by the user for auth-required servers. */
+  credentials?: McpAuthCredentials;
 }

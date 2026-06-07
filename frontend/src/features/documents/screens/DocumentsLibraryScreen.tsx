@@ -12,11 +12,18 @@ import {
   StatusFlag,
   Tabs,
   Text,
+  confirm,
+  toast,
   type Status,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
-import { useDocuments } from "../data";
-import type { DocStatus } from "../model";
+import {
+  useDocumentList,
+  deleteDocument,
+  restoreDocument,
+  toggleArchiveDocument,
+} from "../data";
+import type { DocStatus, DocumentSummary } from "../model";
 
 const statusMap: Record<DocStatus, Status> = {
   active: "nominal",
@@ -32,12 +39,12 @@ function WordCount(props: { words: number }): JSX.Element {
 }
 
 export function DocumentsLibraryScreen(): JSX.Element {
-  const documents = useDocuments();
+  const documents = useDocumentList();
   const [tab, setTab] = createSignal<DocStatus>("active");
   const [query, setQuery] = createSignal("");
 
   const filtered = () => {
-    const all = documents() ?? [];
+    const all = documents();
     const q = query().toLowerCase();
     return all
       .filter((d) => d.status === tab())
@@ -50,9 +57,39 @@ export function DocumentsLibraryScreen(): JSX.Element {
   };
 
   const totalActive = () =>
-    (documents() ?? []).filter((d) => d.status === "active").length;
+    documents().filter((d) => d.status === "active").length;
   const totalArchived = () =>
-    (documents() ?? []).filter((d) => d.status === "archived").length;
+    documents().filter((d) => d.status === "archived").length;
+
+  async function handleDelete(doc: DocumentSummary): Promise<void> {
+    const ok = await confirm({
+      title: `Delete "${doc.title}"?`,
+      detail: "This action cannot be undone.",
+      confirmLabel: "DELETE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    deleteDocument(doc.id);
+    toast.success(`Deleted "${doc.title}"`, {
+      action: {
+        label: "UNDO",
+        onClick: () => restoreDocument(doc),
+      },
+    });
+  }
+
+  function handleArchive(doc: DocumentSummary): void {
+    const next: DocStatus = doc.status === "active" ? "archived" : "active";
+    const prev: DocStatus = doc.status;
+    toggleArchiveDocument(doc.id, next);
+    const label = next === "archived" ? "Archived" : "Restored";
+    toast.success(`${label} "${doc.title}"`, {
+      action: {
+        label: "UNDO",
+        onClick: () => toggleArchiveDocument(doc.id, prev),
+      },
+    });
+  }
 
   return (
     <Stack gap={6}>
@@ -69,7 +106,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String((documents() ?? []).length) },
+          { label: "TOTAL", value: String(documents().length) },
           { label: "ACTIVE", value: String(totalActive()), tone: "nominal" },
           { label: "ARCHIVED", value: String(totalArchived()), tone: "dim" },
         ]}
@@ -142,18 +179,17 @@ export function DocumentsLibraryScreen(): JSX.Element {
                           </span>
                         }
                         items={[
-                          { label: "OPEN", icon: "file", onSelect: () => {} },
                           {
                             label:
                               doc.status === "active" ? "ARCHIVE" : "RESTORE",
                             icon: "archive",
-                            onSelect: () => {},
+                            onSelect: () => handleArchive(doc),
                           },
                           {
                             label: "DELETE",
                             icon: "trash",
                             danger: true,
-                            onSelect: () => {},
+                            onSelect: () => void handleDelete(doc),
                           },
                         ]}
                       />

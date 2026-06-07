@@ -1,4 +1,4 @@
-import { For, onMount, type JSX } from "solid-js";
+import { For, onCleanup, onMount, type JSX } from "solid-js";
 import type { ShellLine } from "../model";
 import {
   Button,
@@ -9,8 +9,10 @@ import {
   Stack,
   StatusFlag,
   Text,
+  confirm,
+  toast,
 } from "~/ui";
-import { createShellSession } from "../data";
+import { createShellSession, isDangerousCommand } from "../data";
 
 export function ShellScreen(): JSX.Element {
   const {
@@ -18,6 +20,7 @@ export function ShellScreen(): JSX.Element {
     input,
     setInput,
     running,
+    cancel,
     history,
     historyIdx,
     setHistoryIdx,
@@ -31,17 +34,44 @@ export function ShellScreen(): JSX.Element {
     if (scrollRef) scrollRef.scrollTop = scrollRef.scrollHeight;
   }
 
-  function runCommand() {
+  // Re-entrancy guard: blocks a second submit while the confirm dialog is open.
+  let confirming = false;
+
+  async function runCommand() {
     const cmd = input().trim();
-    if (!cmd || running()) return;
+    if (!cmd || running() || confirming) return;
+
+    // Gate destructive commands behind an explicit confirmation.
+    if (isDangerousCommand(cmd)) {
+      confirming = true;
+      const ok = await confirm({
+        title: `Run this command?`,
+        detail: `"${cmd}" — This action cannot be undone.`,
+        confirmLabel: "RUN",
+        tone: "alert",
+      });
+      confirming = false;
+      if (!ok) {
+        toast.warn("Command cancelled.");
+        return;
+      }
+    }
+
     run(cmd, scrollToBottom);
-    // After run() sets running=true and appends the command line, focus is
-    // restored by the inputRef callback when running becomes false.
   }
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter") {
-      runCommand();
+      void runCommand();
+    } else if (e.key === "Escape") {
+      if (input().length > 0) {
+        // Clear input on first Escape.
+        setInput("");
+        setHistoryIdx(-1);
+      } else {
+        // Unfocus on second Escape (empty field).
+        inputRef?.blur();
+      }
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       const h = history();
@@ -56,7 +86,20 @@ export function ShellScreen(): JSX.Element {
     }
   }
 
-  onMount(() => inputRef?.focus());
+  /** Global Ctrl+C handler: cancel a running command. */
+  function handleGlobalKeyDown(e: KeyboardEvent) {
+    if (e.ctrlKey && e.key === "c" && running()) {
+      e.preventDefault();
+      cancel();
+      toast.warn("Interrupt sent — awaiting process exit.");
+    }
+  }
+
+  onMount(() => {
+    inputRef?.focus();
+    window.addEventListener("keydown", handleGlobalKeyDown);
+  });
+  onCleanup(() => window.removeEventListener("keydown", handleGlobalKeyDown));
 
   const toneClass = (kind: ShellLine["kind"]) => {
     if (kind === "command") return "text-bright";
@@ -80,6 +123,11 @@ export function ShellScreen(): JSX.Element {
             <StatusFlag status={running() ? "warn" : "nominal"} dot>
               {running() ? "RUNNING" : "READY"}
             </StatusFlag>
+            {running() && (
+              <Text variant="micro" tone="dim" class="select-none">
+                Ctrl+C to interrupt
+              </Text>
+            )}
           </Row>
         }
       />
@@ -144,7 +192,7 @@ export function ShellScreen(): JSX.Element {
                 variant="primary"
                 size="sm"
                 leading="play"
-                onClick={runCommand}
+                onClick={() => void runCommand()}
                 disabled={!input().trim() || running()}
               >
                 RUN

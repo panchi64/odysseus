@@ -12,8 +12,10 @@ import {
   InstrumentBand,
   LoadingText,
   PageHeader,
+  Row,
   Stack,
   Text,
+  toast,
 } from "~/ui";
 import { useSignatures } from "../data";
 import { SignatureTile } from "../components/SignatureTile";
@@ -53,6 +55,25 @@ export function SignaturesScreen(): JSX.Element {
     setSignatures((prev) => prev.filter((s) => s.id !== id));
   }
 
+  function handleExport() {
+    const sigs = signatures();
+    if (sigs.length === 0) {
+      toast.warn("No signatures to export.");
+      return;
+    }
+    const json = JSON.stringify(sigs, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "odysseus-signatures.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(
+      `Exported ${sigs.length} signature${sigs.length !== 1 ? "s" : ""}.`,
+    );
+  }
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -60,13 +81,18 @@ export function SignaturesScreen(): JSX.Element {
         subtitle="Saved digital signatures for PDFs and email."
         assetId="ODY-SIG-01.0"
         actions={
-          <Button
-            variant="primary"
-            leading="pen"
-            onClick={() => setModalOpen(true)}
-          >
-            DRAW NEW
-          </Button>
+          <Row gap={2}>
+            <Button variant="ghost" leading="download" onClick={handleExport}>
+              EXPORT ALL
+            </Button>
+            <Button
+              variant="primary"
+              leading="pen"
+              onClick={() => setModalOpen(true)}
+            >
+              DRAW NEW
+            </Button>
+          </Row>
         }
       />
 

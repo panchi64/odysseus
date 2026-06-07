@@ -54,4 +54,6 @@ export interface ResearchRunState {
   /** 0–100 */
   progress: number;
   query: string;
+  /** Set when the run fails; null otherwise. */
+  error: string | null;
 }

@@ -8,6 +8,8 @@ export interface RagSource {
   docCount: number;
   status: RagIndexStatus;
   lastIndexedAt: string;
+  /** Short reason code for the last error, e.g. "PATH NOT FOUND". Phase 2 populated by backend. */
+  errorHint?: string;
 }
 
 export interface RagIndexStats {

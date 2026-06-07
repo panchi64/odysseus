@@ -11,6 +11,7 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import {
   Button,
   EmptyState,
+  ErrorState,
   InstrumentBand,
   Input,
   ListRow,
@@ -22,6 +23,8 @@ import {
   Stack,
   StatusFlag,
   Text,
+  confirm,
+  toast,
 } from "~/ui";
 import { bytes, num, pct, relativeTime } from "~/lib/format";
 import {
@@ -50,6 +53,7 @@ export function SpeechScreen(): JSX.Element {
     "The vector index migration will complete in under two minutes.",
   );
   const [synthesizing, setSynthesizing] = createSignal(false);
+  const [ttsError, setTtsError] = createSignal<string | null>(null);
   const [cachedAudio, setCachedAudio] = createStore<CachedAudio[]>([]);
 
   // Seed once from the (async) resource
@@ -69,13 +73,20 @@ export function SpeechScreen(): JSX.Element {
   const [sttLanguage, setSttLanguage] = createSignal("en");
   const [recording, setRecording] = createSignal(false);
   const [sttResult, setSttResult] = createSignal<string | null>(null);
+  const [sttError, setSttError] = createSignal<string | null>(null);
+  const [capturedAt, setCapturedAt] = createSignal<string | null>(null);
+  let recordingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  onCleanup(() => timers.forEach(clearTimeout));
+  onCleanup(() => {
+    timers.forEach(clearTimeout);
+    if (recordingTimer) clearTimeout(recordingTimer);
+  });
 
   const voiceOptions = () => ttsVoices[ttsProvider()] ?? [];
 
   function synthesize() {
     if (!sampleText().trim() || synthesizing()) return;
+    setTtsError(null);
     setSynthesizing(true);
     timers.push(
       setTimeout(() => {
@@ -91,8 +102,14 @@ export function SpeechScreen(): JSX.Element {
         };
         setCachedAudio(produce((s) => s.unshift(newEntry)));
         setSynthesizing(false);
+        toast.success("Synthesis complete");
       }, 1200),
     );
+  }
+
+  function retrySynthesize() {
+    setTtsError(null);
+    synthesize();
   }
 
   function playAudio(id: string, durationMs: number) {
@@ -108,18 +125,56 @@ export function SpeechScreen(): JSX.Element {
     );
   }
 
+  function stopRecording() {
+    if (!recording()) return;
+    if (recordingTimer) {
+      clearTimeout(recordingTimer);
+      recordingTimer = null;
+    }
+    setRecording(false);
+    setSttError("Recording cancelled before audio was captured.");
+    setCapturedAt(null);
+  }
+
   function startRecording() {
-    if (recording()) return;
-    setRecording(true);
+    if (recording()) {
+      stopRecording();
+      return;
+    }
     setSttResult(null);
-    timers.push(
-      setTimeout(() => {
-        setRecording(false);
-        setSttResult(
-          "The vector index migration plan uses a shadow collection for zero-downtime re-embedding.",
-        );
-      }, 2500),
-    );
+    setSttError(null);
+    setCapturedAt(null);
+    setRecording(true);
+    recordingTimer = setTimeout(() => {
+      recordingTimer = null;
+      setRecording(false);
+      const now = new Date().toISOString();
+      setCapturedAt(now);
+      setSttResult(
+        "The vector index migration plan uses a shadow collection for zero-downtime re-embedding.",
+      );
+      toast.success("Recording captured");
+    }, 2500);
+  }
+
+  function retryRecording() {
+    setSttError(null);
+    setSttResult(null);
+    setCapturedAt(null);
+    startRecording();
+  }
+
+  async function clearCache() {
+    const ok = await confirm({
+      title: "Clear all cached audio?",
+      detail:
+        "This will permanently remove all synthesized audio clips and cannot be undone.",
+      confirmLabel: "CLEAR CACHE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    // Phase 2: call API to clear cache
+    toast.success("Cache cleared");
   }
 
   return (
@@ -184,6 +239,16 @@ export function SpeechScreen(): JSX.Element {
             >
               {synthesizing() ? "SYNTHESIZING…" : "SYNTHESIZE"}
             </Button>
+            <Show when={ttsError()}>
+              {(err) => (
+                <ErrorState
+                  message="SYNTHESIS FAILED"
+                  hint={err()}
+                  onRetry={retrySynthesize}
+                  retryLabel="RETRY"
+                />
+              )}
+            </Show>
           </Stack>
         </Panel>
 
@@ -208,22 +273,53 @@ export function SpeechScreen(): JSX.Element {
               variant={recording() ? "danger" : "default"}
               leading={recording() ? "stop" : "mic"}
               onClick={startRecording}
-              disabled={recording()}
               block
             >
-              {recording() ? "RECORDING…" : "RECORD"}
+              {recording() ? "STOP RECORDING" : "RECORD"}
             </Button>
             <Show when={recording()}>
               <StatusFlag status="alert" dot>
                 CAPTURING AUDIO
               </StatusFlag>
             </Show>
-            <Show when={sttResult()}>
-              <Panel label="TRANSCRIPT" state="active">
-                <Text variant="body" tone="bright">
-                  {sttResult()}
-                </Text>
-              </Panel>
+            <Show when={sttError()}>
+              {(err) => (
+                <ErrorState
+                  message="RECORDING FAILED"
+                  hint={err()}
+                  onRetry={retryRecording}
+                  retryLabel="RETRY"
+                />
+              )}
+            </Show>
+            <Show when={!recording() && !sttError() && sttResult() !== null}>
+              <Show
+                when={sttResult()}
+                fallback={
+                  <EmptyState
+                    icon="mic"
+                    message="NO AUDIO DETECTED"
+                    hint="No speech was captured. Try speaking clearly and retry."
+                  />
+                }
+              >
+                {(transcript) => (
+                  <Panel label="TRANSCRIPT" state="active">
+                    <Stack gap={2}>
+                      <Text variant="body" tone="bright">
+                        {transcript()}
+                      </Text>
+                      <Show when={capturedAt()}>
+                        {(ts) => (
+                          <Text variant="micro" tone="dim">
+                            CAPTURED AT {relativeTime(ts())}
+                          </Text>
+                        )}
+                      </Show>
+                    </Stack>
+                  </Panel>
+                )}
+              </Show>
             </Show>
           </Stack>
         </Panel>
@@ -233,9 +329,16 @@ export function SpeechScreen(): JSX.Element {
       <Panel
         label="AUDIO CACHE"
         meta={
-          <Text variant="micro" tone="dim">
-            {cachedAudio.length} ENTRIES
-          </Text>
+          <Row gap={3} align="center">
+            <Text variant="micro" tone="dim">
+              {cachedAudio.length} ENTRIES
+            </Text>
+            <Show when={cachedAudio.length > 0}>
+              <Button size="sm" variant="ghost" onClick={clearCache}>
+                CLEAR CACHE
+              </Button>
+            </Show>
+          </Row>
         }
         flush
       >

@@ -11,11 +11,43 @@ import {
   Stack,
   StatusFlag,
   Text,
+  Tooltip,
+  toast,
 } from "~/ui";
 import { bytes, date } from "~/lib/format";
 import type { MediaItem } from "../model";
 
 type AIAction = "upscale" | "inpaint" | "denoise" | "style-transfer" | null;
+
+const AI_ACTION_META: Record<
+  NonNullable<AIAction>,
+  { label: string; tooltip: string; variantSuffix: string }
+> = {
+  upscale: {
+    label: "UPSCALE",
+    tooltip:
+      "Increase resolution 2×. Saves as a new variant; original is preserved.",
+    variantSuffix: "upscaled",
+  },
+  inpaint: {
+    label: "INPAINT",
+    tooltip:
+      "Fill or restore selected regions. Saves as a new variant; original is preserved.",
+    variantSuffix: "inpainted",
+  },
+  denoise: {
+    label: "DENOISE",
+    tooltip:
+      "Reduce noise and artifacts. Saves as a new variant; original is preserved.",
+    variantSuffix: "denoised",
+  },
+  "style-transfer": {
+    label: "STYLE XFER",
+    tooltip:
+      "Apply a style preset. Saves as a new variant; original is preserved.",
+    variantSuffix: "styled",
+  },
+};
 
 interface MediaDetailDrawerProps {
   item: MediaItem | null;
@@ -29,7 +61,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
   const timers: ReturnType<typeof setTimeout>[] = [];
   onCleanup(() => timers.forEach(clearTimeout));
 
-  function runAction(action: AIAction) {
+  function runAction(action: NonNullable<AIAction>) {
     if (activeAction()) return;
     setActiveAction(action);
     setProgress(0);
@@ -37,6 +69,20 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
       setProgress((p) => {
         if (p >= 100) {
           clearInterval(iv);
+          const item = props.item;
+          if (item) {
+            const meta = AI_ACTION_META[action];
+            const ext = item.title.includes(".")
+              ? item.title.slice(item.title.lastIndexOf("."))
+              : "";
+            const base = item.title.includes(".")
+              ? item.title.slice(0, item.title.lastIndexOf("."))
+              : item.title;
+            const variantName = `${base}_${meta.variantSuffix}${ext}`;
+            toast.success(`NEW VARIANT SAVED: ${variantName}`, {
+              duration: 5000,
+            });
+          }
           const t = setTimeout(() => setActiveAction(null), 600);
           timers.push(t);
           return 100;
@@ -130,9 +176,15 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
             <Divider />
 
             <Stack gap={2}>
-              <Text variant="label" tone="dim">
-                AI EDIT
-              </Text>
+              <Stack gap={1}>
+                <Text variant="label" tone="dim">
+                  AI EDIT
+                </Text>
+                <Text variant="micro" tone="dim">
+                  Operations save a new variant; the original is always
+                  preserved.
+                </Text>
+              </Stack>
               <Show when={activeAction()}>
                 {(action) => (
                   <ProgressBar
@@ -144,42 +196,57 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
                 )}
               </Show>
               <div class="grid grid-cols-2 gap-2">
-                <Button
-                  variant="default"
-                  size="sm"
-                  leading="layers"
-                  disabled={!!activeAction()}
-                  onClick={() => runAction("upscale")}
+                <Tooltip label={AI_ACTION_META.upscale.tooltip} side="top">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    leading="layers"
+                    disabled={!!activeAction()}
+                    onClick={() => runAction("upscale")}
+                    class="w-full"
+                  >
+                    UPSCALE
+                  </Button>
+                </Tooltip>
+                <Tooltip label={AI_ACTION_META.inpaint.tooltip} side="top">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    leading="edit"
+                    disabled={!!activeAction()}
+                    onClick={() => runAction("inpaint")}
+                    class="w-full"
+                  >
+                    INPAINT
+                  </Button>
+                </Tooltip>
+                <Tooltip label={AI_ACTION_META.denoise.tooltip} side="top">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    leading="activity"
+                    disabled={!!activeAction()}
+                    onClick={() => runAction("denoise")}
+                    class="w-full"
+                  >
+                    DENOISE
+                  </Button>
+                </Tooltip>
+                <Tooltip
+                  label={AI_ACTION_META["style-transfer"].tooltip}
+                  side="top"
                 >
-                  UPSCALE
-                </Button>
-                <Button
-                  variant="default"
-                  size="sm"
-                  leading="edit"
-                  disabled={!!activeAction()}
-                  onClick={() => runAction("inpaint")}
-                >
-                  INPAINT
-                </Button>
-                <Button
-                  variant="default"
-                  size="sm"
-                  leading="activity"
-                  disabled={!!activeAction()}
-                  onClick={() => runAction("denoise")}
-                >
-                  DENOISE
-                </Button>
-                <Button
-                  variant="default"
-                  size="sm"
-                  leading="compare"
-                  disabled={!!activeAction()}
-                  onClick={() => runAction("style-transfer")}
-                >
-                  STYLE XFER
-                </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    leading="compare"
+                    disabled={!!activeAction()}
+                    onClick={() => runAction("style-transfer")}
+                    class="w-full"
+                  >
+                    STYLE XFER
+                  </Button>
+                </Tooltip>
               </div>
             </Stack>
           </Stack>

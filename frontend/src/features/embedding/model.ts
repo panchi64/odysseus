@@ -12,10 +12,17 @@ export interface EmbeddingModel {
   description?: string;
 }
 
+export interface ReindexProgress {
+  docsProcessed: number;
+  estimatedSecsRemaining: number;
+}
+
 export interface IndexStats {
   indexedDocs: number;
   dims: number;
   throughputDocsSec: number;
   lastIndexedAt: string;
   requiresReindex: boolean;
+  isReindexing: boolean;
+  reindexProgress?: ReindexProgress;
 }

@@ -1,5 +1,5 @@
 import { type JSX } from "solid-js";
-import { Box, Icon, Menu, Row, Stack, Text } from "~/ui";
+import { Box, Icon, Menu, Row, Stack, Text, confirm, toast } from "~/ui";
 import { date } from "~/lib/format";
 import type { Signature } from "../model";
 
@@ -9,6 +9,18 @@ interface SignatureTileProps {
 }
 
 export function SignatureTile(props: SignatureTileProps): JSX.Element {
+  async function handleDelete() {
+    const ok = await confirm({
+      title: `Delete "${props.signature.name}"?`,
+      detail: `This signature has been used ${props.signature.usedCount}× and cannot be recovered.`,
+      confirmLabel: "Delete Permanently",
+      tone: "alert",
+    });
+    if (!ok) return;
+    props.onDelete();
+    toast.success(`Deleted "${props.signature.name}"`);
+  }
+
   return (
     <div class="flex flex-col border border-line bg-surface p-3 gap-3 hover:border-dim hover:bg-raised transition-colors">
       {/* Signature art placeholder */}
@@ -43,12 +55,22 @@ export function SignatureTile(props: SignatureTileProps): JSX.Element {
             </button>
           }
           items={[
-            { label: "Insert into PDF", icon: "file", onSelect: () => {} },
-            { label: "Insert into Email", icon: "mail", onSelect: () => {} },
+            {
+              label: "Insert into PDF",
+              icon: "file",
+              onSelect: () => {},
+              disabled: true,
+            },
+            {
+              label: "Insert into Email",
+              icon: "mail",
+              onSelect: () => {},
+              disabled: true,
+            },
             {
               label: "Delete",
               icon: "trash",
-              onSelect: props.onDelete,
+              onSelect: handleDelete,
               danger: true,
             },
           ]}
