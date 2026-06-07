@@ -11,8 +11,8 @@ import {
   Button,
   Drawer,
   EmptyState,
+  Icon,
   InstrumentBand,
-  ListRow,
   LoadingText,
   Menu,
   type MenuItem,
@@ -26,6 +26,7 @@ import {
   type Status,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
+import { Marquee } from "../components/Marquee";
 import { useServiceStatuses, useOverallHealth } from "../data";
 import type { HealthStatus, ServiceStatus } from "../model";
 
@@ -338,53 +339,73 @@ export function HealthScreen(): JSX.Element {
             <Panel label="SERVICE GRID" flush>
               <For each={services}>
                 {(svc) => (
-                  <ListRow
-                    label={svc.name}
-                    leading="activity"
+                  <div
+                    role="button"
+                    tabindex={0}
                     onClick={() => setDrawerSvc(svc)}
-                    right={
-                      <Row gap={3} align="center">
-                        <Show when={svc.degradationNote}>
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDrawerSvc(svc);
+                      }
+                    }}
+                    class="flex w-full min-w-0 cursor-pointer items-center gap-3 border-b border-line px-3 py-2 text-left transition-colors hover:bg-raised"
+                  >
+                    <span class="flex shrink-0 items-center gap-2">
+                      <Icon name="activity" class="text-dim" />
+                      <Text variant="label">{svc.name}</Text>
+                    </span>
+
+                    {/* Flexible slot: a long degradation note marquees here
+                        rather than pushing the row past full width. */}
+                    <Show
+                      when={svc.degradationNote}
+                      fallback={<span class="flex-1" />}
+                    >
+                      <Marquee class="min-w-0 flex-1">
+                        <Text
+                          variant="micro"
+                          tone={svc.status === "alert" ? "alert" : "warn"}
+                        >
+                          {svc.degradationNote}
+                        </Text>
+                      </Marquee>
+                    </Show>
+
+                    <span class="flex shrink-0 items-center gap-3">
+                      <Text variant="micro" tone="dim">
+                        {svc.detail}
+                      </Text>
+                      <Show
+                        when={
+                          svc.status !== "alert" && svc.status !== "timeout"
+                        }
+                        fallback={
                           <Text
                             variant="micro"
-                            tone="warn"
-                            class="max-w-xs truncate"
+                            tone={svc.status === "timeout" ? "warn" : "alert"}
                           >
-                            {svc.degradationNote}
+                            {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
                           </Text>
-                        </Show>
+                        }
+                      >
                         <Text variant="micro" tone="dim">
-                          {svc.detail}
+                          {svc.latencyMs}MS
                         </Text>
-                        <Show
-                          when={
-                            svc.status !== "alert" && svc.status !== "timeout"
-                          }
-                          fallback={
-                            <Text
-                              variant="micro"
-                              tone={svc.status === "timeout" ? "warn" : "alert"}
-                            >
-                              {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
-                            </Text>
-                          }
-                        >
-                          <Text variant="micro" tone="dim">
-                            {svc.latencyMs}MS
-                          </Text>
-                        </Show>
-                        <HistoryBar history={svc.history} />
-                        <StatusFlag status={healthFlagStatus[svc.status]}>
-                          {svc.status.toUpperCase()}
-                        </StatusFlag>
-                        <Show
-                          when={
-                            svc.status === "alert" ||
-                            svc.status === "warn" ||
-                            svc.status === "timeout" ||
-                            svc.status === "partial"
-                          }
-                        >
+                      </Show>
+                      <HistoryBar history={svc.history} />
+                      <StatusFlag status={healthFlagStatus[svc.status]}>
+                        {svc.status.toUpperCase()}
+                      </StatusFlag>
+                      <Show
+                        when={
+                          svc.status === "alert" ||
+                          svc.status === "warn" ||
+                          svc.status === "timeout" ||
+                          svc.status === "partial"
+                        }
+                      >
+                        <span onClick={(e) => e.stopPropagation()}>
                           <Menu
                             trigger={
                               <Button variant="ghost" size="sm">
@@ -398,10 +419,10 @@ export function HealthScreen(): JSX.Element {
                             })}
                             align="right"
                           />
-                        </Show>
-                      </Row>
-                    }
-                  />
+                        </span>
+                      </Show>
+                    </span>
+                  </div>
                 )}
               </For>
             </Panel>

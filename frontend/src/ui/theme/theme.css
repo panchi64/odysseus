@@ -92,6 +92,41 @@ body {
   animation: ody-blink 1s steps(1, end) infinite;
 }
 
+/* Search "found-it" pulse — a brief attention flash on the located nav row when
+   a query resolves to a single match. Hard-stepped brightness, not a decorative
+   fade (§8). */
+@keyframes ody-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: var(--surface-raised);
+  }
+}
+.ody-flash {
+  /* ~0.5s on/off cycle, six times ≈ 3s of pulsing. */
+  animation: ody-flash 0.5s steps(1, end) 6;
+}
+
+/* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
+   in a dense row), not decoration. It ping-pongs the overflow distance set in
+   --mq-shift, pausing at each end. Only applied (via a motion-safe utility)
+   when the content actually overflows; reduced-motion users get static clip. */
+@keyframes ody-marquee {
+  0%,
+  8% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(var(--mq-shift, 0));
+  }
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
 /* Rendered prose (markdown) — structured assistant/report/doc text. Styled from
    tokens so it inherits the mono, monochrome, grid-aligned look. */
 .ody-prose {
