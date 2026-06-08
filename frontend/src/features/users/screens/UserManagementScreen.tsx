@@ -324,6 +324,8 @@ export function UserManagementScreen(): JSX.Element {
             onToggleDir={view.toggleDir}
             count={view.count()}
             total={view.total()}
+            allSelected={view.allSelected()}
+            onToggleAll={view.toggleAll}
             selectedCount={view.selectedCount()}
             onClearSelection={view.clearSelection}
             bulkActions={

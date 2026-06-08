@@ -285,6 +285,31 @@ export function CookbookScreen(): JSX.Element {
     if (data) setServers(data.map((s) => ({ ...s })));
   });
 
+  // Drive a server from its current state up to running: flip to "starting",
+  // then after a beat mark it running with live readouts. Shared by the
+  // start-from-stopped and retry-from-error paths (they differ only in toast).
+  function bringServerUp(id: string, successMsg: string) {
+    setServers(
+      produce((s) => {
+        const target = s.find((x) => x.id === id);
+        if (target) target.status = "starting";
+      }),
+    );
+    setTimeout(() => {
+      setServers(
+        produce((s) => {
+          const target = s.find((x) => x.id === id);
+          if (target) {
+            target.status = "running";
+            target.tokensPerSec = 74.1;
+            if (!target.contextLen) target.contextLen = 32768;
+          }
+        }),
+      );
+      toast.success(successMsg);
+    }, 1200);
+  }
+
   async function toggleServer(id: string) {
     const srv = servers.find((x) => x.id === id);
     if (!srv) return;
@@ -308,50 +333,14 @@ export function CookbookScreen(): JSX.Element {
       );
       toast.success(`Server stopped — ${srv.model}`);
     } else {
-      setServers(
-        produce((s) => {
-          const target = s.find((x) => x.id === id);
-          if (target) target.status = "starting";
-        }),
-      );
-      setTimeout(() => {
-        setServers(
-          produce((s) => {
-            const target = s.find((x) => x.id === id);
-            if (target) {
-              target.status = "running";
-              target.tokensPerSec = 74.1;
-              if (!target.contextLen) target.contextLen = 32768;
-            }
-          }),
-        );
-        toast.success(`Server started — ${srv.model}`);
-      }, 1200);
+      bringServerUp(id, `Server started — ${srv.model}`);
     }
   }
 
   function retryServer(id: string) {
     const srv = servers.find((x) => x.id === id);
     if (!srv) return;
-    setServers(
-      produce((s) => {
-        const target = s.find((x) => x.id === id);
-        if (target) target.status = "starting";
-      }),
-    );
-    setTimeout(() => {
-      setServers(
-        produce((s) => {
-          const target = s.find((x) => x.id === id);
-          if (target) {
-            target.status = "running";
-            target.tokensPerSec = 74.1;
-            if (!target.contextLen) target.contextLen = 32768;
-          }
-        }),
-      );
-      toast.success(`Server recovered — ${srv.model}`);
-    }, 1200);
+    bringServerUp(id, `Server recovered — ${srv.model}`);
   }
 
   return (

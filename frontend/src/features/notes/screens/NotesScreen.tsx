@@ -107,8 +107,17 @@ export function NotesScreen(): JSX.Element {
   });
 
   const filtered = view.items;
-  const pinned = createMemo(() => filtered().filter((n) => n.pinned));
-  const unpinned = createMemo(() => filtered().filter((n) => !n.pinned));
+  // Partition pinned/unpinned in one pass instead of two filter walks.
+  const partition = createMemo(() => {
+    const pinnedNotes: Note[] = [];
+    const unpinnedNotes: Note[] = [];
+    for (const n of filtered()) {
+      (n.pinned ? pinnedNotes : unpinnedNotes).push(n);
+    }
+    return { pinned: pinnedNotes, unpinned: unpinnedNotes };
+  });
+  const pinned = () => partition().pinned;
+  const unpinned = () => partition().unpinned;
 
   const pinnedCount = () => notes.filter((n) => n.pinned).length;
   const withDueCount = () => notes.filter((n) => n.dueAt).length;

@@ -184,6 +184,8 @@ export function DocumentsLibraryScreen(): JSX.Element {
             onToggleDir={view.toggleDir}
             count={view.count()}
             total={view.total()}
+            allSelected={view.allSelected()}
+            onToggleAll={selectMode() ? view.toggleAll : undefined}
             selectedCount={view.selectedCount()}
             onClearSelection={view.clearSelection}
             bulkActions={

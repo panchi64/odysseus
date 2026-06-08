@@ -1,4 +1,11 @@
-import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  Show,
+  Suspense,
+  type JSX,
+} from "solid-js";
 import {
   Button,
   Divider,
@@ -131,9 +138,23 @@ export function MemoryTimelineScreen(): JSX.Element {
     initialDir: "desc",
   });
 
-  const pinned = () => (memories() ?? []).filter((m) => m.pinned).length;
-  const byType = (t: MemoryType) =>
-    (memories() ?? []).filter((m) => m.type === t).length;
+  // One pass for every header tally instead of a filter walk per metric.
+  const counts = createMemo(() => {
+    const all = memories() ?? [];
+    const c = {
+      total: all.length,
+      pinned: 0,
+      user: 0,
+      feedback: 0,
+      project: 0,
+      reference: 0,
+    };
+    for (const m of all) {
+      if (m.pinned) c.pinned++;
+      c[m.type]++;
+    }
+    return c;
+  });
 
   const remainingPairs = () => (dedupCandidates() ?? []).length;
 
@@ -163,18 +184,18 @@ export function MemoryTimelineScreen(): JSX.Element {
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String((memories() ?? []).length) },
-          { label: "PINNED", value: String(pinned()), tone: "nominal" },
-          { label: "USER", value: String(byType("user")), tone: "info" },
-          { label: "PROJECT", value: String(byType("project")), tone: "warn" },
+          { label: "TOTAL", value: String(counts().total) },
+          { label: "PINNED", value: String(counts().pinned), tone: "nominal" },
+          { label: "USER", value: String(counts().user), tone: "info" },
+          { label: "PROJECT", value: String(counts().project), tone: "warn" },
           {
             label: "REFERENCE",
-            value: String(byType("reference")),
+            value: String(counts().reference),
             tone: "dim",
           },
           {
             label: "FEEDBACK",
-            value: String(byType("feedback")),
+            value: String(counts().feedback),
             tone: "nominal",
           },
         ]}

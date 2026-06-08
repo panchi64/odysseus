@@ -1,5 +1,6 @@
 import {
   createEffect,
+  createMemo,
   createSignal,
   For,
   Show,
@@ -67,10 +68,20 @@ export function GalleryScreen(): JSX.Element {
     id: (m) => m.id,
   });
 
-  const totalImages = () => items().filter((m) => m.type === "image").length;
-  const totalVideos = () => items().filter((m) => m.type === "video").length;
-  const totalFavorites = () => items().filter((m) => m.favorite).length;
-  const totalBytes = () => items().reduce((sum, m) => sum + m.sizeBytes, 0);
+  // One pass for all header stats instead of four walks over the media list.
+  const stats = createMemo(() => {
+    let images = 0;
+    let videos = 0;
+    let favorites = 0;
+    let byteSum = 0;
+    for (const m of items()) {
+      if (m.type === "image") images++;
+      else if (m.type === "video") videos++;
+      if (m.favorite) favorites++;
+      byteSum += m.sizeBytes;
+    }
+    return { images, videos, favorites, bytes: byteSum };
+  });
 
   function toggleFavorite(id: string) {
     setItems((prev) =>
@@ -147,12 +158,12 @@ export function GalleryScreen(): JSX.Element {
           <InstrumentBand
             items={[
               { label: "TOTAL", value: String(items().length) },
-              { label: "STORAGE", value: bytes(totalBytes()), tone: "info" },
-              { label: "IMAGES", value: String(totalImages()) },
-              { label: "VIDEO", value: String(totalVideos()) },
+              { label: "STORAGE", value: bytes(stats().bytes), tone: "info" },
+              { label: "IMAGES", value: String(stats().images) },
+              { label: "VIDEO", value: String(stats().videos) },
               {
                 label: "FAVORITES",
-                value: String(totalFavorites()),
+                value: String(stats().favorites),
                 tone: "warn",
               },
             ]}
@@ -226,6 +237,8 @@ export function GalleryScreen(): JSX.Element {
                   onToggleDir={view.toggleDir}
                   count={view.count()}
                   total={view.total()}
+                  allSelected={view.allSelected()}
+                  onToggleAll={selectMode() ? view.toggleAll : undefined}
                   selectedCount={view.selectedCount()}
                   onClearSelection={view.clearSelection}
                   bulkActions={

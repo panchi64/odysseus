@@ -41,6 +41,18 @@ import {
   daysUntilExpiry,
 } from "../model";
 
+/** Mock token secret (diegetic — Phase 2 has the backend mint it). Uses a
+ *  CSPRNG so the credential-generation pattern is correct from the start. */
+function mockTokenSecret(): string {
+  const chars =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const buf = new Uint32Array(12);
+  crypto.getRandomValues(buf);
+  let out = "ody_";
+  for (let i = 0; i < 12; i++) out += chars[buf[i] % chars.length];
+  return out;
+}
+
 export function ApiTokensScreen(): JSX.Element {
   const tokensResource = useTokens();
 
@@ -93,7 +105,7 @@ export function ApiTokensScreen(): JSX.Element {
       // Phase 1: mock async operation — simulates a real API call
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       const id = `tok-${String(tokens.length + 1).padStart(3, "0")}`;
-      const mockSecret = `ody_${Math.random().toString(36).slice(2, 6)}${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      const mockSecret = mockTokenSecret();
       const token: ApiToken = {
         id,
         label,
@@ -320,6 +332,8 @@ export function ApiTokensScreen(): JSX.Element {
             onToggleDir={view.toggleDir}
             count={view.count()}
             total={view.total()}
+            allSelected={view.allSelected()}
+            onToggleAll={view.toggleAll}
             selectedCount={view.selectedCount()}
             onClearSelection={view.clearSelection}
             bulkActions={

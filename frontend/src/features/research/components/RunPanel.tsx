@@ -1,6 +1,7 @@
 import { createSignal, For, Show, type JSX } from "solid-js";
 import {
   Button,
+  Chip,
   ErrorState,
   InstrumentBand,
   LoadingText,
@@ -94,13 +95,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <div class="flex flex-wrap gap-2">
                 <For each={EXAMPLE_QUERIES}>
                   {(example) => (
-                    <button
-                      type="button"
-                      onClick={() => setQuery(example)}
-                      class="border border-line px-2 py-1 text-left text-micro text-dim transition-colors hover:border-info hover:text-bright"
-                    >
-                      {example}
-                    </button>
+                    <Chip onClick={() => setQuery(example)}>{example}</Chip>
                   )}
                 </For>
               </div>

@@ -53,6 +53,7 @@ export {
   type BandCell,
 } from "./components/InstrumentBand";
 export { Tile, type TileProps } from "./components/Tile";
+export { Chip, type ChipProps } from "./components/Chip";
 export { ListRow, type ListRowProps } from "./components/ListRow";
 export { ListToolbar, type ListToolbarProps } from "./components/ListToolbar";
 export {

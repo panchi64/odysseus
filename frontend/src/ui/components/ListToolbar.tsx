@@ -2,6 +2,7 @@ import { Show, splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Icon } from "../primitives/Icon";
+import { Checkbox } from "./Checkbox";
 import { Input } from "./Input";
 import { Select } from "./Select";
 
@@ -19,6 +20,9 @@ export interface ListToolbarProps {
   // result count, e.g. "12 / 40"
   count?: number;
   total?: number;
+  // select-all control (shown left of search when onToggleAll is provided)
+  allSelected?: boolean;
+  onToggleAll?: () => void;
   // selection / bulk-action strip (shown only while selectedCount > 0)
   selectedCount?: number;
   bulkActions?: JSX.Element;
@@ -52,6 +56,8 @@ export function ListToolbar(props: ListToolbarProps): JSX.Element {
     "onToggleDir",
     "count",
     "total",
+    "allSelected",
+    "onToggleAll",
     "selectedCount",
     "bulkActions",
     "onClearSelection",
@@ -67,6 +73,13 @@ export function ListToolbar(props: ListToolbarProps): JSX.Element {
   return (
     <div class={cx("flex flex-col", local.class)}>
       <div class="flex flex-wrap items-center gap-2">
+        <Show when={local.onToggleAll}>
+          <Checkbox
+            checked={local.allSelected}
+            onChange={() => local.onToggleAll!()}
+            label="ALL"
+          />
+        </Show>
         <div class="min-w-[12rem] flex-1">
           <Input
             leading="search"
