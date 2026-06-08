@@ -41,6 +41,13 @@ export function CodeScreen(): JSX.Element {
     resetToTemplate,
   } = createCodeRunner(runs);
 
+  function onEditorKeyDown(e: KeyboardEvent) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      if (!running()) runCode();
+    }
+  }
+
   function handleCopyError() {
     const errorText = outputLines().join("\n");
     void navigator.clipboard.writeText(errorText).then(() => {
@@ -96,9 +103,18 @@ export function CodeScreen(): JSX.Element {
                 <Show
                   when={running()}
                   fallback={
-                    <Button variant="primary" leading="play" onClick={runCode}>
-                      RUN
-                    </Button>
+                    <Row gap={2} align="center">
+                      <Text variant="micro" tone="dim">
+                        ⌘↵ to run
+                      </Text>
+                      <Button
+                        variant="primary"
+                        leading="play"
+                        onClick={runCode}
+                      >
+                        RUN
+                      </Button>
+                    </Row>
                   }
                 >
                   <Button
@@ -116,6 +132,7 @@ export function CodeScreen(): JSX.Element {
               rows={14}
               value={source()}
               onInput={(e) => setSource(e.currentTarget.value)}
+              onKeyDown={onEditorKeyDown}
               class="font-mono text-sm"
             />
           </Panel>

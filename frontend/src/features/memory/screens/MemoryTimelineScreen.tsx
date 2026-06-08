@@ -6,6 +6,7 @@ import {
   Icon,
   InstrumentBand,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   Modal,
@@ -21,6 +22,7 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { relativeTime, num } from "~/lib/format";
 import {
   useMemories,
@@ -108,12 +110,26 @@ export function MemoryTimelineScreen(): JSX.Element {
   const [typeFilter, setTypeFilter] = createSignal("all");
   const [dedupOpen, setDedupOpen] = createSignal(false);
 
-  const filtered = () => {
+  const typeFiltered = () => {
     const all = memories() ?? [];
     const f = typeFilter();
     if (f === "all") return all;
     return all.filter((m) => m.type === f);
   };
+
+  const view = createListView({
+    source: typeFiltered,
+    search: (m) => m.text,
+    sorts: {
+      recent: {
+        label: "NEWEST",
+        compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      },
+      type: { label: "TYPE", compare: (a, b) => a.type.localeCompare(b.type) },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+  });
 
   const pinned = () => (memories() ?? []).filter((m) => m.pinned).length;
   const byType = (t: MemoryType) =>
@@ -173,6 +189,21 @@ export function MemoryTimelineScreen(): JSX.Element {
           />
         </div>
 
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search memories…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
+          />
+        </div>
+
         <Suspense
           fallback={
             <div class="p-4">
@@ -181,16 +212,20 @@ export function MemoryTimelineScreen(): JSX.Element {
           }
         >
           <Show
-            when={filtered().length}
+            when={view.items().length}
             fallback={
               <EmptyState
                 icon="database"
                 message="NO MEMORIES"
-                hint="No memories match the current filter."
+                hint={
+                  view.isFiltered()
+                    ? "No memories match your search."
+                    : "No memories match the current filter."
+                }
               />
             }
           >
-            <For each={filtered()}>
+            <For each={view.items()}>
               {(mem) => (
                 <ListRow
                   label={mem.text}

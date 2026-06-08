@@ -34,6 +34,7 @@ export const mockEmbeddingModels: EmbeddingModel[] = [
     dims: 1536,
     provider: "remote",
     active: false,
+    apiKeySet: false,
     description: "OpenAI remote — requires API key.",
   },
   {
@@ -42,6 +43,7 @@ export const mockEmbeddingModels: EmbeddingModel[] = [
     dims: 3072,
     provider: "remote",
     active: false,
+    apiKeySet: false,
     description: "OpenAI remote — highest quality, higher cost.",
   },
 ];

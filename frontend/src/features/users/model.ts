@@ -35,3 +35,17 @@ export const ALL_PRIVILEGES: Privilege[] = [
   "gallery",
   "code",
 ];
+
+/** Short, plain-language explanation of what each privilege grants. */
+export const PRIVILEGE_LEGEND: Record<Privilege, string> = {
+  memory: "Read and write persistent memory facts the assistant learns.",
+  skills: "Install and run agent skills and tools.",
+  documents: "Open, edit, and manage workspace documents.",
+  email: "Read and send email through connected accounts.",
+  calendar: "View and create calendar events.",
+  contacts: "Access the address book and contact records.",
+  rag: "Query and ingest the retrieval knowledge base.",
+  uploads: "Upload files into the workspace.",
+  gallery: "View and manage generated images.",
+  code: "Execute shell and Python code via the sandbox.",
+};

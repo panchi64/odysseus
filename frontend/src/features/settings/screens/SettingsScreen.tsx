@@ -8,8 +8,10 @@ import {
 } from "solid-js";
 import {
   Button,
+  copyToClipboard,
   Divider,
   Field,
+  Icon,
   Input,
   LoadingText,
   Modal,
@@ -382,13 +384,27 @@ export function SettingsScreen(): JSX.Element {
                         MANUAL ENTRY SECRET
                       </Text>
                       <Suspense fallback={<LoadingText />}>
-                        <Text
-                          variant="readout"
-                          tone="bright"
-                          class="font-mono tracking-widest"
-                        >
-                          {twoFactor()?.secret ?? "—"}
-                        </Text>
+                        <Row gap={2} align="center">
+                          <Text
+                            variant="readout"
+                            tone="bright"
+                            class="font-mono tracking-widest"
+                          >
+                            {twoFactor()?.secret ?? "—"}
+                          </Text>
+                          <Show when={twoFactor()?.secret}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              leading="copy"
+                              onClick={() =>
+                                copyToClipboard(twoFactor()!.secret, "Secret")
+                              }
+                            >
+                              COPY
+                            </Button>
+                          </Show>
+                        </Row>
                       </Suspense>
                       <Text variant="micro" tone="dim">
                         If you cannot scan, enter this code in your
@@ -417,14 +433,31 @@ export function SettingsScreen(): JSX.Element {
           <Panel
             label="BACKUP CODES"
             meta={
-              <Button
-                variant="ghost"
-                size="sm"
-                leading="refresh"
-                onClick={regenerateCodes}
-              >
-                {codesRegenerated() ? "REGENERATED" : "REGENERATE"}
-              </Button>
+              <Row gap={2} align="center">
+                <Show when={(twoFactor()?.backupCodes ?? []).length > 0}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leading="copy"
+                    onClick={() =>
+                      copyToClipboard(
+                        (twoFactor()?.backupCodes ?? []).join("\n"),
+                        "Backup codes",
+                      )
+                    }
+                  >
+                    COPY ALL
+                  </Button>
+                </Show>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading="refresh"
+                  onClick={regenerateCodes}
+                >
+                  {codesRegenerated() ? "REGENERATED" : "REGENERATE"}
+                </Button>
+              </Row>
             }
           >
             <Stack gap={3}>
@@ -436,11 +469,17 @@ export function SettingsScreen(): JSX.Element {
                 <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <For each={twoFactor()?.backupCodes ?? []}>
                     {(code) => (
-                      <div class="border border-line bg-raised px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(code, "Backup code")}
+                        title="Copy code"
+                        class="flex items-center justify-between gap-2 border border-line bg-raised px-2 py-1.5 text-left transition-colors hover:border-bright"
+                      >
                         <Text variant="readout" tone="bright" class="font-mono">
                           {code}
                         </Text>
-                      </div>
+                        <Icon name="copy" size={12} class="shrink-0 text-dim" />
+                      </button>
                     )}
                   </For>
                 </div>

@@ -193,21 +193,38 @@ export function IntegrationsScreen(): JSX.Element {
             </Text>
           </Show>
 
+          <Show when={editing()}>
+            {(int) => (
+              <Row gap={4} align="center">
+                <Field label="TYPE" value={int().type} />
+                <Field label="ID" value={int().id} />
+              </Row>
+            )}
+          </Show>
+
           <Input
-            label="BASE URL"
+            label="BASE URL (REQUIRED)"
             value={editUrl()}
             onInput={(e) => setEditUrl(e.currentTarget.value)}
             placeholder="https://api.example.com"
           />
           <Input
-            label="API KEY / CREDENTIAL"
+            label={
+              editing()?.credentialRequired
+                ? "API KEY / CREDENTIAL (REQUIRED)"
+                : "API KEY / CREDENTIAL (OPTIONAL)"
+            }
             type="password"
             value={editKey()}
             onInput={(e) => {
               setEditKey(e.currentTarget.value);
               setTestResult(null);
             }}
-            placeholder="Leave blank to keep existing"
+            placeholder={
+              editing()?.credentialRequired
+                ? "Required for this connector"
+                : "Optional — leave blank to keep existing"
+            }
           />
 
           <Show when={testResult() === "ok"}>

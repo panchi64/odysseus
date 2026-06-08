@@ -43,6 +43,12 @@ export function createShellSession() {
     setCancelled(true);
   }
 
+  /** Reset the scrollback to an empty terminal. */
+  function clear() {
+    if (running()) return;
+    setLines(produce((l) => l.splice(0, l.length)));
+  }
+
   function run(cmd: string, onScrollBottom?: () => void) {
     if (!cmd || running()) return;
 
@@ -51,6 +57,8 @@ export function createShellSession() {
     setHistory((h) => [cmd, ...h]);
     setHistoryIdx(-1);
     setInput("");
+
+    const startedAt = Date.now();
 
     setLines(
       produce((l) => {
@@ -66,6 +74,7 @@ export function createShellSession() {
 
     const outputLines = mockOutputFor(cmd);
     const hadOutput = outputLines.length > 0;
+    let sawError = false;
     let i = 0;
 
     const interval = setInterval(() => {
@@ -79,6 +88,8 @@ export function createShellSession() {
               kind: "stderr",
               text: "^C",
               at: new Date().toISOString(),
+              exitCode: 130,
+              durationMs: Date.now() - startedAt,
             });
           }),
         );
@@ -92,6 +103,7 @@ export function createShellSession() {
       const isErr =
         line?.toLowerCase().includes("error") ||
         line?.toLowerCase().includes("stderr");
+      if (isErr) sawError = true;
       setLines(
         produce((l) => {
           l.push({
@@ -106,21 +118,24 @@ export function createShellSession() {
       i++;
       if (i >= outputLines.length) {
         clearInterval(interval);
-        // When the command produced no output, append a dim success marker so
-        // the user knows the command ran and completed (e.g. mkdir, touch, mv).
-        if (!hadOutput) {
-          setLines(
-            produce((l) => {
-              l.push({
-                id: nextId(),
-                kind: "stdout",
-                text: "  [ok]",
-                at: new Date().toISOString(),
-              });
-            }),
-          );
-          onScrollBottom?.();
-        }
+        const exitCode = sawError ? 1 : 0;
+        const durationMs = Date.now() - startedAt;
+        // Always append a terminal status line carrying exit code + duration.
+        // For zero-output commands this doubles as the visible success marker
+        // so the user knows the command ran (e.g. mkdir, touch, mv).
+        setLines(
+          produce((l) => {
+            l.push({
+              id: nextId(),
+              kind: sawError ? "stderr" : "stdout",
+              text: hadOutput ? "" : "[ok]",
+              at: new Date().toISOString(),
+              exitCode,
+              durationMs,
+            });
+          }),
+        );
+        onScrollBottom?.();
         setRunning(false);
       }
     }, 120);
@@ -133,6 +148,7 @@ export function createShellSession() {
     setInput,
     running,
     cancel,
+    clear,
     history,
     historyIdx,
     setHistoryIdx,

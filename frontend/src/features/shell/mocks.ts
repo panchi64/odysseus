@@ -13,6 +13,8 @@ export const mockInitialLines: ShellLine[] = [
     kind: "stdout",
     text: "Installed 142 packages in 0.8s",
     at: "2026-06-07T13:50:02Z",
+    exitCode: 0,
+    durationMs: 2010,
   },
   {
     id: "l-004",
@@ -31,6 +33,8 @@ export const mockInitialLines: ShellLine[] = [
     kind: "stdout",
     text: "22 passed in 3.14s",
     at: "2026-06-07T13:51:04Z",
+    exitCode: 0,
+    durationMs: 3140,
   },
 ];
 

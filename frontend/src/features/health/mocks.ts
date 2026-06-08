@@ -13,6 +13,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "VECTOR SEARCH",
     status: "nominal",
     latencyMs: 18,
+    baselineMs: 20,
     detail: "ChromaDB · 4214 docs · 384D",
     history: [
       "nominal",
@@ -32,6 +33,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "WEB SEARCH",
     status: "nominal",
     latencyMs: 38,
+    baselineMs: 45,
     detail: "SearXNG · /search healthy",
     history: [
       "nominal",
@@ -51,6 +53,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "EMAIL SYNC",
     status: "warn",
     latencyMs: 512,
+    baselineMs: 120,
     detail: "IMAP · last sync 14m ago",
     degradationNote: "Keyword fallback active — semantic ranking offline",
     history: [
@@ -71,6 +74,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "PUSH (NTFY)",
     status: "nominal",
     latencyMs: 24,
+    baselineMs: 30,
     detail: "ntfy.sh · topic connected",
     history: [
       "nominal",
@@ -90,6 +94,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "MODEL ENDPOINT",
     status: "nominal",
     latencyMs: 12,
+    baselineMs: 15,
     detail: "Ollama · :11434 · qwen2.5-32b",
     history: [
       "nominal",
@@ -109,6 +114,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "EMBEDDINGS",
     status: "alert",
     latencyMs: 0,
+    baselineMs: 60,
     detail: "all-MiniLM-L6-v2 · reindex required",
     degradationNote: "Collection schema mismatch — new docs not indexed",
     history: [
@@ -129,6 +135,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "OBJECT STORAGE",
     status: "nominal",
     latencyMs: 8,
+    baselineMs: 10,
     detail: "Local · data/ · 2.4 GB used",
     history: [
       "nominal",
@@ -148,6 +155,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "CALENDAR SYNC",
     status: "timeout",
     latencyMs: 0,
+    baselineMs: 200,
     detail: "CalDAV · check timed out after 5s",
     degradationNote: "Health check timed out — service may be unreachable",
     history: [
@@ -168,6 +176,7 @@ export const mockServiceStatuses: ServiceStatus[] = [
     name: "TEXT-TO-SPEECH",
     status: "partial",
     latencyMs: 340,
+    baselineMs: 280,
     detail: "Kokoro · English only · multilingual offline",
     degradationNote: "Partial — multilingual voices unavailable",
     history: [

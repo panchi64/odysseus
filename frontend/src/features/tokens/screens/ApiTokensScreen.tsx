@@ -11,8 +11,11 @@ import {
   Button,
   Checkbox,
   confirm,
+  EmptyState,
+  InfoHint,
   Input,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   Modal,
@@ -26,12 +29,14 @@ import {
   Tooltip,
   toast,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { timestamp, relativeTime } from "~/lib/format";
 import { useTokens } from "../data";
 import type { ApiToken, TokenScope, ExpiryOption } from "../model";
 import {
   ALL_SCOPES,
   EXPIRY_OPTIONS,
+  SCOPE_DESCRIPTIONS,
   computeExpiresAt,
   daysUntilExpiry,
 } from "../model";
@@ -150,6 +155,47 @@ export function ApiTokensScreen(): JSX.Element {
 
   const activeCount = () => tokens.filter((t) => !t.revoked).length;
 
+  const view = createListView({
+    source: () => tokens,
+    search: (t) => `${t.label} ${t.scopes.join(" ")} ${t.prefix}`,
+    sorts: {
+      created: {
+        label: "CREATED",
+        compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      },
+      lastUsed: {
+        label: "LAST USED",
+        compare: (a, b) =>
+          (a.lastUsedAt ?? "").localeCompare(b.lastUsedAt ?? ""),
+      },
+      label: {
+        label: "LABEL",
+        compare: (a, b) => a.label.localeCompare(b.label),
+      },
+    },
+    initialSort: "created",
+    initialDir: "desc",
+    id: (t) => t.id,
+  });
+
+  async function bulkRevoke() {
+    const targets = view.selectedItems().filter((t) => !t.revoked);
+    if (targets.length === 0) {
+      toast.info("Selected tokens are already revoked.");
+      return;
+    }
+    const ok = await confirm({
+      title: `Revoke ${targets.length} token${targets.length !== 1 ? "s" : ""}?`,
+      detail:
+        "ALL REQUESTS USING THESE TOKENS WILL IMMEDIATELY FAIL. This cannot be undone.",
+      confirmLabel: "REVOKE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    for (const token of targets) await revokeToken(token);
+    view.clearSelection();
+  }
+
   /** Render expiry information for a token row. */
   function ExpiryCell(props: { token: ApiToken }): JSX.Element {
     const days = daysUntilExpiry(props.token);
@@ -262,14 +308,47 @@ export function ApiTokensScreen(): JSX.Element {
         }
         flush
       >
-        <For each={tokens}>
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search by label or scope…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
+            selectedCount={view.selectedCount()}
+            onClearSelection={view.clearSelection}
+            bulkActions={
+              <Button
+                size="sm"
+                variant="danger"
+                leading="close"
+                onClick={() => void bulkRevoke()}
+              >
+                REVOKE
+              </Button>
+            }
+          />
+        </div>
+        <For each={view.items()}>
           {(token, i) => (
             <ListRow
               label={token.label}
               leading="key"
-              flush={i() === tokens.length - 1}
+              selectable
+              selected={view.isSelected(token.id)}
+              onClick={() => view.toggleOne(token.id)}
+              flush={i() === view.items().length - 1}
               right={
-                <Row gap={2} align="center">
+                <Row
+                  gap={2}
+                  align="center"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <Text variant="micro" tone="dim" class="font-mono">
                     {token.prefix}
                   </Text>
@@ -310,12 +389,16 @@ export function ApiTokensScreen(): JSX.Element {
             />
           )}
         </For>
-        <Show when={tokens.length === 0}>
-          <div class="p-4">
-            <Text variant="body" tone="dim">
-              No tokens issued.
-            </Text>
-          </div>
+        <Show when={view.items().length === 0}>
+          <EmptyState
+            icon="key"
+            message="NO TOKENS"
+            hint={
+              view.isFiltered()
+                ? "No tokens match your search."
+                : "No tokens issued yet."
+            }
+          />
         </Show>
       </Panel>
 
@@ -364,11 +447,14 @@ export function ApiTokensScreen(): JSX.Element {
             </Text>
             <For each={ALL_SCOPES}>
               {(scope) => (
-                <Checkbox
-                  label={scope.toUpperCase()}
-                  checked={newScopes().includes(scope)}
-                  onChange={() => toggleScope(scope)}
-                />
+                <Row gap={2} align="center">
+                  <Checkbox
+                    label={scope.toUpperCase()}
+                    checked={newScopes().includes(scope)}
+                    onChange={() => toggleScope(scope)}
+                  />
+                  <InfoHint label={SCOPE_DESCRIPTIONS[scope]} />
+                </Row>
               )}
             </For>
           </Stack>

@@ -4,9 +4,11 @@ import {
   ErrorState,
   LoadingText,
   Panel,
+  Row,
   Stack,
   StatusFlag,
   Text,
+  Tooltip,
 } from "~/ui";
 import type { CompareCandidate, CompareSlot } from "../model";
 
@@ -17,6 +19,8 @@ interface CandidateColumnProps {
   onVote: (slot: CompareSlot) => void;
   onRetry?: (slot: CompareSlot) => void;
   disabled: boolean;
+  /** Why the vote button is disabled — surfaced in a Tooltip. */
+  disabledReason?: string;
 }
 
 /** Single model response column in the blind comparison layout. */
@@ -61,9 +65,16 @@ export function CandidateColumn(props: CandidateColumnProps): JSX.Element {
             </Show>
           }
         >
-          <StatusFlag status={isWinner() ? "nominal" : "idle"}>
-            {isWinner() ? "WINNER" : "—"}
-          </StatusFlag>
+          <Row gap={2} align="center">
+            <Show when={isWinner()}>
+              <StatusFlag status="nominal" dot>
+                VOTED
+              </StatusFlag>
+            </Show>
+            <StatusFlag status={isWinner() ? "nominal" : "idle"}>
+              {isWinner() ? "WINNER" : "—"}
+            </StatusFlag>
+          </Row>
         </Show>
       }
     >
@@ -103,15 +114,26 @@ export function CandidateColumn(props: CandidateColumnProps): JSX.Element {
         </div>
 
         <Show when={!props.revealed}>
-          <Button
-            variant={props.disabled ? "ghost" : "default"}
-            leading="check"
-            disabled={props.disabled}
-            block
-            onClick={() => props.onVote(props.candidate.slot)}
+          <Show
+            when={props.disabled && props.disabledReason}
+            fallback={
+              <Button
+                variant={props.disabled ? "ghost" : "default"}
+                leading="check"
+                disabled={props.disabled}
+                block
+                onClick={() => props.onVote(props.candidate.slot)}
+              >
+                VOTE MODEL {props.candidate.slot}
+              </Button>
+            }
           >
-            VOTE MODEL {props.candidate.slot}
-          </Button>
+            <Tooltip label={props.disabledReason!} class="w-full">
+              <Button variant="ghost" leading="check" disabled block>
+                VOTE MODEL {props.candidate.slot}
+              </Button>
+            </Tooltip>
+          </Show>
         </Show>
       </Stack>
     </Panel>

@@ -4,6 +4,7 @@ import {
   EmptyState,
   InstrumentBand,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   PageHeader,
@@ -16,6 +17,7 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import {
   useDocumentList,
@@ -41,20 +43,27 @@ function WordCount(props: { words: number }): JSX.Element {
 export function DocumentsLibraryScreen(): JSX.Element {
   const documents = useDocumentList();
   const [tab, setTab] = createSignal<DocStatus>("active");
-  const [query, setQuery] = createSignal("");
+  const [selectMode, setSelectMode] = createSignal(false);
 
-  const filtered = () => {
-    const all = documents();
-    const q = query().toLowerCase();
-    return all
-      .filter((d) => d.status === tab())
-      .filter(
-        (d) =>
-          !q ||
-          d.title.toLowerCase().includes(q) ||
-          d.snippet.toLowerCase().includes(q),
-      );
-  };
+  const inTab = () => documents().filter((d) => d.status === tab());
+
+  const view = createListView({
+    source: inTab,
+    search: (d) => `${d.title} ${d.snippet}`,
+    sorts: {
+      recent: {
+        label: "NEWEST",
+        compare: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+      },
+      name: {
+        label: "NAME",
+        compare: (a, b) => a.title.localeCompare(b.title),
+      },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+    id: (d) => d.id,
+  });
 
   const totalActive = () =>
     documents().filter((d) => d.status === "active").length;
@@ -78,6 +87,29 @@ export function DocumentsLibraryScreen(): JSX.Element {
     });
   }
 
+  async function handleBulkDelete(): Promise<void> {
+    const docs = view.selectedItems();
+    if (!docs.length) return;
+    const ok = await confirm({
+      title: `Delete ${docs.length} document${docs.length > 1 ? "s" : ""}?`,
+      detail: "This action cannot be undone.",
+      confirmLabel: "DELETE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    docs.forEach((d) => deleteDocument(d.id));
+    view.clearSelection();
+    toast.success(
+      `Deleted ${docs.length} document${docs.length > 1 ? "s" : ""}`,
+      {
+        action: {
+          label: "UNDO",
+          onClick: () => docs.forEach((d) => restoreDocument(d)),
+        },
+      },
+    );
+  }
+
   function handleArchive(doc: DocumentSummary): void {
     const next: DocStatus = doc.status === "active" ? "archived" : "active";
     const prev: DocStatus = doc.status;
@@ -88,6 +120,13 @@ export function DocumentsLibraryScreen(): JSX.Element {
         label: "UNDO",
         onClick: () => toggleArchiveDocument(doc.id, prev),
       },
+    });
+  }
+
+  function toggleSelectMode(): void {
+    setSelectMode((on) => {
+      if (on) view.clearSelection();
+      return !on;
     });
   }
 
@@ -123,12 +162,40 @@ export function DocumentsLibraryScreen(): JSX.Element {
             onChange={(v) => setTab(v as DocStatus)}
             class="flex-1"
           />
-          <input
-            type="search"
-            placeholder="SEARCH..."
-            value={query()}
-            onInput={(e) => setQuery(e.currentTarget.value)}
-            class="w-48 border border-line bg-bg px-3 py-1.5 font-mono text-label uppercase tracking-label text-text placeholder:text-dim focus:border-bright focus:outline-none"
+          <Button
+            variant={selectMode() ? "primary" : "ghost"}
+            size="sm"
+            leading="check"
+            onClick={toggleSelectMode}
+          >
+            {selectMode() ? "DONE" : "SELECT"}
+          </Button>
+        </div>
+
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search documents…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
+            selectedCount={view.selectedCount()}
+            onClearSelection={view.clearSelection}
+            bulkActions={
+              <Button
+                variant="danger"
+                size="sm"
+                leading="trash"
+                onClick={() => void handleBulkDelete()}
+              >
+                DELETE
+              </Button>
+            }
           />
         </div>
 
@@ -140,29 +207,38 @@ export function DocumentsLibraryScreen(): JSX.Element {
           }
         >
           <Show
-            when={filtered().length}
+            when={view.items().length}
             fallback={
               <EmptyState
                 icon="file"
                 message={
-                  tab() === "active"
-                    ? "NO ACTIVE DOCUMENTS"
-                    : "NO ARCHIVED DOCUMENTS"
+                  view.isFiltered()
+                    ? "NO MATCHES"
+                    : tab() === "active"
+                      ? "NO ACTIVE DOCUMENTS"
+                      : "NO ARCHIVED DOCUMENTS"
                 }
                 hint={
-                  tab() === "active"
-                    ? "Create a document to get started."
-                    : "Archived documents appear here."
+                  view.isFiltered()
+                    ? "No documents match your search."
+                    : tab() === "active"
+                      ? "Create a document to get started."
+                      : "Archived documents appear here."
                 }
               />
             }
           >
-            <For each={filtered()}>
+            <For each={view.items()}>
               {(doc) => (
                 <ListRow
                   label={doc.title}
                   leading="file"
-                  href={`/documents/${doc.id}`}
+                  selectable={selectMode()}
+                  selected={selectMode() && view.isSelected(doc.id)}
+                  href={selectMode() ? undefined : `/documents/${doc.id}`}
+                  onClick={
+                    selectMode() ? () => view.toggleOne(doc.id) : undefined
+                  }
                   right={
                     <span class="flex items-center gap-3">
                       <WordCount words={doc.words} />
@@ -172,27 +248,29 @@ export function DocumentsLibraryScreen(): JSX.Element {
                       <StatusFlag status={statusMap[doc.status]}>
                         {doc.status.toUpperCase()}
                       </StatusFlag>
-                      <Menu
-                        trigger={
-                          <span class="px-1 text-dim hover:text-bright">
-                            <Text variant="micro">···</Text>
-                          </span>
-                        }
-                        items={[
-                          {
-                            label:
-                              doc.status === "active" ? "ARCHIVE" : "RESTORE",
-                            icon: "archive",
-                            onSelect: () => handleArchive(doc),
-                          },
-                          {
-                            label: "DELETE",
-                            icon: "trash",
-                            danger: true,
-                            onSelect: () => void handleDelete(doc),
-                          },
-                        ]}
-                      />
+                      <Show when={!selectMode()}>
+                        <Menu
+                          trigger={
+                            <span class="px-1 text-dim hover:text-bright">
+                              <Text variant="micro">···</Text>
+                            </span>
+                          }
+                          items={[
+                            {
+                              label:
+                                doc.status === "active" ? "ARCHIVE" : "RESTORE",
+                              icon: "archive",
+                              onSelect: () => handleArchive(doc),
+                            },
+                            {
+                              label: "DELETE",
+                              icon: "trash",
+                              danger: true,
+                              onSelect: () => void handleDelete(doc),
+                            },
+                          ]}
+                        />
+                      </Show>
                     </span>
                   }
                 />

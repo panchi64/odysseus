@@ -1,4 +1,4 @@
-import { createSignal, Show, type JSX } from "solid-js";
+import { createSignal, For, Show, type JSX } from "solid-js";
 import {
   Button,
   ErrorState,
@@ -26,6 +26,12 @@ const statusForPhase = (phase: ResearchPhase, running: boolean) => {
   if (phase === "DONE") return "nominal" as const;
   return "info" as const;
 };
+
+const EXAMPLE_QUERIES = [
+  "Compare the energy efficiency of leading local-LLM inference runtimes in 2026",
+  "What are the trade-offs between RAG and long-context for personal knowledge bases?",
+  "Summarize recent advances in on-device speech-to-text for Apple Silicon",
+];
 
 /** Compose panel: query input + live phase/progress display. */
 export function RunPanel(props: RunPanelProps): JSX.Element {
@@ -80,6 +86,26 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
             disabled={props.running}
             hint="Ctrl+Enter to run"
           />
+          <Show when={!props.running && !query().trim()}>
+            <Stack gap={2}>
+              <Text variant="micro" tone="dim">
+                TRY AN EXAMPLE
+              </Text>
+              <div class="flex flex-wrap gap-2">
+                <For each={EXAMPLE_QUERIES}>
+                  {(example) => (
+                    <button
+                      type="button"
+                      onClick={() => setQuery(example)}
+                      class="border border-line px-2 py-1 text-left text-micro text-dim transition-colors hover:border-info hover:text-bright"
+                    >
+                      {example}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Stack>
+          </Show>
           <div class="flex items-center justify-between gap-3">
             <Text variant="micro" tone="dim">
               Ctrl+Enter to run · multi-round deep synthesis

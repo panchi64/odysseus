@@ -4,12 +4,15 @@ import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
+  InfoHint,
   InstrumentBand,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   PageHeader,
   Panel,
+  Row,
   Stack,
   StatusFlag,
   Tabs,
@@ -18,6 +21,7 @@ import {
   confirm,
   toast,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import { useSkills } from "../data";
 import { skillStatusFlag, type Skill, type SkillStatus } from "../model";
@@ -98,11 +102,28 @@ export function SkillsDirectoryScreen(): JSX.Element {
   const allSkills = () => skills;
   const countOf = (s: SkillStatus) =>
     allSkills().filter((sk) => sk.status === s).length;
-  const filtered = () => {
+  const byStatus = () => {
     const f = statusFilter();
-    if (f === "all") return allSkills();
+    if (f === "all") return allSkills().slice();
     return allSkills().filter((s) => s.status === f);
   };
+
+  const view = createListView({
+    source: byStatus,
+    search: (s) => `${s.name} ${s.trigger} ${s.description}`,
+    sorts: {
+      recent: {
+        label: "NEWEST",
+        compare: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+      },
+      name: {
+        label: "NAME",
+        compare: (a, b) => a.name.localeCompare(b.name),
+      },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+  });
 
   return (
     <Stack gap={6}>
@@ -133,11 +154,40 @@ export function SkillsDirectoryScreen(): JSX.Element {
       />
 
       <Panel flush>
-        <div class="border-b border-line">
+        <div class="flex items-center justify-between gap-3 border-b border-line pr-3">
           <Tabs
             items={STATUS_TABS}
             value={statusFilter()}
             onChange={setStatusFilter}
+          />
+          <Row align="center" gap={3}>
+            <Row align="center" gap={1}>
+              <Text variant="micro" tone="dim">
+                DRAFT
+              </Text>
+              <InfoHint label="A draft is unpublished — the assistant won't invoke it. Publishing requires a name, a trigger phrase, and a non-empty body." />
+            </Row>
+            <Row align="center" gap={1}>
+              <Text variant="micro" tone="dim">
+                AUTO
+              </Text>
+              <InfoHint label="Auto-generated skills are synthesized by the system from your usage patterns. They can be edited or deleted, but not manually published or unpublished." />
+            </Row>
+          </Row>
+        </div>
+
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search by name or trigger phrase…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
           />
         </div>
 
@@ -157,16 +207,20 @@ export function SkillsDirectoryScreen(): JSX.Element {
           </Show>
 
           <Show
-            when={filtered().length}
+            when={view.items().length}
             fallback={
               <EmptyState
                 icon="code"
                 message="NO SKILLS"
-                hint="No skills match the current filter."
+                hint={
+                  view.isFiltered()
+                    ? "No skills match your search."
+                    : "No skills match the current filter."
+                }
               />
             }
           >
-            <For each={filtered()}>
+            <For each={view.items()}>
               {(skill) => (
                 <ListRow
                   label={skill.name}

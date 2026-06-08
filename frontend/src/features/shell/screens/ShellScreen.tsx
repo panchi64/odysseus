@@ -1,4 +1,4 @@
-import { For, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Show, onCleanup, onMount, type JSX } from "solid-js";
 import type { ShellLine } from "../model";
 import {
   Button,
@@ -12,7 +12,13 @@ import {
   confirm,
   toast,
 } from "~/ui";
+import { timestamp } from "~/lib/format";
 import { createShellSession, isDangerousCommand } from "../data";
+
+/** UTC clock (HH:MM:SS) for a scrollback line's timestamp gutter. */
+function clockOf(iso: string): string {
+  return timestamp(iso).slice(11);
+}
 
 export function ShellScreen(): JSX.Element {
   const {
@@ -21,6 +27,7 @@ export function ShellScreen(): JSX.Element {
     setInput,
     running,
     cancel,
+    clear,
     history,
     historyIdx,
     setHistoryIdx,
@@ -95,6 +102,13 @@ export function ShellScreen(): JSX.Element {
     }
   }
 
+  function clearScrollback() {
+    if (running()) return;
+    clear();
+    toast.info("Scrollback cleared.");
+    inputRef?.focus();
+  }
+
   onMount(() => {
     inputRef?.focus();
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -128,6 +142,15 @@ export function ShellScreen(): JSX.Element {
                 Ctrl+C to interrupt
               </Text>
             )}
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="trash"
+              onClick={clearScrollback}
+              disabled={running() || lines.length === 0}
+            >
+              CLEAR
+            </Button>
           </Row>
         }
       />
@@ -157,10 +180,25 @@ export function ShellScreen(): JSX.Element {
                 <div
                   class={`flex gap-2 py-0.5 leading-5 text-body ${toneClass(line.kind)}`}
                 >
+                  <span class="select-none text-dim shrink-0 tabular-nums">
+                    {clockOf(line.at)}
+                  </span>
                   <span class="select-none text-dim shrink-0">
                     {prefixFor(line.kind)}
                   </span>
-                  <span class="break-all">{line.text}</span>
+                  <span class="break-all flex-1">{line.text}</span>
+                  <Show when={line.exitCode !== undefined}>
+                    <span class="flex shrink-0 select-none items-center gap-2">
+                      <Text variant="micro" tone="dim">
+                        {line.durationMs}MS
+                      </Text>
+                      <StatusFlag
+                        status={line.exitCode === 0 ? "nominal" : "alert"}
+                      >
+                        {`EXIT ${line.exitCode ?? ""}`}
+                      </StatusFlag>
+                    </span>
+                  </Show>
                 </div>
               )}
             </For>

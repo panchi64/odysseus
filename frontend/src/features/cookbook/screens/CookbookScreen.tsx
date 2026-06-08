@@ -12,12 +12,15 @@ import {
   Button,
   EmptyState,
   ErrorState,
+  InfoHint,
   InstrumentBand,
   ListRow,
+  ListToolbar,
   LoadingText,
   PageHeader,
   Panel,
   ProgressBar,
+  Readout,
   Row,
   Stack,
   StatusFlag,
@@ -27,7 +30,11 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { bytes } from "~/lib/format";
+
+const SUITABILITY_HINT =
+  "Hardware fit for this model: NOMINAL — runs comfortably within memory; WARN — fits but leaves little headroom, expect slower output; ALERT — exceeds the memory budget, not recommended.";
 import {
   useHardware,
   useCookbookModels,
@@ -42,6 +49,14 @@ const suitabilityStatus: Record<string, Status> = {
   alert: "alert",
 };
 
+// Best-fit first: NOMINAL → WARN → ALERT. (Alphabetical localeCompare would
+// invert this, surfacing ALERT/"not recommended" models at the top.)
+const suitabilityRank: Record<string, number> = {
+  nominal: 0,
+  warn: 1,
+  alert: 2,
+};
+
 const serverStatusFlag: Record<ServerStatus, Status> = {
   running: "nominal",
   stopped: "idle",
@@ -53,6 +68,7 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
   const [progress, setProgress] = createSignal<number | null>(null);
   const [done, setDone] = createSignal(props.model.downloaded);
   const [hasError, setHasError] = createSignal(false);
+  const [justFinished, setJustFinished] = createSignal(false);
   const timers: ReturnType<typeof setTimeout>[] = [];
 
   onCleanup(() => timers.forEach(clearTimeout));
@@ -78,6 +94,7 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
           setTimeout(() => {
             setDone(true);
             setProgress(null);
+            setJustFinished(true);
             toast.success(`${props.model.name} ready`);
           }, 500),
         );
@@ -101,9 +118,12 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
               {props.model.params} · {props.model.quant} ·{" "}
               {bytes(props.model.sizeBytes)}
             </Text>
-            <StatusFlag status={suitabilityStatus[props.model.suitability]}>
-              {props.model.suitability.toUpperCase()}
-            </StatusFlag>
+            <Row gap={1} align="center">
+              <StatusFlag status={suitabilityStatus[props.model.suitability]}>
+                {props.model.suitability.toUpperCase()}
+              </StatusFlag>
+              <InfoHint label={SUITABILITY_HINT} size={12} />
+            </Row>
             <Show when={done()}>
               <StatusFlag status="nominal">READY</StatusFlag>
             </Show>
@@ -146,6 +166,14 @@ function DownloadRow(props: { model: ModelEntry }): JSX.Element {
           <ProgressBar value={progress()!} tone="nominal" showValue />
         </div>
       </Show>
+      <Show when={justFinished()}>
+        <div class="px-3 pb-2">
+          <Text variant="micro" tone="dim">
+            Download complete — start a server for this model under RUNNING
+            SERVERS to begin serving it.
+          </Text>
+        </div>
+      </Show>
     </div>
   );
 }
@@ -160,10 +188,21 @@ function ServerRow(props: {
       label={props.server.model}
       leading="cpu"
       right={
-        <Row gap={2} align="center">
+        <Row gap={3} align="center">
           <Text variant="micro" tone="dim">
             :{props.server.port}
           </Text>
+          <Show
+            when={props.server.status === "running" && props.server.contextLen}
+          >
+            <Readout
+              size="md"
+              label="CTX"
+              labelPosition="bottom"
+              value={props.server.contextLen!.toLocaleString()}
+              unit="tok"
+            />
+          </Show>
           <Show when={props.server.tokensPerSec}>
             <Text variant="micro" tone="dim">
               {props.server.tokensPerSec} T/S
@@ -223,6 +262,22 @@ export function CookbookScreen(): JSX.Element {
   const [tab, setTab] = createSignal("local");
   const [servers, setServers] = createStore<RunningServer[]>([]);
 
+  const modelView = createListView<ModelEntry>({
+    source: () => models() ?? [],
+    search: (m) => `${m.name} ${m.params} ${m.quant}`,
+    sorts: {
+      fit: {
+        label: "FIT",
+        compare: (a, b) =>
+          suitabilityRank[a.suitability] - suitabilityRank[b.suitability] ||
+          a.name.localeCompare(b.name),
+      },
+      name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
+      size: { label: "SIZE", compare: (a, b) => a.sizeBytes - b.sizeBytes },
+    },
+    initialSort: "fit",
+  });
+
   // Seed local mutable store from data layer once resource resolves.
   // Phase 2: only fetchServers() body changes — store/screen stay stable.
   createEffect(() => {
@@ -266,6 +321,7 @@ export function CookbookScreen(): JSX.Element {
             if (target) {
               target.status = "running";
               target.tokensPerSec = 74.1;
+              if (!target.contextLen) target.contextLen = 32768;
             }
           }),
         );
@@ -290,6 +346,7 @@ export function CookbookScreen(): JSX.Element {
           if (target) {
             target.status = "running";
             target.tokensPerSec = 74.1;
+            if (!target.contextLen) target.contextLen = 32768;
           }
         }),
       );
@@ -338,15 +395,7 @@ export function CookbookScreen(): JSX.Element {
 
       <Show when={tab() === "local"}>
         <Stack gap={4}>
-          <Panel
-            label="RECOMMENDED MODELS"
-            meta={
-              <Text variant="micro" tone="dim">
-                SORTED BY FIT
-              </Text>
-            }
-            flush
-          >
+          <Panel label="RECOMMENDED MODELS" flush>
             <Suspense
               fallback={
                 <div class="p-3">
@@ -372,7 +421,34 @@ export function CookbookScreen(): JSX.Element {
                   </Show>
                 }
               >
-                <For each={models()}>{(m) => <DownloadRow model={m} />}</For>
+                <div class="border-b border-line p-3">
+                  <ListToolbar
+                    query={modelView.query()}
+                    onQueryChange={modelView.setQuery}
+                    placeholder="Search models…"
+                    sortKey={modelView.sortKey()}
+                    sortOptions={modelView.sortOptions}
+                    onSortChange={modelView.setSort}
+                    dir={modelView.dir()}
+                    onToggleDir={modelView.toggleDir}
+                    count={modelView.count()}
+                    total={modelView.total()}
+                  />
+                </div>
+                <Show
+                  when={modelView.items().length}
+                  fallback={
+                    <EmptyState
+                      icon="search"
+                      message="NO MATCHES"
+                      hint="No models match your search."
+                    />
+                  }
+                >
+                  <For each={modelView.items()}>
+                    {(m) => <DownloadRow model={m} />}
+                  </For>
+                </Show>
               </Show>
             </Suspense>
           </Panel>

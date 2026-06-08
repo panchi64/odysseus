@@ -12,6 +12,7 @@ import {
   Drawer,
   EmptyState,
   Icon,
+  InfoHint,
   InstrumentBand,
   LoadingText,
   Menu,
@@ -98,20 +99,29 @@ function getServiceActions(
   return base;
 }
 
-function HistoryBar(props: { history: HealthStatus[] }): JSX.Element {
+/** Health checks run on a fixed interval; each tick = one probe. */
+const CHECK_INTERVAL = "30s";
+const HISTORY_HINT = `Last 10 health checks (newest on the right). One tick = one probe, every ${CHECK_INTERVAL} — spans ~5 min.`;
+
+function HistoryBar(props: {
+  history: HealthStatus[];
+  showHint?: boolean;
+}): JSX.Element {
   return (
-    <div
-      class="flex items-center gap-0.5"
-      title="Last 10 checks (newest right)"
-    >
-      <For each={props.history}>
-        {(h) => (
-          <span
-            class={`inline-block h-3 w-1.5 ${healthTone[h]}`}
-            style={{ opacity: h === "nominal" ? "0.7" : "1" }}
-          />
-        )}
-      </For>
+    <div class="flex items-center gap-1" title={HISTORY_HINT}>
+      <div class="flex items-center gap-0.5">
+        <For each={props.history}>
+          {(h) => (
+            <span
+              class={`inline-block h-3 w-1.5 ${healthTone[h]}`}
+              style={{ opacity: h === "nominal" ? "0.7" : "1" }}
+            />
+          )}
+        </For>
+      </div>
+      <Show when={props.showHint}>
+        <InfoHint label={HISTORY_HINT} size={11} />
+      </Show>
     </div>
   );
 }
@@ -184,16 +194,28 @@ function ServiceDrawer(props: {
             </Stack>
 
             <Stack gap={1}>
-              <Text variant="label" tone="dim">
-                HISTORY (LAST 10)
-              </Text>
+              <Row gap={1} align="center">
+                <Text variant="label" tone="dim">
+                  HISTORY · EVERY {CHECK_INTERVAL}
+                </Text>
+                <InfoHint label={HISTORY_HINT} size={11} />
+              </Row>
               <HistoryBar history={svc().history} />
             </Stack>
 
             <Show when={svc().latencyMs > 0}>
-              <Text variant="micro" tone="dim">
-                LATENCY: {svc().latencyMs}MS
-              </Text>
+              <Row gap={2} align="baseline">
+                <Text variant="micro" tone="dim">
+                  LATENCY: {svc().latencyMs}MS
+                </Text>
+                <Text variant="micro" tone="dim">
+                  · {svc().baselineMs}MS baseline
+                </Text>
+                <InfoHint
+                  label="Baseline = typical latency for this service under normal load. Live latency well above baseline indicates degradation."
+                  size={11}
+                />
+              </Row>
             </Show>
           </Stack>
         )}
@@ -389,11 +411,21 @@ export function HealthScreen(): JSX.Element {
                           </Text>
                         }
                       >
-                        <Text variant="micro" tone="dim">
-                          {svc.latencyMs}MS
-                        </Text>
+                        <span title={`Baseline ${svc.baselineMs}MS`}>
+                          <Text
+                            variant="micro"
+                            tone={
+                              svc.latencyMs > svc.baselineMs * 2
+                                ? "warn"
+                                : "dim"
+                            }
+                          >
+                            {svc.latencyMs}
+                            <span class="text-dim">/{svc.baselineMs}MS</span>
+                          </Text>
+                        </span>
                       </Show>
-                      <HistoryBar history={svc.history} />
+                      <HistoryBar history={svc.history} showHint />
                       <StatusFlag status={healthFlagStatus[svc.status]}>
                         {svc.status.toUpperCase()}
                       </StatusFlag>

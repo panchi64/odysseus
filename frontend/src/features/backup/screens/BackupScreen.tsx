@@ -12,6 +12,7 @@ import {
   Divider,
   EmptyState,
   ErrorState,
+  InfoHint,
   InstrumentBand,
   ListRow,
   LoadingText,
@@ -37,6 +38,17 @@ const ALL_INCLUDES: BackupInclude[] = [
   "settings",
   "preferences",
 ];
+
+/** Plain-English description of what each backup category includes. */
+const INCLUDE_DESCRIPTIONS: Record<BackupInclude, string> = {
+  memories:
+    "Persistent facts and preferences the system has learned about you.",
+  skills: "Custom agent skills and their definitions.",
+  presets: "Saved model/agent presets from the Cookbook.",
+  settings:
+    "App configuration: providers, models, integrations, and feature toggles.",
+  preferences: "Personal UI preferences such as theme and layout choices.",
+};
 
 export function BackupScreen(): JSX.Element {
   const lastBackup = useLastBackup();
@@ -251,16 +263,39 @@ export function BackupScreen(): JSX.Element {
               file.
             </Text>
             <Stack gap={2}>
-              <Text variant="label" tone="dim">
-                INCLUDE
-              </Text>
+              <Row align="center" justify="between">
+                <Text variant="label" tone="dim">
+                  INCLUDE
+                </Text>
+                <Row gap={1} align="center">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIncludes([...ALL_INCLUDES])}
+                    disabled={includes().length === ALL_INCLUDES.length}
+                  >
+                    ALL
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIncludes([])}
+                    disabled={includes().length === 0}
+                  >
+                    NONE
+                  </Button>
+                </Row>
+              </Row>
               <For each={ALL_INCLUDES}>
                 {(item) => (
-                  <Checkbox
-                    label={item.toUpperCase()}
-                    checked={includes().includes(item)}
-                    onChange={() => toggleInclude(item)}
-                  />
+                  <Row gap={2} align="center">
+                    <Checkbox
+                      label={item.toUpperCase()}
+                      checked={includes().includes(item)}
+                      onChange={() => toggleInclude(item)}
+                    />
+                    <InfoHint label={INCLUDE_DESCRIPTIONS[item]} />
+                  </Row>
                 )}
               </For>
             </Stack>

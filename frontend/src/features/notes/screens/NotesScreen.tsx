@@ -14,6 +14,7 @@ import {
   EmptyState,
   Input,
   InstrumentBand,
+  ListToolbar,
   LoadingText,
   Modal,
   PageHeader,
@@ -28,7 +29,8 @@ import {
   confirm,
   toast,
 } from "~/ui";
-import { relativeTime, date } from "~/lib/format";
+import { createListView } from "~/lib/list";
+import { relativeTime, timestamp } from "~/lib/format";
 import { useNotes } from "../data";
 import type { Note, NoteTone } from "../model";
 
@@ -82,11 +84,29 @@ export function NotesScreen(): JSX.Element {
     };
   }
 
-  const filtered = createMemo(() => {
+  const labelFiltered = createMemo(() => {
     const lf = labelFilter();
     return notes.filter((n) => lf === "all" || n.label === lf);
   });
 
+  const view = createListView({
+    source: labelFiltered,
+    search: (n) => `${n.title} ${n.body}`,
+    sorts: {
+      recent: {
+        label: "UPDATED",
+        compare: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+      },
+      title: {
+        label: "TITLE",
+        compare: (a, b) => a.title.localeCompare(b.title),
+      },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+  });
+
+  const filtered = view.items;
   const pinned = createMemo(() => filtered().filter((n) => n.pinned));
   const unpinned = createMemo(() => filtered().filter((n) => !n.pinned));
 
@@ -269,6 +289,19 @@ export function NotesScreen(): JSX.Element {
         onChange={setLabelFilter}
       />
 
+      <ListToolbar
+        query={view.query()}
+        onQueryChange={view.setQuery}
+        placeholder="Search notes by title or body…"
+        sortKey={view.sortKey()}
+        sortOptions={view.sortOptions}
+        onSortChange={view.setSort}
+        dir={view.dir()}
+        onToggleDir={view.toggleDir}
+        count={view.count()}
+        total={view.total()}
+      />
+
       <Suspense fallback={<LoadingText label="LOADING" />}>
         <Show
           when={filtered().length}
@@ -276,7 +309,11 @@ export function NotesScreen(): JSX.Element {
             <EmptyState
               icon="note"
               message="NO NOTES"
-              hint="No notes match the current filter."
+              hint={
+                view.isFiltered()
+                  ? "No notes match your search."
+                  : "No notes match the current filter."
+              }
               action={
                 <Button variant="default" onClick={openNew}>
                   ADD NOTE
@@ -409,10 +446,16 @@ interface NoteCardProps {
 
 function NoteCard(props: NoteCardProps): JSX.Element {
   const { note } = props;
+  const [checklistExpanded, setChecklistExpanded] = createSignal(false);
   const doneCount = () => note.checklist?.filter((c) => c.done).length ?? 0;
   const totalItems = () => note.checklist?.length ?? 0;
   const progress = () =>
     totalItems() > 0 ? Math.round((doneCount() / totalItems()) * 100) : 0;
+  const visibleItems = () =>
+    checklistExpanded()
+      ? (note.checklist ?? [])
+      : (note.checklist ?? []).slice(0, 4);
+  const hiddenCount = () => Math.max(0, totalItems() - 4);
 
   return (
     <Panel
@@ -476,7 +519,7 @@ function NoteCard(props: NoteCardProps): JSX.Element {
           </Row>
           <ProgressBar value={progress()} tone="nominal" />
           <Stack gap={1}>
-            <For each={note.checklist!.slice(0, 4)}>
+            <For each={visibleItems()}>
               {(item) => (
                 <Checkbox
                   checked={item.done}
@@ -485,10 +528,16 @@ function NoteCard(props: NoteCardProps): JSX.Element {
                 />
               )}
             </For>
-            <Show when={(note.checklist?.length ?? 0) > 4}>
-              <Text variant="micro" tone="dim">
-                +{(note.checklist?.length ?? 0) - 4} MORE ITEMS
-              </Text>
+            <Show when={hiddenCount() > 0}>
+              <button
+                type="button"
+                onClick={() => setChecklistExpanded((v) => !v)}
+                class="self-start text-label uppercase tracking-label text-dim transition-colors hover:text-bright"
+              >
+                {checklistExpanded()
+                  ? "Show less"
+                  : `+${hiddenCount()} more items`}
+              </button>
             </Show>
           </Stack>
         </Stack>
@@ -501,7 +550,7 @@ function NoteCard(props: NoteCardProps): JSX.Element {
               DUE
             </Text>
             <Text variant="micro" tone="warn">
-              {date(note.dueAt!)}
+              {timestamp(note.dueAt!)}
             </Text>
           </Row>
         </Show>

@@ -7,6 +7,8 @@ export interface ServiceStatus {
   name: string;
   status: HealthStatus;
   latencyMs: number;
+  /** Typical/expected latency for this service — context for the live value. */
+  baselineMs: number;
   detail: string;
   history: HealthStatus[];
   degradationNote?: string;

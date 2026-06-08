@@ -30,6 +30,18 @@ export const ALL_SCOPES: TokenScope[] = [
   "read-only",
 ];
 
+/** Plain-English explanation of what each scope grants, for InfoHint. */
+export const SCOPE_DESCRIPTIONS: Record<TokenScope, string> = {
+  chat: "Send and receive chat messages and stream model responses.",
+  memory:
+    "Read and write the persistent memory store (saved facts and preferences).",
+  rag: "Query and ingest documents in the retrieval (RAG) knowledge base.",
+  tools: "Invoke agent tools, including shell, Python, and other capabilities.",
+  admin:
+    "Full administrative control: settings, users, MCP, and serving. Grant sparingly.",
+  "read-only": "View data only — no writes, no tool execution, no mutations.",
+};
+
 /** TTL options for the issue modal. */
 export type ExpiryOption = "30d" | "90d" | "1y" | "never";
 

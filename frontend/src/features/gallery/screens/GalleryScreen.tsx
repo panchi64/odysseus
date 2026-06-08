@@ -10,14 +10,18 @@ import {
   Button,
   EmptyState,
   InstrumentBand,
+  ListToolbar,
   LoadingText,
   PageHeader,
   Panel,
   Stack,
   Tabs,
   Text,
+  confirm,
   toast,
 } from "~/ui";
+import { createListView } from "~/lib/list";
+import { bytes } from "~/lib/format";
 import { useAlbums, useMedia } from "../data";
 import { MediaTile } from "../components/MediaTile";
 import { MediaDetailDrawer } from "../components/MediaDetailDrawer";
@@ -31,6 +35,7 @@ export function GalleryScreen(): JSX.Element {
   const [drawerOpen, setDrawerOpen] = createSignal(false);
   const [items, setItems] = createSignal<MediaItem[]>([]);
   const [importing, setImporting] = createSignal(false);
+  const [selectMode, setSelectMode] = createSignal(false);
 
   let seeded = false;
   createEffect(() => {
@@ -41,14 +46,31 @@ export function GalleryScreen(): JSX.Element {
     }
   });
 
-  const filtered = () => {
+  const inAlbum = () => {
     const album = selectedAlbum();
     return album === "all" ? items() : items().filter((m) => m.album === album);
   };
 
+  const view = createListView({
+    source: inAlbum,
+    search: (m) => `${m.title} ${m.tags.join(" ")}`,
+    sorts: {
+      recent: {
+        label: "DATE",
+        compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      },
+      size: { label: "SIZE", compare: (a, b) => a.sizeBytes - b.sizeBytes },
+      type: { label: "TYPE", compare: (a, b) => a.type.localeCompare(b.type) },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+    id: (m) => m.id,
+  });
+
   const totalImages = () => items().filter((m) => m.type === "image").length;
   const totalVideos = () => items().filter((m) => m.type === "video").length;
   const totalFavorites = () => items().filter((m) => m.favorite).length;
+  const totalBytes = () => items().reduce((sum, m) => sum + m.sizeBytes, 0);
 
   function toggleFavorite(id: string) {
     setItems((prev) =>
@@ -59,6 +81,38 @@ export function GalleryScreen(): JSX.Element {
   function openItem(item: MediaItem) {
     setSelectedItem(item);
     setDrawerOpen(true);
+  }
+
+  function toggleSelectMode(): void {
+    setSelectMode((on) => {
+      if (on) view.clearSelection();
+      return !on;
+    });
+  }
+
+  async function handleBulkDelete(): Promise<void> {
+    const targets = view.selectedItems();
+    if (!targets.length) return;
+    const ok = await confirm({
+      title: `Delete ${targets.length} item${targets.length > 1 ? "s" : ""}?`,
+      detail: "This action cannot be undone.",
+      confirmLabel: "DELETE",
+      tone: "alert",
+    });
+    if (!ok) return;
+    const ids = new Set(targets.map((t) => t.id));
+    const removed = items().filter((m) => ids.has(m.id));
+    setItems((prev) => prev.filter((m) => !ids.has(m.id)));
+    view.clearSelection();
+    toast.success(
+      `Deleted ${targets.length} item${targets.length > 1 ? "s" : ""}`,
+      {
+        action: {
+          label: "UNDO",
+          onClick: () => setItems((prev) => [...removed, ...prev]),
+        },
+      },
+    );
   }
 
   function handleImport() {
@@ -93,6 +147,7 @@ export function GalleryScreen(): JSX.Element {
           <InstrumentBand
             items={[
               { label: "TOTAL", value: String(items().length) },
+              { label: "STORAGE", value: bytes(totalBytes()), tone: "info" },
               { label: "IMAGES", value: String(totalImages()) },
               { label: "VIDEO", value: String(totalVideos()) },
               {
@@ -157,31 +212,83 @@ export function GalleryScreen(): JSX.Element {
             </Show>
           </Suspense>
 
-          <Suspense fallback={<LoadingText />}>
-            <Show
-              when={filtered().length}
-              fallback={
-                <EmptyState
-                  icon="image"
-                  message="NO MEDIA"
-                  hint="Import files or generate with AI to populate the gallery."
+          <Stack gap={3}>
+            <div class="flex items-center gap-3">
+              <div class="flex-1">
+                <ListToolbar
+                  query={view.query()}
+                  onQueryChange={view.setQuery}
+                  placeholder="Search media…"
+                  sortKey={view.sortKey()}
+                  sortOptions={view.sortOptions}
+                  onSortChange={view.setSort}
+                  dir={view.dir()}
+                  onToggleDir={view.toggleDir}
+                  count={view.count()}
+                  total={view.total()}
+                  selectedCount={view.selectedCount()}
+                  onClearSelection={view.clearSelection}
+                  bulkActions={
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      leading="trash"
+                      onClick={() => void handleBulkDelete()}
+                    >
+                      DELETE
+                    </Button>
+                  }
                 />
-              }
-            >
-              <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                <For each={filtered()}>
-                  {(item) => (
-                    <MediaTile
-                      item={item}
-                      selected={selectedItem()?.id === item.id}
-                      onSelect={() => openItem(item)}
-                      onToggleFavorite={() => toggleFavorite(item.id)}
-                    />
-                  )}
-                </For>
               </div>
-            </Show>
-          </Suspense>
+              <Button
+                variant={selectMode() ? "primary" : "ghost"}
+                size="sm"
+                leading="check"
+                onClick={toggleSelectMode}
+              >
+                {selectMode() ? "DONE" : "SELECT"}
+              </Button>
+            </div>
+
+            <Suspense fallback={<LoadingText />}>
+              <Show
+                when={view.items().length}
+                fallback={
+                  <EmptyState
+                    icon="image"
+                    message={view.isFiltered() ? "NO MATCHES" : "NO MEDIA"}
+                    hint={
+                      view.isFiltered()
+                        ? "No media matches your search."
+                        : "Import files or generate with AI to populate the gallery."
+                    }
+                  />
+                }
+              >
+                <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+                  <For each={view.items()}>
+                    {(item) => (
+                      <MediaTile
+                        item={item}
+                        selectMode={selectMode()}
+                        selected={
+                          selectMode()
+                            ? view.isSelected(item.id)
+                            : selectedItem()?.id === item.id
+                        }
+                        onSelect={() =>
+                          selectMode()
+                            ? view.toggleOne(item.id)
+                            : openItem(item)
+                        }
+                        onToggleFavorite={() => toggleFavorite(item.id)}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </Suspense>
+          </Stack>
         </div>
       </div>
 

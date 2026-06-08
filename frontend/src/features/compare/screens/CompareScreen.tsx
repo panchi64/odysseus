@@ -29,6 +29,13 @@ export function CompareScreen(): JSX.Element {
   const bothDone = () =>
     run.candidates.length === 2 && run.candidates.every((c) => !c.streaming);
 
+  const voteDisabledReason = () => {
+    if (run.revealed) return "You've already voted on this comparison.";
+    if (active() || !bothDone())
+      return "Wait for both responses to finish streaming before voting.";
+    return undefined;
+  };
+
   const handleStart = () => {
     const p = prompt().trim();
     if (!p) return;
@@ -143,6 +150,7 @@ export function CompareScreen(): JSX.Element {
                   winner={run.winner}
                   onVote={handleVote}
                   disabled={active() || run.revealed || !bothDone()}
+                  disabledReason={voteDisabledReason()}
                 />
               )}
             </For>

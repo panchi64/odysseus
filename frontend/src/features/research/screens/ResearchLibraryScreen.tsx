@@ -6,6 +6,7 @@ import {
   EmptyState,
   ErrorState,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   PageHeader,
@@ -17,6 +18,7 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import {
   useReportSummaries,
@@ -42,6 +44,23 @@ export function ResearchLibraryScreen(): JSX.Element {
 
   // Seed the mutable store from the resource once loaded (idempotent after first call)
   const summaries = () => store.list;
+
+  const view = createListView({
+    source: summaries,
+    search: (r) => r.title,
+    sorts: {
+      recent: {
+        label: "DATE",
+        compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
+      },
+      status: {
+        label: "STATUS",
+        compare: (a, b) => a.status.localeCompare(b.status),
+      },
+    },
+    initialSort: "recent",
+    initialDir: "desc",
+  });
 
   async function handleArchive(r: ResearchSummary) {
     if (r.status === "archived") {
@@ -109,15 +128,21 @@ export function ResearchLibraryScreen(): JSX.Element {
       </Show>
 
       <Show when={tab() === "library"}>
-        <Panel
-          label="RESEARCH REPORTS"
-          meta={
-            <Text variant="micro" tone="dim">
-              <Suspense fallback="…">{summaries().length} REPORTS</Suspense>
-            </Text>
-          }
-          flush
-        >
+        <Panel label="RESEARCH REPORTS" flush>
+          <div class="border-b border-line p-3">
+            <ListToolbar
+              query={view.query()}
+              onQueryChange={view.setQuery}
+              placeholder="Search reports by title…"
+              sortKey={view.sortKey()}
+              sortOptions={view.sortOptions}
+              onSortChange={view.setSort}
+              dir={view.dir()}
+              onToggleDir={view.toggleDir}
+              count={view.count()}
+              total={view.total()}
+            />
+          </div>
           <Suspense
             fallback={
               <div class="p-4">
@@ -135,16 +160,20 @@ export function ResearchLibraryScreen(): JSX.Element {
             </Show>
             <Show when={!summariesResource.error}>
               <Show
-                when={summaries().length > 0}
+                when={view.items().length > 0}
                 fallback={
                   <EmptyState
                     icon="research"
                     message="NO REPORTS"
-                    hint="Run a research query to generate your first report."
+                    hint={
+                      view.isFiltered()
+                        ? "No reports match your search."
+                        : "Run a research query to generate your first report."
+                    }
                   />
                 }
               >
-                <For each={summaries()}>
+                <For each={view.items()}>
                   {(r) => (
                     <ListRow
                       label={r.title}

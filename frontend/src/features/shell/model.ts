@@ -7,4 +7,8 @@ export interface ShellLine {
   kind: ShellLineKind;
   text: string;
   at: string;
+  /** Process exit code, set on the terminal line of a completed command. */
+  exitCode?: number;
+  /** Wall-clock execution time in ms, set on the terminal line of a command. */
+  durationMs?: number;
 }

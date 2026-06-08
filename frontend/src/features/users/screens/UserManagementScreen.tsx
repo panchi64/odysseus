@@ -6,8 +6,10 @@ import {
   Divider,
   Drawer,
   EmptyState,
+  InfoHint,
   Input,
   ListRow,
+  ListToolbar,
   LoadingText,
   Menu,
   Modal,
@@ -19,13 +21,15 @@ import {
   Text,
   Toggle,
   confirm,
+  copyToClipboard,
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import { useUsers } from "../data";
 import type { ManagedUser, Privilege } from "../model";
-import { ALL_PRIVILEGES } from "../model";
+import { ALL_PRIVILEGES, PRIVILEGE_LEGEND } from "../model";
 
 const userStatus = (u: ManagedUser): Status => {
   if (u.status === "disabled") return "idle";
@@ -33,12 +37,39 @@ const userStatus = (u: ManagedUser): Status => {
   return "info";
 };
 
+/** Generate a mock initial password (diegetic — Phase 2 returns the real one). */
+function generatePassword(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
+  let out = "";
+  for (let i = 0; i < 16; i++) {
+    out += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return out;
+}
+
 export function UserManagementScreen(): JSX.Element {
   const usersResource = useUsers();
 
   // Local mutable list
   const [users, setUsers] = createStore<ManagedUser[]>([]);
   let seeded = false;
+
+  const view = createListView<ManagedUser>({
+    source: () => users,
+    search: (u) => u.name,
+    sorts: {
+      name: {
+        label: "NAME",
+        compare: (a, b) => a.name.localeCompare(b.name),
+      },
+      recent: {
+        label: "LAST ACTIVE",
+        compare: (a, b) => a.lastActiveAt.localeCompare(b.lastActiveAt),
+      },
+    },
+    initialSort: "name",
+    id: (u) => u.id,
+  });
 
   // Drawer: privilege editor
   const [drawerUser, setDrawerUser] = createSignal<ManagedUser | null>(null);
@@ -52,6 +83,13 @@ export function UserManagementScreen(): JSX.Element {
   const [newIsAdmin, setNewIsAdmin] = createSignal(false);
   const [createError, setCreateError] = createSignal<string | null>(null);
   const [createPending, setCreatePending] = createSignal(false);
+
+  // Modal: password handoff (shown after create or reset)
+  const [handoff, setHandoff] = createSignal<{
+    name: string;
+    password: string;
+    title: string;
+  } | null>(null);
 
   function seed(list: ManagedUser[]) {
     if (!seeded) {
@@ -119,6 +157,7 @@ export function UserManagementScreen(): JSX.Element {
     // Phase 1: simulate async work
     await Promise.resolve();
     const id = `u-${String(users.length + 1).padStart(3, "0")}`;
+    const password = newPassword().trim() || generatePassword();
     const user: ManagedUser = {
       id,
       name: name.toUpperCase(),
@@ -134,6 +173,22 @@ export function UserManagementScreen(): JSX.Element {
     setCreatePending(false);
     setCreateOpen(false);
     toast.success(`CREATED USER ${user.name}`);
+    // Surface the initial password for handoff
+    setHandoff({
+      name: user.name,
+      password,
+      title: "USER CREATED",
+    });
+  }
+
+  function resetPassword(user: ManagedUser) {
+    const password = generatePassword();
+    setHandoff({
+      name: user.name,
+      password,
+      title: "PASSWORD RESET",
+    });
+    toast.success(`PASSWORD RESET FOR ${user.name}`);
   }
 
   async function handleDeleteUser(user: ManagedUser) {
@@ -172,6 +227,52 @@ export function UserManagementScreen(): JSX.Element {
     );
   }
 
+  // ── Bulk actions ────────────────────────────────────────────
+  function bulkDisable() {
+    const targets = view.selectedItems().filter((u) => u.status === "active");
+    if (targets.length === 0) {
+      toast.info("SELECTED USERS ALREADY DISABLED");
+      view.clearSelection();
+      return;
+    }
+    const ids = new Set(targets.map((u) => u.id));
+    setUsers(
+      (u) => ids.has(u.id),
+      produce((u) => {
+        u.status = "disabled";
+      }),
+    );
+    toast.success(`DISABLED ${targets.length} USER(S)`);
+    view.clearSelection();
+  }
+
+  async function bulkDelete() {
+    const targets = view.selectedItems();
+    if (targets.length === 0) return;
+    const ok = await confirm({
+      title: `DELETE ${targets.length} USER(S)?`,
+      detail:
+        "This action cannot be undone. All selected users and their sessions will be removed.",
+      confirmLabel: "DELETE",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+    if (!ok) return;
+    const removed = targets.map((u) => ({ ...u }));
+    const ids = new Set(targets.map((u) => u.id));
+    setUsers((u) => u.filter((x) => !ids.has(x.id)));
+    view.clearSelection();
+    toast.success(`DELETED ${removed.length} USER(S)`, {
+      action: {
+        label: "UNDO",
+        onClick: () => {
+          setUsers((u) => [...u, ...removed]);
+          toast.info(`RESTORED ${removed.length} USER(S)`);
+        },
+      },
+    });
+  }
+
   function handleCloseCreateModal() {
     setCreateError(null);
     setNewName("");
@@ -206,62 +307,110 @@ export function UserManagementScreen(): JSX.Element {
         </Show>
       </Suspense>
 
-      <Panel
-        label="REGISTERED USERS"
-        meta={
-          <Text variant="micro" tone="dim">
-            {users.length} TOTAL
-          </Text>
-        }
-        flush
-      >
-        <For each={users}>
-          {(user, i) => (
-            <ListRow
-              label={user.name}
-              leading="user"
-              flush={i() === users.length - 1}
-              right={
-                <Row gap={2} align="center">
-                  <Text variant="micro" tone="dim">
-                    {relativeTime(user.lastActiveAt)}
-                  </Text>
-                  <StatusFlag status={userStatus(user)} dot>
-                    {user.isAdmin ? "ADMIN" : user.status.toUpperCase()}
-                  </StatusFlag>
-                  <Menu
-                    trigger={
-                      <Button variant="ghost" size="sm" leading="settings" />
-                    }
-                    items={[
-                      {
-                        label: "EDIT PRIVILEGES",
-                        icon: "key",
-                        onSelect: () => openDrawer(user),
-                      },
-                      {
-                        label:
-                          user.status === "active"
-                            ? "DISABLE USER"
-                            : "ENABLE USER",
-                        icon: user.status === "active" ? "close" : "check",
-                        onSelect: () => toggleUserStatus(user),
-                      },
-                      {
-                        label: "DELETE USER",
-                        icon: "trash",
-                        danger: true,
-                        onSelect: () => handleDeleteUser(user),
-                      },
-                    ]}
-                  />
-                </Row>
+      <Panel label="REGISTERED USERS" flush>
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search users…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
+            selectedCount={view.selectedCount()}
+            onClearSelection={view.clearSelection}
+            bulkActions={
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  leading="close"
+                  onClick={bulkDisable}
+                >
+                  DISABLE
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  leading="trash"
+                  onClick={bulkDelete}
+                >
+                  DELETE
+                </Button>
+              </>
+            }
+          />
+        </div>
+
+        <Show
+          when={view.items().length}
+          fallback={
+            <EmptyState
+              icon="users"
+              message="NO USERS"
+              hint={
+                view.isFiltered()
+                  ? "No users match your search."
+                  : "No users registered."
               }
             />
-          )}
-        </For>
-        <Show when={users.length === 0}>
-          <EmptyState message="NO USERS REGISTERED" />
+          }
+        >
+          <For each={view.items()}>
+            {(user) => (
+              <ListRow
+                label={user.name}
+                selectable
+                selected={view.isSelected(user.id)}
+                onClick={() => view.toggleOne(user.id)}
+                class={user.status === "disabled" ? "opacity-50" : undefined}
+                right={
+                  <Row gap={2} align="center">
+                    <Text variant="micro" tone="dim">
+                      {relativeTime(user.lastActiveAt)}
+                    </Text>
+                    <StatusFlag status={userStatus(user)} dot>
+                      {user.isAdmin ? "ADMIN" : user.status.toUpperCase()}
+                    </StatusFlag>
+                    <Menu
+                      trigger={
+                        <Button variant="ghost" size="sm" leading="settings" />
+                      }
+                      items={[
+                        {
+                          label: "EDIT PRIVILEGES",
+                          icon: "key",
+                          onSelect: () => openDrawer(user),
+                        },
+                        {
+                          label: "RESET PASSWORD",
+                          icon: "refresh",
+                          onSelect: () => resetPassword(user),
+                        },
+                        {
+                          label:
+                            user.status === "active"
+                              ? "DISABLE USER"
+                              : "ENABLE USER",
+                          icon: user.status === "active" ? "close" : "check",
+                          onSelect: () => toggleUserStatus(user),
+                        },
+                        {
+                          label: "DELETE USER",
+                          icon: "trash",
+                          danger: true,
+                          onSelect: () => handleDeleteUser(user),
+                        },
+                      ]}
+                    />
+                  </Row>
+                }
+              />
+            )}
+          </For>
         </Show>
       </Panel>
 
@@ -302,9 +451,12 @@ export function UserManagementScreen(): JSX.Element {
                 <For each={ALL_PRIVILEGES}>
                   {(priv) => (
                     <Row align="center" justify="between">
-                      <Text variant="label" tone="default">
-                        {priv.toUpperCase()}
-                      </Text>
+                      <Row gap={1} align="center">
+                        <Text variant="label" tone="default">
+                          {priv.toUpperCase()}
+                        </Text>
+                        <InfoHint label={PRIVILEGE_LEGEND[priv]} />
+                      </Row>
                       <Toggle
                         checked={u.privileges.includes(priv)}
                         onChange={() => togglePrivilege(u.id, priv)}
@@ -364,7 +516,8 @@ export function UserManagementScreen(): JSX.Element {
             type="password"
             value={newPassword()}
             onInput={(e) => setNewPassword(e.currentTarget.value)}
-            placeholder="••••••••"
+            placeholder="LEAVE BLANK TO AUTO-GENERATE"
+            hint="If blank, an initial password is generated and shown once."
           />
           <Checkbox
             label="GRANT ADMINISTRATOR ROLE"
@@ -372,6 +525,50 @@ export function UserManagementScreen(): JSX.Element {
             onChange={setNewIsAdmin}
           />
         </Stack>
+      </Modal>
+
+      {/* ── PASSWORD HANDOFF MODAL (create / reset) ──────────── */}
+      <Modal
+        open={handoff() !== null}
+        onClose={() => setHandoff(null)}
+        title={handoff()?.title ?? ""}
+        footer={
+          <Button variant="primary" onClick={() => setHandoff(null)}>
+            DONE
+          </Button>
+        }
+      >
+        <Show when={handoff()} keyed>
+          {(h) => (
+            <Stack gap={3}>
+              <Text variant="body" tone="dim">
+                Initial password for{" "}
+                <Text variant="label" tone="bright" as="span">
+                  {h.name}
+                </Text>
+                . This is shown only once — give it to the user securely and
+                have them change it on first sign-in.
+              </Text>
+              <div class="flex items-center justify-between gap-2 border border-line bg-raised px-3 py-2">
+                <Text
+                  variant="readout"
+                  tone="bright"
+                  class="font-mono tracking-wide break-all"
+                >
+                  {h.password}
+                </Text>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading="copy"
+                  onClick={() => copyToClipboard(h.password, "Password")}
+                >
+                  COPY
+                </Button>
+              </div>
+            </Stack>
+          )}
+        </Show>
       </Modal>
     </Stack>
   );

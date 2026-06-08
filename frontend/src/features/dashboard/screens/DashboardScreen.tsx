@@ -11,7 +11,6 @@ import {
   StatusFlag,
   Text,
   Tile,
-  toast,
   type Status,
 } from "~/ui";
 import { NAV } from "~/app/nav";
@@ -78,11 +77,6 @@ export function DashboardScreen(): JSX.Element {
     return "ALL SYSTEMS";
   };
 
-  // Inline "sync now" handler for EMAIL SYNC (mock: updates detail text + toast).
-  function handleEmailSync(): void {
-    toast.success("Email sync triggered — check back in a moment.");
-  }
-
   return (
     <Stack gap={6}>
       <PageHeader
@@ -142,30 +136,26 @@ export function DashboardScreen(): JSX.Element {
                     label={svc.name}
                     right={
                       <span class="flex items-center gap-2">
+                        {svc.critical && (
+                          <StatusFlag status="info">CRITICAL</StatusFlag>
+                        )}
                         <Text variant="micro" tone="dim">
                           {svc.detail}
                         </Text>
                         <StatusFlag status={svc.status}>
                           {svc.status.toUpperCase()}
                         </StatusFlag>
-                        {svc.name === "EMBEDDINGS" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            href="/models/embedding"
-                          >
-                            REINDEX
-                          </Button>
-                        )}
-                        {svc.name === "EMAIL SYNC" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleEmailSync}
-                          >
-                            SYNC NOW
-                          </Button>
-                        )}
+                        {svc.status !== "nominal" &&
+                          svc.remediationHref &&
+                          svc.remediationLabel && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              href={svc.remediationHref}
+                            >
+                              {svc.remediationLabel}
+                            </Button>
+                          )}
                       </span>
                     }
                   />

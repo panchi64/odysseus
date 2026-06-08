@@ -1,6 +1,8 @@
 import { Show, splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
+import { Icon } from "../primitives/Icon";
+import { type IconName } from "../icons/registry";
 
 export interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
   /** Uppercase field label rendered above the control. */
@@ -9,6 +11,8 @@ export interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
   invalid?: boolean;
   /** Dim helper or error text below the control. */
   hint?: string;
+  /** Leading glyph rendered inside the control (e.g. `search`). */
+  leading?: IconName;
 }
 
 const fieldClass =
@@ -20,6 +24,7 @@ export function Input(props: InputProps): JSX.Element {
     "label",
     "invalid",
     "hint",
+    "leading",
     "class",
   ]);
   return (
@@ -29,15 +34,25 @@ export function Input(props: InputProps): JSX.Element {
           {local.label}
         </Text>
       </Show>
-      <input
-        class={cx(
-          fieldClass,
-          local.invalid ? "border-alert" : "border-line",
-          local.class,
-        )}
-        aria-invalid={local.invalid || undefined}
-        {...rest}
-      />
+      <div class="relative">
+        <Show when={local.leading}>
+          <Icon
+            name={local.leading!}
+            size={14}
+            class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-dim"
+          />
+        </Show>
+        <input
+          class={cx(
+            fieldClass,
+            local.leading && "pl-8",
+            local.invalid ? "border-alert" : "border-line",
+            local.class,
+          )}
+          aria-invalid={local.invalid || undefined}
+          {...rest}
+        />
+      </div>
       <Show when={local.hint}>
         <Text variant="micro" tone={local.invalid ? "alert" : "dim"}>
           {local.hint}

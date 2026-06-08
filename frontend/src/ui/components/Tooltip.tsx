@@ -13,6 +13,9 @@ export interface TooltipProps {
   /** Render the tip in a portal with fixed positioning so it escapes
    *  overflow-clipping ancestors (e.g. a scrolling sidebar). Enables `delay`. */
   float?: boolean;
+  /** Render the label as normal-case prose instead of the default uppercase
+   *  HUD label — for full-sentence explanations (see `InfoHint`). */
+  prose?: boolean;
   class?: string;
   children: JSX.Element;
 }
@@ -25,7 +28,9 @@ const sideClass = {
 } as const;
 
 const tipChrome =
-  "pointer-events-none border border-line bg-raised px-2 py-1 text-micro uppercase tracking-label text-bright";
+  "pointer-events-none border border-line bg-raised px-2 py-1 text-micro text-bright";
+const tipCase = (prose?: boolean) =>
+  prose ? "tracking-normal" : "uppercase tracking-label";
 
 /** Hover/focus tooltip. Default is a CSS-only instant reveal positioned
  *  relative to the trigger. `float` switches to a portaled, fixed-positioned
@@ -36,6 +41,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
     "side",
     "delay",
     "float",
+    "prose",
     "class",
     "children",
   ]);
@@ -48,7 +54,9 @@ export function Tooltip(props: TooltipProps): JSX.Element {
           role="tooltip"
           class={cx(
             tipChrome,
-            "absolute z-50 hidden whitespace-nowrap group-hover/tip:block group-focus-within/tip:block",
+            tipCase(local.prose),
+            "absolute z-50 hidden group-hover/tip:block group-focus-within/tip:block",
+            local.prose ? "max-w-56 whitespace-normal" : "whitespace-nowrap",
             sideClass[local.side ?? "top"],
           )}
         >
@@ -120,7 +128,11 @@ export function Tooltip(props: TooltipProps): JSX.Element {
           <Portal>
             <span
               role="tooltip"
-              class={cx(tipChrome, "fixed z-50 max-w-56 whitespace-normal")}
+              class={cx(
+                tipChrome,
+                tipCase(local.prose),
+                "fixed z-50 max-w-56 whitespace-normal",
+              )}
               style={{
                 left: `${p().x}px`,
                 top: `${p().y}px`,

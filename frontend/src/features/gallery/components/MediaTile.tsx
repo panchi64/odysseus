@@ -1,11 +1,14 @@
-import { For, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import { Box, Button, Icon, Row, Stack, Text } from "~/ui";
-import { bytes } from "~/lib/format";
+import { bytes, relativeTime } from "~/lib/format";
 import type { MediaItem } from "../model";
 
 interface MediaTileProps {
   item: MediaItem;
   selected?: boolean;
+  /** When true, the tile renders a selection checkbox and the whole tile toggles
+   *  selection instead of opening the detail drawer. */
+  selectMode?: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
 }
@@ -18,12 +21,26 @@ export function MediaTile(props: MediaTileProps): JSX.Element {
       onClick={props.onSelect}
     >
       {/* Placeholder tile */}
-      <Box class="aspect-square w-full border border-line bg-bg flex items-center justify-center">
+      <Box class="relative aspect-square w-full border border-line bg-bg flex items-center justify-center">
         <Icon
           name={props.item.type === "video" ? "play" : "image"}
           size={28}
           class="text-dim"
         />
+        <Show when={props.selectMode}>
+          <span
+            class="absolute left-1.5 top-1.5 flex size-4 items-center justify-center rounded-ctl border bg-bg transition-colors"
+            classList={{
+              "border-bright text-bright": props.selected,
+              "border-line text-transparent": !props.selected,
+            }}
+            aria-hidden="true"
+          >
+            <Show when={props.selected}>
+              <Icon name="check" size={12} />
+            </Show>
+          </span>
+        </Show>
       </Box>
 
       <Stack gap={1}>
@@ -51,9 +68,14 @@ export function MediaTile(props: MediaTileProps): JSX.Element {
             )}
           </For>
         </Row>
-        <Text variant="micro" tone="dim">
-          {bytes(props.item.sizeBytes)}
-        </Text>
+        <Row align="center" justify="between" gap={1}>
+          <Text variant="micro" tone="dim">
+            {bytes(props.item.sizeBytes)}
+          </Text>
+          <Text variant="micro" tone="dim">
+            {relativeTime(props.item.createdAt)}
+          </Text>
+        </Row>
       </Stack>
     </div>
   );

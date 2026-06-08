@@ -2,11 +2,16 @@ import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import {
   Button,
+  confirm,
   Drawer,
   EmptyState,
+  ExpandableText,
+  InfoHint,
   Input,
   ListRow,
+  ListToolbar,
   LoadingText,
+  Menu,
   Modal,
   PageHeader,
   Panel,
@@ -20,7 +25,11 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { useMcpServers } from "../data";
+
+const TRANSPORT_HINT =
+  "STDIO runs the server as a local subprocess and talks over stdin/stdout — best for tools on this machine. HTTP connects to a server over the network at a URL — use it for remote or shared servers.";
 import type { McpAuthCredentials, McpServer, McpStatus } from "../model";
 
 const mcpStatusFlag: Record<McpStatus, Status> = {
@@ -172,9 +181,11 @@ function ServerCard(props: {
   onToggleTool: (serverId: string, toolName: string, enabled: boolean) => void;
   onRetry: (serverId: string) => void;
   onConfigureAuth: (server: McpServer) => void;
+  onDelete: (server: McpServer) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
   const enabledCount = () => props.server.tools.filter((t) => t.enabled).length;
+  const hasTools = () => props.server.tools.length > 0;
 
   const isError = () => props.server.status === "error";
   const isDisconnected = () => props.server.status === "disconnected";
@@ -236,17 +247,44 @@ function ServerCard(props: {
             </Button>
           </Show>
 
-          <Button
-            size="sm"
-            variant="ghost"
-            trailing={expanded() ? "chevron-down" : "chevron-right"}
-            onClick={() => setExpanded((v) => !v)}
+          <Show
+            when={hasTools()}
+            fallback={
+              <Tooltip label="This server exposes no tools to the agent.">
+                <Button size="sm" variant="ghost" disabled>
+                  0 TOOLS
+                </Button>
+              </Tooltip>
+            }
           >
-            {props.server.tools.length} TOOLS
-          </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              trailing={expanded() ? "chevron-down" : "chevron-right"}
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {props.server.tools.length} TOOLS
+            </Button>
+          </Show>
+
+          <Menu
+            trigger={
+              <span class="px-1 text-dim hover:text-bright">
+                <Text variant="micro">···</Text>
+              </span>
+            }
+            items={[
+              {
+                label: "DELETE SERVER",
+                icon: "trash",
+                danger: true,
+                onSelect: () => props.onDelete(props.server),
+              },
+            ]}
+          />
         </Row>
       }
-      flush={expanded()}
+      flush={expanded() && hasTools()}
     >
       <Show when={!expanded()}>
         <Stack gap={2}>
@@ -257,6 +295,7 @@ function ServerCard(props: {
             <Text variant="micro" tone="bright">
               {props.server.transport.toUpperCase()}
             </Text>
+            <InfoHint label={TRANSPORT_HINT} size={12} />
           </Row>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
@@ -289,7 +328,7 @@ function ServerCard(props: {
         </Stack>
       </Show>
 
-      <Show when={expanded()}>
+      <Show when={expanded() && hasTools()}>
         <For each={props.server.tools}>
           {(tool) => (
             <ListRow
@@ -297,9 +336,13 @@ function ServerCard(props: {
               leading="code"
               right={
                 <Row gap={2} align="center">
-                  <Text variant="micro" tone="dim" class="max-w-xs truncate">
-                    {tool.description}
-                  </Text>
+                  <ExpandableText
+                    text={tool.description}
+                    limit={120}
+                    variant="micro"
+                    tone="dim"
+                    class="max-w-xs"
+                  />
                   <Toggle
                     checked={tool.enabled}
                     onChange={(v) =>
@@ -319,6 +362,7 @@ function ServerCard(props: {
             <Text variant="micro" tone="bright">
               {props.server.transport.toUpperCase()}
             </Text>
+            <InfoHint label={TRANSPORT_HINT} size={12} />
             <Text variant="micro" tone="dim">
               ·
             </Text>
@@ -404,6 +448,37 @@ export function McpScreen(): JSX.Element {
     }, 2000);
   }
 
+  async function deleteServer(server: McpServer) {
+    const ok = await confirm({
+      title: `Delete server "${server.name}"?`,
+      detail: "The agent will lose access to its tools. This cannot be undone.",
+      confirmLabel: "DELETE",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+    if (!ok) return;
+    setServers(
+      produce((s) => {
+        const idx = s.findIndex((x) => x.id === server.id);
+        if (idx !== -1) s.splice(idx, 1);
+      }),
+    );
+    toast.success(`"${server.name}" removed.`);
+  }
+
+  const view = createListView({
+    source: () => servers,
+    search: (s) => s.name,
+    sorts: {
+      name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
+      status: {
+        label: "STATUS",
+        compare: (a, b) => a.status.localeCompare(b.status),
+      },
+    },
+    initialSort: "name",
+  });
+
   function saveCredentials(serverId: string, creds: McpAuthCredentials) {
     setServers(
       produce((s) => {
@@ -487,7 +562,7 @@ export function McpScreen(): JSX.Element {
               <EmptyState
                 icon="plug"
                 message="NO SERVERS"
-                hint="Register an MCP server to expose tools to the agent."
+                hint="Model Context Protocol (MCP) lets the agent call external tools — file access, search, custom APIs — exposed by a server. Register one to get started."
                 action={
                   <Button onClick={() => setRegisterOpen(true)} leading="plus">
                     REGISTER SERVER
@@ -497,16 +572,44 @@ export function McpScreen(): JSX.Element {
             }
           >
             <Stack gap={4}>
-              <For each={servers}>
-                {(srv) => (
-                  <ServerCard
-                    server={srv}
-                    onToggleTool={toggleTool}
-                    onRetry={retryConnection}
-                    onConfigureAuth={(s) => setAuthTarget(s)}
+              <Text variant="micro" tone="dim">
+                MCP servers expose tools the agent can call. Toggle individual
+                tools on a server, or register more below.
+              </Text>
+              <ListToolbar
+                query={view.query()}
+                onQueryChange={view.setQuery}
+                placeholder="Search servers…"
+                sortKey={view.sortKey()}
+                sortOptions={view.sortOptions}
+                onSortChange={view.setSort}
+                dir={view.dir()}
+                onToggleDir={view.toggleDir}
+                count={view.count()}
+                total={view.total()}
+              />
+              <Show
+                when={view.items().length}
+                fallback={
+                  <EmptyState
+                    icon="search"
+                    message="NO MATCHES"
+                    hint="No servers match your search."
                   />
-                )}
-              </For>
+                }
+              >
+                <For each={view.items()}>
+                  {(srv) => (
+                    <ServerCard
+                      server={srv}
+                      onToggleTool={toggleTool}
+                      onRetry={retryConnection}
+                      onConfigureAuth={(s) => setAuthTarget(s)}
+                      onDelete={deleteServer}
+                    />
+                  )}
+                </For>
+              </Show>
             </Stack>
           </Show>
         </Show>

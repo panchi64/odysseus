@@ -10,6 +10,8 @@ export interface EmbeddingModel {
   active: boolean;
   sizeBytes?: number;
   description?: string;
+  /** Remote models only: whether an API key has been configured. */
+  apiKeySet?: boolean;
 }
 
 export interface ReindexProgress {

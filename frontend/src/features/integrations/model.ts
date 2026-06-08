@@ -11,4 +11,6 @@ export interface Integration {
   status: IntegrationStatus;
   lastTestedAt?: string;
   description?: string;
+  /** Whether an API key / credential is required (vs. optional) for this connector. */
+  credentialRequired?: boolean;
 }

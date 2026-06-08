@@ -21,6 +21,7 @@ export type IconName =
   | "search"
   | "menu"
   | "warning"
+  | "info"
   | "lock"
   | "key"
   | "eye"
@@ -57,6 +58,7 @@ export type IconName =
   | "pen"
   | "compare"
   | "research"
+  | "copy"
   | "sun"
   | "moon";
 
@@ -88,6 +90,12 @@ export const icons: Record<IconName, () => JSX.Element> = {
     <>
       <path d="M8 2L15 14H1L8 2z" />
       <path d="M8 6v4M8 12v0.5" />
+    </>
+  ),
+  info: () => (
+    <>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 7v4M8 5v0.5" />
     </>
   ),
   lock: () => (
@@ -253,6 +261,12 @@ export const icons: Record<IconName, () => JSX.Element> = {
     <>
       <circle cx="7" cy="7" r="4" />
       <path d="M10 10l4 4M7 5v4M5 7h4" />
+    </>
+  ),
+  copy: () => (
+    <>
+      <rect x="5" y="5" width="9" height="9" />
+      <path d="M11 5V2H2v9h3" />
     </>
   ),
   sun: () => (

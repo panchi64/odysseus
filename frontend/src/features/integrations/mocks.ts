@@ -10,6 +10,7 @@ export const mockIntegrations: Integration[] = [
     status: "ok",
     lastTestedAt: "2026-06-07T13:58:00Z",
     description: "Self-hosted metasearch engine for web queries.",
+    credentialRequired: false,
   },
   {
     id: "int-ntfy",
@@ -20,6 +21,7 @@ export const mockIntegrations: Integration[] = [
     status: "ok",
     lastTestedAt: "2026-06-07T12:00:00Z",
     description: "Push notification delivery for alerts and completions.",
+    credentialRequired: false,
   },
   {
     id: "int-github",
@@ -29,6 +31,7 @@ export const mockIntegrations: Integration[] = [
     configured: false,
     status: "untested",
     description: "Repository browsing and issue management.",
+    credentialRequired: true,
   },
   {
     id: "int-jira",
@@ -38,6 +41,7 @@ export const mockIntegrations: Integration[] = [
     configured: false,
     status: "untested",
     description: "Issue tracking and sprint management.",
+    credentialRequired: true,
   },
   {
     id: "int-s3",
@@ -48,5 +52,6 @@ export const mockIntegrations: Integration[] = [
     status: "error",
     lastTestedAt: "2026-06-07T09:00:00Z",
     description: "Document and media object storage.",
+    credentialRequired: true,
   },
 ];

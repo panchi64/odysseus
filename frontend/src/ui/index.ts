@@ -10,6 +10,7 @@
 
 // utils
 export { cx, type ClassValue } from "./cx";
+export { copyToClipboard } from "./clipboard";
 
 // theme
 export {
@@ -53,6 +54,7 @@ export {
 } from "./components/InstrumentBand";
 export { Tile, type TileProps } from "./components/Tile";
 export { ListRow, type ListRowProps } from "./components/ListRow";
+export { ListToolbar, type ListToolbarProps } from "./components/ListToolbar";
 export {
   RegistrationFrame,
   type RegistrationFrameProps,
@@ -79,6 +81,11 @@ export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";
 export { Modal, type ModalProps } from "./components/Modal";
 export { Drawer, type DrawerProps } from "./components/Drawer";
 export { Tooltip, type TooltipProps } from "./components/Tooltip";
+export { InfoHint, type InfoHintProps } from "./components/InfoHint";
+export {
+  ExpandableText,
+  type ExpandableTextProps,
+} from "./components/ExpandableText";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
 export { ThemeToggle } from "./components/ThemeToggle";
 

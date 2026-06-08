@@ -2,8 +2,11 @@ import { createSignal, For, onCleanup, Show, type JSX } from "solid-js";
 import {
   Button,
   confirm,
+  EmptyState,
   Icon,
+  InfoHint,
   Input,
+  ListToolbar,
   Menu,
   PageHeader,
   Panel,
@@ -14,8 +17,25 @@ import {
   toast,
   Tooltip,
 } from "~/ui";
+import { createListView } from "~/lib/list";
 import { deleteVaultEntry, restoreVaultEntry, useVaultEntries } from "../data";
 import type { VaultEntry } from "../model";
+
+/** Rough master-password strength label for the init/unlock field. */
+function passwordStrength(
+  pw: string,
+): { label: string; status: "alert" | "warn" | "nominal" } | null {
+  if (!pw) return null;
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++;
+  if (/\d/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  if (score <= 2) return { label: "WEAK", status: "alert" };
+  if (score <= 3) return { label: "FAIR", status: "warn" };
+  return { label: "STRONG", status: "nominal" };
+}
 
 /** Mock master password. Phase 2 will verify against the backend. */
 const MOCK_MASTER_PASSWORD = "admin1234";
@@ -94,6 +114,17 @@ export function VaultScreen(): JSX.Element {
     });
   }
 
+  const view = createListView({
+    source: () => entries() ?? [],
+    search: (e) => `${e.name} ${e.url} ${e.username}`,
+    sorts: {
+      name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
+      url: { label: "URL", compare: (a, b) => a.url.localeCompare(b.url) },
+    },
+    initialSort: "name",
+    initialDir: "asc",
+  });
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -121,9 +152,12 @@ export function VaultScreen(): JSX.Element {
             <Row gap={3} align="center">
               <Icon name="lock" size={24} class="text-alert" />
               <Stack gap={1}>
-                <Text variant="readout" tone="bright">
-                  MASTER PASSWORD REQUIRED
-                </Text>
+                <Row gap={2} align="center">
+                  <Text variant="readout" tone="bright">
+                    MASTER PASSWORD REQUIRED
+                  </Text>
+                  <InfoHint label="Credentials are encrypted at rest with a key derived from this master password. It is never stored — only its hash. The vault auto-locks on logout and stays locked until re-entered." />
+                </Row>
                 <Text variant="micro" tone="dim">
                   Enter the vault master password to access stored credentials.
                 </Text>
@@ -144,6 +178,21 @@ export function VaultScreen(): JSX.Element {
               hint={unlockError() ?? undefined}
               placeholder="••••••••"
             />
+            <Show when={passwordStrength(masterPassword())}>
+              {(s) => (
+                <Row gap={2} align="center">
+                  <Text variant="micro" tone="dim">
+                    STRENGTH
+                  </Text>
+                  <StatusFlag status={s().status} dot>
+                    {s().label}
+                  </StatusFlag>
+                  <Text variant="micro" tone="dim">
+                    Use 12+ characters mixing case, digits, and symbols.
+                  </Text>
+                </Row>
+              )}
+            </Show>
             <Button variant="primary" leading="key" onClick={unlock}>
               UNLOCK VAULT
             </Button>
@@ -165,16 +214,22 @@ export function VaultScreen(): JSX.Element {
 
       {/* ── UNLOCKED STATE ───────────────────────────────────── */}
       <Show when={!locked()}>
-        <Panel
-          label="CREDENTIALS"
-          meta={
-            <Text variant="micro" tone="dim">
-              {entries()?.length ?? 0} ENTRIES
-            </Text>
-          }
-          flush
-        >
-          <For each={entries()}>
+        <Panel label="CREDENTIALS" flush>
+          <div class="border-b border-line p-3">
+            <ListToolbar
+              query={view.query()}
+              onQueryChange={view.setQuery}
+              placeholder="Search by name or URL…"
+              sortKey={view.sortKey()}
+              sortOptions={view.sortOptions}
+              onSortChange={view.setSort}
+              dir={view.dir()}
+              onToggleDir={view.toggleDir}
+              count={view.count()}
+              total={view.total()}
+            />
+          </div>
+          <For each={view.items()}>
             {(entry) => (
               <div class="border-b border-line last:border-b-0">
                 <div class="flex items-start justify-between gap-3 px-3 py-3">
@@ -262,12 +317,16 @@ export function VaultScreen(): JSX.Element {
               </div>
             )}
           </For>
-          <Show when={(entries()?.length ?? 0) === 0}>
-            <div class="p-4">
-              <Text variant="body" tone="dim">
-                No vault entries.
-              </Text>
-            </div>
+          <Show when={view.items().length === 0}>
+            <EmptyState
+              icon="key"
+              message="NO CREDENTIALS"
+              hint={
+                view.isFiltered()
+                  ? "No entries match your search."
+                  : "No vault entries yet."
+              }
+            />
           </Show>
         </Panel>
       </Show>

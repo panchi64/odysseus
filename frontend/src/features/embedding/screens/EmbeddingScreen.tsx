@@ -15,6 +15,7 @@ import {
   Stack,
   StatusFlag,
   Text,
+  Tooltip,
   toast,
 } from "~/ui";
 import { bytes, num, timestamp } from "~/lib/format";
@@ -37,6 +38,12 @@ export function EmbeddingScreen(): JSX.Element {
 
   async function requestSwap(m: EmbeddingModel) {
     if (m.id === activeId()) return;
+    if (m.provider === "remote" && !m.apiKeySet) {
+      toast.error(
+        `${m.name} needs an API key — configure it in Integrations first.`,
+      );
+      return;
+    }
     const currentName = activeModel()?.name ?? activeId();
     const docCount = stats()?.indexedDocs ?? 0;
 
@@ -89,6 +96,12 @@ export function EmbeddingScreen(): JSX.Element {
           </Show>
         }
       />
+
+      <Text variant="micro" tone="dim">
+        Embeddings turn documents into vectors so the agent can search by
+        meaning. Switching the active model re-indexes the whole library — until
+        that finishes, retrieval quality is reduced.
+      </Text>
 
       <Suspense fallback={<LoadingText label="LOADING STATS" />}>
         <Show when={stats()}>
@@ -216,6 +229,21 @@ export function EmbeddingScreen(): JSX.Element {
                         >
                           {m.provider.toUpperCase()}
                         </StatusFlag>
+                        <Show when={m.provider === "remote"}>
+                          <Tooltip
+                            label={
+                              m.apiKeySet
+                                ? "Remote API key is configured."
+                                : "Add an API key in Integrations before activating this remote model."
+                            }
+                          >
+                            <StatusFlag
+                              status={m.apiKeySet ? "nominal" : "warn"}
+                            >
+                              {m.apiKeySet ? "KEY SET" : "NEEDS KEY"}
+                            </StatusFlag>
+                          </Tooltip>
+                        </Show>
                         <Show
                           when={m.id !== activeId()}
                           fallback={
