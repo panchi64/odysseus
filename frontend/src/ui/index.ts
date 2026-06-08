@@ -70,6 +70,7 @@ export {
 } from "./components/Button";
 export { Input, type InputProps } from "./components/Input";
 export { Textarea, type TextareaProps } from "./components/Textarea";
+export { Composer, type ComposerProps } from "./components/Composer";
 export { Markdown, type MarkdownProps } from "./components/Markdown";
 export {
   Select,
@@ -115,4 +116,5 @@ export {
 } from "./components/ForbiddenView";
 export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
 export { Divider, type DividerProps } from "./components/Divider";
+export { Marquee, type MarqueeProps } from "./components/Marquee";
 export { PageHeader, type PageHeaderProps } from "./components/PageHeader";

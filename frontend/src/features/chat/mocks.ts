@@ -1,29 +1,54 @@
-import type { ChatSession, ChatSummary } from "./model";
+import type { ChatSession, ChatSummary, ModelOption } from "./model";
+
+/* Timestamps are anchored to load time so the recency-gated resume behaviour is
+   demonstrable: the newest thread is always inside the resume window (warm), the
+   rest are stale. Phase 2 returns real server timestamps. */
+const now = Date.now();
+const ago = (ms: number) => new Date(now - ms).toISOString();
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+/** Models the user can pick for a conversation. */
+export const mockModels: ModelOption[] = [
+  { value: "qwen2.5-coder-32b", label: "qwen2.5-coder-32b" },
+  { value: "qwen2.5-32b", label: "qwen2.5-32b" },
+  { value: "llama-3.3-70b", label: "llama-3.3-70b" },
+  { value: "mistral-small-24b", label: "mistral-small-24b" },
+];
 
 export const mockSessions: ChatSummary[] = [
   {
     id: "s-014",
     title: "Vector index migration plan",
-    updatedAt: "2026-06-07T13:58:00Z",
+    updatedAt: ago(6 * MIN),
     messageCount: 18,
+    preview: "How long will the backfill take for ~4k docs?",
+    model: "qwen2.5-coder-32b",
   },
   {
     id: "s-013",
     title: "SearXNG ranking tuning",
-    updatedAt: "2026-06-07T11:20:00Z",
+    updatedAt: ago(2 * HOUR),
     messageCount: 9,
+    preview: "Boost recency for news queries without hurting docs.",
+    model: "qwen2.5-32b",
   },
   {
     id: "s-012",
     title: "Caddy TLS in front of FastAPI",
-    updatedAt: "2026-06-06T22:04:00Z",
+    updatedAt: ago(20 * HOUR),
     messageCount: 24,
+    preview: "Auto-HTTPS with a reverse proxy and HSTS headers.",
+    model: "llama-3.3-70b",
   },
   {
     id: "s-011",
     title: "Memory dedup audit results",
-    updatedAt: "2026-06-06T16:41:00Z",
+    updatedAt: ago(2 * DAY),
     messageCount: 6,
+    preview: "Found 12 near-duplicate facts to merge.",
+    model: "qwen2.5-coder-32b",
   },
 ];
 
@@ -37,13 +62,13 @@ export const mockSession: ChatSession = {
       role: "user",
       content:
         "What's the safest way to migrate our Chroma collection to a new embedding model without losing retrieval?",
-      createdAt: "2026-06-07T13:50:02Z",
+      createdAt: ago(9 * MIN),
     },
     {
       id: "m-2",
       role: "assistant",
       model: "qwen2.5-coder-32b",
-      createdAt: "2026-06-07T13:50:05Z",
+      createdAt: ago(8 * MIN),
       reasoning:
         "The user wants zero-downtime re-embedding. Key constraint: embeddings from different models aren't comparable, so a partial swap corrupts ranking. Plan: build a shadow collection, backfill, then atomically switch the read pointer.",
       tools: [
@@ -102,7 +127,7 @@ client.set_alias("personal_docs", "personal_docs__next")
       id: "m-3",
       role: "user",
       content: "How long will the backfill take for ~4k docs?",
-      createdAt: "2026-06-07T13:57:40Z",
+      createdAt: ago(6 * MIN),
     },
   ],
 };

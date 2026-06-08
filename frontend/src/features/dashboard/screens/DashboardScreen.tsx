@@ -1,22 +1,31 @@
-import { createSignal, For, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Show, createMemo, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
-  Button,
-  InstrumentBand,
-  ListRow,
+  Composer,
+  EmptyState,
   PageHeader,
   Panel,
-  Readout,
   Resource,
-  Stack,
+  Select,
   StatusFlag,
   Text,
-  Tile,
   type Status,
 } from "~/ui";
-import { NAV } from "~/app/nav";
-import { useSession } from "~/lib/stores/session";
-import { useSystemBand, useServices } from "../data";
+import { useServices, useSystemBand, useTasks } from "../data";
 import type { ServiceHealth } from "../mocks";
+import { RecentThreadCard } from "../components/RecentThreadCard";
+import { SystemStrip } from "../components/SystemStrip";
+// The overview is a launchpad INTO chat, so it reads the chat feature's data
+// seam directly (one source of truth for threads, models, and entry intents).
+import {
+  entrySessionId,
+  modelOptions,
+  openConversation,
+  selectedModel,
+  setSelectedModel,
+  startConversation,
+  useChatSessions,
+} from "~/features/chat/data";
 
 /** Derives the worst-case status from the service list for the ALL SYSTEMS flag. */
 function computeOverallStatus(svcs: ServiceHealth[]): Status {
@@ -25,51 +34,28 @@ function computeOverallStatus(svcs: ServiceHealth[]): Status {
   return "nominal";
 }
 
-/** Returns an HH:MM:SS string in local time. */
-function nowHMS(): string {
-  const d = new Date();
-  const p = (n: number) => n.toString().padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
+const RECENT_LIMIT = 6;
 
-/** Tier access check: admin can access everything, user can access user/open,
- *  unauthenticated can only access open. */
-function isTierAccessible(
-  tier: "open" | "user" | "admin",
-  isAdmin: boolean,
-  isAuthenticated: boolean,
-): boolean {
-  if (tier === "open") return true;
-  if (tier === "user") return isAuthenticated;
-  return isAdmin;
-}
-
-/** Home overview: system telemetry, service health, and quick-access tiles. */
+/** Home overview as a launchpad: a centered composer to start work, recent
+ *  threads to resume it, in-flight tasks, and a subtle system strip. */
 export function DashboardScreen(): JSX.Element {
-  const session = useSession();
+  const navigate = useNavigate();
   const { data: systemBand, refetch: refetchBand } = useSystemBand();
-  const { data: services, refetch: refetchServices } = useServices();
+  const { data: services } = useServices();
+  const { data: tasks } = useTasks();
+  const sessions = useChatSessions();
 
-  // Throughput timestamp — shows when the snapshot was captured.
-  const [throughputAt, setThroughputAt] = createSignal(nowHMS());
-  let ticker: ReturnType<typeof setInterval> | undefined;
-
-  onMount(() => {
-    ticker = setInterval(() => setThroughputAt(nowHMS()), 5000);
+  // The resume target: the newest still-warm thread (or none).
+  const entryId = createMemo(() => {
+    const list = sessions();
+    return list ? entrySessionId(list) : null;
   });
+  const recent = createMemo(() => sessions()?.slice(0, RECENT_LIMIT) ?? []);
 
-  onCleanup(() => clearInterval(ticker));
-
-  // Quick-access tiles drawn from first two NAV sections (same as before).
-  const quickTiles = NAV[0].items.concat(NAV[1].items.slice(0, 5));
-
-  // Derived: overall health from the resolved services list.
   const overallStatus = (): Status => {
     const svcs = services();
-    if (!svcs) return "nominal";
-    return computeOverallStatus(svcs);
+    return svcs ? computeOverallStatus(svcs) : "nominal";
   };
-
   const overallLabel = (): string => {
     const s = overallStatus();
     if (s === "alert") return "SYSTEM ALERT";
@@ -77,11 +63,20 @@ export function DashboardScreen(): JSX.Element {
     return "ALL SYSTEMS";
   };
 
+  const handleStart = (text: string) => {
+    startConversation(text, selectedModel());
+    navigate("/chat");
+  };
+  const openThread = (id: string) => {
+    openConversation(id);
+    navigate("/chat");
+  };
+
   return (
-    <Stack gap={6}>
+    <div class="flex min-h-full flex-col gap-6">
       <PageHeader
-        title="OVERVIEW"
-        subtitle="Workspace status and quick access."
+        title="ODYSSEUS"
+        subtitle="Your private, self-hosted AI workspace — chat, research, memory, and more."
         assetId="ODY-HUD-00.1 EDITION 02"
         actions={
           <StatusFlag status={overallStatus()} dot>
@@ -90,113 +85,107 @@ export function DashboardScreen(): JSX.Element {
         }
       />
 
-      <Resource
-        data={systemBand}
-        onRetry={refetchBand}
-        errorMessage="TELEMETRY UNAVAILABLE"
-      >
-        {(band) => (
-          <InstrumentBand
-            items={band().map((s) => ({ label: s.label, value: s.value }))}
+      {/* Composer — the focal point, vertically centered in the free space. */}
+      <div class="flex min-h-0 flex-1 items-center justify-center py-4">
+        <div class="w-full max-w-2xl">
+          <Composer
+            size="lg"
+            title="NEW CONVERSATION"
+            autofocus
+            storageKey="home-new"
+            placeholder="Ask anything, request a summary, or describe a task…"
+            onSend={handleStart}
+            controls={
+              <Select
+                options={modelOptions()}
+                value={selectedModel()}
+                onChange={setSelectedModel}
+                aria-label="Model"
+              />
+            }
           />
-        )}
-      </Resource>
-
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Panel label="THROUGHPUT" class="lg:col-span-1">
-          <Stack gap={4}>
-            <Readout label="TOKENS / SEC" value="82.4" unit="T/S" />
-            <Readout label="QUEUE DEPTH" value="0" size="md" tone="dim" />
-            <Text variant="micro" tone="dim">
-              AS OF {throughputAt()}
-            </Text>
-          </Stack>
-        </Panel>
-
-        <Panel
-          label="SERVICE HEALTH"
-          meta={
-            <Text variant="micro" tone="dim">
-              6 MONITORED
-            </Text>
-          }
-          flush
-          class="lg:col-span-2"
-        >
-          <Resource
-            data={services}
-            onRetry={refetchServices}
-            errorMessage="SERVICE DATA UNAVAILABLE"
-            emptyMessage="NO SERVICES MONITORED"
-          >
-            {(svcs) => (
-              <For each={svcs()}>
-                {(svc) => (
-                  <ListRow
-                    label={svc.name}
-                    right={
-                      <span class="flex items-center gap-2">
-                        {svc.critical && (
-                          <StatusFlag status="info">CRITICAL</StatusFlag>
-                        )}
-                        <Text variant="micro" tone="dim">
-                          {svc.detail}
-                        </Text>
-                        <StatusFlag status={svc.status}>
-                          {svc.status.toUpperCase()}
-                        </StatusFlag>
-                        {svc.status !== "nominal" &&
-                          svc.remediationHref &&
-                          svc.remediationLabel && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              href={svc.remediationHref}
-                            >
-                              {svc.remediationLabel}
-                            </Button>
-                          )}
-                      </span>
-                    }
-                  />
-                )}
-              </For>
-            )}
-          </Resource>
-        </Panel>
+        </div>
       </div>
 
-      <Stack gap={3}>
-        <Text variant="label" tone="dim">
-          QUICK ACCESS
-        </Text>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-          <For each={quickTiles}>
-            {(item) => (
-              <Tile
-                icon={item.icon}
-                label={item.label}
-                href={
-                  isTierAccessible(
-                    item.tier,
-                    session.isAdmin,
-                    session.isAuthenticated,
-                  )
-                    ? item.href
-                    : undefined
-                }
-                locked={
-                  !isTierAccessible(
-                    item.tier,
-                    session.isAdmin,
-                    session.isAuthenticated,
-                  )
-                }
-              />
-            )}
-          </For>
+      {/* Bottom-aligned: recent threads + in-flight, then the system strip. */}
+      <div class="flex flex-col gap-4">
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {/* Recent threads — the launchpad's navigation; default brightness. */}
+          <Panel label="RECENT THREADS" class="lg:col-span-2">
+            <Show
+              when={recent().length}
+              fallback={
+                <EmptyState
+                  icon="terminal"
+                  message="NO CONVERSATIONS YET"
+                  hint="Start one above to see it here."
+                />
+              }
+            >
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <For each={recent()}>
+                  {(s) => (
+                    <RecentThreadCard
+                      title={s.title}
+                      preview={s.preview}
+                      model={s.model}
+                      updatedAt={s.updatedAt}
+                      warm={s.id === entryId()}
+                      onOpen={() => openThread(s.id)}
+                    />
+                  )}
+                </For>
+              </div>
+            </Show>
+          </Panel>
+
+          {/* In flight — most subtle: dim unless a task has failed. */}
+          <Panel label="IN FLIGHT" flush class="lg:col-span-1">
+            <Resource
+              data={tasks}
+              emptyMessage="NO ACTIVE TASKS"
+              isEmpty={(t) => t.length === 0}
+            >
+              {(list) => (
+                <For each={list()}>
+                  {(task) => (
+                    <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2 last:border-0">
+                      <span class="flex min-w-0 items-center gap-2">
+                        <Text variant="label" tone="dim">
+                          {task.kind}
+                        </Text>
+                        <Text variant="micro" tone="dim" class="truncate">
+                          {task.label}
+                        </Text>
+                      </span>
+                      <Text
+                        variant="micro"
+                        tone={task.status === "failed" ? "alert" : "dim"}
+                        class="shrink-0"
+                      >
+                        {task.status === "failed" ? "FAILED" : task.detail}
+                      </Text>
+                    </div>
+                  )}
+                </For>
+              )}
+            </Resource>
+          </Panel>
         </div>
-      </Stack>
-    </Stack>
+
+        {/* System strip — most subtle; compact, marquees only if it overflows. */}
+        <Resource
+          data={systemBand}
+          onRetry={refetchBand}
+          errorMessage="TELEMETRY UNAVAILABLE"
+        >
+          {(band) => (
+            <Show when={services()}>
+              <SystemStrip band={band()} services={services()!} />
+            </Show>
+          )}
+        </Resource>
+      </div>
+    </div>
   );
 }

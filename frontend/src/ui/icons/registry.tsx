@@ -59,6 +59,7 @@ export type IconName =
   | "compare"
   | "research"
   | "copy"
+  | "pin"
   | "sun"
   | "moon";
 
@@ -276,4 +277,10 @@ export const icons: Record<IconName, () => JSX.Element> = {
     </>
   ),
   moon: () => <path d="M13 9.5A5.5 5.5 0 1 1 6.5 3 4.5 4.5 0 0 0 13 9.5z" />,
+  pin: () => (
+    <>
+      <path d="M6 2h4l-1 5 3 3H4l3-3z" />
+      <path d="M8 10v4" />
+    </>
+  ),
 };

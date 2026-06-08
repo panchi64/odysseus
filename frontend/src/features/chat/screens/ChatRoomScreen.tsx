@@ -1,12 +1,20 @@
-import { For, Show, Suspense, createSignal, type JSX } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  type JSX,
+} from "solid-js";
 import {
   Button,
+  Composer,
   Drawer,
   EmptyState,
   Icon,
   InfoHint,
-  ListRow,
-  LoadingText,
   Menu,
   Panel,
   StatusFlag,
@@ -15,20 +23,83 @@ import {
   toast,
   type MenuItem,
 } from "~/ui";
-import { relativeTime } from "~/lib/format";
-import { useChatSession, useChatSessions, createChatStream } from "../data";
+import {
+  consumePendingDraft,
+  consumeRequestedSession,
+  createChatStream,
+  entrySessionId,
+  selectedModel,
+  setSelectedModel,
+  useChatSession,
+  useChatSessions,
+} from "../data";
 import { MessageItem } from "../components/MessageItem";
-import { Composer } from "../components/Composer";
+import { SessionList } from "../components/SessionList";
 
-/** Reference feature screen. Demonstrates the full pattern: data via the
- *  model/mocks/data seam, layout from ~/ui only, and a live streaming region. */
+/** Chat room: a searchable thread rail and a live streaming conversation. On
+ *  entry it resumes the last conversation only while it's warm (recency-gated),
+ *  otherwise it opens a fresh composer — the overview launchpad can also hand it
+ *  a thread to open or a message to start. */
 export function ChatRoomScreen(): JSX.Element {
   const sessions = useChatSessions();
-  const session = useChatSession(() => "s-014");
-  const stream = createChatStream(() => session()?.messages);
+  // null = a new, unsaved conversation.
+  const [currentId, setCurrentId] = createSignal<string | null>(null);
+  const session = useChatSession(currentId);
+  const stream = createChatStream(() => session()?.messages, currentId);
+
+  // Header reflects the selected thread (messages resolve through the seam).
+  const currentSummary = createMemo(() => {
+    const id = currentId();
+    return id ? sessions()?.find((s) => s.id === id) : undefined;
+  });
+  const headerTitle = () => currentSummary()?.title ?? "New conversation";
+  const headerModel = () => currentSummary()?.model ?? selectedModel();
+
+  // Resolve the entry intent once: new-from-overview › open-specific › recency.
+  const [resolved, setResolved] = createSignal(false);
+  createEffect(() => {
+    if (resolved()) return;
+    const draft = consumePendingDraft();
+    if (draft) {
+      setSelectedModel(draft.model);
+      setCurrentId(null);
+      queueMicrotask(() => stream.send(draft.text));
+      setResolved(true);
+      return;
+    }
+    const requested = consumeRequestedSession();
+    if (requested) {
+      setCurrentId(requested);
+      setResolved(true);
+      return;
+    }
+    const list = sessions();
+    if (!list) return; // wait for the seam to resolve
+    setCurrentId(entrySessionId(list));
+    setResolved(true);
+  });
+
+  const startNew = () => setCurrentId(null);
+
+  // ⌘/Ctrl+Shift+O starts a new conversation from anywhere, even mid-thread.
+  const onKey = (e: KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") {
+      e.preventDefault();
+      startNew();
+    }
+  };
+  onMount(() => document.addEventListener("keydown", onKey));
+  onCleanup(() => document.removeEventListener("keydown", onKey));
 
   // Mobile session drawer
   const [sessionsOpen, setSessionsOpen] = createSignal(false);
+  const select = (id: string) => {
+    setCurrentId(id);
+    setSessionsOpen(false);
+  };
+
+  // Per-conversation draft key, so an unsent message is restored on return.
+  const composerKey = () => `chat:${currentId() ?? "new"}`;
 
   const handleDeleteLast = async () => {
     const last = stream.messages[stream.messages.length - 1];
@@ -72,37 +143,16 @@ export function ChatRoomScreen(): JSX.Element {
     });
   };
 
-  const sessionList = () => (
-    <Suspense
-      fallback={
-        <div class="p-3">
-          <LoadingText />
-        </div>
-      }
-    >
-      <For each={sessions()}>
-        {(s) => (
-          <ListRow
-            label={s.title}
-            selected={s.id === "s-014"}
-            href="/chat"
-            right={
-              <Text variant="micro" tone="dim">
-                {relativeTime(s.updatedAt)}
-              </Text>
-            }
-          />
-        )}
-      </For>
-    </Suspense>
-  );
-
   return (
     <div class="flex h-full min-h-0 gap-4">
       {/* Session list — desktop sidebar */}
       <aside class="hidden w-56 shrink-0 lg:block">
         <Panel label="SESSIONS" flush>
-          {sessionList()}
+          <SessionList
+            sessions={sessions}
+            currentId={currentId()}
+            onSelect={select}
+          />
         </Panel>
       </aside>
 
@@ -113,7 +163,11 @@ export function ChatRoomScreen(): JSX.Element {
         title="SESSIONS"
         side="left"
       >
-        {sessionList()}
+        <SessionList
+          sessions={sessions}
+          currentId={currentId()}
+          onSelect={select}
+        />
       </Drawer>
 
       {/* Conversation */}
@@ -131,18 +185,16 @@ export function ChatRoomScreen(): JSX.Element {
             </button>
             <div class="flex min-w-0 flex-col gap-0.5">
               <Text variant="readout" tone="bright">
-                {session()?.title ?? "New session"}
+                {headerTitle()}
               </Text>
               <span class="flex items-center gap-1.5">
-                <StatusFlag status="nominal">
-                  {session()?.model ?? "—"}
-                </StatusFlag>
+                <StatusFlag status="nominal">{headerModel()}</StatusFlag>
                 <InfoHint
-                  label={`Answers in this session are generated by ${session()?.model ?? "the selected model"}. Switch models in Settings.`}
+                  label={`Answers in this conversation are generated by ${headerModel()}. Switch models in Settings.`}
                   side="bottom"
                 />
                 <Text variant="micro" tone="dim">
-                  · SESSION s-014
+                  · SESSION {currentId() ?? "NEW"}
                 </Text>
               </span>
             </div>
@@ -154,7 +206,7 @@ export function ChatRoomScreen(): JSX.Element {
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>
-            <Button variant="ghost" leading="plus">
+            <Button variant="ghost" leading="plus" onClick={startNew}>
               NEW
             </Button>
             <Menu
@@ -192,7 +244,7 @@ export function ChatRoomScreen(): JSX.Element {
               <EmptyState
                 icon="terminal"
                 message="START A CONVERSATION"
-                hint={`${session()?.model ?? "A model"} is loaded and ready. Ask a question, request a summary, or describe a task to begin.`}
+                hint={`${headerModel()} is loaded and ready. Ask a question, request a summary, or describe a task to begin.`}
               />
             }
           >
@@ -203,7 +255,11 @@ export function ChatRoomScreen(): JSX.Element {
         </div>
 
         <div class="sticky bottom-0 -mx-1">
-          <Composer disabled={stream.sending()} onSend={stream.send} />
+          <Composer
+            disabled={stream.sending()}
+            onSend={stream.send}
+            storageKey={composerKey()}
+          />
         </div>
       </section>
     </div>

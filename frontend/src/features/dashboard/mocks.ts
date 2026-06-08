@@ -24,6 +24,36 @@ export interface ServiceHealth {
   remediationLabel?: string;
 }
 
+/** A background job in flight (deep research, indexing, model load). Surfaced
+ *  ambiently on the overview so the user knows what's still working. */
+export interface TaskActivity {
+  id: string;
+  /** Short kind tag, e.g. RESEARCH / INDEX / MODEL. */
+  kind: string;
+  /** Human label or asset id. */
+  label: string;
+  status: "running" | "queued" | "failed";
+  /** Compact progress readout, e.g. "72%" or "batch 4/9". */
+  detail: string;
+}
+
+export const mockTasks: TaskActivity[] = [
+  {
+    id: "tk-1",
+    kind: "RESEARCH",
+    label: "DEEP-RESEARCH-0341",
+    status: "running",
+    detail: "72%",
+  },
+  {
+    id: "tk-2",
+    kind: "INDEX",
+    label: "embeddings backfill",
+    status: "running",
+    detail: "batch 4/9",
+  },
+];
+
 export const mockServices: ServiceHealth[] = [
   { name: "VECTOR SEARCH", status: "nominal", detail: "chroma · 4214 docs" },
   { name: "WEB SEARCH", status: "nominal", detail: "searxng · 38ms" },

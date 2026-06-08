@@ -7,7 +7,131 @@ import {
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import type { ChatMessage, ChatSession, ChatSummary } from "./model";
-import { mockSession, mockSessions, mockStreamingReply } from "./mocks";
+import {
+  mockModels,
+  mockSession,
+  mockSessions,
+  mockStreamingReply,
+} from "./mocks";
+
+/* ── localStorage helpers (best-effort, SSR/permission safe) ──────────────── */
+
+function readLS(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLS(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/* ── Recency-gated resume ─────────────────────────────────────────────────────
+   On entry the chat resumes the last conversation only while it's still "warm"
+   (last activity within the window); otherwise it opens a fresh composer. This
+   keeps a mid-task return seamless without dumping a stale thread on everyone
+   else. */
+
+export const RESUME_WINDOW_MS = 15 * 60 * 1000;
+
+export function isWarm(iso: string, now = Date.now()): boolean {
+  const t = new Date(iso).getTime();
+  return !Number.isNaN(t) && now - t <= RESUME_WINDOW_MS;
+}
+
+/** The session to land on at entry: the newest warm thread, or null = start
+ *  fresh. Assumes `list` is newest-first (as the seam returns it). */
+export function entrySessionId(list: ChatSummary[]): string | null {
+  const warm = list.find((s) => isWarm(s.updatedAt));
+  return warm ? warm.id : null;
+}
+
+/* ── Selected model (sticky across surfaces) ──────────────────────────────── */
+
+const MODEL_KEY = "ody.chat.model";
+const [_model, _setModel] = createSignal<string>(
+  readLS(MODEL_KEY) ?? mockModels[0].value,
+);
+export const selectedModel = _model;
+export function setSelectedModel(model: string): void {
+  _setModel(model);
+  writeLS(MODEL_KEY, model);
+}
+export function modelOptions() {
+  return mockModels;
+}
+
+/* ── Pinned threads (non-recency ordering) ────────────────────────────────── */
+
+const PINS_KEY = "ody.chat.pins";
+function readPins(): Set<string> {
+  try {
+    const raw = readLS(PINS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+const [_pinned, _setPinned] = createSignal<Set<string>>(readPins());
+export const pinnedIds = _pinned;
+export function isPinned(id: string): boolean {
+  return _pinned().has(id);
+}
+export function togglePin(id: string): void {
+  const next = new Set(_pinned());
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  _setPinned(next);
+  writeLS(PINS_KEY, JSON.stringify([...next]));
+}
+
+/** Pinned threads first (recency preserved within each group). */
+export function orderSessions(list: ChatSummary[]): ChatSummary[] {
+  const pins = _pinned();
+  if (pins.size === 0) return list;
+  const pinned = list.filter((s) => pins.has(s.id));
+  const rest = list.filter((s) => !pins.has(s.id));
+  return [...pinned, ...rest];
+}
+
+/* ── Cross-surface entry intents ──────────────────────────────────────────────
+   The overview launchpad hands the chat screen what to do on arrival: start a
+   new conversation seeded with a typed message, or open a specific thread. Both
+   are one-shot and consumed by the chat screen on mount. */
+
+const [_pendingDraft, _setPendingDraft] = createSignal<{
+  text: string;
+  model: string;
+} | null>(null);
+
+/** Begin a new conversation with `text` (used by the overview composer). */
+export function startConversation(text: string, model: string): void {
+  _setPendingDraft({ text, model });
+}
+export function consumePendingDraft(): { text: string; model: string } | null {
+  const v = _pendingDraft();
+  if (v) _setPendingDraft(null);
+  return v;
+}
+
+const [_requestedSession, _setRequestedSession] = createSignal<string | null>(
+  null,
+);
+/** Request that the chat screen open a specific existing thread on arrival. */
+export function openConversation(id: string): void {
+  _setRequestedSession(id);
+}
+export function consumeRequestedSession(): string | null {
+  const v = _requestedSession();
+  if (v) _setRequestedSession(null);
+  return v;
+}
 
 /* ── Mutable session list (Phase-1 local state) ──────────────────────────── */
 
@@ -31,7 +155,9 @@ export function useChatSessions(): Resource<ChatSummary[]> {
   return data;
 }
 
-export function useChatSession(id: () => string): Resource<ChatSession> {
+/** Loads a session. A null/empty id means a new, unsaved conversation — the
+ *  resource simply doesn't fetch, so the screen renders an empty thread. */
+export function useChatSession(id: () => string | null): Resource<ChatSession> {
   const [data] = createResource(id, fetchSession);
   return data;
 }
@@ -45,20 +171,35 @@ export function useChatSession(id: () => string): Resource<ChatSession> {
 let counter = 0;
 const nextId = (prefix: string) => `${prefix}-live-${++counter}`;
 
-export function createChatStream(initial: () => ChatMessage[] | undefined) {
+export function createChatStream(
+  initial: () => ChatMessage[] | undefined,
+  key: () => string | null = () => null,
+) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
   const timers: ReturnType<typeof setTimeout>[] = [];
+  const clearTimers = () => {
+    timers.forEach(clearTimeout);
+    timers.length = 0;
+  };
   const after = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
 
-  // Seed once from the (async) source, then let send() drive the list.
-  let seeded = false;
+  // Re-seed whenever the conversation changes — keyed on session identity, not
+  // just the message-array reference. Phase-1 fetches share a fixture reference,
+  // so a ref check alone would miss an existing→existing switch and leave the
+  // previous thread's live messages on screen.
+  const INIT = Symbol("init");
+  let lastKey: string | null | typeof INIT = INIT;
+  let lastSource: ChatMessage[] | undefined | typeof INIT = INIT;
   createEffect(() => {
+    const k = key();
     const source = initial();
-    if (!seeded && source) {
-      seeded = true;
-      setMessages(reconcile(source.slice()));
-    }
+    if (k === lastKey && source === lastSource) return;
+    lastKey = k;
+    lastSource = source;
+    clearTimers();
+    setSending(false);
+    setMessages(reconcile(source ? source.slice() : []));
   });
 
   function send(text: string) {
@@ -75,7 +216,7 @@ export function createChatStream(initial: () => ChatMessage[] | undefined) {
     const assistantMsg: ChatMessage = {
       id: assistantId,
       role: "assistant",
-      model: mockSession.model,
+      model: selectedModel(),
       content: "",
       streaming: true,
       createdAt: new Date().toISOString(),
@@ -154,7 +295,7 @@ export function createChatStream(initial: () => ChatMessage[] | undefined) {
     setMessages(reconcile(snapshot));
   }
 
-  onCleanup(() => timers.forEach(clearTimeout));
+  onCleanup(clearTimers);
 
   return {
     messages,

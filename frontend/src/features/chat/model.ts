@@ -46,4 +46,14 @@ export interface ChatSummary {
   title: string;
   updatedAt: string;
   messageCount: number;
+  /** Last-message snippet for preview cards. */
+  preview?: string;
+  /** Model the conversation is using. */
+  model?: string;
+}
+
+/** A model the user can pick for a conversation. */
+export interface ModelOption {
+  value: string;
+  label: string;
 }

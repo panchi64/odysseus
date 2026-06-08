@@ -5,7 +5,7 @@ import {
   splitProps,
   type JSX,
 } from "solid-js";
-import { cx } from "~/ui";
+import { cx } from "../cx";
 
 export interface MarqueeProps {
   /** Scroll speed in px/s. Default 40. */

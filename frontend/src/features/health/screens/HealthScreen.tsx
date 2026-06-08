@@ -15,6 +15,7 @@ import {
   InfoHint,
   InstrumentBand,
   LoadingText,
+  Marquee,
   Menu,
   type MenuItem,
   PageHeader,
@@ -27,7 +28,6 @@ import {
   type Status,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
-import { Marquee } from "../components/Marquee";
 import { useServiceStatuses, useOverallHealth } from "../data";
 import type { HealthStatus, ServiceStatus } from "../model";
 
@@ -109,6 +109,11 @@ function HistoryBar(props: {
 }): JSX.Element {
   return (
     <div class="flex items-center gap-1" title={HISTORY_HINT}>
+      {/* Hint sits LEFT of the bars so the bars themselves stay flush against
+          the column's right edge and line up across every row. */}
+      <Show when={props.showHint}>
+        <InfoHint label={HISTORY_HINT} size={11} />
+      </Show>
       <div class="flex items-center gap-0.5">
         <For each={props.history}>
           {(h) => (
@@ -119,9 +124,6 @@ function HistoryBar(props: {
           )}
         </For>
       </div>
-      <Show when={props.showHint}>
-        <InfoHint label={HISTORY_HINT} size={11} />
-      </Show>
     </div>
   );
 }
@@ -358,105 +360,139 @@ export function HealthScreen(): JSX.Element {
             when={services.length}
             fallback={<EmptyState icon="activity" message="NO SERVICES" />}
           >
-            <Panel label="SERVICE GRID" flush>
-              <For each={services}>
-                {(svc) => (
-                  <div
-                    role="button"
-                    tabindex={0}
-                    onClick={() => setDrawerSvc(svc)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setDrawerSvc(svc);
-                      }
-                    }}
-                    class="flex w-full min-w-0 cursor-pointer items-center gap-3 border-b border-line px-3 py-2 text-left transition-colors hover:bg-raised"
-                  >
-                    <span class="flex shrink-0 items-center gap-2">
-                      <Icon name="activity" class="text-dim" />
-                      <Text variant="label">{svc.name}</Text>
-                    </span>
-
-                    {/* Flexible slot: a long degradation note marquees here
-                        rather than pushing the row past full width. */}
-                    <Show
-                      when={svc.degradationNote}
-                      fallback={<span class="flex-1" />}
+            <Panel label="SERVICE GRID" flush class="@container">
+              {/* One shared grid drives every row so the columns — crucially the
+                  uptime HISTORY bars — line up vertically no matter how much
+                  detail a given service carries. Each row is a `subgrid` that
+                  spans the parent tracks, so its cells inherit (and contribute
+                  to) the shared column sizing. Below ~40rem the row restacks
+                  into two lines (identity + status up top, metrics below) so the
+                  dense right-hand content stops overflowing at narrow widths. */}
+              <div class="grid grid-cols-[auto_1fr_auto_auto] @max-[40rem]:grid-cols-[1fr_auto]">
+                <For each={services}>
+                  {(svc) => (
+                    <div
+                      role="button"
+                      tabindex={0}
+                      onClick={() => setDrawerSvc(svc)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setDrawerSvc(svc);
+                        }
+                      }}
+                      class="col-span-full grid grid-cols-subgrid cursor-pointer items-center gap-x-3 gap-y-1 border-b border-line px-3 py-2 text-left transition-colors hover:bg-raised"
                     >
-                      <Marquee class="min-w-0 flex-1">
-                        <Text
-                          variant="micro"
-                          tone={svc.status === "alert" ? "alert" : "warn"}
-                        >
-                          {svc.degradationNote}
+                      {/* IDENTITY — anchors the top line when stacked. */}
+                      <span class="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
+                        <Icon name="activity" class="shrink-0 text-dim" />
+                        <Text variant="label" class="truncate">
+                          {svc.name}
                         </Text>
-                      </Marquee>
-                    </Show>
+                      </span>
 
-                    <span class="flex shrink-0 items-center gap-3">
-                      <Text variant="micro" tone="dim">
-                        {svc.detail}
-                      </Text>
-                      <Show
-                        when={
-                          svc.status !== "alert" && svc.status !== "timeout"
-                        }
-                        fallback={
-                          <Text
-                            variant="micro"
-                            tone={svc.status === "timeout" ? "warn" : "alert"}
+                      {/* METRICS + NOTE — a long degradation note marquees in the
+                          flexible slot rather than widening the row. Drops to the
+                          second line (under identity) when stacked. */}
+                      <span class="col-start-2 row-start-1 flex min-w-0 items-center gap-3 @max-[40rem]:col-start-1 @max-[40rem]:row-start-2">
+                        <Show
+                          when={svc.degradationNote}
+                          fallback={<span class="flex-1" />}
+                        >
+                          <Marquee class="min-w-0 flex-1">
+                            <Text
+                              variant="micro"
+                              tone={svc.status === "alert" ? "alert" : "warn"}
+                            >
+                              {svc.degradationNote}
+                            </Text>
+                          </Marquee>
+                        </Show>
+                        <Text variant="micro" tone="dim" class="shrink-0">
+                          {svc.detail}
+                        </Text>
+                        <Show
+                          when={
+                            svc.status !== "alert" && svc.status !== "timeout"
+                          }
+                          fallback={
+                            <Text
+                              variant="micro"
+                              tone={svc.status === "timeout" ? "warn" : "alert"}
+                              class="shrink-0"
+                            >
+                              {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
+                            </Text>
+                          }
+                        >
+                          <span
+                            class="shrink-0"
+                            title={`Baseline ${svc.baselineMs}MS`}
                           >
-                            {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
-                          </Text>
-                        }
-                      >
-                        <span title={`Baseline ${svc.baselineMs}MS`}>
-                          <Text
-                            variant="micro"
-                            tone={
-                              svc.latencyMs > svc.baselineMs * 2
-                                ? "warn"
-                                : "dim"
-                            }
-                          >
-                            {svc.latencyMs}
-                            <span class="text-dim">/{svc.baselineMs}MS</span>
-                          </Text>
-                        </span>
-                      </Show>
-                      <HistoryBar history={svc.history} showHint />
-                      <StatusFlag status={healthFlagStatus[svc.status]}>
-                        {svc.status.toUpperCase()}
-                      </StatusFlag>
-                      <Show
-                        when={
-                          svc.status === "alert" ||
-                          svc.status === "warn" ||
-                          svc.status === "timeout" ||
-                          svc.status === "partial"
-                        }
-                      >
-                        <span onClick={(e) => e.stopPropagation()}>
-                          <Menu
-                            trigger={
-                              <Button variant="ghost" size="sm">
-                                ACTIONS
-                              </Button>
-                            }
-                            items={getServiceActions(svc, (label) => {
-                              toast.info(`${label} — available in Phase 2`, {
-                                duration: 3500,
-                              });
-                            })}
-                            align="right"
-                          />
-                        </span>
-                      </Show>
-                    </span>
-                  </div>
-                )}
-              </For>
+                            <Text
+                              variant="micro"
+                              tone={
+                                svc.latencyMs > svc.baselineMs * 2
+                                  ? "warn"
+                                  : "dim"
+                              }
+                            >
+                              {svc.latencyMs}
+                              <span class="text-dim">/{svc.baselineMs}MS</span>
+                            </Text>
+                          </span>
+                        </Show>
+                      </span>
+
+                      {/* HISTORY — its own column keeps every bar aligned across
+                          rows. When stacked it shares the right column with the
+                          (wider) status cluster, so `justify-end` keeps the bars
+                          pinned to the same right edge, directly under the badge. */}
+                      <span class="col-start-3 row-start-1 flex shrink-0 items-center justify-end @max-[40rem]:col-start-2 @max-[40rem]:row-start-2">
+                        <HistoryBar history={svc.history} showHint />
+                      </span>
+
+                      {/* ACTIONS + STATUS — top-right; stays on the top line when
+                          stacked, paired with the service name. STATUS sits last
+                          so the badge always anchors to the right edge and every
+                          row's badge lines up, whether or not ACTIONS is present.
+                          When stacked it spans the whole top line (right-aligned)
+                          so its width no longer dictates the right column — that
+                          keeps the column as narrow as the history bars, so the
+                          description below sits right up against the info icon. */}
+                      <span class="col-start-4 row-start-1 flex shrink-0 items-center justify-end gap-3 @max-[40rem]:col-span-full">
+                        <Show
+                          when={
+                            svc.status === "alert" ||
+                            svc.status === "warn" ||
+                            svc.status === "timeout" ||
+                            svc.status === "partial"
+                          }
+                        >
+                          <span onClick={(e) => e.stopPropagation()}>
+                            <Menu
+                              trigger={
+                                <Button variant="ghost" size="sm">
+                                  ACTIONS
+                                </Button>
+                              }
+                              items={getServiceActions(svc, (label) => {
+                                toast.info(`${label} — available in Phase 2`, {
+                                  duration: 3500,
+                                });
+                              })}
+                              align="right"
+                            />
+                          </span>
+                        </Show>
+                        <StatusFlag status={healthFlagStatus[svc.status]}>
+                          {svc.status.toUpperCase()}
+                        </StatusFlag>
+                      </span>
+                    </div>
+                  )}
+                </For>
+              </div>
             </Panel>
           </Show>
         </Show>
