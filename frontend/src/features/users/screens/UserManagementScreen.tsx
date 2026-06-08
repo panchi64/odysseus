@@ -37,12 +37,16 @@ const userStatus = (u: ManagedUser): Status => {
   return "info";
 };
 
-/** Generate a mock initial password (diegetic — Phase 2 returns the real one). */
+/** Generate a mock initial password (diegetic — Phase 2 has the backend mint
+ *  it and only displays the returned value). Uses a CSPRNG even for the mock so
+ *  the credential-generation pattern is correct from the start. */
 function generatePassword(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
+  const buf = new Uint32Array(16);
+  crypto.getRandomValues(buf);
   let out = "";
   for (let i = 0; i < 16; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)];
+    out += chars[buf[i] % chars.length];
   }
   return out;
 }
