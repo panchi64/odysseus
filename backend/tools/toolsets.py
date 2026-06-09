@@ -23,7 +23,7 @@ from .deps import RunDeps
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
-    """AE-3.3: operator-disabled tools are not offered to or invoked by the agent."""
+    """Operator-disabled tools are not offered to or invoked by the agent."""
     return tool_def.name not in ctx.deps.disabled_tools
 
 

@@ -8,8 +8,8 @@ set of live subscribers. It does two jobs at once:
   missed on reconnect.
 - **broker** — each emit fans out to every live subscriber's queue.
 
-The buffer is in-memory and dies with the process, which is exactly what
-``AE-7`` licenses ("continuity need not survive a server restart").
+The buffer is in-memory and dies with the process, which the spec explicitly
+licenses ("continuity need not survive a server restart").
 
 Correctness note: ``emit`` is synchronous and ``subscribe`` does its
 register-then-snapshot with no ``await`` in between. Under single-threaded

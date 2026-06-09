@@ -69,7 +69,7 @@ class StepCompleted(_Body):
     index: int
 
 
-# --- Content (the AE-6.3 reasoning/answer split) -----------------------------
+# --- Content (the reasoning/answer split) ------------------------------------
 class ThinkingDelta(_Body):
     type: Literal["thinking.delta"] = "thinking.delta"
     text: str
@@ -109,7 +109,7 @@ class ToolFailed(_Body):
     error: str
 
 
-# --- Documents (AE-6.2) ------------------------------------------------------
+# --- Documents ---------------------------------------------------------------
 class DocumentCreated(_Body):
     type: Literal["document.created"] = "document.created"
     document_id: str

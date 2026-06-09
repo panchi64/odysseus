@@ -34,7 +34,7 @@ async def test_chat_runs_to_done_with_metrics():
 
 
 async def test_usage_limit_blocks_the_turn(monkeypatch):
-    # request_limit=0 trips on the first model request → bounded stop (AE-1.5).
+    # request_limit=0 trips on the first model request → bounded stop.
     monkeypatch.setattr(
         engine, "get_settings", lambda: Settings(agent_request_limit=0, agent_tool_calls_limit=None)
     )

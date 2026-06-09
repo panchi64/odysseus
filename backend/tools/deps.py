@@ -18,6 +18,6 @@ from runs import Run
 class RunDeps:
     run: Run
     owner_id: str
-    # AE-3.3: operator-disabled tools (by namespaced name). Empty ⇒ all enabled.
+    # Operator-disabled tools, by namespaced name. Empty ⇒ all enabled.
     disabled_tools: frozenset[str] = field(default_factory=frozenset)
-    # Future: capability handles, open document (AE-4.2).
+    # Future: capability handles, the open document.

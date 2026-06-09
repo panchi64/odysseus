@@ -1,7 +1,7 @@
 """Application configuration.
 
 Deploy-level secrets and defaults come from the environment / ``.env`` before
-first boot (``XC-CFG-1``). Runtime-mutable user settings live in the DB and are
+first boot. Runtime-mutable user settings live in the DB and are
 not modeled here.
 """
 
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # All user data lives under here — gitignored, encrypted at rest.
     data_dir: Path = Path("data")
 
-    # Run substrate bounds (XC-PERF-2). Timeouts are seconds; None disables.
+    # Run substrate bounds. Timeouts are seconds; None disables.
     run_max_concurrency: int = 8
     run_wall_clock_timeout_s: float | None = 1800.0
     run_inactivity_timeout_s: float | None = 120.0
@@ -44,8 +44,8 @@ class Settings(BaseSettings):
     llm_model: str = ""  # the `main` role; empty until configured
     utility_model: str = ""  # the `utility` role; falls back to `main`
 
-    # Agent bounds: max model requests per turn (AE-1.5) and optional
-    # per-turn tool-call cap (AE-1.6). None disables the tool cap.
+    # Agent bounds: max model requests per turn and optional per-turn
+    # tool-call cap. None disables the tool cap.
     agent_request_limit: int = 25
     agent_tool_calls_limit: int | None = None
 

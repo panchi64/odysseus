@@ -1,10 +1,10 @@
 """Pillar I — the RunRegistry: launch, track, bound, and cancel Runs.
 
 In-process: Runs are asyncio tasks tracked in a dict, gated by a global
-concurrency semaphore (bursts queue at the gate — the ``queued`` state, also
-satisfying TASK-5 "no overlapping overload"). The registry owns the lifecycle
-mechanics — queued→running, the terminal-state mapping, the two timeout bounds
-(XC-PERF-2), and cancellation — so every orchestrator inherits them for free.
+concurrency semaphore (bursts queue at the gate — the ``queued`` state, which
+also prevents overlapping overload). The registry owns the lifecycle mechanics —
+queued→running, the terminal-state mapping, the wall-clock + inactivity bounds,
+and cancellation — so every orchestrator inherits them for free.
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class RunRegistry:
         wall_clock: float | None,
         inactivity: float | None,
     ) -> None:
-        """Run the orchestrator under wall-clock + inactivity bounds (XC-PERF-2)."""
+        """Run the orchestrator under wall-clock + inactivity bounds."""
         if not wall_clock and not inactivity:
             await orchestrator(run)
             return

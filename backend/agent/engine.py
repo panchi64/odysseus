@@ -105,7 +105,7 @@ async def _drive_turn(
             await stream_agent_run(agent_run, run, announced=announced)
             result = agent_run.result
     except UsageLimitExceeded as exc:
-        # AE-1.5/AE-1.6: hit a bound — stop and report state, don't error.
+        # Hit a usage bound — stop and report state, don't error.
         run.emit(LimitNotice(limit="steps", message=str(exc)))
         run.block("usage limit reached")
         return

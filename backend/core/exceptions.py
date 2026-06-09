@@ -20,8 +20,8 @@ class PermissionDeniedError(OdysseusError):
 
 
 class ApprovalRequiredError(OdysseusError):
-    """A sensitive action needs explicit operator approval before it runs (AE-3)."""
+    """A sensitive action needs explicit operator approval before it runs."""
 
 
 class DegradedCapabilityError(OdysseusError):
-    """An optional capability is unavailable; the caller should degrade (XC-DEG-*)."""
+    """An optional capability is unavailable; the caller should degrade gracefully."""

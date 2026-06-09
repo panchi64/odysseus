@@ -2,8 +2,8 @@
 
 Within a turn we drive ``agent.iter()`` and translate its node stream into our
 event protocol (Pillar II). Around it we will own the meta-loop: the deliverable
-verifier (AE-1.4/AE-5.2), the loop-breaker (AE-5.1), history processors for
-context reduction (AE-5.4), and FallbackModel (AE-5.3). RunDeps/RunContext carry
+deliverable verifier, the no-progress loop-breaker, history processors for
+context reduction, and model fallback. RunDeps/RunContext carry
 per-run policy and capability handles to the tools.
 
 See docs/architecture/README.md (Pillar III).

@@ -6,7 +6,7 @@ library's events into our domain events:
 
 - a ``ModelRequestNode`` is one **step** (step.started/completed around it);
 - text parts → ``answer.delta``, thinking parts → ``thinking.delta`` (the
-  AE-6.3 reasoning/answer split);
+  reasoning/answer split);
 - a ``CallToolsNode`` surfaces tool execution → ``tool.started`` /
   ``tool.completed`` / ``tool.failed`` with full args/results inline.
 

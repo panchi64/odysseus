@@ -60,7 +60,7 @@ class Run:
     parked_payload: object | None = None
 
     def touch(self) -> None:
-        """Mark activity now — feeds the inactivity watchdog (XC-PERF-2)."""
+        """Mark activity now — feeds the inactivity watchdog."""
         self.last_activity_mono = asyncio.get_running_loop().time()
 
     def emit(self, body: BaseModel) -> Event:
@@ -68,7 +68,7 @@ class Run:
         return self.stream.emit(body)
 
     def block(self, detail: str | None = None) -> None:
-        """Orchestrator declares it cannot proceed (AE-1.2 blocked)."""
+        """Orchestrator declares it cannot proceed."""
         self.status = RunStatus.blocked
         self.detail = detail
 
@@ -82,7 +82,7 @@ class Run:
         self.parked_payload = payload
 
     def set_metrics(self, metrics: RunMetrics) -> None:
-        """Stash final metrics; the registry emits them at terminal (AE-6.1)."""
+        """Stash final metrics; the registry emits them at terminal."""
         self.metrics = metrics
 
     @property
