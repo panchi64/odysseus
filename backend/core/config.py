@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # All user data lives under here — gitignored, encrypted at rest.
     data_dir: Path = Path("data")
 
+    # Run substrate bounds (XC-PERF-2). Timeouts are seconds; None disables.
+    run_max_concurrency: int = 8
+    run_wall_clock_timeout_s: float | None = 1800.0
+    run_inactivity_timeout_s: float | None = 120.0
+
 
 @lru_cache
 def get_settings() -> Settings:
