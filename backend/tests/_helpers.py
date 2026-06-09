@@ -14,17 +14,20 @@ from core.config import Settings
 
 
 @asynccontextmanager
-async def client_app():
+async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "test-passphrase"):
     """A booted app + async client, backed by a throwaway in-memory DB.
 
     An in-memory SQLite URL plus a temp data dir (for the keyfile) keep tests off
-    the real ``data/`` dir; a passphrase unlocks the encryption vault at boot.
+    the real ``data/`` dir. By default auth is off and a passphrase unlocks the
+    vault at boot, so feature endpoints are reachable without a token; the auth
+    tests pass ``auth_enabled=True, passphrase=None`` to exercise setup/login.
     """
     with tempfile.TemporaryDirectory() as tmp:
         settings = Settings(
             db_url="sqlite:///:memory:",
             data_dir=Path(tmp),
-            unlock_passphrase="test-passphrase",
+            auth_enabled=auth_enabled,
+            unlock_passphrase=passphrase,
         )
         app = create_app(settings)
         async with app.router.lifespan_context(app):

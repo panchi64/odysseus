@@ -13,10 +13,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import chat, health, runs
+from routes import auth, chat, health, runs
 from runs import RunRegistry
 from services.conversations import ConversationStore
 
@@ -30,6 +31,7 @@ async def lifespan(app: FastAPI):
     (``services/``) wire in here as they land.
     """
     settings: Settings = app.state.settings
+    app.state.auth_manager = AuthManager()
     app.state.runs = RunRegistry(
         max_concurrency=settings.run_max_concurrency,
         wall_clock_timeout_s=settings.run_wall_clock_timeout_s,
@@ -66,6 +68,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Odysseus", version=settings.version, lifespan=lifespan)
     app.state.settings = settings  # the lifespan reads this (tests inject it)
 
+    # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
+    # preflight and decorate even a 401 with the right headers.
+    app.add_middleware(AuthMiddleware)
+
     # Origin-agnostic API: the backend makes no assumption about who serves the
     # frontend. CORS is configurable; bearer auth works same- or split-origin.
     app.add_middleware(
@@ -77,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(runs.router)
     app.include_router(chat.router)
     return app
