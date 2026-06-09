@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     run_wall_clock_timeout_s: float | None = 1800.0
     run_inactivity_timeout_s: float | None = 120.0
 
+    # Model resolution (D16). Minimal single-endpoint seam until the role→
+    # endpoint registry lands in encrypted settings. OpenAI-compatible.
+    llm_base_url: str = "http://localhost:11434/v1"
+    llm_api_key: str = "not-needed"  # local servers ignore it
+    llm_model: str = ""  # the `main` role; empty until configured
+    utility_model: str = ""  # the `utility` role; falls back to `main`
+
+    # Agent bounds: max model requests per turn (AE-1.5) and optional
+    # per-turn tool-call cap (AE-1.6). None disables the tool cap.
+    agent_request_limit: int = 25
+    agent_tool_calls_limit: int | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

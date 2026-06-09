@@ -108,7 +108,7 @@ class RunRegistry:
                 await self._supervise(run, orchestrator, wall_clock, inactivity)
                 if not run.is_terminal:
                     run.status = RunStatus.done
-                run.emit(RunMetrics())
+                run.emit(run.metrics or RunMetrics())
                 run.emit(RunEnded(outcome=run.status.value, detail=run.detail))
         except RunTimeout as timeout:
             run.status = RunStatus.error

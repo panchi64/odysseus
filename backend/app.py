@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import Settings, get_settings
-from routes import health, runs
+from routes import chat, health, runs
 from runs import RunRegistry
 
 
@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(runs.router)
+    app.include_router(chat.router)
     return app
 
 

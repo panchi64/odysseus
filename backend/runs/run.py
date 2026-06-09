@@ -17,7 +17,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from .events import Event, now_utc
+from .events import Event, RunMetrics, now_utc
 from .stream import RunStream
 
 
@@ -54,6 +54,7 @@ class Run:
     last_activity_mono: float = 0.0
     task: asyncio.Task[None] | None = None
     cancel_requested: bool = False
+    metrics: RunMetrics | None = None
 
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog (XC-PERF-2)."""
@@ -67,6 +68,10 @@ class Run:
         """Orchestrator declares it cannot proceed (AE-1.2 blocked)."""
         self.status = RunStatus.blocked
         self.detail = detail
+
+    def set_metrics(self, metrics: RunMetrics) -> None:
+        """Stash final metrics; the registry emits them at terminal (AE-6.1)."""
+        self.metrics = metrics
 
     @property
     def is_terminal(self) -> bool:

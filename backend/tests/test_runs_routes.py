@@ -3,35 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from contextlib import asynccontextmanager
 
-import httpx
-
-from app import create_app
 from runs.events import AnswerDelta
 
-
-@asynccontextmanager
-async def client_app():
-    """A booted app (lifespan run, so app.state.runs exists) + an async client."""
-    app = create_app()
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client, app
-
-
-async def _collect_events(client, run_id, *, last_event_id=None):
-    params = {} if last_event_id is None else {"last_event_id": last_event_id}
-    events = []
-    async with client.stream("GET", f"/runs/{run_id}/events", params=params) as resp:
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("text/event-stream")
-        async for line in resp.aiter_lines():
-            if line.startswith("data:"):
-                events.append(json.loads(line[len("data:") :].strip()))
-    return events
+from ._helpers import client_app, collect_sse_events
 
 
 async def test_stream_delivers_full_event_record():
@@ -41,7 +16,7 @@ async def test_stream_delivers_full_event_record():
             run.emit(AnswerDelta(text="hello"))
 
         run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
-        events = await _collect_events(client, run.id)
+        events = await collect_sse_events(client, run.id)
 
     types = [e["type"] for e in events]
     assert types[0] == "run.started"
@@ -59,7 +34,7 @@ async def test_resume_replays_only_missed_events():
 
         run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
         await run.wait()
-        events = await _collect_events(client, run.id, last_event_id=2)
+        events = await collect_sse_events(client, run.id, last_event_id=2)
 
     assert all(e["seq"] > 2 for e in events)
     assert events[-1]["type"] == "run.ended"
