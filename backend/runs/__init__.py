@@ -7,10 +7,10 @@ timeouts, and metrics are written once here and inherited everywhere.
 - :class:`RunRegistry` — launch/track/bound/cancel Runs (in-process asyncio).
 - :class:`Run` / :class:`RunStatus` — the unit of work and its lifecycle.
 - :class:`RunStream` — per-run event buffer + broker (resume via Last-Event-ID).
-- ``events`` — the frozen v1 typed event union (D15).
-- :func:`sse_response` — stream a Run to a client over SSE (D1).
+- ``events`` — the frozen v1 typed event union.
+- :func:`sse_response` — stream a Run to a client over SSE.
 
-See docs/architecture/README.md (Pillars I & II) and decisions D1/D2/D15/D20.
+See docs/architecture/README.md (Pillars I & II).
 """
 
 from __future__ import annotations

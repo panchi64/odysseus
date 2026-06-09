@@ -1,6 +1,6 @@
 """Pillar I — the RunRegistry: launch, track, bound, and cancel Runs.
 
-In-process (D2): Runs are asyncio tasks tracked in a dict, gated by a global
+In-process: Runs are asyncio tasks tracked in a dict, gated by a global
 concurrency semaphore (bursts queue at the gate — the ``queued`` state, also
 satisfying TASK-5 "no overlapping overload"). The registry owns the lifecycle
 mechanics — queued→running, the terminal-state mapping, the two timeout bounds
@@ -86,9 +86,49 @@ class RunRegistry:
         if run is None or run.is_terminal:
             return False
         run.cancel_requested = True
+        if run.status is RunStatus.awaiting_input:
+            # Parked: the task already ended, so there is nothing to interrupt —
+            # finalize directly and close the stream.
+            run.status = RunStatus.cancelled
+            run.emit(RunEnded(outcome="cancelled"))
+            run.ended_at = now_utc()
+            run.stream.close()
+            return True
         if run.task is not None:
             run.task.cancel()
         return True
+
+    async def resume(
+        self,
+        run_id: str,
+        orchestrator: Orchestrator,
+        *,
+        wall_clock_timeout_s: float | None | object = _UNSET,
+        inactivity_timeout_s: float | None | object = _UNSET,
+    ) -> Run | None:
+        """Continue a parked run with a fresh orchestrator (approval resume).
+
+        Runs on the same Run/stream — no new ``run.started``, no replayed
+        history — and inherits fresh bounds for the continuation turn.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.status is not RunStatus.awaiting_input:
+            return None
+        # Let the parked attempt's task fully exit before we touch status —
+        # otherwise it could wake, see status flipped, and wrongly finalize.
+        if run.task is not None:
+            with suppress(asyncio.CancelledError):
+                await run.task
+        if run.status is not RunStatus.awaiting_input:
+            return None  # cancelled (or already resumed) while we waited
+        run.status = RunStatus.queued
+        wall = self._wall_clock if wall_clock_timeout_s is _UNSET else wall_clock_timeout_s
+        idle = self._inactivity if inactivity_timeout_s is _UNSET else inactivity_timeout_s
+        run.task = asyncio.create_task(
+            self._execute(run, orchestrator, wall, idle, resuming=True),  # type: ignore[arg-type]
+            name=f"run:{run.id}:resume",
+        )
+        return run
 
     # --- execution ------------------------------------------------------------
     async def _execute(
@@ -97,15 +137,22 @@ class RunRegistry:
         orchestrator: Orchestrator,
         wall_clock: float | None,
         inactivity: float | None,
+        *,
+        resuming: bool = False,
     ) -> None:
         try:
-            # Bursts wait here while ``queued`` — bounded concurrency (D2).
+            # Bursts wait here while ``queued`` — bounded concurrency.
             async with self._sem:
                 run.status = RunStatus.running
-                run.started_at = now_utc()
                 run.touch()
-                run.emit(RunStarted(run_id=run.id, kind=run.kind))
+                if not resuming:
+                    run.started_at = now_utc()
+                    run.emit(RunStarted(run_id=run.id, kind=run.kind))
                 await self._supervise(run, orchestrator, wall_clock, inactivity)
+                if run.status is RunStatus.awaiting_input:
+                    # Parked for approval: leave the stream open and the
+                    # slot free; the run is resumed or cancelled out of band.
+                    return
                 if not run.is_terminal:
                     run.status = RunStatus.done
                 run.emit(run.metrics or RunMetrics())
@@ -124,8 +171,11 @@ class RunRegistry:
             run.error = str(exc)
             run.emit(RunError(message=str(exc), kind=type(exc).__name__))
         finally:
-            run.ended_at = run.ended_at or now_utc()
-            run.stream.close()
+            # Only finalize on a terminal outcome — a parked run keeps its
+            # stream open for the eventual resume.
+            if run.is_terminal:
+                run.ended_at = run.ended_at or now_utc()
+                run.stream.close()
 
     async def _supervise(
         self,

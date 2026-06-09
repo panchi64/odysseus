@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     run_wall_clock_timeout_s: float | None = 1800.0
     run_inactivity_timeout_s: float | None = 120.0
 
-    # Model resolution (D16). Minimal single-endpoint seam until the role→
-    # endpoint registry lands in encrypted settings. OpenAI-compatible.
+    # Model resolution. Minimal single-endpoint seam until the role→endpoint
+    # registry lands in encrypted settings. OpenAI-compatible.
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = "not-needed"  # local servers ignore it
     llm_model: str = ""  # the `main` role; empty until configured

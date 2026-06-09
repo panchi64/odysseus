@@ -4,7 +4,7 @@ Chat turns, agent tasks, and research jobs are all Runs; they differ only in
 the orchestrator that drives them. A Run owns its id/owner/status, its event
 stream (buffer + broker), and — once running — the asyncio task executing it.
 Status follows ``queued → running → {done | blocked | error | cancelled}``,
-with a parked ``awaiting_input`` when a sensitive action needs approval (D20).
+with a parked ``awaiting_input`` when a sensitive action needs approval.
 """
 
 from __future__ import annotations
@@ -55,6 +55,9 @@ class Run:
     task: asyncio.Task[None] | None = None
     cancel_requested: bool = False
     metrics: RunMetrics | None = None
+    # Opaque continuation payload for a parked run (set by the orchestrator
+    # layer when awaiting approval). The substrate never interprets it.
+    parked_payload: object | None = None
 
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog (XC-PERF-2)."""
@@ -68,6 +71,15 @@ class Run:
         """Orchestrator declares it cannot proceed (AE-1.2 blocked)."""
         self.status = RunStatus.blocked
         self.detail = detail
+
+    def park(self, payload: object | None = None) -> None:
+        """Park awaiting operator input (approval); not a terminal state.
+
+        The orchestrator returns after parking; the registry leaves the stream
+        open and the slot free until the run is resumed or cancelled.
+        """
+        self.status = RunStatus.awaiting_input
+        self.parked_payload = payload
 
     def set_metrics(self, metrics: RunMetrics) -> None:
         """Stash final metrics; the registry emits them at terminal (AE-6.1)."""

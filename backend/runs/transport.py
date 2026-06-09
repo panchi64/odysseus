@@ -1,8 +1,8 @@
 """Pillar I/II — SSE transport: turn a Run's event stream into an HTTP response.
 
-The only transport in v1 (D1: SSE + POST control). Disconnect is safe — the
-generator just unsubscribes; the Run keeps executing and is fully replayable on
-reconnect via ``Last-Event-ID`` (AE-7).
+The only transport in v1 (SSE for server→client, POST for control). Disconnect
+is safe — the generator just unsubscribes; the Run keeps executing and is fully
+replayable on reconnect via ``Last-Event-ID``.
 """
 
 from __future__ import annotations

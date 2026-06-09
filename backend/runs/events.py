@@ -1,6 +1,6 @@
 """Pillar II — the event protocol (the backend↔frontend contract).
 
-The frozen v1 typed event union (D15). Framing: SSE, each frame's ``id:`` is the
+The frozen v1 typed event union. Framing: SSE, each frame's ``id:`` is the
 per-run monotonic ``seq`` and ``data:`` is the flat JSON envelope
 ``{type, seq, ts, ...payload}``. Naming is ``entity.event``, dot.lowercase —
 past-tense verbs for things that happened, ``delta``/``progress`` for streams.
@@ -80,7 +80,7 @@ class AnswerDelta(_Body):
     text: str
 
 
-# --- Tools (full payloads inline, per D15) -----------------------------------
+# --- Tools (full args + results inline, not summaries) -----------------------
 class ToolStarted(_Body):
     type: Literal["tool.started"] = "tool.started"
     tool_call_id: str
@@ -137,7 +137,7 @@ class CitationAdded(_Body):
 
 
 class ApprovalRequired(_Body):
-    """A sensitive action is parked awaiting operator approval (D20)."""
+    """A sensitive action is parked awaiting operator approval."""
 
     type: Literal["approval.required"] = "approval.required"
     tool_call_id: str

@@ -1,12 +1,12 @@
-"""Model resolution — turn a named role into a Pydantic AI model (D16).
+"""Model resolution — turn a named role into a Pydantic AI model.
 
 Roles the engine consumes: ``main`` (chat/agent), ``utility`` (cheap background
 work), ``embedding`` (recall). Each binds to an OpenAI-compatible endpoint (or,
 later, an ordered fallback chain wrapped in ``FallbackModel``).
 
-This is the **minimal seam**: a single endpoint from config. D16's full role→
-endpoint registry lives in encrypted settings and swaps in here without touching
-callers — the engine only ever asks for a role.
+This is the **minimal seam**: a single endpoint from config. The full role→
+endpoint registry (in encrypted settings, with per-role fallback chains) swaps in
+here later without touching callers — the engine only ever asks for a role.
 """
 
 from __future__ import annotations

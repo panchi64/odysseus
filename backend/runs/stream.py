@@ -5,7 +5,7 @@ set of live subscribers. It does two jobs at once:
 
 - **buffer** — every event is appended in ``seq`` order and kept for the run's
   lifetime, so a client that disconnects and reconnects can replay what it
-  missed (``AE-7`` / D15 resume).
+  missed on reconnect.
 - **broker** — each emit fans out to every live subscriber's queue.
 
 The buffer is in-memory and dies with the process, which is exactly what

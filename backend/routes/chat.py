@@ -14,13 +14,13 @@ from runs import RunRegistry
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-# Single operator (D14): every record is attributed to this owner for now.
+# Single operator: every record is attributed to this owner for now.
 _OPERATOR = "operator"
 
 
 class ChatCreate(BaseModel):
     prompt: str
-    model: str | None = None  # per-conversation `main` override (D16); future
+    model: str | None = None  # per-conversation model override; future
 
 
 class ChatCreated(BaseModel):

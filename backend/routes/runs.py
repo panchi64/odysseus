@@ -8,11 +8,14 @@ Run is a feature concern (chat/agent/research routes), not here — those call
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+from pydantic_ai import ToolApproved, ToolDenied
 
-from runs import Run, RunRegistry, parse_last_event_id, sse_response
+from agent import ParkedTurn, build_resume_orchestrator
+from runs import Run, RunRegistry, RunStatus, parse_last_event_id, sse_response
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -83,3 +86,47 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
             raise HTTPException(status_code=404, detail="run not found")
         raise HTTPException(status_code=409, detail=f"run already {run.status.value}")
     return {"status": "cancelling"}
+
+
+class ApprovalDecision(BaseModel):
+    tool_call_id: str
+    approved: bool
+    message: str | None = None  # shown to the model on denial
+    override_args: dict[str, Any] | None = None  # replace args on approval
+
+
+class ApprovalDecisions(BaseModel):
+    decisions: list[ApprovalDecision]
+
+
+@router.post("/{run_id}/approve", status_code=202)
+async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) -> dict[str, str]:
+    """Decide the sensitive actions a parked run is awaiting, then resume it."""
+    registry = _registry(request)
+    run = registry.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status is not RunStatus.awaiting_input or not isinstance(run.parked_payload, ParkedTurn):
+        raise HTTPException(status_code=409, detail=f"run is not awaiting approval ({run.status})")
+
+    parked: ParkedTurn = run.parked_payload
+    pending = {call.tool_call_id for call in parked.requests.approvals}
+    provided = {d.tool_call_id for d in body.decisions}
+    if provided != pending:
+        raise HTTPException(
+            status_code=400,
+            detail=f"decisions must cover exactly the pending calls: {sorted(pending)}",
+        )
+
+    decisions: dict[str, ToolApproved | ToolDenied] = {}
+    for decision in body.decisions:
+        if decision.approved:
+            decisions[decision.tool_call_id] = ToolApproved(override_args=decision.override_args)
+        else:
+            decisions[decision.tool_call_id] = ToolDenied(
+                message=decision.message or "The operator denied this action."
+            )
+
+    if await registry.resume(run_id, build_resume_orchestrator(parked, decisions)) is None:
+        raise HTTPException(status_code=409, detail="run could not be resumed")
+    return {"status": "resuming"}

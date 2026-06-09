@@ -55,7 +55,7 @@ async def test_retry_prompt_part_becomes_tool_failed():
     event = FunctionToolResultEvent(
         part=RetryPromptPart(content="bad input", tool_name="lookup", tool_call_id="c9")
     )
-    _on_tool_event(event, run)
+    _on_tool_event(event, run, None)
 
     failed = _first(run, "tool.failed")
     assert failed.name == "lookup"

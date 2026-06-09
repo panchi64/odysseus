@@ -8,7 +8,7 @@ library's events into our domain events:
 - text parts → ``answer.delta``, thinking parts → ``thinking.delta`` (the
   AE-6.3 reasoning/answer split);
 - a ``CallToolsNode`` surfaces tool execution → ``tool.started`` /
-  ``tool.completed`` / ``tool.failed`` with full args/results inline (D15).
+  ``tool.completed`` / ``tool.failed`` with full args/results inline.
 
 Step boundaries, document lifecycle, citations, and run metrics are *ours* —
 the library doesn't know about them; we emit them here and in the engine.
@@ -70,9 +70,15 @@ def _on_model_event(event: object, run: Run) -> None:
     # signal we surface — tool execution is reported from the CallToolsNode.
 
 
-def _on_tool_event(event: object, run: Run) -> None:
+def _on_tool_event(event: object, run: Run, announced: set[str] | None) -> None:
     if isinstance(event, FunctionToolCallEvent):
         part = event.part
+        # tool.started is idempotent per run: an approval-deferred call re-fires
+        # its call event on the resume turn, so announce each id once.
+        if announced is not None and part.tool_call_id in announced:
+            return
+        if announced is not None:
+            announced.add(part.tool_call_id)
         run.emit(
             ToolStarted(
                 tool_call_id=part.tool_call_id,
@@ -100,8 +106,15 @@ def _on_tool_event(event: object, run: Run) -> None:
             )
 
 
-async def stream_agent_run(agent_run: Any, run: Run) -> None:
-    """Iterate the AgentRun's graph nodes, emitting our events as they happen."""
+async def stream_agent_run(
+    agent_run: Any, run: Run, *, announced: set[str] | None = None
+) -> None:
+    """Iterate the AgentRun's graph nodes, emitting our events as they happen.
+
+    ``announced`` (a set of tool_call_ids already surfaced as ``tool.started``)
+    is threaded across a turn-chain so an approval-deferred call is announced
+    once even though its call event re-fires on resume.
+    """
     step = 0
     async for node in agent_run:
         if Agent.is_model_request_node(node):
@@ -114,5 +127,5 @@ async def stream_agent_run(agent_run: Any, run: Run) -> None:
         elif Agent.is_call_tools_node(node):
             async with node.stream(agent_run.ctx) as stream:
                 async for event in stream:
-                    _on_tool_event(event, run)
+                    _on_tool_event(event, run, announced)
         # UserPromptNode / End nodes have nothing to stream.

@@ -2,13 +2,14 @@
 
 Which tools a run sees is composition, not bespoke machinery (the most leveraged
 mapping in the design). Each category toolset is namespaced for stable
-``category_tool`` names (D15), combined, then passed through the **enabled gate**
-(AE-3.3). There is deliberately **no relevance pre-filter** — a capable native-
-tool-calling model on one host discerns its own tools (D3); and with no
-privilege tiers (single operator, D14) there is no privilege gate either.
+``category_tool`` names, combined, then passed through the **enabled gate** so an
+operator-disabled tool is never offered. There is deliberately **no relevance
+pre-filter** — a capable native-tool-calling model on one host discerns its own
+tools; and with a single operator (no privilege tiers) there is no privilege
+gate either.
 
-Sensitive-action gating is *not* a filter here — those tools are approval-gated
-at execution time (D20), handled by the engine, not by dropping them.
+Sensitive-action gating is *not* a filter here — those tools pause for operator
+approval at execution time, handled by the engine, not dropped from the catalog.
 """
 
 from __future__ import annotations
