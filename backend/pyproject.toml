@@ -10,11 +10,13 @@ dependencies = [
     "pydantic-settings>=2.7",
     "pydantic-ai>=0.2",
     "sqlmodel>=0.0.22",
+    "cryptography>=44",
+    "argon2-cffi>=23",
 ]
 
-# At-rest encryption (SQLCipher or app-layer), Alembic migrations, argon2-cffi,
-# and sqlite-vec land with the auth/unlock pass — persistence runs on plain
-# SQLite until there's a password to derive the key from.
+# Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest
+# encryption is application-layer AEAD instead. Alembic migrations and
+# sqlite-vec still land later.
 
 [dependency-groups]
 dev = [
