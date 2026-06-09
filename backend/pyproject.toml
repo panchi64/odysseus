@@ -1,0 +1,39 @@
+[project]
+name = "odysseus-backend"
+version = "0.1.0"
+description = "Odysseus backend — the chassis around a Pydantic AI engine."
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "pydantic-ai>=0.2",
+]
+
+# Heavier / native foundations (encrypted SQLite via SQLCipher, Alembic,
+# argon2-cffi, sqlite-vec, the embeddings/serving stacks) are added as their
+# pillar lands — kept out of the bootable skeleton on purpose.
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
