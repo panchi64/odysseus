@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     # DB connection. None ⇒ a file under data_dir; tests pass an in-memory URL.
     db_url: str | None = None
+    # Unlock passphrase for the at-rest encryption vault. When set, the vault is
+    # set up (first run) or unlocked at boot without a login — the auth-disabled
+    # path. With auth enabled the operator unlocks via login instead.
+    unlock_passphrase: str | None = None
 
     # Run substrate bounds. Timeouts are seconds; None disables.
     run_max_concurrency: int = 8

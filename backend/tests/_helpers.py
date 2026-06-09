@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 
@@ -15,13 +17,20 @@ from core.config import Settings
 async def client_app():
     """A booted app + async client, backed by a throwaway in-memory DB.
 
-    Uses an in-memory SQLite URL so tests never touch the real ``data/`` dir.
+    An in-memory SQLite URL plus a temp data dir (for the keyfile) keep tests off
+    the real ``data/`` dir; a passphrase unlocks the encryption vault at boot.
     """
-    app = create_app(Settings(db_url="sqlite:///:memory:"))
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client, app
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Settings(
+            db_url="sqlite:///:memory:",
+            data_dir=Path(tmp),
+            unlock_passphrase="test-passphrase",
+        )
+        app = create_app(settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                yield client, app
 
 
 async def collect_sse_events(client, run_id, *, last_event_id=None):

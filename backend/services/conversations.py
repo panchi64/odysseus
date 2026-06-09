@@ -6,6 +6,12 @@ As each turn completes, its new messages are copied onto a queue that a
 background drainer writes to the DB off the critical path. The DB is the durable
 record; memory is the fast one. A cold conversation rehydrates from the DB once,
 then runs at memory speed.
+
+Content is **encrypted at rest**: the message text and blob are encrypted on the
+hot path (where the vault is unlocked, since the operator is actively chatting),
+so the drainer only ever handles ciphertext and the working set stays plaintext.
+Structural metadata (ids, timestamps, owner, seq, kind) stays plaintext so the
+DB can still index and order.
 """
 
 from __future__ import annotations
@@ -23,12 +29,16 @@ from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
 from core.db import in_session
+from core.vault import Vault
 from models.conversation import Conversation, Message
 
 logger = logging.getLogger(__name__)
 
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
+
+# An encrypted, persistence-ready row: (kind, encrypted text, encrypted blob).
+_EncRow = tuple[str, str, str]
 
 
 def _project(message: ModelMessage) -> tuple[str, str]:
@@ -43,10 +53,11 @@ def _project(message: ModelMessage) -> tuple[str, str]:
 
 
 class ConversationStore:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, vault: Vault) -> None:
         self._engine = engine
+        self._vault = vault
         self._cache: dict[str, list[ModelMessage]] = {}
-        self._queue: asyncio.Queue[tuple[str, list[ModelMessage]]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, list[_EncRow]]] = asyncio.Queue()
         self._drainer: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -85,43 +96,47 @@ class ConversationStore:
             return [row.blob for row in rows]
 
         blobs = await in_session(self._engine, work)
-        messages = [_MESSAGE.validate_json(blob) for blob in blobs]
+        messages = [_MESSAGE.validate_json(self._vault.decrypt_str(blob)) for blob in blobs]
         self._cache[conversation_id] = messages
         return list(messages)
 
     def record(self, conversation_id: str, new_messages: list[ModelMessage]) -> None:
-        """Hot path: extend the working set and queue the durable write."""
+        """Hot path: extend the working set and queue the encrypted durable write."""
         if not new_messages:
             return
         self._cache.setdefault(conversation_id, []).extend(new_messages)
-        self._queue.put_nowait((conversation_id, list(new_messages)))
+        rows: list[_EncRow] = []
+        for message in new_messages:
+            kind, text = _project(message)
+            blob = json.dumps(to_jsonable_python(message))
+            rows.append((kind, self._vault.encrypt_str(text), self._vault.encrypt_str(blob)))
+        self._queue.put_nowait((conversation_id, rows))
 
     async def _drain(self) -> None:
         while True:
-            conversation_id, messages = await self._queue.get()
+            conversation_id, rows = await self._queue.get()
             try:
-                await self._persist(conversation_id, messages)
+                await self._persist(conversation_id, rows)
             except Exception:  # noqa: BLE001 — a bad write must not kill the drainer
                 logger.exception("failed to persist messages for %s", conversation_id)
             finally:
                 self._queue.task_done()
 
-    async def _persist(self, conversation_id: str, messages: list[ModelMessage]) -> None:
+    async def _persist(self, conversation_id: str, rows: list[_EncRow]) -> None:
         def work(session: Session) -> None:
             # The drainer is single-threaded, so the row count is the next seq.
             base = session.scalar(
                 select(func.count(Message.id)).where(Message.conversation_id == conversation_id)
             )
             base = base or 0
-            for offset, message in enumerate(messages):
-                kind, text = _project(message)
+            for offset, (kind, enc_text, enc_blob) in enumerate(rows):
                 session.add(
                     Message(
                         conversation_id=conversation_id,
                         seq=base + offset,
                         kind=kind,
-                        text=text,
-                        blob=json.dumps(to_jsonable_python(message)),
+                        text=enc_text,
+                        blob=enc_blob,
                     )
                 )
             conversation = session.get(Conversation, conversation_id)

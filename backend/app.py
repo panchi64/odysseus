@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
+from core.vault import Vault
 from routes import chat, health, runs
 from runs import RunRegistry
 from services.conversations import ConversationStore
@@ -35,14 +36,24 @@ async def lifespan(app: FastAPI):
         inactivity_timeout_s=settings.run_inactivity_timeout_s,
     )
 
-    url = settings.db_url
-    if url is None:
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        url = f"sqlite:///{settings.data_dir / 'app.db'}"
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    url = settings.db_url or f"sqlite:///{settings.data_dir / 'app.db'}"
     engine = make_engine(url)
     init_db(engine)
     app.state.db_engine = engine
-    app.state.conversations = ConversationStore(engine)
+
+    # The at-rest encryption vault. A passphrase (auth-disabled path) sets it up
+    # or unlocks it at boot; otherwise it stays locked until the operator unlocks
+    # via login/setup.
+    vault = Vault(settings.data_dir / "keyfile.json")
+    app.state.vault = vault
+    if settings.unlock_passphrase:
+        if vault.is_initialized:
+            await vault.unlock(settings.unlock_passphrase)
+        else:
+            await vault.setup(settings.unlock_passphrase)
+
+    app.state.conversations = ConversationStore(engine, vault)
     await app.state.conversations.start()
     try:
         yield

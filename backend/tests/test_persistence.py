@@ -6,20 +6,30 @@ from pydantic_ai.models.test import TestModel
 
 from agent import build_chat_orchestrator
 from core.db import init_db, make_engine
+from core.vault import Vault
 from runs import RunRegistry
 from services.conversations import ConversationStore
 
 from ._helpers import client_app, collect_sse_events
 
 
-def _fresh_store() -> tuple[ConversationStore, object]:
+async def _unlocked_vault(tmp_path, name: str = "keyfile.json") -> Vault:
+    vault = Vault(tmp_path / name)
+    if not vault.is_initialized:
+        await vault.setup("pw")
+    else:
+        await vault.unlock("pw")
+    return vault
+
+
+async def _fresh_store(tmp_path) -> tuple[ConversationStore, object]:
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
-    return ConversationStore(engine), engine
+    return ConversationStore(engine, await _unlocked_vault(tmp_path)), engine
 
 
-async def test_store_records_and_rehydrates_from_db():
-    store, engine = _fresh_store()
+async def test_store_records_and_rehydrates_from_db(tmp_path):
+    store, engine = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator", title="t")
 
@@ -42,17 +52,48 @@ async def test_store_records_and_rehydrates_from_db():
     # The live working set reflects both turns immediately (no DB read).
     assert len(await store.history(conv)) == 4
 
-    # A cold store rehydrates the same history from the durable record.
+    # A cold store rehydrates the same history from the durable record (it must
+    # unlock the same keyfile to decrypt).
     await store.stop()
-    cold = ConversationStore(engine)
+    cold = ConversationStore(engine, await _unlocked_vault(tmp_path))
     await cold.start()
     rehydrated = await cold.history(conv)
     assert [m.kind for m in rehydrated] == ["request", "response", "request", "response"]
     await cold.stop()
 
 
-async def test_second_turn_continues_prior_history():
-    store, _ = _fresh_store()
+async def test_content_is_encrypted_at_rest(tmp_path):
+    from sqlmodel import Session, select
+
+    from models.conversation import Message
+
+    store, engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "tell me the SECRET-TOKEN-XYZ",
+        model=TestModel(custom_output_text="the answer is SECRET-TOKEN-XYZ"),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+    await store.stop()  # flush the write-behind queue
+
+    # Raw rows on disk must not contain the plaintext.
+    with Session(engine) as session:
+        rows = session.exec(select(Message).where(Message.conversation_id == conv)).all()
+    assert rows
+    for row in rows:
+        assert "SECRET-TOKEN-XYZ" not in row.blob
+        assert "SECRET-TOKEN-XYZ" not in row.text
+
+
+async def test_second_turn_continues_prior_history(tmp_path):
+    store, _ = await _fresh_store(tmp_path)
     await store.start()
     conv = await store.create_conversation("operator")
 
