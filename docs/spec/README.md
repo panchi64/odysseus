@@ -2,6 +2,8 @@
 
 This directory specifies **what Odysseus must do**: the required behavior, capabilities, and performance characteristics of the system. It is a black-box specification — it describes the system from the outside, not how any of it is implemented.
 
+For the *how* — the backend architecture that realizes this spec, and the decisions behind it — see [`../architecture/`](../architecture/README.md).
+
 ## Documents
 
 | File | Scope |

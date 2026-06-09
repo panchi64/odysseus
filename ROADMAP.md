@@ -1,45 +1,46 @@
 # Roadmap / Help Wanted
 
-Odysseus is on a voyage, but not home yet. It works great for me (lol), but this is ship is moving fast and feedback/help would be appreciated! (I dont know what I'm doing hlep).
+Odysseus is on a voyage, and right now we're rebuilding the ship's hull. The backend was scorched-earth reset and is being rebuilt greenfield on **Pydantic AI + FastAPI**; the frontend is a SolidStart SPA running on mock data. Feedback and help appreciated (I half-know what I'm doing, hlep).
 
-If you see weird CSS, strange layout behavior, or a suspiciously murky corner of
-the codebase, you are probably right to stay away.
+If you see weird CSS, strange layout behavior, or a suspiciously murky corner, you're probably right to stay away — for now.
 
-## High Priority
+## Where things stand
 
-- SQUASH BUGS
-- Fresh Docker install smoke tests on Linux, macOS, and Windows!!
+- ✅ **Spec** — black-box requirements written (`docs/spec/`).
+- ✅ **Architecture** — engine/chassis design + every foundational decision settled (`docs/architecture/`).
+- 🛠️ **Frontend** — SolidStart terminal-HUD SPA, built against typed mock data behind a stable seam.
+- ⏳ **Backend** — greenfield build-out starting now, against the architecture docs.
 
-- Integration audit: do integrations even work? Confirm what works, what needs setup docs, and what should be removed or hidden. 
-- Self-host troubleshooting cookbook. Document the weird 30-second fixes that otherwise become 30-minute searches: Dovecot cleartext auth for local stacks, ntfy Android Instant Delivery for non-ntfy.sh servers, clipboard limits on plain-HTTP Tailscale URLs, Radicale collection URLs, and similar traps.
-- Cookbook reliability on other computers. This is probably the area most likely to need work across different machines, GPUs, drivers, shells, and Python environments.
-- Tile/window management correctness. I had to brute force my way a bit here, I'm aware, popups, dropdowns, and fixed-position UI inside transformed modals can land in the wrong place.
-- Esc button, it's small but a lot of windows that arent still close on esc and alot of them doesnt. 
-- Skill audit, how does your model respond to skill injection, does it follow? Does its parsing miss? 
-- Better degraded-state reporting for ChromaDB, SearXNG, email, ntfy, and provider probes.
-- Provider setup/probing audit for Anthropic, Gemini, Groq, xAI, OpenRouter, OpenAI, and DeepSeek.
+## Now — foundational build-out
 
-## Refactor Targets
-- CSS cleanup. `static/style.css` basically Calypso's island atm.
-- Tour core helper. The onboarding tours have too much copy-pasted scaffolding; promote a shared `tour-core.js` helper before adding more tours.
-- Mobile media override discoverability. A lot of "CSS did not move" bugs are mobile `@media` overrides of the same selector; comments or linting around desktop/mobile paired rules would help.
-- Dead code pass for old routes, stale feature flags, and unused UI states.
+Scaffold and stand up `backend/` against `docs/architecture/`, pillar by pillar:
 
-## Frontend
+- The **Run substrate** — registry, in-process broker, event buffer, lifecycle state machine, resume/cancel/timeout.
+- The **event protocol** — the frozen v1 typed event union that is the backend↔frontend contract.
+- The **agent engine** — Pydantic AI `Agent` assembly, the toolset-stack access policy, the verifier/loop-break meta-loop.
+- **Persistence & crypto** — encrypted-at-rest SQLite, write-behind history, the password-derived lock-until-unlocked key.
+- **Auth & transport** — global auth middleware, dual cookie + bearer, origin-agnostic API + SSE.
 
-- Mobile gallery/editor polish. Easier to launch/download inpaint model or any missing pieces.
-- Accessibility pass: keyboard navigation, focus states, contrast, reduced motion.
-- Improve empty states and error messages on fresh installs.
-- Tighten first-run setup, hints, and tours so they do not repeat or fight each other.
-- Vendor CDN assets eventually for a more fully self-hosted/offline mode.
+## Next — wire the frontend
 
-## Backend
+- Swap each feature's mock `data.ts` for real `~/lib/api` / `~/lib/stream` calls — return types unchanged, so screens don't move.
+- Stream chat/agent/research over the event protocol end to end.
 
-- More tests around endpoint probing and provider setup.
-- Better task scheduler defaults and visibility.
-- Backup/restore guide and helper flow for `data/`.
-- Security hardening around admin-only tools and clear docs for their risk.
+## Later — feature breadth & hardening
 
-## Not The Focus Right Now
+- Cookbook reliability across machines, GPUs, drivers, and Python environments.
+- Deep research depth, source handling, and report quality.
+- Email/calendar integrations: confirm what works, document setup, hide or remove what doesn't.
+- Better degraded-state reporting for vector store, web search, email, push, and provider probes.
+- Provider setup/probing across Anthropic, Gemini, Groq, xAI, OpenRouter, OpenAI, DeepSeek.
+- Fresh-install smoke tests on Linux and macOS.
+- A self-host troubleshooting cookbook for the weird 30-second fixes that otherwise eat 30 minutes.
 
-I prob shouldnt add more themes.
+## Frontend polish (ongoing)
+
+- Accessibility: keyboard navigation, focus states, contrast, reduced motion.
+- Empty states and error messages on fresh installs.
+- Tighten first-run setup, hints, and tours so they don't repeat or fight each other.
+- Mobile gallery/editor polish; popover/dropdown placement inside transformed modals.
+- `Esc` should close every dismissible surface, consistently.
+- Vendor CDN assets eventually for a fully self-hosted/offline mode.
