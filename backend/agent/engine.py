@@ -33,6 +33,7 @@ from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics
 from services import llm
 from tools import RunDeps, build_agent_toolsets
 
+from .meta import Judge, LoopBreaker, LoopDetected, utility_judge
 from .translate import stream_agent_run
 
 
@@ -45,6 +46,15 @@ class ParkedTurn:
     message_history: list[ModelMessage]
     requests: DeferredToolRequests
     announced: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _TurnResult:
+    """What one turn produced: a final answer (or None if it parked/blocked/hit
+    a bound) and the message history needed to continue the conversation."""
+
+    answer: str | None
+    messages: list[ModelMessage] = field(default_factory=list)
 
 
 def _build_agent(model: Model, *, categories: Any = None) -> Agent:
@@ -87,13 +97,14 @@ async def _drive_turn(
     message_history: list[ModelMessage] | None = None,
     deferred_results: DeferredToolResults | None = None,
     announced: set[str],
-) -> None:
+) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
         request_limit=settings.agent_request_limit,
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
     deps = RunDeps(run=run, owner_id=run.owner_id)
+    loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:
         async with agent.iter(
             prompt,
@@ -102,13 +113,18 @@ async def _drive_turn(
             deferred_tool_results=deferred_results,
             usage_limits=limits,
         ) as agent_run:
-            await stream_agent_run(agent_run, run, announced=announced)
+            await stream_agent_run(agent_run, run, announced=announced, loop_breaker=loop_breaker)
             result = agent_run.result
     except UsageLimitExceeded as exc:
         # Hit a usage bound — stop and report state, don't error.
         run.emit(LimitNotice(limit="steps", message=str(exc)))
         run.block("usage limit reached")
-        return
+        return _TurnResult(answer=None)
+    except LoopDetected as exc:
+        # No-progress guard tripped — stop and report state, don't error.
+        run.emit(LimitNotice(limit="loop", message=str(exc)))
+        run.block("stopped: repeated an action without making progress")
+        return _TurnResult(answer=None)
 
     usage = result.usage
     run.set_metrics(
@@ -122,6 +138,27 @@ async def _drive_turn(
     output = result.output
     if isinstance(output, DeferredToolRequests) and output.approvals:
         _park_for_approval(run, agent, result, output, announced)
+        return _TurnResult(answer=None, messages=result.all_messages())
+    answer = output if isinstance(output, str) else None
+    return _TurnResult(answer=answer, messages=result.all_messages())
+
+
+async def _verify_and_correct(
+    run: Run, agent: Agent, prompt: str, turn: _TurnResult, announced: set[str], judge: Judge
+) -> None:
+    """Judge the answer; on failure make a single bounded corrective re-attempt."""
+    if not turn.answer or not turn.answer.strip():
+        return  # nothing checkable to verify
+    verdict = await judge(prompt, turn.answer)
+    if verdict.ok:
+        return
+    run.emit(LimitNotice(limit="verify", message=f"re-attempting: {verdict.reason}"))
+    nudge = (
+        f"Your previous response did not fully satisfy the request: {verdict.reason}. "
+        "Correct it and complete what was asked."
+    )
+    # One attempt only — no re-verify, so it cannot retry endlessly.
+    await _drive_turn(run, agent, prompt=nudge, message_history=turn.messages, announced=announced)
 
 
 def build_chat_orchestrator(
@@ -130,17 +167,25 @@ def build_chat_orchestrator(
     model: Model | None = None,
     model_role: str = "main",
     categories: Any = None,
+    judge: Judge | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
     ``model`` overrides role resolution (tests, per-conversation picker);
-    ``categories`` overrides the tool catalog (tests).
+    ``categories`` overrides the tool catalog and ``judge`` the verifier's judge
+    (tests). The verifier only runs when enabled in settings.
     """
 
     async def orchestrate(run: Run) -> None:
+        settings = get_settings()
         resolved = model if model is not None else llm.resolve_model(model_role)
         agent = _build_agent(resolved, categories=categories)
-        await _drive_turn(run, agent, prompt=prompt, announced=set())
+        announced: set[str] = set()
+        turn = await _drive_turn(run, agent, prompt=prompt, announced=announced)
+        if turn.answer is None:
+            return  # parked for approval, blocked, or hit a bound
+        if settings.verify_enabled:
+            await _verify_and_correct(run, agent, prompt, turn, announced, judge or utility_judge)
 
     return orchestrate
 

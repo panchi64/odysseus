@@ -43,6 +43,8 @@ from runs import (
     ToolStarted,
 )
 
+from .meta import LoopBreaker
+
 
 def _jsonable(value: Any) -> Any:
     """Coerce a tool result into something the JSON envelope can carry."""
@@ -70,9 +72,14 @@ def _on_model_event(event: object, run: Run) -> None:
     # signal we surface — tool execution is reported from the CallToolsNode.
 
 
-def _on_tool_event(event: object, run: Run, announced: set[str] | None) -> None:
+def _on_tool_event(
+    event: object, run: Run, announced: set[str] | None, loop_breaker: LoopBreaker | None
+) -> None:
     if isinstance(event, FunctionToolCallEvent):
         part = event.part
+        # No-progress guard: trips before we announce a looping call.
+        if loop_breaker is not None:
+            loop_breaker.check(part.tool_name, part.args_as_dict())
         # tool.started is idempotent per run: an approval-deferred call re-fires
         # its call event on the resume turn, so announce each id once.
         if announced is not None and part.tool_call_id in announced:
@@ -107,13 +114,18 @@ def _on_tool_event(event: object, run: Run, announced: set[str] | None) -> None:
 
 
 async def stream_agent_run(
-    agent_run: Any, run: Run, *, announced: set[str] | None = None
+    agent_run: Any,
+    run: Run,
+    *,
+    announced: set[str] | None = None,
+    loop_breaker: LoopBreaker | None = None,
 ) -> None:
     """Iterate the AgentRun's graph nodes, emitting our events as they happen.
 
     ``announced`` (a set of tool_call_ids already surfaced as ``tool.started``)
     is threaded across a turn-chain so an approval-deferred call is announced
-    once even though its call event re-fires on resume.
+    once even though its call event re-fires on resume. ``loop_breaker``, if
+    given, raises :class:`LoopDetected` to abort a no-progress turn.
     """
     step = 0
     async for node in agent_run:
@@ -127,5 +139,5 @@ async def stream_agent_run(
         elif Agent.is_call_tools_node(node):
             async with node.stream(agent_run.ctx) as stream:
                 async for event in stream:
-                    _on_tool_event(event, run, announced)
+                    _on_tool_event(event, run, announced, loop_breaker)
         # UserPromptNode / End nodes have nothing to stream.

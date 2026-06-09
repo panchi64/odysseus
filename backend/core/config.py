@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     agent_request_limit: int = 25
     agent_tool_calls_limit: int | None = None
 
+    # Meta-loop. The no-progress guard trips after this many identical tool
+    # calls in a turn. The verifier (a post-turn judge + one bounded corrective
+    # re-attempt) is off by default.
+    loop_repeat_threshold: int = 3
+    verify_enabled: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:
