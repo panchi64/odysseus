@@ -9,11 +9,12 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "pydantic-ai>=0.2",
+    "sqlmodel>=0.0.22",
 ]
 
-# Heavier / native foundations (encrypted SQLite via SQLCipher, Alembic,
-# argon2-cffi, sqlite-vec, the embeddings/serving stacks) are added as their
-# pillar lands — kept out of the bootable skeleton on purpose.
+# At-rest encryption (SQLCipher or app-layer), Alembic migrations, argon2-cffi,
+# and sqlite-vec land with the auth/unlock pass — persistence runs on plain
+# SQLite until there's a password to derive the key from.
 
 [dependency-groups]
 dev = [

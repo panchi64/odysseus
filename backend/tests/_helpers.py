@@ -8,12 +8,16 @@ from contextlib import asynccontextmanager
 import httpx
 
 from app import create_app
+from core.config import Settings
 
 
 @asynccontextmanager
 async def client_app():
-    """A booted app (lifespan run, so app.state.runs exists) + an async client."""
-    app = create_app()
+    """A booted app + async client, backed by a throwaway in-memory DB.
+
+    Uses an in-memory SQLite URL so tests never touch the real ``data/`` dir.
+    """
+    app = create_app(Settings(db_url="sqlite:///:memory:"))
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

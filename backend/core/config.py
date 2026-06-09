@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     # All user data lives under here — gitignored, encrypted at rest.
     data_dir: Path = Path("data")
+    # DB connection. None ⇒ a file under data_dir; tests pass an in-memory URL.
+    db_url: str | None = None
 
     # Run substrate bounds. Timeouts are seconds; None disables.
     run_max_concurrency: int = 8

@@ -29,8 +29,9 @@ from pydantic_ai import (
 from pydantic_ai.models import Model
 
 from core.config import get_settings
-from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics
+from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
 from services import llm
+from services.conversations import ConversationStore
 from tools import RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, utility_judge
@@ -46,6 +47,11 @@ class ParkedTurn:
     message_history: list[ModelMessage]
     requests: DeferredToolRequests
     announced: set[str] = field(default_factory=set)
+    # Persistence context, attached by the orchestrator: the conversation and
+    # the index from which messages are still unpersisted (so a resume records
+    # the parked turn's messages too, once it finally completes).
+    conversation_id: str | None = None
+    persist_from: int = 0
 
 
 @dataclass
@@ -145,20 +151,25 @@ async def _drive_turn(
 
 async def _verify_and_correct(
     run: Run, agent: Agent, prompt: str, turn: _TurnResult, announced: set[str], judge: Judge
-) -> None:
-    """Judge the answer; on failure make a single bounded corrective re-attempt."""
+) -> _TurnResult:
+    """Judge the answer; on failure make a single bounded corrective re-attempt.
+
+    Returns the final turn (the re-attempt's, or the original if it passed).
+    """
     if not turn.answer or not turn.answer.strip():
-        return  # nothing checkable to verify
+        return turn  # nothing checkable to verify
     verdict = await judge(prompt, turn.answer)
     if verdict.ok:
-        return
+        return turn
     run.emit(LimitNotice(limit="verify", message=f"re-attempting: {verdict.reason}"))
     nudge = (
         f"Your previous response did not fully satisfy the request: {verdict.reason}. "
         "Correct it and complete what was asked."
     )
     # One attempt only — no re-verify, so it cannot retry endlessly.
-    await _drive_turn(run, agent, prompt=nudge, message_history=turn.messages, announced=announced)
+    return await _drive_turn(
+        run, agent, prompt=nudge, message_history=turn.messages, announced=announced
+    )
 
 
 def build_chat_orchestrator(
@@ -168,39 +179,70 @@ def build_chat_orchestrator(
     model_role: str = "main",
     categories: Any = None,
     judge: Judge | None = None,
+    store: ConversationStore | None = None,
+    conversation_id: str | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
     ``model`` overrides role resolution (tests, per-conversation picker);
-    ``categories`` overrides the tool catalog and ``judge`` the verifier's judge
-    (tests). The verifier only runs when enabled in settings.
+    ``categories`` overrides the tool catalog and ``judge`` the verifier's judge.
+    With ``store`` + ``conversation_id`` the turn continues prior history and
+    persists its new messages; without them it runs stateless. The verifier only
+    runs when enabled in settings.
     """
+    persisting = store is not None and conversation_id is not None
 
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         resolved = model if model is not None else llm.resolve_model(model_role)
         agent = _build_agent(resolved, categories=categories)
         announced: set[str] = set()
-        turn = await _drive_turn(run, agent, prompt=prompt, announced=announced)
+        history = await store.history(conversation_id) if persisting else None
+        start = len(history) if history else 0
+
+        turn = await _drive_turn(
+            run, agent, prompt=prompt, message_history=history, announced=announced
+        )
+
+        if run.status is RunStatus.awaiting_input:
+            # Parked: hand the resume the context to persist the parked turn too.
+            if persisting and isinstance(run.parked_payload, ParkedTurn):
+                run.parked_payload.conversation_id = conversation_id
+                run.parked_payload.persist_from = start
+            return
         if turn.answer is None:
-            return  # parked for approval, blocked, or hit a bound
+            return  # blocked or hit a bound — nothing to persist
+
         if settings.verify_enabled:
-            await _verify_and_correct(run, agent, prompt, turn, announced, judge or utility_judge)
+            judging = judge or utility_judge
+            turn = await _verify_and_correct(run, agent, prompt, turn, announced, judging)
+        if persisting:
+            store.record(conversation_id, turn.messages[start:])
 
     return orchestrate
 
 
-def build_resume_orchestrator(parked: ParkedTurn, decisions: dict[str, Any]) -> Orchestrator:
+def build_resume_orchestrator(
+    parked: ParkedTurn, decisions: dict[str, Any], *, store: ConversationStore | None = None
+) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
 
     async def orchestrate(run: Run) -> None:
         results = DeferredToolResults(approvals=decisions)
-        await _drive_turn(
+        turn = await _drive_turn(
             run,
             parked.agent,
             message_history=parked.message_history,
             deferred_results=results,
             announced=parked.announced,
         )
+        if run.status is RunStatus.awaiting_input:
+            # Parked again (another approval): carry the persistence context.
+            if isinstance(run.parked_payload, ParkedTurn):
+                run.parked_payload.conversation_id = parked.conversation_id
+                run.parked_payload.persist_from = parked.persist_from
+            return
+        if store is not None and parked.conversation_id is not None and turn.answer is not None:
+            store.record(parked.conversation_id, turn.messages[parked.persist_from :])
 
     return orchestrate
