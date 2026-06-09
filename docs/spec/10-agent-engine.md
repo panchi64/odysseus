@@ -38,11 +38,13 @@ The agent MUST be able to invoke the following categories of tools. Each is a ca
 - **AE-2.1 (MUST).** Each tool MUST present a typed description of its parameters so the model can call it correctly, and MUST validate arguments before acting.
 - **AE-2.2 (MUST).** A tool MUST always return a result the agent can act on — including a clear error result on failure. A failing or unknown tool MUST NOT abort the turn.
 
-## AE-3 — Access control
+## AE-3 — Sensitive actions & access control
 
-- **AE-3.1 (MUST).** A defined set of privileged tools — shell and code execution, filesystem access, email, contacts, memory, scheduling, model serving, configuration, and vault — MUST be unavailable to non-administrator users.
-- **AE-3.2 (MUST).** A further subset — model-endpoint, integration, webhook, token, and settings management, and model download/serve/stop — MUST be restricted to administrators specifically.
-- **AE-3.3 (MUST).** The user MUST be able to disable individual tools; disabled tools MUST NOT be offered to or invoked by the agent.
+The system is operated by a single operator, so control is expressed over *actions*, not user tiers: actions that are powerful, externally-visible, or hard to reverse require the operator's explicit approval before they take effect.
+
+- **AE-3.1 (MUST).** A defined set of tools perform **sensitive actions** — shell and code execution, filesystem writes, sending email, model download/serve/stop, endpoint/integration/webhook/token/settings configuration, and vault access. The agent MUST NOT complete a sensitive action without the operator's explicit approval of that specific action, presented with what it will do — the action and its concrete arguments — before it takes effect.
+- **AE-3.2 (MUST).** Approval MUST be solicited through a channel appropriate to the run: inline for an interactive run, and through the operator's notification channels for an unattended or scheduled run, which MUST pause awaiting a response rather than proceeding unapproved. A denied action MUST NOT be performed, and the agent MUST be informed of the denial so it can adapt.
+- **AE-3.3 (MUST).** The operator MUST be able to disable individual tools; disabled tools MUST NOT be offered to or invoked by the agent.
 
 ## AE-4 — Tool relevance (performance)
 

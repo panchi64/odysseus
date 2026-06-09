@@ -11,6 +11,7 @@ A **self-hosted AI workspace**: a single application that provides chat, an auto
 3. **Self-contained but degradable.** Optional capabilities (vector search, web search, email, push notifications) may be unavailable; the system reduces functionality gracefully rather than failing.
 4. **Configure in-app.** Most configuration is changeable at runtime through the UI; only deployment-level secrets are supplied before first start.
 5. **Capable models.** The agent targets models that support native tool-calling.
+6. **Platform-agnostic.** The system runs on common operator platforms (Linux, macOS, and other POSIX hosts) with no dependency on any single operating system's facilities.
 
 ---
 
@@ -19,16 +20,20 @@ A **self-hosted AI workspace**: a single application that provides chat, an auto
 ### Security (`XC-SEC-*`)
 
 - **XC-SEC-1 (MUST).** When authentication is enabled, every request MUST be authenticated before any feature is reached.
-- **XC-SEC-2 (MUST).** Privileged operations MUST be restricted to administrators; all other features MUST be governed by per-user privileges.
-- **XC-SEC-3 (MUST).** Secrets at rest MUST be protected: reusable secrets (stored credentials, API keys, integration secrets, vault contents) MUST be encrypted, and authentication secrets (login passwords, two-factor seeds, backup codes) MUST be one-way hashed rather than recoverable.
+- **XC-SEC-2 (MUST).** The system targets a **single operator**; all data and features belong to that operator. Sensitive or hard-to-reverse operations MUST require the operator's explicit approval before they take effect (see `AE-3`). Multi-user privilege separation is out of current scope and MAY be introduced later without changing this posture.
+- **XC-SEC-3 (MUST).** All user data at rest MUST be encrypted, using encryption whose confidentiality remains secure against quantum-capable adversaries (resistant to known quantum attacks, not merely classical ones) — no user information may be stored in plainly-readable form. Reusable secrets (stored credentials, API keys, integration secrets, vault contents) MUST be encrypted. Authentication secrets (login passwords, two-factor seeds, backup codes) are the exception: they MUST be one-way hashed rather than encrypted, so they are never recoverable.
 - **XC-SEC-4 (MUST).** Authentication MUST support password login and optional time-based two-factor (TOTP) with recoverable backup codes.
 - **XC-SEC-5 (MUST).** Untrusted external content (web pages, fetched URLs, emails, uploaded files, retrieved documents, transcripts, and the active editor document) included in a model prompt MUST be marked as untrusted so the model treats it as data, not instructions.
-- **XC-SEC-6 (MUST).** Each user MUST only be able to read or modify their own data; ownership checks MUST deny access to other users' records rather than silently succeeding.
+- **XC-SEC-6 (MUST).** Every record MUST be attributed to an owner. With a single operator, all data belongs to that operator; should multiple accounts be introduced, a user MUST only be able to read or modify their own data, with ownership checks denying access to others' records rather than silently succeeding.
 
 ### Configuration (`XC-CFG-*`)
 
 - **XC-CFG-1 (MUST).** Deployment-level secrets and defaults (authentication toggle, database location, default model host, service endpoints, initial admin password) MUST be configurable before first start.
 - **XC-CFG-2 (SHOULD).** User-facing settings SHOULD be changeable at runtime without restarting the application, and MAY be overridable per user for a defined set of preferences.
+
+### Portability (`XC-PORT-*`)
+
+- **XC-PORT-1 (MUST).** The system MUST run on Linux, macOS, and other POSIX hosts without relying on any operating-system-specific facility for core function (storage, encryption, key custody, scheduling). Where a platform-specific capability is used, it MUST be optional and have a portable default.
 
 ### Data (`XC-DATA-*`)
 
