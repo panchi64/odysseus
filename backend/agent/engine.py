@@ -19,8 +19,8 @@ from pydantic_ai.models import Model
 from core.config import get_settings
 from runs import LimitNotice, Orchestrator, Run, RunMetrics
 from services import llm
+from tools import RunDeps, build_agent_toolsets
 
-from .deps import RunDeps
 from .translate import stream_agent_run
 
 
@@ -39,7 +39,7 @@ def build_chat_orchestrator(
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         resolved = model if model is not None else llm.resolve_model(model_role)
-        agent = Agent(resolved, deps_type=RunDeps)
+        agent = Agent(resolved, deps_type=RunDeps, toolsets=build_agent_toolsets())
         deps = RunDeps(run=run, owner_id=run.owner_id)
         limits = UsageLimits(
             request_limit=settings.agent_request_limit,

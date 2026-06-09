@@ -1,0 +1,23 @@
+"""RunDeps — the per-run dependency object the agent hands to its tools.
+
+Lives in ``tools/`` because it is the agent↔tools contract and ``tools`` sits
+below ``agent`` in the dependency order (agent → tools → services → core), so
+both layers import it without a cycle. It becomes ``RunContext.deps`` inside
+Pydantic AI: a tool reaches the Run (to emit its own ``tool.progress`` events),
+the owner, and the per-run enabled-tool policy through it — never via globals.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from runs import Run
+
+
+@dataclass
+class RunDeps:
+    run: Run
+    owner_id: str
+    # AE-3.3: operator-disabled tools (by namespaced name). Empty ⇒ all enabled.
+    disabled_tools: frozenset[str] = field(default_factory=frozenset)
+    # Future: capability handles, open document (AE-4.2).

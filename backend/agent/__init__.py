@@ -11,7 +11,8 @@ See docs/architecture/README.md (Pillar III) and decisions D3/D4/D5/D16/D20.
 
 from __future__ import annotations
 
-from .deps import RunDeps
+from tools import RunDeps
+
 from .engine import build_chat_orchestrator
 from .translate import stream_agent_run
 
