@@ -13,6 +13,11 @@ from core.auth import AuthManager
 from core.vault import Vault
 from runs import RunRegistry
 from services.conversations import ConversationStore
+from services.registry import ModelRegistry
+
+# Single operator: every record is attributed to this owner until a second human
+# exists (the ownership seam). One constant so routes don't each redefine it.
+OPERATOR_ID = "operator"
 
 
 def registry(request: Request) -> RunRegistry:
@@ -21,6 +26,10 @@ def registry(request: Request) -> RunRegistry:
 
 def store(request: Request) -> ConversationStore:
     return request.app.state.conversations
+
+
+def models(request: Request) -> ModelRegistry:
+    return request.app.state.models
 
 
 def vault(request: Request) -> Vault:

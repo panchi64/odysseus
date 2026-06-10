@@ -17,9 +17,10 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import auth, chat, health, runs
+from routes import auth, chat, health, models, runs
 from runs import RunRegistry
 from services.conversations import ConversationStore
+from services.registry import ModelRegistry
 
 
 @asynccontextmanager
@@ -57,6 +58,9 @@ async def lifespan(app: FastAPI):
 
     app.state.conversations = ConversationStore(engine, vault)
     await app.state.conversations.start()
+
+    # The model registry — role→endpoint resolution + the endpoint catalog.
+    app.state.models = ModelRegistry(engine, vault)
     try:
         yield
     finally:
@@ -86,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(runs.router)
     app.include_router(chat.router)
+    app.include_router(models.router)
     return app
 
 

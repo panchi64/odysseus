@@ -55,6 +55,11 @@ class Run:
     task: asyncio.Task[None] | None = None
     cancel_requested: bool = False
     metrics: RunMetrics | None = None
+    # Set once the first answer token has streamed. The AE-5.3 rule — never
+    # switch endpoints after answer text has begun — is enforced against this:
+    # the orchestrator refuses to re-drive a turn onto another endpoint once it
+    # is set (FallbackModel only falls back pre-stream; this guards the rest).
+    answer_started: bool = False
     # Opaque continuation payload for a parked run (set by the orchestrator
     # layer when awaiting approval). The substrate never interprets it.
     parked_payload: object | None = None

@@ -273,12 +273,12 @@ async def test_verify_park_persists_once_on_resume(tmp_path, monkeypatch):
 
 
 async def test_chat_route_returns_conversation_and_continues(monkeypatch):
-    import services.llm as llm
+    from services.registry import ModelRegistry
 
-    def fake_resolve(role="main"):
+    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
         return TestModel(custom_output_text="hi")
 
-    monkeypatch.setattr(llm, "resolve_model", fake_resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
 
     async with client_app() as (client, app):
         first = await client.post("/chat", json={"prompt": "hello"})

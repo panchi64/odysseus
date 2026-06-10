@@ -12,18 +12,18 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from agent import build_chat_orchestrator
+from core.config import get_settings
+from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
+from routes.deps import OPERATOR_ID
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-# Single operator: every record is attributed to this owner for now.
-_OPERATOR = "operator"
 
 
 class ChatCreate(BaseModel):
     prompt: str
     conversation_id: str | None = None  # continue an existing conversation
-    model: str | None = None  # per-conversation model override; future
+    model: str | None = None  # per-conversation `main` override: an endpoint id
 
 
 class ChatCreated(BaseModel):
@@ -36,18 +36,46 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     if not body.prompt.strip():
         raise HTTPException(status_code=422, detail="prompt must not be empty")
 
+    # Resolve the `main` model now (per-conversation endpoint override included),
+    # so a model misconfiguration surfaces as a clear 4xx/503 rather than a run
+    # that starts and immediately errors.
+    registry = deps.models(request)
+    try:
+        model = await registry.resolve(
+            "main", owner_id=OPERATOR_ID, override_endpoint_id=body.model
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="model endpoint not found") from None
+    except DegradedCapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # The verifier (opt-in) judges with the utility model. Resolve it only when
+    # enabled; if it isn't configured, verification degrades off rather than 503s.
+    utility_model = None
+    if get_settings().verify_enabled:
+        try:
+            utility_model = await registry.resolve("utility", owner_id=OPERATOR_ID)
+        except (DegradedCapabilityError, NotFoundError):
+            utility_model = None
+
     store = deps.store(request)
     if body.conversation_id is not None:
         # Continue an existing conversation, but only one the operator owns —
         # an unknown id must not silently spawn orphan messages.
-        if not await store.exists(body.conversation_id, _OPERATOR):
+        if not await store.exists(body.conversation_id, OPERATOR_ID):
             raise HTTPException(status_code=404, detail="conversation not found")
         conversation_id = body.conversation_id
     else:
-        conversation_id = await store.create_conversation(_OPERATOR)
+        conversation_id = await store.create_conversation(OPERATOR_ID)
 
     orchestrator = build_chat_orchestrator(
-        body.prompt, store=store, conversation_id=conversation_id
+        body.prompt,
+        model=model,
+        utility_model=utility_model,
+        store=store,
+        conversation_id=conversation_id,
     )
-    run = deps.registry(request).submit(kind="chat", owner_id=_OPERATOR, orchestrator=orchestrator)
+    run = deps.registry(request).submit(
+        kind="chat", owner_id=OPERATOR_ID, orchestrator=orchestrator
+    )
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)

@@ -30,11 +30,10 @@ from pydantic_ai.models import Model
 
 from core.config import get_settings
 from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
-from services import llm
 from services.conversations import ConversationStore
 from tools import RunDeps, build_agent_toolsets
 
-from .meta import Judge, LoopBreaker, LoopDetected, utility_judge
+from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .translate import stream_agent_run
 
 
@@ -261,25 +260,27 @@ def _finalize(
 def build_chat_orchestrator(
     prompt: str,
     *,
-    model: Model | None = None,
-    model_role: str = "main",
+    model: Model,
     categories: Any = None,
     judge: Judge | None = None,
+    utility_model: Model | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
-    ``model`` overrides role resolution (tests, per-conversation picker);
-    ``categories`` overrides the tool catalog and ``judge`` the verifier's judge.
-    With ``store`` + ``conversation_id`` the turn continues prior history and
-    persists its new messages; without them it runs stateless. The verifier only
-    runs when enabled in settings (and, by default, only on tool-producing turns).
+    ``model`` is the resolved ``main`` model (the route resolves it from the
+    registry, with any per-conversation override). ``categories`` overrides the
+    tool catalog. The verifier's judge is ``judge`` if injected, else one built
+    from ``utility_model`` when given; with neither, verification is skipped (a
+    graceful degradation when no utility model is configured). With ``store`` +
+    ``conversation_id`` the turn continues prior history and persists its new
+    messages; without them it runs stateless. The verifier only runs when enabled
+    in settings (and, by default, only on tool-producing turns).
     """
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
-        resolved = model if model is not None else llm.resolve_model(model_role)
-        agent = _build_agent(resolved, categories=categories)
+        agent = _build_agent(model, categories=categories)
         announced: set[str] = set()
         history = (
             await store.history(conversation_id)
@@ -300,8 +301,9 @@ def build_chat_orchestrator(
             and settings.verify_enabled
             and _should_verify(settings, run)
         ):
-            judging = judge or utility_judge
-            turn = await _verify_and_correct(run, agent, prompt, turn, announced, judging)
+            judging = judge or (make_utility_judge(utility_model) if utility_model else None)
+            if judging is not None:  # no judge and no utility model → skip (degraded)
+                turn = await _verify_and_correct(run, agent, prompt, turn, announced, judging)
 
         _finalize(
             run,

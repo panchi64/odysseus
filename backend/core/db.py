@@ -39,6 +39,7 @@ def make_engine(url: str) -> Engine:
 def init_db(engine: Engine) -> None:
     """Create tables. Alembic migrations replace this with the encryption pass."""
     import models.conversation  # noqa: F401 — register tables on the metadata
+    import models.registry  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
 

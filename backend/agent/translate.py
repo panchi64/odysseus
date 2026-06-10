@@ -59,12 +59,14 @@ def _on_model_event(event: object, run: Run) -> None:
     if isinstance(event, PartStartEvent):
         part = event.part
         if isinstance(part, TextPart) and part.content:
+            run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=part.content))
         elif isinstance(part, ThinkingPart) and part.content:
             run.emit(ThinkingDelta(text=part.content))
     elif isinstance(event, PartDeltaEvent):
         delta = event.delta
         if isinstance(delta, TextPartDelta) and delta.content_delta:
+            run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=delta.content_delta))
         elif isinstance(delta, ThinkingPartDelta) and delta.content_delta:
             run.emit(ThinkingDelta(text=delta.content_delta))

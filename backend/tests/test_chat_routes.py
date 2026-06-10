@@ -4,17 +4,20 @@ from __future__ import annotations
 
 from pydantic_ai.models.test import TestModel
 
-import services.llm as llm
+from services.registry import ModelRegistry
 
 from ._helpers import client_app, collect_sse_events
 
 
-async def test_chat_creates_run_and_streams_answer(monkeypatch):
-    # The route resolves the `main` role; point it at a TestModel (no server).
-    def fake_resolve(role="main"):
-        return TestModel(custom_output_text="hi")
+async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
+    """Stand in for registry resolution — a TestModel needs no real server."""
+    return TestModel(custom_output_text="hi")
 
-    monkeypatch.setattr(llm, "resolve_model", fake_resolve)
+
+async def test_chat_creates_run_and_streams_answer(monkeypatch):
+    # The route resolves the `main` role through the registry; point that at a
+    # TestModel so the turn runs without a live model server.
+    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
 
     async with client_app() as (client, _app):
         resp = await client.post("/chat", json={"prompt": "say hi"})
@@ -39,10 +42,7 @@ async def test_chat_requires_prompt():
 async def test_chat_rejects_unknown_conversation(monkeypatch):
     # A client-supplied conversation_id that doesn't exist must 404, not silently
     # spawn orphan messages under a phantom conversation.
-    def fake_resolve(role="main"):
-        return TestModel(custom_output_text="hi")
-
-    monkeypatch.setattr(llm, "resolve_model", fake_resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
 
     async with client_app() as (client, _app):
         resp = await client.post(

@@ -43,12 +43,10 @@ class Settings(BaseSettings):
     run_wall_clock_timeout_s: float | None = 1800.0
     run_inactivity_timeout_s: float | None = 120.0
 
-    # Model resolution. Minimal single-endpoint seam until the role→endpoint
-    # registry lands in encrypted settings. OpenAI-compatible.
-    llm_base_url: str = "http://localhost:11434/v1"
-    llm_api_key: str = "not-needed"  # local servers ignore it
-    llm_model: str = ""  # the `main` role; empty until configured
-    utility_model: str = ""  # the `utility` role; falls back to `main`
+    # Model resolution is the DB-backed registry's job (services/registry.py) —
+    # named roles bound to ordered endpoint chains, the single source of truth,
+    # populated by manual config (the /models surface) today and the automatic
+    # setup / Cookbook later. There is deliberately no env model seam.
 
     # Agent bounds: max model requests per turn and optional per-turn
     # tool-call cap. None disables the tool cap.

@@ -7,8 +7,8 @@ import asyncio
 from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
-import services.llm as llm
 import tools.toolsets as toolsets
+from services.registry import ModelRegistry
 from tools import RunDeps
 
 from ._helpers import client_app, collect_sse_events
@@ -17,7 +17,7 @@ from ._helpers import client_app, collect_sse_events
 def _install_sensitive_tool(monkeypatch):
     """Point the model at a TestModel and give it one approval-required tool."""
 
-    def fake_resolve(role="main"):
+    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
         return TestModel(custom_output_text="done")
 
     def danger_categories():
@@ -29,7 +29,7 @@ def _install_sensitive_tool(monkeypatch):
 
         return {"danger": toolset}
 
-    monkeypatch.setattr(llm, "resolve_model", fake_resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(toolsets, "default_categories", danger_categories)
 
 
