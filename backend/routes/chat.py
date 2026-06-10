@@ -72,6 +72,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         body.prompt,
         model=model,
         utility_model=utility_model,
+        memory=deps.memory(request),
         store=store,
         conversation_id=conversation_id,
     )

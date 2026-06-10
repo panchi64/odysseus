@@ -13,6 +13,7 @@ from core.auth import AuthManager
 from core.vault import Vault
 from runs import RunRegistry
 from services.conversations import ConversationStore
+from services.memory import MemoryStore
 from services.registry import ModelRegistry
 
 # Single operator: every record is attributed to this owner until a second human
@@ -30,6 +31,10 @@ def store(request: Request) -> ConversationStore:
 
 def models(request: Request) -> ModelRegistry:
     return request.app.state.models
+
+
+def memory(request: Request) -> MemoryStore:
+    return request.app.state.memory
 
 
 def vault(request: Request) -> Vault:

@@ -17,9 +17,11 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import auth, chat, health, models, runs
+from routes import auth, chat, health, memory, models, runs
 from runs import RunRegistry
 from services.conversations import ConversationStore
+from services.embeddings import RegistryEmbedder
+from services.memory import MemoryStore
 from services.registry import ModelRegistry
 
 
@@ -60,7 +62,11 @@ async def lifespan(app: FastAPI):
     await app.state.conversations.start()
 
     # The model registry — role→endpoint resolution + the endpoint catalog.
-    app.state.models = ModelRegistry(engine, vault)
+    registry = ModelRegistry(engine, vault)
+    app.state.models = registry
+    # Long-term memory — embeds via the registry's embedding role; degrades to
+    # keyword recall when no embedding endpoint is configured.
+    app.state.memory = MemoryStore(engine, vault, RegistryEmbedder(registry))
     try:
         yield
     finally:
@@ -91,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(runs.router)
     app.include_router(chat.router)
     app.include_router(models.router)
+    app.include_router(memory.router)
     return app
 
 

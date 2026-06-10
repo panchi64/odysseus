@@ -10,8 +10,12 @@ the owner, and the per-run enabled-tool policy through it — never via globals.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from runs import Run
+
+if TYPE_CHECKING:
+    from services.memory import MemoryStore
 
 
 @dataclass
@@ -20,4 +24,6 @@ class RunDeps:
     owner_id: str
     # Operator-disabled tools, by namespaced name. Empty ⇒ all enabled.
     disabled_tools: frozenset[str] = field(default_factory=frozenset)
-    # Future: capability handles, the open document.
+    # Capability handles the tools reach (never via globals). More land here as
+    # their services do (search, the open document, …).
+    memory: MemoryStore | None = None

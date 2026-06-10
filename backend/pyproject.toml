@@ -13,6 +13,8 @@ dependencies = [
     "cryptography>=44",
     "argon2-cffi>=23",
     "alembic>=1.18.4",
+    "numpy>=2.4.6",
+    "openai>=2.41.0",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

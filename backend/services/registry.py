@@ -203,6 +203,17 @@ class ModelRegistry:
         specs = [self._to_spec(endpoint, role) for endpoint in endpoints]
         return llm.build_chain(specs)
 
+    async def resolve_embedding_spec(self, owner_id: str) -> llm.EndpointSpec:
+        """The embedding endpoint as a raw spec — embeddings hit the provider's
+        ``/embeddings`` API directly, not a Pydantic AI chat model, so the
+        embedding service needs the base_url/model/key, not a built model.
+        Unconfigured ⇒ degraded (recall falls back to keyword)."""
+        chain_ids = await self.get_role(owner_id, "embedding")
+        if not chain_ids:
+            raise DegradedCapabilityError("no embedding endpoint configured")
+        endpoint = await self.get_endpoint(owner_id, chain_ids[0])
+        return self._to_spec(endpoint, "embedding")
+
     def _to_spec(self, endpoint: ModelEndpoint, role: str) -> llm.EndpointSpec:
         if role in llm.TOOL_CALLING_ROLES and not endpoint.native_tools:
             raise DegradedCapabilityError(

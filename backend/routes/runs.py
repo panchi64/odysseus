@@ -125,7 +125,9 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
                 message=decision.message or "The operator denied this action."
             )
 
-    orchestrator = build_resume_orchestrator(parked, decisions, store=deps.store(request))
+    orchestrator = build_resume_orchestrator(
+        parked, decisions, memory=deps.memory(request), store=deps.store(request)
+    )
     if await registry.resume(run_id, orchestrator) is None:
         raise HTTPException(status_code=409, detail="run could not be resumed")
     return {"status": "resuming"}

@@ -31,6 +31,7 @@ from pydantic_ai.models import Model
 from core.config import get_settings
 from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
 from services.conversations import ConversationStore
+from services.memory import MemoryStore
 from tools import RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
@@ -119,13 +120,14 @@ async def _drive_turn(
     message_history: list[ModelMessage] | None = None,
     deferred_results: DeferredToolResults | None = None,
     announced: set[str],
+    memory: MemoryStore | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
         request_limit=settings.agent_request_limit,
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
-    deps = RunDeps(run=run, owner_id=run.owner_id)
+    deps = RunDeps(run=run, owner_id=run.owner_id, memory=memory)
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:
         async with agent.iter(
@@ -185,6 +187,7 @@ async def _verify_and_correct(
     turn: _TurnResult,
     announced: set[str],
     judge: Judge,
+    memory: MemoryStore | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -211,7 +214,7 @@ async def _verify_and_correct(
     clean_drop = (len(turn.messages) - 1, len(turn.messages))
     # One attempt only — no re-verify, so it cannot retry endlessly.
     corrected = await _drive_turn(
-        run, agent, prompt=nudge, message_history=turn.messages, announced=announced
+        run, agent, prompt=nudge, message_history=turn.messages, announced=announced, memory=memory
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -264,6 +267,7 @@ def build_chat_orchestrator(
     categories: Any = None,
     judge: Judge | None = None,
     utility_model: Model | None = None,
+    memory: MemoryStore | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
 ) -> Orchestrator:
@@ -290,7 +294,7 @@ def build_chat_orchestrator(
         start = len(history) if history else 0
 
         turn = await _drive_turn(
-            run, agent, prompt=prompt, message_history=history, announced=announced
+            run, agent, prompt=prompt, message_history=history, announced=announced, memory=memory
         )
 
         # Verify only a completed turn (not one parked for approval or stopped at
@@ -303,7 +307,9 @@ def build_chat_orchestrator(
         ):
             judging = judge or (make_utility_judge(utility_model) if utility_model else None)
             if judging is not None:  # no judge and no utility model → skip (degraded)
-                turn = await _verify_and_correct(run, agent, prompt, turn, announced, judging)
+                turn = await _verify_and_correct(
+                    run, agent, prompt, turn, announced, judging, memory=memory
+                )
 
         _finalize(
             run,
@@ -318,7 +324,11 @@ def build_chat_orchestrator(
 
 
 def build_resume_orchestrator(
-    parked: ParkedTurn, decisions: dict[str, Any], *, store: ConversationStore | None = None
+    parked: ParkedTurn,
+    decisions: dict[str, Any],
+    *,
+    memory: MemoryStore | None = None,
+    store: ConversationStore | None = None,
 ) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
 
@@ -330,6 +340,7 @@ def build_resume_orchestrator(
             message_history=parked.message_history,
             deferred_results=results,
             announced=parked.announced,
+            memory=memory,
         )
         _finalize(
             run,
