@@ -85,8 +85,19 @@ def _summarize(name: str, args: dict[str, Any]) -> str:
     return f"{name}({rendered})"
 
 
+def _sum_tokens(prior: int | None, delta: int | None) -> int | None:
+    """Add two optional token counts, keeping ``None`` only when both are unknown."""
+    if prior is None and delta is None:
+        return None
+    return (prior or 0) + (delta or 0)
+
+
 def _park_for_approval(
-    run: Run, agent: Agent, result: Any, requests: DeferredToolRequests, announced: set[str]
+    run: Run,
+    agent: Agent,
+    messages: list[ModelMessage],
+    requests: DeferredToolRequests,
+    announced: set[str],
 ) -> None:
     for call in requests.approvals:
         args = call.args_as_dict()
@@ -98,7 +109,7 @@ def _park_for_approval(
                 summary=_summarize(call.tool_name, args),
             )
         )
-    run.park(ParkedTurn(agent, result.all_messages(), requests, announced))
+    run.park(ParkedTurn(agent, messages, requests, announced))
 
 
 async def _drive_turn(
@@ -138,21 +149,26 @@ async def _drive_turn(
         run.block("stopped: repeated an action without making progress")
         return _TurnResult(answer=None)
 
+    # Accumulate onto any prior metrics so a multi-turn run (a verifier
+    # correction, or an approval resume) reports the whole run, not just the
+    # last turn.
     usage = result.usage
+    prior = run.metrics
     run.set_metrics(
         RunMetrics(
-            steps=usage.requests,
-            tool_calls=usage.tool_calls,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
+            steps=(prior.steps if prior else 0) + usage.requests,
+            tool_calls=(prior.tool_calls if prior else 0) + usage.tool_calls,
+            input_tokens=_sum_tokens(prior.input_tokens if prior else None, usage.input_tokens),
+            output_tokens=_sum_tokens(prior.output_tokens if prior else None, usage.output_tokens),
         )
     )
     output = result.output
+    messages = result.all_messages()
     if isinstance(output, DeferredToolRequests) and output.approvals:
-        _park_for_approval(run, agent, result, output, announced)
-        return _TurnResult(answer=None, messages=result.all_messages())
+        _park_for_approval(run, agent, messages, output, announced)
+        return _TurnResult(answer=None, messages=messages)
     answer = output if isinstance(output, str) else None
-    return _TurnResult(answer=answer, messages=result.all_messages())
+    return _TurnResult(answer=answer, messages=messages)
 
 
 def _should_verify(settings: Any, run: Run) -> bool:

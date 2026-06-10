@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from pydantic_ai import ToolApproved, ToolDenied
 
 from agent import ParkedTurn, build_resume_orchestrator
-from runs import Run, RunRegistry, RunStatus, parse_last_event_id, sse_response
+from routes import deps
+from runs import Run, RunStatus, parse_last_event_id, sse_response
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -31,10 +32,6 @@ class RunView(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     last_seq: int
-
-
-def _registry(request: Request) -> RunRegistry:
-    return request.app.state.runs
 
 
 def _view(run: Run) -> RunView:
@@ -53,7 +50,7 @@ def _view(run: Run) -> RunView:
 
 
 def _require_run(request: Request, run_id: str) -> Run:
-    run = _registry(request).get(run_id)
+    run = deps.registry(request).get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     return run
@@ -78,10 +75,11 @@ async def stream_run_events(
 
 @router.post("/{run_id}/cancel", status_code=202)
 async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
-    cancelled = await _registry(request).cancel(run_id)
+    registry = deps.registry(request)
+    cancelled = await registry.cancel(run_id)
     if not cancelled:
         # Unknown, or already terminal — surface the distinction.
-        run = _registry(request).get(run_id)
+        run = registry.get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         raise HTTPException(status_code=409, detail=f"run already {run.status.value}")
@@ -102,7 +100,7 @@ class ApprovalDecisions(BaseModel):
 @router.post("/{run_id}/approve", status_code=202)
 async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) -> dict[str, str]:
     """Decide the sensitive actions a parked run is awaiting, then resume it."""
-    registry = _registry(request)
+    registry = deps.registry(request)
     run = registry.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -127,8 +125,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
                 message=decision.message or "The operator denied this action."
             )
 
-    store = getattr(request.app.state, "conversations", None)
-    orchestrator = build_resume_orchestrator(parked, decisions, store=store)
+    orchestrator = build_resume_orchestrator(parked, decisions, store=deps.store(request))
     if await registry.resume(run_id, orchestrator) is None:
         raise HTTPException(status_code=409, detail="run could not be resumed")
     return {"status": "resuming"}

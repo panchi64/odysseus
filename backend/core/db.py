@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -22,7 +22,18 @@ def make_engine(url: str) -> Engine:
     kwargs = {"connect_args": {"check_same_thread": False}}
     if ":memory:" in url:
         kwargs["poolclass"] = StaticPool
-    return create_engine(url, **kwargs)
+    engine = create_engine(url, **kwargs)
+
+    # SQLite leaves foreign keys *off* per connection unless asked — without this
+    # the declared FKs (e.g. Message → Conversation) enforce nothing, so a stray
+    # conversation_id would silently orphan rows. Turn it on for every connection.
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _record):  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
 
 
 def init_db(engine: Engine) -> None:

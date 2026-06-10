@@ -34,3 +34,18 @@ async def test_chat_requires_prompt():
     async with client_app() as (client, _app):
         resp = await client.post("/chat", json={})
         assert resp.status_code == 422
+
+
+async def test_chat_rejects_unknown_conversation(monkeypatch):
+    # A client-supplied conversation_id that doesn't exist must 404, not silently
+    # spawn orphan messages under a phantom conversation.
+    def fake_resolve(role="main"):
+        return TestModel(custom_output_text="hi")
+
+    monkeypatch.setattr(llm, "resolve_model", fake_resolve)
+
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/chat", json={"prompt": "hello", "conversation_id": "does-not-exist"}
+        )
+        assert resp.status_code == 404

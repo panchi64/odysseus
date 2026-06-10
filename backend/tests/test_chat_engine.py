@@ -33,6 +33,31 @@ async def test_chat_runs_to_done_with_metrics():
     assert metrics.steps >= 1
 
 
+async def test_metrics_accumulate_across_verifier_correction(monkeypatch):
+    # A verifier correction is a second turn; the reported metrics must cover the
+    # whole run, not just the corrective turn.
+    from agent.meta import Verdict
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
+    verdicts = [Verdict(ok=False, reason="redo")]
+
+    async def judge(request, answer):
+        return verdicts.pop(0) if verdicts else Verdict(ok=True)
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "hello", model=TestModel(custom_output_text="hi"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    metrics = next(b for b in _bodies(run) if b.type == "run.metrics")
+    assert metrics.steps >= 2  # original turn + the corrective re-attempt
+
+
 async def test_usage_limit_blocks_the_turn(monkeypatch):
     # request_limit=0 trips on the first model request → bounded stop.
     monkeypatch.setattr(

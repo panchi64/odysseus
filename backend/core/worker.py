@@ -6,8 +6,10 @@ bounded exponential backoff; an item that exhausts its retries is handed to an
 
 Optionally **lock-aware**: a worker whose handler touches the encryption key
 takes the vault's ``unlocked`` event and parks while the vault is locked,
-resuming when it unlocks — rather than erroring on a missing key. While stopping,
-a lock-parked worker stops waiting so shutdown never hangs.
+resuming when it unlocks — rather than erroring on a missing key. A lock that
+lands *mid-handler* is treated as a park, not a failed attempt, so an item is
+never dropped for being in flight when the vault closed. While stopping, a
+lock-parked worker stops waiting so shutdown never hangs.
 
 This is the one place the "we own the queues" substrate lives. The conversation
 persistence drainer is the first instance; the scheduler and notification
@@ -88,8 +90,7 @@ class WriteBehindWorker[T]:
         while True:
             item = await self._queue.get()
             try:
-                if await self._ready():
-                    await self._process(item)
+                await self._process(item)
             finally:
                 self._queue.task_done()
 
@@ -107,11 +108,22 @@ class WriteBehindWorker[T]:
         return self._unlocked.is_set()
 
     async def _process(self, item: T) -> None:
-        for attempt in range(1, self._max_attempts + 1):
+        """Handle one item: park while locked, retry transient errors, drop at the cap."""
+        attempt = 0
+        while True:
+            # Park (without spending the retry budget) while the vault is locked;
+            # give up only if we're shutting down before it ever unlocks.
+            if not await self._ready():
+                return
             try:
                 await self._handler(item)
                 return
             except Exception as exc:  # noqa: BLE001 — a bad item must not kill the worker
+                # A lock that landed mid-handler isn't a failure — wait for unlock
+                # and retry without consuming an attempt.
+                if self._unlocked is not None and not self._unlocked.is_set():
+                    continue
+                attempt += 1
                 if attempt >= self._max_attempts:
                     logger.exception("%s: dropping item after %d attempts", self._name, attempt)
                     if self._on_drop is not None:

@@ -83,6 +83,40 @@ async def test_lock_gated_worker_parks_until_unlocked():
     await worker.stop()
 
 
+async def test_lock_mid_handler_parks_instead_of_dropping():
+    # A vault lock that lands while the handler runs must not count as a failed
+    # attempt: the item parks until unlock and then succeeds, never dropped.
+    unlocked = asyncio.Event()
+    unlocked.set()  # starts unlocked
+    attempts: list[str] = []
+    dropped: list[str] = []
+
+    async def handler(x: str) -> None:
+        attempts.append(x)
+        if len(attempts) == 1:
+            unlocked.clear()  # vault locks mid-handler
+            raise RuntimeError("vault is locked")
+
+    worker = WriteBehindWorker(
+        handler,
+        name="t",
+        unlocked=unlocked,
+        max_attempts=2,
+        base_backoff_s=0.0,
+        on_drop=lambda item, exc: dropped.append(item),
+    )
+    await worker.start()
+    worker.submit("a")
+    await asyncio.sleep(0.02)
+    assert dropped == []  # parked, not dropped, despite the mid-handler failure
+
+    unlocked.set()  # operator unlocks → the item retries and lands
+    await worker.join()
+    assert attempts == ["a", "a"]  # retried once after unlock
+    assert dropped == []
+    await worker.stop()
+
+
 async def test_stop_does_not_hang_when_locked():
     unlocked = asyncio.Event()  # never unlocked
     seen: list[str] = []

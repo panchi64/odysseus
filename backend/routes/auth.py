@@ -10,8 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from core.auth import SESSION_COOKIE, AuthManager, token_from_headers
-from core.vault import Vault
+from core.auth import SESSION_COOKIE, token_from_headers
+from routes import deps
 
 router = APIRouter(tags=["auth"])
 
@@ -32,16 +32,8 @@ class TokenResponse(BaseModel):
     token: str
 
 
-def _vault(request: Request) -> Vault:
-    return request.app.state.vault
-
-
-def _auth(request: Request) -> AuthManager:
-    return request.app.state.auth_manager
-
-
 def _issue_session(request: Request, response: Response) -> TokenResponse:
-    token = _auth(request).issue()
+    token = deps.auth_manager(request).issue()
     # secure=False: the app serves plain HTTP; put TLS in front for remote use.
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", secure=False)
     return TokenResponse(token=token)
@@ -49,7 +41,7 @@ def _issue_session(request: Request, response: Response) -> TokenResponse:
 
 @router.get("/auth/status", response_model=AuthStatus)
 async def auth_status(request: Request) -> AuthStatus:
-    vault = _vault(request)
+    vault = deps.vault(request)
     return AuthStatus(
         initialized=vault.is_initialized,
         unlocked=vault.is_unlocked,
@@ -60,7 +52,7 @@ async def auth_status(request: Request) -> AuthStatus:
 @router.post("/setup", response_model=TokenResponse)
 async def setup(body: PasswordBody, request: Request, response: Response) -> TokenResponse:
     """First run only: choose the operator password (which derives the key)."""
-    vault = _vault(request)
+    vault = deps.vault(request)
     if vault.is_initialized:
         raise HTTPException(status_code=409, detail="already set up")
     if len(body.password) < _MIN_PASSWORD_LEN:
@@ -71,7 +63,7 @@ async def setup(body: PasswordBody, request: Request, response: Response) -> Tok
 
 @router.post("/auth/login", response_model=TokenResponse)
 async def login(body: PasswordBody, request: Request, response: Response) -> TokenResponse:
-    vault = _vault(request)
+    vault = deps.vault(request)
     if not vault.is_initialized:
         raise HTTPException(status_code=409, detail="not set up yet")
     if not await vault.unlock(body.password):
@@ -85,7 +77,7 @@ async def logout(request: Request, response: Response) -> dict[str, str]:
         request.headers.get("authorization"), request.cookies.get(SESSION_COOKIE)
     )
     if token:
-        _auth(request).revoke(token)
+        deps.auth_manager(request).revoke(token)
     response.delete_cookie(SESSION_COOKIE)
     return {"status": "logged out"}
 
@@ -93,6 +85,6 @@ async def logout(request: Request, response: Response) -> dict[str, str]:
 @router.post("/auth/lock")
 async def lock(request: Request) -> dict[str, str]:
     """Wipe the key from memory and revoke all sessions; re-unlock requires login."""
-    _vault(request).lock()
-    _auth(request).revoke_all()
+    deps.vault(request).lock()
+    deps.auth_manager(request).revoke_all()
     return {"status": "locked"}

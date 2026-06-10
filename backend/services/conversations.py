@@ -7,13 +7,15 @@ background drainer writes to the DB off the critical path. The DB is the durable
 record; memory is the fast one. A cold conversation rehydrates from the DB once,
 then runs at memory speed.
 
-Content is **encrypted at rest**: the message text and blob are encrypted on the
-hot path (where the vault is unlocked, since the operator is actively chatting),
-so the drainer only ever handles ciphertext and the working set stays plaintext.
-Structural metadata (ids, timestamps, owner, seq, kind) stays plaintext so the
-DB can still index and order. The drainer is a lock-aware
-:class:`~core.worker.WriteBehindWorker` — it parks while the vault is locked and
-retries failed writes rather than dropping them.
+Content is **encrypted at rest**: the durable text and blob are encrypted by the
+drainer, just before the write, not on the hot path. The working set stays
+plaintext (it already holds plaintext in memory); the hot path only projects and
+serializes. Encrypting in the drainer keeps it on the **lock-aware** side of the
+queue — if the vault locks mid-turn the write parks until unlock instead of
+erroring and losing the turn. Structural metadata (ids, timestamps, owner, seq,
+kind) stays plaintext so the DB can still index and order. The drainer is a
+lock-aware :class:`~core.worker.WriteBehindWorker` — it parks while the vault is
+locked and retries failed writes rather than dropping them.
 """
 
 from __future__ import annotations
@@ -37,12 +39,14 @@ logger = logging.getLogger(__name__)
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 
-# An encrypted, persistence-ready row: (kind, encrypted text, encrypted blob).
-_EncRow = tuple[str, str, str]
+# A persistence-ready row, still plaintext: (kind, text, serialized blob). The
+# drainer encrypts text + blob just before the write (lock-aware side of the
+# queue), so a vault lock mid-turn parks the write rather than losing it.
+_Row = tuple[str, str, str]
 # A write-behind job: (conversation_id, seq of the first row, the rows). The seq
 # base is taken from the authoritative in-memory working set at record time, so
 # the drainer never has to count rows (and the two can't diverge).
-_PersistJob = tuple[str, int, list[_EncRow]]
+_PersistJob = tuple[str, int, list[_Row]]
 
 
 def _project(message: ModelMessage) -> tuple[str, str]:
@@ -86,6 +90,14 @@ class ConversationStore:
         self._cache[conversation_id] = []
         return conversation_id
 
+    async def exists(self, conversation_id: str, owner_id: str) -> bool:
+        """Whether ``conversation_id`` names a conversation owned by ``owner_id``."""
+        def work(session: Session) -> bool:
+            conversation = session.get(Conversation, conversation_id)
+            return conversation is not None and conversation.owner_id == owner_id
+
+        return await in_session(self._engine, work)
+
     async def history(self, conversation_id: str) -> list[ModelMessage]:
         """The conversation's message history — from the cache, or rehydrated once."""
         cached = self._cache.get(conversation_id)
@@ -113,31 +125,34 @@ class ConversationStore:
             return list(messages)
 
     def record(self, conversation_id: str, new_messages: list[ModelMessage]) -> None:
-        """Hot path: extend the working set and queue the encrypted durable write."""
+        """Hot path: extend the working set and queue the durable write.
+
+        Only projects and serializes here (no vault) — the drainer encrypts just
+        before the write, on the lock-aware side of the queue."""
         if not new_messages:
             return
         working = self._cache.setdefault(conversation_id, [])
         base = len(working)  # the seq of the first new message (working set is the truth)
         working.extend(new_messages)
-        rows: list[_EncRow] = []
+        rows: list[_Row] = []
         for message in new_messages:
             kind, text = _project(message)
             blob = _MESSAGE.dump_json(message).decode()
-            rows.append((kind, self._vault.encrypt_str(text), self._vault.encrypt_str(blob)))
+            rows.append((kind, text, blob))
         self._worker.submit((conversation_id, base, rows))
 
     async def _persist(self, job: _PersistJob) -> None:
         conversation_id, base, rows = job
 
         def work(session: Session) -> None:
-            for offset, (kind, enc_text, enc_blob) in enumerate(rows):
+            for offset, (kind, text, blob) in enumerate(rows):
                 session.add(
                     Message(
                         conversation_id=conversation_id,
                         seq=base + offset,
                         kind=kind,
-                        text=enc_text,
-                        blob=enc_blob,
+                        text=self._vault.encrypt_str(text),
+                        blob=self._vault.encrypt_str(blob),
                     )
                 )
             conversation = session.get(Conversation, conversation_id)

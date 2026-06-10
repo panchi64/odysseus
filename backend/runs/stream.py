@@ -15,6 +15,11 @@ Correctness note: ``emit`` is synchronous and ``subscribe`` does its
 register-then-snapshot with no ``await`` in between. Under single-threaded
 asyncio that window is atomic, so every event lands in exactly one of {backlog,
 live queue} — no gap, no duplicate, for any subscriber at any time.
+
+Backpressure: each subscriber queue is bounded. A consumer that stops draining
+(a stalled or wedged client) is dropped rather than allowed to grow without
+limit — it can reconnect with ``Last-Event-ID`` and replay the gap from the
+buffer, so dropping it is lossless, not data loss.
 """
 
 from __future__ import annotations
@@ -25,6 +30,9 @@ from collections.abc import AsyncIterator
 from pydantic import BaseModel
 
 from .events import Event, now_utc
+
+# Per-subscriber backlog cap before we treat the consumer as wedged and drop it.
+_SUBSCRIBER_QUEUE_MAX = 1024
 
 
 class RunStream:
@@ -49,9 +57,20 @@ class RunStream:
         self._seq += 1
         event = Event(seq=self._seq, ts=now_utc(), body=body)
         self._buffer.append(event)
-        for queue in self._subscribers:
-            queue.put_nowait(event)
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._drop_slow(queue)
         return event
+
+    def _drop_slow(self, queue: asyncio.Queue[Event | None]) -> None:
+        """Evict a subscriber that isn't keeping up. Its connection ends; the
+        client can reconnect and replay the missed events from the buffer."""
+        self._subscribers.discard(queue)
+        while not queue.empty():  # make room for the close sentinel
+            queue.get_nowait()
+        queue.put_nowait(None)
 
     def replay(self, after_seq: int = 0) -> list[Event]:
         """Buffered events with ``seq > after_seq`` (all of them if 0)."""
@@ -66,7 +85,7 @@ class RunStream:
         Subscribing to an already-closed stream replays the backlog and stops —
         so a client reconnecting after the run ended still gets the full record.
         """
-        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        queue: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
         # --- atomic: register before snapshot, no await between ---
         self._subscribers.add(queue)
         backlog = self.replay(after_seq)
@@ -90,5 +109,8 @@ class RunStream:
         if self._closed:
             return
         self._closed = True
-        for queue in self._subscribers:
-            queue.put_nowait(None)
+        for queue in list(self._subscribers):
+            if queue.full():  # a wedged consumer — drain to make room for the sentinel
+                self._drop_slow(queue)
+            else:
+                queue.put_nowait(None)

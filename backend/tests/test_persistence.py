@@ -98,6 +98,28 @@ async def test_content_is_encrypted_at_rest(tmp_path):
         assert "SECRET-TOKEN-XYZ" not in row.text
 
 
+async def test_foreign_keys_are_enforced():
+    # The Message → Conversation FK is only real if SQLite's pragma is on; an
+    # orphan insert must fail loudly rather than silently land.
+    from sqlalchemy.exc import IntegrityError
+    from sqlmodel import Session
+
+    from models.conversation import Message
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    raised = False
+    with Session(engine) as session:
+        session.add(
+            Message(conversation_id="no-such-conv", seq=0, kind="response", text="x", blob="y")
+        )
+        try:
+            session.commit()
+        except IntegrityError:
+            raised = True
+    assert raised
+
+
 async def test_second_turn_continues_prior_history(tmp_path):
     store, _ = await _fresh_store(tmp_path)
     await store.start()
