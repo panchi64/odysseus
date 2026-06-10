@@ -7,7 +7,7 @@ A **self-hosted AI workspace**: a single application that provides chat, an auto
 ## Principles
 
 1. **Local-first / privacy-first.** User data stays on the operator's machine. Nothing leaves the system unless the operator configures an external provider or integration.
-2. **Admin-console posture.** The system exposes powerful capabilities (shell, code execution, model serving, configuration). It is operated by its owner; access is authenticated and privileged actions are gated.
+2. **Single-operator, approval-gated.** The system exposes powerful capabilities (shell, code execution, model serving, configuration). It is operated by one owner; access is authenticated by a single password — which also derives the at-rest encryption key — and sensitive or hard-to-reverse actions pause and ask for the operator's explicit approval before they run, rather than relying on privilege tiers (see `AE-3`).
 3. **Self-contained but degradable.** Optional capabilities (vector search, web search, email, push notifications) may be unavailable; the system reduces functionality gracefully rather than failing.
 4. **Configure in-app.** Most configuration is changeable at runtime through the UI; only deployment-level secrets are supplied before first start.
 5. **Capable models.** The agent targets models that support native tool-calling.
@@ -19,16 +19,17 @@ A **self-hosted AI workspace**: a single application that provides chat, an auto
 
 ### Security (`XC-SEC-*`)
 
-- **XC-SEC-1 (MUST).** When authentication is enabled, every request MUST be authenticated before any feature is reached.
+- **XC-SEC-1 (MUST).** When authentication is enabled, every request MUST be authenticated before any feature is reached. Independently of the authentication toggle, no feature that reads or writes user data is reachable until the operator has unlocked at-rest encryption by supplying the password: the system is **locked-until-unlocked**, and a restart returns it to the locked state.
 - **XC-SEC-2 (MUST).** The system targets a **single operator**; all data and features belong to that operator. Sensitive or hard-to-reverse operations MUST require the operator's explicit approval before they take effect (see `AE-3`). Multi-user privilege separation is out of current scope and MAY be introduced later without changing this posture.
-- **XC-SEC-3 (MUST).** All user data at rest MUST be encrypted, using encryption whose confidentiality remains secure against quantum-capable adversaries (resistant to known quantum attacks, not merely classical ones) — no user information may be stored in plainly-readable form. Reusable secrets (stored credentials, API keys, integration secrets, vault contents) MUST be encrypted. Authentication secrets (login passwords, two-factor seeds, backup codes) are the exception: they MUST be one-way hashed rather than encrypted, so they are never recoverable.
-- **XC-SEC-4 (MUST).** Authentication MUST support password login and optional time-based two-factor (TOTP) with recoverable backup codes.
+- **XC-SEC-3 (MUST).** All user data at rest MUST be encrypted with a strong symmetric cipher (AES-256-class), so no user information is stored in plainly-readable form. A 256-bit symmetric key also preserves confidentiality against a quantum-capable adversary, since the best known quantum attack only halves the effective key strength. Reusable secrets (stored credentials, API keys, integration secrets, vault contents) MUST be encrypted. The login password is the exception: it MUST be stored only as a one-way hash (a verifier), never encrypted, so it is never recoverable.
+- **XC-SEC-4 (MUST).** Authentication is by password. The same password derives the at-rest encryption key, so a successful login and an unlocked vault are one and the same event — there is no separate credential store to attack. A second factor is out of scope for the single-operator posture.
 - **XC-SEC-5 (MUST).** Untrusted external content (web pages, fetched URLs, emails, uploaded files, retrieved documents, transcripts, and the active editor document) included in a model prompt MUST be marked as untrusted so the model treats it as data, not instructions.
 - **XC-SEC-6 (MUST).** Every record MUST be attributed to an owner. With a single operator, all data belongs to that operator; should multiple accounts be introduced, a user MUST only be able to read or modify their own data, with ownership checks denying access to others' records rather than silently succeeding.
+- **XC-SEC-7 (MUST).** Code or commands the agent runs MUST execute in an environment **isolated from the host**, operating only on **copies** of the data explicitly provided to them; such execution MUST NOT read or alter the host's filesystem, processes, or environment. If no isolated execution environment is available, the capability MUST be **disabled** rather than fall back to running on the host. Running code directly on the host is permitted only as a **distinct, explicitly-approved action** that carries a plain-language description of what it will do (`AE-3`).
 
 ### Configuration (`XC-CFG-*`)
 
-- **XC-CFG-1 (MUST).** Deployment-level secrets and defaults (authentication toggle, database location, default model host, service endpoints, initial admin password) MUST be configurable before first start.
+- **XC-CFG-1 (MUST).** Deployment-level secrets and defaults (authentication toggle, database location, default model host, service endpoints, initial operator password) MUST be configurable before first start.
 - **XC-CFG-2 (SHOULD).** User-facing settings SHOULD be changeable at runtime without restarting the application, and MAY be overridable per user for a defined set of preferences.
 
 ### Portability (`XC-PORT-*`)

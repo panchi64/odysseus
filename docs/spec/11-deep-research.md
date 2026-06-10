@@ -18,7 +18,7 @@ Deep research answers a question by gathering, reading, and synthesizing many we
 - **DR-2.1 (MUST).** The final report MUST be long-form and well-structured, with headings, an executive summary, and a concluding answer to the question.
 - **DR-2.2 (MUST).** The report MUST include specific evidence (data, figures, comparisons) drawn from the sources, and SHOULD note where sources agree or disagree.
 - **DR-2.3 (SHOULD).** The system SHOULD adapt the report's structure to the question type — for example a ranked list with pros/cons for product questions, a criteria table for comparisons, numbered steps for how-to questions, or an evidence-for/against verdict for fact-checks.
-- **DR-2.4 (MUST).** The completed report MUST be rendered as a self-contained document. Access to it MUST remain restricted to its owner.
+- **DR-2.4 (MUST).** The completed report MUST be rendered as a self-contained document. (Ownership and access follow the system-wide posture in `XC-SEC-6`; no feature-specific access rule is needed here.)
 - **DR-2.5 (SHOULD).** Run statistics (duration, rounds, sources, queries, model, and which search providers contributed) SHOULD be available with the report.
 - **DR-2.6 (MAY).** The report MAY surface representative images from its sources, and the user MAY hide or restore individual images in the rendered report.
 
@@ -40,12 +40,12 @@ Deep research answers a question by gathering, reading, and synthesizing many we
 - **DR-5.1 (MUST).** The system MUST stream progress as the run proceeds, conveying at least the current phase (planning, searching, reading, analyzing, writing) and running counts of sources and findings.
 - **DR-5.2 (MAY).** The system MAY show an estimated time to completion, informed by the duration of past runs.
 
+## DR-6 — Configuration
+
+- **DR-6.1 (MAY).** Per-run limits (rounds, time, sources per round, report length) and the search provider MAY be configurable; if no provider is specified a sensible default MUST be used, and an explicitly disabled provider MUST result in no web search.
+
 ## DR-7 — Library
 
 - **DR-7.1 (MUST).** Completed reports MUST be retained and listed in a browsable library that survives a restart.
 - **DR-7.2 (SHOULD).** The library SHOULD support searching and sorting reports, and archiving or restoring them.
 - **DR-7.3 (SHOULD).** From a completed report, the user SHOULD be able to start a follow-up conversation seeded with that report as context (see DR-1.5).
-
-## DR-6 — Configuration
-
-- **DR-6.1 (MAY).** Per-run limits (rounds, time, sources per round, report length) and the search provider MAY be configurable; if no provider is specified a sensible default MUST be used, and an explicitly disabled provider MUST result in no web search.
