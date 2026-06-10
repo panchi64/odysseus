@@ -55,6 +55,19 @@ async def test_bearer_token_authorizes_without_cookie():
         assert (await client.get("/runs/whatever", headers=headers)).status_code == 404
 
 
+async def test_lock_and_logout_require_authentication():
+    # The gate must not exempt the state-changing /auth endpoints: an
+    # unauthenticated caller can't lock the vault or revoke sessions (DoS).
+    async with client_app(auth_enabled=True, passphrase=None) as (client, _app):
+        await client.post("/setup", json={"password": "the-password"})
+        client.cookies.clear()  # become unauthenticated
+
+        assert (await client.post("/auth/lock")).status_code == 401
+        assert (await client.post("/auth/logout")).status_code == 401
+        # The lock attempt was rejected at the gate — the vault is still unlocked.
+        assert (await client.get("/auth/status")).json()["unlocked"] is True
+
+
 async def test_auth_disabled_still_requires_unlock():
     # auth off + a passphrase ⇒ unlocked at boot, no token needed.
     async with client_app(auth_enabled=False, passphrase="dev-pass") as (client, _app):

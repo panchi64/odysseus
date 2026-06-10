@@ -63,7 +63,9 @@ async def test_verifier_disabled_by_default():
 
 
 async def test_verifier_makes_one_corrective_attempt(monkeypatch):
-    monkeypatch.setattr(engine, "get_settings", lambda: Settings(verify_enabled=True))
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
     verdicts = [Verdict(ok=False, reason="missing the summary")]
     seen = []
 
@@ -73,7 +75,7 @@ async def test_verifier_makes_one_corrective_attempt(monkeypatch):
 
     reg = RunRegistry()
     orch = engine.build_chat_orchestrator(
-        "summarize it", model=TestModel(custom_output_text="here"), judge=judge
+        "summarize it", model=TestModel(custom_output_text="here"), categories={}, judge=judge
     )
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
@@ -87,14 +89,16 @@ async def test_verifier_makes_one_corrective_attempt(monkeypatch):
 
 
 async def test_verifier_accepts_a_good_answer(monkeypatch):
-    monkeypatch.setattr(engine, "get_settings", lambda: Settings(verify_enabled=True))
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
 
     async def judge(request, answer):
         return Verdict(ok=True)
 
     reg = RunRegistry()
     orch = engine.build_chat_orchestrator(
-        "hello", model=TestModel(custom_output_text="hi"), judge=judge
+        "hello", model=TestModel(custom_output_text="hi"), categories={}, judge=judge
     )
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
@@ -102,3 +106,44 @@ async def test_verifier_accepts_a_good_answer(monkeypatch):
     assert run.status is RunStatus.done
     types = [e.body.type for e in run.stream.replay()]
     assert "limit.notice" not in types  # no re-attempt
+
+
+async def test_verifier_heuristic_skips_toolless_turn(monkeypatch):
+    # Default heuristic on: a chitchat turn that called no tools isn't judged.
+    monkeypatch.setattr(engine, "get_settings", lambda: Settings(verify_enabled=True))
+    judged = []
+
+    async def judge(request, answer):
+        judged.append(answer)
+        return Verdict(ok=False, reason="should not run")
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hi", model=TestModel(custom_output_text="hello"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert judged == []  # no checkable artifact (no tool call) → judge skipped
+
+
+async def test_verifier_heuristic_off_judges_every_turn(monkeypatch):
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
+    judged = []
+
+    async def judge(request, answer):
+        judged.append(answer)
+        return Verdict(ok=True)
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hi", model=TestModel(custom_output_text="hello"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert judged == ["hello"]  # judged even with no tools when the heuristic is off

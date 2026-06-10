@@ -52,6 +52,10 @@ class ParkedTurn:
     # the parked turn's messages too, once it finally completes).
     conversation_id: str | None = None
     persist_from: int = 0
+    # When a *verifier* correction is what parked, the [start, end] message range
+    # to drop on the eventual persist (the rejected answer + the synthetic nudge),
+    # so the resume records a clean history too.
+    clean_drop: tuple[int, int] | None = None
 
 
 @dataclass
@@ -61,6 +65,8 @@ class _TurnResult:
 
     answer: str | None
     messages: list[ModelMessage] = field(default_factory=list)
+    # A verifier correction's [reject_idx, nudge_idx] range to drop on persist.
+    clean_drop: tuple[int, int] | None = None
 
 
 def _build_agent(model: Model, *, categories: Any = None) -> Agent:
@@ -149,12 +155,30 @@ async def _drive_turn(
     return _TurnResult(answer=answer, messages=result.all_messages())
 
 
+def _should_verify(settings: Any, run: Run) -> bool:
+    """The verifier's heuristic trigger: judge only turns that produced a
+    checkable artifact (made a tool call). Off ⇒ judge every answer."""
+    if not settings.verify_heuristic:
+        return True
+    return bool(run.metrics and run.metrics.tool_calls)
+
+
 async def _verify_and_correct(
-    run: Run, agent: Agent, prompt: str, turn: _TurnResult, announced: set[str], judge: Judge
+    run: Run,
+    agent: Agent,
+    prompt: str,
+    turn: _TurnResult,
+    announced: set[str],
+    judge: Judge,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
-    Returns the final turn (the re-attempt's, or the original if it passed).
+    A passing answer returns unchanged. Otherwise the correction's full history
+    is returned with a ``clean_drop`` range that ``_finalize`` removes on persist
+    (the rejected answer + the synthetic nudge), so the recorded history reads
+    original request → corrected answer. If the correction itself parks for
+    approval, the drop range rides on the parked payload so the resume cleans too;
+    if it hits a bound, it is returned as-is (no premature persist, no lost answer).
     """
     if not turn.answer or not turn.answer.strip():
         return turn  # nothing checkable to verify
@@ -166,10 +190,56 @@ async def _verify_and_correct(
         f"Your previous response did not fully satisfy the request: {verdict.reason}. "
         "Correct it and complete what was asked."
     )
+    # The range to drop on persist: the rejected ModelResponse (last message of
+    # the original attempt) through the injected nudge ModelRequest (the first
+    # new message of the correction) — two adjacent messages.
+    clean_drop = (len(turn.messages) - 1, len(turn.messages))
     # One attempt only — no re-verify, so it cannot retry endlessly.
-    return await _drive_turn(
+    corrected = await _drive_turn(
         run, agent, prompt=nudge, message_history=turn.messages, announced=announced
     )
+    if run.status is RunStatus.awaiting_input:
+        # The correction needs approval: carry the drop range on the parked turn
+        # so the resume's persist drops the rejected answer + nudge as well.
+        if isinstance(run.parked_payload, ParkedTurn):
+            run.parked_payload.clean_drop = clean_drop
+        return corrected
+    if corrected.answer is None:
+        return corrected  # hit a bound — caller finalizes it
+    return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
+
+
+def _finalize(
+    run: Run,
+    turn: _TurnResult,
+    *,
+    store: ConversationStore | None,
+    conversation_id: str | None,
+    start: int,
+    clean_drop: tuple[int, int] | None = None,
+) -> None:
+    """Close out a turn: persist it, or wire resume context if it parked.
+
+    Shared by the chat and resume orchestrators so the park/answer-None guards
+    are applied *after* the verifier too (a corrective re-attempt can itself park
+    or hit a bound). ``clean_drop`` is a verifier correction's message range to
+    drop from the persisted history."""
+    if run.status is RunStatus.awaiting_input:
+        # Parked: hand the resume the context to persist the parked turn too.
+        if conversation_id is not None and isinstance(run.parked_payload, ParkedTurn):
+            run.parked_payload.conversation_id = conversation_id
+            run.parked_payload.persist_from = start
+            if clean_drop is not None:  # re-park: carry the drop range forward
+                run.parked_payload.clean_drop = clean_drop
+        return
+    if turn.answer is None:
+        return  # blocked or hit a bound — nothing to persist
+    if store is not None and conversation_id is not None:
+        messages = turn.messages
+        if clean_drop is not None:
+            reject_idx, nudge_idx = clean_drop
+            messages = messages[:reject_idx] + messages[nudge_idx + 1 :]
+        store.record(conversation_id, messages[start:])
 
 
 def build_chat_orchestrator(
@@ -188,36 +258,43 @@ def build_chat_orchestrator(
     ``categories`` overrides the tool catalog and ``judge`` the verifier's judge.
     With ``store`` + ``conversation_id`` the turn continues prior history and
     persists its new messages; without them it runs stateless. The verifier only
-    runs when enabled in settings.
+    runs when enabled in settings (and, by default, only on tool-producing turns).
     """
-    persisting = store is not None and conversation_id is not None
-
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         resolved = model if model is not None else llm.resolve_model(model_role)
         agent = _build_agent(resolved, categories=categories)
         announced: set[str] = set()
-        history = await store.history(conversation_id) if persisting else None
+        history = (
+            await store.history(conversation_id)
+            if store is not None and conversation_id is not None
+            else None
+        )
         start = len(history) if history else 0
 
         turn = await _drive_turn(
             run, agent, prompt=prompt, message_history=history, announced=announced
         )
 
-        if run.status is RunStatus.awaiting_input:
-            # Parked: hand the resume the context to persist the parked turn too.
-            if persisting and isinstance(run.parked_payload, ParkedTurn):
-                run.parked_payload.conversation_id = conversation_id
-                run.parked_payload.persist_from = start
-            return
-        if turn.answer is None:
-            return  # blocked or hit a bound — nothing to persist
-
-        if settings.verify_enabled:
+        # Verify only a completed turn (not one parked for approval or stopped at
+        # a bound), and only when the heuristic says it is worth judging.
+        if (
+            run.status is not RunStatus.awaiting_input
+            and turn.answer is not None
+            and settings.verify_enabled
+            and _should_verify(settings, run)
+        ):
             judging = judge or utility_judge
             turn = await _verify_and_correct(run, agent, prompt, turn, announced, judging)
-        if persisting:
-            store.record(conversation_id, turn.messages[start:])
+
+        _finalize(
+            run,
+            turn,
+            store=store,
+            conversation_id=conversation_id,
+            start=start,
+            clean_drop=turn.clean_drop,
+        )
 
     return orchestrate
 
@@ -236,13 +313,13 @@ def build_resume_orchestrator(
             deferred_results=results,
             announced=parked.announced,
         )
-        if run.status is RunStatus.awaiting_input:
-            # Parked again (another approval): carry the persistence context.
-            if isinstance(run.parked_payload, ParkedTurn):
-                run.parked_payload.conversation_id = parked.conversation_id
-                run.parked_payload.persist_from = parked.persist_from
-            return
-        if store is not None and parked.conversation_id is not None and turn.answer is not None:
-            store.record(parked.conversation_id, turn.messages[parked.persist_from :])
+        _finalize(
+            run,
+            turn,
+            store=store,
+            conversation_id=parked.conversation_id,
+            start=parked.persist_from,
+            clean_drop=parked.clean_drop,
+        )
 
     return orchestrate

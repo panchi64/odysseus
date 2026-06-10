@@ -20,9 +20,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 SESSION_COOKIE = "odysseus_session"
 
-# Reachable without authentication: status, first-run setup, login/logout/lock,
-# liveness, and the API docs.
-_PUBLIC_PREFIXES = ("/auth", "/setup", "/health", "/docs", "/redoc", "/openapi.json")
+# Reachable without authentication: status probe, first-run setup, login, and
+# liveness. Everything else — including the *state-changing* /auth/lock and
+# /auth/logout — stays behind the gate, so an unauthenticated caller can't lock
+# the vault or revoke sessions.
+_PUBLIC_PATHS = frozenset({"/auth/status", "/auth/login", "/setup", "/openapi.json"})
+# Prefixes whose sub-paths are also public (liveness probes, the docs UIs).
+_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc")
 
 
 class AuthManager:
@@ -45,6 +49,8 @@ class AuthManager:
 
 
 def _is_public(path: str) -> bool:
+    if path in _PUBLIC_PATHS:
+        return True
     return any(path == p or path.startswith(p + "/") for p in _PUBLIC_PREFIXES)
 
 

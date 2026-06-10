@@ -11,25 +11,25 @@ Content is **encrypted at rest**: the message text and blob are encrypted on the
 hot path (where the vault is unlocked, since the operator is actively chatting),
 so the drainer only ever handles ciphertext and the working set stays plaintext.
 Structural metadata (ids, timestamps, owner, seq, kind) stays plaintext so the
-DB can still index and order.
+DB can still index and order. The drainer is a lock-aware
+:class:`~core.worker.WriteBehindWorker` — it parks while the vault is locked and
+retries failed writes rather than dropping them.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from contextlib import suppress
 from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
 from pydantic_ai import ModelMessage
-from pydantic_core import to_jsonable_python
-from sqlalchemy import Engine, func
+from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
 from core.vault import Vault
+from core.worker import WriteBehindWorker
 from models.conversation import Conversation, Message
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,10 @@ _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 
 # An encrypted, persistence-ready row: (kind, encrypted text, encrypted blob).
 _EncRow = tuple[str, str, str]
+# A write-behind job: (conversation_id, seq of the first row, the rows). The seq
+# base is taken from the authoritative in-memory working set at record time, so
+# the drainer never has to count rows (and the two can't diverge).
+_PersistJob = tuple[str, int, list[_EncRow]]
 
 
 def _project(message: ModelMessage) -> tuple[str, str]:
@@ -57,18 +61,19 @@ class ConversationStore:
         self._engine = engine
         self._vault = vault
         self._cache: dict[str, list[ModelMessage]] = {}
-        self._queue: asyncio.Queue[tuple[str, list[_EncRow]]] = asyncio.Queue()
-        self._drainer: asyncio.Task[None] | None = None
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._worker: WriteBehindWorker[_PersistJob] = WriteBehindWorker(
+            self._persist,
+            name="persistence-drainer",
+            unlocked=vault.unlocked_event,
+            on_drop=self._on_drop,
+        )
 
     async def start(self) -> None:
-        self._drainer = asyncio.create_task(self._drain(), name="persistence-drainer")
+        await self._worker.start()
 
     async def stop(self) -> None:
-        await self._queue.join()  # flush pending writes before shutdown
-        if self._drainer is not None:
-            self._drainer.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._drainer
+        await self._worker.stop()
 
     async def create_conversation(self, owner_id: str, title: str | None = None) -> str:
         def work(session: Session) -> str:
@@ -87,48 +92,44 @@ class ConversationStore:
         if cached is not None:
             return list(cached)
 
-        def work(session: Session) -> list[str]:
-            rows = session.exec(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.seq)
-            ).all()
-            return [row.blob for row in rows]
+        # Serialize rehydration per conversation and re-check inside the lock, so a
+        # concurrent record()/history() can't be clobbered by a stale DB snapshot.
+        async with self._locks.setdefault(conversation_id, asyncio.Lock()):
+            cached = self._cache.get(conversation_id)
+            if cached is not None:
+                return list(cached)
 
-        blobs = await in_session(self._engine, work)
-        messages = [_MESSAGE.validate_json(self._vault.decrypt_str(blob)) for blob in blobs]
-        self._cache[conversation_id] = messages
-        return list(messages)
+            def work(session: Session) -> list[str]:
+                rows = session.exec(
+                    select(Message)
+                    .where(Message.conversation_id == conversation_id)
+                    .order_by(Message.seq)
+                ).all()
+                return [row.blob for row in rows]
+
+            blobs = await in_session(self._engine, work)
+            messages = [_MESSAGE.validate_json(self._vault.decrypt_str(blob)) for blob in blobs]
+            self._cache[conversation_id] = messages
+            return list(messages)
 
     def record(self, conversation_id: str, new_messages: list[ModelMessage]) -> None:
         """Hot path: extend the working set and queue the encrypted durable write."""
         if not new_messages:
             return
-        self._cache.setdefault(conversation_id, []).extend(new_messages)
+        working = self._cache.setdefault(conversation_id, [])
+        base = len(working)  # the seq of the first new message (working set is the truth)
+        working.extend(new_messages)
         rows: list[_EncRow] = []
         for message in new_messages:
             kind, text = _project(message)
-            blob = json.dumps(to_jsonable_python(message))
+            blob = _MESSAGE.dump_json(message).decode()
             rows.append((kind, self._vault.encrypt_str(text), self._vault.encrypt_str(blob)))
-        self._queue.put_nowait((conversation_id, rows))
+        self._worker.submit((conversation_id, base, rows))
 
-    async def _drain(self) -> None:
-        while True:
-            conversation_id, rows = await self._queue.get()
-            try:
-                await self._persist(conversation_id, rows)
-            except Exception:  # noqa: BLE001 — a bad write must not kill the drainer
-                logger.exception("failed to persist messages for %s", conversation_id)
-            finally:
-                self._queue.task_done()
+    async def _persist(self, job: _PersistJob) -> None:
+        conversation_id, base, rows = job
 
-    async def _persist(self, conversation_id: str, rows: list[_EncRow]) -> None:
         def work(session: Session) -> None:
-            # The drainer is single-threaded, so the row count is the next seq.
-            base = session.scalar(
-                select(func.count(Message.id)).where(Message.conversation_id == conversation_id)
-            )
-            base = base or 0
             for offset, (kind, enc_text, enc_blob) in enumerate(rows):
                 session.add(
                     Message(
@@ -144,3 +145,13 @@ class ConversationStore:
                 conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
+
+    def _on_drop(self, job: _PersistJob, exc: Exception) -> None:
+        conversation_id, base, rows = job
+        logger.error(
+            "permanently failed to persist %d messages for conversation %s (seq %d+): %s",
+            len(rows),
+            conversation_id,
+            base,
+            exc,
+        )

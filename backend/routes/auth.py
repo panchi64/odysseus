@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from core.auth import SESSION_COOKIE, AuthManager
+from core.auth import SESSION_COOKIE, AuthManager, token_from_headers
 from core.vault import Vault
 
 router = APIRouter(tags=["auth"])
@@ -81,9 +81,9 @@ async def login(body: PasswordBody, request: Request, response: Response) -> Tok
 
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response) -> dict[str, str]:
-    authorization = request.headers.get("authorization", "")
-    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
-    token = token or request.cookies.get(SESSION_COOKIE)
+    token = token_from_headers(
+        request.headers.get("authorization"), request.cookies.get(SESSION_COOKIE)
+    )
     if token:
         _auth(request).revoke(token)
     response.delete_cookie(SESSION_COOKIE)

@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # re-attempt) is off by default.
     loop_repeat_threshold: int = 3
     verify_enabled: bool = False
+    # When the verifier is on, only judge turns that produced a checkable
+    # artifact (made a tool call) — chitchat that called no tools is skipped.
+    # Set False to judge every answer.
+    verify_heuristic: bool = True
 
 
 @lru_cache

@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -34,6 +35,9 @@ class Conversation(SQLModel, table=True):
 
 class Message(SQLModel, table=True):
     __tablename__ = "messages"
+    # Ordering within a conversation is unique — a double-insert (e.g. a retried
+    # write that partly landed) fails loudly instead of silently duplicating.
+    __table_args__ = (UniqueConstraint("conversation_id", "seq", name="uq_message_conv_seq"),)
 
     id: str = Field(default_factory=_new_id, primary_key=True)
     conversation_id: str = Field(index=True, foreign_key="conversations.id")
