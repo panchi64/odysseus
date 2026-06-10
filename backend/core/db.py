@@ -11,10 +11,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import Engine, event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
+
+# alembic.ini lives at the backend root (core/db.py is backend/core/db.py); its
+# script_location is `%(here)s/migrations`, so resolution is cwd-independent.
+_ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
 
 def make_engine(url: str) -> Engine:
@@ -37,11 +44,16 @@ def make_engine(url: str) -> Engine:
 
 
 def init_db(engine: Engine) -> None:
-    """Create tables. Alembic migrations replace this with the encryption pass."""
-    import models.conversation  # noqa: F401 — register tables on the metadata
-    import models.registry  # noqa: F401
+    """Bring the schema to head via Alembic — applied automatically on startup,
+    no manual step (XC-DATA-2).
 
-    SQLModel.metadata.create_all(engine)
+    Migrations run against the **live engine** (handed to ``migrations/env.py`` on
+    the Alembic config), not a fresh one built from a URL — essential for the
+    in-memory test DBs, whose schema lives only on a single shared connection.
+    """
+    config = Config(str(_ALEMBIC_INI))
+    config.attributes["connection"] = engine
+    command.upgrade(config, "head")
 
 
 async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
