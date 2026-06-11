@@ -3,6 +3,9 @@ import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Button } from "./Button";
 
+// Self-contained guarded storage: the design system does not depend on ~/lib, so
+// the Composer keeps its own best-effort draft persistence rather than importing
+// the app's storage helper.
 const DRAFT_PREFIX = "ody.draft.";
 
 function loadDraft(key?: string): string {

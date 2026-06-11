@@ -16,7 +16,6 @@ the library doesn't know about them; we emit them here and in the engine.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic_ai import (
@@ -32,6 +31,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
+from core.serde import jsonable
 from runs import (
     AnswerDelta,
     Run,
@@ -44,15 +44,6 @@ from runs import (
 )
 
 from .meta import LoopBreaker
-
-
-def _jsonable(value: Any) -> Any:
-    """Coerce a tool result into something the JSON envelope can carry."""
-    try:
-        json.dumps(value)
-        return value
-    except (TypeError, ValueError):
-        return str(value)
 
 
 def _on_model_event(event: object, run: Run) -> None:
@@ -110,7 +101,7 @@ def _on_tool_event(
                 ToolCompleted(
                     tool_call_id=part.tool_call_id,
                     name=part.tool_name,
-                    result=_jsonable(part.content),
+                    result=jsonable(part.content),
                 )
             )
 

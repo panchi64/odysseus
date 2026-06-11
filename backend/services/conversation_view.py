@@ -7,13 +7,13 @@ split out from its answer and its tool calls stitched to their results.
 
 This is the static-history counterpart to the live translator in
 ``agent/translate.py`` — the same part→domain mapping, applied to a settled
-message list rather than a stream. It lives in ``services`` (a lower layer) and so
-duplicates the tiny ``_jsonable`` coercion rather than importing the orchestrator.
+message list rather than a stream. Both share ``core.serde.jsonable`` for the
+tool-result coercion; the shared helper lives in ``core`` so this lower layer
+need not import the orchestrator.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -28,6 +28,8 @@ from pydantic_ai import (
     ToolReturnPart,
     UserPromptPart,
 )
+
+from core.serde import jsonable
 
 
 @dataclass
@@ -49,21 +51,20 @@ class MessageView:
     timestamp: datetime | None = None
 
 
-def _jsonable(value: Any) -> Any:
-    """Coerce a tool result into something the JSON envelope can carry."""
-    try:
-        json.dumps(value)
-        return value
-    except (TypeError, ValueError):
-        return str(value)
-
-
 def _user_text(content: Any) -> str:
-    """Flatten a user prompt's content (str or multimodal sequence) to text."""
+    """Flatten a user prompt's content (str or multimodal sequence) to text.
+
+    A multimodal turn keeps its text parts; non-text parts (images, files) are
+    represented by a single ``[attachment]`` marker so an image-only turn still
+    renders as a turn rather than vanishing into an empty bubble. Defensive — the
+    composer is text-only today, so this only guards future multimodal input."""
     if isinstance(content, str):
         return content
     if isinstance(content, list | tuple):
-        return " ".join(part for part in content if isinstance(part, str))
+        text = " ".join(part for part in content if isinstance(part, str)).strip()
+        if text:
+            return text
+        return "[attachment]" if content else ""
     return ""
 
 
@@ -91,7 +92,7 @@ def project_messages(messages: list[Any]) -> list[MessageView]:
                     tool = by_call.get(part.tool_call_id)
                     if tool is not None:
                         tool.status = "ok"
-                        tool.result = _jsonable(part.content)
+                        tool.result = jsonable(part.content)
                 elif isinstance(part, RetryPromptPart):
                     tool = by_call.get(part.tool_call_id)
                     if tool is not None:

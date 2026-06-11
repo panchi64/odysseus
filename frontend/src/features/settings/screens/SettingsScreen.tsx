@@ -1,7 +1,6 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
-  Checkbox,
   EmptyState,
   Field,
   Input,
@@ -125,25 +124,38 @@ export function SettingsScreen(): JSX.Element {
     }
   };
 
-  /* ── Role bindings ──────────────────────────────────────────────────────── */
-  const isBound = (role: string, endpointId: string) =>
-    (roles()?.[role] ?? []).includes(endpointId);
+  /* ── Role bindings ──────────────────────────────────────────────────────────
+     A role binds to an ordered fallback chain (first = primary). The control
+     below captures that order explicitly — membership *and* position — so it no
+     longer rides on endpoint creation order. */
+  const chainFor = (role: string): string[] => roles()?.[role] ?? [];
+  const endpointName = (id: string): string =>
+    (endpoints() ?? []).find((e) => e.id === id)?.name ?? id;
+  const unboundFor = (role: string): ModelEndpoint[] => {
+    const bound = new Set(chainFor(role));
+    return (endpoints() ?? []).filter((e) => !bound.has(e.id));
+  };
 
-  const toggleBinding = async (role: string, endpointId: string) => {
-    const current = roles()?.[role] ?? [];
-    const all = endpoints() ?? [];
-    const wanted = new Set(
-      current.includes(endpointId)
-        ? current.filter((id) => id !== endpointId)
-        : [...current, endpointId],
-    );
-    // Keep the chain in endpoint-list order (first = primary).
-    const next = all.filter((e) => wanted.has(e.id)).map((e) => e.id);
+  const applyChain = async (role: string, next: string[]) => {
     try {
       await setRoleBinding(role, next);
     } catch {
       toast.error(`Unable to update the ${role} role.`);
     }
+  };
+  const addToRole = (role: string, id: string) =>
+    applyChain(role, [...chainFor(role), id]);
+  const removeFromRole = (role: string, id: string) =>
+    applyChain(
+      role,
+      chainFor(role).filter((x) => x !== id),
+    );
+  const moveInRole = (role: string, index: number, dir: -1 | 1) => {
+    const chain = [...chainFor(role)];
+    const j = index + dir;
+    if (j < 0 || j >= chain.length) return;
+    [chain[index], chain[j]] = [chain[j], chain[index]];
+    return applyChain(role, chain);
   };
 
   return (
@@ -267,17 +279,86 @@ export function SettingsScreen(): JSX.Element {
                   <Text variant="label" tone="bright">
                     {role.toUpperCase()}
                   </Text>
-                  <div class="flex flex-wrap gap-3">
-                    <For each={endpoints() ?? []}>
-                      {(ep) => (
-                        <Checkbox
-                          label={ep.name}
-                          checked={isBound(role, ep.id)}
-                          onChange={() => void toggleBinding(role, ep.id)}
-                        />
-                      )}
-                    </For>
-                  </div>
+                  <Show
+                    when={chainFor(role).length}
+                    fallback={
+                      <Text variant="micro" tone="dim">
+                        No endpoints bound — add one below.
+                      </Text>
+                    }
+                  >
+                    <Stack gap={0}>
+                      <For each={chainFor(role)}>
+                        {(id, i) => (
+                          <Row
+                            align="center"
+                            justify="between"
+                            gap={2}
+                            class="border-b border-line py-1.5 last:border-0"
+                          >
+                            <Row gap={2} align="center" class="min-w-0">
+                              <Text variant="micro" tone="dim">
+                                {i() + 1}
+                              </Text>
+                              <Text
+                                variant="label"
+                                tone="default"
+                                class="truncate"
+                              >
+                                {endpointName(id)}
+                              </Text>
+                              <Show when={i() === 0}>
+                                <StatusFlag status="nominal">
+                                  PRIMARY
+                                </StatusFlag>
+                              </Show>
+                            </Row>
+                            <span class="flex shrink-0 items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                leading="chevron-up"
+                                aria-label="Move earlier in the chain"
+                                disabled={i() === 0}
+                                onClick={() => void moveInRole(role, i(), -1)}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                leading="chevron-down"
+                                aria-label="Move later in the chain"
+                                disabled={i() === chainFor(role).length - 1}
+                                onClick={() => void moveInRole(role, i(), 1)}
+                              />
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                leading="close"
+                                aria-label="Remove from the chain"
+                                onClick={() => void removeFromRole(role, id)}
+                              />
+                            </span>
+                          </Row>
+                        )}
+                      </For>
+                    </Stack>
+                  </Show>
+                  <Show when={unboundFor(role).length}>
+                    <div class="flex flex-wrap gap-2">
+                      <For each={unboundFor(role)}>
+                        {(ep) => (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            leading="plus"
+                            onClick={() => void addToRole(role, ep.id)}
+                          >
+                            {ep.name}
+                          </Button>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
                 </Stack>
               )}
             </For>

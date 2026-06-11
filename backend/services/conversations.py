@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
 from pydantic_ai import ModelMessage
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
 from core.db import in_session
@@ -73,6 +73,43 @@ def _project(message: ModelMessage) -> tuple[str, str]:
         if type(part).__name__ in _TEXT_PARTS and isinstance(getattr(part, "content", None), str)
     )
     return kind, text
+
+
+def _db_stats(
+    session: Session, conversation_ids: list[str]
+) -> dict[str, tuple[int, str | None]]:
+    """(message_count, last-message text) per conversation, from the durable rows.
+
+    One ``COUNT … GROUP BY`` for the counts and one max-seq lookup for the last
+    text — no per-conversation row scan (and no pulling full ``blob`` columns just
+    to count). Replaces the N+1 of loading every message of every conversation.
+    The returned text is still the encrypted ``Message.text`` ciphertext; the
+    caller decrypts only the few it renders."""
+    if not conversation_ids:
+        return {}
+    counts = dict(
+        session.exec(
+            select(Message.conversation_id, func.count())
+            .where(Message.conversation_id.in_(conversation_ids))
+            .group_by(Message.conversation_id)
+        ).all()
+    )
+    latest = (
+        select(Message.conversation_id, func.max(Message.seq).label("seq"))
+        .where(Message.conversation_id.in_(conversation_ids))
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+    last_text = dict(
+        session.exec(
+            select(Message.conversation_id, Message.text).join(
+                latest,
+                (Message.conversation_id == latest.c.conversation_id)
+                & (Message.seq == latest.c.seq),
+            )
+        ).all()
+    )
+    return {cid: (counts.get(cid, 0), last_text.get(cid)) for cid in conversation_ids}
 
 
 class ConversationStore:
@@ -176,16 +213,8 @@ class ConversationStore:
                 .where(Conversation.owner_id == owner_id)
                 .order_by(Conversation.updated_at.desc())
             ).all()
-            out: list[tuple[Conversation, int, str | None]] = []
-            for conversation in conversations:
-                rows = session.exec(
-                    select(Message)
-                    .where(Message.conversation_id == conversation.id)
-                    .order_by(Message.seq)
-                ).all()
-                last_text_enc = rows[-1].text if rows else None
-                out.append((conversation, len(rows), last_text_enc))
-            return out
+            stats = _db_stats(session, [c.id for c in conversations])
+            return [(c, *stats.get(c.id, (0, None))) for c in conversations]
 
         rows = await in_session(self._engine, work)
         return [self._summarize(conv, count, last_enc) for conv, count, last_enc in rows]
@@ -200,12 +229,8 @@ class ConversationStore:
             conversation = session.get(Conversation, conversation_id)
             if conversation is None or conversation.owner_id != owner_id:
                 return None
-            rows = session.exec(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.seq)
-            ).all()
-            return conversation, len(rows), (rows[-1].text if rows else None)
+            count, last_text_enc = _db_stats(session, [conversation_id])[conversation_id]
+            return conversation, count, last_text_enc
 
         result = await in_session(self._engine, work)
         if result is None:

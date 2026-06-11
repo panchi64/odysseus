@@ -7,34 +7,19 @@ import {
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
+import { readLS, writeLS } from "~/lib/storage";
+import { useSession } from "~/lib/stores/session";
 import { streamRun, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
   ApprovalDecision,
+  ArtifactRef,
   ChatMessage,
   ChatSession,
   ChatSummary,
   ModelOption,
   ToolInvocation,
 } from "./model";
-
-/* ── localStorage helpers (best-effort, SSR/permission safe) ──────────────── */
-
-function readLS(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeLS(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage unavailable */
-  }
-}
 
 /* ── Recency-gated resume ─────────────────────────────────────────────────────
    On entry the chat resumes the last conversation only while it's still "warm"
@@ -72,7 +57,10 @@ interface EndpointDTO {
 }
 
 const DEFAULT_OPTION: ModelOption = { value: "", label: "DEFAULT (MAIN)" };
-const [_modelsTick, _setModelsTick] = createSignal(0);
+// Starts at 1 so the resource source is truthy once authenticated; refresh()
+// bumps it. (createResource skips a falsy source — which is how we gate it.)
+const [_modelsTick, _setModelsTick] = createSignal(1);
+const _session = useSession();
 
 async function fetchModelOptions(): Promise<ModelOption[]> {
   try {
@@ -86,7 +74,13 @@ async function fetchModelOptions(): Promise<ModelOption[]> {
   }
 }
 
-const [_modelOptions] = createResource(_modelsTick, fetchModelOptions);
+// This module loads before the operator unlocks, so the source stays `false`
+// until authenticated — no `/models/endpoints` call fires pre-auth (it would
+// 401). It re-fetches automatically when the session flips to unlocked.
+const [_modelOptions] = createResource(
+  () => (_session.isAuthenticated ? _modelsTick() : false),
+  fetchModelOptions,
+);
 
 export function modelOptions(): ModelOption[] {
   return _modelOptions.latest ?? [DEFAULT_OPTION];
@@ -179,12 +173,21 @@ interface ToolCallDTO {
   error?: string | null;
 }
 
+interface ArtifactDTO {
+  artifact_id: string;
+  title: string;
+  filename: string;
+  content_type: string;
+  kind: ArtifactRef["kind"];
+}
+
 interface MessageDTO {
   id: string;
   role: "user" | "assistant";
   content: string;
   reasoning?: string | null;
   tools: ToolCallDTO[];
+  artifacts?: ArtifactDTO[];
   created_at?: string | null;
 }
 
@@ -221,6 +224,19 @@ function stringifyResult(result: unknown): string | undefined {
   return typeof result === "string" ? result : JSON.stringify(result, null, 2);
 }
 
+/** Map a published-artifact DTO/event to the seam type. Shared by the cold read
+ *  (history detail) and the warm stream (`artifact.published`) so both render
+ *  identically. */
+function toArtifactRef(dto: ArtifactDTO): ArtifactRef {
+  return {
+    artifactId: dto.artifact_id,
+    title: dto.title,
+    filename: dto.filename,
+    contentType: dto.content_type,
+    kind: dto.kind,
+  };
+}
+
 function toTool(dto: ToolCallDTO): ToolInvocation {
   return {
     id: dto.id,
@@ -239,6 +255,7 @@ function toMessage(dto: MessageDTO): ChatMessage {
     content: dto.content,
     reasoning: dto.reasoning ?? undefined,
     tools: dto.tools.map(toTool),
+    artifacts: dto.artifacts?.map(toArtifactRef),
     createdAt: dto.created_at ?? new Date().toISOString(),
   };
 }
@@ -412,16 +429,7 @@ export function createChatStream(
         break;
       case "artifact.published":
         patchById(assistantId, (m) => {
-          m.artifacts = [
-            ...(m.artifacts ?? []),
-            {
-              artifactId: ev.artifact_id,
-              title: ev.title,
-              filename: ev.filename,
-              contentType: ev.content_type,
-              kind: ev.kind,
-            },
-          ];
+          m.artifacts = [...(m.artifacts ?? []), toArtifactRef(ev)];
         });
         break;
       case "preview.ready":

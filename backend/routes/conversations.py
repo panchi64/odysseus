@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from routes import deps
 from routes.deps import OPERATOR_ID
+from services.artifacts import ArtifactView, artifact_id_from_result
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView
 
@@ -41,12 +42,24 @@ class ToolCallOut(BaseModel):
     error: str | None = None
 
 
+class ArtifactRefOut(BaseModel):
+    """A published artifact re-attached to the message that produced it, mirroring
+    the live ``artifact.published`` event so a cold read renders like a warm one."""
+
+    artifact_id: str
+    title: str
+    filename: str
+    content_type: str
+    kind: str
+
+
 class MessageOut(BaseModel):
     id: str
     role: str
     content: str
     reasoning: str | None = None
     tools: list[ToolCallOut] = []
+    artifacts: list[ArtifactRefOut] = []
     created_at: datetime | None = None
 
 
@@ -69,7 +82,32 @@ def _summary(view: ConversationSummaryView) -> ConversationSummary:
     )
 
 
-def _message(index: int, view: MessageView) -> MessageOut:
+def _message_artifacts(
+    view: MessageView, by_id: dict[str, ArtifactView]
+) -> list[ArtifactRefOut]:
+    """The artifacts this turn published, recovered from its ``publish_artifact``
+    tool results (each carries the artifact id). A failed publish has no id and is
+    skipped, so the cold read attaches exactly what warmly streamed."""
+    refs: list[ArtifactRefOut] = []
+    for tool in view.tools:
+        if not tool.name.endswith("publish_artifact") or not isinstance(tool.result, str):
+            continue
+        artifact_id = artifact_id_from_result(tool.result)
+        artifact = by_id.get(artifact_id) if artifact_id else None
+        if artifact is not None:
+            refs.append(
+                ArtifactRefOut(
+                    artifact_id=artifact.id,
+                    title=artifact.title,
+                    filename=artifact.filename,
+                    content_type=artifact.content_type,
+                    kind=artifact.kind,
+                )
+            )
+    return refs
+
+
+def _message(index: int, view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
     return MessageOut(
         id=f"m{index}",
         role=view.role,
@@ -81,6 +119,7 @@ def _message(index: int, view: MessageView) -> MessageOut:
             )
             for t in view.tools
         ],
+        artifacts=_message_artifacts(view, by_id),
         created_at=view.timestamp,
     )
 
@@ -98,9 +137,18 @@ async def get_conversation(conversation_id: str, request: Request) -> Conversati
     if summary is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     messages = await store.messages_view(conversation_id)
+    # Only pay for the artifacts lookup when a turn actually published something —
+    # the vast majority of conversations never call publish_artifact.
+    published = any(
+        t.name.endswith("publish_artifact") for m in messages for t in m.tools
+    )
+    by_id: dict[str, ArtifactView] = {}
+    if published:
+        artifacts = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
+        by_id = {a.id: a for a in artifacts}
     return ConversationDetail(
         **_summary(summary).model_dump(),
-        messages=[_message(i, m) for i, m in enumerate(messages)],
+        messages=[_message(i, m, by_id) for i, m in enumerate(messages)],
     )
 
 

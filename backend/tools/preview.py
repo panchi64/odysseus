@@ -17,6 +17,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, RunContext
 
 from runs import ArtifactPublished, PreviewReady, PreviewStopped
+from services.artifacts import format_publish_result
 from services.sandbox import SandboxError
 
 from .deps import RunDeps
@@ -61,7 +62,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
                 kind=view.kind,
             )
         )
-        return f"Published '{view.title}' as a {view.kind} preview (id {view.id})."
+        return format_publish_result(view)
 
     @toolset.tool
     async def start_preview(

@@ -11,6 +11,7 @@ export type IconName =
   | "reticle"
   | "chevron-right"
   | "chevron-down"
+  | "chevron-up"
   | "chevron-left"
   | "arrow-right"
   | "plus"
@@ -73,6 +74,7 @@ export const icons: Record<IconName, () => JSX.Element> = {
   ),
   "chevron-right": () => <path d="M6 3l5 5-5 5" />,
   "chevron-down": () => <path d="M3 6l5 5 5-5" />,
+  "chevron-up": () => <path d="M3 10l5-5 5 5" />,
   "chevron-left": () => <path d="M10 3L5 8l5 5" />,
   "arrow-right": () => <path d="M3 8h10M9 4l4 4-4 4" />,
   plus: () => <path d="M8 3v10M3 8h10" />,

@@ -13,6 +13,7 @@ agree; ``kind`` is a coarse rendering hint the UI keys on.
 from __future__ import annotations
 
 import mimetypes
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -148,3 +149,21 @@ def _to_view(row: Artifact) -> ArtifactView:
         size=row.size,
         created_at=row.created_at,
     )
+
+
+# The `publish_artifact` tool returns this line to the model; it also carries the
+# artifact id back through the saved history so a *cold* conversation read can
+# re-attach the artifact to the message that produced it (no structural join key
+# exists — the format is the contract, owned here so producer and parser agree).
+_PUBLISHED_ID = re.compile(r"\(id ([0-9a-f]+)\)\.\s*$")
+
+
+def format_publish_result(view: ArtifactView) -> str:
+    """The `publish_artifact` tool's return line for a captured artifact."""
+    return f"Published '{view.title}' as a {view.kind} preview (id {view.id})."
+
+
+def artifact_id_from_result(result: str) -> str | None:
+    """The artifact id embedded in a `publish_artifact` result, or None."""
+    match = _PUBLISHED_ID.search(result)
+    return match.group(1) if match else None

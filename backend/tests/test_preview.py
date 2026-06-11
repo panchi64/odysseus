@@ -4,6 +4,7 @@ and emits artifact.published — degrading gracefully when capabilities are abse
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -12,7 +13,12 @@ from agent import stream_agent_run
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import Run, RunStream
-from services.artifacts import ArtifactStore
+from services.artifacts import (
+    ArtifactStore,
+    ArtifactView,
+    artifact_id_from_result,
+    format_publish_result,
+)
 from services.sandbox import SandboxError
 from tools import RunDeps, build_agent_toolsets
 from tools.preview import preview_toolset
@@ -121,3 +127,23 @@ async def test_publish_unavailable_without_store():
     async with agent.iter("go", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
     assert "artifact.published" not in [b.type for b in _bodies(run)]
+
+
+def test_publish_result_round_trips_the_artifact_id():
+    # The tool's return line carries the id back through saved history so a cold
+    # read can re-attach the artifact to its message (producer/parser agree).
+    view = ArtifactView(
+        id="deadbeef01",
+        conversation_id="conv-1",
+        title="My Chart",
+        filename="chart.png",
+        content_type="image/png",
+        kind="image",
+        size=6,
+        created_at=datetime.now(UTC),
+    )
+    assert artifact_id_from_result(format_publish_result(view)) == "deadbeef01"
+
+
+def test_artifact_id_from_unrelated_result_is_none():
+    assert artifact_id_from_result("Could not read 'x.html': no such file") is None

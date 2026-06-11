@@ -7,8 +7,13 @@ read/manage endpoints over it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from pydantic_ai.models.test import TestModel
 
+from routes.conversations import _message_artifacts
+from services.artifacts import ArtifactView, format_publish_result
+from services.conversation_view import MessageView, ToolView
 from services.registry import ModelRegistry
 
 from ._helpers import client_app, collect_sse_events
@@ -103,3 +108,46 @@ async def test_delete_unknown_conversation_404():
     async with client_app() as (client, _app):
         resp = await client.delete("/conversations/nope")
         assert resp.status_code == 404
+
+
+def _artifact_view(artifact_id: str) -> ArtifactView:
+    return ArtifactView(
+        id=artifact_id,
+        conversation_id="conv-1",
+        title="Chart",
+        filename="chart.png",
+        content_type="image/png",
+        kind="image",
+        size=3,
+        created_at=datetime.now(UTC),
+    )
+
+
+def test_cold_read_reattaches_published_artifact():
+    # A successful publish_artifact call on a turn re-attaches its artifact when
+    # the conversation is read cold (warm/cold parity).
+    art = _artifact_view("a1b2c3")
+    tool = ToolView(
+        id="t1",
+        name="preview_publish_artifact",
+        args={},
+        status="ok",
+        result=format_publish_result(art),
+    )
+    message = MessageView(role="assistant", tools=[tool])
+    refs = _message_artifacts(message, {art.id: art})
+    assert [r.artifact_id for r in refs] == ["a1b2c3"]
+    assert refs[0].kind == "image"
+
+
+def test_cold_read_skips_failed_publish():
+    # A degraded/failed publish carries no id, so nothing is attached.
+    tool = ToolView(
+        id="t1",
+        name="preview_publish_artifact",
+        args={},
+        status="ok",
+        result="Could not read 'x.html': no such file",
+    )
+    message = MessageView(role="assistant", tools=[tool])
+    assert _message_artifacts(message, {}) == []

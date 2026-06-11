@@ -7,6 +7,7 @@ import {
   type JSX,
 } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
+import { readLS, writeLS } from "~/lib/storage";
 import { cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
 import {
   NAV,
@@ -62,7 +63,7 @@ function sectionIndicator(section: NavSection): NavIndicator | undefined {
 
 function loadCollapsed(): Record<string, boolean> {
   try {
-    const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+    const raw = readLS(COLLAPSE_STORAGE_KEY);
     return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
   } catch {
     return {};
@@ -87,11 +88,7 @@ export function Sidebar(): JSX.Element {
 
   const persist = (next: Record<string, boolean>) => {
     setCollapsed(next);
-    try {
-      localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      /* storage unavailable — state stays in-memory for the session */
-    }
+    writeLS(COLLAPSE_STORAGE_KEY, JSON.stringify(next));
   };
   const toggleSection = (title: string) =>
     persist({ ...collapsed(), [title]: !collapsed()[title] });
