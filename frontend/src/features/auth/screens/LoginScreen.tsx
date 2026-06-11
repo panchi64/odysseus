@@ -1,5 +1,5 @@
 import { createSignal, Show, type JSX } from "solid-js";
-import { Navigate, useNavigate } from "@solidjs/router";
+import { Navigate } from "@solidjs/router";
 import { isApiError } from "~/lib/api";
 import { useSession } from "~/lib/stores/session";
 import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
@@ -10,7 +10,6 @@ import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
  */
 export function LoginScreen(): JSX.Element {
   const session = useSession();
-  const navigate = useNavigate();
 
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal("");
@@ -25,8 +24,10 @@ export function LoginScreen(): JSX.Element {
     setError("");
     setLoading(true);
     try {
+      // On success the session flips to "unlocked"; the reactive <Navigate>
+      // below handles the redirect home. A second imperative navigate here
+      // would race that route transition and blank the page.
       await session.unlock(password());
-      navigate("/", { replace: true });
     } catch (err) {
       setError(
         isApiError(err) && err.status === 401

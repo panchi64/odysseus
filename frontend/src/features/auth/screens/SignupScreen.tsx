@@ -1,5 +1,5 @@
 import { createSignal, Show, type JSX } from "solid-js";
-import { Navigate, useNavigate } from "@solidjs/router";
+import { Navigate } from "@solidjs/router";
 import { isApiError } from "~/lib/api";
 import { useSession } from "~/lib/stores/session";
 import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
@@ -11,7 +11,6 @@ import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
  */
 export function SignupScreen(): JSX.Element {
   const session = useSession();
-  const navigate = useNavigate();
 
   const [password, setPassword] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
@@ -33,8 +32,10 @@ export function SignupScreen(): JSX.Element {
     setError("");
     setLoading(true);
     try {
+      // Setup flips the session to "unlocked"; the reactive <Navigate> below
+      // redirects home. A second imperative navigate would race that route
+      // transition and blank the page.
       await session.setup(password());
-      navigate("/", { replace: true });
     } catch (err) {
       setError(
         isApiError(err) && err.status === 409
