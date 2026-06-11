@@ -1,26 +1,27 @@
-import { createSignal, onCleanup, Show, type JSX } from "solid-js";
-import { Button, Divider, Input, Row, Stack, StatusFlag, Text } from "~/ui";
+import { createSignal, Show, type JSX } from "solid-js";
+import { Navigate, useNavigate } from "@solidjs/router";
+import { isApiError } from "~/lib/api";
+import { useSession } from "~/lib/stores/session";
+import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
 
+/**
+ * First-run setup: choose the operator password. This derives the vault key and
+ * unlocks the workspace — there is exactly one operator, so this runs once. After
+ * setup, this surface redirects to login (the workspace is already initialized).
+ */
 export function SignupScreen(): JSX.Element {
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
+  const session = useSession();
+  const navigate = useNavigate();
 
-  const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
   const [error, setError] = createSignal("");
   const [loading, setLoading] = createSignal(false);
-  const [created, setCreated] = createSignal(false);
 
-  const passwordMismatch = () =>
-    confirm().length > 0 && password() !== confirm();
+  const mismatch = () => confirm().length > 0 && password() !== confirm();
 
-  function handleCreate(e?: SubmitEvent) {
-    e?.preventDefault();
-    if (!username().trim()) {
-      setError("Username is required.");
-      return;
-    }
+  async function handleCreate(e: SubmitEvent) {
+    e.preventDefault();
     if (password().length < 8) {
       setError("Password must be at least 8 characters.");
       return;
@@ -31,122 +32,80 @@ export function SignupScreen(): JSX.Element {
     }
     setError("");
     setLoading(true);
-    // Phase 1 mock: simulate success and show next-steps guidance.
-    // Phase 2: POST /api/auth/register — on 201, navigate to /login with
-    // a flash message "Account created — sign in with your credentials."
-    timers.push(
-      setTimeout(() => {
-        setLoading(false);
-        setCreated(true);
-      }, 600),
-    );
+    try {
+      await session.setup(password());
+      navigate("/", { replace: true });
+    } catch (err) {
+      setError(
+        isApiError(err) && err.status === 409
+          ? "The workspace is already initialized."
+          : "Unable to complete setup. Check the backend connection.",
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
-  // Success state — shown after mock account creation
   return (
-    <Show
-      when={!created()}
-      fallback={
-        <Stack gap={4}>
-          <StatusFlag status="nominal" dot>
-            ACCOUNT CREATED
-          </StatusFlag>
-          <Text variant="micro" tone="dim">
-            Your account has been created. Sign in with your credentials to
-            access the workspace.
-          </Text>
-          <a href="/login">
-            <Button variant="primary" type="button">
-              SIGN IN →
-            </Button>
-          </a>
-        </Stack>
-      }
-    >
-      <Stack gap={4}>
-        {/* Top navigation — visible exit before the form */}
-        <Row justify="start">
-          <a
-            href="/login"
-            class="text-label font-mono text-dim underline hover:text-bright transition-colors"
-          >
-            ← BACK TO SIGN IN
-          </a>
-        </Row>
+    <>
+      {/* Already set up → don't offer setup again. */}
+      <Show when={session.status === "unlocked"}>
+        <Navigate href="/" />
+      </Show>
+      <Show when={session.status === "locked"}>
+        <Navigate href="/login" />
+      </Show>
 
-        <form onSubmit={handleCreate}>
-          <Stack gap={3}>
-            <Input
-              label="USERNAME"
-              value={username()}
-              onInput={(e) => {
-                setUsername(e.currentTarget.value);
-                setError("");
-              }}
-              placeholder="operator"
-              autocomplete="username"
-            />
-            <Input
-              label="PASSWORD"
-              type="password"
-              value={password()}
-              onInput={(e) => {
-                setPassword(e.currentTarget.value);
-                setError("");
-              }}
-              placeholder="••••••••"
-              hint="Minimum 8 characters."
-              autocomplete="new-password"
-            />
-            <Input
-              label="CONFIRM PASSWORD"
-              type="password"
-              value={confirm()}
-              onInput={(e) => {
-                setConfirm(e.currentTarget.value);
-                setError("");
-              }}
-              placeholder="••••••••"
-              invalid={passwordMismatch()}
-              hint={passwordMismatch() ? "Passwords do not match." : undefined}
-              autocomplete="new-password"
-            />
-            {/* Mismatch warning echoed above the button for clarity */}
-            <Show when={passwordMismatch()}>
-              <StatusFlag status="warn">
-                Passwords do not match — resolve before submitting.
-              </StatusFlag>
-            </Show>
-            <Show when={error()}>
-              <Text variant="micro" tone="alert">
-                {error()}
-              </Text>
-            </Show>
-            <Button
-              variant="primary"
-              type="submit"
-              disabled={loading() || passwordMismatch()}
-            >
-              {loading() ? "CREATING…" : "CREATE ACCOUNT"}
-            </Button>
+      <form onSubmit={handleCreate}>
+        <Stack gap={3}>
+          <Stack gap={1}>
+            <StatusFlag status="info" dot>
+              FIRST-RUN SETUP
+            </StatusFlag>
             <Text variant="micro" tone="dim">
-              Account creation is rate-limited. Admins may disable
-              self-registration.
+              Choose the operator password. It derives the encryption key for
+              all stored data and is never recoverable — store it safely.
             </Text>
           </Stack>
-        </form>
-
-        <Divider />
-
-        <Row justify="end">
-          <a
-            href="/login"
-            class="text-label font-mono text-dim underline hover:text-bright transition-colors"
+          <Input
+            label="PASSWORD"
+            type="password"
+            value={password()}
+            onInput={(e) => {
+              setPassword(e.currentTarget.value);
+              setError("");
+            }}
+            placeholder="••••••••"
+            hint="Minimum 8 characters."
+            autocomplete="new-password"
+          />
+          <Input
+            label="CONFIRM PASSWORD"
+            type="password"
+            value={confirm()}
+            onInput={(e) => {
+              setConfirm(e.currentTarget.value);
+              setError("");
+            }}
+            placeholder="••••••••"
+            invalid={mismatch()}
+            hint={mismatch() ? "Passwords do not match." : undefined}
+            autocomplete="new-password"
+          />
+          <Show when={error()}>
+            <Text variant="micro" tone="alert">
+              {error()}
+            </Text>
+          </Show>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={loading() || mismatch()}
           >
-            ← SIGN IN
-          </a>
-        </Row>
-      </Stack>
-    </Show>
+            {loading() ? "INITIALIZING…" : "INITIALIZE WORKSPACE"}
+          </Button>
+        </Stack>
+      </form>
+    </>
   );
 }

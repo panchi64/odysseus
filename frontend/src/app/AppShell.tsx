@@ -1,12 +1,23 @@
-import { type JSX } from "solid-js";
-import { RegistrationFrame, StatusFlag, ThemeToggle, Text } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { useLocation } from "@solidjs/router";
+import {
+  Button,
+  NotConnectedOverlay,
+  RegistrationFrame,
+  StatusFlag,
+  ThemeToggle,
+  Text,
+} from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import { Sidebar } from "./Sidebar";
+import { isConnectedRoute } from "./nav";
 
 /** The authenticated app chrome: sidebar rail + top status bar + framed main
  *  content. Composed entirely from ~/ui. */
 export function AppShell(props: { children: JSX.Element }): JSX.Element {
   const session = useSession();
+  const location = useLocation();
+  const connected = () => isConnectedRoute(location.pathname);
   return (
     <div class="flex h-screen overflow-hidden bg-bg text-text">
       <aside class="w-52 shrink-0 overflow-y-auto border-r border-line">
@@ -25,14 +36,27 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
           </div>
           <div class="flex items-center gap-3">
             <Text variant="label" tone="dim">
-              {session.user?.name ?? "GUEST"}
+              OPERATOR
             </Text>
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="lock"
+              onClick={() => void session.lock()}
+            >
+              LOCK
+            </Button>
             <ThemeToggle />
           </div>
         </header>
 
         <RegistrationFrame class="min-h-0 flex-1">
-          <main class="h-full overflow-y-auto p-6">{props.children}</main>
+          <div class="relative h-full">
+            <main class="h-full overflow-y-auto p-6">{props.children}</main>
+            <Show when={!connected()}>
+              <NotConnectedOverlay />
+            </Show>
+          </div>
         </RegistrationFrame>
       </div>
     </div>

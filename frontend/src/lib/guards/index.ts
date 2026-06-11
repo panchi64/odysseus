@@ -1,1 +1,1 @@
-export { RequireAuth, RequireAdmin, RequirePrivilege } from "./guards";
+export { RequireAuth } from "./guards";

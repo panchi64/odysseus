@@ -36,20 +36,20 @@ function IndicatorSquare(props: { status: NavIndicator }): JSX.Element {
   );
 }
 
-/** Right-aligned row meta: activity square + a calm, dim "ADM" tag for
- *  admin-gated items (no shouting chip on every row). Returns nothing when the
- *  row carries neither. */
+/** Right-aligned row meta: an ambient activity square, plus a dim OFFLINE tag for
+ *  surfaces not yet wired to the backend so the missing set is scannable from the
+ *  rail. Returns nothing when the row carries neither. */
 function navMeta(item: NavItem): JSX.Element | undefined {
-  const isAdmin = item.tier === "admin";
-  if (!item.indicator && !isAdmin) return undefined;
+  const offline = !item.connected;
+  if (!item.indicator && !offline) return undefined;
   return (
     <span class="flex items-center gap-2">
       <Show when={item.indicator}>
         {(ind) => <IndicatorSquare status={ind()} />}
       </Show>
-      <Show when={isAdmin}>
+      <Show when={offline}>
         <Text variant="micro" tone="dim">
-          ADM
+          OFFLINE
         </Text>
       </Show>
     </span>

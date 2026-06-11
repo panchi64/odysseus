@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
@@ -33,6 +34,7 @@ from core.db import in_session
 from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models.conversation import Conversation, Message
+from services.conversation_view import MessageView, project_messages
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,19 @@ _Row = tuple[str, str, str]
 # base is taken from the authoritative in-memory working set at record time, so
 # the drainer never has to count rows (and the two can't diverge).
 _PersistJob = tuple[str, int, list[_Row]]
+
+
+@dataclass
+class ConversationSummaryView:
+    """A listing projection — never the authoritative history, just enough to
+    render a sidebar row."""
+
+    id: str
+    title: str | None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+    preview: str | None
 
 
 def _project(message: ModelMessage) -> tuple[str, str]:
@@ -124,6 +139,113 @@ class ConversationStore:
             self._cache[conversation_id] = messages
             return list(messages)
 
+    def _summarize(
+        self, conversation: Conversation, db_count: int, last_text_enc: str | None
+    ) -> ConversationSummaryView:
+        """Build a listing summary, preferring the in-memory working set's count +
+        preview (it leads the DB by the write-behind drainer) over the durable
+        rows. Runs outside the DB session — only touches the vault + cache."""
+        cached = self._cache.get(conversation.id)
+        if cached is not None:
+            count = len(cached)
+            preview = next(
+                (text for text in (_project(m)[1] for m in reversed(cached)) if text), None
+            )
+        else:
+            count = db_count
+            decrypted = self._vault.decrypt_str(last_text_enc).strip() if last_text_enc else ""
+            preview = decrypted or None
+        return ConversationSummaryView(
+            id=conversation.id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            message_count=count,
+            preview=preview[:140] if preview else None,
+        )
+
+    async def list_conversations(self, owner_id: str) -> list[ConversationSummaryView]:
+        """Owner's conversations, newest-updated first, with a derived count +
+        preview. The durable rows are the base; an active conversation's in-memory
+        working set overrides count/preview so a just-sent turn shows immediately
+        (the DB lags it by the write-behind drainer)."""
+
+        def work(session: Session) -> list[tuple[Conversation, int, str | None]]:
+            conversations = session.exec(
+                select(Conversation)
+                .where(Conversation.owner_id == owner_id)
+                .order_by(Conversation.updated_at.desc())
+            ).all()
+            out: list[tuple[Conversation, int, str | None]] = []
+            for conversation in conversations:
+                rows = session.exec(
+                    select(Message)
+                    .where(Message.conversation_id == conversation.id)
+                    .order_by(Message.seq)
+                ).all()
+                last_text_enc = rows[-1].text if rows else None
+                out.append((conversation, len(rows), last_text_enc))
+            return out
+
+        rows = await in_session(self._engine, work)
+        return [self._summarize(conv, count, last_enc) for conv, count, last_enc in rows]
+
+    async def get_summary(
+        self, conversation_id: str, owner_id: str
+    ) -> ConversationSummaryView | None:
+        """A single conversation's listing summary, or None if it isn't owned by
+        ``owner_id``. Reads one thread's rows, not the whole corpus."""
+
+        def work(session: Session) -> tuple[Conversation, int, str | None] | None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None or conversation.owner_id != owner_id:
+                return None
+            rows = session.exec(
+                select(Message)
+                .where(Message.conversation_id == conversation_id)
+                .order_by(Message.seq)
+            ).all()
+            return conversation, len(rows), (rows[-1].text if rows else None)
+
+        result = await in_session(self._engine, work)
+        if result is None:
+            return None
+        return self._summarize(*result)
+
+    async def messages_view(self, conversation_id: str) -> list[MessageView]:
+        """The conversation's history projected to render-ready user/assistant
+        turns (reasoning split out, tool calls stitched to results)."""
+        return project_messages(await self.history(conversation_id))
+
+    async def set_title(self, conversation_id: str, title: str | None) -> None:
+        """Rename a conversation (and bump its updated_at)."""
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.title = title
+                conversation.updated_at = datetime.now(UTC)
+
+        await in_session(self._engine, work)
+
+    async def delete_conversation(self, conversation_id: str) -> None:
+        """Drop a conversation and its messages from the durable record, and evict
+        the in-memory working set."""
+
+        def work(session: Session) -> None:
+            rows = session.exec(
+                select(Message).where(Message.conversation_id == conversation_id)
+            ).all()
+            for row in rows:
+                session.delete(row)
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                session.delete(conversation)
+
+        await in_session(self._engine, work)
+        self._cache.pop(conversation_id, None)
+        self._locks.pop(conversation_id, None)
+
     def record(self, conversation_id: str, new_messages: list[ModelMessage]) -> None:
         """Hot path: extend the working set and queue the durable write.
 
@@ -145,6 +267,11 @@ class ConversationStore:
         conversation_id, base, rows = job
 
         def work(session: Session) -> None:
+            # The conversation may have been deleted while this write sat in the
+            # queue — don't resurrect it as orphaned message rows.
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return
             for offset, (kind, text, blob) in enumerate(rows):
                 session.add(
                     Message(
@@ -155,9 +282,7 @@ class ConversationStore:
                         blob=self._vault.encrypt_str(blob),
                     )
                 )
-            conversation = session.get(Conversation, conversation_id)
-            if conversation is not None:
-                conversation.updated_at = datetime.now(UTC)
+            conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
 

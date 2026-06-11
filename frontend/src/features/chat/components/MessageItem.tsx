@@ -1,19 +1,38 @@
 import { For, Show, type JSX } from "solid-js";
 import { Markdown, Stack, Text } from "~/ui";
 import { relativeTime } from "~/lib/format";
-import type { ChatMessage } from "../model";
+import type { ApprovalDecision, ChatMessage } from "../model";
+import { ApprovalCard } from "./ApprovalCard";
+import { ArtifactViewer } from "./ArtifactViewer";
+import { PreviewPane } from "./PreviewPane";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
+
+export interface MessageItemProps {
+  message: ChatMessage;
+  /** Decide a turn's pending approvals (wired from the stream controller). */
+  onResolveApproval?: (
+    messageId: string,
+    decisions: ApprovalDecision[],
+  ) => void | Promise<void>;
+}
 
 /** A single chat turn. User turns fill the row with a distinct `surface`
  *  background and right-aligned content; assistant turns sit on the base
  *  background with reasoning, tool calls, then a markdown-formatted answer and a
  *  streaming caret while in flight. */
-export function MessageItem(props: { message: ChatMessage }): JSX.Element {
-  const m = () => props.message;
+export function MessageItem(props: MessageItemProps): JSX.Element {
   return (
-    <Show when={m().role === "user"} fallback={<AssistantTurn message={m()} />}>
-      <UserTurn message={m()} />
+    <Show
+      when={props.message.role === "user"}
+      fallback={
+        <AssistantTurn
+          message={props.message}
+          onResolveApproval={props.onResolveApproval}
+        />
+      }
+    >
+      <UserTurn message={props.message} />
     </Show>
   );
 }
@@ -40,7 +59,10 @@ function UserTurn(props: { message: ChatMessage }): JSX.Element {
   );
 }
 
-function AssistantTurn(props: { message: ChatMessage }): JSX.Element {
+function AssistantTurn(props: {
+  message: ChatMessage;
+  onResolveApproval?: MessageItemProps["onResolveApproval"];
+}): JSX.Element {
   const m = () => props.message;
   return (
     <div class="border-b border-line px-4 py-4">
@@ -62,6 +84,27 @@ function AssistantTurn(props: { message: ChatMessage }): JSX.Element {
           <Stack gap={1}>
             <For each={m().tools}>{(tool) => <ToolCallCard tool={tool} />}</For>
           </Stack>
+        </Show>
+
+        <Show when={m().approvals?.length}>
+          <ApprovalCard
+            approvals={m().approvals!}
+            onSubmit={(decisions) =>
+              props.onResolveApproval?.(m().id, decisions)
+            }
+          />
+        </Show>
+
+        <Show when={m().artifacts?.length}>
+          <Stack gap={2}>
+            <For each={m().artifacts}>
+              {(artifact) => <ArtifactViewer artifact={artifact} />}
+            </For>
+          </Stack>
+        </Show>
+
+        <Show when={m().preview}>
+          {(preview) => <PreviewPane preview={preview()} />}
         </Show>
 
         <Show

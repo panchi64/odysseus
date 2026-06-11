@@ -1,17 +1,29 @@
-/** Memory feature data contracts. */
-
-export type MemoryType = "user" | "feedback" | "project" | "reference";
+/** Memory feature data contracts. Mirrors the backend `/memory/*` surface —
+ *  single-operator long-term memory: content, pinned, timestamps, and whether an
+ *  embedding exists. There is no "type"/category in the backend model. */
 
 export interface Memory {
   id: string;
-  text: string;
-  type: MemoryType;
-  createdAt: string;
+  content: string;
   pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** True once a dense embedding has been computed (else keyword-only recall). */
+  hasEmbedding: boolean;
 }
 
-export interface DedupCandidate {
-  a: Memory;
-  b: Memory;
+/** A near-duplicate cluster from the dedup audit. The operator resolves it by
+ *  deleting redundant members (the backend has no merge — audit only detects). */
+export interface DuplicateGroup {
+  memories: Memory[];
   similarity: number;
+}
+
+/** One hit from hybrid recall (`/memory/recall`). */
+export interface RecallHit {
+  id: string;
+  content: string;
+  /** How it matched: "semantic" | "keyword" | "both" | "pinned". */
+  matchedBy: string;
+  score: number;
 }

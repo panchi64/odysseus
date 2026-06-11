@@ -6,13 +6,17 @@ import {
   type Resource,
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
-import type { ChatMessage, ChatSession, ChatSummary } from "./model";
-import {
-  mockModels,
-  mockSession,
-  mockSessions,
-  mockStreamingReply,
-} from "./mocks";
+import { api } from "~/lib/api";
+import { streamRun, type RunEvent } from "~/lib/stream";
+import { toast } from "~/ui";
+import type {
+  ApprovalDecision,
+  ChatMessage,
+  ChatSession,
+  ChatSummary,
+  ModelOption,
+  ToolInvocation,
+} from "./model";
 
 /* ── localStorage helpers (best-effort, SSR/permission safe) ──────────────── */
 
@@ -34,9 +38,7 @@ function writeLS(key: string, value: string): void {
 
 /* ── Recency-gated resume ─────────────────────────────────────────────────────
    On entry the chat resumes the last conversation only while it's still "warm"
-   (last activity within the window); otherwise it opens a fresh composer. This
-   keeps a mid-task return seamless without dumping a stale thread on everyone
-   else. */
+   (last activity within the window); otherwise it opens a fresh composer. */
 
 export const RESUME_WINDOW_MS = 15 * 60 * 1000;
 
@@ -52,19 +54,47 @@ export function entrySessionId(list: ChatSummary[]): string | null {
   return warm ? warm.id : null;
 }
 
-/* ── Selected model (sticky across surfaces) ──────────────────────────────── */
+/* ── Selected model/endpoint (sticky across surfaces) ──────────────────────────
+   The value is a backend endpoint id, or "" to let the backend resolve the
+   `main` role. Endpoints are configured in Settings; the picker writes here. */
 
-const MODEL_KEY = "ody.chat.model";
-const [_model, _setModel] = createSignal<string>(
-  readLS(MODEL_KEY) ?? mockModels[0].value,
-);
+const MODEL_KEY = "ody.chat.endpoint";
+const [_model, _setModel] = createSignal<string>(readLS(MODEL_KEY) ?? "");
 export const selectedModel = _model;
 export function setSelectedModel(model: string): void {
   _setModel(model);
   writeLS(MODEL_KEY, model);
 }
-export function modelOptions() {
-  return mockModels;
+
+interface EndpointDTO {
+  id: string;
+  name: string;
+}
+
+const DEFAULT_OPTION: ModelOption = { value: "", label: "DEFAULT (MAIN)" };
+const [_modelsTick, _setModelsTick] = createSignal(0);
+
+async function fetchModelOptions(): Promise<ModelOption[]> {
+  try {
+    const eps = await api.get<EndpointDTO[]>("/models/endpoints");
+    return [
+      DEFAULT_OPTION,
+      ...eps.map((e) => ({ value: e.id, label: e.name })),
+    ];
+  } catch {
+    return [DEFAULT_OPTION];
+  }
+}
+
+const [_modelOptions] = createResource(_modelsTick, fetchModelOptions);
+
+export function modelOptions(): ModelOption[] {
+  return _modelOptions.latest ?? [DEFAULT_OPTION];
+}
+
+/** Re-read the endpoint list (e.g. after Settings adds one). */
+export function refreshModelOptions(): void {
+  _setModelsTick((t) => t + 1);
 }
 
 /* ── Pinned threads (non-recency ordering) ────────────────────────────────── */
@@ -101,16 +131,13 @@ export function orderSessions(list: ChatSummary[]): ChatSummary[] {
 }
 
 /* ── Cross-surface entry intents ──────────────────────────────────────────────
-   The overview launchpad hands the chat screen what to do on arrival: start a
-   new conversation seeded with a typed message, or open a specific thread. Both
-   are one-shot and consumed by the chat screen on mount. */
+   The overview launchpad hands the chat screen what to do on arrival. */
 
 const [_pendingDraft, _setPendingDraft] = createSignal<{
   text: string;
   model: string;
 } | null>(null);
 
-/** Begin a new conversation with `text` (used by the overview composer). */
 export function startConversation(text: string, model: string): void {
   _setPendingDraft({ text, model });
 }
@@ -123,7 +150,6 @@ export function consumePendingDraft(): { text: string; model: string } | null {
 const [_requestedSession, _setRequestedSession] = createSignal<string | null>(
   null,
 );
-/** Request that the chat screen open a specific existing thread on arrival. */
 export function openConversation(id: string): void {
   _setRequestedSession(id);
 }
@@ -133,61 +159,173 @@ export function consumeRequestedSession(): string | null {
   return v;
 }
 
-/* ── Mutable session list (Phase-1 local state) ──────────────────────────── */
+/* ── Conversation REST → seam types ───────────────────────────────────────── */
 
-/** Writable signal so UI can remove or mutate session summaries optimistically. */
-const [_sessions, _setSessions] = createSignal<ChatSummary[]>(mockSessions);
-
-/* ── Read accessors (the seam) ───────────────────────────────────────────────
-   Phase 1: resolve from fixtures. Phase 2: swap the bodies for api calls in
-   ~/lib/api — the return types are unchanged, so screens don't change. */
-
-async function fetchSessions(): Promise<ChatSummary[]> {
-  return _sessions();
+interface ConversationSummaryDTO {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  preview: string | null;
 }
 
-async function fetchSession(_id: string): Promise<ChatSession> {
-  return mockSession;
+interface ToolCallDTO {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: ToolInvocation["status"];
+  result?: unknown;
+  error?: string | null;
+}
+
+interface MessageDTO {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  reasoning?: string | null;
+  tools: ToolCallDTO[];
+  created_at?: string | null;
+}
+
+interface ConversationDetailDTO extends ConversationSummaryDTO {
+  messages: MessageDTO[];
+}
+
+/** A readable one-line title for a thread that the operator hasn't named. */
+function deriveTitle(dto: ConversationSummaryDTO): string {
+  if (dto.title) return dto.title;
+  if (dto.preview) return dto.preview.slice(0, 60);
+  return "Untitled conversation";
+}
+
+function toSummary(dto: ConversationSummaryDTO): ChatSummary {
+  return {
+    id: dto.id,
+    title: deriveTitle(dto),
+    updatedAt: dto.updated_at,
+    messageCount: dto.message_count,
+    preview: dto.preview ?? undefined,
+  };
+}
+
+/** Format tool args as a compact `k=v` summary for the call card. */
+export function formatArgs(args: Record<string, unknown>): string {
+  return Object.entries(args)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(", ");
+}
+
+function stringifyResult(result: unknown): string | undefined {
+  if (result == null) return undefined;
+  return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+}
+
+function toTool(dto: ToolCallDTO): ToolInvocation {
+  return {
+    id: dto.id,
+    name: dto.name,
+    args: formatArgs(dto.args),
+    status: dto.status,
+    result: stringifyResult(dto.result),
+    error: dto.error ?? undefined,
+  };
+}
+
+function toMessage(dto: MessageDTO): ChatMessage {
+  return {
+    id: dto.id,
+    role: dto.role,
+    content: dto.content,
+    reasoning: dto.reasoning ?? undefined,
+    tools: dto.tools.map(toTool),
+    createdAt: dto.created_at ?? new Date().toISOString(),
+  };
+}
+
+/* ── Read accessors (the seam) ────────────────────────────────────────────── */
+
+const [_sessionsTick, _setSessionsTick] = createSignal(0);
+
+async function fetchSessions(): Promise<ChatSummary[]> {
+  const rows = await api.get<ConversationSummaryDTO[]>("/conversations");
+  return rows.map(toSummary);
 }
 
 export function useChatSessions(): Resource<ChatSummary[]> {
-  const [data] = createResource(_sessions, fetchSessions);
+  const [data] = createResource(_sessionsTick, fetchSessions);
   return data;
 }
 
-/** Loads a session. A null/empty id means a new, unsaved conversation — the
- *  resource simply doesn't fetch, so the screen renders an empty thread. */
+/** Re-read the conversation list (after a turn, rename, or delete). */
+export function refreshSessions(): void {
+  _setSessionsTick((t) => t + 1);
+}
+
+async function fetchSession(id: string): Promise<ChatSession> {
+  const dto = await api.get<ConversationDetailDTO>(`/conversations/${id}`);
+  return {
+    id: dto.id,
+    title: deriveTitle(dto),
+    model: "",
+    messages: dto.messages.map(toMessage),
+  };
+}
+
+/** Loads a session. A null id means a new, unsaved conversation — the resource
+ *  doesn't fetch, so the screen renders an empty thread. */
 export function useChatSession(id: () => string | null): Resource<ChatSession> {
   const [data] = createResource(id, fetchSession);
   return data;
 }
 
-/* ── Streaming controller ────────────────────────────────────────────────────
-   Drives the live message list. Today a mock generator reveals reasoning, a
-   tool call, then answer tokens so every streaming state is visible. Phase 2
-   replaces the generator with a subscription from ~/lib/stream; the store shape
-   and `send` signature stay the same. */
+export async function renameConversation(
+  id: string,
+  title: string,
+): Promise<void> {
+  await api.patch(`/conversations/${id}`, { title });
+  refreshSessions();
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await api.del(`/conversations/${id}`);
+  refreshSessions();
+}
+
+/* ── Streaming controller ─────────────────────────────────────────────────────
+   Drives the live message list off a run's SSE stream. The public shape
+   (messages, sending, send, resolveApproval) is the seam the screen renders. */
+
+interface ChatCreatedDTO {
+  run_id: string;
+  conversation_id: string;
+}
 
 let counter = 0;
 const nextId = (prefix: string) => `${prefix}-live-${++counter}`;
 
+export interface ChatStreamOptions {
+  /** Fired once when a brand-new conversation receives its backend id. */
+  onConversationStarted?: (id: string) => void;
+  /** Fired when a turn finishes (done or errored) — refresh the session list. */
+  onTurnComplete?: () => void;
+}
+
 export function createChatStream(
   initial: () => ChatMessage[] | undefined,
   key: () => string | null = () => null,
+  options: ChatStreamOptions = {},
 ) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  const clearTimers = () => {
-    timers.forEach(clearTimeout);
-    timers.length = 0;
-  };
-  const after = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
+  let controller: AbortController | null = null;
+  // The conversation this stream is currently bound to (tracked separately from
+  // the screen's `key`, which only updates once a new thread is persisted).
+  let activeConversationId: string | null = key();
 
-  // Re-seed whenever the conversation changes — keyed on session identity, not
-  // just the message-array reference. Phase-1 fetches share a fixture reference,
-  // so a ref check alone would miss an existing→existing switch and leave the
-  // previous thread's live messages on screen.
+  // Re-seed when the conversation changes. Guard: don't wipe a live thread while
+  // its server history is still loading (the just-created thread re-loads with
+  // identical content, so skipping avoids an empty flash).
   const INIT = Symbol("init");
   let lastKey: string | null | typeof INIT = INIT;
   let lastSource: ChatMessage[] | undefined | typeof INIT = INIT;
@@ -195,17 +333,118 @@ export function createChatStream(
     const k = key();
     const source = initial();
     if (k === lastKey && source === lastSource) return;
+    // The live store is authoritative for the thread we're already on: never let
+    // a (re)fetch of its server history clobber it. This keeps a freshly-created
+    // thread's streamed messages — including live-only fields the history
+    // projection doesn't carry (preview, artifacts, runId) — when it adopts its
+    // backend id, and avoids an empty flash while that history loads.
+    if (k === activeConversationId && messages.length > 0) return;
     lastKey = k;
     lastSource = source;
-    clearTimers();
+    controller?.abort();
+    controller = null;
     setSending(false);
+    activeConversationId = k;
     setMessages(reconcile(source ? source.slice() : []));
   });
 
-  function send(text: string) {
+  function patchById(id: string, fn: (m: ChatMessage) => void): void {
+    const i = messages.findIndex((m) => m.id === id);
+    if (i < 0) return;
+    setMessages(produce((m) => fn(m[i])));
+  }
+
+  function foldEvent(assistantId: string, ev: RunEvent): void {
+    switch (ev.type) {
+      case "thinking.delta":
+        patchById(
+          assistantId,
+          (m) => (m.reasoning = (m.reasoning ?? "") + ev.text),
+        );
+        break;
+      case "answer.delta":
+        patchById(assistantId, (m) => (m.content += ev.text));
+        break;
+      case "tool.started":
+        patchById(assistantId, (m) => {
+          m.tools = [
+            ...(m.tools ?? []),
+            {
+              id: ev.tool_call_id,
+              name: ev.name,
+              args: formatArgs(ev.args),
+              status: "running",
+            },
+          ];
+        });
+        break;
+      case "tool.completed":
+        patchById(assistantId, (m) => {
+          const t = m.tools?.find((x) => x.id === ev.tool_call_id);
+          if (t) {
+            t.status = "ok";
+            t.result = stringifyResult(ev.result);
+          }
+        });
+        break;
+      case "tool.failed":
+        patchById(assistantId, (m) => {
+          const t = m.tools?.find((x) => x.id === ev.tool_call_id);
+          if (t) {
+            t.status = "error";
+            t.error = ev.error;
+          }
+        });
+        break;
+      case "approval.required":
+        patchById(assistantId, (m) => {
+          m.approvals = [
+            ...(m.approvals ?? []),
+            {
+              toolCallId: ev.tool_call_id,
+              name: ev.name,
+              args: ev.args,
+              summary: ev.summary,
+              explanation: ev.explanation ?? undefined,
+            },
+          ];
+        });
+        break;
+      case "artifact.published":
+        patchById(assistantId, (m) => {
+          m.artifacts = [
+            ...(m.artifacts ?? []),
+            {
+              artifactId: ev.artifact_id,
+              title: ev.title,
+              filename: ev.filename,
+              contentType: ev.content_type,
+              kind: ev.kind,
+            },
+          ];
+        });
+        break;
+      case "preview.ready":
+        patchById(assistantId, (m) => {
+          m.preview = { url: ev.url, title: ev.title ?? undefined };
+        });
+        break;
+      case "preview.stopped":
+        patchById(assistantId, (m) => (m.preview = null));
+        break;
+      case "run.error":
+        toast.error(ev.message || "The run failed.");
+        patchById(assistantId, (m) => (m.streaming = false));
+        break;
+      // run.started / run.ended / step.* / run.metrics / limit.notice: no store change
+    }
+  }
+
+  async function send(text: string): Promise<void> {
     if (!text.trim() || sending()) return;
     setSending(true);
 
+    const wasNew = activeConversationId === null;
     const userMsg: ChatMessage = {
       id: nextId("u"),
       role: "user",
@@ -216,94 +455,62 @@ export function createChatStream(
     const assistantMsg: ChatMessage = {
       id: assistantId,
       role: "assistant",
-      model: selectedModel(),
+      model: selectedModel() || undefined,
       content: "",
       streaming: true,
       createdAt: new Date().toISOString(),
     };
     setMessages(produce((m) => m.push(userMsg, assistantMsg)));
 
-    const idx = () => messages.findIndex((m) => m.id === assistantId);
-    const patch = (fn: (m: ChatMessage) => void) => {
-      // The message may be gone if the store was reset mid-stream — skip safely.
-      const i = idx();
-      if (i < 0) return;
-      setMessages(produce((m) => fn(m[i])));
-    };
+    try {
+      const created = await api.post<ChatCreatedDTO>("/chat", {
+        prompt: text.trim(),
+        conversation_id: activeConversationId ?? undefined,
+        model: selectedModel() || undefined,
+      });
+      activeConversationId = created.conversation_id;
+      patchById(assistantId, (m) => (m.runId = created.run_id));
 
-    // 1) reasoning appears
-    after(250, () =>
-      patch((m) => (m.reasoning = mockStreamingReply.reasoning)),
-    );
-
-    // 2) tool call: running -> ok
-    after(500, () =>
-      patch((m) => {
-        m.tools = [
-          {
-            id: nextId("t"),
-            name: mockStreamingReply.tools[0].name,
-            args: mockStreamingReply.tools[0].args,
-            status: "running",
-          },
-        ];
-      }),
-    );
-    after(1600, () =>
-      patch((m) => {
-        if (m.tools?.[0]) {
-          m.tools[0].status = "ok";
-          m.tools[0].result = mockStreamingReply.tools[0].result;
-          m.tools[0].elapsedMs = mockStreamingReply.tools[0].elapsedMs;
-        }
-      }),
-    );
-
-    // 3) answer streams token-by-token
-    const words = mockStreamingReply.content.split(" ");
-    words.forEach((_word, i) =>
-      after(1900 + i * 28, () =>
-        patch((m) => (m.content = words.slice(0, i + 1).join(" "))),
-      ),
-    );
-
-    // 4) done
-    after(1900 + words.length * 28 + 60, () => {
-      patch((m) => (m.streaming = false));
+      controller = new AbortController();
+      await streamRun(created.run_id, {
+        signal: controller.signal,
+        onEvent: (ev) => foldEvent(assistantId, ev),
+      });
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Unable to reach the assistant.",
+      );
+    } finally {
+      patchById(assistantId, (m) => (m.streaming = false));
       setSending(false);
-    });
+      if (wasNew && activeConversationId) {
+        options.onConversationStarted?.(activeConversationId);
+      }
+      options.onTurnComplete?.();
+    }
   }
 
-  function deleteLastMessage(): ChatMessage | undefined {
-    const last = messages[messages.length - 1];
-    if (!last) return undefined;
-    setMessages(produce((m) => m.pop()));
-    return last;
+  /** Decide a message's pending approvals; the open run stream resumes with the
+   *  results, so we only POST and clear the cards. */
+  async function resolveApproval(
+    messageId: string,
+    decisions: ApprovalDecision[],
+  ): Promise<void> {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg?.runId) return;
+    try {
+      await api.post(`/runs/${msg.runId}/approve`, { decisions });
+      patchById(messageId, (m) => (m.approvals = []));
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Unable to submit the decision.",
+      );
+    }
   }
 
-  function restoreMessage(msg: ChatMessage) {
-    setMessages(produce((m) => m.push(msg)));
-  }
+  onCleanup(() => controller?.abort());
 
-  function clearMessages(): ChatMessage[] {
-    const snapshot = messages.slice();
-    setMessages(reconcile([]));
-    return snapshot;
-  }
-
-  function restoreMessages(snapshot: ChatMessage[]) {
-    setMessages(reconcile(snapshot));
-  }
-
-  onCleanup(clearTimers);
-
-  return {
-    messages,
-    sending,
-    send,
-    deleteLastMessage,
-    restoreMessage,
-    clearMessages,
-    restoreMessages,
-  };
+  return { messages, sending, send, resolveApproval };
 }

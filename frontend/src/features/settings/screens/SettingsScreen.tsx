@@ -1,591 +1,355 @@
-import {
-  createSignal,
-  For,
-  onCleanup,
-  Show,
-  Suspense,
-  type JSX,
-} from "solid-js";
+import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
-  copyToClipboard,
-  Divider,
+  Checkbox,
+  EmptyState,
   Field,
-  Icon,
   Input,
   LoadingText,
   Modal,
   PageHeader,
   Panel,
   Row,
-  Select,
   Stack,
   StatusFlag,
-  Tabs,
   Text,
+  ThemeToggle,
   Toggle,
+  confirm,
   toast,
 } from "~/ui";
-import { usePreferences, useTwoFactorState } from "../data";
-import { MODEL_OPTIONS, LANGUAGE_OPTIONS } from "../mocks";
-import type { SettingsTab } from "../model";
-
-const DISPLAY_NAME_MAX = 50;
+import {
+  createEndpoint,
+  deleteEndpoint,
+  setRoleBinding,
+  updateEndpoint,
+  useEndpoints,
+  useRoles,
+} from "../data";
+import { MODEL_ROLES, type ModelEndpoint } from "../model";
 
 export function SettingsScreen(): JSX.Element {
-  const prefs = usePreferences();
-  const twoFactor = useTwoFactorState();
+  const endpoints = useEndpoints();
+  const roles = useRoles();
 
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
-
-  const [tab, setTab] = createSignal<SettingsTab>("preferences");
-
-  // Preferences state
+  /* ── Endpoint form ──────────────────────────────────────────────────────── */
+  const [formOpen, setFormOpen] = createSignal(false);
+  const [editing, setEditing] = createSignal<ModelEndpoint | null>(null);
+  const [name, setName] = createSignal("");
+  const [baseUrl, setBaseUrl] = createSignal("");
   const [model, setModel] = createSignal("");
-  const [language, setLanguage] = createSignal("");
-  const [rememberSearches, setRememberSearches] = createSignal(true);
-  const [cacheEnabled, setCacheEnabled] = createSignal(true);
-  const [prefsSaved, setPrefsSaved] = createSignal(false);
-  const [prefsSaving, setPrefsSaving] = createSignal(false);
+  const [apiKey, setApiKey] = createSignal("");
+  const [contextWindow, setContextWindow] = createSignal("");
+  const [nativeTools, setNativeTools] = createSignal(true);
+  const [vision, setVision] = createSignal(false);
+  const [thinking, setThinking] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
 
-  // Security / 2FA state
-  // twoFAEnabled tracks the committed (saved) state
-  const [twoFAEnabled, setTwoFAEnabled] = createSignal(false);
-  const [twoFAInitialized, setTwoFAInitialized] = createSignal(false);
-  const [showConfirmModal, setShowConfirmModal] = createSignal(false);
-  const [confirmPassword, setConfirmPassword] = createSignal("");
-  const [disableConfirmText, setDisableConfirmText] = createSignal("");
-  const [twoFAPending, setTwoFAPending] = createSignal<
-    "enabled" | "disabled" | null
-  >(null);
-  const [codesRegenerated, setCodesRegenerated] = createSignal(false);
+  const openCreate = () => {
+    setEditing(null);
+    setName("");
+    setBaseUrl("");
+    setModel("");
+    setApiKey("");
+    setContextWindow("");
+    setNativeTools(true);
+    setVision(false);
+    setThinking(false);
+    setFormOpen(true);
+  };
+  const openEdit = (ep: ModelEndpoint) => {
+    setEditing(ep);
+    setName(ep.name);
+    setBaseUrl(ep.baseUrl);
+    setModel(ep.model);
+    setApiKey("");
+    setContextWindow(ep.contextWindow != null ? String(ep.contextWindow) : "");
+    setNativeTools(ep.nativeTools);
+    setVision(ep.vision);
+    setThinking(ep.thinking);
+    setFormOpen(true);
+  };
 
-  // Account state
-  const [displayName, setDisplayName] = createSignal("");
-  const [accountSaved, setAccountSaved] = createSignal(false);
+  const valid = () =>
+    name().trim() !== "" && baseUrl().trim() !== "" && model().trim() !== "";
 
-  // Track whether local state has unsaved changes
-  function prefsChanged() {
-    const p = prefs();
-    if (!p) return false;
-    return (
-      model() !== p.model ||
-      language() !== p.language ||
-      rememberSearches() !== p.rememberSearches ||
-      cacheEnabled() !== p.cacheEnabled
-    );
-  }
-
-  function accountChanged() {
-    const p = prefs();
-    if (!p) return false;
-    const loaded = p.displayName ?? "";
-    const current = displayName() !== "" ? displayName() : loaded;
-    return current !== loaded;
-  }
-
-  function initPrefs(p: typeof prefs extends () => infer T ? T : never) {
-    if (!p) return;
-    if (!model()) setModel(p.model);
-    if (!language()) setLanguage(p.language);
-    setRememberSearches(p.rememberSearches);
-    setCacheEnabled(p.cacheEnabled);
-  }
-
-  function initTwoFactor(
-    t: typeof twoFactor extends () => infer T ? T : never,
-  ) {
-    if (!t) return;
-    if (!twoFAInitialized()) {
-      setTwoFAEnabled(t.enabled);
-      setTwoFAInitialized(true);
+  const save = async () => {
+    if (!valid() || saving()) return;
+    setSaving(true);
+    const cw = contextWindow().trim();
+    const fields = {
+      name: name().trim(),
+      baseUrl: baseUrl().trim(),
+      model: model().trim(),
+      contextWindow: cw ? Number(cw) : null,
+      nativeTools: nativeTools(),
+      vision: vision(),
+      thinking: thinking(),
+    };
+    try {
+      const target = editing();
+      if (target) {
+        // Only send the key if the operator typed one (blank = leave unchanged).
+        await updateEndpoint(target.id, {
+          ...fields,
+          ...(apiKey() ? { apiKey: apiKey() } : {}),
+        });
+        toast.success("Endpoint updated");
+      } else {
+        await createEndpoint({ ...fields, apiKey: apiKey() || undefined });
+        toast.success("Endpoint added");
+      }
+      setFormOpen(false);
+    } catch {
+      toast.error("Unable to save the endpoint.");
+    } finally {
+      setSaving(false);
     }
-  }
+  };
 
-  function resetPrefs() {
-    const p = prefs();
-    if (!p) return;
-    setModel(p.model);
-    setLanguage(p.language);
-    setRememberSearches(p.rememberSearches);
-    setCacheEnabled(p.cacheEnabled);
-    toast.info("Changes discarded.");
-  }
-
-  function resetAccount() {
-    const p = prefs();
-    if (!p) return;
-    setDisplayName(p.displayName ?? "");
-    toast.info("Changes discarded.");
-  }
-
-  function savePrefs() {
-    setPrefsSaving(true);
-    timers.push(
-      setTimeout(() => {
-        setPrefsSaving(false);
-        setPrefsSaved(true);
-        toast.success("Preferences saved.");
-        timers.push(setTimeout(() => setPrefsSaved(false), 2000));
-      }, 600),
-    );
-  }
-
-  function saveAccount() {
-    const name = displayName() || prefs()?.displayName || "";
-    if (!name.trim()) {
-      toast.error("Display name cannot be empty.");
+  const remove = async (ep: ModelEndpoint) => {
+    if (
+      !(await confirm({
+        title: `Delete endpoint "${ep.name}"?`,
+        detail: "Any role bound to it will fall back to its remaining chain.",
+        confirmLabel: "DELETE",
+        tone: "alert",
+      }))
+    )
       return;
+    try {
+      await deleteEndpoint(ep.id);
+      toast.success("Endpoint deleted");
+    } catch {
+      toast.error("Unable to delete the endpoint.");
     }
-    if (name.length > DISPLAY_NAME_MAX) {
-      toast.error(
-        `Display name must be ${DISPLAY_NAME_MAX} characters or fewer.`,
-      );
-      return;
-    }
-    setAccountSaved(true);
-    toast.success("Account saved.");
-    timers.push(setTimeout(() => setAccountSaved(false), 2000));
-  }
+  };
 
-  // Open 2FA modal — do NOT flip twoFAEnabled yet. It will only flip on confirm.
-  function handleToggle2FA() {
-    setConfirmPassword("");
-    setDisableConfirmText("");
-    setShowConfirmModal(true);
-    setTwoFAPending(null);
-  }
+  /* ── Role bindings ──────────────────────────────────────────────────────── */
+  const isBound = (role: string, endpointId: string) =>
+    (roles()?.[role] ?? []).includes(endpointId);
 
-  // Shared close/cancel for modal — always restores UI to committed state
-  function closeModal() {
-    setShowConfirmModal(false);
-    setConfirmPassword("");
-    setDisableConfirmText("");
-    setTwoFAPending(null);
-  }
-
-  function confirmToggle2FA() {
-    if (!confirmPassword()) return;
-    const enabling = !twoFAEnabled();
-    if (!enabling && disableConfirmText().toUpperCase() !== "DISABLE") return;
-
-    // Commit the toggle
-    setTwoFAEnabled(enabling);
-    setTwoFAPending(enabling ? "enabled" : "disabled");
-    closeModal();
-
-    toast.success(
-      enabling ? "Two-factor auth enabled." : "Two-factor auth disabled.",
+  const toggleBinding = async (role: string, endpointId: string) => {
+    const current = roles()?.[role] ?? [];
+    const all = endpoints() ?? [];
+    const wanted = new Set(
+      current.includes(endpointId)
+        ? current.filter((id) => id !== endpointId)
+        : [...current, endpointId],
     );
-
-    timers.push(setTimeout(() => setTwoFAPending(null), 2000));
-  }
-
-  function regenerateCodes() {
-    setCodesRegenerated(true);
-    toast.success("Backup codes regenerated. Store them securely.");
-    timers.push(setTimeout(() => setCodesRegenerated(false), 2000));
-  }
-
-  // Whether the disable confirmation typed field is satisfied
-  function disableConfirmValid() {
-    return disableConfirmText().toUpperCase() === "DISABLE";
-  }
-
-  const currentDisplayName = () =>
-    displayName() !== "" ? displayName() : (prefs()?.displayName ?? "");
-  const displayNameLength = () => currentDisplayName().length;
+    // Keep the chain in endpoint-list order (first = primary).
+    const next = all.filter((e) => wanted.has(e.id)).map((e) => e.id);
+    try {
+      await setRoleBinding(role, next);
+    } catch {
+      toast.error(`Unable to update the ${role} role.`);
+    }
+  };
 
   return (
     <Stack gap={6}>
       <PageHeader
         title="SETTINGS"
-        subtitle="Preferences, security, and account configuration."
-        assetId="ODY-CFG-03.0 EDITION 01"
-        actions={
-          <StatusFlag status="nominal" dot>
-            CONFIGURED
-          </StatusFlag>
+        subtitle="Appearance and model configuration."
+        assetId="ODY-CFG-03.0"
+      />
+
+      <Panel label="APPEARANCE">
+        <Row align="center" justify="between">
+          <Stack gap={1}>
+            <Text variant="label" tone="default">
+              THEME
+            </Text>
+            <Text variant="micro" tone="dim">
+              Phosphor (dark) or Paper (light). Stored locally on this device.
+            </Text>
+          </Stack>
+          <ThemeToggle />
+        </Row>
+      </Panel>
+
+      <Panel
+        label="MODEL ENDPOINTS"
+        meta={
+          <Button
+            variant="primary"
+            size="sm"
+            leading="plus"
+            onClick={openCreate}
+          >
+            ADD ENDPOINT
+          </Button>
         }
-      />
-
-      <Tabs
-        items={[
-          { value: "preferences", label: "PREFERENCES" },
-          { value: "security", label: "SECURITY" },
-          { value: "account", label: "ACCOUNT" },
-        ]}
-        value={tab()}
-        onChange={(v) => setTab(v as SettingsTab)}
-      />
-
-      <Suspense fallback={<LoadingText />}>
-        <Show when={prefs()} keyed>
-          {(p) => {
-            initPrefs(p);
-            return null;
-          }}
-        </Show>
-        <Show when={twoFactor()} keyed>
-          {(t) => {
-            initTwoFactor(t);
-            return null;
-          }}
-        </Show>
-      </Suspense>
-
-      {/* ── PREFERENCES TAB ───────────────────────────────────── */}
-      <Show when={tab() === "preferences"}>
-        <Stack gap={4}>
-          <Panel label="MODEL & INTERFACE">
-            <Stack gap={4}>
-              <Select
-                label="DEFAULT MODEL"
-                options={MODEL_OPTIONS}
-                value={model()}
-                onChange={(v) => {
-                  setModel(v);
-                  setPrefsSaving(true);
-                  timers.push(
-                    setTimeout(() => {
-                      setPrefsSaving(false);
-                      toast.info("Model selection updated — save to persist.");
-                    }, 400),
-                  );
-                }}
-                disabled={prefsSaving()}
+      >
+        <Suspense fallback={<LoadingText />}>
+          <Show
+            when={(endpoints() ?? []).length}
+            fallback={
+              <EmptyState
+                icon="cpu"
+                message="NO ENDPOINTS"
+                hint="Add an OpenAI-compatible endpoint, then bind it to a role below."
               />
-              <Show when={prefsSaving()}>
-                <Text variant="micro" tone="dim">
-                  UPDATING…
-                </Text>
-              </Show>
-              <Select
-                label="LANGUAGE"
-                options={LANGUAGE_OPTIONS}
-                value={language()}
-                onChange={(v) => {
-                  setLanguage(v);
-                }}
-                disabled={prefsSaving()}
-              />
-              <Field
-                label="THEME"
-                value="Controlled by top-bar toggle (sun/moon icon)."
-                orientation="row"
-              />
-            </Stack>
-          </Panel>
-
-          <Panel label="PRIVACY">
-            <Stack gap={3}>
-              <Row align="center" justify="between">
-                <Stack gap={1}>
-                  <Text variant="label" tone="default">
-                    REMEMBER SEARCHES
-                  </Text>
-                  <Text variant="micro" tone="dim">
-                    Store recent search queries for autocomplete.
-                  </Text>
-                </Stack>
-                <Toggle
-                  checked={rememberSearches()}
-                  onChange={setRememberSearches}
-                />
-              </Row>
-              <Divider />
-              <Row align="center" justify="between">
-                <Stack gap={1}>
-                  <Text variant="label" tone="default">
-                    RESPONSE CACHE
-                  </Text>
-                  <Text variant="micro" tone="dim">
-                    Cache repeated identical prompts to reduce token usage.
-                  </Text>
-                </Stack>
-                <Toggle checked={cacheEnabled()} onChange={setCacheEnabled} />
-              </Row>
-            </Stack>
-          </Panel>
-
-          <Row justify="end" gap={2}>
-            <Show when={prefsSaved()}>
-              <StatusFlag status="nominal" dot>
-                SAVED
-              </StatusFlag>
-            </Show>
-            <Show when={prefsChanged() && !prefsSaved()}>
-              <StatusFlag status="warn" dot>
-                UNSAVED
-              </StatusFlag>
-            </Show>
-            <Show when={prefsChanged()}>
-              <Button
-                variant="ghost"
-                onClick={resetPrefs}
-                disabled={prefsSaving()}
-              >
-                RESET
-              </Button>
-            </Show>
-            <Button
-              variant="primary"
-              onClick={savePrefs}
-              disabled={prefsSaving()}
-            >
-              {prefsSaving() ? "SAVING…" : "SAVE PREFERENCES"}
-            </Button>
-          </Row>
-        </Stack>
-      </Show>
-
-      {/* ── SECURITY TAB ─────────────────────────────────────── */}
-      <Show when={tab() === "security"}>
-        <Stack gap={4}>
-          <Panel
-            label="TWO-FACTOR AUTHENTICATION"
-            meta={
-              <Show
-                when={twoFAPending() !== null}
-                fallback={
-                  <StatusFlag status={twoFAEnabled() ? "nominal" : "idle"} dot>
-                    {twoFAEnabled() ? "ENABLED" : "DISABLED"}
-                  </StatusFlag>
-                }
-              >
-                <StatusFlag status="nominal" dot>
-                  {twoFAPending() === "enabled" ? "ENABLED" : "DISABLED"}
-                </StatusFlag>
-              </Show>
             }
           >
-            <Stack gap={4}>
-              <Show when={!twoFAEnabled()}>
-                <Stack gap={3}>
-                  <Text variant="body" tone="dim">
-                    Scan the QR code with your authenticator app, then enter
-                    your password to enable 2FA.
-                  </Text>
-                  {/* QR placeholder */}
-                  <div class="flex items-center gap-6">
-                    <div class="flex h-28 w-28 shrink-0 items-center justify-center border border-line bg-raised">
-                      <Stack gap={1} class="items-center">
-                        <Text variant="micro" tone="dim">
-                          QR CODE
+            <Stack gap={0}>
+              <For each={endpoints() ?? []}>
+                {(ep) => (
+                  <Row
+                    align="center"
+                    justify="between"
+                    gap={3}
+                    class="border-b border-line py-2 last:border-0"
+                  >
+                    <Stack gap={1} class="min-w-0">
+                      <Row gap={2} align="center">
+                        <Text variant="label" tone="bright">
+                          {ep.name}
                         </Text>
-                        <Text variant="micro" tone="dim">
-                          PLACEHOLDER
-                        </Text>
-                      </Stack>
-                    </div>
-                    <Stack gap={2}>
-                      <Text variant="label" tone="dim">
-                        MANUAL ENTRY SECRET
-                      </Text>
-                      <Suspense fallback={<LoadingText />}>
-                        <Row gap={2} align="center">
-                          <Text
-                            variant="readout"
-                            tone="bright"
-                            class="font-mono tracking-widest"
-                          >
-                            {twoFactor()?.secret ?? "—"}
-                          </Text>
-                          <Show when={twoFactor()?.secret}>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              leading="copy"
-                              onClick={() =>
-                                copyToClipboard(twoFactor()!.secret, "Secret")
-                              }
-                            >
-                              COPY
-                            </Button>
-                          </Show>
-                        </Row>
-                      </Suspense>
-                      <Text variant="micro" tone="dim">
-                        If you cannot scan, enter this code in your
-                        authenticator app.
+                        <Show when={ep.hasApiKey}>
+                          <StatusFlag status="nominal">KEY</StatusFlag>
+                        </Show>
+                        <Show when={ep.vision}>
+                          <StatusFlag status="info">VIS</StatusFlag>
+                        </Show>
+                        <Show when={ep.thinking}>
+                          <StatusFlag status="info">THINK</StatusFlag>
+                        </Show>
+                      </Row>
+                      <Text variant="micro" tone="dim" class="truncate">
+                        {ep.model} · {ep.baseUrl}
                       </Text>
                     </Stack>
-                  </div>
-                </Stack>
-              </Show>
-
-              <Row align="center" justify="between">
-                <Text variant="label" tone="default">
-                  ENABLE TWO-FACTOR AUTH
-                </Text>
-                <Toggle checked={twoFAEnabled()} onChange={handleToggle2FA} />
-              </Row>
-
-              <Show when={showConfirmModal()}>
-                <StatusFlag status="warn" dot>
-                  PENDING — confirm in dialog
-                </StatusFlag>
-              </Show>
+                    <span class="flex shrink-0 items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leading="edit"
+                        onClick={() => openEdit(ep)}
+                      >
+                        EDIT
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leading="trash"
+                        onClick={() => remove(ep)}
+                      >
+                        DELETE
+                      </Button>
+                    </span>
+                  </Row>
+                )}
+              </For>
             </Stack>
-          </Panel>
+          </Show>
+        </Suspense>
+      </Panel>
 
-          <Panel
-            label="BACKUP CODES"
-            meta={
-              <Row gap={2} align="center">
-                <Show when={(twoFactor()?.backupCodes ?? []).length > 0}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    leading="copy"
-                    onClick={() =>
-                      copyToClipboard(
-                        (twoFactor()?.backupCodes ?? []).join("\n"),
-                        "Backup codes",
-                      )
-                    }
-                  >
-                    COPY ALL
-                  </Button>
-                </Show>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leading="refresh"
-                  onClick={regenerateCodes}
-                >
-                  {codesRegenerated() ? "REGENERATED" : "REGENERATE"}
-                </Button>
-              </Row>
+      <Panel label="ROLE BINDINGS">
+        <Stack gap={4}>
+          <Text variant="micro" tone="dim">
+            Bind endpoints to each role as an ordered fallback chain (first =
+            primary). `main` answers chat; `utility` runs verification;
+            `embedding` powers memory recall.
+          </Text>
+          <Show
+            when={(endpoints() ?? []).length}
+            fallback={
+              <Text variant="micro" tone="dim">
+                Add an endpoint to bind roles.
+              </Text>
             }
           >
-            <Stack gap={3}>
-              <Text variant="micro" tone="dim">
-                Each code can be used once if you lose access to your
-                authenticator. Store them securely.
-              </Text>
-              <Suspense fallback={<LoadingText />}>
-                <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <For each={twoFactor()?.backupCodes ?? []}>
-                    {(code) => (
-                      <button
-                        type="button"
-                        onClick={() => copyToClipboard(code, "Backup code")}
-                        title="Copy code"
-                        class="flex items-center justify-between gap-2 border border-line bg-raised px-2 py-1.5 text-left transition-colors hover:border-bright"
-                      >
-                        <Text variant="readout" tone="bright" class="font-mono">
-                          {code}
-                        </Text>
-                        <Icon name="copy" size={12} class="shrink-0 text-dim" />
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Suspense>
-            </Stack>
-          </Panel>
+            <For each={MODEL_ROLES}>
+              {(role) => (
+                <Stack gap={2}>
+                  <Text variant="label" tone="bright">
+                    {role.toUpperCase()}
+                  </Text>
+                  <div class="flex flex-wrap gap-3">
+                    <For each={endpoints() ?? []}>
+                      {(ep) => (
+                        <Checkbox
+                          label={ep.name}
+                          checked={isBound(role, ep.id)}
+                          onChange={() => void toggleBinding(role, ep.id)}
+                        />
+                      )}
+                    </For>
+                  </div>
+                </Stack>
+              )}
+            </For>
+          </Show>
         </Stack>
-      </Show>
+      </Panel>
 
-      {/* ── ACCOUNT TAB ──────────────────────────────────────── */}
-      <Show when={tab() === "account"}>
-        <Stack gap={4}>
-          <Panel label="PROFILE">
-            <Stack gap={4}>
-              <Stack gap={1}>
-                <Input
-                  label="DISPLAY NAME"
-                  value={currentDisplayName()}
-                  onInput={(e) => setDisplayName(e.currentTarget.value)}
-                  placeholder="OPERATOR"
-                  maxlength={DISPLAY_NAME_MAX}
-                  invalid={displayNameLength() > DISPLAY_NAME_MAX}
-                  hint={`${displayNameLength()} / ${DISPLAY_NAME_MAX}`}
-                />
-              </Stack>
-              <Suspense fallback={<LoadingText />}>
-                <Field label="USER ID" value={`u-001`} orientation="row" />
-                <Field label="ROLE" value="ADMINISTRATOR" orientation="row" />
-              </Suspense>
-            </Stack>
-          </Panel>
-
-          <Row justify="end" gap={2}>
-            <Show when={accountSaved()}>
-              <StatusFlag status="nominal" dot>
-                SAVED
-              </StatusFlag>
-            </Show>
-            <Show when={accountChanged() && !accountSaved()}>
-              <StatusFlag status="warn" dot>
-                UNSAVED
-              </StatusFlag>
-            </Show>
-            <Show when={accountChanged()}>
-              <Button variant="ghost" onClick={resetAccount}>
-                RESET
-              </Button>
-            </Show>
-            <Button variant="primary" onClick={saveAccount}>
-              SAVE ACCOUNT
-            </Button>
-          </Row>
-        </Stack>
-      </Show>
-
-      {/* ── CONFIRM 2FA MODAL ────────────────────────────────── */}
+      {/* Endpoint form */}
       <Modal
-        open={showConfirmModal()}
-        onClose={closeModal}
-        title={
-          twoFAEnabled() ? "DISABLE TWO-FACTOR AUTH" : "ENABLE TWO-FACTOR AUTH"
-        }
-        footer={
-          <>
-            <Button variant="ghost" onClick={closeModal}>
+        open={formOpen()}
+        onClose={() => setFormOpen(false)}
+        title={editing() ? "EDIT ENDPOINT" : "ADD ENDPOINT"}
+        class="max-w-lg"
+      >
+        <Stack gap={3}>
+          <Input
+            label="NAME"
+            value={name()}
+            onInput={(e) => setName(e.currentTarget.value)}
+            placeholder="e.g. local-qwen"
+          />
+          <Input
+            label="BASE URL"
+            value={baseUrl()}
+            onInput={(e) => setBaseUrl(e.currentTarget.value)}
+            placeholder="http://localhost:11434/v1"
+          />
+          <Input
+            label="MODEL"
+            value={model()}
+            onInput={(e) => setModel(e.currentTarget.value)}
+            placeholder="qwen2.5-coder:32b"
+          />
+          <Input
+            label={
+              editing() ? "API KEY (blank = unchanged)" : "API KEY (optional)"
+            }
+            type="password"
+            value={apiKey()}
+            onInput={(e) => setApiKey(e.currentTarget.value)}
+            placeholder="••••••••"
+          />
+          <Input
+            label="CONTEXT WINDOW (optional)"
+            value={contextWindow()}
+            onInput={(e) => setContextWindow(e.currentTarget.value)}
+            placeholder="32768"
+          />
+          <Row gap={4} align="center" justify="between">
+            <Field label="NATIVE TOOLS" orientation="row" value="" />
+            <Toggle checked={nativeTools()} onChange={setNativeTools} />
+          </Row>
+          <Row gap={4} align="center" justify="between">
+            <Field label="VISION" orientation="row" value="" />
+            <Toggle checked={vision()} onChange={setVision} />
+          </Row>
+          <Row gap={4} align="center" justify="between">
+            <Field label="THINKING" orientation="row" value="" />
+            <Toggle checked={thinking()} onChange={setThinking} />
+          </Row>
+          <div class="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setFormOpen(false)}>
               CANCEL
             </Button>
             <Button
-              variant={twoFAEnabled() ? "danger" : "primary"}
-              onClick={confirmToggle2FA}
-              disabled={
-                !confirmPassword() || (twoFAEnabled() && !disableConfirmValid())
-              }
+              variant="primary"
+              disabled={!valid() || saving()}
+              onClick={save}
             >
-              {twoFAEnabled() ? "DISABLE 2FA" : "CONFIRM"}
+              {saving() ? "SAVING…" : "SAVE"}
             </Button>
-          </>
-        }
-      >
-        <Stack gap={3}>
-          <Text variant="body" tone="dim">
-            {twoFAEnabled()
-              ? "Enter your password to disable two-factor authentication. This will reduce your account security."
-              : "Enter your password to confirm enabling two-factor authentication."}
-          </Text>
-          <Show when={twoFAEnabled()}>
-            <Text variant="micro" tone="alert">
-              This is a security-critical action. Type DISABLE below to confirm.
-            </Text>
-            <Input
-              label='TYPE "DISABLE" TO CONFIRM'
-              value={disableConfirmText()}
-              onInput={(e) => setDisableConfirmText(e.currentTarget.value)}
-              placeholder="DISABLE"
-              invalid={
-                disableConfirmText().length > 0 && !disableConfirmValid()
-              }
-            />
-          </Show>
-          <Input
-            label="CURRENT PASSWORD"
-            type="password"
-            value={confirmPassword()}
-            onInput={(e) => setConfirmPassword(e.currentTarget.value)}
-            placeholder="••••••••"
-          />
+          </div>
         </Stack>
       </Modal>
     </Stack>

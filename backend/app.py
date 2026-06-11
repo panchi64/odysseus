@@ -18,7 +18,17 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import artifacts, auth, chat, health, memory, models, previews, runs
+from routes import (
+    artifacts,
+    auth,
+    chat,
+    conversations,
+    health,
+    memory,
+    models,
+    previews,
+    runs,
+)
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
@@ -130,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(runs.router)
     app.include_router(chat.router)
+    app.include_router(conversations.router)
     app.include_router(models.router)
     app.include_router(memory.router)
     app.include_router(artifacts.router)

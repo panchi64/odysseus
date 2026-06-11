@@ -1,6 +1,6 @@
 /** Chat feature data contracts. This is the SEAM: screens depend on these
- *  types, mocks.ts implements them now, and Phase 2 fetchers will return the
- *  same shapes — so no screen changes when real data lands. */
+ *  types, `data.ts` maps backend responses/events to them — so screens don't
+ *  change when the mapping behind them does. */
 
 export type Role = "user" | "assistant";
 
@@ -8,7 +8,7 @@ export type ToolStatus = "running" | "ok" | "error";
 
 export interface ToolInvocation {
   id: string;
-  /** Namespaced tool name, e.g. "web.search". */
+  /** Namespaced tool name, e.g. "memory.recall". */
   name: string;
   /** Human-readable argument summary. */
   args: string;
@@ -20,6 +20,34 @@ export interface ToolInvocation {
   elapsedMs?: number;
 }
 
+/** A sensitive action the agent paused to ask about (`approval.required`). The
+ *  operator approves or denies; the run resumes on the same stream. */
+export interface Approval {
+  toolCallId: string;
+  name: string;
+  /** Full call arguments, shown so the operator can judge the action. */
+  args: Record<string, unknown>;
+  /** One-line summary of what will happen. */
+  summary: string;
+  /** Longer plain-language explanation, when the tool provides one. */
+  explanation?: string;
+}
+
+/** A file the agent published for preview (`artifact.published`). */
+export interface ArtifactRef {
+  artifactId: string;
+  title: string;
+  filename: string;
+  contentType: string;
+  kind: "html" | "image" | "text" | "other";
+}
+
+/** A live server the agent started (`preview.ready`). */
+export interface PreviewRef {
+  url: string;
+  title?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -27,10 +55,18 @@ export interface ChatMessage {
   /** Separate reasoning/thinking stream, rendered apart from the answer. */
   reasoning?: string;
   tools?: ToolInvocation[];
+  /** Sensitive actions awaiting the operator's decision. */
+  approvals?: Approval[];
+  /** Files published during this turn. */
+  artifacts?: ArtifactRef[];
+  /** Live preview surfaced during this turn (replaced/cleared by later events). */
+  preview?: PreviewRef | null;
+  /** The run this assistant turn streams from — needed to approve/cancel it. */
+  runId?: string;
   /** True while tokens are still streaming in. */
   streaming?: boolean;
   createdAt: string;
-  /** Model that produced an assistant message. */
+  /** Model/endpoint that produced an assistant message. */
   model?: string;
 }
 
@@ -52,8 +88,16 @@ export interface ChatSummary {
   model?: string;
 }
 
-/** A model the user can pick for a conversation. */
+/** A model/endpoint the user can pick for a conversation. */
 export interface ModelOption {
   value: string;
   label: string;
+}
+
+/** One decision in an approval response (mirrors the backend's shape). */
+export interface ApprovalDecision {
+  tool_call_id: string;
+  approved: boolean;
+  message?: string;
+  override_args?: Record<string, unknown>;
 }

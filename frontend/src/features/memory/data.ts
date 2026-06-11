@@ -1,36 +1,48 @@
 import { createResource, createSignal, type Resource } from "solid-js";
-import { createStore, produce } from "solid-js/store";
-import type { DedupCandidate, Memory } from "./model";
-import { mockDedupCandidates, mockMemories } from "./mocks";
+import { api } from "~/lib/api";
+import type { DuplicateGroup, Memory, RecallHit } from "./model";
 
-// Mutable local state for Phase 1 — actions mutate this directly.
-// In Phase 2, these become API calls; the return types stay the same.
-const [memoriesStore, setMemoriesStore] = createStore<Memory[]>([
-  ...mockMemories,
-]);
-const [dedupStore, setDedupStore] = createStore<DedupCandidate[]>([
-  ...mockDedupCandidates,
-]);
+/* ── Backend DTOs → seam types ────────────────────────────────────────────── */
 
-// Trigger signal to invalidate the resource when the store changes.
+interface MemoryOut {
+  id: string;
+  content: string;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  has_embedding: boolean;
+}
+
+interface DuplicateGroupOut {
+  memory_ids: string[];
+  similarity: number;
+}
+
+interface RecallHitOut {
+  id: string;
+  content: string;
+  matched_by: string;
+  score: number;
+}
+
+function toMemory(dto: MemoryOut): Memory {
+  return {
+    id: dto.id,
+    content: dto.content,
+    pinned: dto.pinned,
+    createdAt: dto.created_at,
+    updatedAt: dto.updated_at,
+    hasEmbedding: dto.has_embedding,
+  };
+}
+
+/* ── List (the seam) ──────────────────────────────────────────────────────── */
+
 const [memTick, setMemTick] = createSignal(0);
-const [dedupTick, setDedupTick] = createSignal(0);
-
-function bump() {
-  setMemTick((n) => n + 1);
-}
-function bumpDedup() {
-  setDedupTick((n) => n + 1);
-}
 
 async function fetchMemories(): Promise<Memory[]> {
-  void memTick(); // reactive dependency
-  return [...memoriesStore];
-}
-
-async function fetchDedupCandidates(): Promise<DedupCandidate[]> {
-  void dedupTick(); // reactive dependency
-  return [...dedupStore];
+  const rows = await api.get<MemoryOut[]>("/memory");
+  return rows.map(toMemory);
 }
 
 export function useMemories(): Resource<Memory[]> {
@@ -38,64 +50,59 @@ export function useMemories(): Resource<Memory[]> {
   return data;
 }
 
-export function useDedupCandidates(): Resource<DedupCandidate[]> {
-  const [data] = createResource(dedupTick, fetchDedupCandidates);
-  return data;
+/** Invalidate the list after a mutation. */
+export function refreshMemories(): void {
+  setMemTick((n) => n + 1);
 }
 
-/** Toggle pinned state for a memory. Returns the new pinned value. */
-export function togglePin(id: string): boolean {
-  let next = false;
-  setMemoriesStore(
-    produce((list) => {
-      const mem = list.find((m) => m.id === id);
-      if (mem) {
-        mem.pinned = !mem.pinned;
-        next = mem.pinned;
-      }
-    }),
-  );
-  bump();
-  return next;
+/* ── Mutations ────────────────────────────────────────────────────────────── */
+
+export async function addMemory(
+  content: string,
+  pinned = false,
+): Promise<void> {
+  await api.post("/memory", { content, pinned });
+  refreshMemories();
 }
 
-/** Remove a memory by id. Returns the removed memory for undo. */
-export function deleteMemory(id: string): Memory | undefined {
-  const removed = memoriesStore.find((m) => m.id === id);
-  setMemoriesStore((list) => list.filter((m) => m.id !== id));
-  bump();
-  return removed ? { ...removed } : undefined;
+export async function updateMemory(
+  id: string,
+  patch: { content?: string; pinned?: boolean },
+): Promise<void> {
+  await api.patch(`/memory/${id}`, patch);
+  refreshMemories();
 }
 
-/** Restore a previously deleted memory (undo). */
-export function restoreMemory(mem: Memory): void {
-  setMemoriesStore(
-    produce((list) => {
-      list.push(mem);
-      list.sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
-    }),
-  );
-  bump();
+export async function deleteMemory(id: string): Promise<void> {
+  await api.del(`/memory/${id}`);
+  refreshMemories();
 }
 
-/** Merge a dedup pair: keep A, remove B, remove the pair from the dedup list.
- *  Returns both memories for the toast message. */
-export function mergePair(pair: DedupCandidate): void {
-  setMemoriesStore((list) => list.filter((m) => m.id !== pair.b.id));
-  setDedupStore((list) =>
-    list.filter((p) => !(p.a.id === pair.a.id && p.b.id === pair.b.id)),
-  );
-  bump();
-  bumpDedup();
+/* ── Recall + audit (on demand) ───────────────────────────────────────────── */
+
+export async function recall(query: string, limit = 5): Promise<RecallHit[]> {
+  const hits = await api.post<RecallHitOut[]>("/memory/recall", {
+    query,
+    limit,
+  });
+  return hits.map((h) => ({
+    id: h.id,
+    content: h.content,
+    matchedBy: h.matched_by,
+    score: h.score,
+  }));
 }
 
-/** Dismiss a dedup pair without merging (keep both). */
-export function dismissPair(pair: DedupCandidate): void {
-  setDedupStore((list) =>
-    list.filter((p) => !(p.a.id === pair.a.id && p.b.id === pair.b.id)),
-  );
-  bumpDedup();
+/** Run the dedup audit and resolve each group's member ids to full memories. */
+export async function auditDuplicates(
+  memories: Memory[],
+): Promise<DuplicateGroup[]> {
+  const groups = await api.post<DuplicateGroupOut[]>("/memory/audit");
+  const byId = new Map(memories.map((m) => [m.id, m]));
+  return groups.map((g) => ({
+    similarity: g.similarity,
+    memories: g.memory_ids
+      .map((id) => byId.get(id))
+      .filter((m): m is Memory => m !== undefined),
+  }));
 }
