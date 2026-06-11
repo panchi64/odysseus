@@ -11,7 +11,13 @@ See docs/architecture/README.md (Pillar III, §2.2).
 from __future__ import annotations
 
 from .builtin import builtin_toolset
-from .deps import RunDeps
+from .deps import Capabilities, RunDeps
 from .toolsets import build_agent_toolsets, default_categories
 
-__all__ = ["RunDeps", "builtin_toolset", "build_agent_toolsets", "default_categories"]
+__all__ = [
+    "Capabilities",
+    "RunDeps",
+    "builtin_toolset",
+    "build_agent_toolsets",
+    "default_categories",
+]

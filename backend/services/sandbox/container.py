@@ -31,6 +31,21 @@ from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
 # Candidate runtimes, in preference order. Both speak the same run/exec/version CLI.
 _RUNTIMES = ("docker", "podman")
 
+# How much longer the outer asyncio backstop waits than the in-container limit —
+# enough to let the in-container `timeout` send SIGTERM then escalate to SIGKILL.
+_BACKSTOP_GRACE_S = 15.0
+
+
+def with_in_container_timeout(command: list[str], timeout_s: float) -> list[str]:
+    """Wrap a command so the time limit is enforced *inside* the container.
+
+    Killing the local CLI client does not stop the process running in the
+    container, so we run the command under coreutils ``timeout`` (present in the
+    default image): it sends SIGTERM at the deadline and SIGKILL shortly after,
+    exiting 124 on timeout. The caller's outer wall-clock wait is only a backstop
+    for a hung CLI/daemon."""
+    return ["timeout", "--kill-after=5", str(timeout_s), *command]
+
 
 def _discover_runtime(preferred: str | None = None) -> str | None:
     """The first container runtime binary on PATH, honoring an explicit choice."""
@@ -168,7 +183,7 @@ class ContainerSandbox(Sandbox):
             "--interactive",  # so stdin can be piped in
             *self._flags(spec, mount),
             self.image,
-            *spec.command,
+            *with_in_container_timeout(list(spec.command), spec.timeout_s),
         ]
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
@@ -186,14 +201,18 @@ class ContainerSandbox(Sandbox):
             raise SandboxError("no container runtime available")
 
         self._write_inputs(workspace, spec)
-        timed_out, exit_code, out, err = await run_subprocess(
-            self._run_argv(runtime, spec, workspace), stdin=spec.stdin, timeout_s=spec.timeout_s
+        backstop_timed_out, exit_code, out, err = await run_subprocess(
+            self._run_argv(runtime, spec, workspace),
+            stdin=spec.stdin,
+            timeout_s=spec.timeout_s + _BACKSTOP_GRACE_S,
         )
         return SandboxResult(
             exit_code=exit_code,
             stdout=out.decode("utf-8", "replace"),
             stderr=err.decode("utf-8", "replace"),
-            timed_out=timed_out,
+            # 124 is the in-container `timeout`'s exit on overrun; the backstop is
+            # the rarer hung-CLI case. Either way the run timed out.
+            timed_out=backstop_timed_out or exit_code == 124,
             outputs=self._read_outputs(workspace, spec),
         )
 

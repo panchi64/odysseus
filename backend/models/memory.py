@@ -19,24 +19,17 @@ recall can re-embed or skip them rather than compare across incompatible spaces.
 
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
-
-def _new_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+from models._fields import new_id, utcnow
 
 
 class Memory(SQLModel, table=True):
     __tablename__ = "memories"
 
-    id: str = Field(default_factory=_new_id, primary_key=True)
+    id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     # AEAD ciphertext of the memory text (the source of truth).
     content_enc: str
@@ -48,5 +41,5 @@ class Memory(SQLModel, table=True):
     embedding_dim: int | None = None
     # Pinned memories are always included in recall (MEM-4).
     pinned: bool = Field(default=False, index=True)
-    created_at: datetime = Field(default_factory=_now, index=True)
-    updated_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)

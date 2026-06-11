@@ -20,6 +20,18 @@ if TYPE_CHECKING:
     from services.sandbox import SandboxSessionManager
 
 
+@dataclass(frozen=True)
+class Capabilities:
+    """The capability handles an orchestrator hands a run's tools, bundled so a new
+    capability is one field here — not a new parameter on every engine function and
+    call site. Per-turn context (the conversation id) stays separate; the engine
+    unpacks these into each turn's :class:`RunDeps`."""
+
+    memory: MemoryStore | None = None
+    sandbox_sessions: SandboxSessionManager | None = None
+    artifacts: ArtifactStore | None = None
+
+
 @dataclass
 class RunDeps:
     run: Run
@@ -38,3 +50,10 @@ class RunDeps:
     # Where the agent's published previews are captured (the `preview` tool reads a
     # sandbox file and hands its bytes here). None ⇒ previews unavailable.
     artifacts: ArtifactStore | None = None
+
+    @property
+    def sandbox_key(self) -> str:
+        """The key a conversation's sandbox session and its artifacts share — the
+        conversation when there is one, else the run (a stateless turn). Defined
+        once so the code and preview tools can never key them differently."""
+        return self.conversation_id or self.run.id

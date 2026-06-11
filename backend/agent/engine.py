@@ -30,14 +30,14 @@ from pydantic_ai.models import Model
 
 from core.config import get_settings
 from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
-from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
-from services.memory import MemoryStore
-from services.sandbox import SandboxSessionManager
-from tools import RunDeps, build_agent_toolsets
+from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .translate import stream_agent_run
+
+# A shared empty bundle for the no-capabilities default (frozen ⇒ safe to share).
+_NO_CAPS = Capabilities()
 
 
 @dataclass
@@ -127,10 +127,8 @@ async def _drive_turn(
     message_history: list[ModelMessage] | None = None,
     deferred_results: DeferredToolResults | None = None,
     announced: set[str],
-    memory: MemoryStore | None = None,
-    sandbox_sessions: SandboxSessionManager | None = None,
+    caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
-    artifacts: ArtifactStore | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -140,10 +138,10 @@ async def _drive_turn(
     deps = RunDeps(
         run=run,
         owner_id=run.owner_id,
-        memory=memory,
-        sandbox_sessions=sandbox_sessions,
+        memory=caps.memory,
+        sandbox_sessions=caps.sandbox_sessions,
         conversation_id=conversation_id,
-        artifacts=artifacts,
+        artifacts=caps.artifacts,
     )
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:
@@ -204,10 +202,8 @@ async def _verify_and_correct(
     turn: _TurnResult,
     announced: set[str],
     judge: Judge,
-    memory: MemoryStore | None = None,
-    sandbox_sessions: SandboxSessionManager | None = None,
+    caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
-    artifacts: ArtifactStore | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -239,10 +235,8 @@ async def _verify_and_correct(
         prompt=nudge,
         message_history=turn.messages,
         announced=announced,
-        memory=memory,
-        sandbox_sessions=sandbox_sessions,
+        caps=caps,
         conversation_id=conversation_id,
-        artifacts=artifacts,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -295,9 +289,7 @@ def build_chat_orchestrator(
     categories: Any = None,
     judge: Judge | None = None,
     utility_model: Model | None = None,
-    memory: MemoryStore | None = None,
-    sandbox_sessions: SandboxSessionManager | None = None,
-    artifacts: ArtifactStore | None = None,
+    capabilities: Capabilities = _NO_CAPS,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
 ) -> Orchestrator:
@@ -329,10 +321,8 @@ def build_chat_orchestrator(
             prompt=prompt,
             message_history=history,
             announced=announced,
-            memory=memory,
-            sandbox_sessions=sandbox_sessions,
+            caps=capabilities,
             conversation_id=conversation_id,
-            artifacts=artifacts,
         )
 
         # Verify only a completed turn (not one parked for approval or stopped at
@@ -352,10 +342,8 @@ def build_chat_orchestrator(
                     turn,
                     announced,
                     judging,
-                    memory=memory,
-                    sandbox_sessions=sandbox_sessions,
+                    caps=capabilities,
                     conversation_id=conversation_id,
-                    artifacts=artifacts,
                 )
 
         _finalize(
@@ -374,9 +362,7 @@ def build_resume_orchestrator(
     parked: ParkedTurn,
     decisions: dict[str, Any],
     *,
-    memory: MemoryStore | None = None,
-    sandbox_sessions: SandboxSessionManager | None = None,
-    artifacts: ArtifactStore | None = None,
+    capabilities: Capabilities = _NO_CAPS,
     store: ConversationStore | None = None,
 ) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
@@ -389,10 +375,8 @@ def build_resume_orchestrator(
             message_history=parked.message_history,
             deferred_results=results,
             announced=parked.announced,
-            memory=memory,
-            sandbox_sessions=sandbox_sessions,
+            caps=capabilities,
             conversation_id=parked.conversation_id,
-            artifacts=artifacts,
         )
         _finalize(
             run,

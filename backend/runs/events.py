@@ -135,6 +135,7 @@ class ArtifactPublished(_Body):
 
     type: Literal["artifact.published"] = "artifact.published"
     artifact_id: str
+    conversation_id: str
     title: str
     filename: str
     content_type: str

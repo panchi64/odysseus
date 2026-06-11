@@ -34,7 +34,13 @@ from pathlib import Path
 from core.vault import Vault
 
 from .base import SandboxError, SandboxResult, SandboxSpec
-from .container import ContainerSandbox, hardened_flags, run_subprocess
+from .container import (
+    _BACKSTOP_GRACE_S,
+    ContainerSandbox,
+    hardened_flags,
+    run_subprocess,
+    with_in_container_timeout,
+)
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -50,17 +56,24 @@ def _excluded(arcname: str, excludes: Iterable[str]) -> bool:
 
 
 def _seal_workspace(workspace: Path, excludes: Iterable[str], vault: Vault) -> bytes:
-    """A gzip tar of the workspace, minus the excluded bloat, sealed by the vault."""
+    """A gzip tar of the workspace, minus the excluded bloat, sealed by the vault.
+
+    Only regular files and directories are archived. Symlinks/hardlinks/devices —
+    which the agent (root in the box) can create — are dropped: an unsafe link
+    would otherwise make the whole archive un-restorable under the ``data`` filter,
+    losing every file with it."""
+
+    def keep(ti: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if _excluded(ti.name, excludes) or not (ti.isfile() or ti.isdir()):
+            return None
+        return ti
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for item in sorted(workspace.iterdir()):
             if _excluded(item.name, excludes):
                 continue
-            tar.add(
-                item,
-                arcname=item.name,
-                filter=lambda ti: None if _excluded(ti.name, excludes) else ti,
-            )
+            tar.add(item, arcname=item.name, filter=keep)
     return vault.encrypt_bytes(buf.getvalue())
 
 
@@ -103,12 +116,15 @@ class SandboxSession:
     def is_busy(self) -> bool:
         return self._lock.locked()
 
+    def touch(self) -> None:
+        self._last_used = time.monotonic()
+
     def idle_seconds(self, now: float) -> float:
         return now - self._last_used
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         async with self._lock:
-            self._last_used = time.monotonic()
+            self.touch()
             try:
                 return await self._run_inner(spec)
             except SandboxError:
@@ -123,14 +139,18 @@ class SandboxSession:
             # the same workspace, so the live session itself stays no-network.
             return await self._backend.run_in(self.workspace, spec)
         await self._ensure_up()
-        timed_out, code, out, err = await run_subprocess(
-            self._exec_argv(spec), stdin=spec.stdin, timeout_s=spec.timeout_s
+        backstop_timed_out, code, out, err = await run_subprocess(
+            self._exec_argv(spec),
+            stdin=spec.stdin,
+            timeout_s=spec.timeout_s + _BACKSTOP_GRACE_S,
         )
         return SandboxResult(
             exit_code=code,
             stdout=out.decode("utf-8", "replace"),
             stderr=err.decode("utf-8", "replace"),
-            timed_out=timed_out,
+            # The in-container `timeout` exits 124 on overrun and actually kills
+            # the process; the backstop only catches a hung exec client.
+            timed_out=backstop_timed_out or code == 124,
         )
 
     def read_file(self, relpath: str) -> bytes:
@@ -151,12 +171,15 @@ class SandboxSession:
                 await self._kill()
                 self._running = False
             if self.workspace.exists() and self._vault.is_unlocked:
-                self.sealed.parent.mkdir(parents=True, exist_ok=True)
-                self.sealed.write_bytes(
-                    _seal_workspace(self.workspace, self._excludes, self._vault)
-                )
-                shutil.rmtree(self.workspace, ignore_errors=True)
-            # Vault locked ⇒ leave the plaintext workspace; a later reap seals it.
+                # Off-thread: tar+gzip+AEAD of a workspace must not block the loop.
+                await asyncio.to_thread(self._seal_and_clear)
+            # Vault locked ⇒ leave the plaintext workspace; the manager defers
+            # reaping while locked, so a later (unlocked) reap seals it.
+
+    def _seal_and_clear(self) -> None:
+        self.sealed.parent.mkdir(parents=True, exist_ok=True)
+        self.sealed.write_bytes(_seal_workspace(self.workspace, self._excludes, self._vault))
+        shutil.rmtree(self.workspace, ignore_errors=True)
 
     def _ensure_workspace(self) -> None:
         if self.workspace.exists():
@@ -204,7 +227,8 @@ class SandboxSession:
         argv = [self._runtime, "exec", "--interactive", "--workdir", self._backend.workdir]
         for key, value in spec.env.items():
             argv += ["--env", f"{key}={value}"]
-        argv += [self.container, *spec.command]
+        argv.append(self.container)
+        argv += with_in_container_timeout(list(spec.command), spec.timeout_s)
         return argv  # type: ignore[return-value]  # _runtime set by _ensure_up
 
     async def _kill(self) -> None:
@@ -268,6 +292,9 @@ class SandboxSessionManager:
                     excludes=self._excludes,
                 )
                 self._sessions[safe] = session
+            # Mark it freshly used so a reap sweep can't evict it out from under the
+            # caller in the window between acquiring it and running on it.
+            session.touch()
             return session
 
     async def start(self) -> None:
@@ -283,7 +310,10 @@ class SandboxSessionManager:
             self._reaper = None
         async with self._lock:
             for session in list(self._sessions.values()):
-                await session.shutdown()
+                try:
+                    await session.shutdown()
+                except Exception:  # noqa: BLE001 — tear the rest down regardless
+                    pass
             self._sessions.clear()
 
     async def _reaper_loop(self) -> None:
@@ -295,6 +325,11 @@ class SandboxSessionManager:
                 pass
 
     async def _sweep(self) -> None:
+        # Reaping seals the workspace; without the vault key we can't seal, and
+        # killing the container would strand plaintext on disk. So defer all
+        # reaping until the vault is unlocked rather than break encryption-at-rest.
+        if not self._vault.is_unlocked:
+            return
         now = time.monotonic()
         async with self._lock:
             stale = [
@@ -302,6 +337,12 @@ class SandboxSessionManager:
                 for key, s in self._sessions.items()
                 if not s.is_busy and s.idle_seconds(now) >= self._idle_ttl
             ]
+            # shutdown() runs under the manager lock so a concurrent acquire can't
+            # mint a second session (same container name/workspace) mid-teardown;
+            # the seal is off-thread, so the loop itself is not blocked.
             for key in stale:
                 session = self._sessions.pop(key)
-                await session.shutdown()
+                try:
+                    await session.shutdown()
+                except Exception:  # noqa: BLE001 — one bad teardown must not stall the reaper
+                    pass

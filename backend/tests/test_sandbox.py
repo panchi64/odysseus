@@ -3,6 +3,7 @@ copy in/out, and the deliberate host escape hatch."""
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 
 import pytest
@@ -78,8 +79,11 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     assert "--read-only" in joined
     assert "--pids-limit 256" in joined
     assert f"{tmp_path}:/work" in joined  # copies mounted, not host files
-    # image precedes the command, and the command is preserved verbatim
-    assert argv[-3:] == ["img:1", "echo", "hi"]
+    # The command is preserved verbatim at the tail, wrapped by the in-container
+    # timeout, which the image precedes.
+    assert argv[-2:] == ["echo", "hi"]
+    assert argv[argv.index("img:1") + 1] == "timeout"  # enforced inside the box
+    assert "--kill-after=5" in joined
 
 
 def test_run_argv_opens_network_only_when_asked(tmp_path):
@@ -122,6 +126,16 @@ async def test_run_on_host_executes_and_reports_exit():
     assert ok.ok and "hostran" in ok.stdout
     bad = await run_on_host("exit 3")
     assert bad.exit_code == 3 and not bad.ok
+
+
+async def test_host_timeout_kills_the_whole_process_group(tmp_path):
+    # A child the command backgrounds must die with the timeout, not orphan.
+    marker = tmp_path / "orphan-ran"
+    cmd = f"( sleep 2; touch {marker} ) & wait"
+    result = await run_on_host(cmd, timeout_s=0.4)
+    assert result.timed_out and result.exit_code == 124
+    await asyncio.sleep(2.5)  # past when an orphaned child would have written
+    assert not marker.exists()  # the whole group was killed — no survivor
 
 
 # --- container integration (only when a real runtime is present) -------------

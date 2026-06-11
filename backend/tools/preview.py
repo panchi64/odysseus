@@ -34,7 +34,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         store = ctx.deps.artifacts
         if sessions is None or store is None:
             return "Preview is unavailable."
-        key = ctx.deps.conversation_id or ctx.deps.run.id
+        key = ctx.deps.sandbox_key
         try:
             session = await sessions.acquire(key)
             content = session.read_file(path)
@@ -51,6 +51,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         ctx.deps.run.emit(
             ArtifactPublished(
                 artifact_id=view.id,
+                conversation_id=view.conversation_id,
                 title=view.title,
                 filename=view.filename,
                 content_type=view.content_type,

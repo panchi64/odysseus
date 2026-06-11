@@ -10,15 +10,16 @@ directly; the frontend should still host it in a sandboxed iframe.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from services.artifacts import ArtifactView
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -34,6 +35,8 @@ _PREVIEW_HEADERS = {
 
 
 class ArtifactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)  # built straight from an ArtifactView
+
     id: str
     conversation_id: str
     title: str
@@ -44,23 +47,20 @@ class ArtifactOut(BaseModel):
     created_at: datetime
 
 
-def _out(view: ArtifactView) -> ArtifactOut:
-    return ArtifactOut(
-        id=view.id,
-        conversation_id=view.conversation_id,
-        title=view.title,
-        filename=view.filename,
-        content_type=view.content_type,
-        kind=view.kind,
-        size=view.size,
-        created_at=view.created_at,
-    )
+def _content_disposition(filename: str) -> str:
+    """A safe inline Content-Disposition for an agent-chosen (untrusted) filename.
+
+    The quoted form is reduced to a conservative ASCII token (so a ``"`` or
+    newline can't break out of the header or inject another), and the full name
+    rides in the RFC 5987 ``filename*`` field, percent-encoded."""
+    ascii_token = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "artifact"
+    return f"inline; filename=\"{ascii_token}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @router.get("", response_model=list[ArtifactOut])
 async def list_artifacts(conversation_id: str, request: Request) -> list[ArtifactOut]:
     views = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
-    return [_out(v) for v in views]
+    return [ArtifactOut.model_validate(v) for v in views]
 
 
 @router.get("/{artifact_id}", response_model=ArtifactOut)
@@ -69,7 +69,7 @@ async def get_artifact(artifact_id: str, request: Request) -> ArtifactOut:
         view = await deps.artifacts(request).get(OPERATOR_ID, artifact_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="artifact not found") from None
-    return _out(view)
+    return ArtifactOut.model_validate(view)
 
 
 @router.get("/{artifact_id}/content")
@@ -78,5 +78,5 @@ async def get_artifact_content(artifact_id: str, request: Request) -> Response:
         blob = await deps.artifacts(request).content(OPERATOR_ID, artifact_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="artifact not found") from None
-    headers = {**_PREVIEW_HEADERS, "Content-Disposition": f'inline; filename="{blob.filename}"'}
+    headers = {**_PREVIEW_HEADERS, "Content-Disposition": _content_disposition(blob.filename)}
     return Response(content=blob.content, media_type=blob.content_type, headers=headers)

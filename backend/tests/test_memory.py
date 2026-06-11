@@ -228,6 +228,7 @@ async def test_agent_memory_tool_reaches_the_store():
 
     from agent import build_chat_orchestrator
     from runs import RunRegistry, RunStatus
+    from tools import Capabilities
     from tools.memory import memory_toolset
 
     store = await _setup(FakeEmbedder())
@@ -235,7 +236,7 @@ async def test_agent_memory_tool_reaches_the_store():
         "note something",
         model=TestModel(custom_output_text="done"),
         categories={"memory": memory_toolset()},
-        memory=store,
+        capabilities=Capabilities(memory=store),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()

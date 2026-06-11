@@ -18,19 +18,12 @@ The per-conversation ``main`` override is a runtime argument, not stored here.
 
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
-
-def _new_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+from models._fields import new_id, utcnow
 
 
 class ModelEndpoint(SQLModel, table=True):
@@ -39,7 +32,7 @@ class ModelEndpoint(SQLModel, table=True):
     # stably and a re-import can't silently duplicate one.
     __table_args__ = (UniqueConstraint("owner_id", "name", name="uq_endpoint_owner_name"),)
 
-    id: str = Field(default_factory=_new_id, primary_key=True)
+    id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     name: str
     base_url: str
@@ -52,18 +45,18 @@ class ModelEndpoint(SQLModel, table=True):
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
-    created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class ModelRole(SQLModel, table=True):
     __tablename__ = "model_roles"
     __table_args__ = (UniqueConstraint("owner_id", "role", name="uq_role_owner_role"),)
 
-    id: str = Field(default_factory=_new_id, primary_key=True)
+    id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     role: str  # main | utility | embedding | vision | image-gen
     # The ordered fallback chain, by endpoint id. First is primary; the rest are
     # tried in order. Stored as JSON so order and length are one row, one write.
     endpoint_ids: list[str] = Field(sa_column=Column(JSON, nullable=False, default=list))
-    updated_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=utcnow)

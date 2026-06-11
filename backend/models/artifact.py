@@ -14,24 +14,17 @@ Every record carries the ``owner_id`` seam.
 
 from __future__ import annotations
 
-import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
-
-def _new_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
+from models._fields import new_id, utcnow
 
 
 class Artifact(SQLModel, table=True):
     __tablename__ = "artifacts"
 
-    id: str = Field(default_factory=_new_id, primary_key=True)
+    id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     conversation_id: str = Field(index=True)
     run_id: str | None = None
@@ -43,4 +36,4 @@ class Artifact(SQLModel, table=True):
     size: int
     # AEAD ciphertext of the file bytes (the source of truth).
     blob_enc: bytes
-    created_at: datetime = Field(default_factory=_now, index=True)
+    created_at: datetime = Field(default_factory=utcnow, index=True)

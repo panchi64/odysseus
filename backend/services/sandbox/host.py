@@ -12,29 +12,20 @@ live in one place and the contrast is impossible to miss.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import os
+import signal
 
 from core.exceptions import OdysseusError
+
+from .base import SandboxResult
 
 
 class HostExecutionError(OdysseusError):
     """The host command could not be launched (a non-zero exit is a normal
-    :class:`HostResult`, not this)."""
+    :class:`SandboxResult`, not this)."""
 
 
-@dataclass(frozen=True)
-class HostResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-    timed_out: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
-
-
-async def run_on_host(command: str, *, timeout_s: float = 120.0) -> HostResult:
+async def run_on_host(command: str, *, timeout_s: float = 120.0) -> SandboxResult:
     """Run ``command`` in the host shell, after approval. Bounded by a wall-clock
     timeout; the process group is killed on overrun."""
     try:
@@ -42,6 +33,7 @@ async def run_on_host(command: str, *, timeout_s: float = 120.0) -> HostResult:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # own process group, so we can kill the whole tree
         )
     except (OSError, ValueError) as exc:
         raise HostExecutionError(f"failed to launch host command: {exc}") from exc
@@ -49,10 +41,17 @@ async def run_on_host(command: str, *, timeout_s: float = 120.0) -> HostResult:
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except TimeoutError:
-        proc.kill()
+        # Kill the whole process group, not just the shell — otherwise a child the
+        # command spawned (a server, a backgrounded job) survives the timeout.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
         await proc.wait()
-        return HostResult(exit_code=124, stdout="", stderr="host command timed out", timed_out=True)
-    return HostResult(
+        return SandboxResult(
+            exit_code=124, stdout="", stderr="host command timed out", timed_out=True
+        )
+    return SandboxResult(
         exit_code=proc.returncode or 0,
         stdout=out.decode("utf-8", "replace"),
         stderr=err.decode("utf-8", "replace"),

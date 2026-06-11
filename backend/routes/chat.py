@@ -16,6 +16,7 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
+from tools import Capabilities
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -72,9 +73,11 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         body.prompt,
         model=model,
         utility_model=utility_model,
-        memory=deps.memory(request),
-        sandbox_sessions=deps.sandbox_sessions(request),
-        artifacts=deps.artifacts(request),
+        capabilities=Capabilities(
+            memory=deps.memory(request),
+            sandbox_sessions=deps.sandbox_sessions(request),
+            artifacts=deps.artifacts(request),
+        ),
         store=store,
         conversation_id=conversation_id,
     )

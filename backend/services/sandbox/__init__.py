@@ -18,7 +18,7 @@ from .base import (
 )
 from .container import ContainerSandbox
 from .detect import detect_sandbox
-from .host import HostExecutionError, HostResult, run_on_host
+from .host import HostExecutionError, run_on_host
 from .session import SandboxSession, SandboxSessionManager
 
 __all__ = [
@@ -32,6 +32,5 @@ __all__ = [
     "SandboxSession",
     "SandboxSessionManager",
     "HostExecutionError",
-    "HostResult",
     "run_on_host",
 ]

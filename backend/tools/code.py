@@ -34,7 +34,10 @@ def _failure_hint(exit_code: int, timed_out: bool) -> str:
     if timed_out:
         return "It exceeded the time limit and was killed; reduce the work or raise timeout_s."
     if exit_code in (137, 139):  # SIGKILL / SIGSEGV
-        return f"The process was killed (exit {exit_code}) — most likely it ran out of memory."
+        return (
+            f"The process was killed (exit {exit_code}) — often an out-of-memory "
+            "kill, possibly a forced stop; check the work's memory use."
+        )
     return f"It exited with a non-zero status ({exit_code}); see stderr for the error."
 
 
@@ -96,7 +99,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             timeout_s=timeout_s,
         )
         try:
-            session = await sessions.acquire(ctx.deps.conversation_id or ctx.deps.run.id)
+            session = await sessions.acquire(ctx.deps.sandbox_key)
             result = await session.run(spec)
         except SandboxError as exc:
             # Any sandbox/infra failure comes back as something the model can act

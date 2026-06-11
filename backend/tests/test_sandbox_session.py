@@ -79,6 +79,37 @@ async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
     assert not (restored / "__pycache__").exists()  # cache dropped
 
 
+async def test_seal_drops_symlinks_so_one_bad_link_cant_brick_restore(tmp_path):
+    vault = await _vault(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "real.txt").write_text("keep me")
+    (work / "evil").symlink_to("/etc/passwd")  # an absolute link the agent could plant
+
+    sealed = _seal_workspace(work, _EXCLUDES, vault)
+    restored = tmp_path / "restored"
+    _restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
+
+    assert (restored / "real.txt").read_text() == "keep me"  # the real file survives
+    assert not (restored / "evil").exists()  # the symlink was never archived
+
+
+async def test_reaper_defers_while_the_vault_is_locked(tmp_path):
+    vault = Vault(tmp_path / "k.json")
+    await vault.setup("pw")
+    vault.lock()
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    (session.workspace / "f.txt").write_text("data")
+
+    await manager._sweep()  # cannot seal without the key → must not reap
+
+    assert manager._sessions  # session kept, not evicted
+    assert session.workspace.exists()  # not killed-and-stranded as plaintext
+    assert not session.sealed.exists()
+
+
 # --- errors surface legibly, never as a crash --------------------------------
 async def test_run_wraps_an_unexpected_error_as_sandbox_error(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)

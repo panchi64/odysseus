@@ -17,6 +17,7 @@ from pydantic_ai import ToolApproved, ToolDenied
 from agent import ParkedTurn, build_resume_orchestrator
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
+from tools import Capabilities
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -128,9 +129,11 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     orchestrator = build_resume_orchestrator(
         parked,
         decisions,
-        memory=deps.memory(request),
-        sandbox_sessions=deps.sandbox_sessions(request),
-        artifacts=deps.artifacts(request),
+        capabilities=Capabilities(
+            memory=deps.memory(request),
+            sandbox_sessions=deps.sandbox_sessions(request),
+            artifacts=deps.artifacts(request),
+        ),
         store=deps.store(request),
     )
     if await registry.resume(run_id, orchestrator) is None:
