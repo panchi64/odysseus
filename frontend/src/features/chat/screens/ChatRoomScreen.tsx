@@ -264,6 +264,7 @@ export function ChatRoomScreen(): JSX.Element {
                 <MessageItem
                   message={message}
                   onResolveApproval={stream.resolveApproval}
+                  onResolveHostCommands={stream.resolveHostCommands}
                 />
               )}
             </For>

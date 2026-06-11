@@ -33,6 +33,35 @@ export interface Approval {
   explanation?: string;
 }
 
+/** Lifecycle of a host-machine command (`run_host_command`) — the one
+ *  approval-gated tool that runs on the real host instead of the sandbox. */
+export type HostCommandPhase =
+  | "pending" // awaiting the operator's approval
+  | "running" // approved; executing on the host
+  | "ok" // finished, exit 0
+  | "error" // finished non-zero, or the launch failed
+  | "denied"; // the operator refused it
+
+/** A host shell command rendered as a single persistent terminal: the exact
+ *  command, the approval gate, and — once it runs — its captured output. Folded
+ *  from the run's `tool.started`/`approval.required`/`tool.completed` events
+ *  (warm) or the persisted tool call (cold), all keyed by `toolCallId`. */
+export interface HostCommand {
+  toolCallId: string;
+  /** The exact command line the agent asked to run on the host. */
+  command: string;
+  /** Plain-language description of the effect, shown for the approval decision. */
+  explanation?: string;
+  phase: HostCommandPhase;
+  /** Captured output streams, present once the command has run. */
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  timedOut?: boolean;
+  /** A short failure hint, or a launch error. */
+  error?: string;
+}
+
 /** A file the agent published for preview (`artifact.published`). */
 export interface ArtifactRef {
   artifactId: string;
@@ -55,6 +84,8 @@ export interface ChatMessage {
   /** Separate reasoning/thinking stream, rendered apart from the answer. */
   reasoning?: string;
   tools?: ToolInvocation[];
+  /** Host-machine commands rendered as live terminals (approval + runtime). */
+  hostCommands?: HostCommand[];
   /** Sensitive actions awaiting the operator's decision. */
   approvals?: Approval[];
   /** Files published during this turn. */

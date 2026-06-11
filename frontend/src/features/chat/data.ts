@@ -17,9 +17,16 @@ import type {
   ChatMessage,
   ChatSession,
   ChatSummary,
+  HostCommand,
+  HostCommandPhase,
   ModelOption,
   ToolInvocation,
 } from "./model";
+
+/** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
+ *  approval + execution render as a single persistent terminal, never a generic
+ *  approval card or tool card. */
+export const HOST_COMMAND_TOOL = "run_host_command";
 
 /* ── Recency-gated resume ─────────────────────────────────────────────────────
    On entry the chat resumes the last conversation only while it's still "warm"
@@ -224,6 +231,69 @@ function stringifyResult(result: unknown): string | undefined {
   return typeof result === "string" ? result : JSON.stringify(result, null, 2);
 }
 
+/** Shape of `run_host_command`'s result; mirrors the tool's return dict. */
+interface HostResult {
+  ok?: boolean;
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+  timed_out?: boolean;
+  error?: string;
+}
+
+/** Pull the structured streams out of a host command's result, or null when the
+ *  payload isn't that shape (e.g. a denial string) — callers leave the phase
+ *  untouched in that case so a denied command stays denied. */
+function parseHostResult(result: unknown): HostResult | null {
+  if (result == null || typeof result !== "object") return null;
+  const r = result as Record<string, unknown>;
+  const known =
+    typeof r.stdout === "string" ||
+    typeof r.exit_code === "number" ||
+    typeof r.error === "string";
+  return known ? (r as HostResult) : null;
+}
+
+function hostPhaseFromResult(r: HostResult): HostCommandPhase {
+  return r.ok === false || r.error != null ? "error" : "ok";
+}
+
+/** Map a persisted host-command tool call (cold history) to the terminal model.
+ *  A stored call has already run, so its phase comes from the recorded status. */
+function toHostCommand(dto: ToolCallDTO): HostCommand {
+  const r = parseHostResult(dto.result);
+  // The tool always returns a structured dict when it actually executes, so a
+  // plain-string result means it never ran — i.e. it was denied, and the string
+  // is the denial message the model was handed. Surface that instead of a green OK.
+  const denial =
+    !r && typeof dto.result === "string" && dto.result ? dto.result : undefined;
+  const phase: HostCommandPhase = denial
+    ? "denied"
+    : dto.status === "running"
+      ? "running"
+      : dto.status === "error"
+        ? "error"
+        : r
+          ? hostPhaseFromResult(r)
+          : "ok";
+  return {
+    toolCallId: dto.id,
+    command: typeof dto.args.command === "string" ? dto.args.command : "",
+    explanation:
+      typeof dto.args.explanation === "string"
+        ? dto.args.explanation
+        : undefined,
+    phase,
+    exitCode: r?.exit_code,
+    stdout: r?.stdout,
+    stderr: r?.stderr,
+    timedOut: r?.timed_out,
+    // Carry whatever diagnostic exists: the result hint, the denial message, or a
+    // retry/validation error projected onto the tool call.
+    error: r?.error ?? denial ?? dto.error ?? undefined,
+  };
+}
+
 /** Map a published-artifact DTO/event to the seam type. Shared by the cold read
  *  (history detail) and the warm stream (`artifact.published`) so both render
  *  identically. */
@@ -249,12 +319,21 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
 }
 
 function toMessage(dto: MessageDTO): ChatMessage {
+  // Host commands render as their own terminal, so split them out of the generic
+  // tool-call list (both surfaces come from the same persisted tool calls).
+  const tools: ToolInvocation[] = [];
+  const hostCommands: HostCommand[] = [];
+  for (const t of dto.tools) {
+    if (t.name === HOST_COMMAND_TOOL) hostCommands.push(toHostCommand(t));
+    else tools.push(toTool(t));
+  }
   return {
     id: dto.id,
     role: dto.role,
     content: dto.content,
     reasoning: dto.reasoning ?? undefined,
-    tools: dto.tools.map(toTool),
+    tools,
+    hostCommands: hostCommands.length ? hostCommands : undefined,
     artifacts: dto.artifacts?.map(toArtifactRef),
     createdAt: dto.created_at ?? new Date().toISOString(),
   };
@@ -371,6 +450,20 @@ export function createChatStream(
     setMessages(produce((m) => fn(m[i])));
   }
 
+  /** Upsert a host command onto a message, keyed by its tool_call_id. The
+   *  `tool.started`, `approval.required`, and `tool.completed` events for the
+   *  same host call all land here, each filling in the part it carries. */
+  function upsertHostCommand(
+    m: ChatMessage,
+    toolCallId: string,
+    patch: Partial<HostCommand>,
+  ): void {
+    const list = m.hostCommands ?? (m.hostCommands = []);
+    const existing = list.find((h) => h.toolCallId === toolCallId);
+    if (existing) Object.assign(existing, patch);
+    else list.push({ toolCallId, command: "", phase: "pending", ...patch });
+  }
+
   function foldEvent(assistantId: string, ev: RunEvent): void {
     switch (ev.type) {
       case "thinking.delta":
@@ -383,6 +476,21 @@ export function createChatStream(
         patchById(assistantId, (m) => (m.content += ev.text));
         break;
       case "tool.started":
+        // Host commands are terminals, not generic tool cards. (tool.started
+        // fires before approval.required, so this seeds the pending terminal.)
+        if (ev.name === HOST_COMMAND_TOOL) {
+          patchById(assistantId, (m) =>
+            upsertHostCommand(m, ev.tool_call_id, {
+              command:
+                typeof ev.args.command === "string" ? ev.args.command : "",
+              explanation:
+                typeof ev.args.explanation === "string"
+                  ? ev.args.explanation
+                  : undefined,
+            }),
+          );
+          break;
+        }
         patchById(assistantId, (m) => {
           m.tools = [
             ...(m.tools ?? []),
@@ -396,6 +504,22 @@ export function createChatStream(
         });
         break;
       case "tool.completed":
+        if (ev.name === HOST_COMMAND_TOOL) {
+          const r = parseHostResult(ev.result);
+          if (r) {
+            patchById(assistantId, (m) =>
+              upsertHostCommand(m, ev.tool_call_id, {
+                phase: hostPhaseFromResult(r),
+                exitCode: r.exit_code,
+                stdout: r.stdout,
+                stderr: r.stderr,
+                timedOut: r.timed_out,
+                error: r.error,
+              }),
+            );
+          }
+          break;
+        }
         patchById(assistantId, (m) => {
           const t = m.tools?.find((x) => x.id === ev.tool_call_id);
           if (t) {
@@ -405,6 +529,15 @@ export function createChatStream(
         });
         break;
       case "tool.failed":
+        if (ev.name === HOST_COMMAND_TOOL) {
+          patchById(assistantId, (m) =>
+            upsertHostCommand(m, ev.tool_call_id, {
+              phase: "error",
+              error: ev.error,
+            }),
+          );
+          break;
+        }
         patchById(assistantId, (m) => {
           const t = m.tools?.find((x) => x.id === ev.tool_call_id);
           if (t) {
@@ -414,6 +547,17 @@ export function createChatStream(
         });
         break;
       case "approval.required":
+        if (ev.name === HOST_COMMAND_TOOL) {
+          patchById(assistantId, (m) =>
+            upsertHostCommand(m, ev.tool_call_id, {
+              command:
+                typeof ev.args.command === "string" ? ev.args.command : "",
+              explanation: ev.explanation ?? undefined,
+              phase: "pending",
+            }),
+          );
+          break;
+        }
         patchById(assistantId, (m) => {
           m.approvals = [
             ...(m.approvals ?? []),
@@ -499,17 +643,20 @@ export function createChatStream(
     }
   }
 
-  /** Decide a message's pending approvals; the open run stream resumes with the
-   *  results, so we only POST and clear the cards. */
-  async function resolveApproval(
+  /** POST a batch of approval decisions for a message's run, then apply an
+   *  optimistic patch. The open run stream resumes with the results — the parked
+   *  run requires a decision covering *every* pending call, which is why each
+   *  surface batches its decisions into one POST. */
+  async function submitDecisions(
     messageId: string,
     decisions: ApprovalDecision[],
+    optimistic: (m: ChatMessage) => void,
   ): Promise<void> {
     const msg = messages.find((m) => m.id === messageId);
     if (!msg?.runId) return;
     try {
       await api.post(`/runs/${msg.runId}/approve`, { decisions });
-      patchById(messageId, (m) => (m.approvals = []));
+      patchById(messageId, optimistic);
     } catch (err) {
       toast.error(
         (err as { detail?: string })?.detail ??
@@ -518,7 +665,24 @@ export function createChatStream(
     }
   }
 
+  /** Decide a message's pending approvals; the cards clear once submitted. */
+  const resolveApproval = (messageId: string, decisions: ApprovalDecision[]) =>
+    submitDecisions(messageId, decisions, (m) => (m.approvals = []));
+
+  /** Decide a message's host-command approvals. Approved commands begin running
+   *  and denied ones close out optimistically; the stream confirms the outcome. */
+  const resolveHostCommands = (
+    messageId: string,
+    decisions: ApprovalDecision[],
+  ) =>
+    submitDecisions(messageId, decisions, (m) => {
+      for (const d of decisions) {
+        const h = m.hostCommands?.find((x) => x.toolCallId === d.tool_call_id);
+        if (h) h.phase = d.approved ? "running" : "denied";
+      }
+    });
+
   onCleanup(() => controller?.abort());
 
-  return { messages, sending, send, resolveApproval };
+  return { messages, sending, send, resolveApproval, resolveHostCommands };
 }

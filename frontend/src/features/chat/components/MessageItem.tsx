@@ -4,6 +4,7 @@ import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage } from "../model";
 import { ApprovalCard } from "./ApprovalCard";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { HostCommandCard } from "./HostCommandCard";
 import { PreviewPane } from "./PreviewPane";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
@@ -12,6 +13,11 @@ export interface MessageItemProps {
   message: ChatMessage;
   /** Decide a turn's pending approvals (wired from the stream controller). */
   onResolveApproval?: (
+    messageId: string,
+    decisions: ApprovalDecision[],
+  ) => void | Promise<void>;
+  /** Decide a turn's pending host-command approvals (terminal blocks). */
+  onResolveHostCommands?: (
     messageId: string,
     decisions: ApprovalDecision[],
   ) => void | Promise<void>;
@@ -29,6 +35,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
         <AssistantTurn
           message={props.message}
           onResolveApproval={props.onResolveApproval}
+          onResolveHostCommands={props.onResolveHostCommands}
         />
       }
     >
@@ -62,6 +69,7 @@ function UserTurn(props: { message: ChatMessage }): JSX.Element {
 function AssistantTurn(props: {
   message: ChatMessage;
   onResolveApproval?: MessageItemProps["onResolveApproval"];
+  onResolveHostCommands?: MessageItemProps["onResolveHostCommands"];
 }): JSX.Element {
   const m = () => props.message;
   return (
@@ -84,6 +92,15 @@ function AssistantTurn(props: {
           <Stack gap={1}>
             <For each={m().tools}>{(tool) => <ToolCallCard tool={tool} />}</For>
           </Stack>
+        </Show>
+
+        <Show when={m().hostCommands?.length}>
+          <HostCommandCard
+            commands={m().hostCommands!}
+            onSubmit={(decisions) =>
+              props.onResolveHostCommands?.(m().id, decisions)
+            }
+          />
         </Show>
 
         <Show when={m().approvals?.length}>
