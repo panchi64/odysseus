@@ -28,6 +28,8 @@ from .events import (
     Event,
     EventBody,
     LimitNotice,
+    PreviewReady,
+    PreviewStopped,
     RunEnded,
     RunError,
     RunMetrics,
@@ -76,6 +78,8 @@ __all__ = [
     "DocumentCommitted",
     "CitationAdded",
     "ArtifactPublished",
+    "PreviewReady",
+    "PreviewStopped",
     "ApprovalRequired",
     "LimitNotice",
 ]

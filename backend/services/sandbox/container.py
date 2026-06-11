@@ -47,6 +47,32 @@ def with_in_container_timeout(command: list[str], timeout_s: float) -> list[str]
     return ["timeout", "--kill-after=5", str(timeout_s), *command]
 
 
+def detached_run_argv(
+    runtime: str, name: str, flags: list[str], image: str, command: list[str]
+) -> list[str]:
+    """The shared command line for a detached, named container — the envelope every
+    long-lived box (the exec session, a preview server) starts from, so a hardening
+    flag added to ``hardened_flags`` reaches them all and can't drift between paths."""
+    return [runtime, "run", "--detach", "--name", name, *flags, image, *command]
+
+
+async def force_remove_container(runtime: str, name: str) -> None:
+    """Best-effort ``runtime rm --force`` of a container — a missing one is fine.
+    The single teardown primitive for every container we name (session + preview)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            runtime,
+            "rm",
+            "--force",
+            name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    except (OSError, ValueError):
+        pass
+
+
 def _discover_runtime(preferred: str | None = None) -> str | None:
     """The first container runtime binary on PATH, honoring an explicit choice."""
     candidates = (preferred, *_RUNTIMES) if preferred else _RUNTIMES
@@ -65,9 +91,14 @@ def hardened_flags(
     workdir: str,
     mount: Path,
     env: Mapping[str, str],
+    publish_port: int | None = None,
 ) -> list[str]:
     """The isolation flags shared by every container we launch — egress off unless
-    asked, all capabilities dropped, immutable root, only the workspace writable."""
+    asked, all capabilities dropped, immutable root, only the workspace writable.
+
+    ``publish_port`` (the live-preview path only) maps an in-container port out to
+    an OS-assigned host port bound to loopback, so only this host reaches the
+    preview server — never the LAN."""
     flags = [
         "--network",
         "bridge" if network else "none",
@@ -89,6 +120,8 @@ def hardened_flags(
         "--volume",
         f"{mount}:{workdir}",
     ]
+    if publish_port is not None:
+        flags += ["--publish", f"127.0.0.1:0:{publish_port}"]
     for key, value in env.items():
         flags += ["--env", f"{key}={value}"]
     return flags

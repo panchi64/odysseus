@@ -142,6 +142,34 @@ class ArtifactPublished(_Body):
     kind: str  # "html" | "image" | "text" | "other"
 
 
+class PreviewReady(_Body):
+    """The agent started a live server. ``url`` is a token-gated proxy path on this
+    same API origin (``/previews/{token}/``) that streams the server's HTTP and
+    WebSocket traffic out of the sandbox.
+
+    Frontend contract: mount it as ``<iframe src={url}>`` with
+    ``sandbox="allow-scripts allow-forms allow-popups"`` — deliberately **without**
+    ``allow-same-origin``, so the framed (model-generated) app runs in an opaque
+    origin and cannot act as the operator against the API. The token in the path is
+    the credential, so no auth header is needed and relative subresources/WebSockets
+    resolve automatically. Additive to v1; no bump."""
+
+    type: Literal["preview.ready"] = "preview.ready"
+    conversation_id: str
+    url: str  # "/previews/{token}/"
+    title: str | None = None
+    command: str  # the server command, for display
+    port: int  # the in-container port it listens on
+
+
+class PreviewStopped(_Body):
+    """A live preview was torn down (explicitly via stop_preview, or reaped with its
+    idle session); the frontend should drop the iframe for this conversation."""
+
+    type: Literal["preview.stopped"] = "preview.stopped"
+    conversation_id: str
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -188,6 +216,8 @@ EventBody = Annotated[
     | DocumentCommitted
     | CitationAdded
     | ArtifactPublished
+    | PreviewReady
+    | PreviewStopped
     | ApprovalRequired
     | LimitNotice,
     Field(discriminator="type"),

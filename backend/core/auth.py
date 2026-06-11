@@ -26,7 +26,11 @@ SESSION_COOKIE = "odysseus_session"
 # the vault or revoke sessions.
 _PUBLIC_PATHS = frozenset({"/auth/status", "/auth/login", "/setup", "/openapi.json"})
 # Prefixes whose sub-paths are also public (liveness probes, the docs UIs).
-_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc")
+# `/previews` is a token-gated subtree: the unguessable token in the path is the
+# credential (so a sandboxed, opaque-origin iframe can load assets without the
+# operator's cookie), and the route only ever proxies to a loopback preview
+# container — never to operator data.
+_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/previews")
 
 
 class AuthManager:

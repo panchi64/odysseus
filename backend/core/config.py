@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # unused before it is killed; `reap_interval` is how often the reaper sweeps.
     sandbox_session_idle_ttl_s: float = 1800.0
     sandbox_session_reap_interval_s: float = 60.0
+    # Live preview: the agent runs a dev server in the sandbox and the backend
+    # reverse-proxies it to the frontend. How long to wait for that server to start
+    # listening before reporting the start as failed (back to the agent).
+    sandbox_preview_startup_timeout_s: float = 20.0
     # What a reap preserves: the agent's own files and any output it produced.
     # These names/globs are dropped from the sealed copy — virtual environments
     # and language caches are bloat that is cheaper to rebuild than to store.

@@ -19,6 +19,7 @@ from .base import (
 from .container import ContainerSandbox
 from .detect import detect_sandbox
 from .host import HostExecutionError, run_on_host
+from .preview import PreviewHandle
 from .session import SandboxSession, SandboxSessionManager
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "SandboxSpec",
     "ContainerSandbox",
     "detect_sandbox",
+    "PreviewHandle",
     "SandboxSession",
     "SandboxSessionManager",
     "HostExecutionError",

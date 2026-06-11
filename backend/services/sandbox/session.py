@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import secrets
 import shutil
 import tarfile
 import time
@@ -37,10 +38,13 @@ from .base import SandboxError, SandboxResult, SandboxSpec
 from .container import (
     _BACKSTOP_GRACE_S,
     ContainerSandbox,
+    detached_run_argv,
+    force_remove_container,
     hardened_flags,
     run_subprocess,
     with_in_container_timeout,
 )
+from .preview import PreviewHandle, launch_preview, stop_preview_container
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -104,17 +108,23 @@ class SandboxSession:
         self.workspace = workspace
         self.sealed = sealed
         self.container = f"odysseus-sbx-{key}"
+        self._preview_container = f"odysseus-pre-{key}"
         self._backend = backend
         self._vault = vault
         self._excludes = tuple(excludes)
         self._runtime: str | None = None
         self._running = False
+        self._preview: PreviewHandle | None = None
         self._last_used = time.monotonic()
         self._lock = asyncio.Lock()
 
     @property
     def is_busy(self) -> bool:
         return self._lock.locked()
+
+    @property
+    def preview(self) -> PreviewHandle | None:
+        return self._preview
 
     def touch(self) -> None:
         self._last_used = time.monotonic()
@@ -164,9 +174,52 @@ class SandboxSession:
             raise SandboxError(f"no such file in the sandbox: {relpath!r}")
         return target.read_bytes()
 
+    async def start_preview(
+        self, command: list[str], port: int, *, token: str, startup_timeout_s: float
+    ) -> PreviewHandle:
+        """Run ``command`` as a live server over this workspace, reachable on a
+        loopback host port. Replaces any preview already running here (one per
+        conversation). Raises :class:`SandboxError` if the server never binds."""
+        async with self._lock:
+            self.touch()
+            self._ensure_workspace()
+            runtime = self._backend.runtime
+            if runtime is None:  # disappeared since detection — fail closed
+                raise SandboxError("no container runtime available")
+            await self._stop_preview_locked()
+            handle = await launch_preview(
+                runtime=runtime,
+                backend=self._backend,
+                workspace=self.workspace,
+                container=self._preview_container,
+                token=token,
+                command=command,
+                port=port,
+                startup_timeout_s=startup_timeout_s,
+            )
+            self._runtime = runtime
+            self._preview = handle
+            return handle
+
+    async def stop_preview(self) -> None:
+        """Tear down this session's preview server, if any."""
+        async with self._lock:
+            await self._stop_preview_locked()
+
+    async def _stop_preview_locked(self) -> None:
+        if self._preview is None:
+            return
+        runtime = self._runtime or self._backend.runtime
+        if runtime is not None:
+            await stop_preview_container(runtime, self._preview.container)
+        self._preview = None
+
     async def shutdown(self) -> None:
         """Kill the container and seal the workspace (when the vault is unlocked)."""
         async with self._lock:
+            # Tear the preview's container down first — it holds the workspace mount
+            # the seal is about to archive.
+            await self._stop_preview_locked()
             if self._running:
                 await self._kill()
                 self._running = False
@@ -198,13 +251,10 @@ class SandboxSession:
         if runtime is None:  # disappeared since detection — fail closed
             raise SandboxError("no container runtime available")
         await self._kill_quietly(runtime)  # clear any stale same-named container
-        argv = [
+        argv = detached_run_argv(
             runtime,
-            "run",
-            "--detach",
-            "--name",
             self.container,
-            *hardened_flags(
+            hardened_flags(
                 network=False,
                 memory=self._backend.memory,
                 cpus=self._backend.cpus,
@@ -214,9 +264,8 @@ class SandboxSession:
                 env={},
             ),
             self._backend.image,
-            "sleep",
-            "infinity",  # keep the container alive between exec calls
-        ]
+            ["sleep", "infinity"],  # keep the container alive between exec calls
+        )
         _timed_out, code, _out, err = await run_subprocess(argv, timeout_s=60.0)
         if code != 0:
             raise SandboxError(f"failed to start sandbox session: {err.decode('utf-8', 'replace')}")
@@ -236,18 +285,7 @@ class SandboxSession:
             await self._kill_quietly(self._runtime)
 
     async def _kill_quietly(self, runtime: str) -> None:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                runtime,
-                "rm",
-                "--force",
-                self.container,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
-        except (OSError, ValueError):
-            pass  # best-effort teardown
+        await force_remove_container(runtime, self.container)
 
 
 class SandboxSessionManager:
@@ -265,6 +303,7 @@ class SandboxSessionManager:
         idle_ttl_s: float,
         reap_interval_s: float,
         excludes: Iterable[str],
+        preview_startup_timeout_s: float = 20.0,
     ) -> None:
         self._backend = backend
         self._vault = vault
@@ -273,7 +312,10 @@ class SandboxSessionManager:
         self._idle_ttl = idle_ttl_s
         self._reap_interval = reap_interval_s
         self._excludes = tuple(excludes)
+        self._preview_startup_timeout_s = preview_startup_timeout_s
         self._sessions: dict[str, SandboxSession] = {}
+        # token → safe session key, so the proxy route resolves a preview in O(1).
+        self._previews: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
 
@@ -297,6 +339,48 @@ class SandboxSessionManager:
             session.touch()
             return session
 
+    async def start_preview(
+        self, key: str, command: list[str], port: int
+    ) -> PreviewHandle:
+        """Start (or replace) the conversation's live preview and index its token."""
+        session = await self.acquire(key)
+        safe = _safe_key(key)
+        token = secrets.token_urlsafe(32)
+        # Launch outside the manager lock — the readiness wait must not stall other
+        # conversations; the session's own lock marks it busy so the reaper defers.
+        handle = await session.start_preview(
+            command, port, token=token, startup_timeout_s=self._preview_startup_timeout_s
+        )
+        async with self._lock:
+            self._drop_preview_tokens(safe)  # one preview per conversation
+            self._previews[token] = safe
+        return handle
+
+    def resolve_preview(self, token: str) -> PreviewHandle | None:
+        """The running preview a proxy request names, or None. Touches the session
+        so active viewing keeps it warm (the idle reaper won't evict it). Sync (no
+        await) so it reads the maps atomically against the reaper."""
+        safe = self._previews.get(token)
+        if safe is None:
+            return None
+        session = self._sessions.get(safe)
+        if session is None or session.preview is None or session.preview.token != token:
+            return None
+        session.touch()
+        return session.preview
+
+    async def stop_preview(self, key: str) -> None:
+        """Tear down the conversation's preview, leaving the exec session intact."""
+        safe = _safe_key(key)
+        async with self._lock:
+            session = self._sessions.get(safe)
+            self._drop_preview_tokens(safe)
+            if session is not None:
+                await session.stop_preview()
+
+    def _drop_preview_tokens(self, safe: str) -> None:
+        self._previews = {t: k for t, k in self._previews.items() if k != safe}
+
     async def start(self) -> None:
         self._reaper = asyncio.create_task(self._reaper_loop())
 
@@ -315,6 +399,7 @@ class SandboxSessionManager:
                 except Exception:  # noqa: BLE001 — tear the rest down regardless
                     pass
             self._sessions.clear()
+            self._previews.clear()
 
     async def _reaper_loop(self) -> None:
         while True:
@@ -342,6 +427,7 @@ class SandboxSessionManager:
             # the seal is off-thread, so the loop itself is not blocked.
             for key in stale:
                 session = self._sessions.pop(key)
+                self._drop_preview_tokens(key)
                 try:
                     await session.shutdown()
                 except Exception:  # noqa: BLE001 — one bad teardown must not stall the reaper

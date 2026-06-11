@@ -1,19 +1,22 @@
-"""Preview tool — the agent surfaces a sandbox file for the operator to see.
+"""Preview tools — the agent surfaces its work for the operator to see.
 
-A thin adapter: it reads a file the agent produced in its sandbox workspace,
-hands the bytes to the artifact store (captured, encrypted at rest, decoupled
-from the sandbox's lifecycle), and emits ``artifact.published`` so the UI can
-render it. No logic here — capture and serving live in ``services/artifacts``.
+Two shapes, both thin adapters over ``services/``:
 
-If the sandbox or artifact store isn't wired into the run, it says so rather than
-failing — the model adapts (graceful degradation).
+- ``publish_artifact`` captures a *file* the agent produced into the encrypted
+  artifact store and emits ``artifact.published`` — a static snapshot.
+- ``start_preview`` / ``stop_preview`` run a *live server* in the sandbox and
+  emit ``preview.ready`` / ``preview.stopped`` — the backend reverse-proxies it
+  to a sandboxed iframe. The session manager owns the container lifecycle.
+
+If the sandbox or artifact store isn't wired into the run, the tools say so
+rather than failing — the model adapts (graceful degradation).
 """
 
 from __future__ import annotations
 
 from pydantic_ai import FunctionToolset, RunContext
 
-from runs import ArtifactPublished
+from runs import ArtifactPublished, PreviewReady, PreviewStopped
 from services.sandbox import SandboxError
 
 from .deps import RunDeps
@@ -59,5 +62,47 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
             )
         )
         return f"Published '{view.title}' as a {view.kind} preview (id {view.id})."
+
+    @toolset.tool
+    async def start_preview(
+        ctx: RunContext[RunDeps],
+        command: list[str],
+        port: int,
+        title: str | None = None,
+    ) -> str:
+        """Run a live server in the sandbox and show it to the operator as an
+        interactive preview — a web app, a dev server, a served site. ``command``
+        is the argv that starts the server (e.g. ``["python", "-m", "http.server",
+        "8000"]`` or ``["npm", "run", "dev"]``); ``port`` is the port it listens on
+        inside the sandbox. The server must bind ``0.0.0.0`` (not ``127.0.0.1``) so
+        it is reachable, and serve assets with relative URLs. Replaces any preview
+        already running in this conversation. Returns once the server is up."""
+        sessions = ctx.deps.sandbox_sessions
+        if sessions is None:
+            return "Live preview is unavailable (no sandbox runtime)."
+        try:
+            handle = await sessions.start_preview(ctx.deps.sandbox_key, command, port)
+        except SandboxError as exc:
+            return f"The preview server did not start: {exc}"
+        ctx.deps.run.emit(
+            PreviewReady(
+                conversation_id=ctx.deps.sandbox_key,
+                url=handle.path,
+                title=title,
+                command=" ".join(handle.command),
+                port=port,
+            )
+        )
+        return f"Live preview running at {handle.path} (serving '{' '.join(handle.command)}')."
+
+    @toolset.tool
+    async def stop_preview(ctx: RunContext[RunDeps]) -> str:
+        """Stop the live preview server running in this conversation, if any."""
+        sessions = ctx.deps.sandbox_sessions
+        if sessions is None:
+            return "Live preview is unavailable (no sandbox runtime)."
+        await sessions.stop_preview(ctx.deps.sandbox_key)
+        ctx.deps.run.emit(PreviewStopped(conversation_id=ctx.deps.sandbox_key))
+        return "Stopped the live preview."
 
     return toolset

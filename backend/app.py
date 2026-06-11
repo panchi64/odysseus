@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,7 +18,7 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import artifacts, auth, chat, health, memory, models, runs
+from routes import artifacts, auth, chat, health, memory, models, previews, runs
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
             idle_ttl_s=settings.sandbox_session_idle_ttl_s,
             reap_interval_s=settings.sandbox_session_reap_interval_s,
             excludes=settings.sandbox_session_seal_excludes,
+            preview_startup_timeout_s=settings.sandbox_preview_startup_timeout_s,
         )
         if backend is not None
         else None
@@ -92,9 +94,14 @@ async def lifespan(app: FastAPI):
     app.state.sandbox = sandbox_manager
     if sandbox_manager is not None:
         await sandbox_manager.start()
+    # Reused by the preview reverse proxy to forward HTTP to a sandbox server. No
+    # redirect following — the proxy rewrites Location and returns it to the browser.
+    preview_client = httpx.AsyncClient(follow_redirects=False)
+    app.state.preview_client = preview_client
     try:
         yield
     finally:
+        await preview_client.aclose()
         if sandbox_manager is not None:
             await sandbox_manager.stop()
         await app.state.conversations.stop()
@@ -126,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models.router)
     app.include_router(memory.router)
     app.include_router(artifacts.router)
+    app.include_router(previews.router)
     return app
 
 
