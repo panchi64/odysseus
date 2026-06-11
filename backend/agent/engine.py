@@ -30,6 +30,7 @@ from pydantic_ai.models import Model
 
 from core.config import get_settings
 from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
+from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
 from services.memory import MemoryStore
 from services.sandbox import SandboxSessionManager
@@ -129,6 +130,7 @@ async def _drive_turn(
     memory: MemoryStore | None = None,
     sandbox_sessions: SandboxSessionManager | None = None,
     conversation_id: str | None = None,
+    artifacts: ArtifactStore | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -141,6 +143,7 @@ async def _drive_turn(
         memory=memory,
         sandbox_sessions=sandbox_sessions,
         conversation_id=conversation_id,
+        artifacts=artifacts,
     )
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:
@@ -204,6 +207,7 @@ async def _verify_and_correct(
     memory: MemoryStore | None = None,
     sandbox_sessions: SandboxSessionManager | None = None,
     conversation_id: str | None = None,
+    artifacts: ArtifactStore | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -238,6 +242,7 @@ async def _verify_and_correct(
         memory=memory,
         sandbox_sessions=sandbox_sessions,
         conversation_id=conversation_id,
+        artifacts=artifacts,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -292,6 +297,7 @@ def build_chat_orchestrator(
     utility_model: Model | None = None,
     memory: MemoryStore | None = None,
     sandbox_sessions: SandboxSessionManager | None = None,
+    artifacts: ArtifactStore | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
 ) -> Orchestrator:
@@ -326,6 +332,7 @@ def build_chat_orchestrator(
             memory=memory,
             sandbox_sessions=sandbox_sessions,
             conversation_id=conversation_id,
+            artifacts=artifacts,
         )
 
         # Verify only a completed turn (not one parked for approval or stopped at
@@ -348,6 +355,7 @@ def build_chat_orchestrator(
                     memory=memory,
                     sandbox_sessions=sandbox_sessions,
                     conversation_id=conversation_id,
+                    artifacts=artifacts,
                 )
 
         _finalize(
@@ -368,6 +376,7 @@ def build_resume_orchestrator(
     *,
     memory: MemoryStore | None = None,
     sandbox_sessions: SandboxSessionManager | None = None,
+    artifacts: ArtifactStore | None = None,
     store: ConversationStore | None = None,
 ) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
@@ -383,6 +392,7 @@ def build_resume_orchestrator(
             memory=memory,
             sandbox_sessions=sandbox_sessions,
             conversation_id=parked.conversation_id,
+            artifacts=artifacts,
         )
         _finalize(
             run,

@@ -12,6 +12,7 @@ from fastapi import Request
 from core.auth import AuthManager
 from core.vault import Vault
 from runs import RunRegistry
+from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -36,6 +37,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def artifacts(request: Request) -> ArtifactStore:
+    return request.app.state.artifacts
 
 
 def sandbox_sessions(request: Request) -> SandboxSessionManager | None:

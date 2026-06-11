@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from runs import Run
 
 if TYPE_CHECKING:
+    from services.artifacts import ArtifactStore
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
 
@@ -34,3 +35,6 @@ class RunDeps:
     # conversation, falling back to the run id for a stateless (no-conversation) run.
     sandbox_sessions: SandboxSessionManager | None = None
     conversation_id: str | None = None
+    # Where the agent's published previews are captured (the `preview` tool reads a
+    # sandbox file and hands its bytes here). None ⇒ previews unavailable.
+    artifacts: ArtifactStore | None = None

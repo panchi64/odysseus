@@ -128,6 +128,19 @@ class DocumentCommitted(_Body):
     version: int
 
 
+# --- Artifacts (previewable output the agent published) ----------------------
+class ArtifactPublished(_Body):
+    """The agent surfaced a file for preview; fetch its bytes from the artifact
+    route. ``kind`` is a coarse rendering hint. Additive to v1; no bump."""
+
+    type: Literal["artifact.published"] = "artifact.published"
+    artifact_id: str
+    title: str
+    filename: str
+    content_type: str
+    kind: str  # "html" | "image" | "text" | "other"
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -173,6 +186,7 @@ EventBody = Annotated[
     | DocumentDelta
     | DocumentCommitted
     | CitationAdded
+    | ArtifactPublished
     | ApprovalRequired
     | LimitNotice,
     Field(discriminator="type"),

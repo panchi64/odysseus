@@ -23,6 +23,7 @@ from sqlalchemy import Engine, create_engine
 from sqlmodel import SQLModel
 
 # Import every model module so its tables register on SQLModel.metadata.
+import models.artifact  # noqa: F401
 import models.conversation  # noqa: F401
 import models.memory  # noqa: F401
 import models.registry  # noqa: F401

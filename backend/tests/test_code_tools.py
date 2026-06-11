@@ -8,9 +8,31 @@ from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator, stream_agent_run
 from runs import Run, RunRegistry, RunStatus, RunStream
-from services.sandbox import SandboxResult, SandboxSpec
+from services.sandbox import SandboxError, SandboxResult, SandboxSpec
 from tools import RunDeps, build_agent_toolsets
 from tools.code import code_toolset
+
+
+class _CannedSession:
+    """A session that returns a preset result or raises a preset error."""
+
+    def __init__(self, *, result: SandboxResult | None = None, error: Exception | None = None):
+        self._result = result
+        self._error = error
+
+    async def run(self, spec: SandboxSpec) -> SandboxResult:
+        if self._error is not None:
+            raise self._error
+        assert self._result is not None
+        return self._result
+
+
+class _CannedManager:
+    def __init__(self, session: _CannedSession) -> None:
+        self._session = session
+
+    async def acquire(self, key: str) -> _CannedSession:
+        return self._session
 
 
 class FakeSession:
@@ -79,7 +101,39 @@ async def test_execute_code_fails_closed_without_a_runtime():
     # No sandbox wired in ⇒ the tool reports unavailable and does NOT touch host.
     run = await _run_one_tool("code_execute_code", sessions=None)
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
+    assert completed.result["ok"] is False
     assert "unavailable" in completed.result["error"].lower()
+
+
+# --- failures feed back to the model (the iterate-fix loop) -------------------
+async def _run_canned(*, result=None, error=None) -> dict:
+    manager = _CannedManager(_CannedSession(result=result, error=error))
+    run = await _run_one_tool("code_execute_code", sessions=manager)
+    return next(b for b in _bodies(run) if b.type == "tool.completed").result
+
+
+async def test_failed_run_feeds_stderr_and_a_hint_back():
+    failing = SandboxResult(exit_code=1, stdout="", stderr="Traceback: NameError: x")
+    result = await _run_canned(result=failing)
+    assert result["ok"] is False
+    assert "NameError" in result["stderr"]  # the real error reaches the model
+    assert "non-zero" in result["error"]  # plus a plain-language hint
+
+
+async def test_timeout_and_oom_get_legible_hints():
+    timed = SandboxResult(exit_code=124, stdout="", stderr="", timed_out=True)
+    assert "time limit" in (await _run_canned(result=timed))["error"]
+
+    killed = SandboxResult(exit_code=137, stdout="", stderr="")  # SIGKILL, empty stderr
+    assert "memory" in (await _run_canned(result=killed))["error"]
+
+
+async def test_sandbox_failure_feeds_back_instead_of_crashing_the_run():
+    # A SandboxError (container won't start, damaged seal, …) becomes a result the
+    # model can act on — the run completes, it does not error out.
+    result = await _run_canned(error=SandboxError("container would not start"))
+    assert result["ok"] is False
+    assert "container would not start" in result["error"]
 
 
 # --- host execution (the deliberate, approval-gated escape hatch) ------------

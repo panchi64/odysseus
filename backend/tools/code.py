@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic_ai import FunctionToolset, RunContext
 
-from services.sandbox import SandboxError, SandboxSpec, run_on_host
+from services.sandbox import HostExecutionError, SandboxError, SandboxSpec, run_on_host
 
 from .deps import RunDeps
 
@@ -27,6 +27,30 @@ _INTERPRETERS: dict[str, list[str]] = {
     "python": ["python", "-c"],
     "bash": ["bash", "-c"],
 }
+
+
+def _failure_hint(exit_code: int, timed_out: bool) -> str:
+    """A short, plain reason for a failed run — stderr is often empty for these."""
+    if timed_out:
+        return "It exceeded the time limit and was killed; reduce the work or raise timeout_s."
+    if exit_code in (137, 139):  # SIGKILL / SIGSEGV
+        return f"The process was killed (exit {exit_code}) — most likely it ran out of memory."
+    return f"It exited with a non-zero status ({exit_code}); see stderr for the error."
+
+
+def _exec_result(result) -> dict:
+    """Shape an execution result for the model, with an explicit success flag and,
+    on failure, a legible hint alongside the raw streams so it can correct."""
+    payload = {
+        "ok": result.ok,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "timed_out": result.timed_out,
+    }
+    if not result.ok:
+        payload["error"] = _failure_hint(result.exit_code, result.timed_out)
+    return payload
 
 
 def code_toolset() -> FunctionToolset[RunDeps]:
@@ -52,13 +76,18 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         run something, see an error, fix it, and re-run without starting over. It is
         reclaimed after a stretch of inactivity (your files are kept and restored;
         installed packages may need reinstalling). Use this for computation,
-        scripting, and iterating toward a working result."""
+        scripting, and iterating toward a working result.
+
+        The result has ``ok``, ``exit_code``, ``stdout``, ``stderr``, and
+        ``timed_out``; on failure it adds a short ``error`` hint. When it fails,
+        read ``stderr`` for the cause, fix the code, and run again."""
         sessions = ctx.deps.sandbox_sessions
         if sessions is None:
             return {
+                "ok": False,
                 "error": "Code execution is unavailable: no sandbox runtime is "
                 "configured. Computation that would require running code cannot "
-                "be done, and will not run on the host."
+                "be done, and will not run on the host.",
             }
         spec = SandboxSpec(
             command=[*_INTERPRETERS[language], code],
@@ -70,13 +99,10 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             session = await sessions.acquire(ctx.deps.conversation_id or ctx.deps.run.id)
             result = await session.run(spec)
         except SandboxError as exc:
-            return {"error": f"Sandbox failed to run: {exc}"}
-        return {
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "timed_out": result.timed_out,
-        }
+            # Any sandbox/infra failure comes back as something the model can act
+            # on — it never escapes to crash the run.
+            return {"ok": False, "error": f"The sandbox could not run the code: {exc}"}
+        return _exec_result(result)
 
     @toolset.tool(requires_approval=True)
     async def run_host_command(
@@ -92,12 +118,10 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         host — it is shown to the operator for approval. Prefer ``execute_code``
         for anything that does not need the real host.
         """
-        result = await run_on_host(command, timeout_s=timeout_s)
-        return {
-            "exit_code": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "timed_out": result.timed_out,
-        }
+        try:
+            result = await run_on_host(command, timeout_s=timeout_s)
+        except HostExecutionError as exc:
+            return {"ok": False, "error": f"The host command could not be launched: {exc}"}
+        return _exec_result(result)
 
     return toolset

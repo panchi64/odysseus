@@ -20,6 +20,7 @@ from .events import (
     PROTOCOL_VERSION,
     AnswerDelta,
     ApprovalRequired,
+    ArtifactPublished,
     CitationAdded,
     DocumentCommitted,
     DocumentCreated,
@@ -74,6 +75,7 @@ __all__ = [
     "DocumentDelta",
     "DocumentCommitted",
     "CitationAdded",
+    "ArtifactPublished",
     "ApprovalRequired",
     "LimitNotice",
 ]

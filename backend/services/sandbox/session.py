@@ -65,10 +65,13 @@ def _seal_workspace(workspace: Path, excludes: Iterable[str], vault: Vault) -> b
 
 
 def _restore_workspace(blob: bytes, workspace: Path, vault: Vault) -> None:
-    raw = vault.decrypt_bytes(blob)
-    workspace.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-        tar.extractall(workspace, filter="data")  # 'data' guards path traversal
+    try:
+        raw = vault.decrypt_bytes(blob)
+        workspace.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+            tar.extractall(workspace, filter="data")  # 'data' guards path traversal
+    except Exception as exc:  # noqa: BLE001 — a damaged seal is a legible failure, not a crash
+        raise SandboxError(f"could not restore the sandbox workspace: {exc}") from exc
 
 
 class SandboxSession:
@@ -106,21 +109,40 @@ class SandboxSession:
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         async with self._lock:
             self._last_used = time.monotonic()
-            self._ensure_workspace()
-            if spec.network:
-                # Egress is granted per-call via a throwaway bridge container over
-                # the same workspace, so the live session itself stays no-network.
-                return await self._backend.run_in(self.workspace, spec)
-            await self._ensure_up()
-            timed_out, code, out, err = await run_subprocess(
-                self._exec_argv(spec), stdin=spec.stdin, timeout_s=spec.timeout_s
-            )
-            return SandboxResult(
-                exit_code=code,
-                stdout=out.decode("utf-8", "replace"),
-                stderr=err.decode("utf-8", "replace"),
-                timed_out=timed_out,
-            )
+            try:
+                return await self._run_inner(spec)
+            except SandboxError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — surface as a failure, never crash the agent
+                raise SandboxError(f"unexpected sandbox failure: {exc}") from exc
+
+    async def _run_inner(self, spec: SandboxSpec) -> SandboxResult:
+        self._ensure_workspace()
+        if spec.network:
+            # Egress is granted per-call via a throwaway bridge container over
+            # the same workspace, so the live session itself stays no-network.
+            return await self._backend.run_in(self.workspace, spec)
+        await self._ensure_up()
+        timed_out, code, out, err = await run_subprocess(
+            self._exec_argv(spec), stdin=spec.stdin, timeout_s=spec.timeout_s
+        )
+        return SandboxResult(
+            exit_code=code,
+            stdout=out.decode("utf-8", "replace"),
+            stderr=err.decode("utf-8", "replace"),
+            timed_out=timed_out,
+        )
+
+    def read_file(self, relpath: str) -> bytes:
+        """Read a file the agent produced in this session's workspace, restoring
+        from the sealed copy if the session was reaped. Guards against escape."""
+        self._ensure_workspace()
+        target = (self.workspace / relpath).resolve()
+        if not target.is_relative_to(self.workspace.resolve()):
+            raise SandboxError(f"path escapes the sandbox workspace: {relpath!r}")
+        if not target.is_file():
+            raise SandboxError(f"no such file in the sandbox: {relpath!r}")
+        return target.read_bytes()
 
     async def shutdown(self) -> None:
         """Kill the container and seal the workspace (when the vault is unlocked)."""

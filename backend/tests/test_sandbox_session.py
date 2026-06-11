@@ -7,7 +7,12 @@ import pytest
 
 from core.config import Settings
 from core.vault import Vault
-from services.sandbox import ContainerSandbox, SandboxSessionManager, SandboxSpec
+from services.sandbox import (
+    ContainerSandbox,
+    SandboxError,
+    SandboxSessionManager,
+    SandboxSpec,
+)
 from services.sandbox.session import (
     _excluded,
     _restore_workspace,
@@ -72,6 +77,25 @@ async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
     assert (restored / "sub" / "out.txt").read_text() == "result"
     assert not (restored / ".venv").exists()  # virtual env dropped
     assert not (restored / "__pycache__").exists()  # cache dropped
+
+
+# --- errors surface legibly, never as a crash --------------------------------
+async def test_run_wraps_an_unexpected_error_as_sandbox_error(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    session = await _manager(tmp_path, vault).acquire("conv-a")
+
+    def boom() -> None:
+        raise ValueError("something deep broke")
+
+    monkeypatch.setattr(session, "_ensure_workspace", boom)
+    with pytest.raises(SandboxError):  # the agent gets a sandbox failure, not a ValueError
+        await session.run(SandboxSpec(command=["echo", "hi"]))
+
+
+async def test_restoring_a_damaged_seal_raises_sandbox_error(tmp_path):
+    vault = await _vault(tmp_path)
+    with pytest.raises(SandboxError):
+        _restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
 
 
 # --- lazy acquisition --------------------------------------------------------

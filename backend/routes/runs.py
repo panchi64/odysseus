@@ -130,6 +130,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         decisions,
         memory=deps.memory(request),
         sandbox_sessions=deps.sandbox_sessions(request),
+        artifacts=deps.artifacts(request),
         store=deps.store(request),
     )
     if await registry.resume(run_id, orchestrator) is None:

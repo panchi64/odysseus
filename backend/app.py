@@ -17,8 +17,9 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
-from routes import auth, chat, health, memory, models, runs
+from routes import artifacts, auth, chat, health, memory, models, runs
 from runs import RunRegistry
+from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
@@ -68,6 +69,9 @@ async def lifespan(app: FastAPI):
     # Long-term memory — embeds via the registry's embedding role; degrades to
     # keyword recall when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, RegistryEmbedder(registry))
+    # Published previews — the agent captures a sandbox file here, the frontend
+    # fetches and renders it. Encrypted at rest like the rest of the operator's data.
+    app.state.artifacts = ArtifactStore(engine, vault)
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
     # Present ⇒ wrap it in a per-conversation session manager that keeps a
@@ -121,6 +125,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(models.router)
     app.include_router(memory.router)
+    app.include_router(artifacts.router)
     return app
 
 
