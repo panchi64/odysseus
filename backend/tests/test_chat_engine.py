@@ -16,7 +16,9 @@ def _bodies(run):
 
 async def test_chat_runs_to_done_with_metrics():
     reg = RunRegistry()
-    orch = build_chat_orchestrator("hello", model=TestModel(custom_output_text="hi there"))
+    orch = build_chat_orchestrator(
+        "hello", model=TestModel(custom_output_text="hi there", call_tools=[])
+    )
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
 

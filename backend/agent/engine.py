@@ -32,6 +32,7 @@ from core.config import get_settings
 from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
 from services.conversations import ConversationStore
 from services.memory import MemoryStore
+from services.sandbox import SandboxSessionManager
 from tools import RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
@@ -101,12 +102,17 @@ def _park_for_approval(
 ) -> None:
     for call in requests.approvals:
         args = call.args_as_dict()
+        # A tool may hand the operator a plain-language explanation via an
+        # `explanation` argument (the host-execution path requires one); surface
+        # it as a distinct field so the client need not parse it out of the args.
+        explanation = args.get("explanation")
         run.emit(
             ApprovalRequired(
                 tool_call_id=call.tool_call_id,
                 name=call.tool_name,
                 args=args,
                 summary=_summarize(call.tool_name, args),
+                explanation=explanation if isinstance(explanation, str) else None,
             )
         )
     run.park(ParkedTurn(agent, messages, requests, announced))
@@ -121,13 +127,21 @@ async def _drive_turn(
     deferred_results: DeferredToolResults | None = None,
     announced: set[str],
     memory: MemoryStore | None = None,
+    sandbox_sessions: SandboxSessionManager | None = None,
+    conversation_id: str | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
         request_limit=settings.agent_request_limit,
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
-    deps = RunDeps(run=run, owner_id=run.owner_id, memory=memory)
+    deps = RunDeps(
+        run=run,
+        owner_id=run.owner_id,
+        memory=memory,
+        sandbox_sessions=sandbox_sessions,
+        conversation_id=conversation_id,
+    )
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:
         async with agent.iter(
@@ -188,6 +202,8 @@ async def _verify_and_correct(
     announced: set[str],
     judge: Judge,
     memory: MemoryStore | None = None,
+    sandbox_sessions: SandboxSessionManager | None = None,
+    conversation_id: str | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -214,7 +230,14 @@ async def _verify_and_correct(
     clean_drop = (len(turn.messages) - 1, len(turn.messages))
     # One attempt only — no re-verify, so it cannot retry endlessly.
     corrected = await _drive_turn(
-        run, agent, prompt=nudge, message_history=turn.messages, announced=announced, memory=memory
+        run,
+        agent,
+        prompt=nudge,
+        message_history=turn.messages,
+        announced=announced,
+        memory=memory,
+        sandbox_sessions=sandbox_sessions,
+        conversation_id=conversation_id,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -268,6 +291,7 @@ def build_chat_orchestrator(
     judge: Judge | None = None,
     utility_model: Model | None = None,
     memory: MemoryStore | None = None,
+    sandbox_sessions: SandboxSessionManager | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
 ) -> Orchestrator:
@@ -294,7 +318,14 @@ def build_chat_orchestrator(
         start = len(history) if history else 0
 
         turn = await _drive_turn(
-            run, agent, prompt=prompt, message_history=history, announced=announced, memory=memory
+            run,
+            agent,
+            prompt=prompt,
+            message_history=history,
+            announced=announced,
+            memory=memory,
+            sandbox_sessions=sandbox_sessions,
+            conversation_id=conversation_id,
         )
 
         # Verify only a completed turn (not one parked for approval or stopped at
@@ -308,7 +339,15 @@ def build_chat_orchestrator(
             judging = judge or (make_utility_judge(utility_model) if utility_model else None)
             if judging is not None:  # no judge and no utility model → skip (degraded)
                 turn = await _verify_and_correct(
-                    run, agent, prompt, turn, announced, judging, memory=memory
+                    run,
+                    agent,
+                    prompt,
+                    turn,
+                    announced,
+                    judging,
+                    memory=memory,
+                    sandbox_sessions=sandbox_sessions,
+                    conversation_id=conversation_id,
                 )
 
         _finalize(
@@ -328,6 +367,7 @@ def build_resume_orchestrator(
     decisions: dict[str, Any],
     *,
     memory: MemoryStore | None = None,
+    sandbox_sessions: SandboxSessionManager | None = None,
     store: ConversationStore | None = None,
 ) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
@@ -341,6 +381,8 @@ def build_resume_orchestrator(
             deferred_results=results,
             announced=parked.announced,
             memory=memory,
+            sandbox_sessions=sandbox_sessions,
+            conversation_id=parked.conversation_id,
         )
         _finalize(
             run,

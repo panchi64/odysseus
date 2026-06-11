@@ -10,8 +10,12 @@ from ._helpers import client_app, collect_sse_events
 
 
 async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
-    """Stand in for registry resolution — a TestModel needs no real server."""
-    return TestModel(custom_output_text="hi")
+    """Stand in for registry resolution — a TestModel needs no real server.
+
+    ``call_tools=[]`` keeps this a plain text turn: the default catalog now holds
+    an approval-gated tool, and a TestModel that called every tool would park the
+    run instead of completing the stream this test reads."""
+    return TestModel(custom_output_text="hi", call_tools=[])
 
 
 async def test_chat_creates_run_and_streams_answer(monkeypatch):

@@ -126,7 +126,11 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             )
 
     orchestrator = build_resume_orchestrator(
-        parked, decisions, memory=deps.memory(request), store=deps.store(request)
+        parked,
+        decisions,
+        memory=deps.memory(request),
+        sandbox_sessions=deps.sandbox_sessions(request),
+        store=deps.store(request),
     )
     if await registry.resume(run_id, orchestrator) is None:
         raise HTTPException(status_code=409, detail="run could not be resumed")

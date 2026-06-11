@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic_ai import Agent, FunctionToolset, RunContext
+from pydantic_ai import Agent, DeferredToolRequests, FunctionToolset, RunContext
 from pydantic_ai.models.test import TestModel
 
 from agent import stream_agent_run
@@ -19,6 +19,9 @@ async def _run_agent(*, disabled=frozenset(), categories=None) -> Run:
         TestModel(custom_output_text="ok"),
         deps_type=RunDeps,
         toolsets=build_agent_toolsets(categories),
+        # The default catalog includes an approval-gated tool (host exec); accept
+        # DeferredToolRequests like the real engine so it defers instead of erroring.
+        output_type=[str, DeferredToolRequests],
     )
     run = _run()
     deps = RunDeps(run=run, owner_id="operator", disabled_tools=disabled)

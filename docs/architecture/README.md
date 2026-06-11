@@ -153,4 +153,4 @@ All decisions with real trade-offs are tracked in **[`decisions.md`](./decisions
 
 **Deferred to when their feature is in scope** (not blocking the foundation): **D21** document streaming & auto-promotion (`AE-6.2/6.4`, `DOC-3`) · **D22** attachment/upload ingestion (`CHAT-2`, `UP-*`).
 
-The foundation is fully specified. The natural next step is expanding a Pillar into its detailed doc (`10-run-substrate.md`, `20-event-protocol.md`, `30-agent-engine.md`, …) or scaffolding `backend/`.
+The foundation is fully specified **and built** — Pillars I–III, approval, memory, auth, at-rest encryption, the model registry, and the code-execution sandbox (in flight) live under `backend/`. Detail docs written so far: [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md) (the gating stack + D20/D23/D24/D25). What's built vs. pending against every spec requirement is tracked in the coverage matrix, [`70-spec-coverage.md`](./70-spec-coverage.md). Remaining detail docs (`10-run-substrate.md`, `20-event-protocol.md`, `30-agent-engine.md`, `50-capabilities.md`, `60-data-model.md`) are still to be written.

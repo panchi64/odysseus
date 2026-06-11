@@ -95,6 +95,13 @@ class Vault:
     def decrypt_str(self, token: str) -> str:
         return crypto.aead_decrypt(self._require_dek(), _b64d(token)).decode()
 
+    def encrypt_bytes(self, raw: bytes) -> bytes:
+        """Seal a raw blob (e.g. a workspace archive) — returned bytes go to disk."""
+        return crypto.aead_encrypt(self._require_dek(), raw)
+
+    def decrypt_bytes(self, token: bytes) -> bytes:
+        return crypto.aead_decrypt(self._require_dek(), token)
+
     def _set_dek(self, dek: bytes) -> None:
         self._dek = dek
         self._unlocked.set()

@@ -144,6 +144,10 @@ class ApprovalRequired(_Body):
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     summary: str
+    # Plain-language description of what the action does and its effect, so the
+    # operator can judge it without reading the raw arguments — set when the tool
+    # supplies one (the host-execution path requires it). Additive to v1; no bump.
+    explanation: str | None = None
 
 
 class LimitNotice(_Body):

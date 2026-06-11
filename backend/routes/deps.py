@@ -15,6 +15,7 @@ from runs import RunRegistry
 from services.conversations import ConversationStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
+from services.sandbox import SandboxSessionManager
 
 # Single operator: every record is attributed to this owner until a second human
 # exists (the ownership seam). One constant so routes don't each redefine it.
@@ -35,6 +36,12 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def sandbox_sessions(request: Request) -> SandboxSessionManager | None:
+    """The per-conversation sandbox manager, or None when no runtime is available
+    (fail closed)."""
+    return request.app.state.sandbox
 
 
 def vault(request: Request) -> Vault:

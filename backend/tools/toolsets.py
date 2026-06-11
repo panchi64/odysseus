@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
 
 from .builtin import builtin_toolset
+from .code import code_toolset
 from .deps import RunDeps
 from .memory import memory_toolset
 
@@ -30,7 +31,11 @@ def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
 
 def default_categories() -> dict[str, AbstractToolset[RunDeps]]:
     """The tool catalog grows here as services land (one category per cluster)."""
-    return {"builtin": builtin_toolset(), "memory": memory_toolset()}
+    return {
+        "builtin": builtin_toolset(),
+        "memory": memory_toolset(),
+        "code": code_toolset(),
+    }
 
 
 def build_agent_toolsets(

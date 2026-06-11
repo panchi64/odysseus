@@ -53,6 +53,31 @@ class Settings(BaseSettings):
     agent_request_limit: int = 25
     agent_tool_calls_limit: int | None = None
 
+    # Execution sandbox. Agent code/shell runs isolated from the host; when no
+    # runtime is available the capability is disabled (fail closed — never a host
+    # fallback). `sandbox_runtime` pins docker/podman; None auto-detects.
+    sandbox_enabled: bool = True
+    sandbox_runtime: str | None = None
+    sandbox_image: str = "python:3.12-slim"
+    sandbox_memory: str = "512m"
+    sandbox_cpus: str = "1.0"
+    # Per-conversation live sandbox: a container lazily spun up on the first code
+    # execution and kept warm so the agent can iterate (fix an error, reuse an
+    # installed dependency) without rebuilding. Idle sessions are reaped to free
+    # resources; the workspace (the agent's files) is preserved across reaps,
+    # sealed with the vault while dormant. `idle_ttl` is how long a session may sit
+    # unused before it is killed; `reap_interval` is how often the reaper sweeps.
+    sandbox_session_idle_ttl_s: float = 1800.0
+    sandbox_session_reap_interval_s: float = 60.0
+    # What a reap preserves: the agent's own files and any output it produced.
+    # These names/globs are dropped from the sealed copy — virtual environments
+    # and language caches are bloat that is cheaper to rebuild than to store.
+    sandbox_session_seal_excludes: tuple[str, ...] = (
+        ".venv", "venv", "env", "__pycache__", "node_modules", ".git",
+        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache", "dist", "build",
+        "*.pyc", "*.pyo", "*.egg-info",
+    )
+
     # Meta-loop. The no-progress guard trips after this many identical tool
     # calls in a turn. The verifier (a post-turn judge + one bounded corrective
     # re-attempt) is off by default.

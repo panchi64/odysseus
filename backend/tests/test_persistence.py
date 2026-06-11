@@ -276,7 +276,9 @@ async def test_chat_route_returns_conversation_and_continues(monkeypatch):
     from services.registry import ModelRegistry
 
     async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
-        return TestModel(custom_output_text="hi")
+        # call_tools=[] → a plain text turn; the default catalog's approval-gated
+        # tool would otherwise park the run and stall the SSE this test reads.
+        return TestModel(custom_output_text="hi", call_tools=[])
 
     monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
 

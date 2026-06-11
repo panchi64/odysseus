@@ -16,6 +16,7 @@ from runs import Run
 
 if TYPE_CHECKING:
     from services.memory import MemoryStore
+    from services.sandbox import SandboxSessionManager
 
 
 @dataclass
@@ -27,3 +28,9 @@ class RunDeps:
     # Capability handles the tools reach (never via globals). More land here as
     # their services do (search, the open document, …).
     memory: MemoryStore | None = None
+    # The execution sandbox, as a per-conversation session manager. None ⇒ no
+    # runtime available, so code execution is disabled and its tool says so (it
+    # never falls back to the host). The code tool keys a live session by the
+    # conversation, falling back to the run id for a stateless (no-conversation) run.
+    sandbox_sessions: SandboxSessionManager | None = None
+    conversation_id: str | None = None

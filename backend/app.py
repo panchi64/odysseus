@@ -23,6 +23,7 @@ from services.conversations import ConversationStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
+from services.sandbox import SandboxSessionManager, detect_sandbox
 
 
 @asynccontextmanager
@@ -67,9 +68,31 @@ async def lifespan(app: FastAPI):
     # Long-term memory — embeds via the registry's embedding role; degrades to
     # keyword recall when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, RegistryEmbedder(registry))
+    # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
+    # code-execution capability is disabled (it never falls back to the host).
+    # Present ⇒ wrap it in a per-conversation session manager that keeps a
+    # container warm for iterative work and reaps it when idle.
+    backend = await detect_sandbox(settings)
+    sandbox_manager = (
+        SandboxSessionManager(
+            backend,
+            vault,
+            data_dir=settings.data_dir,
+            idle_ttl_s=settings.sandbox_session_idle_ttl_s,
+            reap_interval_s=settings.sandbox_session_reap_interval_s,
+            excludes=settings.sandbox_session_seal_excludes,
+        )
+        if backend is not None
+        else None
+    )
+    app.state.sandbox = sandbox_manager
+    if sandbox_manager is not None:
+        await sandbox_manager.start()
     try:
         yield
     finally:
+        if sandbox_manager is not None:
+            await sandbox_manager.stop()
         await app.state.conversations.stop()
 
 

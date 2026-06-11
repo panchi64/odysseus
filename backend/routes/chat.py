@@ -73,6 +73,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         model=model,
         utility_model=utility_model,
         memory=deps.memory(request),
+        sandbox_sessions=deps.sandbox_sessions(request),
         store=store,
         conversation_id=conversation_id,
     )

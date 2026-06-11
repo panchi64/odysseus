@@ -53,7 +53,7 @@ async def test_verifier_disabled_by_default():
 
     reg = RunRegistry()
     orch = engine.build_chat_orchestrator(
-        "hello", model=TestModel(custom_output_text="hi"), judge=judge
+        "hello", model=TestModel(custom_output_text="hi"), categories={}, judge=judge
     )
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
