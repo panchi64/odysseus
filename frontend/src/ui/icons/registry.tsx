@@ -62,7 +62,8 @@ export type IconName =
   | "copy"
   | "pin"
   | "sun"
-  | "moon";
+  | "moon"
+  | "system";
 
 export const icons: Record<IconName, () => JSX.Element> = {
   cross: () => <path d="M8 3v10M3 8h10" />,
@@ -279,6 +280,12 @@ export const icons: Record<IconName, () => JSX.Element> = {
     </>
   ),
   moon: () => <path d="M13 9.5A5.5 5.5 0 1 1 6.5 3 4.5 4.5 0 0 0 13 9.5z" />,
+  system: () => (
+    <>
+      <rect x="2" y="3" width="12" height="8" />
+      <path d="M6 14h4M8 11v3" />
+    </>
+  ),
   pin: () => (
     <>
       <path d="M6 2h4l-1 5 3 3H4l3-3z" />

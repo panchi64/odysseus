@@ -1,9 +1,10 @@
 // @refresh reload
 import { createHandler, StartServer } from "@solidjs/start/server";
 
-// Runs before first paint: reflect the stored theme onto <html data-theme>
-// so there is no flash of the wrong palette on load. Defaults to phosphor.
-const NO_FLASH_THEME = `(function(){try{var t=localStorage.getItem("odysseus:theme");document.documentElement.dataset.theme=(t==="paper"||t==="phosphor")?t:"phosphor";}catch(e){document.documentElement.dataset.theme="phosphor";}})();`;
+// Runs before first paint: resolve the stored preference onto <html data-theme>
+// so there is no flash of the wrong palette on load. "system" resolves against
+// prefers-color-scheme; anything unrecognized falls back to phosphor.
+const NO_FLASH_THEME = `(function(){try{var t=localStorage.getItem("odysseus:theme");var s=window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches?"paper":"phosphor";document.documentElement.dataset.theme=(t==="paper"||t==="phosphor")?t:(t==="system"?s:"phosphor");}catch(e){document.documentElement.dataset.theme="phosphor";}})();`;
 
 export default createHandler(() => (
   <StartServer

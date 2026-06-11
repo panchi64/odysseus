@@ -173,7 +173,8 @@ export function SettingsScreen(): JSX.Element {
               THEME
             </Text>
             <Text variant="micro" tone="dim">
-              Phosphor (dark) or Paper (light). Stored locally on this device.
+              Phosphor (dark), Paper (light), or follow system. Stored locally
+              on this device.
             </Text>
           </Stack>
           <ThemeToggle />

@@ -14,13 +14,19 @@ export { copyToClipboard } from "./clipboard";
 
 // theme
 export {
-  theme,
+  preference,
   setTheme,
   toggleTheme,
   applyTheme,
+  resolveTheme,
+  systemTheme,
+  syncSystemTheme,
   DEFAULT_THEME,
+  DEFAULT_PREFERENCE,
   THEME_STORAGE_KEY,
+  THEME_CYCLE,
   type ThemeMode,
+  type ThemePreference,
 } from "./theme/theme-store";
 export { useTheme } from "./theme/useTheme";
 export { ThemeProvider } from "./theme/ThemeProvider";

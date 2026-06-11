@@ -1,10 +1,22 @@
-import { theme, setTheme, toggleTheme, type ThemeMode } from "./theme-store";
+import {
+  preference,
+  resolveTheme,
+  setTheme,
+  toggleTheme,
+  type ThemeMode,
+  type ThemePreference,
+} from "./theme-store";
 
-/** Read/control the active theme mode from any component. */
+/** Read/control the active theme from any component. */
 export function useTheme() {
   return {
-    get theme(): ThemeMode {
-      return theme();
+    /** The user's chosen mode: "phosphor" | "paper" | "system". */
+    get preference(): ThemePreference {
+      return preference();
+    },
+    /** The concrete palette currently applied. */
+    get resolved(): ThemeMode {
+      return resolveTheme(preference());
     },
     set: setTheme,
     toggle: toggleTheme,
