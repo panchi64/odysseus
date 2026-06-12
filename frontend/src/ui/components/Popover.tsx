@@ -8,7 +8,8 @@ import {
 import { cx } from "../cx";
 
 export interface PopoverApi {
-  open: boolean;
+  /** Reactive open-state accessor — call it (`open()`) in the trigger. */
+  open: () => boolean;
   setOpen: (open: boolean) => void;
   close: () => void;
 }
@@ -44,7 +45,7 @@ export function Popover(props: PopoverProps): JSX.Element {
 
   return (
     <div class={cx("relative inline-flex", props.class)}>
-      {props.trigger({ open: open(), setOpen, close })}
+      {props.trigger({ open, setOpen, close })}
       <Show when={open()}>
         <div class="fixed inset-0 z-40" onClick={close} />
         <div

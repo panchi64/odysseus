@@ -72,10 +72,10 @@ export function Combobox(props: ComboboxProps): JSX.Element {
           type="button"
           aria-label={props["aria-label"]}
           aria-haspopup="listbox"
-          aria-expanded={open}
+          aria-expanded={open()}
           onClick={() => {
             setQuery("");
-            setOpen(!open);
+            setOpen(!open());
           }}
           class="flex h-8 min-w-32 max-w-56 items-center gap-1.5 rounded-ctl border border-line bg-surface pl-2 pr-2 transition-colors hover:border-bright"
         >

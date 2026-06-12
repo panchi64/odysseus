@@ -1,15 +1,14 @@
 """The model registry — resolve a named role to a model, and manage endpoints.
 
-This is the DB-backed half of model resolution (the env fallback lives in
-:mod:`services.llm`). It owns the operator's endpoint catalog and the role→chain
-bindings, and turns a role into a Pydantic AI model at run start:
+The single source of truth for model resolution: it owns the operator's endpoint
+catalog and the role→chain bindings, and turns a role into a Pydantic AI model at
+run start (there is no ``.env`` model seam):
 
-- ``main`` is **overridable per conversation** (the chat model picker passes an
-  endpoint id); every other role is a global binding.
-- ``utility`` **falls back to ``main``'s chain** when it has none of its own.
-- a role with no DB binding **falls back to ``.env``** (``services.llm.resolve_model``),
-  so the app works before the registry is populated — and so the env seam that
-  tests monkeypatch stays the resolution path.
+- ``main`` is **overridable per conversation** — the chat model picker passes a
+  provider (endpoint id) and a model on it; every other role is a global binding.
+- ``utility`` and ``embedding`` resolve their own bindings only; an unbound role
+  is a degraded capability (the chat layer reuses ``main`` when ``utility`` is
+  unset, so verification works without separate setup).
 
 The API key is the only encrypted field: it is sealed with the vault on write
 and opened on resolve. Resolution validates that tool-driving roles
@@ -257,7 +256,7 @@ class ModelRegistry:
         api_key = (
             self._vault.decrypt_str(endpoint.api_key_enc)
             if endpoint.api_key_enc
-            else "not-needed"
+            else llm.NO_API_KEY
         )
         return llm.EndpointSpec(
             base_url=endpoint.base_url,

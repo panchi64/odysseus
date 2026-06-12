@@ -195,17 +195,21 @@ export function SettingsScreen(): JSX.Element {
   const toasted = new Set<string>();
   createEffect(() => {
     for (const d of endpointDiscovery()) {
-      if (d.status === "unavailable" && !toasted.has(d.endpointId)) {
-        toasted.add(d.endpointId);
-        // `supported` distinguishes a working-but-empty models API from one that
-        // couldn't be reached, so the operator knows where to look.
-        const reason = d.supported
-          ? "the provider listed no models"
-          : "its models API was unavailable";
-        toast.error(
-          `No models for "${d.endpointName}" — ${reason}. Set a default model or check the provider.`,
-        );
+      if (d.status !== "unavailable") {
+        // Recovered (or never failed) — re-arm so a later regression re-toasts.
+        toasted.delete(d.endpointId);
+        continue;
       }
+      if (toasted.has(d.endpointId)) continue;
+      toasted.add(d.endpointId);
+      // `supported` distinguishes a working-but-empty models API from one that
+      // couldn't be reached, so the operator knows where to look.
+      const reason = d.supported
+        ? "the provider listed no models"
+        : "its models API was unavailable";
+      toast.error(
+        `No models for "${d.endpointName}" — ${reason}. Set a default model or check the provider.`,
+      );
     }
   });
 

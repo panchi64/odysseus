@@ -150,8 +150,10 @@ def _named_models(payload: object) -> list[str] | None:
         if not isinstance(row, dict):
             continue
         ident = row.get("id") or row.get("name")
-        if isinstance(ident, str) and ident:
-            ids.append(ident.removeprefix("models/"))
+        if isinstance(ident, str):
+            stripped = ident.removeprefix("models/")
+            if stripped:
+                ids.append(stripped)
     return ids
 
 
