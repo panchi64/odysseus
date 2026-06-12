@@ -6,7 +6,7 @@
  * with `VITE_API_BASE` (see `frontend/.env`); defaults to the local dev backend.
  */
 export const API_BASE: string =
-  import.meta.env.VITE_API_BASE ?? "http://localhost:7000";
+  import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 /** Resolve an API path against the backend origin (e.g. for iframe `src`). */
 export function apiUrl(path: string): string {

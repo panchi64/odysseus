@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     host: str = "127.0.0.1"
-    port: int = 7000
+    # 8000, not 7000: macOS AirPlay Receiver squats on :7000 (wildcard, both IP
+    # stacks), shadowing an IPv4-only bind when localhost resolves to ::1.
+    port: int = 8000
 
     # Origin-agnostic: the frontend origins allowed to call the API.
     cors_origins: list[str] = ["http://localhost:5173"]
