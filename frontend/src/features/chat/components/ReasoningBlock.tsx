@@ -2,14 +2,35 @@ import { Show, createSignal, type JSX } from "solid-js";
 import { Icon, Text } from "~/ui";
 
 /** Collapsible reasoning/thinking stream, rendered apart from the answer and
- *  dimmer than it (the answer is the bright value). Collapsed by default. */
+ *  dimmer than it (the answer is the bright value). Collapsed by default.
+ *  The whole block is a click target, but a click that completes a text
+ *  selection is ignored so the reasoning text stays selectable. */
 export function ReasoningBlock(props: { reasoning: string }): JSX.Element {
   const [open, setOpen] = createSignal(false);
+
+  const toggle = (): void => {
+    setOpen((v) => !v);
+  };
+
+  // Ignore the click that finishes a drag-select so text can be highlighted.
+  const handleClick = (): void => {
+    if (window.getSelection()?.toString()) return;
+    toggle();
+  };
+
   return (
-    <div class="border-l border-line pl-2">
+    <div
+      onClick={handleClick}
+      class="cursor-pointer border-l border-line pl-2 transition-colors hover:border-text/40"
+    >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => {
+          // The container handler owns toggling; keep the button's keyboard
+          // activation working without double-firing on pointer clicks.
+          e.stopPropagation();
+          toggle();
+        }}
         class="flex items-center gap-1 text-left text-dim transition-colors hover:text-text"
       >
         <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} />
@@ -18,7 +39,11 @@ export function ReasoningBlock(props: { reasoning: string }): JSX.Element {
         </Text>
       </button>
       <Show when={open()}>
-        <Text variant="body" tone="dim" class="mt-1 block whitespace-pre-wrap">
+        <Text
+          variant="body"
+          tone="dim"
+          class="mt-1 block cursor-text whitespace-pre-wrap"
+        >
           {props.reasoning}
         </Text>
       </Show>

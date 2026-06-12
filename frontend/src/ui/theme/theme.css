@@ -72,6 +72,14 @@ body {
   line-height: var(--type-body-lh);
 }
 
+/* Text selection — a terminal-style inverted block, not the browser's blue.
+   Monochrome (§4): a `text-dim` highlight with the text knocked out to `bg`,
+   reading like an inverted CRT cell rather than a colored wash. */
+::selection {
+  background: var(--text-dim);
+  color: var(--bg);
+}
+
 /* Mechanical motion: no decorative transitions slower than the base tempo. */
 :where(button, a, [role="button"], input, select, textarea) {
   transition-duration: var(--motion-fast);
