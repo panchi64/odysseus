@@ -44,7 +44,7 @@ from services.conversations import ConversationStore
 from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
-from .title import first_user_text, generate_title, last_assistant_text
+from .title import first_user_text, generate_title, last_assistant_text, last_user_text
 from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,7 @@ async def _maybe_title(
 
 
 def build_chat_orchestrator(
-    prompt: str,
+    prompt: str | None,
     *,
     model: Model,
     categories: Any = None,
@@ -370,6 +370,10 @@ def build_chat_orchestrator(
     conversation_id: str | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
+
+    ``prompt`` is the operator's message, or ``None`` to **regenerate**: re-run
+    from a history that already ends in the user request (the caller moved the
+    active leaf there), producing a fresh answer as a sibling of the previous one.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -415,10 +419,13 @@ def build_chat_orchestrator(
         ):
             judging = judge or (make_utility_judge(utility_model) if utility_model else None)
             if judging is not None:  # no judge and no utility model → skip (degraded)
+                # On a regenerate (prompt is None) the request to judge against is
+                # the last user turn already in history.
+                verify_prompt = prompt if prompt is not None else last_user_text(history or [])
                 turn = await _verify_and_correct(
                     run,
                     agent,
-                    prompt,
+                    verify_prompt,
                     turn,
                     announced,
                     judging,

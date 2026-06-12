@@ -99,6 +99,12 @@ export interface ChatMessage {
   createdAt: string;
   /** Model/endpoint that produced an assistant message. */
   model?: string;
+  /** 0-based position of this turn among its sibling versions (branches). */
+  versionIndex?: number;
+  /** Total sibling versions for this turn (≥1); >1 means it can be cycled. */
+  versionCount?: number;
+  /** Whether the operator has pinned this turn (backend-owned). */
+  pinned?: boolean;
 }
 
 export interface ChatSession {

@@ -102,6 +102,14 @@ export function ChatRoomScreen(): JSX.Element {
 
   const startNew = () => setCurrentId(null);
 
+  // Stop the live run for real: cancel on the backend, abort the local stream.
+  // `cancel()` surfaces its own backend error; this only adds the success note.
+  const stopRun = async () => {
+    if (!stream.sending()) return;
+    await stream.cancel();
+    toast.success("Run cancelled");
+  };
+
   // ⌘/Ctrl+Shift+O starts a new conversation from anywhere, even mid-thread.
   const onKey = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") {
@@ -242,6 +250,16 @@ export function ChatRoomScreen(): JSX.Element {
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>
+            <Show when={stream.sending()}>
+              <Button
+                variant="ghost"
+                leading="stop"
+                aria-label="Stop run"
+                onClick={() => void stopRun()}
+              >
+                STOP
+              </Button>
+            </Show>
             <Button variant="ghost" leading="plus" onClick={startNew}>
               NEW
             </Button>
@@ -289,6 +307,28 @@ export function ChatRoomScreen(): JSX.Element {
                   message={message}
                   onResolveApproval={stream.resolveApproval}
                   onResolveHostCommands={stream.resolveHostCommands}
+                  onRegenerate={(model) =>
+                    void stream.regenerate(message.id, model)
+                  }
+                  onEditMessage={(id, text) => void stream.edit(id, text)}
+                  onSwitchVersion={(id, i) => void stream.switchVersion(id, i)}
+                  onTogglePin={() => void stream.togglePin(message.id)}
+                  onRewind={() => {
+                    void stream.rewind(message.id);
+                  }}
+                  onDelete={async () => {
+                    if (
+                      await confirm({
+                        title: "Delete this message?",
+                        detail: "This removes it and everything after it.",
+                        confirmLabel: "DELETE",
+                        tone: "alert",
+                      })
+                    ) {
+                      await stream.removeMessage(message.id);
+                      toast.success("Message deleted");
+                    }
+                  }}
                 />
               )}
             </For>

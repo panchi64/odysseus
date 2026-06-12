@@ -49,6 +49,16 @@ class MessageView:
     reasoning: str = ""
     tools: list[ToolView] = field(default_factory=list)
     timestamp: datetime | None = None
+    # The id of the tree node that *defines this turn's branch point* — the user
+    # request for a user turn, the first response for an assistant turn. It is what
+    # the frontend addresses to regenerate / edit / delete / switch this turn.
+    id: str = ""
+    # Position among this turn's sibling versions (0-based) and how many there are.
+    # 1 ⇒ no alternatives; >1 ⇒ the turn has been regenerated/edited.
+    version_index: int = 0
+    version_count: int = 1
+    # The operator's durable pin on this turn (a bookmark), from the branch node.
+    pinned: bool = False
 
 
 def _user_text(content: Any) -> str:
@@ -68,27 +78,49 @@ def _user_text(content: Any) -> str:
     return ""
 
 
-def project_messages(messages: list[Any]) -> list[MessageView]:
-    """Fold a ModelMessage history into ordered user/assistant view turns.
+def project_tree(nodes: list[tuple[str, Any]]) -> list[MessageView]:
+    """Fold an active-path ``(node_id, ModelMessage)`` sequence into ordered
+    user/assistant view turns.
+
+    One turn = one view. A user turn is a request carrying a ``UserPromptPart``.
+    An assistant turn is the run of everything after it until the next user turn —
+    one or more ``ModelResponse`` messages plus the interleaved tool-return
+    requests — **merged into a single assistant view** (reasoning, then tool calls
+    stitched to their results, then the answer). This matches the live stream,
+    which renders one assistant bubble per turn, so a cold read and a warm one look
+    identical.
+
+    Each view's ``id`` is the node that *defines the turn's branch point*: the user
+    request for a user turn, the first response for an assistant turn — i.e. the
+    node whose siblings are this turn's versions. Version index/count are filled in
+    later by the store, which holds the tree.
 
     Tool calls surface on the assistant turn that issued them; a later request's
     ``ToolReturnPart``/``RetryPromptPart`` mutates the same (shared) ``ToolView``
-    that's already attached to its turn, so results stitch back in place.
+    already attached, so results stitch back in place.
     """
     views: list[MessageView] = []
     by_call: dict[str, ToolView] = {}
-    for message in messages:
+    assistant: MessageView | None = None  # the open assistant turn, if any
+    for node_id, message in nodes:
         if isinstance(message, ModelRequest):
-            for part in message.parts:
-                if isinstance(part, UserPromptPart):
-                    views.append(
-                        MessageView(
-                            role="user",
-                            content=_user_text(part.content),
-                            timestamp=getattr(part, "timestamp", None),
-                        )
+            user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
+            if user_parts:
+                # A new user turn closes any open assistant turn.
+                assistant = None
+                part = user_parts[0]
+                views.append(
+                    MessageView(
+                        role="user",
+                        content=_user_text(part.content),
+                        timestamp=getattr(part, "timestamp", None),
+                        id=node_id,
                     )
-                elif isinstance(part, ToolReturnPart):
+                )
+                continue
+            # A tool-return request: stitch results into the open assistant turn.
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart):
                     tool = by_call.get(part.tool_call_id)
                     if tool is not None:
                         tool.status = "ok"
@@ -99,17 +131,21 @@ def project_messages(messages: list[Any]) -> list[MessageView]:
                         tool.status = "error"
                         tool.error = part.model_response()
         elif isinstance(message, ModelResponse):
-            view = MessageView(role="assistant", timestamp=getattr(message, "timestamp", None))
+            if assistant is None:
+                # First response of the turn — its node id is the branch point.
+                assistant = MessageView(
+                    role="assistant", timestamp=getattr(message, "timestamp", None), id=node_id
+                )
+                views.append(assistant)
             for part in message.parts:
                 if isinstance(part, TextPart):
-                    view.content += part.content
+                    assistant.content += part.content
                 elif isinstance(part, ThinkingPart):
-                    view.reasoning += part.content
+                    assistant.reasoning += part.content
                 elif isinstance(part, ToolCallPart):
                     tool = ToolView(
                         id=part.tool_call_id, name=part.tool_name, args=part.args_as_dict()
                     )
-                    view.tools.append(tool)
+                    assistant.tools.append(tool)
                     by_call[part.tool_call_id] = tool
-            views.append(view)
     return views

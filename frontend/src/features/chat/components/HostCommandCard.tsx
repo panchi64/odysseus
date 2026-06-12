@@ -1,4 +1,4 @@
-import { For, Show, createSignal, type JSX } from "solid-js";
+import { For, Show, createEffect, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
 
@@ -25,6 +25,9 @@ const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
 export function HostCommandCard(props: {
   commands: HostCommand[];
   onSubmit: (decisions: ApprovalDecision[]) => void | Promise<void>;
+  /** Controls the runtime-output collapse (expand-all/collapse-all). Defaults to
+   *  expanded; the command line and decision controls always stay visible. */
+  open?: boolean;
 }): JSX.Element {
   const [decisions, setDecisions] = createSignal<Record<string, boolean>>({});
   const [submitting, setSubmitting] = createSignal(false);
@@ -61,6 +64,7 @@ export function HostCommandCard(props: {
             decided={decisions()[command.toolCallId]}
             held={command.toolCallId in decisions() && !allDecided()}
             submitting={submitting()}
+            open={props.open}
             onDecide={decide}
           />
         )}
@@ -77,10 +81,16 @@ function Terminal(props: {
   /** Decided locally, but the batch is held until sibling commands are decided. */
   held?: boolean;
   submitting?: boolean;
+  /** When defined, controls the runtime-output collapse; defaults to expanded. */
+  open?: boolean;
   onDecide: (toolCallId: string, approved: boolean) => void;
 }): JSX.Element {
   const c = () => props.command;
   const flag = () => phaseFlag[c().phase];
+  const [showOutput, setShowOutput] = createSignal(true);
+  createEffect(() => {
+    if (props.open !== undefined) setShowOutput(props.open);
+  });
   // Decided locally, before the optimistic transition off "pending".
   const decidedPending = () =>
     c().phase === "pending" && props.decided !== undefined;
@@ -169,7 +179,7 @@ function Terminal(props: {
         </Show>
 
         {/* Runtime output, once the command has run. */}
-        <Show when={hasOutput()}>
+        <Show when={hasOutput() && showOutput()}>
           <div class="border-t border-line" />
           <Stack gap={1}>
             <Show when={c().stdout}>

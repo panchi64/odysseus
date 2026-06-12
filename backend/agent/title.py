@@ -65,6 +65,16 @@ def first_user_text(messages: list[ModelMessage]) -> str:
     return ""
 
 
+def last_user_text(messages: list[ModelMessage]) -> str:
+    """The latest user prompt in a history — the request a regenerate re-answers
+    (so the verifier still has the prompt to judge against when no new one was sent)."""
+    for message in reversed(messages):
+        text = _part_text(message, _USER_PARTS)
+        if text:
+            return text
+    return ""
+
+
 def last_assistant_text(messages: list[ModelMessage]) -> str:
     """The latest assistant answer text in a history."""
     for message in reversed(messages):

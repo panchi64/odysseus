@@ -183,6 +183,12 @@ interface MessageDTO {
   tools: ToolCallDTO[];
   artifacts?: ArtifactDTO[];
   created_at?: string | null;
+  /** 0-based index of this turn among its sibling versions. */
+  version_index?: number;
+  /** Total sibling versions for this turn (≥1). */
+  version_count?: number;
+  /** Whether the operator has pinned this turn. */
+  pinned?: boolean;
 }
 
 interface ConversationDetailDTO extends ConversationSummaryDTO {
@@ -323,6 +329,9 @@ function toMessage(dto: MessageDTO): ChatMessage {
     hostCommands: hostCommands.length ? hostCommands : undefined,
     artifacts: dto.artifacts?.map(toArtifactRef),
     createdAt: dto.created_at ?? new Date().toISOString(),
+    versionIndex: dto.version_index,
+    versionCount: dto.version_count,
+    pinned: dto.pinned,
   };
 }
 
@@ -409,6 +418,9 @@ export function createChatStream(
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
   let controller: AbortController | null = null;
+  // The run currently streaming, if any — needed to cancel it on the backend
+  // (aborting the SSE alone leaves the run executing server-side).
+  let activeRunId: string | null = null;
   // The conversation this stream is currently bound to (tracked separately from
   // the screen's `key`, which only updates once a new thread is persisted).
   let activeConversationId: string | null = key();
@@ -591,6 +603,78 @@ export function createChatStream(
     }
   }
 
+  /** Drive a started run to completion: open the SSE, fold every event onto the
+   *  given assistant message, and on end clear streaming/sending, fire the
+   *  lifecycle callbacks, and refresh the session list. Shared by `send` and the
+   *  branching ops (regenerate/edit) so the run tail lives in one place.
+   *  `wasNew` reports a freshly-created conversation so its id can be adopted. */
+  async function driveRun(
+    runId: string,
+    assistantId: string,
+    wasNew = false,
+  ): Promise<void> {
+    activeRunId = runId;
+    patchById(assistantId, (m) => (m.runId = runId));
+    try {
+      controller = new AbortController();
+      await streamRun(runId, {
+        signal: controller.signal,
+        onEvent: (ev) => foldEvent(assistantId, ev),
+      });
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Unable to reach the assistant.",
+      );
+    } finally {
+      activeRunId = null;
+      patchById(assistantId, (m) => (m.streaming = false));
+      setSending(false);
+      if (wasNew && activeConversationId) {
+        options.onConversationStarted?.(activeConversationId);
+      }
+      options.onTurnComplete?.();
+      // Adopt the backend's authoritative ids + version metadata for the turn
+      // just recorded — without this the live message keeps its client id and a
+      // stale version count, so the ‹k/n› cycler never appears and a later
+      // regenerate/edit/delete/pin would address an id the backend doesn't know.
+      await adoptServerMeta();
+    }
+  }
+
+  /** Reconcile the live store with the backend's projected active path after a
+   *  turn: adopt each turn's real node id + version index/count + pin by position
+   *  (the store mirrors the same active path), leaving live-only fields the cold
+   *  projection doesn't carry — `preview`, `runId` — untouched. A length mismatch
+   *  (e.g. a turn that produced no persisted answer) falls back to a full reseat.
+   *  Best-effort: a failed read leaves the optimistic store in place. */
+  async function adoptServerMeta(): Promise<void> {
+    if (activeConversationId === null) return;
+    let detail: ConversationDetailDTO;
+    try {
+      detail = await api.get<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}`,
+      );
+    } catch {
+      return;
+    }
+    const server = detail.messages;
+    if (server.length !== messages.length) {
+      reseatFromDetail(detail);
+      return;
+    }
+    setMessages(
+      produce((list) => {
+        for (let i = 0; i < list.length; i++) {
+          list[i].id = server[i].id;
+          list[i].versionIndex = server[i].version_index;
+          list[i].versionCount = server[i].version_count;
+          list[i].pinned = server[i].pinned;
+        }
+      }),
+    );
+  }
+
   async function send(text: string): Promise<void> {
     if (!text.trim() || sending()) return;
     setSending(true);
@@ -614,34 +698,52 @@ export function createChatStream(
     };
     setMessages(produce((m) => m.push(userMsg, assistantMsg)));
 
+    let created: ChatCreatedDTO;
     try {
-      const created = await api.post<ChatCreatedDTO>("/chat", {
+      created = await api.post<ChatCreatedDTO>("/chat", {
         prompt: text.trim(),
         conversation_id: activeConversationId ?? undefined,
         endpoint_id: selection?.endpointId,
         model: selection?.model,
-      });
-      activeConversationId = created.conversation_id;
-      patchById(assistantId, (m) => (m.runId = created.run_id));
-
-      controller = new AbortController();
-      await streamRun(created.run_id, {
-        signal: controller.signal,
-        onEvent: (ev) => foldEvent(assistantId, ev),
       });
     } catch (err) {
       toast.error(
         (err as { detail?: string })?.detail ??
           "Unable to reach the assistant.",
       );
-    } finally {
       patchById(assistantId, (m) => (m.streaming = false));
       setSending(false);
-      if (wasNew && activeConversationId) {
-        options.onConversationStarted?.(activeConversationId);
-      }
-      options.onTurnComplete?.();
+      return;
     }
+    activeConversationId = created.conversation_id;
+    await driveRun(created.run_id, assistantId, wasNew);
+  }
+
+  /** Cancel the in-flight run for real: tell the backend to stop it (it keeps
+   *  running even when the SSE is dropped), then abort the local stream and clear
+   *  the streaming state. Safe to call with no active run. */
+  async function cancel(): Promise<void> {
+    const runId = activeRunId;
+    if (runId) {
+      try {
+        await api.post(`/runs/${runId}/cancel`, {});
+      } catch (err) {
+        // The local abort below still stops the UI; surface but don't block.
+        toast.error(
+          (err as { detail?: string })?.detail ?? "Unable to cancel the run.",
+        );
+      }
+    }
+    activeRunId = null;
+    controller?.abort();
+    controller = null;
+    setMessages(
+      produce((m) => {
+        const streaming = m.find((x) => x.streaming);
+        if (streaming) streaming.streaming = false;
+      }),
+    );
+    setSending(false);
   }
 
   /** POST a batch of approval decisions for a message's run, then apply an
@@ -683,7 +785,194 @@ export function createChatStream(
       }
     });
 
+  /* ── Branching: regenerate / edit / version-cycle / rewind / delete ─────────
+     Each is a thin relay to a live backend endpoint. The regenerate/edit ops
+     re-drive a run (optimistically resetting the path, then streaming the new
+     answer in); the rest reseat the store from a returned conversation detail.
+     All guard on a persisted conversation and surface failures via toast. */
+
+  function reseatFromDetail(detail: ConversationDetailDTO): void {
+    setMessages(reconcile(detail.messages.map(toMessage)));
+  }
+
+  function toastError(err: unknown, fallback: string): void {
+    toast.error((err as { detail?: string })?.detail ?? fallback);
+  }
+
+  /** Re-answer an assistant turn from the preceding request; the new answer
+   *  becomes a sibling version. `messageId` is the assistant message's id. */
+  async function regenerate(
+    messageId: string,
+    selection?: ModelSelection | null,
+  ): Promise<void> {
+    if (activeConversationId === null || sending()) return;
+    const i = messages.findIndex(
+      (m) => m.id === messageId && m.role === "assistant",
+    );
+    if (i < 0) return;
+    setSending(true);
+    const sel = selection ?? effectiveSelection();
+    try {
+      const created = await api.post<ChatCreatedDTO>("/chat/regenerate", {
+        conversation_id: activeConversationId,
+        message_id: messageId,
+        endpoint_id: sel?.endpointId,
+        model: sel?.model,
+      });
+      const reset: ChatMessage = {
+        id: messageId,
+        role: "assistant",
+        model: sel?.model,
+        content: "",
+        streaming: true,
+        preview: null,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages(reconcile([...messages.slice(0, i), reset]));
+      await driveRun(created.run_id, messageId);
+    } catch (err) {
+      toastError(err, "Unable to regenerate the answer.");
+      setSending(false);
+    }
+  }
+
+  /** Re-ask an edited user turn as a new version; a fresh answer streams in.
+   *  `messageId` is the user message's id. */
+  async function edit(
+    messageId: string,
+    newText: string,
+    selection?: ModelSelection | null,
+  ): Promise<void> {
+    if (activeConversationId === null || sending() || !newText.trim()) return;
+    const j = messages.findIndex(
+      (m) => m.id === messageId && m.role === "user",
+    );
+    if (j < 0) return;
+    setSending(true);
+    const sel = selection ?? effectiveSelection();
+    const prompt = newText.trim();
+    try {
+      const created = await api.post<ChatCreatedDTO>("/chat/edit", {
+        conversation_id: activeConversationId,
+        message_id: messageId,
+        prompt,
+        endpoint_id: sel?.endpointId,
+        model: sel?.model,
+      });
+      const editedUser: ChatMessage = { ...messages[j], content: prompt };
+      const assistantId = nextId("a");
+      const assistantMsg: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        model: sel?.model,
+        content: "",
+        streaming: true,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages(
+        reconcile([...messages.slice(0, j), editedUser, assistantMsg]),
+      );
+      await driveRun(created.run_id, assistantId);
+    } catch (err) {
+      toastError(err, "Unable to submit the edit.");
+      setSending(false);
+    }
+  }
+
+  /** Switch a turn to a sibling version; reseat the store from the returned
+   *  active path and refresh the sidebar. */
+  async function switchVersion(
+    messageId: string,
+    index: number,
+  ): Promise<void> {
+    if (activeConversationId === null) return;
+    // Stop any live run first: the reseat below replaces the store, and a still-
+    // streaming foldEvent would keep patching a message the reseat removed.
+    if (sending()) await cancel();
+    try {
+      const detail = await api.post<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}/messages/${messageId}/version`,
+        { index },
+      );
+      reseatFromDetail(detail);
+      options.onTurnComplete?.();
+    } catch (err) {
+      toastError(err, "Unable to switch versions.");
+    }
+  }
+
+  /** Rewind the thread to end at a turn; the operator's next send branches. */
+  async function rewind(messageId: string): Promise<void> {
+    if (activeConversationId === null) return;
+    if (sending()) await cancel();
+    try {
+      const detail = await api.post<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}/messages/${messageId}/rewind`,
+        {},
+      );
+      reseatFromDetail(detail);
+      options.onTurnComplete?.();
+      toast.success("Rewound — your next message starts a new branch");
+    } catch (err) {
+      toastError(err, "Unable to rewind the conversation.");
+    }
+  }
+
+  /** Delete a turn and everything after it; reseat from the refreshed detail. */
+  async function removeMessage(messageId: string): Promise<void> {
+    if (activeConversationId === null) return;
+    if (sending()) await cancel();
+    try {
+      await api.del(
+        `/conversations/${activeConversationId}/messages/${messageId}`,
+      );
+      const detail = await api.get<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}`,
+      );
+      reseatFromDetail(detail);
+      options.onTurnComplete?.();
+    } catch (err) {
+      toastError(err, "Unable to delete the message.");
+    }
+  }
+
+  /** Pin/unpin a turn. The backend owns the flag; this optimistically echoes the
+   *  toggle and reverts if the POST fails. */
+  async function togglePin(messageId: string): Promise<void> {
+    if (activeConversationId === null) return;
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) return;
+    const next = !msg.pinned;
+    patchById(messageId, (m) => {
+      m.pinned = next;
+    });
+    try {
+      await api.post(
+        `/conversations/${activeConversationId}/messages/${messageId}/pin`,
+        { pinned: next },
+      );
+    } catch (err) {
+      patchById(messageId, (m) => {
+        m.pinned = !next;
+      });
+      toastError(err, "Unable to update the pin.");
+    }
+  }
+
   onCleanup(() => controller?.abort());
 
-  return { messages, sending, send, resolveApproval, resolveHostCommands };
+  return {
+    messages,
+    sending,
+    send,
+    cancel,
+    resolveApproval,
+    resolveHostCommands,
+    regenerate,
+    edit,
+    switchVersion,
+    rewind,
+    removeMessage,
+    togglePin,
+  };
 }
