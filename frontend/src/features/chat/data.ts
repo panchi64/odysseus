@@ -447,7 +447,13 @@ export function createChatStream(
     controller = null;
     setSending(false);
     activeConversationId = k;
-    setMessages(reconcile(source ? source.slice() : []));
+    // A null key is a new, unsaved conversation: it has no persisted history, so
+    // the only `source` here is the seam resource's *retained* value from the
+    // thread we just left (Solid keeps a resource's last value once its id goes
+    // null). Seeding from it would keep a just-deleted thread's messages on
+    // screen, so a null key always starts empty.
+    const seed = k === null ? [] : source ? source.slice() : [];
+    setMessages(reconcile(seed));
   });
 
   function patchById(id: string, fn: (m: ChatMessage) => void): void {
