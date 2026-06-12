@@ -34,11 +34,10 @@ import {
   entrySessionId,
   refreshSessions,
   renameConversation,
-  selectedModel,
-  setSelectedModel,
   useChatSession,
   useChatSessions,
 } from "../data";
+import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { MessageItem } from "../components/MessageItem";
 import { SessionList } from "../components/SessionList";
 
@@ -65,7 +64,7 @@ export function ChatRoomScreen(): JSX.Element {
   });
   const headerTitle = () => currentSummary()?.title ?? "New conversation";
   const headerModel = () =>
-    currentSummary()?.model ?? (selectedModel() || "DEFAULT");
+    currentSummary()?.model ?? (selectedModelLabel() || "NO MODEL");
 
   // Resolve the entry intent once: new-from-overview › open-specific › recency.
   const [resolved, setResolved] = createSignal(false);
@@ -73,7 +72,9 @@ export function ChatRoomScreen(): JSX.Element {
     if (resolved()) return;
     const draft = consumePendingDraft();
     if (draft) {
-      setSelectedModel(draft.model);
+      // Only adopt an explicit pick — an empty draft (discovery not yet resolved
+      // on the overview) must not clobber the operator's sticky selection.
+      if (draft.model) setSelectedModel(draft.model);
       setCurrentId(null);
       queueMicrotask(() => void stream.send(draft.text));
       setResolved(true);

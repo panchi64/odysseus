@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -67,3 +68,54 @@ def build_chain(specs: Sequence[EndpointSpec]) -> Model:
     if len(models) == 1:
         return models[0]
     return FallbackModel(*models)
+
+
+async def discover_models(base_url: str, api_key: str | None = None) -> list[str]:
+    """Discover the model ids a provider advertises.
+
+    Hits the OpenAI-style ``GET {base_url}/models`` — the de-facto standard most
+    OpenAI-compatible servers (Ollama, vLLM, LM Studio, …) expose — and parses
+    the common response shapes defensively, so providers that instead return a
+    ``models`` array (or a bare list) still resolve. Returns the ids de-duplicated
+    and sorted; raises ``DegradedCapabilityError`` when the provider can't be
+    reached or advertises nothing parseable, so the caller can fall back to the
+    endpoint's configured model.
+    """
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key and api_key != "not-needed" else {}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise DegradedCapabilityError(f"could not list models from {base_url!r}: {exc}") from exc
+    ids = _extract_model_ids(payload)
+    if not ids:
+        raise DegradedCapabilityError(f"{base_url!r} advertised no models")
+    return ids
+
+
+def _extract_model_ids(payload: object) -> list[str]:
+    """Pull model identifiers out of the shapes providers return.
+
+    OpenAI/Anthropic: ``{"data": [{"id": …}]}``. Gemini/Cohere/Ollama-native:
+    ``{"models": [{"id" | "name": …}]}``. Some servers return a bare list, of
+    dicts or of strings. A ``models/`` name prefix (Gemini) is stripped.
+    """
+    rows: object = payload
+    if isinstance(payload, dict):
+        rows = payload.get("data") or payload.get("models") or []
+    if not isinstance(rows, list):
+        return []
+    ids: list[str] = []
+    for row in rows:
+        if isinstance(row, str):
+            ident: str | None = row
+        elif isinstance(row, dict):
+            ident = row.get("id") or row.get("name")
+        else:
+            ident = None
+        if isinstance(ident, str) and ident:
+            ids.append(ident.removeprefix("models/"))
+    return sorted(dict.fromkeys(ids))

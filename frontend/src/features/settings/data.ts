@@ -1,6 +1,6 @@
 import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
-import { refreshModelOptions } from "~/features/chat/data";
+import { refreshModelOptions } from "~/lib/stores/models";
 import type { EndpointInput, ModelEndpoint, RoleBindings } from "./model";
 
 /* ── Backend DTOs ─────────────────────────────────────────────────────────── */
@@ -9,7 +9,7 @@ interface EndpointView {
   id: string;
   name: string;
   base_url: string;
-  model: string;
+  model: string | null;
   has_api_key: boolean;
   context_window: number | null;
   native_tools: boolean;

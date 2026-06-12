@@ -2,6 +2,7 @@ import { Show, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
   Button,
+  Combobox,
   NotConnectedOverlay,
   RegistrationFrame,
   StatusFlag,
@@ -9,6 +10,11 @@ import {
   Text,
 } from "~/ui";
 import { useSession } from "~/lib/stores/session";
+import {
+  effectiveValue,
+  modelPickerGroups,
+  setSelectedModel,
+} from "~/lib/stores/models";
 import { Sidebar } from "./Sidebar";
 import { isConnectedRoute } from "./nav";
 
@@ -35,6 +41,17 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
             </Text>
           </div>
           <div class="flex items-center gap-3">
+            <Combobox
+              groups={modelPickerGroups()}
+              value={effectiveValue()}
+              onChange={setSelectedModel}
+              leading="cpu"
+              align="right"
+              placeholder="NO MODEL"
+              searchPlaceholder="Search models…"
+              emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
+              aria-label="Active model"
+            />
             <Text variant="label" tone="dim">
               OPERATOR
             </Text>

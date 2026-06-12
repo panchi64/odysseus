@@ -1,12 +1,12 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import {
+  Combobox,
   Composer,
   EmptyState,
   PageHeader,
   Panel,
   Resource,
-  Select,
   StatusFlag,
   Text,
   type Status,
@@ -16,16 +16,19 @@ import type { ServiceHealth } from "../mocks";
 import { RecentThreadCard } from "../components/RecentThreadCard";
 import { SystemStrip } from "../components/SystemStrip";
 // The overview is a launchpad INTO chat, so it reads the chat feature's data
-// seam directly (one source of truth for threads, models, and entry intents).
+// seam directly (one source of truth for threads and entry intents). The model
+// selection is global app state, shared with the top-bar picker.
 import {
   entrySessionId,
-  modelOptions,
   openConversation,
-  selectedModel,
-  setSelectedModel,
   startConversation,
   useChatSessions,
 } from "~/features/chat/data";
+import {
+  effectiveValue,
+  modelPickerGroups,
+  setSelectedModel,
+} from "~/lib/stores/models";
 
 /** Derives the worst-case status from the service list for the ALL SYSTEMS flag. */
 function computeOverallStatus(svcs: ServiceHealth[]): Status {
@@ -64,7 +67,7 @@ export function DashboardScreen(): JSX.Element {
   };
 
   const handleStart = (text: string) => {
-    startConversation(text, selectedModel());
+    startConversation(text, effectiveValue());
     navigate("/chat");
   };
   const openThread = (id: string) => {
@@ -96,10 +99,14 @@ export function DashboardScreen(): JSX.Element {
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
             controls={
-              <Select
-                options={modelOptions()}
-                value={selectedModel()}
+              <Combobox
+                groups={modelPickerGroups()}
+                value={effectiveValue()}
                 onChange={setSelectedModel}
+                leading="cpu"
+                placeholder="NO MODEL"
+                searchPlaceholder="Search models…"
+                emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
                 aria-label="Model"
               />
             }

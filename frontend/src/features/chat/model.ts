@@ -119,12 +119,6 @@ export interface ChatSummary {
   model?: string;
 }
 
-/** A model/endpoint the user can pick for a conversation. */
-export interface ModelOption {
-  value: string;
-  label: string;
-}
-
 /** One decision in an approval response (mirrors the backend's shape). */
 export interface ApprovalDecision {
   tool_call_id: string;

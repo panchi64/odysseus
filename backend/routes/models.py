@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.exceptions import NotFoundError
+from core.exceptions import DegradedCapabilityError, NotFoundError
 from models.registry import ModelEndpoint
 from routes import deps
 from routes.deps import OPERATOR_ID
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/models", tags=["models"])
 class EndpointCreate(BaseModel):
     name: str
     base_url: str
-    model: str
+    model: str | None = None
     api_key: str | None = None
     context_window: int | None = None
     native_tools: bool = True
@@ -46,7 +46,7 @@ class EndpointView(BaseModel):
     id: str
     name: str
     base_url: str
-    model: str
+    model: str | None
     has_api_key: bool
     context_window: int | None
     native_tools: bool
@@ -87,6 +87,24 @@ async def get_endpoint(endpoint_id: str, request: Request) -> EndpointView:
     except NotFoundError:
         raise HTTPException(status_code=404, detail="endpoint not found") from None
     return _view(endpoint)
+
+
+class EndpointModels(BaseModel):
+    models: list[str]
+    # False when the provider has no models API (or is unreachable) — the picker
+    # then falls back to the endpoint's configured model instead of a live list.
+    supported: bool
+
+
+@router.get("/endpoints/{endpoint_id}/models", response_model=EndpointModels)
+async def list_endpoint_models(endpoint_id: str, request: Request) -> EndpointModels:
+    try:
+        models = await deps.models(request).list_provider_models(OPERATOR_ID, endpoint_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="endpoint not found") from None
+    except DegradedCapabilityError:
+        return EndpointModels(models=[], supported=False)
+    return EndpointModels(models=models, supported=True)
 
 
 @router.patch("/endpoints/{endpoint_id}", response_model=EndpointView)

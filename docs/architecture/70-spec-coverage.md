@@ -14,7 +14,7 @@
 | 🔭 | **Deferred by decision** — design is settled (a D-number), build is deliberately held until its feature/seam is in scope. The seam is reserved; this is *not* an oversight. |
 | ⬜ | **Pending** — capability/feature not yet started. |
 
-**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, and the code-execution sandbox (active). The long tail — most feature surfaces (mail, calendar, documents, research, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
+**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, the code-execution sandbox (built — per-conversation live session, host-isolated, fail-closed), and the first surfaces on top of it — encrypted **artifacts** + live **previews** (token-gated reverse proxy) and a **conversation** read/manage layer. The long tail — most feature surfaces (mail, calendar, documents, research, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
 
 ---
 
@@ -28,7 +28,7 @@
 | XC-SEC-4 password derives the at-rest key (login == unlock) | ✅ | `core/vault` (Argon2id KDF → memory-only DEK) | One event, no separate credential store. |
 | XC-SEC-5 untrusted external content marked as data | 🔭 | — | Technique decided (D11: `wrap_untrusted` + reinjected system prompt); no untrusted-content path exists yet (web/uploads/mail unbuilt). Lands with the first ingester. |
 | XC-SEC-6 every record owner-stamped | ✅ | `owner_id` on every `models/` entity | Multi-user enforcement deferred (one human). |
-| XC-SEC-7 agent code exec isolated from host; disabled if no sandbox | 🟢 | `services/sandbox`, `tools/code.py` | **Active build.** Fail-closed; never host fallback (D23). |
+| XC-SEC-7 agent code exec isolated from host; disabled if no sandbox | ✅ | `services/sandbox`, `tools/code.py` | Container backend; fail-closed (no runtime ⇒ capability absent), never host fallback (D23). Per-conversation live session, idle-reaped, vault-sealed workspace. |
 
 ## Cross-cutting — Config / Portability / Data (`XC-CFG-*`, `XC-PORT-*`, `XC-DATA-*`)
 
@@ -64,13 +64,13 @@
 | AE-1.4 in-turn self-check of deliverables | ✅ | system prompt + the `AE-5.2` verifier | Systemic counterpart below. |
 | AE-1.5 max-step bound, report on hit | ✅ | engine step ceiling | |
 | AE-1.6 optional per-turn tool-call ceiling | 🟡 | run bounds | SHOULD; ceiling seam present, not fully wired. |
-| AE-2 tool categories | 🟡 | `tools/` (`builtin`, `memory`, `code`) | 3 of ~14 categories built; rest land with their capability. See [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md). |
+| AE-2 tool categories | 🟡 | `tools/` (`builtin`, `memory`, `code`, `preview`) | 4 of ~14 categories built; rest land with their capability. See [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md). |
 | AE-2.1 typed params + arg validation | ✅ | Pydantic AI tool schemas | |
 | AE-2.2 tool always returns actionable result; failure ≠ abort | ✅ | tools return error payloads, not raises | memory/code tools model this. |
 | AE-3.1 sensitive set requires explicit approval | ✅ | D20 deferred-tool pause; `tools/code.py` host tool | Mechanism built; expands as sensitive tools land. |
 | AE-3.2 approval channel per run; pause unattended | 🟡 | inline approval + `/runs/{id}/approve` | Interactive path ✅; unattended push/email channel ⬜. |
 | AE-3.3 operator can disable individual tools | ✅ | `tools/toolsets` `_enabled_gate` | |
-| AE-3.4 host-exec approval carries plain-language explanation | 🟢 | `tools/code.py` `run_host_command(explanation=…)` | **Active build** (D23). |
+| AE-3.4 host-exec approval carries plain-language explanation | ✅ | `tools/code.py` `run_host_command(explanation=…)` | Explanation surfaced on `approval.required` (D23). |
 | AE-3.5 scheduled-task pre-authorization (scoped standing grant) | 🔭 | — | Designed (D24); lands with `TASK-*`. |
 | AE-3.6 external tools sensitive-by-default + trusted opt-out | 🔭 | — | Designed (D25); lands with `MCP-*`/`INTEG-*`. |
 | AE-4.1 lean catalog, no runtime relevance filter | ✅ | `tools/toolsets` (no `.prepared()` step) | By design (D3); seam reserved. |
@@ -92,12 +92,16 @@
 
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
-| CHAT-1 send text/links/files, streamed reply | 🟡 | `routes/chat`, run substrate | Text+stream ✅; attachments/links ⬜ (D22). |
+| CHAT-1 send text/links/files, streamed reply | 🟡 | `routes/chat`, run substrate, `services/conversations` | Text+stream+persistence ✅; attachments/links ⬜ (D22). |
 | CHAT-2 links/files as model context | 🔭 | — | Deferred (D22, ingestion pipeline). |
 | CHAT-3 every message runs the agent path | ✅ | `agent/engine` single path | No pre-classification (D5). |
 | CHAT-4 summarize near context limit (utility model) | 🔭 | — | With `AE-5.4` (D6). Utility role already exists in the registry. |
 | CHAT-5 stop in-progress; resume after disconnect | ✅ | `/runs/{id}/cancel`, `runs/stream` | |
 | CHAT-6 ask AI to rewrite/rephrase a message | ⬜ | — | SHOULD; not built. |
+
+> **Supporting infra, not a named spec feature:** a **conversation read/manage surface** (`services/conversations` write-behind store, `services/conversation_view` projection, `/conversations/*`) backs the chat features — list summaries, read render-ready history projected from full-fidelity `ModelMessage` blobs, rename, delete. Conversation content is encrypted at rest (`XC-SEC-3`). A "supporting utility" per spec §inventory-tail.
+>
+> **Supporting infra, on top of the sandbox:** **artifacts + previews** (`services/artifacts`, `tools/preview`, `/artifacts/*`, `/previews/{token}/*`). `publish_artifact` captures a sandbox file into an encrypted store and serves it back inert (sandboxing CSP + `nosniff`); `start_preview`/`stop_preview` run a live server in the sandbox, reverse-proxied over a token-gated subtree (HTTP + WebSocket) into an opaque-origin iframe. Not a named spec feature; it is the agent's render surface for sandboxed output and a building block toward `DOC-*`/`RUN-1`-class display. Distinct from `RUN-1` (which is an in-browser, host-free snippet runner — still ⬜).
 
 ## Feature inventory — B. Knowledge & content
 
@@ -138,7 +142,7 @@
 | INTEG-1…3 third-party integrations | ⬜ | — | Gating designed (D25). |
 | AUDIO-1…2 TTS / STT | ⬜ | — | |
 
-> **Supporting infra, not a spec feature:** the **model role→endpoint registry** (`services/registry`, `models/registry`, `/models/*`) is the single source of truth for model resolution — named roles (`main`/`utility`/`embedding`) → ordered `FallbackModel` chains, per-conversation `main` override, API keys encrypted at rest. It realizes **D16** and directly backs `AE-5.3`, `CHAT-4`, and `EMB-*`.
+> **Supporting infra, not a spec feature:** the **model role→endpoint registry** (`services/registry`, `models/registry`, `/models/*`) is the single source of truth for model resolution — named roles (`main`/`utility`/`embedding`) → ordered `FallbackModel` chains, per-conversation `main` override (a provider **and** a model on it), API keys encrypted at rest. An **endpoint is a provider connection** (model optional); its served models are **discovered at runtime** from the provider's models API (`GET /models/endpoints/{id}/models`, parsed across OpenAI/Gemini/Ollama-style shapes), so the chat model is chosen from a top-bar picker rather than baked per endpoint. It realizes **D16** and directly backs `AE-5.3`, `CHAT-4`, and `EMB-*`.
 
 ## Feature inventory — E. Security & operations
 
@@ -173,12 +177,11 @@ The orchestrator (`research/`) is a stub; the build approach is decided (**D19**
 
 ## What this says about "next"
 
-The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
+The code-execution sandbox is now in (`XC-SEC-7`/`AE-3.4` ✅), with artifacts + previews riding on top. The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
 
-1. **Finish the code-execution sandbox** (🟢 in flight) — completes `XC-SEC-7` / `AE-3.4` and unlocks the `code` category end to end.
-2. **Web search capability** (`SEARCH-*`) — unblocks `XC-DEG-2`, the agent's web tools, *and* all of deep research (`DR-*`) at once.
-3. **The scheduler** (`TASK-*` + D13) — turns `AE-3.5`/D24 pre-authorization from design into running unattended automation, reusing the approval mechanism already built.
-4. **Uploads/attachments** (`UP-*` / D22) — unblocks `CHAT-1`/`CHAT-2` and feeds `RAG-*`, and is the first consumer of the `XC-SEC-5` untrusted-content marking.
+1. **Web search capability** (`SEARCH-*`) — unblocks `XC-DEG-2`, the agent's web tools, *and* all of deep research (`DR-*`) at once.
+2. **The scheduler** (`TASK-*` + D13) — turns `AE-3.5`/D24 pre-authorization from design into running unattended automation, reusing the approval mechanism already built.
+3. **Uploads/attachments** (`UP-*` / D22) — unblocks `CHAT-1`/`CHAT-2` and feeds `RAG-*`, and is the first consumer of the `XC-SEC-5` untrusted-content marking.
 
 Each is additive over the foundation, not a rebuild — which is the whole point of having spent the early passes on the chassis.
 

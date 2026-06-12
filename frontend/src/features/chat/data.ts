@@ -8,7 +8,7 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
-import { useSession } from "~/lib/stores/session";
+import { effectiveSelection } from "~/lib/stores/models";
 import { streamRun, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
@@ -19,7 +19,6 @@ import type {
   ChatSummary,
   HostCommand,
   HostCommandPhase,
-  ModelOption,
   ToolInvocation,
 } from "./model";
 
@@ -44,58 +43,6 @@ export function isWarm(iso: string, now = Date.now()): boolean {
 export function entrySessionId(list: ChatSummary[]): string | null {
   const warm = list.find((s) => isWarm(s.updatedAt));
   return warm ? warm.id : null;
-}
-
-/* ── Selected model/endpoint (sticky across surfaces) ──────────────────────────
-   The value is a backend endpoint id, or "" to let the backend resolve the
-   `main` role. Endpoints are configured in Settings; the picker writes here. */
-
-const MODEL_KEY = "ody.chat.endpoint";
-const [_model, _setModel] = createSignal<string>(readLS(MODEL_KEY) ?? "");
-export const selectedModel = _model;
-export function setSelectedModel(model: string): void {
-  _setModel(model);
-  writeLS(MODEL_KEY, model);
-}
-
-interface EndpointDTO {
-  id: string;
-  name: string;
-}
-
-const DEFAULT_OPTION: ModelOption = { value: "", label: "DEFAULT (MAIN)" };
-// Starts at 1 so the resource source is truthy once authenticated; refresh()
-// bumps it. (createResource skips a falsy source — which is how we gate it.)
-const [_modelsTick, _setModelsTick] = createSignal(1);
-const _session = useSession();
-
-async function fetchModelOptions(): Promise<ModelOption[]> {
-  try {
-    const eps = await api.get<EndpointDTO[]>("/models/endpoints");
-    return [
-      DEFAULT_OPTION,
-      ...eps.map((e) => ({ value: e.id, label: e.name })),
-    ];
-  } catch {
-    return [DEFAULT_OPTION];
-  }
-}
-
-// This module loads before the operator unlocks, so the source stays `false`
-// until authenticated — no `/models/endpoints` call fires pre-auth (it would
-// 401). It re-fetches automatically when the session flips to unlocked.
-const [_modelOptions] = createResource(
-  () => (_session.isAuthenticated ? _modelsTick() : false),
-  fetchModelOptions,
-);
-
-export function modelOptions(): ModelOption[] {
-  return _modelOptions.latest ?? [DEFAULT_OPTION];
-}
-
-/** Re-read the endpoint list (e.g. after Settings adds one). */
-export function refreshModelOptions(): void {
-  _setModelsTick((t) => t + 1);
 }
 
 /* ── Pinned threads (non-recency ordering) ────────────────────────────────── */
@@ -603,11 +550,12 @@ export function createChatStream(
       content: text.trim(),
       createdAt: new Date().toISOString(),
     };
+    const selection = effectiveSelection();
     const assistantId = nextId("a");
     const assistantMsg: ChatMessage = {
       id: assistantId,
       role: "assistant",
-      model: selectedModel() || undefined,
+      model: selection?.model,
       content: "",
       streaming: true,
       createdAt: new Date().toISOString(),
@@ -618,7 +566,8 @@ export function createChatStream(
       const created = await api.post<ChatCreatedDTO>("/chat", {
         prompt: text.trim(),
         conversation_id: activeConversationId ?? undefined,
-        model: selectedModel() || undefined,
+        endpoint_id: selection?.endpointId,
+        model: selection?.model,
       });
       activeConversationId = created.conversation_id;
       patchById(assistantId, (m) => (m.runId = created.run_id));

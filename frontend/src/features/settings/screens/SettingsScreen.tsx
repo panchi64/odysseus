@@ -25,7 +25,7 @@ import {
   useEndpoints,
   useRoles,
 } from "../data";
-import { MODEL_ROLES, type ModelEndpoint } from "../model";
+import { BINDABLE_ROLES, type ModelEndpoint } from "../model";
 
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
@@ -60,7 +60,7 @@ export function SettingsScreen(): JSX.Element {
     setEditing(ep);
     setName(ep.name);
     setBaseUrl(ep.baseUrl);
-    setModel(ep.model);
+    setModel(ep.model ?? "");
     setApiKey("");
     setContextWindow(ep.contextWindow != null ? String(ep.contextWindow) : "");
     setNativeTools(ep.nativeTools);
@@ -69,17 +69,16 @@ export function SettingsScreen(): JSX.Element {
     setFormOpen(true);
   };
 
-  const valid = () =>
-    name().trim() !== "" && baseUrl().trim() !== "" && model().trim() !== "";
+  const valid = () => name().trim() !== "" && baseUrl().trim() !== "";
 
   const save = async () => {
     if (!valid() || saving()) return;
     setSaving(true);
     const cw = contextWindow().trim();
+    const m = model().trim();
     const fields = {
       name: name().trim(),
       baseUrl: baseUrl().trim(),
-      model: model().trim(),
       contextWindow: cw ? Number(cw) : null,
       nativeTools: nativeTools(),
       vision: vision(),
@@ -88,14 +87,19 @@ export function SettingsScreen(): JSX.Element {
     try {
       const target = editing();
       if (target) {
-        // Only send the key if the operator typed one (blank = leave unchanged).
+        // Only send key/model if the operator typed one (blank = leave unchanged).
         await updateEndpoint(target.id, {
           ...fields,
+          ...(m ? { model: m } : {}),
           ...(apiKey() ? { apiKey: apiKey() } : {}),
         });
         toast.success("Endpoint updated");
       } else {
-        await createEndpoint({ ...fields, apiKey: apiKey() || undefined });
+        await createEndpoint({
+          ...fields,
+          model: m || undefined,
+          apiKey: apiKey() || undefined,
+        });
         toast.success("Endpoint added");
       }
       setFormOpen(false);
@@ -201,7 +205,7 @@ export function SettingsScreen(): JSX.Element {
               <EmptyState
                 icon="cpu"
                 message="NO ENDPOINTS"
-                hint="Add an OpenAI-compatible endpoint, then bind it to a role below."
+                hint="Add an OpenAI-compatible endpoint to pick its models from the top bar."
               />
             }
           >
@@ -230,7 +234,7 @@ export function SettingsScreen(): JSX.Element {
                         </Show>
                       </Row>
                       <Text variant="micro" tone="dim" class="truncate">
-                        {ep.model} · {ep.baseUrl}
+                        {ep.model ? `${ep.model} · ${ep.baseUrl}` : ep.baseUrl}
                       </Text>
                     </Stack>
                     <span class="flex shrink-0 items-center gap-2">
@@ -263,8 +267,9 @@ export function SettingsScreen(): JSX.Element {
         <Stack gap={4}>
           <Text variant="micro" tone="dim">
             Bind endpoints to each role as an ordered fallback chain (first =
-            primary). `main` answers chat; `utility` runs verification;
-            `embedding` powers memory recall.
+            primary). `utility` runs background verification; `embedding` powers
+            memory recall. The chat (`main`) model is chosen from the model
+            picker in the top bar.
           </Text>
           <Show
             when={(endpoints() ?? []).length}
@@ -274,7 +279,7 @@ export function SettingsScreen(): JSX.Element {
               </Text>
             }
           >
-            <For each={MODEL_ROLES}>
+            <For each={BINDABLE_ROLES}>
               {(role) => (
                 <Stack gap={2}>
                   <Text variant="label" tone="bright">
@@ -388,10 +393,11 @@ export function SettingsScreen(): JSX.Element {
             placeholder="http://localhost:11434/v1"
           />
           <Input
-            label="MODEL"
+            label="DEFAULT MODEL (optional)"
             value={model()}
             onInput={(e) => setModel(e.currentTarget.value)}
             placeholder="qwen2.5-coder:32b"
+            hint="Models are discovered from the provider and picked in the top bar. Set a default only as a fallback for providers without a models API."
           />
           <Input
             label={

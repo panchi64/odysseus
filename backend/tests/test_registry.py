@@ -72,6 +72,27 @@ async def test_main_override_picks_a_specific_endpoint():
     assert model.model_name == "p"
 
 
+async def test_main_override_with_model_picks_that_model():
+    reg = await _registry()
+    # The endpoint is a bare provider connection (no baked model); the picker
+    # supplies the specific model it discovered from the provider.
+    ep = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1")
+    model = await reg.resolve(
+        "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="qwen-72b"
+    )
+    assert isinstance(model, OpenAIChatModel)
+    assert model.model_name == "qwen-72b"
+
+
+async def test_modelless_endpoint_without_override_is_degraded():
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1")
+    await reg.set_role(OWNER, "main", [ep.id])
+    # No baked model and no picker override → nothing to run.
+    with pytest.raises(DegradedCapabilityError):
+        await reg.resolve("main", owner_id=OWNER)
+
+
 async def test_unconfigured_role_is_degraded():
     reg = await _registry()
     # No endpoints, no bindings → degraded; the registry is the only source of
@@ -147,3 +168,53 @@ async def test_rest_rejects_unknown_role_and_missing_endpoint():
         assert bad_role.status_code == 422
         missing = await client.put("/models/roles/main", json={"endpoint_ids": ["nope"]})
         assert missing.status_code == 404
+
+
+async def test_model_discovery_lists_provider_models(monkeypatch):
+    async def fake_list(self, owner_id, endpoint_id):
+        return ["gpt-4o", "gpt-4o-mini"]
+
+    monkeypatch.setattr(ModelRegistry, "list_provider_models", fake_list)
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints", json={"name": "local", "base_url": "http://x/v1"}
+            )
+        ).json()
+        # The endpoint was created with no model — the picker discovers them.
+        assert ep["model"] is None
+        resp = await client.get(f"/models/endpoints/{ep['id']}/models")
+        assert resp.status_code == 200
+        assert resp.json() == {"models": ["gpt-4o", "gpt-4o-mini"], "supported": True}
+
+
+async def test_model_discovery_degrades_when_provider_has_no_models_api(monkeypatch):
+    async def fake_list(self, owner_id, endpoint_id):
+        raise DegradedCapabilityError("no models API")
+
+    monkeypatch.setattr(ModelRegistry, "list_provider_models", fake_list)
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints", json={"name": "local", "base_url": "http://x/v1"}
+            )
+        ).json()
+        resp = await client.get(f"/models/endpoints/{ep['id']}/models")
+        assert resp.status_code == 200
+        # Unsupported, not an error — the picker falls back to the configured model.
+        assert resp.json() == {"models": [], "supported": False}
+
+
+def test_extract_model_ids_handles_provider_shapes():
+    from services.llm import _extract_model_ids
+
+    # OpenAI / Anthropic: {"data": [{"id": …}]}
+    assert _extract_model_ids({"data": [{"id": "b"}, {"id": "a"}]}) == ["a", "b"]
+    # Gemini / Cohere / Ollama-native: {"models": [{"name": …}]}, "models/" stripped.
+    assert _extract_model_ids({"models": [{"name": "models/gemini-1.5-pro"}]}) == [
+        "gemini-1.5-pro"
+    ]
+    # Bare list of strings, de-duplicated.
+    assert _extract_model_ids(["qwen", "llama3", "qwen"]) == ["llama3", "qwen"]
+    # Nothing parseable.
+    assert _extract_model_ids({"object": "list", "data": []}) == []

@@ -24,7 +24,10 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatCreate(BaseModel):
     prompt: str
     conversation_id: str | None = None  # continue an existing conversation
-    model: str | None = None  # per-conversation `main` override: an endpoint id
+    # Per-conversation `main` override from the chat picker: which provider
+    # (`endpoint_id`) and which model on it (`model`, discovered from the provider).
+    endpoint_id: str | None = None
+    model: str | None = None
 
 
 class ChatCreated(BaseModel):
@@ -43,7 +46,10 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     registry = deps.models(request)
     try:
         model = await registry.resolve(
-            "main", owner_id=OPERATOR_ID, override_endpoint_id=body.model
+            "main",
+            owner_id=OPERATOR_ID,
+            override_endpoint_id=body.endpoint_id,
+            override_model=body.model,
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="model endpoint not found") from None

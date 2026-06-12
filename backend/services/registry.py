@@ -66,7 +66,7 @@ class ModelRegistry:
         *,
         name: str,
         base_url: str,
-        model: str,
+        model: str | None = None,
         api_key: str | None = None,
         context_window: int | None = None,
         native_tools: bool = True,
@@ -180,10 +180,17 @@ class ModelRegistry:
     # --- resolution -------------------------------------------------------
 
     async def resolve(
-        self, role: str, *, owner_id: str, override_endpoint_id: str | None = None
+        self,
+        role: str,
+        *,
+        owner_id: str,
+        override_endpoint_id: str | None = None,
+        override_model: str | None = None,
     ) -> Model:
         """Resolve ``role`` to a model: per-conversation ``main`` override →
-        the role's chain → ``utility``'s fall-through to ``main``. Wraps a
+        the role's chain → ``utility``'s fall-through to ``main``. The chat picker
+        overrides ``main`` with a provider (``override_endpoint_id``) and a specific
+        model on it (``override_model``, discovered from the provider). Wraps a
         multi-endpoint chain in ``FallbackModel`` (AE-5.3). An unconfigured role
         is a degraded capability — the registry is the only source of truth."""
         if role not in llm.ROLES:
@@ -191,7 +198,7 @@ class ModelRegistry:
 
         if override_endpoint_id is not None and role == "main":
             endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
-            return llm.build_chain([self._to_spec(endpoint, role)])
+            return llm.build_chain([self._to_spec(endpoint, role, model_override=override_model)])
 
         chain_ids = await self.get_role(owner_id, role)
         if not chain_ids and role == "utility":
@@ -214,11 +221,27 @@ class ModelRegistry:
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
         return self._to_spec(endpoint, "embedding")
 
-    def _to_spec(self, endpoint: ModelEndpoint, role: str) -> llm.EndpointSpec:
+    async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:
+        """Ask the endpoint's provider which models it serves (the chat picker's
+        dynamic list). Raises ``NotFoundError`` for an unknown endpoint and
+        ``DegradedCapabilityError`` when the provider can't be reached or exposes
+        no models API — the caller falls back to the endpoint's configured model."""
+        endpoint = await self.get_endpoint(owner_id, endpoint_id)
+        api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
+        return await llm.discover_models(endpoint.base_url, api_key)
+
+    def _to_spec(
+        self, endpoint: ModelEndpoint, role: str, *, model_override: str | None = None
+    ) -> llm.EndpointSpec:
         if role in llm.TOOL_CALLING_ROLES and not endpoint.native_tools:
             raise DegradedCapabilityError(
                 f"role {role!r} requires native tool-calling, but endpoint "
                 f"{endpoint.name!r} does not support it"
+            )
+        model = model_override or endpoint.model
+        if not model:
+            raise DegradedCapabilityError(
+                f"endpoint {endpoint.name!r} has no model configured and none was selected"
             )
         api_key = (
             self._vault.decrypt_str(endpoint.api_key_enc)
@@ -227,7 +250,7 @@ class ModelRegistry:
         )
         return llm.EndpointSpec(
             base_url=endpoint.base_url,
-            model=endpoint.model,
+            model=model,
             api_key=api_key,
             context_window=endpoint.context_window,
             native_tools=endpoint.native_tools,

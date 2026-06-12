@@ -9,7 +9,7 @@ from services.registry import ModelRegistry
 from ._helpers import client_app, collect_sse_events
 
 
-async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
+async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
     """Stand in for registry resolution — a TestModel needs no real server.
 
     ``call_tools=[]`` keeps this a plain text turn: the default catalog now holds

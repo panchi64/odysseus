@@ -8,7 +8,9 @@ export interface ModelEndpoint {
   id: string;
   name: string;
   baseUrl: string;
-  model: string;
+  /** Default/fallback model. Null when the provider's models are discovered
+   *  dynamically (the top-bar picker) and no default was set. */
+  model: string | null;
   /** Whether a key is stored — the value is write-only and never returned. */
   hasApiKey: boolean;
   contextWindow: number | null;
@@ -17,12 +19,12 @@ export interface ModelEndpoint {
   thinking: boolean;
 }
 
-/** Form values for creating/updating an endpoint. `apiKey` omitted = unchanged;
- *  "" = clear. */
+/** Form values for creating/updating an endpoint. `apiKey`/`model` omitted =
+ *  unchanged; `apiKey: ""` clears the key. */
 export interface EndpointInput {
   name: string;
   baseUrl: string;
-  model: string;
+  model?: string;
   apiKey?: string;
   contextWindow: number | null;
   nativeTools: boolean;
@@ -30,9 +32,13 @@ export interface EndpointInput {
   thinking: boolean;
 }
 
-/** The named roles the agent resolves through ordered endpoint chains. */
+/** The named roles the agent resolves through ordered endpoint chains. `main`
+ *  (chat) is chosen from the top-bar model picker, not bound here. */
 export const MODEL_ROLES = ["main", "utility", "embedding"] as const;
 export type ModelRole = (typeof MODEL_ROLES)[number];
+
+/** Roles still bound in Settings — `main` is driven by the top-bar picker. */
+export const BINDABLE_ROLES = ["utility", "embedding"] as const;
 
 /** role → ordered endpoint ids (a FallbackModel chain). */
 export type RoleBindings = Record<string, string[]>;

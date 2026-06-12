@@ -83,6 +83,12 @@ export {
   type SelectProps,
   type SelectOption,
 } from "./components/Select";
+export {
+  Combobox,
+  type ComboboxProps,
+  type ComboboxGroup,
+  type ComboboxOption,
+} from "./components/Combobox";
 export { Checkbox, type CheckboxProps } from "./components/Checkbox";
 export { Toggle, type ToggleProps } from "./components/Toggle";
 export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";

@@ -36,7 +36,10 @@ class ModelEndpoint(SQLModel, table=True):
     owner_id: str = Field(index=True)
     name: str
     base_url: str
-    model: str
+    # The endpoint is a provider connection; ``model`` is the default/fallback used
+    # when the chat picker doesn't override it and the provider's models API isn't
+    # available. Optional — the picker discovers models from the provider at runtime.
+    model: str | None = None
     # App-layer AEAD ciphertext of the API key; None ⇒ no key (local servers).
     api_key_enc: str | None = None
     context_window: int | None = None

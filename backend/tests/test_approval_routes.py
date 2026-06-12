@@ -17,7 +17,7 @@ from ._helpers import client_app, collect_sse_events
 def _install_sensitive_tool(monkeypatch):
     """Point the model at a TestModel and give it one approval-required tool."""
 
-    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
+    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
         return TestModel(custom_output_text="done")
 
     def danger_categories():

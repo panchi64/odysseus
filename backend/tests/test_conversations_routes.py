@@ -19,7 +19,7 @@ from services.registry import ModelRegistry
 from ._helpers import client_app, collect_sse_events
 
 
-async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None):
+async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
     """A plain text turn with no tool calls — keeps the stream completable."""
     return TestModel(custom_output_text="hello there", call_tools=[])
 
