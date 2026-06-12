@@ -1,10 +1,10 @@
 import { For, type JSX } from "solid-js";
 import { Marquee, Text, cx } from "~/ui";
-import type { ServiceHealth, SystemStat } from "../mocks";
+import type { CapabilityHealth, SystemStat } from "../model";
 
-/** Maps a non-nominal service to its semantic dot color; nominal stays dim so a
- *  healthy strip is fully monochrome. */
-const dotClass: Record<ServiceHealth["status"], string> = {
+/** Maps a non-nominal capability to its semantic dot color; nominal stays dim so
+ *  a healthy strip is fully monochrome. */
+const dotClass: Record<CapabilityHealth["status"], string> = {
   nominal: "bg-dim",
   warn: "bg-warn",
   alert: "bg-alert",
@@ -12,7 +12,7 @@ const dotClass: Record<ServiceHealth["status"], string> = {
 
 export interface SystemStripProps {
   band: SystemStat[];
-  services: ServiceHealth[];
+  capabilities: CapabilityHealth[];
 }
 
 /**
@@ -45,21 +45,21 @@ export function SystemStrip(props: SystemStripProps): JSX.Element {
             class="inline-block h-3 w-px shrink-0 bg-line"
             aria-hidden="true"
           />
-          <For each={props.services}>
-            {(svc) => (
+          <For each={props.capabilities}>
+            {(cap) => (
               <span class="inline-flex items-center gap-1">
                 <span
                   class={cx(
                     "inline-block size-1.5 rounded-full",
-                    dotClass[svc.status],
+                    dotClass[cap.status],
                   )}
                   aria-hidden="true"
                 />
                 <Text
                   variant="label"
-                  tone={svc.status === "nominal" ? "dim" : svc.status}
+                  tone={cap.status === "nominal" ? "dim" : cap.status}
                 >
-                  {svc.name}
+                  {cap.label}
                 </Text>
               </span>
             )}

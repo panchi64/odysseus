@@ -251,11 +251,15 @@ export function flattenNav(nav: NavSection[] = NAV): NavMatch[] {
 
 /** Whether a route path is backed by the real backend (vs. a mock-only surface).
  *  Drives the NOT CONNECTED overlay. Matches a connected nav item's href exactly
- *  or as a path prefix (so detail routes like `/chat/x` count as connected). */
+ *  or as a path prefix (so detail routes like `/chat/x` count as connected). The
+ *  home route (`/`) has no nav entry — it's the launchpad — but is itself
+ *  connected (the composer/threads via the chat seam, the status panels via
+ *  `/overview` + `/runs`), so it's treated as connected here. */
 export function isConnectedRoute(
   pathname: string,
   nav: NavSection[] = NAV,
 ): boolean {
+  if (pathname === "/") return true;
   return flattenNav(nav).some(
     ({ item }) =>
       item.connected &&

@@ -26,6 +26,7 @@ from routes import (
     health,
     memory,
     models,
+    overview,
     previews,
     runs,
 )
@@ -146,6 +147,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(runs.router)
     app.include_router(chat.router)
     app.include_router(conversations.router)
+    app.include_router(overview.router)
     app.include_router(models.router)
     app.include_router(memory.router)
     app.include_router(artifacts.router)

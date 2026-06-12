@@ -37,7 +37,7 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
               LINK
             </StatusFlag>
             <Text variant="micro" tone="dim">
-              UPLINK 12MS · LOCAL
+              LOCAL
             </Text>
           </div>
           <div class="flex items-center gap-3">

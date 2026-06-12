@@ -46,7 +46,7 @@
 |---|---|---|---|
 | XC-DEG-1 vector search → keyword fallback | ✅ | `services/memory` (hybrid, RRF; degrades to keyword) | Honored end to end (D18-as-built). |
 | XC-DEG-2 web search unavailable → clear state, no hang | ⬜ | — | Web search not built. |
-| XC-DEG-3 external-service health observable | ⬜ | `/health` (liveness only) | Per-capability health (vector/search/mail/push/endpoints) pending. |
+| XC-DEG-3 external-service health observable | 🟡 | `routes/overview.py` (`GET /overview`: per-capability health for main model / embeddings / sandbox — backend-decided status + remediation) + `/health` (liveness) | The home page renders these. Capabilities not yet built (web search, email, push, vector store) are deferred — they grow rows here as they land. |
 | XC-PERF-1 hung request killed by server-side timeout | ✅ | `runs/registry` (wall-clock bound) | |
 | XC-PERF-2 stalled model cut by inactivity + wall-clock | ✅ | `runs/registry` (`RunTimeout` kinds: `inactivity`, `wall_clock`) | Watchdog on `Run.touch()`. |
 | XC-PERF-3 output streams incrementally | ✅ | `runs/transport` (SSE), `answer.delta` | |

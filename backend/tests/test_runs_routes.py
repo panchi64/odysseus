@@ -70,6 +70,36 @@ async def test_cancel_terminal_run_conflicts():
         assert resp.status_code == 409
 
 
+async def test_list_runs_active_only_by_default():
+    async with client_app() as (client, app):
+
+        async def blocked(run):
+            run.emit(AnswerDelta(text="working"))
+            await asyncio.Event().wait()
+
+        async def done(run):
+            return None
+
+        live = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=blocked)
+        finished = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=done)
+        await finished.wait()
+        await asyncio.sleep(0)
+
+        active = (await client.get("/runs")).json()
+        assert {r["id"] for r in active} == {live.id}
+
+        everything = (await client.get("/runs", params={"active": False})).json()
+        assert {finished.id, live.id} <= {r["id"] for r in everything}
+
+        await app.state.runs.cancel(live.id)
+        await live.wait()
+
+
+async def test_list_runs_empty():
+    async with client_app() as (client, _app):
+        assert (await client.get("/runs")).json() == []
+
+
 async def test_unknown_run_is_404():
     async with client_app() as (client, _app):
         assert (await client.get("/runs/nope")).status_code == 404

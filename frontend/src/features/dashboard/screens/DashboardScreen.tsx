@@ -11,8 +11,8 @@ import {
   Text,
   type Status,
 } from "~/ui";
-import { useServices, useSystemBand, useTasks } from "../data";
-import type { ServiceHealth } from "../mocks";
+import { overviewBand, useActiveRuns, useOverview } from "../data";
+import type { CapabilityHealth } from "../model";
 import { RecentThreadCard } from "../components/RecentThreadCard";
 import { SystemStrip } from "../components/SystemStrip";
 // The overview is a launchpad INTO chat, so it reads the chat feature's data
@@ -31,22 +31,26 @@ import {
   selectModelByValue,
 } from "~/lib/stores/models";
 
-/** Derives the worst-case status from the service list for the ALL SYSTEMS flag. */
-function computeOverallStatus(svcs: ServiceHealth[]): Status {
-  if (svcs.some((s) => s.status === "alert")) return "alert";
-  if (svcs.some((s) => s.status === "warn")) return "warn";
+/** Overall status for the header flag. Any down capability is an alert; a
+ *  degraded *critical* capability is a warning. Non-critical degradations
+ *  (e.g. keyword-only recall) stay off the top-level flag but still show as
+ *  dots in the strip — the backend's `critical` flag is the severity policy. */
+function computeOverallStatus(caps: CapabilityHealth[]): Status {
+  if (caps.some((c) => c.status === "alert")) return "alert";
+  if (caps.some((c) => c.critical && c.status === "warn")) return "warn";
   return "nominal";
 }
 
 const RECENT_LIMIT = 6;
 
 /** Home overview as a launchpad: a centered composer to start work, recent
- *  threads to resume it, in-flight tasks, and a subtle system strip. */
+ *  threads to resume it, in-flight runs, and a subtle system strip. Every panel
+ *  reflects real backend state — the composer/threads via the chat seam, the
+ *  facts band + capability health via `/overview`, the in-flight list via `/runs`. */
 export function DashboardScreen(): JSX.Element {
   const navigate = useNavigate();
-  const { data: systemBand, refetch: refetchBand } = useSystemBand();
-  const { data: services } = useServices();
-  const { data: tasks } = useTasks();
+  const { data: overview, refetch: refetchOverview } = useOverview();
+  const { data: runs } = useActiveRuns();
   const sessions = useChatSessions();
 
   // The resume target: the newest still-warm thread (or none).
@@ -57,8 +61,8 @@ export function DashboardScreen(): JSX.Element {
   const recent = createMemo(() => sessions()?.slice(0, RECENT_LIMIT) ?? []);
 
   const overallStatus = (): Status => {
-    const svcs = services();
-    return svcs ? computeOverallStatus(svcs) : "nominal";
+    const o = overview();
+    return o ? computeOverallStatus(o.capabilities) : "nominal";
   };
   const overallLabel = (): string => {
     const s = overallStatus();
@@ -147,31 +151,31 @@ export function DashboardScreen(): JSX.Element {
             </Show>
           </Panel>
 
-          {/* In flight — most subtle: dim unless a task has failed. */}
+          {/* In flight — most subtle: real runs not yet terminal. */}
           <Panel label="IN FLIGHT" flush class="lg:col-span-1">
             <Resource
-              data={tasks}
-              emptyMessage="NO ACTIVE TASKS"
-              isEmpty={(t) => t.length === 0}
+              data={runs}
+              emptyMessage="NO ACTIVE RUNS"
+              isEmpty={(r) => r.length === 0}
             >
               {(list) => (
                 <For each={list()}>
-                  {(task) => (
+                  {(run) => (
                     <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2 last:border-0">
                       <span class="flex min-w-0 items-center gap-2">
                         <Text variant="label" tone="dim">
-                          {task.kind}
+                          {run.kind}
                         </Text>
                         <Text variant="micro" tone="dim" class="truncate">
-                          {task.label}
+                          {run.label}
                         </Text>
                       </span>
                       <Text
                         variant="micro"
-                        tone={task.status === "failed" ? "alert" : "dim"}
+                        tone={run.status === "awaiting_input" ? "warn" : "dim"}
                         class="shrink-0"
                       >
-                        {task.status === "failed" ? "FAILED" : task.detail}
+                        {run.detail}
                       </Text>
                     </div>
                   )}
@@ -183,14 +187,15 @@ export function DashboardScreen(): JSX.Element {
 
         {/* System strip — most subtle; compact, marquees only if it overflows. */}
         <Resource
-          data={systemBand}
-          onRetry={refetchBand}
+          data={overview}
+          onRetry={refetchOverview}
           errorMessage="TELEMETRY UNAVAILABLE"
         >
-          {(band) => (
-            <Show when={services()}>
-              <SystemStrip band={band()} services={services()!} />
-            </Show>
+          {(o) => (
+            <SystemStrip
+              band={overviewBand(o())}
+              capabilities={o().capabilities}
+            />
           )}
         </Resource>
       </div>

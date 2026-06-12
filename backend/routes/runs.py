@@ -57,6 +57,17 @@ def _require_run(request: Request, run_id: str) -> Run:
     return run
 
 
+@router.get("", response_model=list[RunView])
+async def list_runs(request: Request, active: bool = Query(default=True)) -> list[RunView]:
+    """The operator's runs, newest first. ``active=True`` (default) returns only
+    the ones still in flight (not yet terminal) — what the home page surfaces."""
+    runs = deps.registry(request).list(deps.OPERATOR_ID)
+    if active:
+        runs = [r for r in runs if not r.is_terminal]
+    runs.sort(key=lambda r: r.created_at, reverse=True)
+    return [_view(r) for r in runs]
+
+
 @router.get("/{run_id}", response_model=RunView)
 async def get_run(run_id: str, request: Request) -> RunView:
     return _view(_require_run(request, run_id))
