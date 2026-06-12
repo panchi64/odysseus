@@ -57,10 +57,15 @@ async def test_overview_reports_configured_main_model():
     assert main["detail"] == "qwen2.5-32b"
 
 
-async def test_overview_counts_memories():
+async def test_overview_counts_memories_and_conversations():
     async with client_app() as (client, app):
         await app.state.memory.remember("operator", "the operator prefers dark mode")
+        await app.state.memory.remember("operator", "the operator's name is Frank")
+        await app.state.conversations.create_conversation("operator")
+        await app.state.conversations.create_conversation("operator")
+        await app.state.conversations.create_conversation("operator")
         resp = await client.get("/overview")
         body = resp.json()
 
-    assert body["memory_count"] == 1
+    assert body["memory_count"] == 2
+    assert body["conversation_count"] == 3

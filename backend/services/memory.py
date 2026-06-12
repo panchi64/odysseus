@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
 from core.db import in_session
@@ -151,6 +151,16 @@ class MemoryStore:
                 .order_by(Memory.created_at.desc())  # type: ignore[attr-defined]
             ).all()
             return [self._to_view(row, self._vault.decrypt_str(row.content_enc)) for row in rows]
+
+        return await in_session(self._engine, work)
+
+    async def count(self, owner_id: str) -> int:
+        """How many memories the owner has — a scalar count that never decrypts
+        (the overview readout, not the timeline)."""
+        def work(session: Session) -> int:
+            return session.exec(
+                select(func.count()).select_from(Memory).where(Memory.owner_id == owner_id)
+            ).one()
 
         return await in_session(self._engine, work)
 

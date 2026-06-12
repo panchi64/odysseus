@@ -62,8 +62,8 @@ async def get_overview(request: Request) -> Overview:
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
 
-    conversations = await deps.store(request).list_conversations(OPERATOR_ID)
-    memories = await deps.memory(request).list_memories(OPERATOR_ID)
+    conversation_count = await deps.store(request).count_conversations(OPERATOR_ID)
+    memory_count = await deps.memory(request).count(OPERATOR_ID)
     active_runs = [r for r in deps.registry(request).list(OPERATOR_ID) if not r.is_terminal]
 
     capabilities: list[Capability] = []
@@ -117,8 +117,8 @@ async def get_overview(request: Request) -> Overview:
         main_provider=main_endpoint.name if main_endpoint else None,
         context_window=main_endpoint.context_window if main_endpoint else None,
         endpoint_count=len(endpoints),
-        conversation_count=len(conversations),
-        memory_count=len(memories),
+        conversation_count=conversation_count,
+        memory_count=memory_count,
         active_run_count=len(active_runs),
         capabilities=capabilities,
     )

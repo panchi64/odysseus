@@ -406,6 +406,20 @@ class ConversationStore:
         rows = await in_session(self._engine, work)
         return [self._summarize(conv, count, last_enc) for conv, count, last_enc in rows]
 
+    async def count_conversations(self, owner_id: str) -> int:
+        """How many conversations the owner has — a scalar count that loads no
+        rows or previews (the overview readout, not the listing). Conversations
+        are persisted on creation, so this is accurate the moment a turn starts."""
+
+        def work(session: Session) -> int:
+            return session.exec(
+                select(func.count())
+                .select_from(Conversation)
+                .where(Conversation.owner_id == owner_id)
+            ).one()
+
+        return await in_session(self._engine, work)
+
     async def get_summary(
         self, conversation_id: str, owner_id: str
     ) -> ConversationSummaryView | None:
