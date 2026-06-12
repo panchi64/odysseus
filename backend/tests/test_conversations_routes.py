@@ -9,19 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pydantic_ai.models.test import TestModel
-
 from routes.conversations import _message_artifacts
 from services.artifacts import ArtifactView, format_publish_result
 from services.conversation_view import MessageView, ToolView
-from services.registry import ModelRegistry
 
-from ._helpers import client_app, collect_sse_events
-
-
-async def _fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
-    """A plain text turn with no tool calls — keeps the stream completable."""
-    return TestModel(custom_output_text="hello there", call_tools=[])
+from ._helpers import client_app, collect_sse_events, patch_model_resolution
 
 
 async def _start_conversation(client, prompt: str = "say hi") -> str:
@@ -35,7 +27,7 @@ async def _start_conversation(client, prompt: str = "say hi") -> str:
 
 
 async def test_list_conversations(monkeypatch):
-    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
+    patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):
         conversation_id = await _start_conversation(client)
 
@@ -50,7 +42,7 @@ async def test_list_conversations(monkeypatch):
 
 
 async def test_get_conversation_projects_history(monkeypatch):
-    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
+    patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):
         conversation_id = await _start_conversation(client, prompt="say hi")
 
@@ -72,7 +64,7 @@ async def test_get_unknown_conversation_404():
 
 
 async def test_rename_conversation(monkeypatch):
-    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
+    patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):
         conversation_id = await _start_conversation(client)
 
@@ -93,7 +85,7 @@ async def test_rename_unknown_conversation_404():
 
 
 async def test_delete_conversation(monkeypatch):
-    monkeypatch.setattr(ModelRegistry, "resolve", _fake_resolve)
+    patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):
         conversation_id = await _start_conversation(client)
 

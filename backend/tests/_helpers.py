@@ -8,9 +8,31 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+from pydantic_ai.models.test import TestModel
 
 from app import create_app
 from core.config import Settings
+
+
+def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=()):
+    """Point both registry resolution paths at a ``TestModel`` so route tests run
+    without a live model server. The chat route resolves the ``main`` model via
+    ``resolve`` and the background (verify/title) model via ``resolve_detailed``;
+    patch both. ``call_tools=()`` keeps it a plain text turn — the default catalog
+    has an approval-gated tool that would otherwise park the run."""
+    from services.registry import ModelRegistry, ResolvedModel
+
+    def _model() -> TestModel:
+        return TestModel(custom_output_text=output_text, call_tools=list(call_tools))
+
+    async def resolve(self, role, **kwargs):
+        return _model()
+
+    async def resolve_detailed(self, role, **kwargs):
+        return ResolvedModel(model=_model(), reasoning_off={})
+
+    monkeypatch.setattr(ModelRegistry, "resolve", resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
 
 @asynccontextmanager

@@ -253,6 +253,23 @@ class ConversationStore:
 
         await in_session(self._engine, work)
 
+    async def set_title_if_absent(self, conversation_id: str, title: str) -> bool:
+        """Set the title only when the conversation has none yet; return whether it
+        was applied. This is the authoritative "fill, don't overwrite" guard for
+        auto-titling — it can never clobber a name the operator chose, and a caller
+        only announces the title when this returns True. Atomic within one session
+        (check-and-set), so it is safe against a concurrent rename."""
+
+        def work(session: Session) -> bool:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None or (conversation.title or "").strip():
+                return False
+            conversation.title = title
+            conversation.updated_at = datetime.now(UTC)
+            return True
+
+        return await in_session(self._engine, work)
+
     async def delete_conversation(self, conversation_id: str) -> None:
         """Drop a conversation and its messages from the durable record, and evict
         the in-memory working set."""

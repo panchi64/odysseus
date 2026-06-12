@@ -15,6 +15,7 @@ we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,17 +28,39 @@ from pydantic_ai import (
     UsageLimits,
 )
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
-from runs import ApprovalRequired, LimitNotice, Orchestrator, Run, RunMetrics, RunStatus
+from runs import (
+    ApprovalRequired,
+    ConversationTitled,
+    LimitNotice,
+    Orchestrator,
+    Run,
+    RunMetrics,
+    RunStatus,
+)
 from services.conversations import ConversationStore
 from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .title import first_user_text, generate_title, last_assistant_text
 from .translate import stream_agent_run
+
+logger = logging.getLogger(__name__)
 
 # A shared empty bundle for the no-capabilities default (frozen ⇒ safe to share).
 _NO_CAPS = Capabilities()
+
+
+@dataclass(frozen=True)
+class TitleContext:
+    """What auto-titling needs, bundled so it can ride a parked turn to its resume.
+    The model + its reasoning-off settings come resolved together from the registry
+    (titling is a fast, no-reasoning pass). Absent ⇒ titling is off for this run."""
+
+    model: Model
+    settings: ModelSettings
 
 
 @dataclass
@@ -58,6 +81,10 @@ class ParkedTurn:
     # to drop on the eventual persist (the rejected answer + the synthetic nudge),
     # so the resume records a clean history too.
     clean_drop: tuple[int, int] | None = None
+    # Auto-title context, carried so a first turn that parked for approval is still
+    # named once it resumes and completes (titling lives at the shared finalize
+    # point, not only in the initial chat turn). None ⇒ don't title on resume.
+    title: TitleContext | None = None
 
 
 @dataclass
@@ -282,6 +309,53 @@ def _finalize(
         store.record(conversation_id, messages[start:])
 
 
+async def _maybe_title(
+    run: Run,
+    *,
+    title: TitleContext | None,
+    store: ConversationStore | None,
+    conversation_id: str | None,
+    is_first_turn: bool,
+) -> None:
+    """Auto-name a fresh conversation from its opening exchange.
+
+    Shared by the chat and resume orchestrators (called from both after persist),
+    so a first turn that parked for approval is still named once it resumes. The
+    exchange is read from the just-persisted history rather than threaded in, so
+    one code path serves both callers. Guards:
+
+    - ``is_first_turn`` (no prior messages) is the cheap pre-filter that skips the
+      model call on continuation turns;
+    - :meth:`ConversationStore.set_title_if_absent` is the authoritative guard —
+      it fills only a blank title, so an operator-named thread is never clobbered,
+      and we announce ``conversation.titled`` only when it actually set the name.
+
+    Emitted before the orchestrator returns (before ``run.ended``) so the open
+    stream carries it. Best-effort throughout: any failure leaves the thread
+    untitled without disturbing the finished turn."""
+    if not is_first_turn or title is None or store is None or conversation_id is None:
+        return
+    try:
+        history = await store.history(conversation_id)
+        prompt = first_user_text(history)
+        answer = last_assistant_text(history)
+        if not prompt or not answer:
+            return  # nothing checkable to name from (e.g. the turn produced no text)
+        name = await generate_title(
+            title.model,
+            prompt,
+            answer,
+            reasoning_off=title.settings,
+            timeout_s=get_settings().title_timeout_s,
+        )
+        if not name:
+            return
+        if await store.set_title_if_absent(conversation_id, name):
+            run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
+    except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
+        logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
+
+
 def build_chat_orchestrator(
     prompt: str,
     *,
@@ -289,6 +363,8 @@ def build_chat_orchestrator(
     categories: Any = None,
     judge: Judge | None = None,
     utility_model: Model | None = None,
+    title_model: Model | None = None,
+    title_settings: ModelSettings | None = None,
     capabilities: Capabilities = _NO_CAPS,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
@@ -302,7 +378,10 @@ def build_chat_orchestrator(
     graceful degradation when no utility model is configured). With ``store`` +
     ``conversation_id`` the turn continues prior history and persists its new
     messages; without them it runs stateless. The verifier only runs when enabled
-    in settings (and, by default, only on tool-producing turns).
+    in settings (and, by default, only on tool-producing turns). With
+    ``title_model`` (and ``title_enabled`` in settings) the *first* completed turn
+    of a fresh thread is auto-named; ``title_settings`` carries the model's
+    reasoning-off settings so the namer runs fast.
     """
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
@@ -314,6 +393,7 @@ def build_chat_orchestrator(
             else None
         )
         start = len(history) if history else 0
+        is_first_turn = start == 0
 
         turn = await _drive_turn(
             run,
@@ -355,6 +435,30 @@ def build_chat_orchestrator(
             clean_drop=turn.clean_drop,
         )
 
+        # Auto-title context for this run — None disables it (feature off, or no
+        # utility model). Built here so it can ride a parked turn to its resume.
+        title_ctx = (
+            TitleContext(title_model, title_settings or {})
+            if title_model is not None and settings.title_enabled
+            else None
+        )
+        if run.status is RunStatus.awaiting_input:
+            # Parked for approval before producing an answer: carry the title
+            # context so the resume names the thread once it completes.
+            if isinstance(run.parked_payload, ParkedTurn):
+                run.parked_payload.title = title_ctx
+        else:
+            # Name the thread after persisting it — a cosmetic follow-on that must
+            # not gate the answer. Emitted before the orchestrator returns
+            # (run.ended), so the open stream carries it.
+            await _maybe_title(
+                run,
+                title=title_ctx,
+                store=store,
+                conversation_id=conversation_id,
+                is_first_turn=is_first_turn,
+            )
+
     return orchestrate
 
 
@@ -386,5 +490,21 @@ def build_resume_orchestrator(
             start=parked.persist_from,
             clean_drop=parked.clean_drop,
         )
+
+        if run.status is RunStatus.awaiting_input:
+            # Re-parked on a further approval: carry the title context forward to
+            # the new parked payload so the eventual completion still names it.
+            if isinstance(run.parked_payload, ParkedTurn):
+                run.parked_payload.title = parked.title
+        else:
+            # A first turn that parked then resumed to completion is still the
+            # opening exchange — name it (persist_from == 0 means no prior turns).
+            await _maybe_title(
+                run,
+                title=parked.title,
+                store=store,
+                conversation_id=parked.conversation_id,
+                is_first_turn=parked.persist_from == 0,
+            )
 
     return orchestrate

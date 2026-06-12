@@ -170,6 +170,18 @@ class PreviewStopped(_Body):
     conversation_id: str
 
 
+# --- Conversation ------------------------------------------------------------
+class ConversationTitled(_Body):
+    """The chassis named a freshly-created conversation from its first exchange,
+    so the operator never has to. The title is persisted too; the frontend reveals
+    it with a typing animation. Emitted mid-run (before ``run.ended``) so a still-
+    open stream carries it. Additive to v1; no bump."""
+
+    type: Literal["conversation.titled"] = "conversation.titled"
+    conversation_id: str
+    title: str
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -218,6 +230,7 @@ EventBody = Annotated[
     | ArtifactPublished
     | PreviewReady
     | PreviewStopped
+    | ConversationTitled
     | ApprovalRequired
     | LimitNotice,
     Field(discriminator="type"),

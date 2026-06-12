@@ -22,6 +22,7 @@ from .events import (
     ApprovalRequired,
     ArtifactPublished,
     CitationAdded,
+    ConversationTitled,
     DocumentCommitted,
     DocumentCreated,
     DocumentDelta,
@@ -80,6 +81,7 @@ __all__ = [
     "ArtifactPublished",
     "PreviewReady",
     "PreviewStopped",
+    "ConversationTitled",
     "ApprovalRequired",
     "LimitNotice",
 ]

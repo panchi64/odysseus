@@ -1,5 +1,5 @@
 import { For, Show, type JSX } from "solid-js";
-import { Markdown, Stack, Text } from "~/ui";
+import { Caret, Markdown, Stack, Text } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage } from "../model";
 import { ApprovalCard } from "./ApprovalCard";
@@ -129,7 +129,7 @@ function AssistantTurn(props: {
           fallback={
             <Show when={m().streaming}>
               <Text variant="body" tone="dim">
-                <span class="ody-caret">▋</span>
+                <Caret />
               </Text>
             </Show>
           }
@@ -137,7 +137,8 @@ function AssistantTurn(props: {
           <div>
             <Markdown class="inline">{m().content}</Markdown>
             <Show when={m().streaming}>
-              <span class="ody-caret text-bright"> ▋</span>
+              {" "}
+              <Caret class="text-bright" />
             </Show>
           </div>
         </Show>

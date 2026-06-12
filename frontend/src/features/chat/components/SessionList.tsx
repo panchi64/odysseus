@@ -3,7 +3,7 @@ import { EmptyState, Input, LoadingText } from "~/ui";
 import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import type { ChatSummary } from "../model";
-import { isPinned, orderSessions, togglePin } from "../data";
+import { isPinned, orderSessions, titleReveals, togglePin } from "../data";
 import { SessionRow } from "./SessionRow";
 
 export interface SessionListProps {
@@ -54,6 +54,7 @@ export function SessionList(props: SessionListProps): JSX.Element {
               meta={relativeTime(s.updatedAt)}
               selected={s.id === props.currentId}
               pinned={isPinned(s.id)}
+              reveal={titleReveals[s.id]}
               onOpen={() => props.onSelect(s.id)}
               onTogglePin={() => togglePin(s.id)}
             />

@@ -8,7 +8,7 @@ from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
 import tools.toolsets as toolsets
-from services.registry import ModelRegistry
+from services.registry import ModelRegistry, ResolvedModel
 from tools import RunDeps
 
 from ._helpers import client_app, collect_sse_events
@@ -20,6 +20,11 @@ def _install_sensitive_tool(monkeypatch):
     async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
         return TestModel(custom_output_text="done")
 
+    async def fake_resolve_detailed(self, role, **kwargs):
+        # The titler runs on this (toolless) agent after the approved turn
+        # completes; a plain text model names the thread without tool calls.
+        return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
+
     def danger_categories():
         toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
@@ -30,6 +35,7 @@ def _install_sensitive_tool(monkeypatch):
         return {"danger": toolset}
 
     monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
     monkeypatch.setattr(toolsets, "default_categories", danger_categories)
 
 

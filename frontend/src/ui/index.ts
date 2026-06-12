@@ -78,6 +78,11 @@ export { Input, type InputProps } from "./components/Input";
 export { Textarea, type TextareaProps } from "./components/Textarea";
 export { Composer, type ComposerProps } from "./components/Composer";
 export { Markdown, type MarkdownProps } from "./components/Markdown";
+export { Caret, type CaretProps } from "./components/Caret";
+export {
+  TypewriterText,
+  type TypewriterTextProps,
+} from "./components/TypewriterText";
 export {
   Select,
   type SelectProps,

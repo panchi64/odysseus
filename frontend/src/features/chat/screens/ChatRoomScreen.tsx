@@ -22,11 +22,13 @@ import {
   Stack,
   StatusFlag,
   Text,
+  TypewriterText,
   confirm,
   toast,
   type MenuItem,
 } from "~/ui";
 import {
+  REVEAL_SPEED_MS,
   consumePendingDraft,
   consumeRequestedSession,
   createChatStream,
@@ -34,6 +36,7 @@ import {
   entrySessionId,
   refreshSessions,
   renameConversation,
+  titleReveals,
   useChatSession,
   useChatSessions,
 } from "../data";
@@ -63,6 +66,11 @@ export function ChatRoomScreen(): JSX.Element {
     return id ? sessions()?.find((s) => s.id === id) : undefined;
   });
   const headerTitle = () => currentSummary()?.title ?? "New conversation";
+  // A just-generated title for the open thread, if the backend named it this turn.
+  const headerReveal = () => {
+    const id = currentId();
+    return id ? titleReveals[id] : undefined;
+  };
   const headerModel = () =>
     currentSummary()?.model ?? (selectedModelLabel() || "NO MODEL");
 
@@ -197,9 +205,23 @@ export function ChatRoomScreen(): JSX.Element {
               <Icon name="menu" size={16} />
             </button>
             <div class="flex min-w-0 flex-col gap-0.5">
-              <Text variant="readout" tone="bright">
-                {headerTitle()}
-              </Text>
+              <Show
+                when={headerReveal()}
+                fallback={
+                  <Text variant="readout" tone="bright">
+                    {headerTitle()}
+                  </Text>
+                }
+              >
+                {(title) => (
+                  <TypewriterText
+                    variant="readout"
+                    tone="bright"
+                    text={title()}
+                    speed={REVEAL_SPEED_MS}
+                  />
+                )}
+              </Show>
               <span class="flex items-center gap-1.5">
                 <StatusFlag status="nominal">{headerModel()}</StatusFlag>
                 <InfoHint

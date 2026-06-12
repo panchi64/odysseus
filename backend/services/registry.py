@@ -17,10 +17,12 @@ and opened on resolve. Resolution validates that tool-driving roles
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
@@ -28,7 +30,17 @@ from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
-from services import llm
+from services import llm, reasoning
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """A resolved role: the model to run, plus the settings that disable its
+    reasoning (empty when the model isn't a recognized thinking model). Background
+    callers that want a fast, no-reasoning pass (titling) read ``reasoning_off``."""
+
+    model: Model
+    reasoning_off: ModelSettings
 
 
 class ModelRegistry:
@@ -188,6 +200,32 @@ class ModelRegistry:
 
     # --- resolution -------------------------------------------------------
 
+    async def _resolve_specs(
+        self,
+        role: str,
+        *,
+        owner_id: str,
+        override_endpoint_id: str | None = None,
+        override_model: str | None = None,
+    ) -> list[llm.EndpointSpec]:
+        """The ordered, decrypted endpoint specs ``role`` resolves to: a
+        per-conversation ``main`` override → the role's own chain. Shared by
+        :meth:`resolve` (which builds a model) and :meth:`resolve_detailed` (which
+        also derives reasoning-off settings), so both see identical resolution."""
+        if role not in llm.ROLES:
+            raise ValueError(f"unknown model role: {role!r}")
+
+        if override_endpoint_id is not None and role == "main":
+            endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
+            return [self._to_spec(endpoint, role, model_override=override_model)]
+
+        chain_ids = await self.get_role(owner_id, role)
+        if not chain_ids:
+            raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
+
+        endpoints = [await self.get_endpoint(owner_id, eid) for eid in chain_ids]
+        return [self._to_spec(endpoint, role) for endpoint in endpoints]
+
     async def resolve(
         self,
         role: str,
@@ -203,20 +241,43 @@ class ModelRegistry:
         bindings. Wraps a multi-endpoint chain in ``FallbackModel`` (AE-5.3). An
         unconfigured role is a degraded capability — the registry is the only
         source of truth (the chat layer reuses ``main`` when ``utility`` is unset)."""
-        if role not in llm.ROLES:
-            raise ValueError(f"unknown model role: {role!r}")
+        return llm.build_chain(
+            await self._resolve_specs(
+                role,
+                owner_id=owner_id,
+                override_endpoint_id=override_endpoint_id,
+                override_model=override_model,
+            )
+        )
 
-        if override_endpoint_id is not None and role == "main":
-            endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
-            return llm.build_chain([self._to_spec(endpoint, role, model_override=override_model)])
-
-        chain_ids = await self.get_role(owner_id, role)
-        if not chain_ids:
-            raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
-
-        endpoints = [await self.get_endpoint(owner_id, eid) for eid in chain_ids]
-        specs = [self._to_spec(endpoint, role) for endpoint in endpoints]
-        return llm.build_chain(specs)
+    async def resolve_detailed(
+        self,
+        role: str,
+        *,
+        owner_id: str,
+        override_endpoint_id: str | None = None,
+        override_model: str | None = None,
+    ) -> ResolvedModel:
+        """Like :meth:`resolve`, but also returns the settings that disable the
+        model's reasoning (from the **primary** endpoint — settings are uniform
+        per run, so the chain's head decides). Background work that must be fast
+        and not reason (titling) uses this; a model with no recognized thinking
+        lever yields empty settings and is left to reason normally."""
+        specs = await self._resolve_specs(
+            role,
+            owner_id=owner_id,
+            override_endpoint_id=override_endpoint_id,
+            override_model=override_model,
+        )
+        primary = specs[0]
+        reasoning_off = reasoning.disable_thinking(
+            reasoning.ModelDescriptor(
+                model_id=primary.model,
+                base_url=primary.base_url,
+                thinking=primary.thinking,
+            )
+        )
+        return ResolvedModel(model=llm.build_chain(specs), reasoning_off=reasoning_off)
 
     async def resolve_embedding_spec(self, owner_id: str) -> llm.EndpointSpec:
         """The embedding endpoint as a raw spec — embeddings hit the provider's

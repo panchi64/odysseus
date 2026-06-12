@@ -125,6 +125,13 @@ export interface PreviewStopped extends Base {
   conversation_id: string;
 }
 
+// --- Conversation ----------------------------------------------------------
+export interface ConversationTitled extends Base {
+  type: "conversation.titled";
+  conversation_id: string;
+  title: string;
+}
+
 // --- Notices ---------------------------------------------------------------
 export interface CitationAdded extends Base {
   type: "citation.added";
@@ -165,6 +172,7 @@ export type RunEvent =
   | ArtifactPublished
   | PreviewReady
   | PreviewStopped
+  | ConversationTitled
   | CitationAdded
   | ApprovalRequired
   | LimitNotice;

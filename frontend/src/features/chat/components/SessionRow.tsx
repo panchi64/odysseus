@@ -1,5 +1,6 @@
-import { type JSX } from "solid-js";
-import { Icon, Text, cx } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { Icon, Text, TypewriterText, cx } from "~/ui";
+import { REVEAL_SPEED_MS } from "../data";
 
 export interface SessionRowProps {
   title: string;
@@ -7,6 +8,9 @@ export interface SessionRowProps {
   meta: string;
   selected?: boolean;
   pinned?: boolean;
+  /** A freshly auto-generated title to type out in place of the static one. The
+   *  header owns clearing the reveal; the row just mirrors it while it lasts. */
+  reveal?: string;
   onOpen: () => void;
   onTogglePin: () => void;
 }
@@ -29,13 +33,28 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
         onClick={() => props.onOpen()}
         class="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2 text-left"
       >
-        <Text
-          variant="label"
-          tone={props.selected ? "bright" : "default"}
-          class="truncate"
+        <Show
+          when={props.reveal}
+          fallback={
+            <Text
+              variant="label"
+              tone={props.selected ? "bright" : "default"}
+              class="truncate"
+            >
+              {props.title}
+            </Text>
+          }
         >
-          {props.title}
-        </Text>
+          {(reveal) => (
+            <TypewriterText
+              variant="label"
+              tone={props.selected ? "bright" : "default"}
+              text={reveal()}
+              speed={REVEAL_SPEED_MS}
+              class="truncate"
+            />
+          )}
+        </Show>
         <Text variant="micro" tone="dim" class="shrink-0">
           {props.meta}
         </Text>

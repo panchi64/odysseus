@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
+    # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
+    # utility call). On by default; the operator can rename either way. The
+    # title call is best-effort and bounded by `title_timeout_s` so a slow or
+    # stuck utility model can't hold the run open.
+    title_enabled: bool = True
+    title_timeout_s: float = 20.0
+
 
 @lru_cache
 def get_settings() -> Settings:

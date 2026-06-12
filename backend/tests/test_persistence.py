@@ -273,14 +273,20 @@ async def test_verify_park_persists_once_on_resume(tmp_path, monkeypatch):
 
 
 async def test_chat_route_returns_conversation_and_continues(monkeypatch):
-    from services.registry import ModelRegistry
+    from services.registry import ModelRegistry, ResolvedModel
 
     async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
         # call_tools=[] → a plain text turn; the default catalog's approval-gated
         # tool would otherwise park the run and stall the SSE this test reads.
         return TestModel(custom_output_text="hi", call_tools=[])
 
+    async def fake_resolve_detailed(self, role, **kwargs):
+        return ResolvedModel(
+            model=TestModel(custom_output_text="hi", call_tools=[]), reasoning_off={}
+        )
+
     monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
     async with client_app() as (client, app):
         first = await client.post("/chat", json={"prompt": "hello"})

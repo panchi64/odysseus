@@ -56,15 +56,27 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    # The verifier (opt-in) judges with the utility model. Resolve it only when
-    # enabled; when no utility endpoint is bound, reuse the resolved `main` model
-    # (including the picker override) so verification works without separate setup.
-    utility_model = None
-    if get_settings().verify_enabled:
+    # Background work — verification (opt-in) and auto-titling (on by default) —
+    # runs on the cheap `utility` model, with the title call wanting its
+    # reasoning-off settings too (a fast, no-thinking pass). Resolve the pair only
+    # when a background feature is enabled, so a plain chat with both off pays
+    # nothing; when no `utility` endpoint is bound, reuse the resolved `main` model
+    # (picker override included) so both work without extra setup.
+    settings = get_settings()
+    utility_model = model
+    title_settings = None
+    if settings.verify_enabled or settings.title_enabled:
         try:
-            utility_model = await registry.resolve("utility", owner_id=OPERATOR_ID)
+            background = await registry.resolve_detailed("utility", owner_id=OPERATOR_ID)
         except (DegradedCapabilityError, NotFoundError):
-            utility_model = model
+            background = await registry.resolve_detailed(
+                "main",
+                owner_id=OPERATOR_ID,
+                override_endpoint_id=body.endpoint_id,
+                override_model=body.model,
+            )
+        utility_model = background.model
+        title_settings = background.reasoning_off
 
     store = deps.store(request)
     if body.conversation_id is not None:
@@ -80,6 +92,8 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         body.prompt,
         model=model,
         utility_model=utility_model,
+        title_model=utility_model,
+        title_settings=title_settings,
         capabilities=Capabilities(
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),
