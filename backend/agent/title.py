@@ -49,11 +49,20 @@ _USER_PARTS = frozenset({"UserPromptPart"})
 
 
 def _part_text(message: ModelMessage, part_names: frozenset[str]) -> str:
-    return " ".join(
-        part.content
-        for part in message.parts
-        if type(part).__name__ in part_names and isinstance(getattr(part, "content", None), str)
-    ).strip()
+    """Join the text of the named parts. A part's content is usually a string, but
+    a multimodal user prompt carries a sequence (text + images/files); pull the
+    text out of those too so a regenerate verifier / auto-title still sees the
+    words rather than an empty string."""
+    chunks: list[str] = []
+    for part in message.parts:
+        if type(part).__name__ not in part_names:
+            continue
+        content = getattr(part, "content", None)
+        if isinstance(content, str):
+            chunks.append(content)
+        elif isinstance(content, list | tuple):
+            chunks.extend(item for item in content if isinstance(item, str))
+    return " ".join(chunks).strip()
 
 
 def first_user_text(messages: list[ModelMessage]) -> str:

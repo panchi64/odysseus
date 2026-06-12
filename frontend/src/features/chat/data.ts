@@ -918,16 +918,14 @@ export function createChatStream(
     }
   }
 
-  /** Delete a turn and everything after it; reseat from the refreshed detail. */
+  /** Delete a turn and everything after it; reseat from the returned active path
+   *  (the DELETE returns the post-delete detail, like version-switch/rewind). */
   async function removeMessage(messageId: string): Promise<void> {
     if (activeConversationId === null) return;
     if (sending()) await cancel();
     try {
-      await api.del(
+      const detail = await api.del<ConversationDetailDTO>(
         `/conversations/${activeConversationId}/messages/${messageId}`,
-      );
-      const detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${activeConversationId}`,
       );
       reseatFromDetail(detail);
       options.onTurnComplete?.();
@@ -938,7 +936,7 @@ export function createChatStream(
 
   /** Pin/unpin a turn. The backend owns the flag; this optimistically echoes the
    *  toggle and reverts if the POST fails. */
-  async function togglePin(messageId: string): Promise<void> {
+  async function toggleMessagePin(messageId: string): Promise<void> {
     if (activeConversationId === null) return;
     const msg = messages.find((m) => m.id === messageId);
     if (!msg) return;
@@ -973,6 +971,6 @@ export function createChatStream(
     switchVersion,
     rewind,
     removeMessage,
-    togglePin,
+    toggleMessagePin,
   };
 }

@@ -68,8 +68,11 @@ export function Markdown(props: MarkdownProps): JSX.Element {
   };
 
   createEffect(() => {
+    const enabled = local.copyCode !== false; // re-runs when toggled (stream end)
     html(); // track re-parses (streaming deltas) so new blocks get enhanced
-    queueMicrotask(enhance);
+    // Skip scheduling entirely while disabled (e.g. a streaming answer), so a long
+    // stream doesn't re-scan/re-wrap the DOM on every token.
+    if (enabled) queueMicrotask(enhance);
   });
 
   // One delegated click handler copies the sibling <code>'s text (already clean).

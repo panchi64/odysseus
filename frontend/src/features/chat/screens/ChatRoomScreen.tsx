@@ -312,7 +312,7 @@ export function ChatRoomScreen(): JSX.Element {
                   }
                   onEditMessage={(id, text) => void stream.edit(id, text)}
                   onSwitchVersion={(id, i) => void stream.switchVersion(id, i)}
-                  onTogglePin={() => void stream.togglePin(message.id)}
+                  onTogglePin={() => void stream.toggleMessagePin(message.id)}
                   onRewind={() => {
                     void stream.rewind(message.id);
                   }}

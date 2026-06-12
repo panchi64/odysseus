@@ -36,7 +36,8 @@ from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
 from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
-from sqlalchemy import Engine, func
+from sqlalchemy import Engine, delete, func
+from sqlalchemy import text as sa_text
 from sqlmodel import Session, select
 
 from core.db import in_session
@@ -194,6 +195,16 @@ class _Tree:
         for parent_id in list(self.children):
             if parent_id in doomed:
                 self.children.pop(parent_id, None)
+
+
+def _defer_fk(session: Session) -> None:
+    """Defer foreign-key enforcement to commit for this transaction, so a set of
+    rows linked by the self-referential ``parent_id`` FK can be deleted in one
+    statement regardless of order. SQLite checks FKs per-statement otherwise; this
+    is its mechanism (a no-op guard keeps a non-SQLite backend from erroring on the
+    pragma — such a backend would use deferrable constraints instead)."""
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        session.execute(sa_text("PRAGMA defer_foreign_keys=ON"))
 
 
 def _is_user_prompt(message: ModelMessage) -> bool:
@@ -464,17 +475,10 @@ class ConversationStore:
 
         def work(session: Session) -> None:
             conversation = session.get(Conversation, conversation_id)
-            # Highest seq first — children before parents — and flushed one at a
-            # time, so the enforced self-referential parent_id foreign key is never
-            # left dangling (a batched multi-row delete can't guarantee the order).
-            rows = session.exec(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .order_by(Message.seq.desc())
-            ).all()
-            for row in rows:
-                session.delete(row)
-                session.flush()
+            # Defer FK checks so the whole message set drops in one statement,
+            # without ordering children before parents for the self-referential FK.
+            _defer_fk(session)
+            session.execute(delete(Message).where(Message.conversation_id == conversation_id))
             if conversation is not None:
                 session.delete(conversation)
 
@@ -520,30 +524,33 @@ class ConversationStore:
             )
         )
 
-    async def regenerate_point(self, conversation_id: str, message_id: str) -> bool:
-        """Set up a regenerate of the assistant turn whose branch node is
-        ``message_id``: move the active leaf back to the user request that preceded
-        it, so a fresh turn (run with no new prompt) records a sibling answer.
-        Returns False if the node is unknown or has no preceding request."""
+    async def _reseat_to_parent(
+        self, conversation_id: str, message_id: str, *, require_parent: bool
+    ) -> bool:
+        """Move the active leaf to ``message_id``'s parent, so the next turn branches
+        in as a sibling of ``message_id``. ``require_parent`` rejects a root node
+        (regenerate needs a preceding request; edit allows branching from the root).
+        Returns False if the node is unknown (or rootless when required)."""
         tree = await self._tree(conversation_id)
         node = tree.nodes.get(message_id)
-        if node is None or node.parent_id is None:
+        if node is None or (require_parent and node.parent_id is None):
             return False
         tree.active_leaf_id = node.parent_id
         self._move_leaf(conversation_id, tree.active_leaf_id)
         return True
 
+    async def regenerate_point(self, conversation_id: str, message_id: str) -> bool:
+        """Set up a regenerate of the assistant turn whose branch node is
+        ``message_id``: move the active leaf back to the user request that preceded
+        it, so a fresh turn (run with no new prompt) records a sibling answer.
+        Returns False if the node is unknown or has no preceding request."""
+        return await self._reseat_to_parent(conversation_id, message_id, require_parent=True)
+
     async def edit_point(self, conversation_id: str, message_id: str) -> bool:
         """Set up an edit of the user turn whose request node is ``message_id``:
         move the active leaf to that request's parent, so a fresh turn (run with the
         edited prompt) records a sibling request + answer. Returns False if unknown."""
-        tree = await self._tree(conversation_id)
-        node = tree.nodes.get(message_id)
-        if node is None:
-            return False
-        tree.active_leaf_id = node.parent_id
-        self._move_leaf(conversation_id, tree.active_leaf_id)
-        return True
+        return await self._reseat_to_parent(conversation_id, message_id, require_parent=False)
 
     async def switch_version(
         self, conversation_id: str, message_id: str, target_index: int
@@ -571,8 +578,13 @@ class ConversationStore:
         if message_id not in ids:
             return False
         idx = ids.index(message_id)
-        while idx + 1 < len(path) and not _is_user_prompt(path[idx + 1].message):
-            idx += 1
+        # Extend to the tail of *this* turn: an assistant turn spans its response
+        # plus interleaved tool-return requests up to the next user prompt. A user
+        # turn is just its own request (its answer is the next turn), so don't
+        # advance past it — the thread then ends at the user message as documented.
+        if not _is_user_prompt(path[idx].message):
+            while idx + 1 < len(path) and not _is_user_prompt(path[idx + 1].message):
+                idx += 1
         tree.active_leaf_id = path[idx].id
         self._move_leaf(conversation_id, tree.active_leaf_id)
         return True
@@ -670,13 +682,9 @@ class ConversationStore:
             conversation = session.get(Conversation, job.conversation_id)
             if conversation is None:
                 return
-            # Pre-ordered children-before-parents; flush each so the enforced
-            # self-referential FK never sees a parent removed before its child.
-            for message_id in job.deleted_ids:
-                row = session.get(Message, message_id)
-                if row is not None:
-                    session.delete(row)
-                    session.flush()
+            if job.deleted_ids:
+                _defer_fk(session)  # remove the subtree in one statement, FK-safe
+                session.execute(delete(Message).where(Message.id.in_(job.deleted_ids)))
             conversation.active_leaf_id = job.active_leaf_id
             conversation.updated_at = datetime.now(UTC)
 
@@ -684,6 +692,8 @@ class ConversationStore:
 
     async def _persist_pin(self, job: _PersistJob) -> None:
         def work(session: Session) -> None:
+            # Deliberately does not bump updated_at: pinning is a bookmark, not
+            # activity, and must not float the conversation in the newest-first list.
             row = session.get(Message, job.message_id) if job.message_id else None
             if row is not None:
                 row.pinned = job.pinned

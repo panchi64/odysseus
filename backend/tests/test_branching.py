@@ -144,6 +144,24 @@ async def test_rewind_then_send_branches(tmp_path):
     await store.stop()
 
 
+async def test_rewind_to_user_turn_ends_before_its_answer(tmp_path):
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    reg = RunRegistry()
+    conv = await store.create_conversation("operator")
+
+    await _turn(store, conv, reg, prompt="q1", answer="a1")
+    await _turn(store, conv, reg, prompt="q2", answer="a2")
+
+    # Rewinding to a user turn ends the thread at that message (its answer is the
+    # next turn, so it must not be carried along).
+    second_user = (await store.messages_view(conv))[2].id
+    assert await store.rewind(conv, second_user)
+    view = await store.messages_view(conv)
+    assert [m.content for m in view] == ["q1", "a1", "q2"]
+    await store.stop()
+
+
 async def test_delete_removes_turn_and_downstream(tmp_path):
     store, engine = await _fresh_store(tmp_path)
     await store.start()

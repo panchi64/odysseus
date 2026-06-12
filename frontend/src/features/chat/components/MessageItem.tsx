@@ -316,7 +316,11 @@ function AssistantTurn(props: {
           }
         >
           <div>
-            <Markdown class="inline">{m().content}</Markdown>
+            {/* Defer code-block copy enhancement until the answer settles — it
+                would otherwise re-scan and re-wrap the DOM on every token. */}
+            <Markdown class="inline" copyCode={!m().streaming}>
+              {m().content}
+            </Markdown>
             <Show when={m().streaming}>
               {" "}
               <Caret class="text-bright" />

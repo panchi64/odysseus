@@ -203,14 +203,18 @@ async def _require_owned(request: Request, conversation_id: str) -> Conversation
     return summary
 
 
-@router.delete("/{conversation_id}/messages/{message_id}", status_code=204)
-async def delete_message(conversation_id: str, message_id: str, request: Request) -> None:
+@router.delete("/{conversation_id}/messages/{message_id}", response_model=ConversationDetail)
+async def delete_message(
+    conversation_id: str, message_id: str, request: Request
+) -> ConversationDetail:
     """Remove a turn and everything after it on every branch (its subtree). The
-    active path falls back to the deleted turn's parent."""
+    active path falls back to the deleted turn's parent. Returns the resulting
+    thread so the client reseats in one round-trip (like version switch / rewind)."""
     store = deps.store(request)
-    await _require_owned(request, conversation_id)
+    summary = await _require_owned(request, conversation_id)
     if not await store.delete_message(conversation_id, message_id):
         raise HTTPException(status_code=404, detail="message not found")
+    return await _detail(request, conversation_id, summary)
 
 
 @router.post("/{conversation_id}/messages/{message_id}/version", response_model=ConversationDetail)
