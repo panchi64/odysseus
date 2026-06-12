@@ -3,6 +3,7 @@ import {
   createResource,
   createSignal,
   onCleanup,
+  type Accessor,
   type Resource,
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
@@ -294,21 +295,28 @@ function toMessage(dto: MessageDTO): ChatMessage {
 
 /* ── Read accessors (the seam) ────────────────────────────────────────────── */
 
-const [_sessionsTick, _setSessionsTick] = createSignal(0);
+let refetchSessions: (() => void) | undefined;
 
 async function fetchSessions(): Promise<ChatSummary[]> {
   const rows = await api.get<ConversationSummaryDTO[]>("/conversations");
   return rows.map(toSummary);
 }
 
-export function useChatSessions(): Resource<ChatSummary[]> {
-  const [data] = createResource(_sessionsTick, fetchSessions);
-  return data;
+export function useChatSessions(): Accessor<ChatSummary[] | undefined> {
+  const [data, { refetch }] = createResource(fetchSessions);
+  refetchSessions = refetch;
+  // Read `.latest`, not the resource itself. `refreshSessions()` runs after every
+  // turn and refetches in place; reading the resource under the app's
+  // fallback-less root <Suspense> would re-suspend it for the duration of each
+  // refetch, blanking the whole page for a frame. `.latest` keeps the prior list
+  // on screen while the refetch is in flight, so a finishing stream no longer
+  // flickers the page.
+  return () => data.latest;
 }
 
 /** Re-read the conversation list (after a turn, rename, or delete). */
 export function refreshSessions(): void {
-  _setSessionsTick((t) => t + 1);
+  refetchSessions?.();
 }
 
 async function fetchSession(id: string): Promise<ChatSession> {
