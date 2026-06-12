@@ -109,6 +109,23 @@ body {
   animation: ody-flash 0.5s steps(1, end) 6;
 }
 
+/* Live-activity pulse — a stepped blink on a state dot while a stream is in
+   flight. Functional (signals "live"), hard-stepped like the caret, not a
+   decorative fade (§8). */
+@keyframes ody-pulse {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.3;
+  }
+}
+.ody-pulse {
+  animation: ody-pulse 1s steps(1, end) infinite;
+}
+
 /* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
    in a dense row), not decoration. It ping-pongs the overflow distance set in
    --mq-shift, pausing at each end. Only applied (via a motion-safe utility)

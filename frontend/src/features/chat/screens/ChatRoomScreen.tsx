@@ -216,6 +216,7 @@ export function ChatRoomScreen(): JSX.Element {
             <StatusFlag
               status={stream.sending() ? "info" : "idle"}
               dot={stream.sending()}
+              pulse={stream.sending()}
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>

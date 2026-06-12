@@ -19,6 +19,8 @@ export interface StatusFlagProps {
   status?: Status;
   /** Render a leading state dot. */
   dot?: boolean;
+  /** Pulse the state dot to signal live activity (e.g. a stream in flight). */
+  pulse?: boolean;
   class?: string;
   children: string;
 }
@@ -26,7 +28,13 @@ export interface StatusFlagProps {
 /** Small uppercase chip carrying a state (§6.5). Idle is neutral; a screen at
  *  rest shows only idle flags. */
 export function StatusFlag(props: StatusFlagProps): JSX.Element {
-  const [local] = splitProps(props, ["status", "dot", "class", "children"]);
+  const [local] = splitProps(props, [
+    "status",
+    "dot",
+    "pulse",
+    "class",
+    "children",
+  ]);
   const status = () => local.status ?? "idle";
   const tone = () => statusTone[status()];
   return (
@@ -40,7 +48,10 @@ export function StatusFlag(props: StatusFlagProps): JSX.Element {
     >
       {local.dot && (
         <span
-          class="inline-block size-1.5 rounded-full bg-current"
+          class={cx(
+            "inline-block size-1.5 rounded-full bg-current",
+            local.pulse && "ody-pulse",
+          )}
           aria-hidden="true"
         />
       )}
