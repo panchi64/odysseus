@@ -1,6 +1,7 @@
-/** Global model-selection state — the chat (`main`) model the operator picks
- *  from the top-bar dropdown, shared across the app shell, chat, and the overview
- *  launchpad so every surface stays in sync.
+/** Global model state — the endpoint catalog, runtime model discovery, and the
+ *  chat (`main`) model selection. One place owns all of it so the app shell's
+ *  top-bar picker, the overview launchpad, chat, and Settings share a single
+ *  source of truth (and a single `/models/endpoints` fetch).
  *
  *  An *endpoint* is a provider connection; its models are discovered at runtime
  *  from the provider (`GET /models/endpoints/{id}/models`). The selection is held
@@ -9,7 +10,13 @@
  *  per option), so a model id containing `::` never round-trips through storage.
  *  The backend re-resolves and is the authority — this is a presentation echo. */
 
-import { createResource, createSignal } from "solid-js";
+import {
+  createMemo,
+  createResource,
+  createRoot,
+  createSignal,
+  type Resource,
+} from "solid-js";
 import { api } from "~/lib/api";
 import { readLS, removeLS, writeLS } from "~/lib/storage";
 import { useSession } from "~/lib/stores/session";
@@ -18,6 +25,22 @@ import { useSession } from "~/lib/stores/session";
 export interface ModelSelection {
   endpointId: string;
   model: string;
+}
+
+/** The operator's view of a configured endpoint (the shared read shape). */
+export interface ModelEndpoint {
+  id: string;
+  name: string;
+  baseUrl: string;
+  /** Default/fallback model. Null when models are discovered dynamically and no
+   *  default was set. */
+  model: string | null;
+  /** Whether a key is stored — the value is write-only and never returned. */
+  hasApiKey: boolean;
+  contextWindow: number | null;
+  nativeTools: boolean;
+  vision: boolean;
+  thinking: boolean;
 }
 
 /** One model served by one endpoint, for the picker. */
@@ -80,35 +103,38 @@ function readSelection(): ModelSelection | null {
   }
 }
 
-const [_selected, _setSelected] = createSignal<ModelSelection | null>(
-  readSelection(),
-);
+/* ── Backend DTOs + mappers ────────────────────────────────────────────────── */
 
-/** The operator's explicit pick (or null before they've chosen). Prefer
- *  `effectiveValue()` for display and `effectiveSelection()` for sending. */
-export const selectedModel = _selected;
-
-export function setSelectedModel(sel: ModelSelection | null): void {
-  _setSelected(sel);
-  if (sel) writeLS(MODEL_KEY, JSON.stringify(sel));
-  else removeLS(MODEL_KEY);
-}
-
-/** Combobox onChange adapter: decode the option value into a structured pick. */
-export function selectModelByValue(value: string): void {
-  setSelectedModel(decodeValue(value));
-}
-
-/* ── Dynamic discovery ──────────────────────────────────────────────────────── */
-
-interface EndpointDTO {
+interface EndpointView {
   id: string;
   name: string;
+  base_url: string;
   model: string | null;
+  has_api_key: boolean;
+  context_window: number | null;
+  native_tools: boolean;
+  vision: boolean;
+  thinking: boolean;
 }
 interface EndpointModelsDTO {
   models: string[];
   supported: boolean;
+}
+
+/** The single snake_case→camel mapper for an endpoint row, shared by the picker
+ *  and Settings so a backend rename is fixed in one place. */
+export function toEndpoint(dto: EndpointView): ModelEndpoint {
+  return {
+    id: dto.id,
+    name: dto.name,
+    baseUrl: dto.base_url,
+    model: dto.model,
+    hasApiKey: dto.has_api_key,
+    contextWindow: dto.context_window,
+    nativeTools: dto.native_tools,
+    vision: dto.vision,
+    thinking: dto.thinking,
+  };
 }
 
 interface EndpointResult {
@@ -123,13 +149,14 @@ interface EndpointResult {
 // longer budget — bound each discovery call independently of the server.
 const DISCOVERY_TIMEOUT_MS = 3000;
 
-async function fetchEndpointResults(): Promise<EndpointResult[]> {
-  let endpoints: EndpointDTO[];
-  try {
-    endpoints = await api.get<EndpointDTO[]>("/models/endpoints");
-  } catch {
-    return [];
-  }
+async function fetchEndpoints(): Promise<ModelEndpoint[]> {
+  const rows = await api.get<EndpointView[]>("/models/endpoints");
+  return rows.map(toEndpoint);
+}
+
+async function fetchDiscovery(
+  endpoints: ModelEndpoint[],
+): Promise<EndpointResult[]> {
   return Promise.all(
     endpoints.map(async (e): Promise<EndpointResult> => {
       let models: string[] = [];
@@ -158,98 +185,151 @@ async function fetchEndpointResults(): Promise<EndpointResult[]> {
   );
 }
 
-// Mirrors the chat-session pattern: the source stays falsy until the operator
-// unlocks, so no `/models/*` call fires pre-auth (it would 401); it re-fetches
-// when the session flips to unlocked, and `refreshModelOptions` bumps the tick.
-const [_tick, _setTick] = createSignal(1);
-const _session = useSession();
-const [_results] = createResource(
-  () => (_session.isAuthenticated ? _tick() : false),
-  fetchEndpointResults,
-);
-
-function results(): EndpointResult[] {
-  return _results.latest ?? [];
+function statusOf(r: EndpointResult): DiscoveryStatus {
+  if (r.discovered > 0) return "live";
+  return r.choices.length > 0 ? "default-only" : "unavailable";
 }
 
-/** Re-read endpoints and their model lists (after Settings adds/edits one). */
-export function refreshModelOptions(): void {
-  _setTick((t) => t + 1);
+/* ── The reactive store ─────────────────────────────────────────────────────────
+   Owned by one app-lifetime root so the derivations can be memoized (computed
+   once per change, shared across every surface) without dangling computations.
+   The endpoints resource is the single `/models/endpoints` fetch; discovery is
+   derived from it, so the catalog renders immediately and badges fill in. */
+
+const store = createRoot(() => {
+  const session = useSession();
+
+  const [selection, setSelection] = createSignal<ModelSelection | null>(
+    readSelection(),
+  );
+
+  // The endpoint catalog — gated on unlock (a pre-auth call would 401); the tick
+  // lets a write (create/update/delete) force a re-read, which cascades to
+  // discovery since discovery's source is the endpoints list.
+  const [endpointsTick, setEndpointsTick] = createSignal(1);
+  const [endpoints] = createResource(
+    () => (session.isAuthenticated ? endpointsTick() : false),
+    fetchEndpoints,
+  );
+
+  const [discovery] = createResource(
+    () => (session.isAuthenticated ? (endpoints.latest ?? false) : false),
+    fetchDiscovery,
+  );
+
+  const results = createMemo<EndpointResult[]>(() => discovery.latest ?? []);
+  const groups = createMemo<ModelGroup[]>(() =>
+    results()
+      .filter((r) => r.choices.length > 0)
+      .map((r) => ({
+        endpointId: r.endpointId,
+        endpointName: r.endpointName,
+        choices: r.choices,
+      })),
+  );
+  const choices = createMemo<ModelChoice[]>(() =>
+    groups().flatMap((g) => g.choices),
+  );
+  const pickerGroups = createMemo(() =>
+    groups().map((g) => ({
+      label: g.endpointName,
+      options: g.choices.map((c) => ({
+        value: encodeChoice(c.endpointId, c.model),
+        label: c.model,
+      })),
+    })),
+  );
+  const discoveries = createMemo<EndpointDiscovery[]>(() =>
+    results().map((r) => ({
+      endpointId: r.endpointId,
+      endpointName: r.endpointName,
+      discovered: r.discovered,
+      supported: r.supported,
+      status: statusOf(r),
+    })),
+  );
+  // The picker always resolves to a concrete model when any is configured: the
+  // operator's explicit pick if still valid, otherwise the first available.
+  const effective = createMemo<ModelSelection | null>(() => {
+    const all = choices();
+    const sel = selection();
+    const explicit =
+      sel &&
+      all.find((c) => c.endpointId === sel.endpointId && c.model === sel.model);
+    if (explicit)
+      return { endpointId: explicit.endpointId, model: explicit.model };
+    const first = all[0];
+    return first ? { endpointId: first.endpointId, model: first.model } : null;
+  });
+
+  return {
+    selection,
+    setSelection,
+    endpoints,
+    setEndpointsTick,
+    groups,
+    pickerGroups,
+    discoveries,
+    effective,
+  };
+});
+
+/* ── Public surface ─────────────────────────────────────────────────────────── */
+
+/** The operator's explicit pick (or null before they've chosen). Prefer
+ *  `effectiveValue()` for display and `effectiveSelection()` for sending. */
+export const selectedModel = store.selection;
+
+export function setSelectedModel(sel: ModelSelection | null): void {
+  store.setSelection(sel);
+  if (sel) writeLS(MODEL_KEY, JSON.stringify(sel));
+  else removeLS(MODEL_KEY);
+}
+
+/** Combobox onChange adapter: decode the option value into a structured pick. */
+export function selectModelByValue(value: string): void {
+  setSelectedModel(decodeValue(value));
+}
+
+/** The endpoint catalog resource — shared by the picker and Settings. */
+export function useEndpoints(): Resource<ModelEndpoint[]> {
+  return store.endpoints;
+}
+
+/** Re-read the catalog (after a create/update/delete); cascades to discovery. */
+export function refreshEndpoints(): void {
+  store.setEndpointsTick((t) => t + 1);
 }
 
 /** Endpoints with at least one selectable model, grouped for the picker. */
 export function modelGroups(): ModelGroup[] {
-  return results()
-    .filter((r) => r.choices.length > 0)
-    .map((r) => ({
-      endpointId: r.endpointId,
-      endpointName: r.endpointName,
-      choices: r.choices,
-    }));
+  return store.groups();
 }
 
-/** The discovered models shaped for a grouped picker (`~/ui` Combobox): one
- *  group per endpoint, each model an option. Shared by every picker surface. */
+/** The discovered models shaped for a grouped picker (`~/ui` Combobox). */
 export function modelPickerGroups(): {
   label: string;
   options: { value: string; label: string }[];
 }[] {
-  return modelGroups().map((g) => ({
-    label: g.endpointName,
-    options: g.choices.map((c) => ({
-      value: encodeChoice(c.endpointId, c.model),
-      label: c.model,
-    })),
-  }));
+  return store.pickerGroups();
 }
 
 /** Per-endpoint discovery state for Settings (badges + failure surfacing). */
 export function endpointDiscovery(): EndpointDiscovery[] {
-  return results().map((r) => ({
-    endpointId: r.endpointId,
-    endpointName: r.endpointName,
-    discovered: r.discovered,
-    supported: r.supported,
-    status:
-      r.discovered > 0
-        ? "live"
-        : r.choices.length > 0
-          ? "default-only"
-          : "unavailable",
-  }));
-}
-
-/* ── Effective selection ──────────────────────────────────────────────────────
-   The picker always resolves to a concrete model when any is configured: the
-   operator's explicit pick if still valid, otherwise the first available. This
-   keeps the dropdown showing a real selection without persisting a default the
-   operator never made. */
-
-function allChoices(): ModelChoice[] {
-  return modelGroups().flatMap((g) => g.choices);
+  return store.discoveries();
 }
 
 export function effectiveSelection(): ModelSelection | null {
-  const choices = allChoices();
-  const sel = selectedModel();
-  const explicit =
-    sel &&
-    choices.find(
-      (c) => c.endpointId === sel.endpointId && c.model === sel.model,
-    );
-  if (explicit)
-    return { endpointId: explicit.endpointId, model: explicit.model };
-  const first = choices[0];
-  return first ? { endpointId: first.endpointId, model: first.model } : null;
+  return store.effective();
 }
 
 /** The composite value the picker should show as active (effective pick). */
 export function effectiveValue(): string {
-  const sel = effectiveSelection();
+  const sel = store.effective();
   return sel ? encodeChoice(sel.endpointId, sel.model) : "";
 }
 
 /** The model id to display (or "" when nothing is configured). */
 export function selectedModelLabel(): string {
-  return effectiveSelection()?.model ?? "";
+  return store.effective()?.model ?? "";
 }

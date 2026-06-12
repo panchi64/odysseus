@@ -1,35 +1,12 @@
 import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
-import { refreshModelOptions } from "~/lib/stores/models";
-import type { EndpointInput, ModelEndpoint, RoleBindings } from "./model";
+import { refreshEndpoints, useEndpoints } from "~/lib/stores/models";
+import type { EndpointInput, RoleBindings } from "./model";
 
-/* ── Backend DTOs ─────────────────────────────────────────────────────────── */
-
-interface EndpointView {
-  id: string;
-  name: string;
-  base_url: string;
-  model: string | null;
-  has_api_key: boolean;
-  context_window: number | null;
-  native_tools: boolean;
-  vision: boolean;
-  thinking: boolean;
-}
-
-function toEndpoint(dto: EndpointView): ModelEndpoint {
-  return {
-    id: dto.id,
-    name: dto.name,
-    baseUrl: dto.base_url,
-    model: dto.model,
-    hasApiKey: dto.has_api_key,
-    contextWindow: dto.context_window,
-    nativeTools: dto.native_tools,
-    vision: dto.vision,
-    thinking: dto.thinking,
-  };
-}
+// The endpoint catalog (read) is owned by the shared models store so the chat
+// picker and Settings share one fetch and one type; this module owns the writes
+// (CRUD + role bindings) and the role read.
+export { useEndpoints };
 
 /** Map form values to the backend's snake_case body. `apiKey` undefined is
  *  omitted (leave unchanged); "" clears it. */
@@ -47,24 +24,7 @@ function toBody(input: Partial<EndpointInput>): Record<string, unknown> {
   return body;
 }
 
-/* ── Endpoints ────────────────────────────────────────────────────────────── */
-
-const [endpointsTick, setEndpointsTick] = createSignal(0);
-
-async function fetchEndpoints(): Promise<ModelEndpoint[]> {
-  const rows = await api.get<EndpointView[]>("/models/endpoints");
-  return rows.map(toEndpoint);
-}
-
-export function useEndpoints(): Resource<ModelEndpoint[]> {
-  const [data] = createResource(endpointsTick, fetchEndpoints);
-  return data;
-}
-
-function refreshEndpoints(): void {
-  setEndpointsTick((n) => n + 1);
-  refreshModelOptions(); // keep the chat picker in sync
-}
+/* ── Endpoints (writes) ───────────────────────────────────────────────────── */
 
 export async function createEndpoint(input: EndpointInput): Promise<void> {
   await api.post("/models/endpoints", toBody(input));
@@ -103,5 +63,4 @@ export async function setRoleBinding(
 ): Promise<void> {
   await api.put(`/models/roles/${role}`, { endpoint_ids: endpointIds });
   setRolesTick((n) => n + 1);
-  refreshModelOptions();
 }

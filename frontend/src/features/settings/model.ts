@@ -2,22 +2,9 @@
  *
  * The connected surface is model configuration: the backend's endpoint registry
  * (`/models/endpoints`) and the role→endpoint bindings (`/models/roles`). There
- * is no user-preferences/2FA/account model — Odysseus is single-operator. */
-
-export interface ModelEndpoint {
-  id: string;
-  name: string;
-  baseUrl: string;
-  /** Default/fallback model. Null when the provider's models are discovered
-   *  dynamically (the top-bar picker) and no default was set. */
-  model: string | null;
-  /** Whether a key is stored — the value is write-only and never returned. */
-  hasApiKey: boolean;
-  contextWindow: number | null;
-  nativeTools: boolean;
-  vision: boolean;
-  thinking: boolean;
-}
+ * is no user-preferences/2FA/account model — Odysseus is single-operator. The
+ * endpoint read shape (`ModelEndpoint`) is owned by `~/lib/stores/models`, shared
+ * with the chat picker; this module holds the write/form and role contracts. */
 
 /** Form values for creating/updating an endpoint. `apiKey` omitted = unchanged,
  *  `apiKey: ""` clears the key; `model: ""` clears the default model. */

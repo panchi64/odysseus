@@ -1,9 +1,9 @@
 import {
   createEffect,
+  createMemo,
   createSignal,
   For,
   Show,
-  Suspense,
   type JSX,
 } from "solid-js";
 import {
@@ -32,8 +32,12 @@ import {
   useEndpoints,
   useRoles,
 } from "../data";
-import { BINDABLE_ROLES, type ModelEndpoint } from "../model";
-import { endpointDiscovery, type EndpointDiscovery } from "~/lib/stores/models";
+import { BINDABLE_ROLES } from "../model";
+import {
+  endpointDiscovery,
+  type EndpointDiscovery,
+  type ModelEndpoint,
+} from "~/lib/stores/models";
 
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
@@ -174,8 +178,15 @@ export function SettingsScreen(): JSX.Element {
   /* ── Discovery status ─────────────────────────────────────────────────────────
      Each endpoint's models are discovered from its provider; surface whether that
      yielded a live list, only the configured default, or nothing usable. */
+  // Index discovery by endpoint once per change — O(1) per row instead of a
+  // linear scan in each of the N rows.
+  const discoveryById = createMemo(() => {
+    const m = new Map<string, EndpointDiscovery>();
+    for (const d of endpointDiscovery()) m.set(d.endpointId, d);
+    return m;
+  });
   const discoveryFor = (id: string): EndpointDiscovery | undefined =>
-    endpointDiscovery().find((d) => d.endpointId === id);
+    discoveryById().get(id);
   const discoveryBadge = (
     d: EndpointDiscovery,
   ): { status: "nominal" | "warn" | "alert"; label: string } => {
@@ -249,9 +260,9 @@ export function SettingsScreen(): JSX.Element {
           </Button>
         }
       >
-        <Suspense fallback={<LoadingText />}>
+        <Show when={endpoints.latest} fallback={<LoadingText />}>
           <Show
-            when={(endpoints() ?? []).length}
+            when={(endpoints.latest ?? []).length}
             fallback={
               <EmptyState
                 icon="cpu"
@@ -261,7 +272,7 @@ export function SettingsScreen(): JSX.Element {
             }
           >
             <Stack gap={0}>
-              <For each={endpoints() ?? []}>
+              <For each={endpoints.latest ?? []}>
                 {(ep) => (
                   <Row
                     align="center"
@@ -318,7 +329,7 @@ export function SettingsScreen(): JSX.Element {
               </For>
             </Stack>
           </Show>
-        </Suspense>
+        </Show>
       </Panel>
 
       <Panel label="ROLE BINDINGS">
