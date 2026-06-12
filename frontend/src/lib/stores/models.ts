@@ -3,21 +3,25 @@
  *  launchpad so every surface stays in sync.
  *
  *  An *endpoint* is a provider connection; its models are discovered at runtime
- *  from the provider (`GET /models/endpoints/{id}/models`). A selection is a
- *  specific model on a specific endpoint, encoded as `endpointId::model` so it
- *  rides through a single string (the picker value and the localStorage value).
+ *  from the provider (`GET /models/endpoints/{id}/models`). The selection is held
+ *  structured (`{endpointId, model}`) and JSON-persisted; the `endpointId::model`
+ *  composite exists only at the picker boundary (the Combobox needs one string
+ *  per option), so a model id containing `::` never round-trips through storage.
  *  The backend re-resolves and is the authority — this is a presentation echo. */
 
 import { createResource, createSignal } from "solid-js";
 import { api } from "~/lib/api";
-import { readLS, writeLS } from "~/lib/storage";
+import { readLS, removeLS, writeLS } from "~/lib/storage";
 import { useSession } from "~/lib/stores/session";
 
-/** A model the operator can pick: one model served by one endpoint. */
+/** A specific model on a specific endpoint — the unit of selection. */
+export interface ModelSelection {
+  endpointId: string;
+  model: string;
+}
+
+/** One model served by one endpoint, for the picker. */
 export interface ModelChoice {
-  /** Composite `endpointId::model` — the picker/localStorage value. */
-  value: string;
-  /** The model id as the provider names it (shown and sent). */
   model: string;
   endpointId: string;
 }
@@ -29,16 +33,29 @@ export interface ModelGroup {
   choices: ModelChoice[];
 }
 
+/** Whether an endpoint's models came from a live API, a configured default, or
+ *  nothing at all — surfaced as a status badge in Settings. */
+export type DiscoveryStatus = "live" | "default-only" | "unavailable";
+
+export interface EndpointDiscovery {
+  endpointId: string;
+  endpointName: string;
+  status: DiscoveryStatus;
+  /** Count the provider's models API advertised (0 when unsupported/empty). */
+  discovered: number;
+  /** Whether the provider has a working models API. */
+  supported: boolean;
+}
+
+/* ── Composite encoding (picker boundary only) ─────────────────────────────── */
+
 const SEP = "::";
 
-export function encodeChoice(endpointId: string, model: string): string {
+function encodeChoice(endpointId: string, model: string): string {
   return `${endpointId}${SEP}${model}`;
 }
 
-/** Split a composite selection back into its parts (null if malformed/empty). */
-export function parseSelection(
-  value: string,
-): { endpointId: string; model: string } | null {
+function decodeValue(value: string): ModelSelection | null {
   const i = value.indexOf(SEP);
   if (i < 0) return null;
   const endpointId = value.slice(0, i);
@@ -46,18 +63,40 @@ export function parseSelection(
   return endpointId && model ? { endpointId, model } : null;
 }
 
-/* ── Sticky selection ───────────────────────────────────────────────────────── */
+/* ── Sticky selection (structured, JSON-persisted) ─────────────────────────── */
 
 const MODEL_KEY = "ody.chat.model";
-const [_selected, _setSelected] = createSignal<string>(readLS(MODEL_KEY) ?? "");
 
-/** The operator's explicit pick (composite, or "" before they've chosen). Prefer
+function readSelection(): ModelSelection | null {
+  const raw = readLS(MODEL_KEY);
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw) as Partial<ModelSelection>;
+    return o.endpointId && o.model
+      ? { endpointId: o.endpointId, model: o.model }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const [_selected, _setSelected] = createSignal<ModelSelection | null>(
+  readSelection(),
+);
+
+/** The operator's explicit pick (or null before they've chosen). Prefer
  *  `effectiveValue()` for display and `effectiveSelection()` for sending. */
 export const selectedModel = _selected;
 
-export function setSelectedModel(value: string): void {
-  _setSelected(value);
-  writeLS(MODEL_KEY, value);
+export function setSelectedModel(sel: ModelSelection | null): void {
+  _setSelected(sel);
+  if (sel) writeLS(MODEL_KEY, JSON.stringify(sel));
+  else removeLS(MODEL_KEY);
+}
+
+/** Combobox onChange adapter: decode the option value into a structured pick. */
+export function selectModelByValue(value: string): void {
+  setSelectedModel(decodeValue(value));
 }
 
 /* ── Dynamic discovery ──────────────────────────────────────────────────────── */
@@ -72,41 +111,51 @@ interface EndpointModelsDTO {
   supported: boolean;
 }
 
-async function fetchModelGroups(): Promise<ModelGroup[]> {
+interface EndpointResult {
+  endpointId: string;
+  endpointName: string;
+  supported: boolean;
+  discovered: number;
+  choices: ModelChoice[];
+}
+
+// A slow/unreachable provider must not freeze the picker on the backend's
+// longer budget — bound each discovery call independently of the server.
+const DISCOVERY_TIMEOUT_MS = 3000;
+
+async function fetchEndpointResults(): Promise<EndpointResult[]> {
   let endpoints: EndpointDTO[];
   try {
     endpoints = await api.get<EndpointDTO[]>("/models/endpoints");
   } catch {
     return [];
   }
-  const groups = await Promise.all(
-    endpoints.map(async (e): Promise<ModelGroup> => {
+  return Promise.all(
+    endpoints.map(async (e): Promise<EndpointResult> => {
       let models: string[] = [];
+      let supported = false;
       try {
         const res = await api.get<EndpointModelsDTO>(
           `/models/endpoints/${e.id}/models`,
+          { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) },
         );
         models = res.models;
+        supported = res.supported;
       } catch {
-        models = [];
+        /* unreachable / timeout → unsupported, fall back to the default */
       }
-      // Always keep the configured default selectable — discovery may be
-      // unavailable, or return a live list that omits a model the operator set
-      // as the fallback. Lead with it so it stays the default pick.
+      const discovered = models.length;
+      // Always keep the configured default selectable, leading the list.
       if (e.model && !models.includes(e.model)) models = [e.model, ...models];
       return {
         endpointId: e.id,
         endpointName: e.name,
-        choices: models.map((m) => ({
-          value: encodeChoice(e.id, m),
-          model: m,
-          endpointId: e.id,
-        })),
+        supported,
+        discovered,
+        choices: models.map((m) => ({ model: m, endpointId: e.id })),
       };
     }),
   );
-  // Drop endpoints with nothing to offer (no discovery, no configured model).
-  return groups.filter((g) => g.choices.length > 0);
 }
 
 // Mirrors the chat-session pattern: the source stays falsy until the operator
@@ -114,13 +163,29 @@ async function fetchModelGroups(): Promise<ModelGroup[]> {
 // when the session flips to unlocked, and `refreshModelOptions` bumps the tick.
 const [_tick, _setTick] = createSignal(1);
 const _session = useSession();
-const [_groups] = createResource(
+const [_results] = createResource(
   () => (_session.isAuthenticated ? _tick() : false),
-  fetchModelGroups,
+  fetchEndpointResults,
 );
 
+function results(): EndpointResult[] {
+  return _results.latest ?? [];
+}
+
+/** Re-read endpoints and their model lists (after Settings adds/edits one). */
+export function refreshModelOptions(): void {
+  _setTick((t) => t + 1);
+}
+
+/** Endpoints with at least one selectable model, grouped for the picker. */
 export function modelGroups(): ModelGroup[] {
-  return _groups.latest ?? [];
+  return results()
+    .filter((r) => r.choices.length > 0)
+    .map((r) => ({
+      endpointId: r.endpointId,
+      endpointName: r.endpointName,
+      choices: r.choices,
+    }));
 }
 
 /** The discovered models shaped for a grouped picker (`~/ui` Combobox): one
@@ -131,13 +196,27 @@ export function modelPickerGroups(): {
 }[] {
   return modelGroups().map((g) => ({
     label: g.endpointName,
-    options: g.choices.map((c) => ({ value: c.value, label: c.model })),
+    options: g.choices.map((c) => ({
+      value: encodeChoice(c.endpointId, c.model),
+      label: c.model,
+    })),
   }));
 }
 
-/** Re-read endpoints and their model lists (after Settings adds/edits one). */
-export function refreshModelOptions(): void {
-  _setTick((t) => t + 1);
+/** Per-endpoint discovery state for Settings (badges + failure surfacing). */
+export function endpointDiscovery(): EndpointDiscovery[] {
+  return results().map((r) => ({
+    endpointId: r.endpointId,
+    endpointName: r.endpointName,
+    discovered: r.discovered,
+    supported: r.supported,
+    status:
+      r.discovered > 0
+        ? "live"
+        : r.choices.length > 0
+          ? "default-only"
+          : "unavailable",
+  }));
 }
 
 /* ── Effective selection ──────────────────────────────────────────────────────
@@ -150,12 +229,14 @@ function allChoices(): ModelChoice[] {
   return modelGroups().flatMap((g) => g.choices);
 }
 
-export function effectiveSelection(): {
-  endpointId: string;
-  model: string;
-} | null {
+export function effectiveSelection(): ModelSelection | null {
   const choices = allChoices();
-  const explicit = choices.find((c) => c.value === selectedModel());
+  const sel = selectedModel();
+  const explicit =
+    sel &&
+    choices.find(
+      (c) => c.endpointId === sel.endpointId && c.model === sel.model,
+    );
   if (explicit)
     return { endpointId: explicit.endpointId, model: explicit.model };
   const first = choices[0];

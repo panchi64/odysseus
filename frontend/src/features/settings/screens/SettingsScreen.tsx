@@ -1,4 +1,11 @@
-import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  Show,
+  Suspense,
+  type JSX,
+} from "solid-js";
 import {
   Button,
   EmptyState,
@@ -26,6 +33,7 @@ import {
   useRoles,
 } from "../data";
 import { BINDABLE_ROLES, type ModelEndpoint } from "../model";
+import { endpointDiscovery, type EndpointDiscovery } from "~/lib/stores/models";
 
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
@@ -87,10 +95,11 @@ export function SettingsScreen(): JSX.Element {
     try {
       const target = editing();
       if (target) {
-        // Only send key/model if the operator typed one (blank = leave unchanged).
+        // Always send model so a cleared field unsets the default; the key is
+        // only sent when typed (blank = leave the stored key unchanged).
         await updateEndpoint(target.id, {
           ...fields,
-          ...(m ? { model: m } : {}),
+          model: m,
           ...(apiKey() ? { apiKey: apiKey() } : {}),
         });
         toast.success("Endpoint updated");
@@ -162,6 +171,44 @@ export function SettingsScreen(): JSX.Element {
     return applyChain(role, chain);
   };
 
+  /* ── Discovery status ─────────────────────────────────────────────────────────
+     Each endpoint's models are discovered from its provider; surface whether that
+     yielded a live list, only the configured default, or nothing usable. */
+  const discoveryFor = (id: string): EndpointDiscovery | undefined =>
+    endpointDiscovery().find((d) => d.endpointId === id);
+  const discoveryBadge = (
+    d: EndpointDiscovery,
+  ): { status: "nominal" | "warn" | "alert"; label: string } => {
+    if (d.status === "live")
+      return {
+        status: "nominal",
+        label: `${d.discovered} ${d.discovered === 1 ? "MODEL" : "MODELS"}`,
+      };
+    if (d.status === "default-only")
+      return { status: "warn", label: "DEFAULT ONLY" };
+    return { status: "alert", label: "NO MODELS" };
+  };
+
+  // Surface a saved endpoint that contributes no selectable model — discovery
+  // failed and no default is set — so the operator isn't left guessing. Once per
+  // endpoint while this screen is open.
+  const toasted = new Set<string>();
+  createEffect(() => {
+    for (const d of endpointDiscovery()) {
+      if (d.status === "unavailable" && !toasted.has(d.endpointId)) {
+        toasted.add(d.endpointId);
+        // `supported` distinguishes a working-but-empty models API from one that
+        // couldn't be reached, so the operator knows where to look.
+        const reason = d.supported
+          ? "the provider listed no models"
+          : "its models API was unavailable";
+        toast.error(
+          `No models for "${d.endpointName}" — ${reason}. Set a default model or check the provider.`,
+        );
+      }
+    }
+  });
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -231,6 +278,13 @@ export function SettingsScreen(): JSX.Element {
                         </Show>
                         <Show when={ep.thinking}>
                           <StatusFlag status="info">THINK</StatusFlag>
+                        </Show>
+                        <Show when={discoveryFor(ep.id)}>
+                          {(d) => (
+                            <StatusFlag status={discoveryBadge(d()).status}>
+                              {discoveryBadge(d()).label}
+                            </StatusFlag>
+                          )}
                         </Show>
                       </Row>
                       <Text variant="micro" tone="dim" class="truncate">

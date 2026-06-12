@@ -49,13 +49,24 @@ async function toApiError(res: Response): Promise<ApiError> {
   return { status: res.status, detail };
 }
 
+export interface RequestOptions {
+  /** Abort the request when this signal fires (e.g. a per-call timeout). */
+  signal?: AbortSignal;
+}
+
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  opts?: RequestOptions,
 ): Promise<T> {
   const headers = authHeaders();
-  const init: RequestInit = { method, headers, credentials: "omit" };
+  const init: RequestInit = {
+    method,
+    headers,
+    credentials: "omit",
+    signal: opts?.signal,
+  };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -71,7 +82,8 @@ async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>("GET", path),
+  get: <T>(path: string, opts?: RequestOptions) =>
+    request<T>("GET", path, undefined, opts),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),

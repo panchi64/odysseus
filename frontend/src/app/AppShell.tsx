@@ -13,7 +13,7 @@ import { useSession } from "~/lib/stores/session";
 import {
   effectiveValue,
   modelPickerGroups,
-  setSelectedModel,
+  selectModelByValue,
 } from "~/lib/stores/models";
 import { Sidebar } from "./Sidebar";
 import { isConnectedRoute } from "./nav";
@@ -44,7 +44,7 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
             <Combobox
               groups={modelPickerGroups()}
               value={effectiveValue()}
-              onChange={setSelectedModel}
+              onChange={selectModelByValue}
               leading="cpu"
               align="right"
               placeholder="NO MODEL"

@@ -57,13 +57,14 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # The verifier (opt-in) judges with the utility model. Resolve it only when
-    # enabled; if it isn't configured, verification degrades off rather than 503s.
+    # enabled; when no utility endpoint is bound, reuse the resolved `main` model
+    # (including the picker override) so verification works without separate setup.
     utility_model = None
     if get_settings().verify_enabled:
         try:
             utility_model = await registry.resolve("utility", owner_id=OPERATOR_ID)
         except (DegradedCapabilityError, NotFoundError):
-            utility_model = None
+            utility_model = model
 
     store = deps.store(request)
     if body.conversation_id is not None:

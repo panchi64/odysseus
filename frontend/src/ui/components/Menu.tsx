@@ -1,7 +1,8 @@
-import { For, Show, createSignal, splitProps, type JSX } from "solid-js";
+import { For, Show, splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Icon, type IconProps } from "../primitives/Icon";
+import { Popover } from "./Popover";
 
 export interface MenuItem {
   label: string;
@@ -20,28 +21,22 @@ export interface MenuProps {
   class?: string;
 }
 
-/** Dropdown menu. Closes on item select or backdrop click. Instant reveal. */
+/** Dropdown menu. Closes on item select, backdrop click, or Escape. Instant
+ *  reveal. Built on the shared Popover shell. */
 export function Menu(props: MenuProps): JSX.Element {
   const [local] = splitProps(props, ["trigger", "items", "align", "class"]);
-  const [open, setOpen] = createSignal(false);
   return (
-    <div class={cx("relative inline-flex", local.class)}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        class="inline-flex"
-      >
-        {local.trigger}
-      </button>
-      <Show when={open()}>
-        <div class="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-        <div
-          role="menu"
-          class={cx(
-            "absolute top-full z-50 mt-1 min-w-40 border border-line bg-surface py-1",
-            local.align === "left" ? "left-0" : "right-0",
-          )}
-        >
+    <Popover
+      class={local.class}
+      align={local.align ?? "right"}
+      panelClass="min-w-40 py-1"
+      trigger={({ setOpen }) => (
+        <button type="button" onClick={() => setOpen(true)} class="inline-flex">
+          {local.trigger}
+        </button>
+      )}
+      panel={({ close }) => (
+        <div role="menu">
           <For each={local.items}>
             {(item) => (
               <button
@@ -49,7 +44,7 @@ export function Menu(props: MenuProps): JSX.Element {
                 role="menuitem"
                 disabled={item.disabled}
                 onClick={() => {
-                  setOpen(false);
+                  close();
                   item.onSelect();
                 }}
                 class={cx(
@@ -70,7 +65,7 @@ export function Menu(props: MenuProps): JSX.Element {
             )}
           </For>
         </div>
-      </Show>
-    </div>
+      )}
+    />
   );
 }

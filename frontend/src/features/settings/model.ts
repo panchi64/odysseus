@@ -19,8 +19,8 @@ export interface ModelEndpoint {
   thinking: boolean;
 }
 
-/** Form values for creating/updating an endpoint. `apiKey`/`model` omitted =
- *  unchanged; `apiKey: ""` clears the key. */
+/** Form values for creating/updating an endpoint. `apiKey` omitted = unchanged,
+ *  `apiKey: ""` clears the key; `model: ""` clears the default model. */
 export interface EndpointInput {
   name: string;
   baseUrl: string;

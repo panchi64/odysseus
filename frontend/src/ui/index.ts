@@ -101,6 +101,11 @@ export {
   type ExpandableTextProps,
 } from "./components/ExpandableText";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
+export {
+  Popover,
+  type PopoverProps,
+  type PopoverApi,
+} from "./components/Popover";
 export { ThemeToggle } from "./components/ThemeToggle";
 
 // state / utility

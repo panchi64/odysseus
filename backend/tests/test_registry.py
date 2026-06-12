@@ -52,11 +52,20 @@ async def test_multi_endpoint_chain_wraps_in_fallback():
     assert len(model.models) == 2
 
 
-async def test_utility_falls_back_to_main_chain():
+async def test_unbound_utility_is_degraded():
     reg = await _registry()
     ep = await reg.create_endpoint(OWNER, name="main-ep", base_url="http://m/v1", model="m")
     await reg.set_role(OWNER, "main", [ep.id])
-    # utility has no binding of its own → resolves to main's chain.
+    # utility no longer inherits main's chain — an unbound utility is degraded;
+    # the chat layer reuses the resolved main model instead.
+    with pytest.raises(DegradedCapabilityError):
+        await reg.resolve("utility", owner_id=OWNER)
+
+
+async def test_bound_utility_resolves_independently():
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="util", base_url="http://u/v1", model="u")
+    await reg.set_role(OWNER, "utility", [ep.id])
     model = await reg.resolve("utility", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel)
 
@@ -214,7 +223,12 @@ def test_extract_model_ids_handles_provider_shapes():
     assert _extract_model_ids({"models": [{"name": "models/gemini-1.5-pro"}]}) == [
         "gemini-1.5-pro"
     ]
+    # The models/ strip is scoped to the named-models shape — an OpenAI-shaped id
+    # that legitimately starts with models/ is preserved.
+    assert _extract_model_ids({"data": [{"id": "models/foo"}]}) == ["models/foo"]
     # Bare list of strings, de-duplicated.
     assert _extract_model_ids(["qwen", "llama3", "qwen"]) == ["llama3", "qwen"]
-    # Nothing parseable.
+    # Recognized shape that lists nothing → empty (supported but empty).
     assert _extract_model_ids({"object": "list", "data": []}) == []
+    # Unrecognized payload → None (no models API), distinct from empty.
+    assert _extract_model_ids({"foo": "bar"}) is None

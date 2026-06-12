@@ -8,7 +8,7 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
-import { effectiveSelection } from "~/lib/stores/models";
+import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import { streamRun, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
@@ -83,13 +83,19 @@ export function orderSessions(list: ChatSummary[]): ChatSummary[] {
 
 const [_pendingDraft, _setPendingDraft] = createSignal<{
   text: string;
-  model: string;
+  model: ModelSelection | null;
 } | null>(null);
 
-export function startConversation(text: string, model: string): void {
+export function startConversation(
+  text: string,
+  model: ModelSelection | null,
+): void {
   _setPendingDraft({ text, model });
 }
-export function consumePendingDraft(): { text: string; model: string } | null {
+export function consumePendingDraft(): {
+  text: string;
+  model: ModelSelection | null;
+} | null {
   const v = _pendingDraft();
   if (v) _setPendingDraft(null);
   return v;

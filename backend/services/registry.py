@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import httpx
 from pydantic_ai.models import Model
 from sqlalchemy import Engine
 from sqlmodel import Session, select
@@ -32,9 +33,14 @@ from services import llm
 
 
 class ModelRegistry:
-    def __init__(self, engine: Engine, vault: Vault) -> None:
+    def __init__(
+        self, engine: Engine, vault: Vault, http_client: httpx.AsyncClient | None = None
+    ) -> None:
         self._engine = engine
         self._vault = vault
+        # Pooled client for provider model discovery; None ⇒ a transient client
+        # per call (the path tests take, where discovery is monkeypatched out).
+        self._http_client = http_client
 
     # --- endpoint catalog -------------------------------------------------
 
@@ -97,7 +103,8 @@ class ModelRegistry:
         self, owner_id: str, endpoint_id: str, **changes: object
     ) -> ModelEndpoint:
         """Apply field changes. ``api_key`` (plaintext, or "" to clear) is sealed
-        before storage; every other key maps straight onto the column."""
+        before storage; ``model`` accepts "" to clear the default back to null;
+        every other key maps straight onto the column."""
         await self.get_endpoint(owner_id, endpoint_id)  # ownership check
 
         def work(session: Session) -> ModelEndpoint:
@@ -106,6 +113,9 @@ class ModelRegistry:
             for key, value in changes.items():
                 if key == "api_key":
                     endpoint.api_key_enc = self._vault.encrypt_str(str(value)) if value else None
+                elif key == "model":
+                    # An explicit empty value clears the default back to discovery-only.
+                    endpoint.model = str(value) if value else None
                 elif value is not None:
                     setattr(endpoint, key, value)
             endpoint.updated_at = datetime.now(UTC)
@@ -187,12 +197,13 @@ class ModelRegistry:
         override_endpoint_id: str | None = None,
         override_model: str | None = None,
     ) -> Model:
-        """Resolve ``role`` to a model: per-conversation ``main`` override →
-        the role's chain → ``utility``'s fall-through to ``main``. The chat picker
-        overrides ``main`` with a provider (``override_endpoint_id``) and a specific
-        model on it (``override_model``, discovered from the provider). Wraps a
-        multi-endpoint chain in ``FallbackModel`` (AE-5.3). An unconfigured role
-        is a degraded capability — the registry is the only source of truth."""
+        """Resolve ``role`` to a model: per-conversation ``main`` override → the
+        role's own chain. The chat picker overrides ``main`` with a provider
+        (``override_endpoint_id``) and a specific model on it (``override_model``,
+        discovered from the provider); ``utility``/``embedding`` resolve their own
+        bindings. Wraps a multi-endpoint chain in ``FallbackModel`` (AE-5.3). An
+        unconfigured role is a degraded capability — the registry is the only
+        source of truth (the chat layer reuses ``main`` when ``utility`` is unset)."""
         if role not in llm.ROLES:
             raise ValueError(f"unknown model role: {role!r}")
 
@@ -201,8 +212,6 @@ class ModelRegistry:
             return llm.build_chain([self._to_spec(endpoint, role, model_override=override_model)])
 
         chain_ids = await self.get_role(owner_id, role)
-        if not chain_ids and role == "utility":
-            chain_ids = await self.get_role(owner_id, "main")  # utility falls back to main
         if not chain_ids:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
@@ -228,7 +237,9 @@ class ModelRegistry:
         no models API — the caller falls back to the endpoint's configured model."""
         endpoint = await self.get_endpoint(owner_id, endpoint_id)
         api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
-        return await llm.discover_models(endpoint.base_url, api_key)
+        return await llm.discover_models(
+            endpoint.base_url, api_key, client=self._http_client
+        )
 
     def _to_spec(
         self, endpoint: ModelEndpoint, role: str, *, model_override: str | None = None

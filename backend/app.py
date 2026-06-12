@@ -74,8 +74,12 @@ async def lifespan(app: FastAPI):
     app.state.conversations = ConversationStore(engine, vault)
     await app.state.conversations.start()
 
+    # Pooled outbound client for provider model discovery (the chat model picker).
+    # Connection-reused across endpoints; follows redirects (some providers 30x).
+    discovery_client = httpx.AsyncClient(follow_redirects=True)
+    app.state.discovery_client = discovery_client
     # The model registry — role→endpoint resolution + the endpoint catalog.
-    registry = ModelRegistry(engine, vault)
+    registry = ModelRegistry(engine, vault, http_client=discovery_client)
     app.state.models = registry
     # Long-term memory — embeds via the registry's embedding role; degrades to
     # keyword recall when no embedding endpoint is configured.
@@ -112,6 +116,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await preview_client.aclose()
+        await discovery_client.aclose()
         if sandbox_manager is not None:
             await sandbox_manager.stop()
         await app.state.conversations.stop()

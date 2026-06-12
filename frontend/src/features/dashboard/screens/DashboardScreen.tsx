@@ -25,9 +25,10 @@ import {
   useChatSessions,
 } from "~/features/chat/data";
 import {
+  effectiveSelection,
   effectiveValue,
   modelPickerGroups,
-  setSelectedModel,
+  selectModelByValue,
 } from "~/lib/stores/models";
 
 /** Derives the worst-case status from the service list for the ALL SYSTEMS flag. */
@@ -67,7 +68,7 @@ export function DashboardScreen(): JSX.Element {
   };
 
   const handleStart = (text: string) => {
-    startConversation(text, effectiveValue());
+    startConversation(text, effectiveSelection());
     navigate("/chat");
   };
   const openThread = (id: string) => {
@@ -102,7 +103,7 @@ export function DashboardScreen(): JSX.Element {
               <Combobox
                 groups={modelPickerGroups()}
                 value={effectiveValue()}
-                onChange={setSelectedModel}
+                onChange={selectModelByValue}
                 leading="cpu"
                 placeholder="NO MODEL"
                 searchPlaceholder="Search models…"
