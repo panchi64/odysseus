@@ -33,6 +33,7 @@ import {
   useRoles,
 } from "../data";
 import { BINDABLE_ROLES } from "../model";
+import { SearchProvidersPanel } from "../components/SearchProvidersPanel";
 import {
   endpointDiscovery,
   type EndpointDiscovery,
@@ -228,7 +229,7 @@ export function SettingsScreen(): JSX.Element {
     <Stack gap={6}>
       <PageHeader
         title="SETTINGS"
-        subtitle="Appearance and model configuration."
+        subtitle="Appearance, model, and web-search configuration."
         assetId="ODY-CFG-03.0"
       />
 
@@ -440,6 +441,8 @@ export function SettingsScreen(): JSX.Element {
           </Show>
         </Stack>
       </Panel>
+
+      <SearchProvidersPanel />
 
       {/* Endpoint form */}
       <Modal
