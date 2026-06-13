@@ -9,13 +9,14 @@ that editorializes makes its output harder to use.
 
 from __future__ import annotations
 
-# Names a fresh conversation from its first exchange. Output is the title itself,
-# nothing else — the caller strips stray quotes/prefixes but expects clean input.
+# Names a fresh conversation from the user's opening message. Output is the title
+# itself, nothing else — the caller strips stray quotes/prefixes but expects clean
+# input. The title reflects what the user asked, never the assistant's reply.
 TITLE_INSTRUCTIONS = (
-    "You name chat threads. Given the first exchange between a user and an "
-    "assistant, reply with a short, specific title of 3-6 words that captures the "
-    "topic in Title Case. Output only the title: no quotes, no surrounding "
-    "punctuation, no preamble, no explanation."
+    "You name chat threads. Given a user's opening message, reply with a short, "
+    "specific title of 3-6 words that captures their topic or request in Title "
+    "Case. Output only the title: no quotes, no surrounding punctuation, no "
+    "preamble, no explanation."
 )
 
 # The deliverable judge behind the verifier. Rules whether a turn actually did what

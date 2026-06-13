@@ -46,7 +46,7 @@ from services.conversations import ConversationStore
 from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
-from .title import first_user_text, generate_title, last_assistant_text, last_user_text
+from .title import first_user_text, generate_title, last_user_text
 from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -326,12 +326,13 @@ async def _maybe_title(
     conversation_id: str | None,
     is_first_turn: bool,
 ) -> None:
-    """Auto-name a fresh conversation from its opening exchange.
+    """Auto-name a fresh conversation from the operator's opening message.
 
     Shared by the chat and resume orchestrators (called from both after persist),
     so a first turn that parked for approval is still named once it resumes. The
-    exchange is read from the just-persisted history rather than threaded in, so
-    one code path serves both callers. Guards:
+    user's first message is read from the just-persisted history rather than threaded
+    in, so one code path serves both callers. The title reflects what the operator
+    asked — the assistant's reply is deliberately not fed to the namer. Guards:
 
     - ``is_first_turn`` (no prior messages) is the cheap pre-filter that skips the
       model call on continuation turns;
@@ -347,13 +348,11 @@ async def _maybe_title(
     try:
         history = await store.history(conversation_id)
         prompt = first_user_text(history)
-        answer = last_assistant_text(history)
-        if not prompt or not answer:
-            return  # nothing checkable to name from (e.g. the turn produced no text)
+        if not prompt:
+            return  # nothing to name from (e.g. a non-text opening prompt)
         name = await generate_title(
             title.model,
             prompt,
-            answer,
             reasoning_off=title.settings,
             timeout_s=get_settings().title_timeout_s,
         )

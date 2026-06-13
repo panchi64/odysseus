@@ -2,10 +2,12 @@
 
 After a brand-new conversation's first turn lands, the chassis asks the utility
 model for a short descriptive title so the operator never has to name a thread.
-The task is trivial, so the call is deliberately cheap and must never tax the
-turn it follows: reasoning is disabled and the output is capped. The engine emits
-the result as ``conversation.titled`` and persists it; the frontend reveals it
-with a typing animation.
+The thread is named for what the *operator* asked — only the first user message is
+fed to the namer, never the assistant's reply — so the title mirrors the request,
+not the answer. The task is trivial, so the call is deliberately cheap and must
+never tax the turn it follows: reasoning is disabled and the output is capped. The
+engine emits the result as ``conversation.titled`` and persists it; the frontend
+reveals it with a typing animation.
 
 How reasoning is disabled is **not** decided here — it is provider-shaped and
 lives in :mod:`services.reasoning`. The caller resolves the model and its
@@ -34,12 +36,11 @@ logger = logging.getLogger(__name__)
 # disabled the model spends its whole budget on the answer.
 _BASE_SETTINGS: ModelSettings = {"max_tokens": 48, "temperature": 0.3}
 
-# Trim the prompt/answer fed to the namer — the topic is in the opening, and a
+# Trim the user message fed to the namer — the topic is in the opening, and a
 # long body only slows the call without sharpening the title.
 _EXCERPT = 600
 _MAX_TITLE_LEN = 60
 
-_TEXT_PARTS = frozenset({"TextPart"})
 _USER_PARTS = frozenset({"UserPromptPart"})
 
 
@@ -79,15 +80,6 @@ def last_user_text(messages: list[ModelMessage]) -> str:
     return ""
 
 
-def last_assistant_text(messages: list[ModelMessage]) -> str:
-    """The latest assistant answer text in a history."""
-    for message in reversed(messages):
-        text = _part_text(message, _TEXT_PARTS)
-        if text:
-            return text
-    return ""
-
-
 def _clean(raw: str) -> str | None:
     """Sanitize the model's reply into a single-line title, or None if empty.
 
@@ -107,14 +99,15 @@ def _clean(raw: str) -> str | None:
 async def generate_title(
     model: Model,
     prompt: str,
-    answer: str,
     *,
     reasoning_off: ModelSettings | None = None,
     timeout_s: float | None = None,
 ) -> str | None:
-    """Name a conversation from its first exchange, or None on any failure.
+    """Name a conversation from the user's opening message, or None on any failure.
 
-    Best-effort and isolated: titling is a cosmetic nicety, so a model error,
+    The thread is named for what the operator asked — ``prompt`` is the first user
+    message and nothing else is fed in, so the assistant's reply never colours the
+    title. Best-effort and isolated: titling is a cosmetic nicety, so a model error,
     timeout, or empty reply degrades to "no auto-title" rather than disturbing the
     turn that produced the answer. ``reasoning_off`` is merged over the base caps
     (its source — :mod:`services.reasoning` — owns the per-provider lever);
@@ -122,7 +115,7 @@ async def generate_title(
     hold the run open."""
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
     agent = make_utility_agent(model, output_type=str, instructions=TITLE_INSTRUCTIONS)
-    user = f"User:\n{prompt[:_EXCERPT]}\n\nAssistant:\n{answer[:_EXCERPT]}"
+    user = prompt[:_EXCERPT]
     try:
         run = agent.run(user, model_settings=settings)
         # asyncio.TimeoutError is an Exception subclass (caught below); CancelledError

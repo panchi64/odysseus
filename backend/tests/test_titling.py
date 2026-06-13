@@ -9,7 +9,7 @@ from pydantic_ai.models.test import TestModel
 
 import agent.engine as engine
 from agent import build_chat_orchestrator, build_resume_orchestrator
-from agent.title import _clean, first_user_text, generate_title, last_assistant_text
+from agent.title import _clean, first_user_text, generate_title
 from core.config import Settings
 from core.db import init_db, make_engine
 from core.vault import Vault
@@ -64,7 +64,7 @@ def test_clean_caps_length():
 
 async def test_generate_title_returns_clean_title():
     model = TestModel(custom_output_text='"Configuring the Model Registry"')
-    title = await generate_title(model, "how do I set up endpoints?", "You do X and Y.")
+    title = await generate_title(model, "how do I set up endpoints?")
     assert title == "Configuring the Model Registry"
 
 
@@ -75,7 +75,6 @@ async def test_generate_title_merges_reasoning_off_without_error():
     title = await generate_title(
         model,
         "q",
-        "a",
         reasoning_off={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
     )
     assert title == "A Title"
@@ -246,7 +245,7 @@ async def test_parked_first_turn_is_titled_on_resume(tmp_path):
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
 
-    # Parked before any answer — nothing to name yet.
+    # Parked before reaching the finalize point — titling hasn't run yet.
     assert run.status is RunStatus.awaiting_input
     assert not any(b.type == "conversation.titled" for b in _bodies(run))
 
@@ -270,8 +269,9 @@ async def test_parked_first_turn_is_titled_on_resume(tmp_path):
 
 
 async def test_title_text_extraction_from_history(tmp_path):
-    # The exchange the namer sees is read back from persisted history, so the
-    # extraction helpers must pull the first user prompt and last assistant text.
+    # The message the namer sees is read back from persisted history, so the
+    # extraction helper must pull the first user prompt — the title is named for
+    # what the operator asked, not the assistant's reply.
     store = await _fresh_store(tmp_path)
     conv = await store.create_conversation("operator")
     reg = RunRegistry()
@@ -287,5 +287,4 @@ async def test_title_text_extraction_from_history(tmp_path):
 
     history = await store.history(conv)
     assert "capital of France" in first_user_text(history)
-    assert "Paris" in last_assistant_text(history)
     await store.stop()
