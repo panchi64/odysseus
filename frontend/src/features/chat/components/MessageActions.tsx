@@ -8,7 +8,6 @@ import {
   copyToClipboard,
   type MenuItem,
 } from "~/ui";
-import { modelGroups } from "~/lib/stores/models";
 import type { ChatMessage } from "../model";
 
 /** Assemble a message's full record — reasoning, each tool call as
@@ -30,8 +29,8 @@ function assembleMessage(m: ChatMessage): string {
  *  (`focus-within`), so it stays reachable without a pointer. */
 export function MessageActions(props: {
   message: ChatMessage;
-  /** Re-answer an assistant turn (current selection, or a chosen model). */
-  onRegenerate?: (model?: { endpointId: string; model: string }) => void;
+  /** Re-answer an assistant turn with the current model selection. */
+  onRegenerate?: () => void;
   /** Enter edit-in-place on a user turn. */
   onEdit?: () => void;
   /** Rewind the thread to (and including) this turn. */
@@ -45,19 +44,6 @@ export function MessageActions(props: {
 }): JSX.Element {
   const m = () => props.message;
   const isAssistant = () => m().role === "assistant";
-
-  // A "Regenerate with <model>" picker is offered when the catalog has more than
-  // one choice; otherwise REGENERATE is a plain button using the current pick.
-  const regenItems = (): MenuItem[] =>
-    modelGroups().flatMap((g) =>
-      g.choices.map((c) => ({
-        label: `↻ ${c.model}`,
-        icon: "refresh" as const,
-        onSelect: () =>
-          props.onRegenerate?.({ endpointId: c.endpointId, model: c.model }),
-      })),
-    );
-  const hasModelChoices = () => regenItems().length > 1;
 
   return (
     <div class="flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
@@ -118,104 +104,66 @@ export function MessageActions(props: {
 
       {/* User turns: edit-in-place. */}
       <Show when={!isAssistant() && props.onEdit}>
-        <Tooltip label="EDIT">
-          <Button
-            variant="ghost"
-            size="sm"
-            leading="pen"
-            aria-label="Edit message"
-            onClick={() => props.onEdit?.()}
-          >
-            EDIT
-          </Button>
-        </Tooltip>
-      </Show>
-
-      {/* Assistant turns: regenerate (with optional model override) + rewind. */}
-      <Show when={isAssistant() && props.onRegenerate}>
-        <Show
-          when={hasModelChoices()}
-          fallback={
-            <Tooltip label="REGENERATE">
-              <Button
-                variant="ghost"
-                size="sm"
-                leading="refresh"
-                aria-label="Regenerate answer"
-                onClick={() => props.onRegenerate?.()}
-              >
-                REGENERATE
-              </Button>
-            </Tooltip>
-          }
-        >
-          <Menu
-            align="left"
-            trigger={
-              <span
-                class="inline-flex h-6 items-center gap-1 rounded-ctl border border-transparent px-2 text-dim transition-colors hover:text-bright"
-                aria-label="Regenerate answer"
-              >
-                <Icon name="refresh" size={12} />
-                <Text variant="label" tone="dim">
-                  REGENERATE
-                </Text>
-              </span>
-            }
-            items={[
-              {
-                label: "↻ Current model",
-                icon: "refresh",
-                onSelect: () => props.onRegenerate?.(),
-              },
-              ...regenItems(),
-            ]}
-          />
-        </Show>
-      </Show>
-      <Show when={isAssistant() && props.onRewind}>
-        <Tooltip label="REWIND">
-          <Button
-            variant="ghost"
-            size="sm"
-            leading="chevron-up"
-            aria-label="Rewind to here"
-            onClick={() => props.onRewind?.()}
-          >
-            REWIND
-          </Button>
-        </Tooltip>
-      </Show>
-
-      {/* Both roles: pin, save-to-notes (Phase 2), delete. */}
-      <Tooltip label={m().pinned ? "UNPIN" : "PIN"}>
         <Button
           variant="ghost"
           size="sm"
-          leading="pin"
-          aria-label={m().pinned ? "Unpin message" : "Pin message"}
-          onClick={() => props.onTogglePin?.()}
+          leading="pen"
+          aria-label="Edit message"
+          onClick={() => props.onEdit?.()}
         >
-          {m().pinned ? "PINNED" : "PIN"}
+          EDIT
         </Button>
-      </Tooltip>
+      </Show>
+
+      {/* Assistant turns: regenerate with the current model + rewind. */}
+      <Show when={isAssistant() && props.onRegenerate}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="refresh"
+          aria-label="Regenerate answer"
+          onClick={() => props.onRegenerate?.()}
+        >
+          REGENERATE
+        </Button>
+      </Show>
+      <Show when={isAssistant() && props.onRewind}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="chevron-up"
+          aria-label="Rewind to here"
+          onClick={() => props.onRewind?.()}
+        >
+          REWIND
+        </Button>
+      </Show>
+
+      {/* Both roles: pin, save-to-notes (Phase 2), delete. */}
+      <Button
+        variant="ghost"
+        size="sm"
+        leading="pin"
+        aria-label={m().pinned ? "Unpin message" : "Pin message"}
+        onClick={() => props.onTogglePin?.()}
+      >
+        {m().pinned ? "PINNED" : "PIN"}
+      </Button>
       <Tooltip label="Available in Phase 2">
         <Button variant="ghost" size="sm" leading="note" disabled>
           SAVE TO NOTES
         </Button>
       </Tooltip>
       <Show when={props.onDelete}>
-        <Tooltip label="DELETE">
-          <Button
-            variant="danger"
-            size="sm"
-            leading="trash"
-            aria-label="Delete message"
-            onClick={() => props.onDelete?.()}
-          >
-            DELETE
-          </Button>
-        </Tooltip>
+        <Button
+          variant="danger"
+          size="sm"
+          leading="trash"
+          aria-label="Delete message"
+          onClick={() => props.onDelete?.()}
+        >
+          DELETE
+        </Button>
       </Show>
 
       {props.children}

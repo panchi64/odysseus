@@ -307,9 +307,7 @@ export function ChatRoomScreen(): JSX.Element {
                   message={message}
                   onResolveApproval={stream.resolveApproval}
                   onResolveHostCommands={stream.resolveHostCommands}
-                  onRegenerate={(model) =>
-                    void stream.regenerate(message.id, model)
-                  }
+                  onRegenerate={() => void stream.regenerate(message.id)}
                   onEditMessage={(id, text) => void stream.edit(id, text)}
                   onSwitchVersion={(id, i) => void stream.switchVersion(id, i)}
                   onTogglePin={() => void stream.toggleMessagePin(message.id)}

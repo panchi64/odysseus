@@ -31,8 +31,8 @@ export interface MessageItemProps {
     messageId: string,
     decisions: ApprovalDecision[],
   ) => void | Promise<void>;
-  /** Re-answer this assistant turn (optionally with a chosen model). */
-  onRegenerate?: (model?: { endpointId: string; model: string }) => void;
+  /** Re-answer this assistant turn with the current model selection. */
+  onRegenerate?: () => void;
   /** Re-ask an edited user turn as a new version. */
   onEditMessage?: (id: string, text: string) => void;
   /** Delete this turn and everything after it. */

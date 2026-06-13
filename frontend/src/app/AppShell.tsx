@@ -8,11 +8,14 @@ import {
   StatusFlag,
   ThemeToggle,
   Text,
+  Tooltip,
+  toast,
 } from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import {
   effectiveValue,
   modelPickerGroups,
+  refreshEndpoints,
   selectModelByValue,
 } from "~/lib/stores/models";
 import { Sidebar } from "./Sidebar";
@@ -41,17 +44,31 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
             </Text>
           </div>
           <div class="flex items-center gap-3">
-            <Combobox
-              groups={modelPickerGroups()}
-              value={effectiveValue()}
-              onChange={selectModelByValue}
-              leading="cpu"
-              align="right"
-              placeholder="NO MODEL"
-              searchPlaceholder="Search models…"
-              emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
-              aria-label="Active model"
-            />
+            <div class="flex items-center gap-1">
+              <Combobox
+                groups={modelPickerGroups()}
+                value={effectiveValue()}
+                onChange={selectModelByValue}
+                leading="cpu"
+                align="right"
+                placeholder="NO MODEL"
+                searchPlaceholder="Search models…"
+                emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
+                aria-label="Active model"
+              />
+              <Tooltip label="REFRESH MODELS">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading="refresh"
+                  aria-label="Refresh model list"
+                  onClick={() => {
+                    refreshEndpoints();
+                    toast.info("Refreshing model list…");
+                  }}
+                />
+              </Tooltip>
+            </div>
             <Text variant="label" tone="dim">
               OPERATOR
             </Text>

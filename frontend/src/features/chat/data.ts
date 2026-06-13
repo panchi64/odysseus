@@ -805,19 +805,17 @@ export function createChatStream(
     toast.error((err as { detail?: string })?.detail ?? fallback);
   }
 
-  /** Re-answer an assistant turn from the preceding request; the new answer
-   *  becomes a sibling version. `messageId` is the assistant message's id. */
-  async function regenerate(
-    messageId: string,
-    selection?: ModelSelection | null,
-  ): Promise<void> {
+  /** Re-answer an assistant turn from the preceding request, using the current
+   *  model selection; the new answer becomes a sibling version. `messageId` is
+   *  the assistant message's id. */
+  async function regenerate(messageId: string): Promise<void> {
     if (activeConversationId === null || sending()) return;
     const i = messages.findIndex(
       (m) => m.id === messageId && m.role === "assistant",
     );
     if (i < 0) return;
     setSending(true);
-    const sel = selection ?? effectiveSelection();
+    const sel = effectiveSelection();
     try {
       const created = await api.post<ChatCreatedDTO>("/chat/regenerate", {
         conversation_id: activeConversationId,
