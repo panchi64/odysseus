@@ -196,7 +196,7 @@ async def test_agent_search_tool_reaches_the_service():
     from agent import build_chat_orchestrator
     from runs import RunRegistry, RunStatus
     from tools import Capabilities
-    from tools.search import search_toolset
+    from tools.search import web_toolset
 
     seen = {}
 
@@ -211,10 +211,10 @@ async def test_agent_search_tool_reaches_the_service():
     await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
     orch = build_chat_orchestrator(
         "look it up",
-        # Tools are namespaced by category → "search_search"; only call search
-        # (fetch_url would need a real, resolvable URL).
-        model=TestModel(call_tools=["search_search"]),
-        categories={"search": search_toolset()},
+        # Tools are namespaced by category → "web_search"; only call search
+        # (web_fetch would need a real, resolvable URL).
+        model=TestModel(call_tools=["web_search"]),
+        categories={"web": web_toolset()},
         capabilities=Capabilities(search=svc),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
@@ -230,13 +230,13 @@ async def test_web_tools_degrade_when_capability_absent():
     from agent import build_chat_orchestrator
     from runs import RunRegistry, RunStatus
     from tools import Capabilities
-    from tools.search import search_toolset
+    from tools.search import web_toolset
 
     # No search capability wired: both tools must answer "unavailable", not crash.
     orch = build_chat_orchestrator(
         "search and read",
-        model=TestModel(call_tools=["search_search", "search_fetch_url"]),
-        categories={"search": search_toolset()},
+        model=TestModel(call_tools=["web_search", "web_fetch"]),
+        categories={"web": web_toolset()},
         capabilities=Capabilities(search=None),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)

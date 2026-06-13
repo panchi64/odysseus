@@ -26,7 +26,7 @@ import type {
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
  *  approval + execution render as a single persistent terminal, never a generic
  *  approval card or tool card. */
-export const HOST_COMMAND_TOOL = "run_host_command";
+export const HOST_COMMAND_TOOL = "code_run_host_command";
 
 /* ── Recency-gated resume ─────────────────────────────────────────────────────
    On entry the chat resumes the last conversation only while it's still "warm"

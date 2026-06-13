@@ -23,7 +23,7 @@ from services.search import FetchedPage, SearchResult
 from .deps import RunDeps
 
 
-def search_toolset() -> FunctionToolset[RunDeps]:
+def web_toolset() -> FunctionToolset[RunDeps]:
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
     @toolset.tool
@@ -43,7 +43,7 @@ def search_toolset() -> FunctionToolset[RunDeps]:
             return f"Web search is unavailable: {exc}"
 
     @toolset.tool(retries=2)
-    async def fetch_url(ctx: RunContext[RunDeps], url: str) -> FetchedPage | str:
+    async def fetch(ctx: RunContext[RunDeps], url: str) -> FetchedPage | str:
         """Fetch a single web page and return its main content as Markdown.
 
         Use after `search` to read a result in full. If a URL can't be fetched you

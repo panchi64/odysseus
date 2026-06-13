@@ -2,9 +2,9 @@
 
 Two shapes, both thin adapters over ``services/``:
 
-- ``publish_artifact`` captures a *file* the agent produced into the encrypted
-  artifact store and emits ``artifact.published`` — a static snapshot.
-- ``start_preview`` / ``stop_preview`` run a *live server* in the sandbox and
+- ``preview_publish_artifact`` captures a *file* the agent produced into the
+  encrypted artifact store and emits ``artifact.published`` — a static snapshot.
+- ``preview_start`` / ``preview_stop`` run a *live server* in the sandbox and
   emit ``preview.ready`` / ``preview.stopped`` — the backend reverse-proxies it
   to a sandboxed iframe. The session manager owns the container lifecycle.
 
@@ -65,7 +65,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         return format_publish_result(view)
 
     @toolset.tool
-    async def start_preview(
+    async def start(
         ctx: RunContext[RunDeps],
         command: list[str],
         port: int,
@@ -97,7 +97,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         return f"Live preview running at {handle.path} (serving '{' '.join(handle.command)}')."
 
     @toolset.tool
-    async def stop_preview(ctx: RunContext[RunDeps]) -> str:
+    async def stop(ctx: RunContext[RunDeps]) -> str:
         """Stop the live preview server running in this conversation, if any."""
         sessions = ctx.deps.sandbox_sessions
         if sessions is None:

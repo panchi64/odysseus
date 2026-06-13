@@ -1,8 +1,8 @@
 """Code & shell tools — the agent's two execution paths, cleanly split.
 
-``execute_code`` is the default: it runs in the host-isolated sandbox, so it is
+``code_execute`` is the default: it runs in the host-isolated sandbox, so it is
 **not** approval-gated — being contained, it carries no host-level risk and the
-agent computes freely. ``run_host_command`` is the deliberate exception: it runs
+agent computes freely. ``code_run_host_command`` is the deliberate exception: it runs
 on the real host, so it is an approval-gated tool whose request must carry a
 plain-language ``explanation`` the operator can judge without reading the command.
 
@@ -60,7 +60,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
     @toolset.tool
-    async def execute_code(
+    async def execute(
         ctx: RunContext[RunDeps],
         language: Literal["python", "bash"],
         code: str,
@@ -118,7 +118,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
 
         Only for when the host itself must change. ``explanation`` MUST be a
         plain-language description of what the command does and its effect on the
-        host — it is shown to the operator for approval. Prefer ``execute_code``
+        host — it is shown to the operator for approval. Prefer ``code_execute``
         for anything that does not need the real host.
         """
         try:

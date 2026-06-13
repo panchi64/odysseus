@@ -82,7 +82,7 @@ async def _run_one_tool(tool: str, *, sessions=None) -> Run:
 # --- sandboxed execution (the default, not approval-gated) -------------------
 async def test_execute_code_runs_in_the_conversation_session():
     manager = FakeSessionManager()
-    run = await _run_one_tool("code_execute_code", sessions=manager)
+    run = await _run_one_tool("code_execute", sessions=manager)
 
     # The session was keyed by the conversation (so follow-up calls reuse it).
     assert manager.acquired == "conv-1"
@@ -99,7 +99,7 @@ async def test_execute_code_runs_in_the_conversation_session():
 
 async def test_execute_code_fails_closed_without_a_runtime():
     # No sandbox wired in ⇒ the tool reports unavailable and does NOT touch host.
-    run = await _run_one_tool("code_execute_code", sessions=None)
+    run = await _run_one_tool("code_execute", sessions=None)
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
     assert completed.result["ok"] is False
     assert "unavailable" in completed.result["error"].lower()
@@ -108,7 +108,7 @@ async def test_execute_code_fails_closed_without_a_runtime():
 # --- failures feed back to the model (the iterate-fix loop) -------------------
 async def _run_canned(*, result=None, error=None) -> dict:
     manager = _CannedManager(_CannedSession(result=result, error=error))
-    run = await _run_one_tool("code_execute_code", sessions=manager)
+    run = await _run_one_tool("code_execute", sessions=manager)
     return next(b for b in _bodies(run) if b.type == "tool.completed").result
 
 

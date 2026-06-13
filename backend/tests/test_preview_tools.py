@@ -80,7 +80,7 @@ async def test_start_preview_emits_ready_and_forwards_spec():
     manager = _FakeManager()
     agent, run, deps = _run(
         manager,
-        tool_name="preview_start_preview",
+        tool_name="preview_start",
         args={"command": ["python", "-m", "http.server", "8000"], "port": 8000, "title": "Site"},
     )
     async with agent.iter("serve it", deps=deps) as agent_run:
@@ -99,7 +99,7 @@ async def test_start_preview_failure_feeds_back_without_event():
     manager = _FakeManager(fail=True)
     agent, run, deps = _run(
         manager,
-        tool_name="preview_start_preview",
+        tool_name="preview_start",
         args={"command": ["bad"], "port": 8000},
     )
     async with agent.iter("serve it", deps=deps) as agent_run:
@@ -111,7 +111,7 @@ async def test_start_preview_failure_feeds_back_without_event():
 
 async def test_stop_preview_emits_stopped():
     manager = _FakeManager()
-    agent, run, deps = _run(manager, tool_name="preview_stop_preview", args={})
+    agent, run, deps = _run(manager, tool_name="preview_stop", args={})
     async with agent.iter("stop it", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
 
@@ -121,7 +121,7 @@ async def test_stop_preview_emits_stopped():
 
 async def test_start_preview_unavailable_without_sandbox():
     agent, run, deps = _run(
-        None, tool_name="preview_start_preview", args={"command": ["x"], "port": 8000}
+        None, tool_name="preview_start", args={"command": ["x"], "port": 8000}
     )
     async with agent.iter("serve it", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
