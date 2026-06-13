@@ -23,16 +23,11 @@ from pydantic_ai import ModelMessage
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
+from prompts.utility import TITLE_INSTRUCTIONS
+
 from .meta import make_utility_agent
 
 logger = logging.getLogger(__name__)
-
-_TITLE_INSTRUCTIONS = (
-    "You name chat threads. Given the first exchange between a user and an "
-    "assistant, reply with a short, specific title of 3-6 words that captures the "
-    "topic in Title Case. Output only the title: no quotes, no surrounding "
-    "punctuation, no preamble, no explanation."
-)
 
 # Output-capped base settings; the caller's reasoning-off settings are merged on
 # top. The cap is small because a title is a handful of words — with thinking
@@ -126,7 +121,7 @@ async def generate_title(
     ``timeout_s`` bounds how long the call may run so a slow utility model cannot
     hold the run open."""
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
-    agent = make_utility_agent(model, output_type=str, instructions=_TITLE_INSTRUCTIONS)
+    agent = make_utility_agent(model, output_type=str, instructions=TITLE_INSTRUCTIONS)
     user = f"User:\n{prompt[:_EXCERPT]}\n\nAssistant:\n{answer[:_EXCERPT]}"
     try:
         run = agent.run(user, model_settings=settings)

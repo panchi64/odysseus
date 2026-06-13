@@ -20,6 +20,8 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
+from prompts.utility import JUDGE_INSTRUCTIONS
+
 
 def make_utility_agent(
     model: Model, *, output_type: Any = str, instructions: str
@@ -66,13 +68,6 @@ class Verdict(BaseModel):
 Judge = Callable[[str, str], Awaitable[Verdict]]
 
 
-_JUDGE_INSTRUCTIONS = (
-    "You verify whether an assistant's response fully satisfied the user's request. "
-    "Be strict about concrete deliverables the user named. Set ok=false with a short, "
-    "specific reason when something asked for is missing or wrong; otherwise ok=true."
-)
-
-
 def make_utility_judge(model: Model) -> Judge:
     """The default judge — asks the given utility model whether the task was
     satisfied. The model is resolved from the registry's ``utility`` role by the
@@ -80,7 +75,7 @@ def make_utility_judge(model: Model) -> Judge:
 
     async def judge(request: str, answer: str) -> Verdict:
         agent = make_utility_agent(
-            model, output_type=Verdict, instructions=_JUDGE_INSTRUCTIONS
+            model, output_type=Verdict, instructions=JUDGE_INSTRUCTIONS
         )
         result = await agent.run(f"Request:\n{request}\n\nResponse:\n{answer}")
         return result.output

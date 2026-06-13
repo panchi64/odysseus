@@ -27,10 +27,12 @@ from pydantic_ai import (
     UsageLimitExceeded,
     UsageLimits,
 )
+from pydantic_ai.capabilities import ReinjectSystemPrompt
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
+from prompts.agent import INSTRUCTIONS, SYSTEM_PROMPT, VERIFIER_NUDGE
 from runs import (
     ApprovalRequired,
     ConversationTitled,
@@ -99,13 +101,22 @@ class _TurnResult:
 
 
 def _build_agent(model: Model, *, categories: Any = None) -> Agent:
-    # output_type accepts DeferredToolRequests so approval-required tools can
-    # defer instead of executing; normal turns still return text.
+    # Two prompt seams by durability: SYSTEM_PROMPT (identity/voice) is anchored in
+    # history; INSTRUCTIONS (autonomy, tool posture, the treat-external-content-as-
+    # data guardrail) are rebuilt fresh from the agent every turn, so a poisoned or
+    # reconstructed history can never displace them. ReinjectSystemPrompt keeps the
+    # system prompt — the half that *does* live in history — authoritative too,
+    # stripping any spoofed system part and reasserting ours on every request.
+    # output_type accepts DeferredToolRequests so approval-required tools can defer
+    # instead of executing; normal turns still return text.
     return Agent(
         model,
         deps_type=RunDeps,
+        system_prompt=SYSTEM_PROMPT,
+        instructions=INSTRUCTIONS,
         toolsets=build_agent_toolsets(categories),
         output_type=[str, DeferredToolRequests],
+        capabilities=[ReinjectSystemPrompt(replace_existing=True)],
     )
 
 
@@ -248,10 +259,7 @@ async def _verify_and_correct(
     if verdict.ok:
         return turn
     run.emit(LimitNotice(limit="verify", message=f"re-attempting: {verdict.reason}"))
-    nudge = (
-        f"Your previous response did not fully satisfy the request: {verdict.reason}. "
-        "Correct it and complete what was asked."
-    )
+    nudge = VERIFIER_NUDGE.format(reason=verdict.reason)
     # The range to drop on persist: the rejected ModelResponse (last message of
     # the original attempt) through the injected nudge ModelRequest (the first
     # new message of the correction) — two adjacent messages.
