@@ -8,12 +8,13 @@ import {
   createSignal,
   type JSX,
 } from "solid-js";
-import { Caret, Icon, Markdown, Stack, Text, cx } from "~/ui";
+import { Caret, Icon, Markdown, Text, cx } from "~/ui";
 import type {
   ApprovalBlock,
   ApprovalDecision,
   ArtifactBlock,
   AssistantBlock,
+  BlockKind,
   HostCommandBlock,
   PreviewBlock,
   TextBlock,
@@ -25,6 +26,7 @@ import {
   peekLatestTool,
   planTurnLayout,
   type BlockGroup,
+  type LayoutItem,
 } from "../blocks";
 import { ApprovalCard } from "./ApprovalCard";
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -41,22 +43,53 @@ interface RowHandlers {
   onResolveHostCommands?: Resolve;
 }
 
+/** How a row spaces itself from the one above:
+ *  - "none"    — first row, flush to the top.
+ *  - "gap"     — separated by margin (no rail ink in the gap): a run boundary.
+ *  - "connect" — separated by border-covered padding so a rail block's hairline
+ *    runs unbroken into the rail block above it (one continuous timeline). */
+type TopSpacing = "none" | "gap" | "connect";
+
+/** Block kinds that render against the left timeline rail (process), as opposed
+ *  to the full-width result blocks (answer text, artifacts, previews). */
+const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
+  "thinking",
+  "tool",
+  "host_command",
+  "approval",
+]);
+
 /** The left rail that turns a stack of process blocks into a legible, ordered
  *  timeline. A 1px hairline — the workhorse divider that enforces structure
  *  (§2) — coloured to mark the live block (brightness/hue, not width, so the
- *  block never reflows when it goes active, §1). Answer/artifact/preview render
- *  full-width (results lead; work recedes). */
-function Rail(props: { active?: boolean; children: JSX.Element }): JSX.Element {
+ *  block never reflows when it goes active, §1). When `top="connect"` the gap
+ *  above is *padding inside the border*, so the hairline joins the rail block
+ *  above into one unbroken line; "gap" keeps the spacing outside the border so
+ *  the line stops at a run boundary. Answer/artifact/preview render full-width
+ *  (results lead; work recedes). */
+function Rail(props: {
+  active?: boolean;
+  top?: TopSpacing;
+  children: JSX.Element;
+}): JSX.Element {
   return (
     <div
       class={cx(
         "border-l pl-3 transition-colors",
         props.active ? "border-info" : "border-line",
+        props.top === "connect" && "pt-3",
+        props.top === "gap" && "mt-3",
       )}
     >
       {props.children}
     </div>
   );
+}
+
+/** Margin for a full-width (non-rail) row — spacing always lives outside, since
+ *  there's no rail to keep continuous. */
+function fullWidthTop(top?: TopSpacing): string | undefined {
+  return top && top !== "none" ? "mt-3" : undefined;
 }
 
 /** A passage of the answer — full-width and bright. The active, still-streaming
@@ -89,26 +122,35 @@ function BlockRow(
     active?: boolean;
     streaming?: boolean;
     forceOpen?: boolean;
+    top?: TopSpacing;
   } & RowHandlers,
 ): JSX.Element {
   const g = () => props.group;
   return (
     <Switch>
       <Match when={g().kind === "text"}>
-        <AnswerText
-          text={(g().blocks[0] as TextBlock).text}
-          active={props.active}
-          streaming={props.streaming}
-        />
+        <div class={fullWidthTop(props.top)}>
+          <AnswerText
+            text={(g().blocks[0] as TextBlock).text}
+            active={props.active}
+            streaming={props.streaming}
+          />
+        </div>
       </Match>
       <Match when={g().kind === "artifact"}>
-        <ArtifactViewer artifact={(g().blocks[0] as ArtifactBlock).artifact} />
+        <div class={fullWidthTop(props.top)}>
+          <ArtifactViewer
+            artifact={(g().blocks[0] as ArtifactBlock).artifact}
+          />
+        </div>
       </Match>
       <Match when={g().kind === "preview"}>
-        <PreviewPane preview={(g().blocks[0] as PreviewBlock).preview} />
+        <div class={fullWidthTop(props.top)}>
+          <PreviewPane preview={(g().blocks[0] as PreviewBlock).preview} />
+        </div>
       </Match>
       <Match when={g().kind === "thinking"}>
-        <Rail active={props.active}>
+        <Rail active={props.active} top={props.top}>
           <ReasoningBlock
             reasoning={(g().blocks[0] as ThinkingBlock).text}
             open={props.forceOpen}
@@ -118,7 +160,7 @@ function BlockRow(
         </Rail>
       </Match>
       <Match when={g().kind === "tool"}>
-        <Rail active={props.active}>
+        <Rail active={props.active} top={props.top}>
           <ToolCallCard
             tool={(g().blocks[0] as ToolBlock).tool}
             open={props.forceOpen}
@@ -126,7 +168,7 @@ function BlockRow(
         </Rail>
       </Match>
       <Match when={g().kind === "host_command"}>
-        <Rail active={props.active}>
+        <Rail active={props.active} top={props.top}>
           <HostCommandCard
             commands={(g().blocks as HostCommandBlock[]).map((b) => b.command)}
             open={props.forceOpen}
@@ -135,7 +177,7 @@ function BlockRow(
         </Rail>
       </Match>
       <Match when={g().kind === "approval"}>
-        <Rail active={props.active}>
+        <Rail active={props.active} top={props.top}>
           <ApprovalCard
             approvals={(g().blocks as ApprovalBlock[]).map((b) => b.approval)}
             onSubmit={props.onResolveApproval ?? noop}
@@ -146,11 +188,25 @@ function BlockRow(
   );
 }
 
+/** The top spacing for the item at `index`: nothing for the first, a connected
+ *  rail when this and the previous row are both rail blocks, otherwise a plain
+ *  gap (run boundary). */
+function topSpacing(items: LayoutItem[], index: number): TopSpacing {
+  if (index === 0) return "none";
+  const isRail = (it: LayoutItem) =>
+    it.type === "group" && RAIL_KINDS.has(it.group.kind);
+  return isRail(items[index]) && isRail(items[index - 1]) ? "connect" : "gap";
+}
+
 /** The compacted work log: a leading run of process blocks folded into one
  *  accordion that peeks the latest call + its rationale, so a long turn doesn't
  *  bury the screen. Expanding restores the full ordered run. */
 function WorkLogAccordion(
-  props: { groups: BlockGroup[]; forceOpen?: boolean } & RowHandlers,
+  props: {
+    groups: BlockGroup[];
+    forceOpen?: boolean;
+    top?: TopSpacing;
+  } & RowHandlers,
 ): JSX.Element {
   const [open, setOpen] = createSignal(false);
   createEffect(() => {
@@ -159,7 +215,7 @@ function WorkLogAccordion(
   const peek = createMemo(() => peekLatestTool(props.groups));
 
   return (
-    <div>
+    <div class={fullWidthTop(props.top)}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -179,18 +235,20 @@ function WorkLogAccordion(
         </Show>
       </button>
       <Show when={open()}>
-        <Stack gap={3} class="mt-2">
+        {/* Every folded group is a rail block, so they connect into one line. */}
+        <div class="mt-2">
           <For each={props.groups}>
-            {(group) => (
+            {(group, i) => (
               <BlockRow
                 group={group}
+                top={i() === 0 ? "none" : "connect"}
                 forceOpen={props.forceOpen}
                 onResolveApproval={props.onResolveApproval}
                 onResolveHostCommands={props.onResolveHostCommands}
               />
             )}
           </For>
-        </Stack>
+        </div>
       </Show>
     </div>
   );
@@ -221,12 +279,13 @@ export function TurnBlocks(
   });
 
   return (
-    <Stack gap={3}>
+    <div>
       <For each={layout()}>
-        {(item) =>
+        {(item, i) =>
           item.type === "worklog" ? (
             <WorkLogAccordion
               groups={item.groups}
+              top={topSpacing(layout(), i())}
               forceOpen={props.forceOpen}
               onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
@@ -236,6 +295,7 @@ export function TurnBlocks(
               group={item.group}
               active={item.group.id === activeId()}
               streaming={props.streaming}
+              top={topSpacing(layout(), i())}
               forceOpen={props.forceOpen}
               onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
@@ -243,6 +303,6 @@ export function TurnBlocks(
           )
         }
       </For>
-    </Stack>
+    </div>
   );
 }
