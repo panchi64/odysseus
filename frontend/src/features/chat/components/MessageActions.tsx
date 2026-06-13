@@ -47,6 +47,43 @@ export function MessageActions(props: {
 
   return (
     <div class="flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {/* Lead with the turn's primary action: edit for the operator's own
+          message, regenerate/rewind for the assistant's answer. */}
+      <Show when={!isAssistant() && props.onEdit}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="pen"
+          aria-label="Edit message"
+          onClick={() => props.onEdit?.()}
+        >
+          EDIT
+        </Button>
+      </Show>
+      <Show when={isAssistant() && props.onRegenerate}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="refresh"
+          aria-label="Regenerate answer"
+          onClick={() => props.onRegenerate?.()}
+        >
+          REGENERATE
+        </Button>
+      </Show>
+      <Show when={isAssistant() && props.onRewind}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="chevron-up"
+          aria-label="Rewind to here"
+          onClick={() => props.onRewind?.()}
+        >
+          REWIND
+        </Button>
+      </Show>
+
+      {/* Both roles: copy (answer / full message / reasoning). */}
       <Show
         when={isAssistant()}
         fallback={
@@ -100,43 +137,6 @@ export function MessageActions(props: {
             ] satisfies MenuItem[]
           }
         />
-      </Show>
-
-      {/* User turns: edit-in-place. */}
-      <Show when={!isAssistant() && props.onEdit}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="pen"
-          aria-label="Edit message"
-          onClick={() => props.onEdit?.()}
-        >
-          EDIT
-        </Button>
-      </Show>
-
-      {/* Assistant turns: regenerate with the current model + rewind. */}
-      <Show when={isAssistant() && props.onRegenerate}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="refresh"
-          aria-label="Regenerate answer"
-          onClick={() => props.onRegenerate?.()}
-        >
-          REGENERATE
-        </Button>
-      </Show>
-      <Show when={isAssistant() && props.onRewind}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="chevron-up"
-          aria-label="Rewind to here"
-          onClick={() => props.onRewind?.()}
-        >
-          REWIND
-        </Button>
       </Show>
 
       {/* Both roles: pin, save-to-document (Phase 2), delete. */}

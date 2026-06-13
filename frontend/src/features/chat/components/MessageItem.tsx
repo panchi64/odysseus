@@ -148,15 +148,31 @@ function UserTurn(props: {
 
   return (
     <div class="group flex flex-col items-end gap-1 border-b border-line bg-surface px-4 py-3">
-      <div class="flex items-center gap-2">
-        <PinMarker message={m()} />
-        <VersionCycler message={m()} onSwitchVersion={props.onSwitchVersion} />
-        <Text variant="micro" tone="dim">
-          {relativeTime(m().createdAt)}
-        </Text>
-        <Text variant="label" tone="default">
-          OPERATOR
-        </Text>
+      <div class="flex w-full items-center justify-between gap-2">
+        {/* Left: actions reveal on hover. Right: identity + metadata. */}
+        <div class="flex items-center gap-2">
+          <Show when={!editing()}>
+            <MessageActions
+              message={m()}
+              onEdit={startEdit}
+              onDelete={props.onDelete}
+              onTogglePin={props.onTogglePin}
+            />
+          </Show>
+        </div>
+        <div class="flex items-center gap-2">
+          <PinMarker message={m()} />
+          <VersionCycler
+            message={m()}
+            onSwitchVersion={props.onSwitchVersion}
+          />
+          <Text variant="micro" tone="dim">
+            {relativeTime(m().createdAt)}
+          </Text>
+          <Text variant="label" tone="default">
+            OPERATOR
+          </Text>
+        </div>
       </div>
       <Show
         when={editing()}
@@ -191,14 +207,6 @@ function UserTurn(props: {
             </Button>
           </div>
         </div>
-      </Show>
-      <Show when={!editing()}>
-        <MessageActions
-          message={m()}
-          onEdit={startEdit}
-          onDelete={props.onDelete}
-          onTogglePin={props.onTogglePin}
-        />
       </Show>
     </div>
   );

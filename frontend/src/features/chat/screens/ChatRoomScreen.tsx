@@ -6,6 +6,7 @@ import {
   createSignal,
   onCleanup,
   onMount,
+  untrack,
   type JSX,
 } from "solid-js";
 import {
@@ -58,6 +59,68 @@ export function ChatRoomScreen(): JSX.Element {
     // the sidebar reflects the new/updated thread.
     onConversationStarted: (id) => setCurrentId(id),
     onTurnComplete: () => refreshSessions(),
+  });
+
+  // Follow the stream: keep the transcript pinned to the bottom while the answer
+  // arrives, yield the moment the operator scrolls up to read back, and re-attach
+  // when they scroll near the bottom again. A floating control jumps back down
+  // once they've scrolled far up.
+  let scrollEl: HTMLDivElement | undefined;
+  const [pinned, setPinned] = createSignal(true);
+  const [showJump, setShowJump] = createSignal(false);
+  const scrollToBottom = () => {
+    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+  };
+  const jumpToLatest = () => {
+    setPinned(true);
+    setShowJump(false);
+    queueMicrotask(scrollToBottom);
+  };
+  const onScroll = () => {
+    if (!scrollEl) return;
+    const distance =
+      scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    setPinned(distance < 80); // within 80px counts as attached
+    setShowJump(distance > 240); // surface the jump control past ~one screenful
+  };
+  // Ticks on every fragment that grows the in-flight turn — answer + reasoning
+  // tokens, tool args/result/status, and host-command output — so the follow
+  // effect re-runs as content streams in, not only when a message is added.
+  const streamTick = createMemo(() => {
+    const last = stream.messages[stream.messages.length - 1];
+    if (!last) return stream.messages.length;
+    let n =
+      stream.messages.length +
+      (last.content?.length ?? 0) +
+      (last.reasoning?.length ?? 0);
+    for (const t of last.tools ?? [])
+      n +=
+        t.status.length +
+        t.args.length +
+        (t.result?.length ?? 0) +
+        (t.error?.length ?? 0);
+    for (const h of last.hostCommands ?? [])
+      n += h.phase.length + (h.stdout?.length ?? 0) + (h.stderr?.length ?? 0);
+    return n;
+  });
+  createEffect(() => {
+    streamTick();
+    // untrack(pinned): only new content drives a scroll, so re-attaching by
+    // scrolling down doesn't itself snap — the next fragment catches up.
+    if (untrack(pinned)) queueMicrotask(scrollToBottom);
+  });
+  // The operator initiating a turn (send / regenerate / edit) re-attaches the
+  // follow, so the new answer is tracked even if they had scrolled up.
+  let wasSending = false;
+  createEffect(() => {
+    const sending = stream.sending();
+    if (sending && !wasSending) jumpToLatest();
+    wasSending = sending;
+  });
+  // Switching threads re-attaches and jumps to the latest message.
+  createEffect(() => {
+    currentId();
+    jumpToLatest();
   });
 
   // Header reflects the selected thread (messages resolve through the seam).
@@ -290,46 +353,65 @@ export function ChatRoomScreen(): JSX.Element {
           </div>
         </header>
 
-        <div class="min-h-0 flex-1 overflow-y-auto py-2">
-          <Show
-            when={stream.messages.length}
-            fallback={
-              <EmptyState
-                icon="terminal"
-                message="START A CONVERSATION"
-                hint="Ask a question, request a summary, or describe a task to begin."
-              />
-            }
+        <div class="relative flex min-h-0 flex-1 flex-col">
+          <div
+            ref={scrollEl}
+            onScroll={onScroll}
+            class="min-h-0 flex-1 overflow-y-auto py-2"
           >
-            <For each={stream.messages}>
-              {(message) => (
-                <MessageItem
-                  message={message}
-                  onResolveApproval={stream.resolveApproval}
-                  onResolveHostCommands={stream.resolveHostCommands}
-                  onRegenerate={() => void stream.regenerate(message.id)}
-                  onEditMessage={(id, text) => void stream.edit(id, text)}
-                  onSwitchVersion={(id, i) => void stream.switchVersion(id, i)}
-                  onTogglePin={() => void stream.toggleMessagePin(message.id)}
-                  onRewind={() => {
-                    void stream.rewind(message.id);
-                  }}
-                  onDelete={async () => {
-                    if (
-                      await confirm({
-                        title: "Delete this message?",
-                        detail: "This removes it and everything after it.",
-                        confirmLabel: "DELETE",
-                        tone: "alert",
-                      })
-                    ) {
-                      await stream.removeMessage(message.id);
-                      toast.success("Message deleted");
-                    }
-                  }}
+            <Show
+              when={stream.messages.length}
+              fallback={
+                <EmptyState
+                  icon="terminal"
+                  message="START A CONVERSATION"
+                  hint="Ask a question, request a summary, or describe a task to begin."
                 />
-              )}
-            </For>
+              }
+            >
+              <For each={stream.messages}>
+                {(message) => (
+                  <MessageItem
+                    message={message}
+                    onResolveApproval={stream.resolveApproval}
+                    onResolveHostCommands={stream.resolveHostCommands}
+                    onRegenerate={() => void stream.regenerate(message.id)}
+                    onEditMessage={(id, text) => void stream.edit(id, text)}
+                    onSwitchVersion={(id, i) =>
+                      void stream.switchVersion(id, i)
+                    }
+                    onTogglePin={() => void stream.toggleMessagePin(message.id)}
+                    onRewind={() => {
+                      void stream.rewind(message.id);
+                    }}
+                    onDelete={async () => {
+                      if (
+                        await confirm({
+                          title: "Delete this message?",
+                          detail: "This removes it and everything after it.",
+                          confirmLabel: "DELETE",
+                          tone: "alert",
+                        })
+                      ) {
+                        await stream.removeMessage(message.id);
+                        toast.success("Message deleted");
+                      }
+                    }}
+                  />
+                )}
+              </For>
+            </Show>
+          </div>
+          <Show when={showJump()}>
+            <Button
+              variant="default"
+              size="sm"
+              leading="chevron-down"
+              onClick={jumpToLatest}
+              class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface"
+            >
+              JUMP TO LATEST
+            </Button>
           </Show>
         </div>
 
