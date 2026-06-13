@@ -89,18 +89,30 @@ export function ChatRoomScreen(): JSX.Element {
   const streamTick = createMemo(() => {
     const last = stream.messages[stream.messages.length - 1];
     if (!last) return stream.messages.length;
-    let n =
-      stream.messages.length +
-      (last.content?.length ?? 0) +
-      (last.reasoning?.length ?? 0);
-    for (const t of last.tools ?? [])
-      n +=
-        t.status.length +
-        t.args.length +
-        (t.result?.length ?? 0) +
-        (t.error?.length ?? 0);
-    for (const h of last.hostCommands ?? [])
-      n += h.phase.length + (h.stdout?.length ?? 0) + (h.stderr?.length ?? 0);
+    let n = stream.messages.length + (last.content?.length ?? 0);
+    for (const b of last.blocks ?? []) {
+      switch (b.kind) {
+        case "thinking":
+        case "text":
+          n += b.text.length;
+          break;
+        case "tool":
+          n +=
+            b.tool.status.length +
+            b.tool.args.length +
+            (b.tool.result?.length ?? 0) +
+            (b.tool.error?.length ?? 0);
+          break;
+        case "host_command":
+          n +=
+            b.command.phase.length +
+            (b.command.stdout?.length ?? 0) +
+            (b.command.stderr?.length ?? 0);
+          break;
+        default:
+          n += 1; // approval / artifact / preview: a new block is enough
+      }
+    }
     return n;
   });
   createEffect(() => {

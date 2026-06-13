@@ -5,7 +5,8 @@
  * Rules (see src/ui/CLAUDE.md):
  *  - tokens.css is the single source of truth for colors/spacing/type.
  *  - Cosmetic differences are variant props, never forked components.
- *  - No spinners — use LoadingText / EmptyState.
+ *  - No eased/decorative spinners — use LoadingText / EmptyState. (The one live
+ *    "working" indicator is Frames: hard-stepped glyph cycling, see design §8.)
  */
 
 // utils
@@ -79,6 +80,7 @@ export { Textarea, type TextareaProps } from "./components/Textarea";
 export { Composer, type ComposerProps } from "./components/Composer";
 export { Markdown, type MarkdownProps } from "./components/Markdown";
 export { Caret, type CaretProps } from "./components/Caret";
+export { Frames, type FramesProps } from "./components/Frames";
 export {
   TypewriterText,
   type TypewriterTextProps,

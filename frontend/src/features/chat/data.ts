@@ -15,11 +15,15 @@ import { toast } from "~/ui";
 import type {
   ApprovalDecision,
   ArtifactRef,
+  AssistantBlock,
   ChatMessage,
   ChatSession,
   ChatSummary,
   HostCommand,
+  HostCommandBlock,
   HostCommandPhase,
+  PreviewBlock,
+  ToolBlock,
   ToolInvocation,
 } from "./model";
 
@@ -312,27 +316,48 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
 }
 
 function toMessage(dto: MessageDTO): ChatMessage {
-  // Host commands render as their own terminal, so split them out of the generic
-  // tool-call list (both surfaces come from the same persisted tool calls).
-  const tools: ToolInvocation[] = [];
-  const hostCommands: HostCommand[] = [];
-  for (const t of dto.tools) {
-    if (t.name === HOST_COMMAND_TOOL) hostCommands.push(toHostCommand(t));
-    else tools.push(toTool(t));
-  }
-  return {
+  const base: ChatMessage = {
     id: dto.id,
     role: dto.role,
     content: dto.content,
-    reasoning: dto.reasoning ?? undefined,
-    tools,
-    hostCommands: hostCommands.length ? hostCommands : undefined,
-    artifacts: dto.artifacts?.map(toArtifactRef),
     createdAt: dto.created_at ?? new Date().toISOString(),
     versionIndex: dto.version_index,
     versionCount: dto.version_count,
     pinned: dto.pinned,
   };
+  if (dto.role !== "assistant") return base;
+  // Cold history is still flat (no recorded emission order), so reconstruct the
+  // turn's blocks in the legacy lane order — reasoning, the tool/host calls,
+  // artifacts, then the answer. (Once the backend persists ordered blocks, map
+  // them straight through here; the live stream already carries true order.)
+  const blocks: AssistantBlock[] = [];
+  if (dto.reasoning)
+    blocks.push({
+      kind: "thinking",
+      id: `${dto.id}-reasoning`,
+      text: dto.reasoning,
+    });
+  for (const t of dto.tools) {
+    if (t.name === HOST_COMMAND_TOOL)
+      blocks.push({
+        kind: "host_command",
+        id: `${dto.id}-${t.id}`,
+        command: toHostCommand(t),
+      });
+    else
+      blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
+  }
+  for (const a of dto.artifacts ?? [])
+    blocks.push({
+      kind: "artifact",
+      id: `${dto.id}-${a.artifact_id}`,
+      artifact: toArtifactRef(a),
+    });
+  if (dto.content)
+    blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
+  // The answer lives in the text block(s); keep `content` empty for assistant
+  // turns so it isn't a second, divergent copy of the same text.
+  return { ...base, content: "", blocks };
 }
 
 /* ── Read accessors (the seam) ────────────────────────────────────────────── */
@@ -462,37 +487,62 @@ export function createChatStream(
     setMessages(produce((m) => fn(m[i])));
   }
 
-  /** Upsert a host command onto a message, keyed by its tool_call_id. The
-   *  `tool.started`, `approval.required`, and `tool.completed` events for the
-   *  same host call all land here, each filling in the part it carries. */
-  function upsertHostCommand(
+  /** Append a streamed delta onto the trailing block of `kind`, starting a new
+   *  block whenever the kind changes. This is what turns the flat delta stream
+   *  into an ordered, interleaved sequence — and what gives a turn *multiple*
+   *  thinking blocks (each resumption after a tool/text starts a fresh one). */
+  function appendDelta(
+    m: ChatMessage,
+    kind: "thinking" | "text",
+    text: string,
+  ): void {
+    const blocks = m.blocks ?? (m.blocks = []);
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === kind) last.text += text;
+    else blocks.push({ kind, id: nextId(kind), text });
+  }
+
+  function findTool(m: ChatMessage, toolCallId: string): ToolBlock | undefined {
+    return m.blocks?.find(
+      (b): b is ToolBlock => b.kind === "tool" && b.tool.id === toolCallId,
+    );
+  }
+
+  /** Upsert a host-command *block*, keyed by tool_call_id. The host call's
+   *  `tool.started`, `approval.required`, and `tool.completed` events all land
+   *  here, each filling in the part it carries onto the same terminal block. */
+  function upsertHost(
     m: ChatMessage,
     toolCallId: string,
     patch: Partial<HostCommand>,
   ): void {
-    const list = m.hostCommands ?? (m.hostCommands = []);
-    const existing = list.find((h) => h.toolCallId === toolCallId);
-    if (existing) Object.assign(existing, patch);
-    else list.push({ toolCallId, command: "", phase: "pending", ...patch });
+    const existing = m.blocks?.find(
+      (b): b is HostCommandBlock =>
+        b.kind === "host_command" && b.command.toolCallId === toolCallId,
+    );
+    if (existing) Object.assign(existing.command, patch);
+    else
+      (m.blocks ?? (m.blocks = [])).push({
+        kind: "host_command",
+        id: `host-${toolCallId}`,
+        command: { toolCallId, command: "", phase: "pending", ...patch },
+      });
   }
 
   function foldEvent(assistantId: string, ev: RunEvent): void {
     switch (ev.type) {
       case "thinking.delta":
-        patchById(
-          assistantId,
-          (m) => (m.reasoning = (m.reasoning ?? "") + ev.text),
-        );
+        patchById(assistantId, (m) => appendDelta(m, "thinking", ev.text));
         break;
       case "answer.delta":
-        patchById(assistantId, (m) => (m.content += ev.text));
+        patchById(assistantId, (m) => appendDelta(m, "text", ev.text));
         break;
       case "tool.started":
         // Host commands are terminals, not generic tool cards. (tool.started
         // fires before approval.required, so this seeds the pending terminal.)
         if (ev.name === HOST_COMMAND_TOOL) {
           patchById(assistantId, (m) =>
-            upsertHostCommand(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, {
               command:
                 typeof ev.args.command === "string" ? ev.args.command : "",
               explanation:
@@ -504,15 +554,16 @@ export function createChatStream(
           break;
         }
         patchById(assistantId, (m) => {
-          m.tools = [
-            ...(m.tools ?? []),
-            {
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "tool",
+            id: `tool-${ev.tool_call_id}`,
+            tool: {
               id: ev.tool_call_id,
               name: ev.name,
               args: formatArgs(ev.args),
               status: "running",
             },
-          ];
+          });
         });
         break;
       case "tool.completed":
@@ -520,7 +571,7 @@ export function createChatStream(
           const r = parseHostResult(ev.result);
           if (r) {
             patchById(assistantId, (m) =>
-              upsertHostCommand(m, ev.tool_call_id, {
+              upsertHost(m, ev.tool_call_id, {
                 phase: hostPhaseFromResult(r),
                 exitCode: r.exit_code,
                 stdout: r.stdout,
@@ -533,17 +584,17 @@ export function createChatStream(
           break;
         }
         patchById(assistantId, (m) => {
-          const t = m.tools?.find((x) => x.id === ev.tool_call_id);
-          if (t) {
-            t.status = "ok";
-            t.result = stringifyResult(ev.result);
+          const b = findTool(m, ev.tool_call_id);
+          if (b) {
+            b.tool.status = "ok";
+            b.tool.result = stringifyResult(ev.result);
           }
         });
         break;
       case "tool.failed":
         if (ev.name === HOST_COMMAND_TOOL) {
           patchById(assistantId, (m) =>
-            upsertHostCommand(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, {
               phase: "error",
               error: ev.error,
             }),
@@ -551,17 +602,17 @@ export function createChatStream(
           break;
         }
         patchById(assistantId, (m) => {
-          const t = m.tools?.find((x) => x.id === ev.tool_call_id);
-          if (t) {
-            t.status = "error";
-            t.error = ev.error;
+          const b = findTool(m, ev.tool_call_id);
+          if (b) {
+            b.tool.status = "error";
+            b.tool.error = ev.error;
           }
         });
         break;
       case "approval.required":
         if (ev.name === HOST_COMMAND_TOOL) {
           patchById(assistantId, (m) =>
-            upsertHostCommand(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, {
               command:
                 typeof ev.args.command === "string" ? ev.args.command : "",
               explanation: ev.explanation ?? undefined,
@@ -571,30 +622,48 @@ export function createChatStream(
           break;
         }
         patchById(assistantId, (m) => {
-          m.approvals = [
-            ...(m.approvals ?? []),
-            {
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "approval",
+            id: `approval-${ev.tool_call_id}`,
+            approval: {
               toolCallId: ev.tool_call_id,
               name: ev.name,
               args: ev.args,
               summary: ev.summary,
               explanation: ev.explanation ?? undefined,
             },
-          ];
+          });
         });
         break;
       case "artifact.published":
         patchById(assistantId, (m) => {
-          m.artifacts = [...(m.artifacts ?? []), toArtifactRef(ev)];
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "artifact",
+            id: `artifact-${ev.artifact_id}`,
+            artifact: toArtifactRef(ev),
+          });
         });
         break;
       case "preview.ready":
+        // At most one live preview per turn — a later ready replaces the prior.
         patchById(assistantId, (m) => {
-          m.preview = { url: ev.url, title: ev.title ?? undefined };
+          const preview = { url: ev.url, title: ev.title ?? undefined };
+          const existing = m.blocks?.find(
+            (b): b is PreviewBlock => b.kind === "preview",
+          );
+          if (existing) existing.preview = preview;
+          else
+            (m.blocks ?? (m.blocks = [])).push({
+              kind: "preview",
+              id: nextId("preview"),
+              preview,
+            });
         });
         break;
       case "preview.stopped":
-        patchById(assistantId, (m) => (m.preview = null));
+        patchById(assistantId, (m) => {
+          if (m.blocks) m.blocks = m.blocks.filter((b) => b.kind !== "preview");
+        });
         break;
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
@@ -699,6 +768,7 @@ export function createChatStream(
       role: "assistant",
       model: selection?.model,
       content: "",
+      blocks: [],
       streaming: true,
       createdAt: new Date().toISOString(),
     };
@@ -776,7 +846,9 @@ export function createChatStream(
 
   /** Decide a message's pending approvals; the cards clear once submitted. */
   const resolveApproval = (messageId: string, decisions: ApprovalDecision[]) =>
-    submitDecisions(messageId, decisions, (m) => (m.approvals = []));
+    submitDecisions(messageId, decisions, (m) => {
+      if (m.blocks) m.blocks = m.blocks.filter((b) => b.kind !== "approval");
+    });
 
   /** Decide a message's host-command approvals. Approved commands begin running
    *  and denied ones close out optimistically; the stream confirms the outcome. */
@@ -786,8 +858,12 @@ export function createChatStream(
   ) =>
     submitDecisions(messageId, decisions, (m) => {
       for (const d of decisions) {
-        const h = m.hostCommands?.find((x) => x.toolCallId === d.tool_call_id);
-        if (h) h.phase = d.approved ? "running" : "denied";
+        const b = m.blocks?.find(
+          (x): x is HostCommandBlock =>
+            x.kind === "host_command" &&
+            x.command.toolCallId === d.tool_call_id,
+        );
+        if (b) b.command.phase = d.approved ? "running" : "denied";
       }
     });
 
@@ -828,8 +904,8 @@ export function createChatStream(
         role: "assistant",
         model: sel?.model,
         content: "",
+        blocks: [],
         streaming: true,
-        preview: null,
         createdAt: new Date().toISOString(),
       };
       setMessages(reconcile([...messages.slice(0, i), reset]));
@@ -870,6 +946,7 @@ export function createChatStream(
         role: "assistant",
         model: sel?.model,
         content: "",
+        blocks: [],
         streaming: true,
         createdAt: new Date().toISOString(),
       };

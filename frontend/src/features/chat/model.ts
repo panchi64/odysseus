@@ -77,21 +77,76 @@ export interface PreviewRef {
   title?: string;
 }
 
+/** One renderable unit of an assistant turn. A turn is an *ordered* list of
+ *  these — the agent's true emission sequence (think → tool → text → think →
+ *  tool → …), not regrouped into fixed lanes. Thinking and text arrive as deltas
+ *  folded onto a trailing block of the same kind; a new block starts whenever the
+ *  kind changes, so a turn naturally holds *multiple* thinking blocks interleaved
+ *  with tools and text. `id` is stable for keyed rendering. */
+export type AssistantBlock =
+  | ThinkingBlock
+  | TextBlock
+  | ToolBlock
+  | HostCommandBlock
+  | ApprovalBlock
+  | ArtifactBlock
+  | PreviewBlock;
+
+export type BlockKind = AssistantBlock["kind"];
+
+/** A private reasoning passage (`thinking.delta`). */
+export interface ThinkingBlock {
+  kind: "thinking";
+  id: string;
+  text: string;
+}
+/** A passage of the answer the operator reads (`answer.delta`). */
+export interface TextBlock {
+  kind: "text";
+  id: string;
+  text: string;
+}
+/** A single generic tool invocation, rendered as a call card. */
+export interface ToolBlock {
+  kind: "tool";
+  id: string;
+  tool: ToolInvocation;
+}
+/** A host-machine command, rendered as a persistent terminal. */
+export interface HostCommandBlock {
+  kind: "host_command";
+  id: string;
+  command: HostCommand;
+}
+/** A sensitive action paused for the operator's decision. */
+export interface ApprovalBlock {
+  kind: "approval";
+  id: string;
+  approval: Approval;
+}
+/** A file the agent published during the turn. */
+export interface ArtifactBlock {
+  kind: "artifact";
+  id: string;
+  artifact: ArtifactRef;
+}
+/** A live preview the agent surfaced during the turn. */
+export interface PreviewBlock {
+  kind: "preview";
+  id: string;
+  preview: PreviewRef;
+}
+
 export interface ChatMessage {
   id: string;
   role: Role;
+  /** User turns: the operator's prompt text. Assistant turns: unused — the
+   *  answer lives in the `text` blocks of `blocks` (kept "" so copy/edit/version
+   *  paths that touch user content stay role-agnostic). */
   content: string;
-  /** Separate reasoning/thinking stream, rendered apart from the answer. */
-  reasoning?: string;
-  tools?: ToolInvocation[];
-  /** Host-machine commands rendered as live terminals (approval + runtime). */
-  hostCommands?: HostCommand[];
-  /** Sensitive actions awaiting the operator's decision. */
-  approvals?: Approval[];
-  /** Files published during this turn. */
-  artifacts?: ArtifactRef[];
-  /** Live preview surfaced during this turn (replaced/cleared by later events). */
-  preview?: PreviewRef | null;
+  /** Assistant turns: the ordered block sequence (the single source of truth for
+   *  what the turn rendered). Absent on user turns. */
+  blocks?: AssistantBlock[];
   /** The run this assistant turn streams from — needed to approve/cancel it. */
   runId?: string;
   /** True while tokens are still streaming in. */

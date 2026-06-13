@@ -205,7 +205,12 @@ This content should look real but reward no scrutiny — it sets atmosphere, not
 
 - **No easing flourishes.** Transitions are instant or linear, ≤120ms.
 - Permitted: value tick-overs (numbers updating), cursor blink, dim→bright on activation.
-- Forbidden: bouncing, sliding panels, fades for decoration, spinners.
+- **Stepped glyph frames** are permitted as a live/working indicator — a fixed
+  set of monospace glyphs cycled with **hard cuts** (no fade, no easing), the same
+  mechanical family as the cursor blink. Use for "the agent is working now"
+  (e.g. a braille throbber `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`). This is *not* a smooth/easing spinner —
+  the forbidden kind is the rotating, eased, decorative spinner below.
+- Forbidden: bouncing, sliding panels, fades for decoration, eased/decorative spinners.
 - The interface should feel *responsive and mechanical*, never animated.
 
 ---

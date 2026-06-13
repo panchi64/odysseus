@@ -1,24 +1,32 @@
 import { Show, createEffect, createSignal, type JSX } from "solid-js";
-import { Icon, Text } from "~/ui";
+import { Caret, Frames, Icon, Text, cx } from "~/ui";
 
-/** Collapsible reasoning/thinking stream, rendered apart from the answer and
- *  dimmer than it (the answer is the bright value). Collapsed by default.
- *  The whole block is a click target, but a click that completes a text
- *  selection is ignored so the reasoning text stays selectable.
+/** Collapsible reasoning/thinking passage, rendered apart from the answer and
+ *  dimmer than it (the answer is the bright value). Collapsed by default. The
+ *  whole block is a click target, but a click that completes a text selection is
+ *  ignored so the reasoning text stays selectable.
  *
- *  `open` makes it controlled (expand-all/collapse-all). When defined it syncs
- *  the local signal; when undefined the block keeps its closed-by-default
- *  behavior and toggles locally. */
+ *  Open state, in precedence order:
+ *  - `open` (expand-all / collapse-all) — when defined, wins.
+ *  - `active` — the live, trailing reasoning block: auto-peeks its streaming
+ *    tokens (capped height), then collapses the moment the next block appears.
+ *  - otherwise closed-by-default, toggled locally. */
 export function ReasoningBlock(props: {
   reasoning: string;
   open?: boolean;
+  /** This is the turn's trailing block and the run is still going. */
+  active?: boolean;
+  /** Tokens are still streaming in (drives the THINKING throbber + caret). */
+  streaming?: boolean;
 }): JSX.Element {
   const [open, setOpen] = createSignal(false);
 
-  // Adopt the controlling value whenever it changes; local toggles still work
-  // between changes (so a controlled-then-nudged block stays responsive).
+  // Adopt the controlling value when it changes; local toggles still work
+  // between changes. `open` (explicit expand-all) wins; otherwise the live block
+  // auto-peeks while active and collapses when it stops being active.
   createEffect(() => {
     if (props.open !== undefined) setOpen(props.open);
+    else if (props.active !== undefined) setOpen(props.active);
   });
 
   const toggle = (): void => {
@@ -32,10 +40,9 @@ export function ReasoningBlock(props: {
   };
 
   return (
-    <div
-      onClick={handleClick}
-      class="cursor-pointer border-l border-line pl-2 transition-colors hover:border-text/40"
-    >
+    // The left rail is owned by the enclosing TurnBlocks Rail — this block just
+    // carries the collapsible header + body.
+    <div onClick={handleClick} class="cursor-pointer">
       <button
         type="button"
         onClick={(e) => {
@@ -48,17 +55,32 @@ export function ReasoningBlock(props: {
       >
         <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} />
         <Text variant="label" tone="dim">
-          REASONING
+          {props.active ? "THINKING" : "REASONING"}
         </Text>
+        <Show when={props.active && props.streaming}>
+          <Frames class="text-info" />
+        </Show>
       </button>
       <Show when={open()}>
-        <Text
-          variant="body"
-          tone="dim"
-          class="mt-1 block cursor-text whitespace-pre-wrap"
+        {/* While active, peek the latest tokens: cap the height and pin to the
+            bottom (col-reverse) so the newest reasoning stays in view. */}
+        <div
+          class={cx(
+            "mt-1",
+            props.active && "flex max-h-32 flex-col-reverse overflow-hidden",
+          )}
         >
-          {props.reasoning}
-        </Text>
+          <Text
+            variant="body"
+            tone="dim"
+            class="block cursor-text whitespace-pre-wrap"
+          >
+            {props.reasoning}
+            <Show when={props.active && props.streaming}>
+              <Caret />
+            </Show>
+          </Text>
+        </div>
       </Show>
     </div>
   );

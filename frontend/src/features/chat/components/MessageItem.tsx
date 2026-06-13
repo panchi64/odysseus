@@ -1,23 +1,11 @@
-import { For, Show, createSignal, type JSX } from "solid-js";
-import {
-  Button,
-  Caret,
-  Icon,
-  Markdown,
-  Stack,
-  Text,
-  Textarea,
-  Tooltip,
-} from "~/ui";
+import { Show, createSignal, type JSX } from "solid-js";
+import { Button, Icon, Stack, Text, Textarea, Tooltip } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage } from "../model";
-import { ApprovalCard } from "./ApprovalCard";
-import { ArtifactViewer } from "./ArtifactViewer";
-import { HostCommandCard } from "./HostCommandCard";
+import { hasLayers as turnHasLayers } from "../blocks";
 import { MessageActions } from "./MessageActions";
-import { PreviewPane } from "./PreviewPane";
-import { ReasoningBlock } from "./ReasoningBlock";
-import { ToolCallCard } from "./ToolCallCard";
+import { TurnBlocks } from "./TurnBlocks";
+import { TurnProgressRail } from "./TurnProgressRail";
 
 export interface MessageItemProps {
   message: ChatMessage;
@@ -229,8 +217,7 @@ function AssistantTurn(props: {
   const [forceOpen, setForceOpen] = createSignal<boolean | undefined>(
     undefined,
   );
-  const hasLayers = () =>
-    Boolean(m().reasoning || m().tools?.length || m().hostCommands?.length);
+  const hasLayers = () => turnHasLayers(m().blocks);
   const toggleAll = () => setForceOpen((v) => !v);
 
   return (
@@ -269,72 +256,21 @@ function AssistantTurn(props: {
         </span>
       </div>
 
-      <Stack gap={2}>
-        <Show when={m().reasoning}>
-          <ReasoningBlock reasoning={m().reasoning!} open={forceOpen()} />
-        </Show>
-
-        <Show when={m().tools?.length}>
-          <Stack gap={1}>
-            <For each={m().tools}>
-              {(tool) => <ToolCallCard tool={tool} open={forceOpen()} />}
-            </For>
-          </Stack>
-        </Show>
-
-        <Show when={m().hostCommands?.length}>
-          <HostCommandCard
-            commands={m().hostCommands!}
-            open={forceOpen()}
-            onSubmit={(decisions) =>
-              props.onResolveHostCommands?.(m().id, decisions)
-            }
-          />
-        </Show>
-
-        <Show when={m().approvals?.length}>
-          <ApprovalCard
-            approvals={m().approvals!}
-            onSubmit={(decisions) =>
-              props.onResolveApproval?.(m().id, decisions)
-            }
-          />
-        </Show>
-
-        <Show when={m().artifacts?.length}>
-          <Stack gap={2}>
-            <For each={m().artifacts}>
-              {(artifact) => <ArtifactViewer artifact={artifact} />}
-            </For>
-          </Stack>
-        </Show>
-
-        <Show when={m().preview}>
-          {(preview) => <PreviewPane preview={preview()} />}
-        </Show>
-
-        <Show
-          when={m().content}
-          fallback={
-            <Show when={m().streaming}>
-              <Text variant="body" tone="dim">
-                <Caret />
-              </Text>
-            </Show>
+      <Stack gap={3}>
+        {/* What's happening now (streaming) / what it took (settled). */}
+        <TurnProgressRail blocks={m().blocks} streaming={m().streaming} />
+        {/* The turn's ordered, interleaved blocks — the source of truth. */}
+        <TurnBlocks
+          blocks={m().blocks}
+          streaming={m().streaming}
+          forceOpen={forceOpen()}
+          onResolveApproval={(decisions) =>
+            props.onResolveApproval?.(m().id, decisions)
           }
-        >
-          <div>
-            {/* Defer code-block copy enhancement until the answer settles — it
-                would otherwise re-scan and re-wrap the DOM on every token. */}
-            <Markdown class="inline" copyCode={!m().streaming}>
-              {m().content}
-            </Markdown>
-            <Show when={m().streaming}>
-              {" "}
-              <Caret class="text-bright" />
-            </Show>
-          </div>
-        </Show>
+          onResolveHostCommands={(decisions) =>
+            props.onResolveHostCommands?.(m().id, decisions)
+          }
+        />
       </Stack>
     </div>
   );

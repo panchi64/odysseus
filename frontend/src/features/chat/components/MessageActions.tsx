@@ -9,20 +9,12 @@ import {
   type MenuItem,
 } from "~/ui";
 import type { ChatMessage } from "../model";
-
-/** Assemble a message's full record — reasoning, each tool call as
- *  `name(args) -> result/error`, then the answer — into one plain-text block for
- *  "COPY MESSAGE". */
-function assembleMessage(m: ChatMessage): string {
-  const parts: string[] = [];
-  if (m.reasoning) parts.push(`REASONING\n${m.reasoning}`);
-  for (const t of m.tools ?? []) {
-    const outcome = t.error ? `error: ${t.error}` : (t.result ?? "");
-    parts.push(`${t.name}(${t.args}) -> ${outcome}`);
-  }
-  if (m.content) parts.push(m.content);
-  return parts.join("\n\n");
-}
+import {
+  answerText,
+  assembleTranscript,
+  hasReasoning,
+  reasoningText,
+} from "../blocks";
 
 /** Hover/focus-revealed action row for a chat turn. Lives inside a `group`
  *  wrapper in the parent turn and surfaces on hover or keyboard focus
@@ -116,21 +108,22 @@ export function MessageActions(props: {
               {
                 label: "COPY ANSWER",
                 icon: "copy",
-                onSelect: () => copyToClipboard(m().content, "Answer"),
+                onSelect: () =>
+                  copyToClipboard(answerText(m().blocks), "Answer"),
               },
               {
                 label: "COPY MESSAGE",
                 icon: "layers",
                 onSelect: () =>
-                  copyToClipboard(assembleMessage(m()), "Message"),
+                  copyToClipboard(assembleTranscript(m().blocks), "Message"),
               },
-              ...(m().reasoning
+              ...(hasReasoning(m().blocks)
                 ? [
                     {
                       label: "COPY REASONING",
                       icon: "note",
                       onSelect: () =>
-                        copyToClipboard(m().reasoning!, "Reasoning"),
+                        copyToClipboard(reasoningText(m().blocks), "Reasoning"),
                     } satisfies MenuItem,
                   ]
                 : []),
