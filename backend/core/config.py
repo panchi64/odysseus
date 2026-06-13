@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +34,15 @@ class Settings(BaseSettings):
 
     # All user data lives under here — gitignored, encrypted at rest.
     data_dir: Path = Path("data")
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value: Path) -> Path:
+        # Anchor to an absolute host path once, here. Consumers bind-mount paths
+        # beneath this (the sandbox workspace, the managed SearXNG config) into
+        # containers, and a container bind mount needs an absolute source — a
+        # relative one is read as a named volume, which forbids path separators.
+        return value.expanduser().resolve()
     # DB connection. None ⇒ a file under data_dir; tests pass an in-memory URL.
     db_url: str | None = None
     # Unlock passphrase for the at-rest encryption vault. When set, the vault is

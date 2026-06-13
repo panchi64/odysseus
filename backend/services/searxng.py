@@ -200,7 +200,8 @@ class ManagedSearxng:
 
     def _write_settings(self) -> Path:
         """(Re)write the settings file from the template, reusing a persisted
-        secret key so it stays stable across restarts. Returns its path."""
+        secret key so it stays stable across restarts. Returns its path (absolute
+        via the absolute ``data_dir``, as the container bind mount requires)."""
         self._dir.mkdir(parents=True, exist_ok=True)
         key_file = self._dir / "secret_key"
         if key_file.exists():
@@ -211,4 +212,4 @@ class ManagedSearxng:
             key_file.chmod(0o600)  # a service secret — not world-readable
         settings_path = self._dir / "settings.yml"
         settings_path.write_text(_SETTINGS_TEMPLATE.format(secret_key=secret_key))
-        return settings_path
+        return settings_path.resolve()
