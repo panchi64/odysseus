@@ -8,7 +8,6 @@ export type Privilege =
   | "documents"
   | "email"
   | "calendar"
-  | "contacts"
   | "rag"
   | "uploads"
   | "gallery"
@@ -29,7 +28,6 @@ export const ALL_PRIVILEGES: Privilege[] = [
   "documents",
   "email",
   "calendar",
-  "contacts",
   "rag",
   "uploads",
   "gallery",
@@ -43,7 +41,6 @@ export const PRIVILEGE_LEGEND: Record<Privilege, string> = {
   documents: "Open, edit, and manage workspace documents.",
   email: "Read and send email through connected accounts.",
   calendar: "View and create calendar events.",
-  contacts: "Access the address book and contact records.",
   rag: "Query and ingest the retrieval knowledge base.",
   uploads: "Upload files into the workspace.",
   gallery: "View and manage generated images.",

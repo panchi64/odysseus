@@ -4,7 +4,6 @@ import {
   EmptyState,
   InstrumentBand,
   LoadingText,
-  PageHeader,
   Panel,
   ProgressBar,
   Row,
@@ -15,13 +14,14 @@ import {
   toast,
 } from "~/ui";
 import { pct } from "~/lib/format";
-import { useLeaderboard, createCompareRun } from "../data";
-import { CandidateColumn } from "../components/CandidateColumn";
-import type { CompareSlot } from "../model";
+import { useLeaderboard, createCompareRun } from "../compare/data";
+import { CandidateColumn } from "../compare/CandidateColumn";
+import type { CompareSlot } from "../compare/model";
 
-/** Blind model comparison: submit a prompt, watch both respond anonymously,
- *  vote for the better answer, then reveal identities. */
-export function CompareScreen(): JSX.Element {
+/** Blind model comparison — the COMPARE tab of the Model Cookbook. Submit a
+ *  prompt, watch both models respond anonymously, vote, then reveal identities.
+ *  Owns no page chrome; the Cookbook screen provides the header. */
+export function ComparePanel(): JSX.Element {
   const [prompt, setPrompt] = createSignal("");
   const leaderboard = useLeaderboard();
   const { run, active, start, vote, stop, reset } = createCompareRun();
@@ -62,27 +62,26 @@ export function CompareScreen(): JSX.Element {
 
   return (
     <Stack gap={6}>
-      <PageHeader
-        title="MODEL COMPARISON"
-        subtitle="Blind side-by-side evaluation. Vote before identities are revealed."
-        assetId="ODY-CMP-01.0"
-        actions={
-          <StatusFlag status={active() ? "info" : "idle"} dot={active()}>
-            {active() ? "STREAMING" : run.id ? "AWAITING VOTE" : "IDLE"}
-          </StatusFlag>
-        }
-      />
-
       {/* Prompt input */}
       <Panel
         label="PROMPT"
         state={active() ? "active" : "default"}
         meta={
-          <Show when={run.id}>
-            <Button variant="ghost" size="sm" leading="refresh" onClick={reset}>
-              RESET
-            </Button>
-          </Show>
+          <Row gap={2} align="center">
+            <StatusFlag status={active() ? "info" : "idle"} dot={active()}>
+              {active() ? "STREAMING" : run.id ? "AWAITING VOTE" : "IDLE"}
+            </StatusFlag>
+            <Show when={run.id}>
+              <Button
+                variant="ghost"
+                size="sm"
+                leading="refresh"
+                onClick={reset}
+              >
+                RESET
+              </Button>
+            </Show>
+          </Row>
         }
       >
         <Stack gap={3}>

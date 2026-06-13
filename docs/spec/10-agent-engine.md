@@ -27,7 +27,6 @@ The agent MUST be able to invoke the following categories of tools. Each is a ca
 | Skills | Create, refine, publish, and search reusable skills |
 | Tasks & calendar | Manage scheduled tasks and reminders; manage calendar events |
 | Email | List, read, send, and reply to email |
-| Contacts | Resolve a name to a contact; manage contacts |
 | Model management | Download, serve, list, and stop models; search and inspect model catalogs; manage serving presets and remote hosts |
 | Research | Start a deep-research run; retrieve and manage research results |
 | Inter-agent | Converse with another model; create and drive sub-sessions; run a multi-step pipeline |

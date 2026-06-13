@@ -7,7 +7,6 @@ import {
   InstrumentBand,
   ListRow,
   LoadingText,
-  PageHeader,
   Panel,
   ProgressBar,
   Resource,
@@ -25,10 +24,12 @@ import {
   startReindex,
   useEmbeddingModels,
   useIndexStats,
-} from "../data";
-import type { EmbeddingModel } from "../model";
+} from "../embedding/data";
+import type { EmbeddingModel } from "../embedding/model";
 
-export function EmbeddingScreen(): JSX.Element {
+/** Vector-embedding configuration and index stats — the EMBEDDING tab of the
+ *  Model Cookbook. Owns no page chrome; the Cookbook screen provides the header. */
+export function EmbeddingPanel(): JSX.Element {
   const models = useEmbeddingModels();
   const stats = useIndexStats();
   const [activeId, setActiveId] = createSignal("all-minilm-l6-v2");
@@ -75,33 +76,27 @@ export function EmbeddingScreen(): JSX.Element {
 
   return (
     <Stack gap={6}>
-      <PageHeader
-        title="EMBEDDING MODELS"
-        subtitle="Vector embedding configuration and index statistics."
-        assetId="SYS-EMB-03.2"
-        actions={
-          <Show
-            when={reindex()}
-            fallback={
-              <Show when={stats()?.requiresReindex}>
-                <StatusFlag status="warn" dot>
-                  REINDEX REQUIRED
-                </StatusFlag>
-              </Show>
-            }
-          >
-            <StatusFlag status="info" dot>
-              REINDEX IN PROGRESS
-            </StatusFlag>
-          </Show>
-        }
-      />
-
-      <Text variant="micro" tone="dim">
-        Embeddings turn documents into vectors so the agent can search by
-        meaning. Switching the active model re-indexes the whole library — until
-        that finishes, retrieval quality is reduced.
-      </Text>
+      <Row gap={3} align="start" justify="between">
+        <Text variant="micro" tone="dim" class="flex-1">
+          Embeddings turn documents into vectors so the agent can search by
+          meaning. Switching the active model re-indexes the whole library —
+          until that finishes, retrieval quality is reduced.
+        </Text>
+        <Show
+          when={reindex()}
+          fallback={
+            <Show when={stats()?.requiresReindex}>
+              <StatusFlag status="warn" dot>
+                REINDEX REQUIRED
+              </StatusFlag>
+            </Show>
+          }
+        >
+          <StatusFlag status="info" dot>
+            REINDEX IN PROGRESS
+          </StatusFlag>
+        </Show>
+      </Row>
 
       <Suspense fallback={<LoadingText label="LOADING STATS" />}>
         <Show when={stats()}>

@@ -52,12 +52,6 @@ export const NAV: NavSection[] = [
         icon: "research",
         description: "Run deep, multi-source research reports",
       },
-      {
-        label: "Compare",
-        href: "/compare",
-        icon: "compare",
-        description: "Run one prompt across models side by side",
-      },
     ],
   },
   {
@@ -106,12 +100,6 @@ export const NAV: NavSection[] = [
         icon: "code",
         description: "Run code snippets in a sandbox",
       },
-      {
-        label: "Signatures",
-        href: "/signatures",
-        icon: "pen",
-        description: "Saved signatures for documents and email",
-      },
     ],
   },
   {
@@ -130,12 +118,6 @@ export const NAV: NavSection[] = [
         description: "View and manage your schedule",
       },
       {
-        label: "Contacts",
-        href: "/contacts",
-        icon: "users",
-        description: "Your address book",
-      },
-      {
         label: "Tasks",
         href: "/tasks",
         icon: "clock",
@@ -151,13 +133,8 @@ export const NAV: NavSection[] = [
         label: "Cookbook",
         href: "/models/cookbook",
         icon: "cpu",
-        description: "Serve and manage local models",
-      },
-      {
-        label: "Embedding",
-        href: "/models/embedding",
-        icon: "grid",
-        description: "Configure the text-embedding model for search",
+        description:
+          "Serve and manage local models, embeddings, and side-by-side comparison",
       },
       {
         label: "MCP",
@@ -170,12 +147,6 @@ export const NAV: NavSection[] = [
         href: "/integrations",
         icon: "link",
         description: "Connect external accounts and services",
-      },
-      {
-        label: "Speech",
-        href: "/speech",
-        icon: "mic",
-        description: "Text-to-speech and speech-to-text settings",
       },
       {
         label: "Health",

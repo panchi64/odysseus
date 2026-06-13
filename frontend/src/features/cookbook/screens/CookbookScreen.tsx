@@ -42,6 +42,8 @@ import {
   useRemoteEndpoints,
 } from "../data";
 import type { ModelEntry, RunningServer, ServerStatus } from "../model";
+import { EmbeddingPanel } from "../components/EmbeddingPanel";
+import { ComparePanel } from "../components/ComparePanel";
 
 const suitabilityStatus: Record<string, Status> = {
   nominal: "nominal",
@@ -347,7 +349,7 @@ export function CookbookScreen(): JSX.Element {
     <Stack gap={6}>
       <PageHeader
         title="MODEL COOKBOOK"
-        subtitle="Local model management, hardware fit analysis, and remote endpoints."
+        subtitle="Local and remote model serving, hardware fit, embedding configuration, and side-by-side comparison."
         assetId="SYS-MDL-03.1"
         actions={
           <StatusFlag status="nominal" dot>
@@ -356,27 +358,31 @@ export function CookbookScreen(): JSX.Element {
         }
       />
 
-      <Suspense fallback={<LoadingText label="READING HARDWARE" />}>
-        <Show when={hardware()}>
-          {(hw) => (
-            <InstrumentBand
-              items={[
-                { label: "CHIP", value: hw().chip },
-                { label: "RAM", value: hw().ram },
-                { label: "VRAM", value: hw().vram },
-                { label: "CORES", value: hw().cores },
-                { label: "BACKEND", value: "Metal / MPS" },
-                { label: "OLLAMA", value: "0.6.4" },
-              ]}
-            />
-          )}
-        </Show>
-      </Suspense>
+      <Show when={tab() === "local" || tab() === "remote"}>
+        <Suspense fallback={<LoadingText label="READING HARDWARE" />}>
+          <Show when={hardware()}>
+            {(hw) => (
+              <InstrumentBand
+                items={[
+                  { label: "CHIP", value: hw().chip },
+                  { label: "RAM", value: hw().ram },
+                  { label: "VRAM", value: hw().vram },
+                  { label: "CORES", value: hw().cores },
+                  { label: "BACKEND", value: "Metal / MPS" },
+                  { label: "OLLAMA", value: "0.6.4" },
+                ]}
+              />
+            )}
+          </Show>
+        </Suspense>
+      </Show>
 
       <Tabs
         items={[
           { value: "local", label: "LOCAL MODELS" },
           { value: "remote", label: "REMOTE ENDPOINTS" },
+          { value: "embedding", label: "EMBEDDING" },
+          { value: "compare", label: "COMPARE" },
         ]}
         value={tab()}
         onChange={setTab}
@@ -555,6 +561,14 @@ export function CookbookScreen(): JSX.Element {
             </Show>
           </Suspense>
         </Panel>
+      </Show>
+
+      <Show when={tab() === "embedding"}>
+        <EmbeddingPanel />
+      </Show>
+
+      <Show when={tab() === "compare"}>
+        <ComparePanel />
       </Show>
     </Stack>
   );

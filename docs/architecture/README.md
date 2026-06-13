@@ -83,7 +83,7 @@ Three nested concerns:
 
    This is the single most leveraged mapping in the design: the spec's entire access-control + namespacing story is *composition of library primitives keyed on per-run dependencies*, not bespoke machinery. Per **D3** we deliberately omit relevance pre-filtering (`AE-4.1`, a waivable SHOULD-performance) — capable native-tool-call models on one powerful host select their own tools, and `AE-4.2` is trivially met since every tool is always present.
 
-3. **Capabilities** (`services/`) are the actual implementations — web search, vector store, memory, embeddings, model serving, mail, TTS/STT — each an async interface with a graceful-degradation story (`XC-DEG-*`). **Tools are thin adapters over capabilities.** The same capability is reused by a tool (agent calls it), by the research pipeline (calls it directly), and by a plain REST route (user calls it directly). Logic never hides inside a tool.
+3. **Capabilities** (`services/`) are the actual implementations — web search, vector store, memory, embeddings, model serving, mail — each an async interface with a graceful-degradation story (`XC-DEG-*`). **Tools are thin adapters over capabilities.** The same capability is reused by a tool (agent calls it), by the research pipeline (calls it directly), and by a plain REST route (user calls it directly). Logic never hides inside a tool.
 
 → details: [`30-agent-engine.md`](./30-agent-engine.md), [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md), [`50-capabilities.md`](./50-capabilities.md)
 
@@ -116,7 +116,7 @@ backend/
   agent/            # the engine: Agent assembly, RunDeps/RunContext, the meta-loop (verifier, loop-break),
                     #             history processors, event translation
   tools/            # tool definitions grouped by AE-2 category — thin adapters over services/
-  services/         # capabilities: llm, embeddings, vectorstore, search, memory, tts, stt, serving, mail, dav, notify
+  services/         # capabilities: llm, embeddings, vectorstore, search, memory, serving, mail, dav, notify
   research/         # the deep-research orchestrator (its own pipeline on the Run substrate, reusing services/)
   routes/           # thin FastAPI routers, one per feature surface
   tests/

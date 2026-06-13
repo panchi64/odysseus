@@ -88,12 +88,6 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **RAG-2 (MUST).** Indexed content MUST be retrievable by meaning during chat and agent tasks, and the index MUST be re-buildable as the source files change.
 - **RAG-3 (SHOULD).** The user SHOULD be able to see what is indexed and its status, and remove items from the index.
 
-### Signatures (`SIG-*`)
-
-**Purpose:** Save reusable handwritten signatures for documents and mail.
-
-- **SIG-1 (MUST).** The user MUST be able to draw, save, and reuse signatures, and apply one to a PDF form field or an outgoing email.
-
 ### Code runner (`RUN-*`)
 
 **Purpose:** Run small code snippets directly in the browser.
@@ -122,13 +116,6 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **CAL-1 (MUST).** The user MUST be able to create, view, edit, and delete events, including all-day and recurring events, with correct time-zone handling.
 - **CAL-2 (SHOULD).** Remote calendars SHOULD be syncable into the local calendar; import and export via standard calendar files MUST be supported.
 - **CAL-3 (SHOULD).** Natural-language event entry (e.g. "lunch Friday 1pm") SHOULD be parsed into a structured event.
-
-### Contacts (`CONTACT-*`)
-
-**Purpose:** A contact directory, optionally backed by CardDAV.
-
-- **CONTACT-1 (MUST).** The user MUST be able to create, view, edit, delete, and search contacts with multiple emails and phone numbers each.
-- **CONTACT-2 (SHOULD).** Contacts SHOULD be backed by a remote CardDAV directory when configured, falling back to local storage otherwise; they SHOULD be importable/exportable in standard formats, and the agent SHOULD be able to resolve a name to a contact.
 
 ### Tasks & scheduling (`TASK-*`)
 
@@ -189,13 +176,6 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **INTEG-2 (MUST).** The agent MUST be able to call a configured integration on the user's behalf, subject to the external-tool gating in `AE-3.6` (sensitive by default until the operator marks it trusted).
 - **INTEG-3 (SHOULD).** The operator SHOULD be able to test a connector's credentials before relying on it.
 - **Sensitive:** configuring a connector and its credentials is operator configuration; the agent calling a configured integration is approval-gated by default until the operator marks it trusted (`AE-3.6`).
-
-### Speech (`AUDIO-*`)
-
-**Purpose:** Text-to-speech and speech-to-text.
-
-- **AUDIO-1 (MUST).** The system MUST synthesize speech from text and transcribe speech from audio, each through a selectable provider (including local and remote options) that can be changed without restart.
-- **AUDIO-2 (SHOULD — performance).** Synthesized audio SHOULD be cached so identical requests are not re-computed.
 
 ---
 

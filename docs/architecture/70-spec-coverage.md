@@ -117,7 +117,6 @@
 | GAL-1…4 gallery & image editing | ⬜ | — | |
 | SEARCH-1…3 web search | ⬜ | — | Backs `XC-DEG-2`, deep research, agent web tools. |
 | RAG-1…3 personal knowledge base | ⬜ | — | Reuses the `services/memory` store/seam (D18). |
-| SIG-1 signatures | ⬜ | — | |
 | RUN-1 in-browser snippet runner | ⬜ | frontend | Never on host (honors `XC-SEC-7` spirit). |
 
 ## Feature inventory — C. Communication & personal info
@@ -126,7 +125,6 @@
 |---|---|---|
 | EMAIL-1…5 | ⬜ | Agent send/reply is approval-gated when built (`AE-3.1`). |
 | CAL-1…3 | ⬜ | CalDAV sync. |
-| CONTACT-1…2 | ⬜ | Optional CardDAV. |
 | TASK-1…6 | ⬜ | Scheduler designed (D13); scheduling pre-auth designed (D24, `AE-3.5`). `TASK-6` (reminders via in-app/email/push, no duplicates, optional AI phrasing) absorbs the former Notes reminders. |
 
 ## Feature inventory — D. Models & infrastructure
@@ -134,12 +132,11 @@
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
 | COOK-1…5 model download/serve/manage | ⬜ | — | Registry handles *endpoint* config, not local serving. Agent serve/stop is approval-gated when built. |
-| EMB-1 choose/manage embedding model | ✅ | `services/registry` `embedding` role, `services/embeddings` | |
+| EMB-1 choose/manage embedding model | ✅ | `services/registry` `embedding` role, `services/embeddings` | Surfaced in the Cookbook UI (EMBEDDING tab). |
 | EMB-2 model change re-embeds/segregates | ✅ | `services/memory` (dense gated to model/dim) | Degrades to sparse across spaces (D16/D18). |
-| CMP-1…3 blind model compare | ⬜ | — | |
+| CMP-1…3 blind model compare | ⬜ | — | Surfaced in the Cookbook UI (COMPARE tab). |
 | MCP-1…3 external tool servers | ⬜ | — | Gating designed (D25, `AE-3.6`). |
 | INTEG-1…3 third-party integrations | ⬜ | — | Gating designed (D25). |
-| AUDIO-1…2 TTS / STT | ⬜ | — | |
 
 > **Supporting infra, not a spec feature:** the **model role→endpoint registry** (`services/registry`, `models/registry`, `/models/*`) is the single source of truth for model resolution — named roles (`main`/`utility`/`embedding`) → ordered `FallbackModel` chains, per-conversation `main` override (a provider **and** a model on it), API keys encrypted at rest. An **endpoint is a provider connection** (model optional); its served models are **discovered at runtime** from the provider's models API (`GET /models/endpoints/{id}/models`, parsed across OpenAI/Gemini/Ollama-style shapes), so the chat model is chosen from a top-bar picker rather than baked per endpoint. It realizes **D16** and directly backs `AE-5.3`, `CHAT-4`, and `EMB-*`.
 

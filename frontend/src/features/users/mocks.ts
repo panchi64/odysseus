@@ -12,7 +12,6 @@ export const mockUsers: ManagedUser[] = [
       "documents",
       "email",
       "calendar",
-      "contacts",
       "rag",
       "uploads",
       "gallery",

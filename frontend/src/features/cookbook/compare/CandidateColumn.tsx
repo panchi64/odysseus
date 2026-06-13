@@ -10,7 +10,7 @@ import {
   Text,
   Tooltip,
 } from "~/ui";
-import type { CompareCandidate, CompareSlot } from "../model";
+import type { CompareCandidate, CompareSlot } from "./model";
 
 interface CandidateColumnProps {
   candidate: CompareCandidate;
