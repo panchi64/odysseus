@@ -50,9 +50,11 @@ export function Markdown(props: MarkdownProps): JSX.Element {
 
   let ref: HTMLDivElement | undefined;
 
-  // Post-render enhancement: wrap each <pre> in a relative `group/code` host and
-  // drop in a copy button. Re-runs whenever the rendered HTML changes (streaming
-  // answers re-parse on every delta), and is idempotent per <pre>.
+  // Post-render enhancement, idempotent per node, re-run whenever the rendered
+  // HTML changes (streaming answers re-parse on every delta):
+  //   • wrap each <pre> in a relative `group/code` host + copy button
+  //   • wrap each <table> in a scroll host so a wide table scrolls horizontally
+  //     instead of bursting its container
   const enhance = (): void => {
     if (!ref || local.copyCode === false) return;
     const pres = ref.querySelectorAll<HTMLPreElement>("pre");
@@ -64,6 +66,14 @@ export function Markdown(props: MarkdownProps): JSX.Element {
       pre.replaceWith(host);
       host.appendChild(pre);
       host.appendChild(makeCopyButton());
+    });
+    const tables = ref.querySelectorAll<HTMLTableElement>("table");
+    tables.forEach((table) => {
+      if (table.parentElement?.dataset.tableHost !== undefined) return;
+      const host = document.createElement("div");
+      host.dataset.tableHost = "";
+      table.replaceWith(host);
+      host.appendChild(table);
     });
   };
 

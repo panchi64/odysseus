@@ -256,3 +256,45 @@ body {
   padding-left: var(--space-3);
   color: var(--text-dim);
 }
+
+/* Tables read as dense data panels: a hairline grid, square corners, tabular
+   figures, and an uppercase label-styled header band. No zebra striping or
+   accent fills — hierarchy comes from the header's brightness/weight alone. The
+   scroll host (injected post-render, like code blocks) lets a wide table scroll
+   horizontally instead of bursting its message bubble. */
+.ody-prose [data-table-host] {
+  overflow-x: auto;
+}
+.ody-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  border: var(--line-w) solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.ody-prose th,
+.ody-prose td {
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+  vertical-align: baseline;
+}
+/* Hairline grid: cell separators on every internal edge. */
+.ody-prose th + th,
+.ody-prose td + td {
+  border-left: var(--line-w) solid var(--line);
+}
+.ody-prose tbody tr {
+  border-top: var(--line-w) solid var(--line);
+}
+.ody-prose thead th {
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-lh);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border-bottom: var(--line-w) solid var(--line);
+}
+.ody-prose tbody td {
+  color: var(--text);
+}
