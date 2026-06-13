@@ -10,14 +10,23 @@ free, and genuinely parallelizes (SQLite releases the GIL during I/O).
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
+
+# In-memory engines share a single connection (StaticPool), which is *not* safe for
+# the concurrent, multi-threaded access `in_session` produces (each call runs on its
+# own threadpool thread). A per-engine lock serializes their sessions so two threads
+# never drive the one connection at once. File-backed engines hand each thread its
+# own connection and carry no lock, so they run fully unserialized.
+_CONN_LOCKS: WeakKeyDictionary[Engine, threading.Lock] = WeakKeyDictionary()
 
 # alembic.ini lives at the backend root (core/db.py is backend/core/db.py); its
 # script_location is `%(here)s/migrations`, so resolution is cwd-independent.
@@ -30,6 +39,11 @@ def make_engine(url: str) -> Engine:
     if ":memory:" in url:
         kwargs["poolclass"] = StaticPool
     engine = create_engine(url, **kwargs)
+
+    # A single-connection (in-memory) engine must serialize its threadpool sessions;
+    # see `_CONN_LOCKS`. File-backed engines pool a connection per thread and skip it.
+    if ":memory:" in url:
+        _CONN_LOCKS[engine] = threading.Lock()
 
     # SQLite leaves foreign keys *off* per connection unless asked — without this
     # the declared FKs (e.g. Message → Conversation) enforce nothing, so a stray
@@ -57,7 +71,10 @@ def init_db(engine: Engine) -> None:
 
 
 async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
-    """Run a unit of DB work in a threadpool and commit it."""
+    """Run a unit of DB work in a threadpool and commit it. For a single-connection
+    in-memory engine the session is taken under that engine's lock, so overlapping
+    threadpool calls never drive the one shared connection at the same time."""
+    lock = _CONN_LOCKS.get(engine)
 
     def _run() -> T:
         with Session(engine, expire_on_commit=False) as session:
@@ -65,4 +82,10 @@ async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
             session.commit()
             return result
 
-    return await asyncio.to_thread(_run)
+    def _run_guarded() -> T:
+        if lock is None:
+            return _run()
+        with lock:
+            return _run()
+
+    return await asyncio.to_thread(_run_guarded)
