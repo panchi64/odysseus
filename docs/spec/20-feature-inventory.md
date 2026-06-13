@@ -52,6 +52,7 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **DOC-3 (MUST).** The AI MUST be able to fully rewrite a document, make targeted edits, or propose suggestions, with edits streaming into view as produced. Suggestions MUST be reviewable change-by-change with accept/reject (and accept-all) controls before anything is applied.
 - **DOC-4 (SHOULD).** The library SHOULD support multi-term search and sorting, de-duplication of near-identical documents, and removal of junk documents via both a fast heuristic pass and an AI-assisted review.
 - **DOC-5 (SHOULD).** Documents SHOULD be exportable individually (including rendering filled PDF forms) and in bulk.
+- **DOC-6 (SHOULD).** Documents SHOULD support lightweight note-keeping: checklist items within a document, and organization of the library by labels and pinning.
 
 ### Uploads & PDFs (`UP-*`)
 
@@ -129,23 +130,16 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **CONTACT-1 (MUST).** The user MUST be able to create, view, edit, delete, and search contacts with multiple emails and phone numbers each.
 - **CONTACT-2 (SHOULD).** Contacts SHOULD be backed by a remote CardDAV directory when configured, falling back to local storage otherwise; they SHOULD be importable/exportable in standard formats, and the agent SHOULD be able to resolve a name to a contact.
 
-### Notes (`NOTE-*`)
-
-**Purpose:** Quick notes and checklists with reminders.
-
-- **NOTE-1 (MUST).** The user MUST be able to create notes with labels, color, pinning, archiving, due dates, repetition, and checklist items.
-- **NOTE-2 (MUST).** Reminders MUST fire on the due date through the user's chosen channels (in-app, email, push) and MUST NOT deliver duplicates for the same reminder.
-- **NOTE-3 (MAY).** Reminder messages MAY be phrased by the AI for context rather than sent verbatim.
-
 ### Tasks & scheduling (`TASK-*`)
 
-**Purpose:** Recurring automated jobs the agent or built-in actions perform.
+**Purpose:** Recurring automated jobs and reminders the agent or built-in actions perform.
 
 - **TASK-1 (MUST).** The user MUST be able to define scheduled tasks (recurring or one-off, including cron-style) and tasks triggered by events or inbound webhooks.
 - **TASK-2 (MUST).** A task's output MUST be deliverable to a chat session, a notification, or email; each run MUST record its outcome.
 - **TASK-3 (SHOULD).** Tasks MAY invoke predefined automation actions (e.g. email triage, housekeeping) in addition to free-form agent work, and MAY chain to a follow-up task on success.
 - **TASK-4 (SHOULD).** Natural-language task descriptions SHOULD be parseable into a structured schedule.
 - **TASK-5 (MUST).** Tasks MUST run without overlapping in a way that overloads the system.
+- **TASK-6 (MUST).** Reminders MUST fire on their scheduled date through the user's chosen channels — in-app, email, and push — and MUST NOT deliver duplicates for the same reminder; reminder messages MAY be phrased by the AI for context rather than sent verbatim.
 - **Sensitive:** scheduling a task is itself approval-gated — the operator reviews it and **pre-authorizes** the sensitive actions it may perform unattended (`AE-3.5`); within that scope its runs proceed without re-prompting, and anything outside it falls back to pause-and-notify (`AE-3.2`). Code a task runs still follows the code-execution rules (sandboxed by default; host execution approval-gated — `XC-SEC-7`, `AE-3.4`).
 
 ---

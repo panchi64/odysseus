@@ -136,12 +136,6 @@ export const NAV: NavSection[] = [
         description: "Your address book",
       },
       {
-        label: "Notes",
-        href: "/notes",
-        icon: "note",
-        description: "Quick personal notes",
-      },
-      {
         label: "Tasks",
         href: "/tasks",
         icon: "clock",

@@ -2,7 +2,7 @@
 
 ## What Odysseus is
 
-A **self-hosted AI workspace**: a single application that provides chat, an autonomous agent, deep research, a model manager, persistent memory, email, calendar, documents, notes, tasks, and related features — running on the operator's own hardware against their own data.
+A **self-hosted AI workspace**: a single application that provides chat, an autonomous agent, deep research, a model manager, persistent memory, email, calendar, documents, tasks, and related features — running on the operator's own hardware against their own data.
 
 ## Principles
 

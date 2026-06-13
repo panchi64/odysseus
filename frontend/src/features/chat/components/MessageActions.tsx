@@ -139,7 +139,7 @@ export function MessageActions(props: {
         </Button>
       </Show>
 
-      {/* Both roles: pin, save-to-notes (Phase 2), delete. */}
+      {/* Both roles: pin, save-to-document (Phase 2), delete. */}
       <Button
         variant="ghost"
         size="sm"
@@ -151,7 +151,7 @@ export function MessageActions(props: {
       </Button>
       <Tooltip label="Available in Phase 2">
         <Button variant="ghost" size="sm" leading="note" disabled>
-          SAVE TO NOTES
+          SAVE TO DOCUMENT
         </Button>
       </Tooltip>
       <Show when={props.onDelete}>

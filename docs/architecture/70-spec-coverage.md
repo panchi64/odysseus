@@ -112,7 +112,7 @@
 | MEM-3 audit: detect & consolidate near-duplicates | ⬜ | — | SHOULD; not built. |
 | MEM-4 pin / import / extract from conversation | ⬜ | — | MAY. |
 | SKILL-1…6 reusable skills | ⬜ | — | Not started. |
-| DOC-1…5 document library + editor + AI assist | ⬜ | — | Streaming/auto-promote deferred (D21). |
+| DOC-1…6 document library + editor + AI assist | ⬜ | — | Streaming/auto-promote deferred (D21). `DOC-6` (checklists + label/pin organization) folds in the former Notes surface. |
 | UP-1…4 uploads & PDFs | 🔭 | — | Ingestion deferred (D22). |
 | GAL-1…4 gallery & image editing | ⬜ | — | |
 | SEARCH-1…3 web search | ⬜ | — | Backs `XC-DEG-2`, deep research, agent web tools. |
@@ -127,8 +127,7 @@
 | EMAIL-1…5 | ⬜ | Agent send/reply is approval-gated when built (`AE-3.1`). |
 | CAL-1…3 | ⬜ | CalDAV sync. |
 | CONTACT-1…2 | ⬜ | Optional CardDAV. |
-| NOTE-1…3 | ⬜ | |
-| TASK-1…5 | ⬜ | Scheduler designed (D13); scheduling pre-auth designed (D24, `AE-3.5`). |
+| TASK-1…6 | ⬜ | Scheduler designed (D13); scheduling pre-auth designed (D24, `AE-3.5`). `TASK-6` (reminders via in-app/email/push, no duplicates, optional AI phrasing) absorbs the former Notes reminders. |
 
 ## Feature inventory — D. Models & infrastructure
 

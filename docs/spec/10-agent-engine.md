@@ -25,7 +25,7 @@ The agent MUST be able to invoke the following categories of tools. Each is a ca
 | Documents | Create, replace, edit (find/replace), and suggest changes to documents; manage the document library |
 | Memory & history | Store and recall long-term memory; search past conversations |
 | Skills | Create, refine, publish, and search reusable skills |
-| Notes, tasks, calendar | Manage notes and reminders; manage scheduled tasks; manage calendar events |
+| Tasks & calendar | Manage scheduled tasks and reminders; manage calendar events |
 | Email | List, read, send, and reply to email |
 | Contacts | Resolve a name to a contact; manage contacts |
 | Model management | Download, serve, list, and stop models; search and inspect model catalogs; manage serving presets and remote hosts |
