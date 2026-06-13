@@ -8,6 +8,10 @@ import { Button } from "./Button";
 // the app's storage helper.
 const DRAFT_PREFIX = "ody.draft.";
 
+// The docked field grows with its content up to this many lines, then scrolls —
+// long prompts stay readable without the bar swallowing the conversation.
+const MAX_ROWS = 6;
+
 function loadDraft(key?: string): string {
   if (!key) return "";
   try {
@@ -29,6 +33,11 @@ function saveDraft(key: string, value: string): void {
 export interface ComposerProps {
   onSend: (text: string) => void;
   disabled?: boolean;
+  /** A run is generating: the SEND button becomes a STOP button wired to
+   *  `onStop`, so the interrupt control sits where the user's focus already is. */
+  streaming?: boolean;
+  /** Invoked when STOP is pressed mid-stream (see `streaming`). */
+  onStop?: () => void;
   placeholder?: string;
   /** `md` = docked input bar (default); `lg` = centered hero field. */
   size?: "md" | "lg";
@@ -86,6 +95,30 @@ export function Composer(props: ComposerProps): JSX.Element {
 
   const lg = () => props.size === "lg";
 
+  // Grow the docked field to fit its content, capped at MAX_ROWS (then scroll).
+  // The hero (`lg`) variant keeps its fixed rows. Runs on every text change —
+  // typing, draft load, and clear-after-send all reflow the height.
+  const autosize = () => {
+    const el = field;
+    if (!el || lg()) return;
+    el.style.height = "auto";
+    const cs = getComputedStyle(el);
+    const line = parseFloat(cs.lineHeight) || 20;
+    const padding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const border =
+      parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    const max = line * MAX_ROWS + padding + border;
+    // `scrollHeight` covers content + padding but not border; the field is
+    // border-box, so add the border back or the set height clips by that much.
+    const fit = el.scrollHeight + border;
+    el.style.height = `${Math.min(fit, max)}px`;
+    el.style.overflowY = fit > max ? "auto" : "hidden";
+  };
+  createEffect(() => {
+    text(); // reflow whenever the value changes
+    autosize();
+  });
+
   const fieldClass = () =>
     cx(
       "w-full resize-none font-mono text-bright placeholder:text-dim outline-none transition-colors disabled:opacity-40",
@@ -107,15 +140,26 @@ export function Composer(props: ComposerProps): JSX.Element {
     />
   );
 
-  const sendBtn = (
-    <Button
-      variant="primary"
-      trailing="send"
-      disabled={props.disabled || !text().trim()}
-      onClick={submit}
+  // While a run streams, the primary action interrupts rather than sends — the
+  // STOP button stays clickable even though the field is disabled mid-stream.
+  const actionBtn = (
+    <Show
+      when={props.streaming}
+      fallback={
+        <Button
+          variant="primary"
+          trailing="send"
+          disabled={props.disabled || !text().trim()}
+          onClick={submit}
+        >
+          SEND
+        </Button>
+      }
     >
-      SEND
-    </Button>
+      <Button variant="default" leading="stop" onClick={() => props.onStop?.()}>
+        STOP
+      </Button>
+    </Show>
   );
 
   return (
@@ -126,7 +170,7 @@ export function Composer(props: ComposerProps): JSX.Element {
           <div class="flex items-end gap-2">
             {textarea}
             <Show when={props.controls}>{props.controls}</Show>
-            {sendBtn}
+            {actionBtn}
           </div>
         </div>
       }
@@ -147,7 +191,7 @@ export function Composer(props: ComposerProps): JSX.Element {
           <Show when={props.controls} fallback={<span />}>
             {props.controls}
           </Show>
-          {sendBtn}
+          {actionBtn}
         </div>
       </div>
     </Show>

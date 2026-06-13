@@ -239,6 +239,11 @@ export function ChatRoomScreen(): JSX.Element {
     )
       return;
     try {
+      // Deleting a thread mid-stream must stop its generation: cancel the live
+      // run first (while it still exists) so the backend halts it, rather than
+      // leaving it generating into a conversation that's about to be gone —
+      // aborting the local SSE alone wouldn't stop the run server-side.
+      if (stream.sending()) await stream.cancel();
       await deleteConversation(id);
       startNew();
       toast.success("Conversation deleted");
@@ -325,16 +330,6 @@ export function ChatRoomScreen(): JSX.Element {
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>
-            <Show when={stream.sending()}>
-              <Button
-                variant="ghost"
-                leading="stop"
-                aria-label="Stop run"
-                onClick={() => void stopRun()}
-              >
-                STOP
-              </Button>
-            </Show>
             <Button variant="ghost" leading="plus" onClick={startNew}>
               NEW
             </Button>
@@ -430,6 +425,8 @@ export function ChatRoomScreen(): JSX.Element {
         <div class="sticky bottom-0 -mx-1">
           <Composer
             disabled={stream.sending()}
+            streaming={stream.sending()}
+            onStop={() => void stopRun()}
             onSend={(text) => void stream.send(text)}
             storageKey={composerKey()}
           />
