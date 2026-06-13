@@ -11,21 +11,19 @@ exec lifecycle and this holds the launch / host-port / readiness details.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
 from .base import SandboxError
 from .container import (
     ContainerSandbox,
+    await_listening,
     detached_run_argv,
     force_remove_container,
     hardened_flags,
+    published_host_port,
     run_subprocess,
 )
-
-# How often to retry the readiness probe while the server boots.
-_READY_POLL_INTERVAL_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -81,8 +79,8 @@ async def launch_preview(
         raise SandboxError(f"failed to start preview server: {err.decode('utf-8', 'replace')}")
 
     try:
-        host_port = await _published_host_port(runtime, container, port)
-        await _await_listening(host_port, startup_timeout_s)
+        host_port = await published_host_port(runtime, container, port)
+        await await_listening(host_port, startup_timeout_s)
     except SandboxError as exc:
         tail = await _log_tail(runtime, container)
         await stop_preview_container(runtime, container)
@@ -101,41 +99,6 @@ async def launch_preview(
 async def stop_preview_container(runtime: str, container: str) -> None:
     """Tear down the preview container (the same best-effort kill the session uses)."""
     await force_remove_container(runtime, container)
-
-
-async def _published_host_port(runtime: str, container: str, port: int) -> int:
-    """The loopback host port the runtime assigned to the published container port."""
-    _timed_out, code, out, err = await run_subprocess(
-        [runtime, "port", container, f"{port}/tcp"], timeout_s=15.0
-    )
-    if code != 0:
-        raise SandboxError(
-            f"could not read the preview port: {err.decode('utf-8', 'replace').strip()}"
-        )
-    # Output is one or more `0.0.0.0:NNNNN` / `127.0.0.1:NNNNN` lines; take the port.
-    for line in out.decode("utf-8", "replace").splitlines():
-        host_port = line.rsplit(":", 1)[-1].strip()
-        if host_port.isdigit():
-            return int(host_port)
-    raise SandboxError("the preview server did not publish a port")
-
-
-async def _await_listening(host_port: int, timeout_s: float) -> None:
-    """Poll the published port until a TCP connection succeeds, or time out."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while True:
-        try:
-            _reader, writer = await asyncio.open_connection("127.0.0.1", host_port)
-            writer.close()
-            await writer.wait_closed()
-            return
-        except (OSError, ConnectionError):
-            if loop.time() >= deadline:
-                raise SandboxError(
-                    f"the preview server did not start listening within {timeout_s:.0f}s"
-                ) from None
-            await asyncio.sleep(_READY_POLL_INTERVAL_S)
 
 
 async def _log_tail(runtime: str, container: str, *, lines: int = 50) -> str:

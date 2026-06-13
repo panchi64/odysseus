@@ -62,7 +62,9 @@ async def get_overview(request: Request) -> Overview:
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
     search_providers = await deps.search(request).list_providers(OPERATOR_ID)
-    web_search_configured = any(p.enabled for p in search_providers)
+    provider_enabled = any(p.enabled for p in search_providers)
+    managed_search_ready = deps.searxng(request).base_url is not None
+    web_search_configured = provider_enabled or managed_search_ready
 
     conversation_count = await deps.store(request).count_conversations(OPERATOR_ID)
     memory_count = await deps.memory(request).count(OPERATOR_ID)
@@ -112,16 +114,21 @@ async def get_overview(request: Request) -> Overview:
             detail="container runtime" if sandbox_present else "no runtime — disabled",
         )
     )
-    # Web search — provider configured ⇒ search/fetch available; absent ⇒ disabled
-    # (degraded, not down).
+    # Web search — the backend's managed SearXNG (or an operator-configured
+    # provider that overrides it) ⇒ search/fetch available; neither ⇒ disabled
+    # (degraded, not down — e.g. no container runtime, or the instance still booting).
+    if provider_enabled:
+        search_detail = "SearXNG configured"
+    elif managed_search_ready:
+        search_detail = "SearXNG (managed)"
+    else:
+        search_detail = "no runtime — disabled"
     capabilities.append(
         Capability(
             key="web_search",
             label="WEB SEARCH",
             status="nominal" if web_search_configured else "warn",
-            detail="SearXNG configured" if web_search_configured else "no provider — disabled",
-            remediation_href=None if web_search_configured else "/search",
-            remediation_label=None if web_search_configured else "CONFIGURE",
+            detail=search_detail,
         )
     )
 

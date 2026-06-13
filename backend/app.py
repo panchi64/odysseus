@@ -39,6 +39,7 @@ from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
+from services.searxng import ManagedSearxng
 
 
 @asynccontextmanager
@@ -90,15 +91,30 @@ async def lifespan(app: FastAPI):
     # Published previews — the agent captures a sandbox file here, the frontend
     # fetches and renders it. Encrypted at rest like the rest of the operator's data.
     app.state.artifacts = ArtifactStore(engine, vault)
-    # The web capability — search via the operator's SearXNG providers + a guarded
-    # direct fetch. Its own outbound client does NOT follow redirects: fetch follows
-    # them by hand so it can re-run the SSRF guard on every hop.
+    # Managed web search — the backend runs its own SearXNG (same container runtime
+    # as the sandbox) so search works with zero operator setup. Bring-up is
+    # best-effort in the background; until it's ready (or if no runtime exists) the
+    # search service degrades. An operator-configured provider overrides it.
+    searxng = ManagedSearxng(
+        enabled=settings.searxng_enabled,
+        image=settings.searxng_image,
+        data_dir=settings.data_dir,
+        startup_timeout_s=settings.searxng_startup_timeout_s,
+        external_base_url=settings.searxng_base_url,
+        runtime_pref=settings.sandbox_runtime,
+    )
+    app.state.searxng = searxng
+    await searxng.start()
+    # The web capability — search via the managed SearXNG (or an operator-configured
+    # provider) + a guarded direct fetch. Its own outbound client does NOT follow
+    # redirects: fetch follows them by hand so it can re-run the SSRF guard on every hop.
     web_client = httpx.AsyncClient(follow_redirects=False)
     app.state.web_client = web_client
     app.state.search = SearchService(
         engine,
         vault,
         http_client=web_client,
+        managed_url=lambda: searxng.base_url,
         timeout_s=settings.web_fetch_timeout_s,
         max_bytes=settings.web_fetch_max_bytes,
         max_redirects=settings.web_fetch_max_redirects,
@@ -135,6 +151,7 @@ async def lifespan(app: FastAPI):
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()
+        await searxng.stop()
         if sandbox_manager is not None:
             await sandbox_manager.stop()
         await app.state.conversations.stop()

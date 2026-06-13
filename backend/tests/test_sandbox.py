@@ -18,13 +18,13 @@ from services.sandbox import (
     detect_sandbox,
     run_on_host,
 )
-from services.sandbox.container import _discover_runtime
+from services.sandbox.container import discover_runtime
 
 
 def _runtime_ready() -> bool:
     """A runtime binary on PATH *and* a reachable daemon — the real gate for the
     integration tests (a present CLI with a dead daemon must still skip)."""
-    runtime = _discover_runtime()
+    runtime = discover_runtime()
     if runtime is None:
         return False
     try:

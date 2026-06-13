@@ -1,8 +1,10 @@
 """Web search and fetch — the agent's window onto the open web.
 
-Two capabilities over one operator-run search provider:
+Two capabilities over a SearXNG instance — by default the backend's own managed
+one (`services.searxng`), needing no operator setup; an enabled provider in the
+DB-backed registry overrides it (a custom/remote instance):
 
-- **search** queries the configured SearXNG instance's JSON API and returns the
+- **search** queries the active SearXNG instance's JSON API and returns the
   hits (title, url, snippet).
 - **fetch** retrieves a single URL directly and extracts its main content as
   Markdown — guarded against SSRF (the target host is re-validated on every
@@ -19,6 +21,7 @@ message (terminal), keeping this service reusable by non-agent callers.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urljoin
@@ -57,13 +60,27 @@ class FetchedPage:
     content: str
 
 
+@dataclass(frozen=True)
+class _SearchTarget:
+    """The resolved instance to query — either an operator-configured provider or
+    the backend's managed SearXNG. ``api_key`` is already decrypted."""
+
+    base_url: str
+    engines: list[str]
+    params: dict
+    api_key: str | None
+
+
 class SearchService:
     """The web capability: a SearXNG-backed search plus a guarded direct fetch.
 
     ``http_client`` is the pooled outbound client (``follow_redirects=False`` so
     fetch controls redirects for per-hop SSRF re-validation); None ⇒ a transient
-    client per call (the path tests take). The bounds default to the configured
-    settings and are injected so tests can shrink them.
+    client per call (the path tests take). ``managed_url`` returns the backend's
+    self-managed SearXNG URL (or ``None`` until it is ready) — the zero-config
+    default used when the operator has configured no provider of their own. The
+    bounds default to the configured settings and are injected so tests can shrink
+    them.
     """
 
     def __init__(
@@ -72,6 +89,7 @@ class SearchService:
         vault: Vault,
         *,
         http_client: httpx.AsyncClient | None = None,
+        managed_url: Callable[[], str | None] | None = None,
         timeout_s: float = 15.0,
         max_bytes: int = 2_000_000,
         max_redirects: int = 5,
@@ -80,6 +98,7 @@ class SearchService:
         self._engine = engine
         self._vault = vault
         self._http_client = http_client
+        self._managed_url = managed_url
         self._timeout_s = timeout_s
         self._max_bytes = max_bytes
         self._max_redirects = max_redirects
@@ -171,13 +190,23 @@ class SearchService:
 
         await in_session(self._engine, work)
 
-    async def _active_provider(self, owner_id: str) -> SearchProvider:
-        """The first enabled provider, else a degraded capability (no web search)."""
+    async def _resolve_target(self, owner_id: str) -> _SearchTarget:
+        """The instance to query: the first enabled operator-configured provider
+        (an override), else the backend's managed SearXNG, else a degraded
+        capability (no web search)."""
         providers = await self.list_providers(owner_id)
         active = next((p for p in providers if p.enabled), None)
-        if active is None:
-            raise DegradedCapabilityError("no web search provider configured")
-        return active
+        if active is not None:
+            return _SearchTarget(
+                base_url=active.base_url,
+                engines=active.engines,
+                params=active.params,
+                api_key=self._vault.decrypt_str(active.api_key_enc) if active.api_key_enc else None,
+            )
+        managed = self._managed_url() if self._managed_url is not None else None
+        if managed:
+            return _SearchTarget(base_url=managed, engines=[], params={}, api_key=None)
+        raise DegradedCapabilityError("no web search provider configured")
 
     # --- search & fetch ---------------------------------------------------
 
@@ -187,15 +216,15 @@ class SearchService:
         """Query the active SearXNG provider's JSON API. An empty result list is a
         valid answer (the model concludes, rather than looping); an unreachable
         provider or non-JSON response is a degraded capability."""
-        provider = await self._active_provider(owner_id)
+        target = await self._resolve_target(owner_id)
         limit = self._result_limit if limit is None else limit
-        params: dict = {"q": query, "format": "json", **provider.params}
-        if provider.engines:
-            params["engines"] = ",".join(provider.engines)
+        params: dict = {"q": query, "format": "json", **target.params}
+        if target.engines:
+            params["engines"] = ",".join(target.engines)
         headers: dict = {}
-        if provider.api_key_enc:
-            headers["Authorization"] = f"Bearer {self._vault.decrypt_str(provider.api_key_enc)}"
-        url = provider.base_url.rstrip("/") + "/search"
+        if target.api_key:
+            headers["Authorization"] = f"Bearer {target.api_key}"
+        url = target.base_url.rstrip("/") + "/search"
 
         client = self._http_client or httpx.AsyncClient()
         owns = self._http_client is None

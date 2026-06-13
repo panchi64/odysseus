@@ -30,8 +30,11 @@ async def test_overview_empty_workspace():
     assert caps["main_model"]["remediation_href"] == "/models/cookbook"
     assert caps["embeddings"]["status"] == "warn"
     assert caps["sandbox"]["status"] == "warn"
+    # Web search is managed (auto-run SearXNG); with no runtime in tests it degrades
+    # to warn, and there is nothing for the operator to configure.
     assert caps["web_search"]["status"] == "warn"
-    assert caps["web_search"]["remediation_href"] == "/search"
+    assert caps["web_search"]["detail"] == "no runtime — disabled"
+    assert caps["web_search"]["remediation_href"] is None
 
 
 async def test_overview_web_search_nominal_once_a_provider_is_enabled():

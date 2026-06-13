@@ -94,15 +94,25 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
-    # Web access (search + fetch). The agent reaches the web through operator-run
-    # providers (SearXNG), configured in the DB-backed search registry — there is
-    # no env URL seam, like the model registry. These bound the direct, SSRF-guarded
-    # fetch: how long to wait, how big a page to read, and how many redirect hops to
-    # follow (each re-checked by the guard). `web_search_result_limit` caps results.
+    # Web access (search + fetch). These bound the direct, SSRF-guarded fetch: how
+    # long to wait, how big a page to read, and how many redirect hops to follow
+    # (each re-checked by the guard). `web_search_result_limit` caps results.
     web_fetch_timeout_s: float = 15.0
     web_fetch_max_bytes: int = 2_000_000
     web_fetch_max_redirects: int = 5
     web_search_result_limit: int = 10
+
+    # Managed web search. So search "just works" with zero operator setup, the
+    # backend runs its own SearXNG in a container (the same runtime the sandbox
+    # uses), bound to loopback, and queries it automatically — the DB-backed
+    # provider registry stays as an optional override for a custom/remote instance.
+    # The image is always refreshed to the latest tag on boot. When no runtime is
+    # present web search simply degrades (no host fallback). `searxng_base_url`
+    # points at an already-running instance instead, so no container is managed.
+    searxng_enabled: bool = True
+    searxng_image: str = "searxng/searxng:latest"
+    searxng_startup_timeout_s: float = 30.0
+    searxng_base_url: str | None = None
 
     # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
     # utility call). On by default; the operator can rename either way. The

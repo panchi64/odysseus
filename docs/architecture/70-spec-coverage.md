@@ -45,7 +45,7 @@
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
 | XC-DEG-1 vector search → keyword fallback | ✅ | `services/memory` (hybrid, RRF; degrades to keyword) | Honored end to end (D18-as-built). |
-| XC-DEG-2 web search unavailable → clear state, no hang | ✅ | `services/search` (`DegradedCapabilityError`), `tools/search.py`, `routes/overview` | No enabled provider ⇒ tools return "unavailable" and overview warns; an empty result set is a valid answer. No hang or loop. |
+| XC-DEG-2 web search unavailable → clear state, no hang | ✅ | `services/search` (`DegradedCapabilityError`), `services/searxng` (managed instance), `tools/search.py`, `routes/overview` | Managed SearXNG normally backs search with zero setup; no instance (no container runtime / not yet booted) and no configured provider ⇒ tools return "unavailable" and overview warns. An empty result set is a valid answer. No hang or loop. |
 | XC-DEG-3 external-service health observable | 🟡 | `routes/overview.py` (`GET /overview`: per-capability health for main model / embeddings / sandbox — backend-decided status + remediation) + `/health` (liveness) | The home page renders these. Capabilities not yet built (web search, email, push, vector store) are deferred — they grow rows here as they land. |
 | XC-PERF-1 hung request killed by server-side timeout | ✅ | `runs/registry` (wall-clock bound) | |
 | XC-PERF-2 stalled model cut by inactivity + wall-clock | ✅ | `runs/registry` (`RunTimeout` kinds: `inactivity`, `wall_clock`) | Watchdog on `Run.touch()`. |
@@ -115,7 +115,7 @@
 | DOC-1…6 document library + editor + AI assist | ⬜ | — | Streaming/auto-promote deferred (D21). `DOC-6` (checklists + label/pin organization) folds in the former Notes surface. |
 | UP-1…4 uploads & PDFs | 🔭 | — | Ingestion deferred (D22). |
 | GAL-1…4 gallery & image editing | ⬜ | — | |
-| SEARCH-1…3 web search | ✅ | `services/search`, `tools/search.py`, `routes/search`, `models/search` | SearXNG-backed `search` + SSRF-guarded `fetch_url` (trafilatura → Markdown) as agent tools; provider CRUD surface; results untrusted-wrapped. Backs the agent's web tools and unblocks deep research. |
+| SEARCH-1…3 web search | ✅ | `services/search`, `services/searxng`, `tools/search.py`, `routes/search`, `models/search` | The backend runs its **own** SearXNG in a container (same runtime as the sandbox, image refreshed to latest on boot, loopback-bound) and queries it automatically — **zero operator setup**. SSRF-guarded `fetch_url` (trafilatura → Markdown); results untrusted-wrapped. The provider CRUD surface (`routes/search`) stays as an optional override (a custom/remote instance wins over the managed one). Backs the agent's web tools and unblocks deep research. |
 | RAG-1…3 personal knowledge base | ⬜ | — | Reuses the `services/memory` store/seam (D18). |
 | RUN-1 in-browser snippet runner | ⬜ | frontend | Never on host (honors `XC-SEC-7` spirit). |
 

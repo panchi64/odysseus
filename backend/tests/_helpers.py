@@ -50,6 +50,12 @@ async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "te
             data_dir=Path(tmp),
             auth_enabled=auth_enabled,
             unlock_passphrase=passphrase,
+            # No container side effects in tests, regardless of the host: the
+            # managed SearXNG would pull/launch a container at boot, and sandbox
+            # detection would otherwise flip with host Docker. Tests that need
+            # either inject it directly (e.g. app.state.sandbox = a fake).
+            searxng_enabled=False,
+            sandbox_enabled=False,
         )
         app = create_app(settings)
         async with app.router.lifespan_context(app):

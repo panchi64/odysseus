@@ -16,7 +16,15 @@ from .base import (
     SandboxResult,
     SandboxSpec,
 )
-from .container import ContainerSandbox
+from .container import (
+    ContainerSandbox,
+    await_listening,
+    detached_run_argv,
+    discover_runtime,
+    force_remove_container,
+    published_host_port,
+    run_subprocess,
+)
 from .detect import detect_sandbox
 from .host import HostExecutionError, run_on_host
 from .preview import PreviewHandle
@@ -29,6 +37,12 @@ __all__ = [
     "SandboxResult",
     "SandboxSpec",
     "ContainerSandbox",
+    "await_listening",
+    "detached_run_argv",
+    "discover_runtime",
+    "force_remove_container",
+    "published_host_port",
+    "run_subprocess",
     "detect_sandbox",
     "PreviewHandle",
     "SandboxSession",

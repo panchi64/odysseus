@@ -73,13 +73,57 @@ async def force_remove_container(runtime: str, name: str) -> None:
         pass
 
 
-def _discover_runtime(preferred: str | None = None) -> str | None:
-    """The first container runtime binary on PATH, honoring an explicit choice."""
+def discover_runtime(preferred: str | None = None) -> str | None:
+    """The first container runtime binary on PATH, honoring an explicit choice.
+    Shared by every backend that needs a runtime (the sandbox, the managed
+    SearXNG instance) so the discovery rule lives in one place."""
     candidates = (preferred, *_RUNTIMES) if preferred else _RUNTIMES
     for name in candidates:
         if name and shutil.which(name):
             return name
     return None
+
+
+async def published_host_port(runtime: str, container: str, port: int) -> int:
+    """The loopback host port the runtime assigned to a published container port.
+
+    Shared by every long-lived box that publishes a port (the live preview, the
+    managed SearXNG instance). Raises :class:`SandboxError` if the runtime reports
+    no published port for ``port``."""
+    _timed_out, code, out, err = await run_subprocess(
+        [runtime, "port", container, f"{port}/tcp"], timeout_s=15.0
+    )
+    if code != 0:
+        raise SandboxError(
+            f"could not read the published port: {err.decode('utf-8', 'replace').strip()}"
+        )
+    # Output is one or more `0.0.0.0:NNNNN` / `127.0.0.1:NNNNN` lines; take the port.
+    for line in out.decode("utf-8", "replace").splitlines():
+        host_port = line.rsplit(":", 1)[-1].strip()
+        if host_port.isdigit():
+            return int(host_port)
+    raise SandboxError("the container did not publish a port")
+
+
+async def await_listening(
+    host_port: int, timeout_s: float, *, poll_interval_s: float = 0.25
+) -> None:
+    """Poll a loopback host port until a TCP connection succeeds, or time out —
+    the readiness probe shared by every server we wait on to bind."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        try:
+            _reader, writer = await asyncio.open_connection("127.0.0.1", host_port)
+            writer.close()
+            await writer.wait_closed()
+            return
+        except (OSError, ConnectionError):
+            if loop.time() >= deadline:
+                raise SandboxError(
+                    f"the server did not start listening within {timeout_s:.0f}s"
+                ) from None
+            await asyncio.sleep(poll_interval_s)
 
 
 def hardened_flags(
@@ -179,7 +223,7 @@ class ContainerSandbox(Sandbox):
     @property
     def runtime(self) -> str | None:
         """The resolved runtime binary (re-discovered if not pinned)."""
-        return self._runtime or _discover_runtime()
+        return self._runtime or discover_runtime()
 
     async def available(self) -> bool:
         runtime = self.runtime

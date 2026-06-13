@@ -80,6 +80,43 @@ async def test_search_unconfigured_is_degraded():
         await svc.search(OWNER, "anything")
 
 
+async def test_search_uses_managed_instance_when_no_provider():
+    # Zero operator config: the backend's managed SearXNG is queried automatically.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200, json={"results": [{"title": "M", "url": "https://m.example", "content": "c"}]}
+        )
+
+    svc = await _make_service(handler, managed_url=lambda: "http://managed.local")
+    results = await svc.search(OWNER, "q")
+    assert seen["url"].startswith("http://managed.local/search")
+    assert [r.title for r in results] == ["M"]
+
+
+async def test_enabled_provider_overrides_managed_instance():
+    # An operator-configured provider wins over the managed default.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"results": []})
+
+    svc = await _make_service(handler, managed_url=lambda: "http://managed.local")
+    await svc.create_provider(OWNER, name="searx", base_url="http://override.local")
+    await svc.search(OWNER, "q")
+    assert seen["url"].startswith("http://override.local/search")
+
+
+async def test_search_degraded_when_managed_not_ready_and_no_provider():
+    # Managed instance still booting (URL None) and no provider ⇒ degrade cleanly.
+    svc = await _make_service(lambda req: httpx.Response(200), managed_url=lambda: None)
+    with pytest.raises(DegradedCapabilityError):
+        await svc.search(OWNER, "q")
+
+
 # --- search -----------------------------------------------------------------
 
 
