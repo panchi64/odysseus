@@ -11,7 +11,6 @@ import {
   Tooltip,
   toast,
 } from "~/ui";
-import { useSession } from "~/lib/stores/session";
 import {
   effectiveValue,
   modelPickerGroups,
@@ -24,7 +23,6 @@ import { isConnectedRoute } from "./nav";
 /** The authenticated app chrome: sidebar rail + top status bar + framed main
  *  content. Composed entirely from ~/ui. */
 export function AppShell(props: { children: JSX.Element }): JSX.Element {
-  const session = useSession();
   const location = useLocation();
   const connected = () => isConnectedRoute(location.pathname);
   return (
@@ -56,7 +54,7 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
                 emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
                 aria-label="Active model"
               />
-              <Tooltip label="REFRESH MODELS">
+              <Tooltip label="REFRESH MODELS" side="bottom">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -69,17 +67,6 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
                 />
               </Tooltip>
             </div>
-            <Text variant="label" tone="dim">
-              OPERATOR
-            </Text>
-            <Button
-              variant="ghost"
-              size="sm"
-              leading="lock"
-              onClick={() => void session.lock()}
-            >
-              LOCK
-            </Button>
             <ThemeToggle />
           </div>
         </header>

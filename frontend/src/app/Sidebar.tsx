@@ -8,7 +8,8 @@ import {
 } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { readLS, writeLS } from "~/lib/storage";
-import { cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
+import { Button, cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
+import { useSession } from "~/lib/stores/session";
 import {
   NAV,
   searchNav,
@@ -76,6 +77,7 @@ function loadCollapsed(): Record<string, boolean> {
 export function Sidebar(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
+  const session = useSession();
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
 
@@ -215,7 +217,7 @@ export function Sidebar(): JSX.Element {
         </div>
       </div>
 
-      <div class="flex flex-col py-2">
+      <div class="flex flex-1 flex-col py-2">
         <For each={NAV}>
           {(section) => (
             <div class="mb-2">
@@ -270,6 +272,23 @@ export function Sidebar(): JSX.Element {
             </div>
           )}
         </For>
+      </div>
+
+      <div class="sticky bottom-0 flex items-center justify-between gap-2 border-t border-line bg-surface px-3 py-3">
+        <span class="flex items-center gap-2">
+          <Icon name="user" size={14} class="text-dim" />
+          <Text variant="label" tone="dim">
+            OPERATOR
+          </Text>
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="lock"
+          onClick={() => void session.lock()}
+        >
+          LOCK
+        </Button>
       </div>
     </nav>
   );

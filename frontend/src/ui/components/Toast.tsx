@@ -72,7 +72,7 @@ const toneText: Record<ToastTone, string> = {
 export function Toaster(): JSX.Element {
   return (
     <Portal>
-      <div class="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+      <div class="pointer-events-none fixed bottom-4 left-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
         <For each={items()}>
           {(t) => (
             <div
