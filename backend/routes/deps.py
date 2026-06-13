@@ -17,6 +17,7 @@ from services.conversations import ConversationStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager
+from services.search import SearchService
 
 # Single operator: every record is attributed to this owner until a second human
 # exists (the ownership seam). One constant so routes don't each redefine it.
@@ -37,6 +38,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def search(request: Request) -> SearchService:
+    return request.app.state.search
 
 
 def artifacts(request: Request) -> ArtifactStore:

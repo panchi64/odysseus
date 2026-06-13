@@ -61,6 +61,8 @@ async def get_overview(request: Request) -> Overview:
     main_endpoint = by_id.get(main_ids[0]) if main_ids else None
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
+    search_providers = await deps.search(request).list_providers(OPERATOR_ID)
+    web_search_configured = any(p.enabled for p in search_providers)
 
     conversation_count = await deps.store(request).count_conversations(OPERATOR_ID)
     memory_count = await deps.memory(request).count(OPERATOR_ID)
@@ -108,6 +110,18 @@ async def get_overview(request: Request) -> Overview:
             label="CODE SANDBOX",
             status="nominal" if sandbox_present else "warn",
             detail="container runtime" if sandbox_present else "no runtime — disabled",
+        )
+    )
+    # Web search — provider configured ⇒ search/fetch available; absent ⇒ disabled
+    # (degraded, not down).
+    capabilities.append(
+        Capability(
+            key="web_search",
+            label="WEB SEARCH",
+            status="nominal" if web_search_configured else "warn",
+            detail="SearXNG configured" if web_search_configured else "no provider — disabled",
+            remediation_href=None if web_search_configured else "/search",
+            remediation_label=None if web_search_configured else "CONFIGURE",
         )
     )
 

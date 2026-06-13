@@ -27,6 +27,7 @@ import models.artifact  # noqa: F401
 import models.conversation  # noqa: F401
 import models.memory  # noqa: F401
 import models.registry  # noqa: F401
+import models.search  # noqa: F401
 
 config = context.config
 target_metadata = SQLModel.metadata

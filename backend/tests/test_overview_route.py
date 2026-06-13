@@ -30,6 +30,20 @@ async def test_overview_empty_workspace():
     assert caps["main_model"]["remediation_href"] == "/models/cookbook"
     assert caps["embeddings"]["status"] == "warn"
     assert caps["sandbox"]["status"] == "warn"
+    assert caps["web_search"]["status"] == "warn"
+    assert caps["web_search"]["remediation_href"] == "/search"
+
+
+async def test_overview_web_search_nominal_once_a_provider_is_enabled():
+    async with client_app() as (client, app):
+        await app.state.search.create_provider(
+            "operator", name="searx", base_url="http://searx.local", enabled=True
+        )
+        body = (await client.get("/overview")).json()
+
+    web = _capabilities(body)["web_search"]
+    assert web["status"] == "nominal"
+    assert web["detail"] == "SearXNG configured"
 
 
 async def test_overview_reports_configured_main_model():

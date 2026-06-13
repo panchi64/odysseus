@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
+    # Web access (search + fetch). The agent reaches the web through operator-run
+    # providers (SearXNG), configured in the DB-backed search registry — there is
+    # no env URL seam, like the model registry. These bound the direct, SSRF-guarded
+    # fetch: how long to wait, how big a page to read, and how many redirect hops to
+    # follow (each re-checked by the guard). `web_search_result_limit` caps results.
+    web_fetch_timeout_s: float = 15.0
+    web_fetch_max_bytes: int = 2_000_000
+    web_fetch_max_redirects: int = 5
+    web_search_result_limit: int = 10
+
     # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
     # utility call). On by default; the operator can rename either way. The
     # title call is best-effort and bounded by `title_timeout_s` so a slow or

@@ -26,7 +26,7 @@
 | XC-SEC-2 single operator, approval-gated | ✅ | D14 throughout | No tiers; sensitivity, not privilege. |
 | XC-SEC-3 all data AES-256 at rest; password one-way hashed | ✅ | `core/crypto` (AES-256-GCM), `core/vault` (Argon2id verifier) | App-layer per-column AEAD (D17). |
 | XC-SEC-4 password derives the at-rest key (login == unlock) | ✅ | `core/vault` (Argon2id KDF → memory-only DEK) | One event, no separate credential store. |
-| XC-SEC-5 untrusted external content marked as data | 🔭 | — | Technique decided (D11: `wrap_untrusted` + reinjected system prompt); no untrusted-content path exists yet (web/uploads/mail unbuilt). Lands with the first ingester. |
+| XC-SEC-5 untrusted external content marked as data | 🟡 | `core/untrusted.py` (`wrap_untrusted`); applied in `services/search` to fetched pages + search snippets | Marking built and applied at the first ingester (web): sentinel-delimited block + standing "treat as data" instruction. `ReinjectSystemPrompt` (poisoned-history defense) still pending; extends to uploads/mail as they land. |
 | XC-SEC-6 every record owner-stamped | ✅ | `owner_id` on every `models/` entity | Multi-user enforcement deferred (one human). |
 | XC-SEC-7 agent code exec isolated from host; disabled if no sandbox | ✅ | `services/sandbox`, `tools/code.py` | Container backend; fail-closed (no runtime ⇒ capability absent), never host fallback (D23). Per-conversation live session, idle-reaped, vault-sealed workspace. |
 
@@ -45,7 +45,7 @@
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
 | XC-DEG-1 vector search → keyword fallback | ✅ | `services/memory` (hybrid, RRF; degrades to keyword) | Honored end to end (D18-as-built). |
-| XC-DEG-2 web search unavailable → clear state, no hang | ⬜ | — | Web search not built. |
+| XC-DEG-2 web search unavailable → clear state, no hang | ✅ | `services/search` (`DegradedCapabilityError`), `tools/search.py`, `routes/overview` | No enabled provider ⇒ tools return "unavailable" and overview warns; an empty result set is a valid answer. No hang or loop. |
 | XC-DEG-3 external-service health observable | 🟡 | `routes/overview.py` (`GET /overview`: per-capability health for main model / embeddings / sandbox — backend-decided status + remediation) + `/health` (liveness) | The home page renders these. Capabilities not yet built (web search, email, push, vector store) are deferred — they grow rows here as they land. |
 | XC-PERF-1 hung request killed by server-side timeout | ✅ | `runs/registry` (wall-clock bound) | |
 | XC-PERF-2 stalled model cut by inactivity + wall-clock | ✅ | `runs/registry` (`RunTimeout` kinds: `inactivity`, `wall_clock`) | Watchdog on `Run.touch()`. |
@@ -115,7 +115,7 @@
 | DOC-1…6 document library + editor + AI assist | ⬜ | — | Streaming/auto-promote deferred (D21). `DOC-6` (checklists + label/pin organization) folds in the former Notes surface. |
 | UP-1…4 uploads & PDFs | 🔭 | — | Ingestion deferred (D22). |
 | GAL-1…4 gallery & image editing | ⬜ | — | |
-| SEARCH-1…3 web search | ⬜ | — | Backs `XC-DEG-2`, deep research, agent web tools. |
+| SEARCH-1…3 web search | ✅ | `services/search`, `tools/search.py`, `routes/search`, `models/search` | SearXNG-backed `search` + SSRF-guarded `fetch_url` (trafilatura → Markdown) as agent tools; provider CRUD surface; results untrusted-wrapped. Backs the agent's web tools and unblocks deep research. |
 | RAG-1…3 personal knowledge base | ⬜ | — | Reuses the `services/memory` store/seam (D18). |
 | RUN-1 in-browser snippet runner | ⬜ | frontend | Never on host (honors `XC-SEC-7` spirit). |
 
@@ -157,7 +157,7 @@
 
 ## Deep research (`DR-*`)
 
-The orchestrator (`research/`) is a stub; the build approach is decided (**D19** — hand-coded outer pipeline + in-round agent, on the Run substrate, reusing search + LLM capabilities). All `DR-*` are ⬜ **pending**, gated on the `search` capability. Substrate-level pieces it will inherit *already exist*: the Run lifecycle, cancellation at step boundary (`DR-3.3` ↔ `CHAT-5`), bounds (`DR-3.1` ↔ `runs/registry`), phase/progress streaming (`DR-5.1` ↔ the event protocol), and graceful degradation (`DR-4.1` ↔ `XC-DEG-2`). So deep research is "write the pipeline orchestrator + wire search," not new chassis.
+The orchestrator (`research/`) is a stub; the build approach is decided (**D19** — hand-coded outer pipeline + in-round agent, on the Run substrate, reusing search + LLM capabilities). All `DR-*` are ⬜ **pending** — but their blocking dependency, the `search` capability, **now exists** (`services/search`, `SEARCH-*` ✅), so deep research is unblocked. Substrate-level pieces it will inherit *already exist*: the Run lifecycle, cancellation at step boundary (`DR-3.3` ↔ `CHAT-5`), bounds (`DR-3.1` ↔ `runs/registry`), phase/progress streaming (`DR-5.1` ↔ the event protocol), and graceful degradation (`DR-4.1` ↔ `XC-DEG-2`). So deep research is "write the pipeline orchestrator + wire search," not new chassis.
 
 | Group | Status | Notes |
 |---|---|---|
@@ -173,11 +173,11 @@ The orchestrator (`research/`) is a stub; the build approach is decided (**D19**
 
 ## What this says about "next"
 
-The code-execution sandbox is now in (`XC-SEC-7`/`AE-3.4` ✅), with artifacts + previews riding on top. The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
+The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with artifacts + previews on top, and **web search is now in** (`SEARCH-*`/`XC-DEG-2` ✅), which also stood up the first untrusted-content marking (`XC-SEC-5` 🟡). The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
 
-1. **Web search capability** (`SEARCH-*`) — unblocks `XC-DEG-2`, the agent's web tools, *and* all of deep research (`DR-*`) at once.
+1. **Deep research** (`DR-*` / D19) — now unblocked (its `search` dependency landed); it's "write the pipeline orchestrator + wire the existing search/fetch tools," reusing the Run substrate, bounds, cancellation, and progress streaming it already inherits.
 2. **The scheduler** (`TASK-*` + D13) — turns `AE-3.5`/D24 pre-authorization from design into running unattended automation, reusing the approval mechanism already built.
-3. **Uploads/attachments** (`UP-*` / D22) — unblocks `CHAT-1`/`CHAT-2` and feeds `RAG-*`, and is the first consumer of the `XC-SEC-5` untrusted-content marking.
+3. **Uploads/attachments** (`UP-*` / D22) — unblocks `CHAT-1`/`CHAT-2` and feeds `RAG-*`, and is the next consumer of the `XC-SEC-5` untrusted-content marking (extending `wrap_untrusted` past the web ingester).
 
 Each is additive over the foundation, not a rebuild — which is the whole point of having spent the early passes on the chassis.
 

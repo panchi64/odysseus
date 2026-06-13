@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from services.artifacts import ArtifactStore
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
+    from services.search import SearchService
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class Capabilities:
     memory: MemoryStore | None = None
     sandbox_sessions: SandboxSessionManager | None = None
     artifacts: ArtifactStore | None = None
+    search: SearchService | None = None
 
 
 @dataclass
@@ -50,6 +52,8 @@ class RunDeps:
     # Where the agent's published previews are captured (the `preview` tool reads a
     # sandbox file and hands its bytes here). None ⇒ previews unavailable.
     artifacts: ArtifactStore | None = None
+    # The web capability (search + guarded fetch). None ⇒ web tools say so.
+    search: SearchService | None = None
 
     @property
     def sandbox_key(self) -> str:

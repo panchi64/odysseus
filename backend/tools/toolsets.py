@@ -23,6 +23,7 @@ from .code import code_toolset
 from .deps import RunDeps
 from .memory import memory_toolset
 from .preview import preview_toolset
+from .search import search_toolset
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
@@ -37,6 +38,7 @@ def default_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "memory": memory_toolset(),
         "code": code_toolset(),
         "preview": preview_toolset(),
+        "search": search_toolset(),
     }
 
 

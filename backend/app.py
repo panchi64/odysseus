@@ -29,6 +29,7 @@ from routes import (
     overview,
     previews,
     runs,
+    search,
 )
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
@@ -37,6 +38,7 @@ from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
+from services.search import SearchService
 
 
 @asynccontextmanager
@@ -88,6 +90,20 @@ async def lifespan(app: FastAPI):
     # Published previews — the agent captures a sandbox file here, the frontend
     # fetches and renders it. Encrypted at rest like the rest of the operator's data.
     app.state.artifacts = ArtifactStore(engine, vault)
+    # The web capability — search via the operator's SearXNG providers + a guarded
+    # direct fetch. Its own outbound client does NOT follow redirects: fetch follows
+    # them by hand so it can re-run the SSRF guard on every hop.
+    web_client = httpx.AsyncClient(follow_redirects=False)
+    app.state.web_client = web_client
+    app.state.search = SearchService(
+        engine,
+        vault,
+        http_client=web_client,
+        timeout_s=settings.web_fetch_timeout_s,
+        max_bytes=settings.web_fetch_max_bytes,
+        max_redirects=settings.web_fetch_max_redirects,
+        result_limit=settings.web_search_result_limit,
+    )
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
     # Present ⇒ wrap it in a per-conversation session manager that keeps a
@@ -118,6 +134,7 @@ async def lifespan(app: FastAPI):
     finally:
         await preview_client.aclose()
         await discovery_client.aclose()
+        await web_client.aclose()
         if sandbox_manager is not None:
             await sandbox_manager.stop()
         await app.state.conversations.stop()
@@ -152,6 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(memory.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)
+    app.include_router(search.router)
     return app
 
 

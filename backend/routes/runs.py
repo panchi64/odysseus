@@ -144,6 +144,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),
             artifacts=deps.artifacts(request),
+            search=deps.search(request),
         ),
         store=deps.store(request),
     )

@@ -25,3 +25,15 @@ class ApprovalRequiredError(OdysseusError):
 
 class DegradedCapabilityError(OdysseusError):
     """An optional capability is unavailable; the caller should degrade gracefully."""
+
+
+class SSRFError(OdysseusError):
+    """An outbound request was refused because its target resolves to a
+    non-public address (loopback, private, link-local, cloud metadata) or uses a
+    disallowed scheme — a server-side request forgery guard."""
+
+
+class WebFetchError(OdysseusError):
+    """A web fetch failed for a single URL in a way the caller can retry against a
+    different source — a network error, a non-OK status, too many redirects, or a
+    page with no extractable content. Distinct from a missing capability."""

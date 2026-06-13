@@ -129,6 +129,7 @@ def _submit_turn(
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),
             artifacts=deps.artifacts(request),
+            search=deps.search(request),
         ),
         store=deps.store(request),
         conversation_id=conversation_id,
