@@ -32,9 +32,16 @@ from .meta import make_utility_agent
 logger = logging.getLogger(__name__)
 
 # Output-capped base settings; the caller's reasoning-off settings are merged on
-# top. The cap is small because a title is a handful of words — with thinking
-# disabled the model spends its whole budget on the answer.
-_BASE_SETTINGS: ModelSettings = {"max_tokens": 48, "temperature": 0.3}
+# top. ``max_tokens`` is response-level (it bounds the model's output, never the
+# prompt), so it must fit everything the model emits before the title — including a
+# ``<think>`` block when reasoning is on. The cap is a ceiling, not a cost: when the
+# reasoning-off lever takes (recognized family AND a runtime that honors it) the
+# model emits the handful of title words and stops early, so the headroom is free;
+# when a runtime ignores the lever (e.g. Ollama/LM Studio drop OpenAI
+# ``chat_template_kwargs``) the think block is response tokens too, so a tight cap
+# would be spent thinking and the call would die before producing a title. Keep it
+# generous enough to clear a titling think block.
+_BASE_SETTINGS: ModelSettings = {"max_tokens": 1024, "temperature": 0.3}
 
 # Trim the user message fed to the namer — the topic is in the opening, and a
 # long body only slows the call without sharpening the title.
