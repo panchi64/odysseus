@@ -179,7 +179,7 @@ export interface ChatSummary {
   messageCount: number;
   /** Last-message snippet for preview cards. */
   preview?: string;
-  /** Model the conversation is using. */
+  /** The model the conversation last ran on (its most recent answer's model). */
   model?: string;
 }
 

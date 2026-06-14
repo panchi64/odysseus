@@ -39,6 +39,24 @@ async def test_list_conversations(monkeypatch):
         assert row["id"] == conversation_id
         assert row["message_count"] == 2  # user prompt + assistant answer
         assert row["preview"]  # derived from the latest message text
+        assert row["model"] == "test"  # the model the turn ran on (TestModel)
+
+
+async def test_summary_model_survives_a_cold_read(monkeypatch):
+    """The last-used model is durable: it's recovered from the stored response blob
+    after the in-memory tree is evicted, not only while the conversation is warm."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+        app.state.conversations._cache.clear()  # force the cold (DB) summary path
+
+        store = app.state.conversations
+        await store._worker.join()  # let the write-behind drainer settle the model
+        store._cache.clear()  # force the cold (DB) summary path
+
+        rows = (await client.get("/conversations")).json()
+        assert rows[0]["id"] == conversation_id
+        assert rows[0]["model"] == "test"
 
 
 async def test_get_conversation_projects_history(monkeypatch):
@@ -53,8 +71,10 @@ async def test_get_conversation_projects_history(monkeypatch):
         messages = detail["messages"]
         assert [m["role"] for m in messages] == ["user", "assistant"]
         assert messages[0]["content"] == "say hi"
+        assert messages[0]["model"] is None  # user turns carry no model
         assert messages[1]["content"] == "hello there"
         assert messages[1]["tools"] == []
+        assert messages[1]["model"] == "test"  # the assistant turn's model
 
 
 async def test_get_unknown_conversation_404():

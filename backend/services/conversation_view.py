@@ -49,6 +49,10 @@ class MessageView:
     reasoning: str = ""
     tools: list[ToolView] = field(default_factory=list)
     timestamp: datetime | None = None
+    # The model that produced this assistant turn (the last response's model_name —
+    # the one that wrote the answer). None for user turns and turns older than this
+    # projection. Surfaced so the UI can show what a chat actually last ran on.
+    model: str | None = None
     # The id of the tree node that *defines this turn's branch point* — the user
     # request for a user turn, the first response for an assistant turn. It is what
     # the frontend addresses to regenerate / edit / delete / switch this turn.
@@ -137,6 +141,9 @@ def project_tree(nodes: list[tuple[str, Any]]) -> list[MessageView]:
                     role="assistant", timestamp=getattr(message, "timestamp", None), id=node_id
                 )
                 views.append(assistant)
+            # A turn can span several responses (tool round-trips); the last one
+            # carrying a name is the model that wrote the final answer.
+            assistant.model = getattr(message, "model_name", None) or assistant.model
             for part in message.parts:
                 if isinstance(part, TextPart):
                     assistant.content += part.content

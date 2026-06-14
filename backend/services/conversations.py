@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
-from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy import Engine, delete, func
 from sqlalchemy import text as sa_text
 from sqlmodel import Session, select
@@ -77,6 +77,11 @@ class _PersistJob:
     # For "pin": the message to (un)pin and the value to set.
     message_id: str | None = None
     pinned: bool = False
+    # The active path's last-used model at queue time — written denormalized onto
+    # the Conversation alongside its active_leaf_id, so the listing reads it without
+    # opening a blob. Computed where the leaf moves, never in the drainer (the tree
+    # may have moved on by then). Unused by the "pin" job, which leaves model alone.
+    model: str | None = None
 
 
 @dataclass
@@ -226,6 +231,20 @@ class ConversationSummaryView:
     updated_at: datetime
     message_count: int
     preview: str | None
+    # The model the conversation last ran on (the most recent response's
+    # model_name). None for a conversation with no answer yet.
+    model: str | None = None
+
+
+def _model_of(message: ModelMessage) -> str | None:
+    """The model that produced a response message, or None for a request."""
+    return getattr(message, "model_name", None) if isinstance(message, ModelResponse) else None
+
+
+def _active_path_model(path: list[_Node]) -> str | None:
+    """The model the active path last ran on — its most recent response's
+    ``model_name``. None for a path with no answer yet."""
+    return next((m for m in (_model_of(n.message) for n in reversed(path)) if m), None)
 
 
 def _project(message: ModelMessage) -> tuple[str, str]:
@@ -249,7 +268,10 @@ def _db_stats(
     in-memory tree): the count is the total node count and the preview the latest
     by seq, which can include off-path branches; an active conversation overrides
     both from its tree (exact for the visible path). The returned text is still the
-    encrypted ``Message.text`` ciphertext; the caller decrypts only what it renders."""
+    encrypted ``Message.text`` ciphertext; the caller decrypts only what it renders.
+    The last-used model isn't derived here — it rides denormalized on the
+    ``Conversation`` row (kept in step with the active leaf), so listing never has
+    to open a message blob."""
     if not conversation_ids:
         return {}
     counts = dict(
@@ -366,9 +388,11 @@ class ConversationStore:
         self, conversation: Conversation, db_count: int, last_text_enc: str | None
     ) -> ConversationSummaryView:
         """Build a listing summary, preferring the in-memory tree's active-path
-        count + preview (exact for the visible thread, and ahead of the DB by the
-        write-behind drainer) over the durable rows. Runs outside the DB session —
-        only touches the vault + cache."""
+        count + preview + model (exact for the visible thread, and ahead of the DB
+        by the write-behind drainer) over the durable rows. Runs outside the DB
+        session — only touches the vault + cache. The cold model comes from the
+        denormalized ``Conversation.model``, kept in step with the active leaf, so
+        warm and cold agree and listing never opens a blob."""
         cached = self._cache.get(conversation.id)
         if cached is not None:
             path = cached.active_path()
@@ -376,10 +400,12 @@ class ConversationStore:
             preview = next(
                 (text for text in (_project(n.message)[1] for n in reversed(path)) if text), None
             )
+            model = _active_path_model(path)
         else:
             count = db_count
             decrypted = self._vault.decrypt_str(last_text_enc).strip() if last_text_enc else ""
             preview = decrypted or None
+            model = conversation.model
         return ConversationSummaryView(
             id=conversation.id,
             title=conversation.title,
@@ -387,6 +413,7 @@ class ConversationStore:
             updated_at=conversation.updated_at,
             message_count=count,
             preview=preview[:140] if preview else None,
+            model=model,
         )
 
     async def list_conversations(self, owner_id: str) -> list[ConversationSummaryView]:
@@ -404,7 +431,7 @@ class ConversationStore:
             return [(c, *stats.get(c.id, (0, None))) for c in conversations]
 
         rows = await in_session(self._engine, work)
-        return [self._summarize(conv, count, last_enc) for conv, count, last_enc in rows]
+        return [self._summarize(*row) for row in rows]
 
     async def count_conversations(self, owner_id: str) -> int:
         """How many conversations the owner has — a scalar count that loads no
@@ -521,6 +548,7 @@ class ConversationStore:
                 conversation_id=conversation_id,
                 active_leaf_id=tree.active_leaf_id,
                 rows=rows,
+                model=_active_path_model(tree.active_path()),
             )
         )
 
@@ -531,10 +559,17 @@ class ConversationStore:
     # caller then launches a normal turn whose record() writes the new branch.
 
     def _move_leaf(self, conversation_id: str, leaf_id: str | None) -> None:
-        """Queue an active-leaf move (the in-memory tree is already updated)."""
+        """Queue an active-leaf move (the in-memory tree is already updated). The
+        new active path can run on a different model than before (switching to an
+        older version), so the denormalized model rides along with the pointer."""
+        tree = self._cache.get(conversation_id)
+        model = _active_path_model(tree.active_path()) if tree is not None else None
         self._worker.submit(
             _PersistJob(
-                kind="active_leaf", conversation_id=conversation_id, active_leaf_id=leaf_id
+                kind="active_leaf",
+                conversation_id=conversation_id,
+                active_leaf_id=leaf_id,
+                model=model,
             )
         )
 
@@ -642,6 +677,7 @@ class ConversationStore:
                 conversation_id=conversation_id,
                 active_leaf_id=tree.active_leaf_id,
                 deleted_ids=doomed,
+                model=_active_path_model(tree.active_path()),
             )
         )
         return True
@@ -678,6 +714,7 @@ class ConversationStore:
                     )
                 )
             conversation.active_leaf_id = job.active_leaf_id
+            conversation.model = job.model
             conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
@@ -687,6 +724,7 @@ class ConversationStore:
             conversation = session.get(Conversation, job.conversation_id)
             if conversation is not None:
                 conversation.active_leaf_id = job.active_leaf_id
+                conversation.model = job.model
                 conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
@@ -700,6 +738,7 @@ class ConversationStore:
                 _defer_fk(session)  # remove the subtree in one statement, FK-safe
                 session.execute(delete(Message).where(Message.id.in_(job.deleted_ids)))
             conversation.active_leaf_id = job.active_leaf_id
+            conversation.model = job.model
             conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)

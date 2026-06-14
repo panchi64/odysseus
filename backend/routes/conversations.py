@@ -31,6 +31,7 @@ class ConversationSummary(BaseModel):
     updated_at: datetime
     message_count: int
     preview: str | None = None
+    model: str | None = None  # the model the conversation last ran on
 
 
 class ToolCallOut(BaseModel):
@@ -61,6 +62,7 @@ class MessageOut(BaseModel):
     tools: list[ToolCallOut] = []
     artifacts: list[ArtifactRefOut] = []
     created_at: datetime | None = None
+    model: str | None = None  # the model that produced this assistant turn
     # Version navigation: position among this turn's siblings and how many exist.
     # version_count > 1 ⇒ the operator can cycle ‹ k/n › between regenerations/edits.
     version_index: int = 0
@@ -92,6 +94,7 @@ def _summary(view: ConversationSummaryView) -> ConversationSummary:
         updated_at=view.updated_at,
         message_count=view.message_count,
         preview=view.preview,
+        model=view.model,
     )
 
 
@@ -134,6 +137,7 @@ def _message(view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
         ],
         artifacts=_message_artifacts(view, by_id),
         created_at=view.timestamp,
+        model=view.model,
         version_index=view.version_index,
         version_count=view.version_count,
         pinned=view.pinned,

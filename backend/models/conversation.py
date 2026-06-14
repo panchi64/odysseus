@@ -37,6 +37,11 @@ class Conversation(SQLModel, table=True):
     # to the root is the active history. Null only for an empty conversation; a
     # cold load that finds it dangling falls back to the deepest leaf by seq.
     active_leaf_id: str | None = None
+    # The model the active path last ran on (its most recent answer's model_name),
+    # denormalized so the listing reads it without opening a message blob. Kept in
+    # step with active_leaf_id by the write-behind store; structural metadata, not
+    # user content, so it stays in the clear. Null until the first answer.
+    model: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

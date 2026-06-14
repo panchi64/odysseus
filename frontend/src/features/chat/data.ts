@@ -160,6 +160,7 @@ interface ConversationSummaryDTO {
   updated_at: string;
   message_count: number;
   preview: string | null;
+  model: string | null;
 }
 
 interface ToolCallDTO {
@@ -187,6 +188,8 @@ interface MessageDTO {
   tools: ToolCallDTO[];
   artifacts?: ArtifactDTO[];
   created_at?: string | null;
+  /** The model that produced this assistant turn. */
+  model?: string | null;
   /** 0-based index of this turn among its sibling versions. */
   version_index?: number;
   /** Total sibling versions for this turn (≥1). */
@@ -213,6 +216,7 @@ function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     updatedAt: dto.updated_at,
     messageCount: dto.message_count,
     preview: dto.preview ?? undefined,
+    model: dto.model ?? undefined,
   };
 }
 
@@ -357,7 +361,7 @@ function toMessage(dto: MessageDTO): ChatMessage {
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
   // The answer lives in the text block(s); keep `content` empty for assistant
   // turns so it isn't a second, divergent copy of the same text.
-  return { ...base, content: "", blocks };
+  return { ...base, content: "", blocks, model: dto.model ?? undefined };
 }
 
 /* ── Read accessors (the seam) ────────────────────────────────────────────── */

@@ -155,6 +155,10 @@ export function ChatRoomScreen(): JSX.Element {
     const id = currentId();
     return id ? titleReveals[id] : undefined;
   };
+  // The model below the title is what this chat *last ran on* (the summary's
+  // last-used model), not the top-bar picker selection — that's the picker's job.
+  // A fresh thread with no answers yet falls back to the current selection, since
+  // that's the model its first turn will use.
   const headerModel = () =>
     currentSummary()?.model ?? (selectedModelLabel() || "NO MODEL");
 
