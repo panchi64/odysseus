@@ -54,12 +54,21 @@ export function ChatRoomScreen(): JSX.Element {
   // null = a new, unsaved conversation.
   const [currentId, setCurrentId] = createSignal<string | null>(null);
   const session = useChatSession(currentId);
-  const stream = createChatStream(() => session()?.messages, currentId, {
-    // A new thread adopts its backend id once persisted; the list refreshes so
-    // the sidebar reflects the new/updated thread.
-    onConversationStarted: (id) => setCurrentId(id),
-    onTurnComplete: () => refreshSessions(),
-  });
+  // While a thread's history loads, the resource still reports the *previous*
+  // thread's messages (Solid retains a resource's last value across a source
+  // change). Feeding that stale value to the stream would seed the outgoing
+  // thread's history into the incoming one, so withhold the source until it has
+  // resolved for the current id — the stream re-seeds once it arrives.
+  const stream = createChatStream(
+    () => (session.loading ? undefined : session()?.messages),
+    currentId,
+    {
+      // A new thread adopts its backend id once persisted; the list refreshes so
+      // the sidebar reflects the new/updated thread.
+      onConversationStarted: (id) => setCurrentId(id),
+      onTurnComplete: () => refreshSessions(),
+    },
+  );
 
   // Follow the stream: keep the transcript pinned to the bottom while the answer
   // arrives, yield the moment the operator scrolls up to read back, and re-attach
