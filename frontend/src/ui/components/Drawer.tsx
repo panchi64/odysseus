@@ -8,6 +8,8 @@ export interface DrawerProps {
   open: boolean;
   onClose: () => void;
   title?: string;
+  /** Right-aligned header content, shown before the close button. */
+  meta?: JSX.Element;
   /** Edge the drawer slides from. Default right. */
   side?: "left" | "right";
   footer?: JSX.Element;
@@ -21,6 +23,7 @@ export function Drawer(props: DrawerProps): JSX.Element {
     "open",
     "onClose",
     "title",
+    "meta",
     "side",
     "footer",
     "class",
@@ -45,14 +48,17 @@ export function Drawer(props: DrawerProps): JSX.Element {
                 <Text variant="label" tone="bright">
                   {local.title}
                 </Text>
-                <button
-                  type="button"
-                  onClick={local.onClose}
-                  aria-label="Close"
-                  class="text-dim transition-colors hover:text-bright"
-                >
-                  <Icon name="close" size={14} />
-                </button>
+                <div class="flex items-center gap-2">
+                  <Show when={local.meta}>{local.meta}</Show>
+                  <button
+                    type="button"
+                    onClick={local.onClose}
+                    aria-label="Close"
+                    class="text-dim transition-colors hover:text-bright"
+                  >
+                    <Icon name="close" size={14} />
+                  </button>
+                </div>
               </header>
             </Show>
             <div class="min-h-0 flex-1 overflow-auto p-4">{local.children}</div>

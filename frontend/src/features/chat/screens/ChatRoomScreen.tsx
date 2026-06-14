@@ -186,6 +186,26 @@ export function ChatRoomScreen(): JSX.Element {
 
   const startNew = () => setCurrentId(null);
 
+  // Right-aligned "new conversation" control, shown beside the SESSIONS title in
+  // both the desktop rail and the mobile drawer. In the desktop panel it bleeds
+  // out to fill the header cell (negative margins cancel the header padding); the
+  // drawer shares its header with a close button, so it stays inset there.
+  const newSessionButton = (flush = false) => (
+    <Button
+      variant="ghost"
+      size="sm"
+      leading="plus"
+      onClick={startNew}
+      class={
+        flush
+          ? "-my-2 -mr-4 !h-auto self-stretch border-l border-line bg-raised"
+          : "border-l border-line bg-raised"
+      }
+    >
+      NEW
+    </Button>
+  );
+
   // Stop the live run for real: cancel on the backend, abort the local stream.
   // `cancel()` surfaces its own backend error; this only adds the success note.
   const stopRun = async () => {
@@ -265,7 +285,7 @@ export function ChatRoomScreen(): JSX.Element {
     <div class="flex h-full min-h-0 gap-4">
       {/* Session list — desktop sidebar */}
       <aside class="hidden w-56 shrink-0 lg:block">
-        <Panel label="SESSIONS" flush>
+        <Panel label="SESSIONS" meta={newSessionButton(true)} flush>
           <SessionList
             sessions={sessions}
             currentId={currentId()}
@@ -279,6 +299,7 @@ export function ChatRoomScreen(): JSX.Element {
         open={sessionsOpen()}
         onClose={() => setSessionsOpen(false)}
         title="SESSIONS"
+        meta={newSessionButton()}
         side="left"
       >
         <SessionList
@@ -339,9 +360,6 @@ export function ChatRoomScreen(): JSX.Element {
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>
-            <Button variant="ghost" leading="plus" onClick={startNew}>
-              NEW
-            </Button>
             <Menu
               trigger={
                 <Button variant="ghost" aria-label="Session actions">
