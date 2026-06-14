@@ -9,6 +9,7 @@ import {
   Resource,
   StatusFlag,
   Text,
+  Tooltip,
   type Status,
 } from "~/ui";
 import { overviewBand, useActiveRuns, useOverview } from "../data";
@@ -71,6 +72,24 @@ export function DashboardScreen(): JSX.Element {
     return "ALL SYSTEMS";
   };
 
+  // The capabilities responsible for the current flag — the same severity policy
+  // as `computeOverallStatus`: down capabilities raise an alert, degraded
+  // *critical* ones a warning. Their details become the flag's hover tooltip so
+  // the operator sees *what* is wrong without leaving the launchpad.
+  const alertReason = (): string | null => {
+    const o = overview();
+    if (!o) return null;
+    const s = overallStatus();
+    const triggering =
+      s === "alert"
+        ? o.capabilities.filter((c) => c.status === "alert")
+        : s === "warn"
+          ? o.capabilities.filter((c) => c.critical && c.status === "warn")
+          : [];
+    if (!triggering.length) return null;
+    return triggering.map((c) => `${c.label}: ${c.detail}`).join(" · ");
+  };
+
   const handleStart = (text: string) => {
     startConversation(text, effectiveSelection());
     navigate("/chat");
@@ -87,9 +106,22 @@ export function DashboardScreen(): JSX.Element {
         subtitle="Your private, self-hosted AI workspace — chat, research, memory, and more."
         assetId="ODY-HUD-00.1 EDITION 02"
         actions={
-          <StatusFlag status={overallStatus()} dot>
-            {overallLabel()}
-          </StatusFlag>
+          <Show
+            when={alertReason()}
+            fallback={
+              <StatusFlag status={overallStatus()} dot>
+                {overallLabel()}
+              </StatusFlag>
+            }
+          >
+            {(reason) => (
+              <Tooltip label={reason()} side="left" prose float>
+                <StatusFlag status={overallStatus()} dot>
+                  {overallLabel()}
+                </StatusFlag>
+              </Tooltip>
+            )}
+          </Show>
         }
       />
 
