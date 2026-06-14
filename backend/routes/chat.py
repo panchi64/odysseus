@@ -117,18 +117,22 @@ def _submit_turn(
     prompt: str | None,
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None],
+    ephemeral: bool = False,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models and submit the Run.
 
     No failure path after the caller's conversation mutation — ``prompt is None``
-    is a regenerate (re-run from a history that already ends in the user request)."""
+    is a regenerate (re-run from a history that already ends in the user request).
+    ``ephemeral`` threads (e.g. the compare panes) are hidden from the listing and
+    show no title, so auto-titling them is invisible work that only holds the run
+    open after the answer — skip it by passing no title model."""
     resolved, utility_model, title_settings = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
         utility_model=utility_model,
-        title_model=utility_model,
-        title_settings=title_settings,
+        title_model=None if ephemeral else utility_model,
+        title_settings=None if ephemeral else title_settings,
         capabilities=Capabilities(
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),
@@ -166,7 +170,11 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         )
 
     return _submit_turn(
-        request, prompt=body.prompt, conversation_id=conversation_id, models=models
+        request,
+        prompt=body.prompt,
+        conversation_id=conversation_id,
+        models=models,
+        ephemeral=body.ephemeral,
     )
 
 

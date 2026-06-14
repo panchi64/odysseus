@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic_ai import FunctionToolset, ToolApproved
+from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -262,6 +265,87 @@ async def test_parked_first_turn_is_titled_on_resume(tmp_path):
     assert len(titled) == 1 and titled[0].title == "Deleting The Thing"
     summary = await store.get_summary(conv, "operator")
     assert summary is not None and summary.title == "Deleting The Thing"
+    await store.stop()
+
+
+async def test_titling_runs_concurrently_with_the_answer(tmp_path):
+    # Titling is kicked off up-front and overlaps the answer rather than following
+    # it, so it adds no post-answer "writing" tail. Proven structurally: the answer
+    # only completes once titling has begun — a deadlock unless the two run
+    # concurrently — yet the title is still announced before the run ends.
+    store = await _fresh_store(tmp_path)
+    conv = await store.create_conversation("operator")
+    reg = RunRegistry()
+
+    title_started = asyncio.Event()
+
+    def title_fn(messages, info):
+        title_started.set()
+        return ModelResponse(parts=[TextPart("Concurrent Title")])
+
+    async def answer_stream(messages, info):
+        await asyncio.wait_for(title_started.wait(), timeout=2)
+        yield "answer"
+
+    orch = build_chat_orchestrator(
+        "name me",
+        model=FunctionModel(stream_function=answer_stream),
+        title_model=FunctionModel(function=title_fn),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    titled = [b for b in _bodies(run) if b.type == "conversation.titled"]
+    assert len(titled) == 1 and titled[0].title == "Concurrent Title"
+    types = [b.type for b in _bodies(run)]
+    assert types.index("conversation.titled") < types.index("run.ended")
+    await store.stop()
+
+
+async def test_concurrent_title_is_cancelled_when_the_turn_fails(tmp_path):
+    # The title is kicked off concurrently *before* the answer; if the turn then
+    # raises, the orchestrator must cancel it so the title-model call doesn't run on
+    # detached past the failed run (and no stale title is announced).
+    store = await _fresh_store(tmp_path)
+    conv = await store.create_conversation("operator")
+    reg = RunRegistry()
+
+    title_running = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()  # never set — the title stays in-flight until cancelled
+
+    async def title_fn(messages, info):
+        title_running.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return ModelResponse(parts=[TextPart("Should Not Appear")])
+
+    async def boom_stream(messages, info):
+        await title_running.wait()  # ensure the title is in-flight first
+        raise RuntimeError("main model failed")
+        yield  # pragma: no cover — makes this an async generator
+
+    orch = build_chat_orchestrator(
+        "name me",
+        model=FunctionModel(stream_function=boom_stream),
+        title_model=FunctionModel(function=title_fn),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.error
+    await asyncio.wait_for(cancelled.wait(), timeout=2)  # the title task was cancelled
+    assert not any(b.type == "conversation.titled" for b in _bodies(run))
     await store.stop()
 
 

@@ -15,7 +15,9 @@ we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -358,10 +360,11 @@ async def _maybe_title(
 ) -> None:
     """Auto-name a fresh conversation from the operator's opening message.
 
-    Shared by the chat and resume orchestrators (called from both after persist),
-    so a first turn that parked for approval is still named once it resumes. The
-    user's first message is read from the just-persisted history rather than threaded
-    in, so one code path serves both callers. The title reflects what the operator
+    The resume path's namer: a first turn that parked for approval is named once it
+    resumes to completion. The user's first message is read from the just-persisted
+    history rather than threaded in (the resume has no ``prompt`` in hand). The
+    initial chat orchestrator instead titles concurrently via :func:`_start_title` /
+    :func:`_emit_title` so it adds no post-answer delay. The title reflects what the operator
     asked — the assistant's reply is deliberately not fed to the namer. Guards:
 
     - ``is_first_turn`` (no prior messages) is the cheap pre-filter that skips the
@@ -386,12 +389,83 @@ async def _maybe_title(
             reasoning_off=title.settings,
             timeout_s=get_settings().title_timeout_s,
         )
-        if not name:
-            return
-        if await store.set_title_if_absent(conversation_id, name):
-            run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
+        await _announce_title(run, name, store=store, conversation_id=conversation_id)
     except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
         logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
+
+
+async def _announce_title(
+    run: Run,
+    name: str | None,
+    *,
+    store: ConversationStore | None,
+    conversation_id: str | None,
+) -> None:
+    """Persist a generated title (fill-only-if-blank) and announce it on success.
+
+    :meth:`ConversationStore.set_title_if_absent` is the authoritative guard — it
+    fills only a blank title, so an operator-named thread is never clobbered, and
+    ``conversation.titled`` is announced only when it actually set the name. Shared
+    by both the concurrent (:func:`_emit_title`) and resume (:func:`_maybe_title`)
+    paths."""
+    if not name or store is None or conversation_id is None:
+        return
+    if await store.set_title_if_absent(conversation_id, name):
+        run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
+
+
+def _start_title(
+    title: TitleContext | None, prompt: str | None
+) -> asyncio.Task[str | None] | None:
+    """Begin generating a thread title concurrently with the turn's answer.
+
+    Titling needs only the operator's opening message, which a first turn already
+    has in ``prompt`` — so there's no need to wait for the answer (or persistence)
+    first. Overlapping it with the (longer) answer means it adds no post-answer
+    latency, while the result is still emitted before ``run.ended``. Returns ``None``
+    when titling is off or there is nothing to name from. The call stays bounded by
+    ``title_timeout_s``."""
+    if title is None or not prompt:
+        return None
+    return asyncio.create_task(
+        generate_title(
+            title.model,
+            prompt,
+            reasoning_off=title.settings,
+            timeout_s=get_settings().title_timeout_s,
+        )
+    )
+
+
+async def _emit_title(
+    run: Run,
+    task: asyncio.Task[str | None] | None,
+    *,
+    store: ConversationStore | None,
+    conversation_id: str | None,
+) -> None:
+    """Await the concurrently-started title and announce it. Emitted before the
+    orchestrator returns (``run.ended``) so the open stream carries it. Best-effort:
+    any failure leaves the thread untitled without disturbing the turn."""
+    if task is None:
+        return
+    try:
+        await _announce_title(
+            run, await task, store=store, conversation_id=conversation_id
+        )
+    except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
+        logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
+
+
+async def _discard_title(task: asyncio.Task[str | None] | None) -> None:
+    """Abandon a concurrently-started title (the turn parked, raised, or was
+    cancelled): cancel it and drain the cancellation so the title-model call does
+    not outlive the run."""
+    if task is None or task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def build_chat_orchestrator(
@@ -437,72 +511,79 @@ def build_chat_orchestrator(
         start = len(history) if history else 0
         is_first_turn = start == 0
 
-        turn = await _drive_turn(
-            run,
-            agent,
-            prompt=prompt,
-            message_history=history,
-            announced=announced,
-            caps=capabilities,
-            conversation_id=conversation_id,
-        )
-
-        # Verify only a completed turn (not one parked for approval or stopped at
-        # a bound), and only when the heuristic says it is worth judging.
-        if (
-            run.status is not RunStatus.awaiting_input
-            and turn.answer is not None
-            and settings.verify_enabled
-            and _should_verify(settings, run)
-        ):
-            judging = judge or (make_utility_judge(utility_model) if utility_model else None)
-            if judging is not None:  # no judge and no utility model → skip (degraded)
-                # On a regenerate (prompt is None) the request to judge against is
-                # the last user turn already in history.
-                verify_prompt = prompt if prompt is not None else last_user_text(history or [])
-                turn = await _verify_and_correct(
-                    run,
-                    agent,
-                    verify_prompt,
-                    turn,
-                    announced,
-                    judging,
-                    caps=capabilities,
-                    conversation_id=conversation_id,
-                )
-
-        _finalize(
-            run,
-            turn,
-            store=store,
-            conversation_id=conversation_id,
-            start=start,
-            clean_drop=turn.clean_drop,
-        )
-
         # Auto-title context for this run — None disables it (feature off, or no
-        # utility model). Built here so it can ride a parked turn to its resume.
+        # utility model). Built up-front so the title can be generated *concurrently*
+        # with the answer (it needs only the operator's opening message), leaving no
+        # post-answer "writing" tail. Only a fresh thread's first turn is named.
         title_ctx = (
             TitleContext(title_model, title_settings or {})
             if title_model is not None and settings.title_enabled
             else None
         )
-        if run.status is RunStatus.awaiting_input:
-            # Parked for approval before producing an answer: carry the title
-            # context so the resume names the thread once it completes.
-            if isinstance(run.parked_payload, ParkedTurn):
-                run.parked_payload.title = title_ctx
-        else:
-            # Name the thread after persisting it — a cosmetic follow-on that must
-            # not gate the answer. Emitted before the orchestrator returns
-            # (run.ended), so the open stream carries it.
-            await _maybe_title(
+        title_task = _start_title(title_ctx if is_first_turn else None, prompt)
+        try:
+            turn = await _drive_turn(
                 run,
-                title=title_ctx,
+                agent,
+                prompt=prompt,
+                message_history=history,
+                announced=announced,
+                caps=capabilities,
+                conversation_id=conversation_id,
+            )
+
+            # Verify only a completed turn (not one parked for approval or stopped at
+            # a bound), and only when the heuristic says it is worth judging.
+            if (
+                run.status is not RunStatus.awaiting_input
+                and turn.answer is not None
+                and settings.verify_enabled
+                and _should_verify(settings, run)
+            ):
+                judging = judge or (make_utility_judge(utility_model) if utility_model else None)
+                if judging is not None:  # no judge and no utility model → skip (degraded)
+                    # On a regenerate (prompt is None) the request to judge against is
+                    # the last user turn already in history.
+                    verify_prompt = prompt if prompt is not None else last_user_text(history or [])
+                    turn = await _verify_and_correct(
+                        run,
+                        agent,
+                        verify_prompt,
+                        turn,
+                        announced,
+                        judging,
+                        caps=capabilities,
+                        conversation_id=conversation_id,
+                    )
+
+            _finalize(
+                run,
+                turn,
                 store=store,
                 conversation_id=conversation_id,
-                is_first_turn=is_first_turn,
+                start=start,
+                clean_drop=turn.clean_drop,
             )
+
+            if run.status is RunStatus.awaiting_input:
+                # Parked for approval before producing an answer: abandon the
+                # concurrent title and carry the context forward so the resume names
+                # the thread once it completes (the resume titles from history).
+                await _discard_title(title_task)
+                if isinstance(run.parked_payload, ParkedTurn):
+                    run.parked_payload.title = title_ctx
+            else:
+                # Announce the title started up-front — a cosmetic follow-on that, run
+                # concurrently with the answer, doesn't gate it. Emitted before the
+                # orchestrator returns (run.ended), so the open stream carries it.
+                await _emit_title(
+                    run, title_task, store=store, conversation_id=conversation_id
+                )
+        finally:
+            # Safety net: if the turn raised or was cancelled before the title was
+            # consumed above, don't let the detached title-model call outlive the run.
+            if title_task is not None and not title_task.done():
+                title_task.cancel()
 
     return orchestrate
 

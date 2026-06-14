@@ -24,6 +24,23 @@ async def test_chat_creates_run_and_streams_answer(monkeypatch):
     assert answer == "hi"
 
 
+async def test_ephemeral_chat_is_not_titled(monkeypatch):
+    # Ephemeral (compare) threads are hidden from the listing and show no title, so
+    # auto-titling them is invisible work that only holds the run open after the
+    # answer — the route disables it. A normal first turn is still named.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, _app):
+        eph = await client.post("/chat", json={"prompt": "hi", "ephemeral": True})
+        eph_events = await collect_sse_events(client, eph.json()["run_id"])
+
+        normal = await client.post("/chat", json={"prompt": "hi"})
+        normal_events = await collect_sse_events(client, normal.json()["run_id"])
+
+    assert not any(e["type"] == "conversation.titled" for e in eph_events)
+    assert any(e["type"] == "conversation.titled" for e in normal_events)
+
+
 async def test_chat_requires_prompt():
     async with client_app() as (client, _app):
         resp = await client.post("/chat", json={})
