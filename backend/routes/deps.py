@@ -14,6 +14,7 @@ from core.vault import Vault
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
+from services.cookbook import CookbookService
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager
@@ -57,6 +58,10 @@ def sandbox_sessions(request: Request) -> SandboxSessionManager | None:
     """The per-conversation sandbox manager, or None when no runtime is available
     (fail closed)."""
     return request.app.state.sandbox
+
+
+def cookbook(request: Request) -> CookbookService:
+    return request.app.state.cookbook
 
 
 def vault(request: Request) -> Vault:

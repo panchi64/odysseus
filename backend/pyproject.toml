@@ -16,6 +16,10 @@ dependencies = [
     "numpy>=2.4.6",
     "openai>=2.41.0",
     "websockets>=16.0",
+    "httpx>=0.28",
+    # Cross-platform CPU/RAM facts for the Cookbook hardware probe (GPU/VRAM stay on
+    # subprocess probes). Portable wheels for all target POSIX hosts.
+    "psutil>=6",
     # Web fetch: main-content extraction with native Markdown output
     # (output_format="markdown"). Pulls lxml transitively.
     "trafilatura>=2.0",
@@ -29,7 +33,6 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.28",
     "ruff>=0.8",
 ]
 

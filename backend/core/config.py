@@ -124,6 +124,17 @@ class Settings(BaseSettings):
     searxng_startup_timeout_s: float = 30.0
     searxng_base_url: str | None = None
 
+    # Cookbook — host hardware detection + a live, cached model catalog. The catalog
+    # is sourced from HuggingFace (authoritative specs/sizes) + OpenRouter (capability
+    # flags) and held behind a TTL with serve-stale-on-failure. `hf_token` is optional
+    # and only lifts HuggingFace's anonymous rate limit. `list_limit` is how many
+    # trending repos to scan; `max_models` caps how many distinct models get a (per-repo
+    # file-tree) size lookup.
+    cookbook_catalog_ttl_s: float = 86_400.0
+    cookbook_catalog_list_limit: int = 60
+    cookbook_catalog_max_models: int = 24
+    hf_token: str | None = None
+
     # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
     # utility call). On by default; the operator can rename either way. The
     # title call is best-effort and bounded by `title_timeout_s` so a slow or

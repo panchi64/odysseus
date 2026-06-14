@@ -1,17 +1,20 @@
 import {
   createEffect,
+  createResource,
   createSignal,
   For,
+  onCleanup,
   Show,
   Suspense,
-  onCleanup,
   type JSX,
 } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import {
   Button,
+  Chip,
   EmptyState,
   ErrorState,
+  Icon,
   InfoHint,
   InstrumentBand,
   ListRow,
@@ -20,7 +23,6 @@ import {
   NotConnectedOverlay,
   PageHeader,
   Panel,
-  ProgressBar,
   Readout,
   Row,
   Stack,
@@ -41,6 +43,7 @@ import {
   useCookbookModels,
   useRunningServers,
   useRemoteEndpoints,
+  searchModels,
 } from "../data";
 import type { ModelEntry, RunningServer, ServerStatus } from "../model";
 import { EmbeddingPanel } from "../components/EmbeddingPanel";
@@ -52,8 +55,8 @@ const suitabilityStatus: Record<string, Status> = {
   alert: "alert",
 };
 
-// Best-fit first: NOMINAL → WARN → ALERT. (Alphabetical localeCompare would
-// invert this, surfacing ALERT/"not recommended" models at the top.)
+// Best-fit band first: NOMINAL → WARN → ALERT. Within a band the backend's
+// quality ranking is authoritative, so the default view preserves its order.
 const suitabilityRank: Record<string, number> = {
   nominal: 0,
   warn: 1,
@@ -67,116 +70,59 @@ const serverStatusFlag: Record<ServerStatus, Status> = {
   error: "alert",
 };
 
-function DownloadRow(props: { model: ModelEntry }): JSX.Element {
-  const [progress, setProgress] = createSignal<number | null>(null);
-  const [done, setDone] = createSignal(props.model.downloaded);
-  const [hasError, setHasError] = createSignal(false);
-  const [justFinished, setJustFinished] = createSignal(false);
-  const timers: ReturnType<typeof setTimeout>[] = [];
+const CAPS_HINT =
+  "Model capabilities: TOOLS — native tool/function calling; REASONING — extended thinking; VISION — image input; EMBEDDING — vector embeddings; IMAGE — image generation.";
 
-  onCleanup(() => timers.forEach(clearTimeout));
-
-  function cancelDownload() {
-    timers.forEach(clearTimeout);
-    timers.length = 0;
-    setProgress(null);
-    setHasError(false);
-    toast.warn(`Download cancelled — ${props.model.name}`);
-  }
-
-  function startDownload() {
-    if (progress() !== null || done()) return;
-    setHasError(false);
-    setProgress(0);
-    let p = 0;
-    const tick = () => {
-      p += Math.random() * 6 + 2;
-      if (p >= 100) {
-        setProgress(100);
-        timers.push(
-          setTimeout(() => {
-            setDone(true);
-            setProgress(null);
-            setJustFinished(true);
-            toast.success(`${props.model.name} ready`);
-          }, 500),
-        );
-      } else {
-        setProgress(p);
-        timers.push(setTimeout(tick, 180));
-      }
-    };
-    timers.push(setTimeout(tick, 100));
-  }
-
+// One row of the compatible-models table. A `subgrid` so its cells inherit the shared
+// column tracks and line up with every other row. Read-only: the backend ranks the
+// models that fit this hardware; downloading/serving them lands with a later slice.
+function ModelRow(props: { model: ModelEntry }): JSX.Element {
+  const caps = () => props.model.capabilities;
+  const elo = () => props.model.arenaElo;
   return (
-    <div class="border-b border-line last:border-b-0">
-      <ListRow
-        label={props.model.name}
-        leading="layers"
-        flush
-        right={
-          <Row gap={2} align="center">
-            <Text variant="micro" tone="dim">
-              {props.model.params} · {props.model.quant} ·{" "}
-              {bytes(props.model.sizeBytes)}
-            </Text>
-            <Row gap={1} align="center">
-              <StatusFlag status={suitabilityStatus[props.model.suitability]}>
-                {props.model.suitability.toUpperCase()}
-              </StatusFlag>
-              <InfoHint label={SUITABILITY_HINT} size={12} />
-            </Row>
-            <Show when={done()}>
-              <StatusFlag status="nominal">READY</StatusFlag>
-            </Show>
-            <Show when={hasError()}>
-              <StatusFlag status="alert">ERROR</StatusFlag>
-              <Button
-                size="sm"
-                variant="ghost"
-                leading="refresh"
-                onClick={startDownload}
-              >
-                RETRY
-              </Button>
-            </Show>
-            <Show when={!done() && !hasError() && progress() === null}>
-              <Button
-                size="sm"
-                variant="ghost"
-                leading="download"
-                onClick={startDownload}
-              >
-                GET
-              </Button>
-            </Show>
-            <Show when={progress() !== null && !done()}>
-              <Button
-                size="sm"
-                variant="ghost"
-                leading="close"
-                onClick={cancelDownload}
-              >
-                CANCEL
-              </Button>
-            </Show>
-          </Row>
-        }
-      />
-      <Show when={progress() !== null && !done()}>
-        <div class="px-3 pb-2">
-          <ProgressBar value={progress()!} tone="nominal" showValue />
-        </div>
-      </Show>
-      <Show when={justFinished()}>
-        <div class="px-3 pb-2">
-          <Text variant="micro" tone="dim">
-            Download complete — start a server for this model under RUNNING
-            SERVERS to begin serving it.
-          </Text>
-        </div>
-      </Show>
+    <div class="col-span-full grid grid-cols-subgrid items-center gap-x-4 border-b border-line px-3 py-2 last:border-b-0">
+      <span class="flex min-w-0 items-center gap-2">
+        <Icon name="layers" size={14} class="shrink-0 text-dim" />
+        <Text variant="body" tone="bright" class="truncate">
+          {props.model.name}
+        </Text>
+      </span>
+      <Text
+        variant="body"
+        tone={elo() != null ? "bright" : "dim"}
+        class="text-right tabular-nums"
+      >
+        {elo() ?? "—"}
+      </Text>
+      <span class="flex items-center gap-1">
+        <Show when={caps().tools}>
+          <Chip>TOOLS</Chip>
+        </Show>
+        <Show when={caps().reasoning}>
+          <Chip>REASONING</Chip>
+        </Show>
+        <Show when={caps().vision}>
+          <Chip>VISION</Chip>
+        </Show>
+        <Show when={caps().embedding}>
+          <Chip>EMBEDDING</Chip>
+        </Show>
+        <Show when={caps().imageGen}>
+          <Chip>IMAGE</Chip>
+        </Show>
+      </span>
+      <Text variant="body" tone="default" class="text-right tabular-nums">
+        {props.model.params}
+      </Text>
+      <Text variant="body" tone="default">
+        {props.model.quant}
+      </Text>
+      <Text variant="body" tone="default" class="text-right tabular-nums">
+        {bytes(props.model.sizeBytes)}
+      </Text>
+      <StatusFlag status={suitabilityStatus[props.model.suitability]}>
+        {props.model.suitability.toUpperCase()}
+      </StatusFlag>
     </div>
   );
 }
@@ -265,15 +211,35 @@ export function CookbookScreen(): JSX.Element {
   const [tab, setTab] = createSignal("local");
   const [servers, setServers] = createStore<RunningServer[]>([]);
 
+  // The search box queries the full catalog on the backend (debounced), so the operator
+  // can check any model — not just the curated compatible list — against their hardware.
+  // Empty query → the curated list; a query → backend search results, both scored here.
+  const [query, setQuery] = createSignal("");
+  const [debounced, setDebounced] = createSignal("");
+  createEffect(() => {
+    const q = query().trim();
+    const timer = setTimeout(() => setDebounced(q), 300);
+    onCleanup(() => clearTimeout(timer));
+  });
+  const [searchResults] = createResource(
+    () => debounced() || null,
+    (q) => searchModels(q),
+  );
+  const isSearching = () => debounced().length > 0;
+  const displayModels = (): ModelEntry[] =>
+    isSearching() ? (searchResults() ?? []) : (models() ?? []);
+
   const modelView = createListView<ModelEntry>({
-    source: () => models() ?? [],
-    search: (m) => `${m.name} ${m.params} ${m.quant}`,
+    // Sort-only over the displayed set (curated list or search results); filtering is
+    // the backend search's job, so no client `search` predicate here.
+    source: displayModels,
     sorts: {
       fit: {
         label: "FIT",
+        // Band only — within a band, the stable sort keeps the backend's quality
+        // order (newer/stronger models first). Re-sorting by name would discard it.
         compare: (a, b) =>
-          suitabilityRank[a.suitability] - suitabilityRank[b.suitability] ||
-          a.name.localeCompare(b.name),
+          suitabilityRank[a.suitability] - suitabilityRank[b.suitability],
       },
       name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
       size: { label: "SIZE", compare: (a, b) => a.sizeBytes - b.sizeBytes },
@@ -353,9 +319,13 @@ export function CookbookScreen(): JSX.Element {
         subtitle="Local and remote model serving, hardware fit, embedding configuration, and side-by-side comparison."
         assetId="SYS-MDL-03.1"
         actions={
-          <StatusFlag status="nominal" dot>
-            OLLAMA LIVE
-          </StatusFlag>
+          <Show when={hardware()}>
+            {(hw) => (
+              <StatusFlag status="nominal" dot>
+                {hw().backend}
+              </StatusFlag>
+            )}
+          </Show>
         }
       />
 
@@ -369,8 +339,19 @@ export function CookbookScreen(): JSX.Element {
                   { label: "RAM", value: hw().ram },
                   { label: "VRAM", value: hw().vram },
                   { label: "CORES", value: hw().cores },
-                  { label: "BACKEND", value: "Metal / MPS" },
-                  { label: "OLLAMA", value: "0.6.4" },
+                  { label: "BACKEND", value: hw().backend },
+                  ...(hw().runtimes.length
+                    ? hw().runtimes.map((r) => ({
+                        label: r.name.toUpperCase(),
+                        value: r.version ?? "—",
+                      }))
+                    : [
+                        {
+                          label: "RUNTIME",
+                          value: "none detected",
+                          tone: "dim" as const,
+                        },
+                      ]),
                 ]}
               />
             )}
@@ -389,68 +370,103 @@ export function CookbookScreen(): JSX.Element {
         onChange={setTab}
       />
 
-      {/* Local models, remote endpoints, and embedding are still mock surfaces;
-          the page is connected only because COMPARE is wired, so each unbuilt tab
-          carries its own inline NOT CONNECTED marker. */}
+      {/* LOCAL MODELS is wired: the hardware band + compatible models come from the
+          backend Cookbook. REMOTE ENDPOINTS and EMBEDDING remain mock surfaces and
+          carry their own inline NOT CONNECTED marker. */}
       <Show when={tab() === "local"}>
         <div class="relative">
           <Stack gap={4}>
-            <Panel label="RECOMMENDED MODELS" flush>
-              <Suspense
+            <Panel label="COMPATIBLE MODELS" flush>
+              <Show
+                when={!models.error}
                 fallback={
-                  <div class="p-3">
-                    <LoadingText />
-                  </div>
-                }
-              >
-                <Show when={models.error}>
                   <ErrorState
                     message="FAILED TO LOAD MODELS"
                     hint={String(models.error)}
                   />
-                </Show>
-                <Show
-                  when={!models.error && (models() ?? []).length}
+                }
+              >
+                {/* Toolbar stays mounted (outside Suspense) so the search box never
+                    vanishes while a search is in flight. */}
+                <div class="border-b border-line p-3">
+                  <ListToolbar
+                    query={query()}
+                    onQueryChange={setQuery}
+                    placeholder="Search all models…"
+                    sortKey={modelView.sortKey()}
+                    sortOptions={modelView.sortOptions}
+                    onSortChange={modelView.setSort}
+                    dir={modelView.dir()}
+                    onToggleDir={modelView.toggleDir}
+                    count={modelView.count()}
+                    total={modelView.total()}
+                  />
+                </div>
+                <Suspense
                   fallback={
-                    <Show when={!models.error}>
-                      <EmptyState
-                        icon="layers"
-                        message="NO MODELS"
-                        hint="No models found in registry."
+                    <div class="p-3">
+                      <LoadingText
+                        label={isSearching() ? "SEARCHING" : "LOADING"}
                       />
-                    </Show>
+                    </div>
                   }
                 >
-                  <div class="border-b border-line p-3">
-                    <ListToolbar
-                      query={modelView.query()}
-                      onQueryChange={modelView.setQuery}
-                      placeholder="Search models…"
-                      sortKey={modelView.sortKey()}
-                      sortOptions={modelView.sortOptions}
-                      onSortChange={modelView.setSort}
-                      dir={modelView.dir()}
-                      onToggleDir={modelView.toggleDir}
-                      count={modelView.count()}
-                      total={modelView.total()}
-                    />
-                  </div>
                   <Show
                     when={modelView.items().length}
                     fallback={
                       <EmptyState
                         icon="search"
-                        message="NO MATCHES"
-                        hint="No models match your search."
+                        message={isSearching() ? "NO MATCHES" : "NO MODELS"}
+                        hint={
+                          isSearching()
+                            ? `No models found for “${debounced()}”.`
+                            : "No models compatible with this hardware."
+                        }
                       />
                     }
                   >
-                    <For each={modelView.items()}>
-                      {(m) => <DownloadRow model={m} />}
-                    </For>
+                    {/* One shared grid drives the header + every row (each a
+                        `subgrid`), so the columns line up vertically for fast
+                        scanning. Numbers are right-aligned and tabular. */}
+                    <div class="overflow-x-auto">
+                      <div class="grid min-w-max grid-cols-[1fr_auto_auto_auto_auto_auto_auto]">
+                        <div class="col-span-full grid grid-cols-subgrid items-center gap-x-4 border-b border-line px-3 py-2">
+                          <Text variant="label" tone="dim">
+                            MODEL
+                          </Text>
+                          <Text variant="label" tone="dim" class="text-right">
+                            ARENA
+                          </Text>
+                          <Row gap={1} align="center">
+                            <Text variant="label" tone="dim">
+                              CAPABILITIES
+                            </Text>
+                            <InfoHint label={CAPS_HINT} size={12} />
+                          </Row>
+                          <Text variant="label" tone="dim" class="text-right">
+                            PARAMS
+                          </Text>
+                          <Text variant="label" tone="dim">
+                            QUANT
+                          </Text>
+                          <Text variant="label" tone="dim" class="text-right">
+                            SIZE
+                          </Text>
+                          <Row gap={1} align="center">
+                            <Text variant="label" tone="dim">
+                              FIT
+                            </Text>
+                            <InfoHint label={SUITABILITY_HINT} size={12} />
+                          </Row>
+                        </div>
+                        <For each={modelView.items()}>
+                          {(m) => <ModelRow model={m} />}
+                        </For>
+                      </div>
+                    </div>
                   </Show>
-                </Show>
-              </Suspense>
+                </Suspense>
+              </Show>
             </Panel>
 
             <Panel
@@ -500,7 +516,6 @@ export function CookbookScreen(): JSX.Element {
               </Suspense>
             </Panel>
           </Stack>
-          <NotConnectedOverlay />
         </div>
       </Show>
 

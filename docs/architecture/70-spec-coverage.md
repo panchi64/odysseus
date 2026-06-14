@@ -131,7 +131,9 @@
 
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
-| COOK-1…5 model download/serve/manage | ⬜ | — | Registry handles *endpoint* config, not local serving. Agent serve/stop is approval-gated when built. |
+| COOK-1 detect hardware + recommend fitting models | ✅ | `services/cookbook` (`hardware`, `catalog`/`sources`, `recommend`), `/models/cookbook/*` | Degrade-safe hardware probe (psutil + gated subprocess probes); live catalog from HuggingFace (specs/sizes) + OpenRouter (capability flags, `hugging_face_id`-joined), TTL-cached with serve-stale; hardware-adaptive suitability scoring. |
+| COOK-2 simulate other hardware | ✅ | `POST /models/cookbook/recommendations` (supplied profile) | Same scorer, operator-supplied `HardwareProfile`. |
+| COOK-3…5 download/serve/manage models | ⬜ | — | Registry handles *endpoint* config, not local serving. Agent download/serve/stop is approval-gated when built. Builds on the `services/cookbook` package. |
 | EMB-1 choose/manage embedding model | ✅ | `services/registry` `embedding` role, `services/embeddings` | Surfaced in the Cookbook UI (EMBEDDING tab). |
 | EMB-2 model change re-embeds/segregates | ✅ | `services/memory` (dense gated to model/dim) | Degrades to sparse across spaces (D16/D18). |
 | CMP-1…3 blind model compare | ⬜ | — | Surfaced in the Cookbook UI (COMPARE tab). |

@@ -8,6 +8,7 @@ this is the chassis — see ``docs/architecture/README.md``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,7 @@ from routes import (
     auth,
     chat,
     conversations,
+    cookbook,
     health,
     memory,
     models,
@@ -35,6 +37,7 @@ from routes import (
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
 from services.conversations import ConversationStore
+from services.cookbook import CookbookService
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -88,6 +91,20 @@ async def lifespan(app: FastAPI):
     # The model registry — role→endpoint resolution + the endpoint catalog.
     registry = ModelRegistry(engine, vault, http_client=discovery_client)
     app.state.models = registry
+    # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
+    # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
+    # for its outbound calls. Hardware + catalog are warmed in the background so a slow
+    # `system_profiler` or the first catalog pull never blocks boot; first request falls
+    # back to lazy-detect if the warm-up hasn't finished.
+    app.state.cookbook = CookbookService(
+        discovery_client,
+        hf_token=settings.hf_token,
+        catalog_ttl_s=settings.cookbook_catalog_ttl_s,
+        catalog_list_limit=settings.cookbook_catalog_list_limit,
+        catalog_max_models=settings.cookbook_catalog_max_models,
+    )
+    logger.info("cookbook: hardware + model catalog (warming in background)")
+    app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())
     # Long-term memory — embeds via the registry's embedding role; degrades to
     # keyword recall when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, RegistryEmbedder(registry))
@@ -155,6 +172,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        warmup = app.state.cookbook_warmup
+        if not warmup.done():
+            warmup.cancel()
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()
@@ -190,6 +210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(overview.router)
     app.include_router(models.router)
+    app.include_router(cookbook.router)
     app.include_router(memory.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)
