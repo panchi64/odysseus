@@ -96,9 +96,9 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         if sessions is None:
             return {
                 "ok": False,
-                "error": "Code execution is unavailable: no sandbox runtime is "
+                "error": "Your computer is unavailable right now: no runtime is "
                 "configured. Computation that would require running code cannot "
-                "be done, and will not run on the host.",
+                "be done, and will not run on the operator's host.",
             }
         spec = SandboxSpec(
             command=[*_INTERPRETERS[language], code],
@@ -124,7 +124,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         except SandboxError as exc:
             # Any sandbox/infra failure comes back as something the model can act
             # on — it never escapes to crash the run.
-            return {"ok": False, "error": f"The sandbox could not run the code: {exc}"}
+            return {"ok": False, "error": f"Your computer could not run the code: {exc}"}
         return _exec_result(result)
 
     @toolset.tool(requires_approval=True)

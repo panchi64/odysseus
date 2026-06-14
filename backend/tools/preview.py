@@ -30,10 +30,10 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
     async def publish_artifact(
         ctx: RunContext[RunDeps], path: str, title: str | None = None
     ) -> str:
-        """Show a file you created in the sandbox to the operator as a preview — an
-        HTML page, an image or chart, a code snippet. ``path`` is the file's path
-        within the sandbox working directory. Use this to surface a result for
-        viewing, not to store data."""
+        """Show a file you created on your computer to the operator as a preview —
+        an HTML page, an image or chart, a code snippet. ``path`` is the file's path
+        within your working directory. Use this to surface a result for viewing, not
+        to store data."""
         sessions = ctx.deps.sandbox_sessions
         store = ctx.deps.artifacts
         if sessions is None or store is None:
@@ -71,16 +71,16 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         port: int,
         title: str | None = None,
     ) -> str:
-        """Run a live server in the sandbox and show it to the operator as an
+        """Run a live server on your computer and show it to the operator as an
         interactive preview — a web app, a dev server, a served site. ``command``
         is the argv that starts the server (e.g. ``["python", "-m", "http.server",
-        "8000"]`` or ``["npm", "run", "dev"]``); ``port`` is the port it listens on
-        inside the sandbox. The server must bind ``0.0.0.0`` (not ``127.0.0.1``) so
+        "8000"]`` or ``["npm", "run", "dev"]``); ``port`` is the port it listens on.
+        The server must bind ``0.0.0.0`` (not ``127.0.0.1``) so
         it is reachable, and serve assets with relative URLs. Replaces any preview
         already running in this conversation. Returns once the server is up."""
         sessions = ctx.deps.sandbox_sessions
         if sessions is None:
-            return "Live preview is unavailable (no sandbox runtime)."
+            return "Live preview is unavailable — your computer isn't available right now."
         try:
             handle = await sessions.start_preview(ctx.deps.sandbox_key, command, port)
         except SandboxError as exc:
@@ -101,7 +101,7 @@ def preview_toolset() -> FunctionToolset[RunDeps]:
         """Stop the live preview server running in this conversation, if any."""
         sessions = ctx.deps.sandbox_sessions
         if sessions is None:
-            return "Live preview is unavailable (no sandbox runtime)."
+            return "Live preview is unavailable — your computer isn't available right now."
         await sessions.stop_preview(ctx.deps.sandbox_key)
         ctx.deps.run.emit(PreviewStopped(conversation_id=ctx.deps.sandbox_key))
         return "Stopped the live preview."
