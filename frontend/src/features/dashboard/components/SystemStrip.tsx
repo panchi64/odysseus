@@ -2,10 +2,11 @@ import { For, type JSX } from "solid-js";
 import { Marquee, Text, cx } from "~/ui";
 import type { CapabilityHealth, SystemStat } from "../model";
 
-/** Maps a non-nominal capability to its semantic dot color; nominal stays dim so
- *  a healthy strip is fully monochrome. */
+/** Maps a capability to its semantic dot color: green when up, so an operator can
+ *  confirm at a glance that services like web search and code execution are live —
+ *  warn/alert carry their own accent when degraded or down. */
 const dotClass: Record<CapabilityHealth["status"], string> = {
-  nominal: "bg-dim",
+  nominal: "bg-nominal",
   warn: "bg-warn",
   alert: "bg-alert",
 };
