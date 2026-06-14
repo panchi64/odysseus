@@ -13,6 +13,9 @@ export interface ToolInvocation {
   /** Human-readable argument summary. */
   args: string;
   status: ToolStatus;
+  /** Latest progress note while `status='running'` (`tool.progress`), e.g. the
+   *  sandbox spinning up. Reassures the operator the wait is work, not a stall. */
+  progress?: string;
   /** Result preview shown when expanded. */
   result?: string;
   /** Error detail shown when status='error'. */

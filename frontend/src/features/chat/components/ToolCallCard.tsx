@@ -1,5 +1,12 @@
 import { Show, createEffect, createSignal, type JSX } from "solid-js";
-import { Icon, StatusFlag, Text, copyToClipboard, type Status } from "~/ui";
+import {
+  Frames,
+  Icon,
+  StatusFlag,
+  Text,
+  copyToClipboard,
+  type Status,
+} from "~/ui";
 import { num } from "~/lib/format";
 import type { ToolInvocation } from "../model";
 
@@ -50,9 +57,21 @@ export function ToolCallCard(props: {
           <Text variant="label" tone="bright" class="truncate">
             {props.tool.name}
           </Text>
-          <Text variant="micro" tone="dim" class="truncate">
-            {props.tool.args}
-          </Text>
+          <Show
+            when={props.tool.status === "running" && props.tool.progress}
+            fallback={
+              <Text variant="micro" tone="dim" class="truncate">
+                {props.tool.args}
+              </Text>
+            }
+          >
+            <span class="flex min-w-0 items-center gap-1.5">
+              <Frames class="text-info" />
+              <Text variant="micro" tone="info" class="truncate">
+                {props.tool.progress}
+              </Text>
+            </span>
+          </Show>
         </button>
         <span class="flex shrink-0 items-center gap-2">
           <Show when={props.tool.elapsedMs !== undefined}>

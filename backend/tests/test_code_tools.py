@@ -16,6 +16,8 @@ from tools.code import code_toolset
 class _CannedSession:
     """A session that returns a preset result or raises a preset error."""
 
+    is_warm = False
+
     def __init__(self, *, result: SandboxResult | None = None, error: Exception | None = None):
         self._result = result
         self._error = error
@@ -37,6 +39,8 @@ class _CannedManager:
 
 class FakeSession:
     """Records each spec it runs and returns a canned result."""
+
+    is_warm = False
 
     def __init__(self) -> None:
         self.specs: list[SandboxSpec] = []
@@ -95,6 +99,17 @@ async def test_execute_code_runs_in_the_conversation_session():
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
     assert completed.result["stdout"] == "hello from box"
     assert "approval.required" not in [b.type for b in _bodies(run)]
+
+
+async def test_cold_session_announces_the_spin_up():
+    # A cold container emits a tool.progress so the wait reads as the environment
+    # starting up, not the model stalling.
+    manager = FakeSessionManager()  # FakeSession.is_warm is False ⇒ cold start
+    run = await _run_one_tool("code_execute", sessions=manager)
+
+    progress = [b for b in _bodies(run) if b.type == "tool.progress"]
+    assert len(progress) == 1
+    assert "sandbox" in progress[0].partial.lower()
 
 
 async def test_execute_code_fails_closed_without_a_runtime():

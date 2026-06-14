@@ -566,6 +566,14 @@ export function createChatStream(
           });
         });
         break;
+      case "tool.progress":
+        // A running tool's status note (e.g. the sandbox spinning up). Folds onto
+        // the generic tool card; host commands have their own terminal lifecycle.
+        patchById(assistantId, (m) => {
+          const b = findTool(m, ev.tool_call_id);
+          if (b) b.tool.progress = ev.partial ?? undefined;
+        });
+        break;
       case "tool.completed":
         if (ev.name === HOST_COMMAND_TOOL) {
           const r = parseHostResult(ev.result);
@@ -588,6 +596,7 @@ export function createChatStream(
           if (b) {
             b.tool.status = "ok";
             b.tool.result = stringifyResult(ev.result);
+            b.tool.progress = undefined; // the run is over — drop the spin-up note
           }
         });
         break;
@@ -606,6 +615,7 @@ export function createChatStream(
           if (b) {
             b.tool.status = "error";
             b.tool.error = ev.error;
+            b.tool.progress = undefined; // the run is over — drop the spin-up note
           }
         });
         break;
