@@ -1,6 +1,8 @@
 # Odysseus
 ───────────────────────────────────────────────
- ⊹ ࣪ ˖ ૮( ˶ᵔ ᵕ ᵔ˶ )っ  Odysseus vers. 2.0
+
+ ⊹ ࣪ ˖ ૮( ˶ᵔ ᵕ ᵔ˶ )っ  Odysseus (Revamped)
+
 ───────────────────────────────────────────────
 
 A self-hosted AI workspace that runs on your own hardware against your own data. Local-first, encrypted at rest, built for personal use (1 user).
