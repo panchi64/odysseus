@@ -28,6 +28,7 @@ from services.sandbox import (
     await_listening,
     detached_run_argv,
     discover_runtime,
+    ensure_image,
     force_remove_container,
     published_host_port,
     run_subprocess,
@@ -102,14 +103,16 @@ class ManagedSearxng:
         """Begin bring-up. Returns immediately — the container pull/launch runs in a
         background task so app startup is never blocked. A no-op when disabled."""
         if not self._enabled:
+            logger.info("search: managed SearXNG disabled")
             return
         if self._external is not None:
             # The operator runs their own; nothing to manage.
             self._base_url = self._external
-            logger.info("using external SearXNG at %s", self._external)
+            logger.info("search: using external SearXNG at %s", self._external)
             return
         if self._task is not None:  # already bringing up — don't launch a second
             return
+        logger.info("search: bringing up managed SearXNG in the background")
         self._task = asyncio.create_task(self._bring_up())
 
     async def stop(self) -> None:
@@ -128,11 +131,12 @@ class ManagedSearxng:
     async def _bring_up(self) -> None:
         runtime = discover_runtime(self._runtime_pref)
         if runtime is None:
-            logger.info("no container runtime — managed web search unavailable")
+            logger.info("search: no container runtime — managed web search unavailable")
             return
         self._runtime = runtime
         try:
-            if not await self._ensure_image(runtime):
+            if not await ensure_image(runtime, self._image):
+                logger.info("search: no SearXNG image available — managed web search unavailable")
                 return
             await force_remove_container(runtime, _CONTAINER)  # clear any stale one
             _timed_out, code, _out, err = await run_subprocess(
@@ -141,46 +145,25 @@ class ManagedSearxng:
             )
             if code != 0:
                 logger.warning(
-                    "managed SearXNG failed to start: %s", err.decode("utf-8", "replace").strip()
+                    "search: managed SearXNG failed to start: %s",
+                    err.decode("utf-8", "replace").strip(),
                 )
                 await force_remove_container(runtime, _CONTAINER)
                 return
             host_port = await published_host_port(runtime, _CONTAINER, _INTERNAL_PORT)
             await await_listening(host_port, self._startup_timeout_s)
         except SandboxError as exc:
-            logger.warning("managed SearXNG did not come up: %s", exc)
+            logger.warning("search: managed SearXNG did not come up: %s", exc)
             await force_remove_container(runtime, _CONTAINER)
             return
         except Exception:
             # Anything unexpected (e.g. an unwritable data dir) must not vanish into
             # the background task with no trace — log it and leave search degraded.
-            logger.exception("managed SearXNG bring-up failed unexpectedly")
+            logger.exception("search: managed SearXNG bring-up failed unexpectedly")
             await force_remove_container(runtime, _CONTAINER)
             return
         self._base_url = f"http://127.0.0.1:{host_port}"
-        logger.info("managed SearXNG ready at %s", self._base_url)
-
-    async def _ensure_image(self, runtime: str) -> bool:
-        """Pull the latest image so the instance stays current. If the pull fails
-        (offline) fall back to a cached image; report unavailable only if neither
-        is present."""
-        _timed_out, code, _out, err = await run_subprocess(
-            [runtime, "pull", self._image], timeout_s=300.0
-        )
-        if code == 0:
-            return True
-        logger.warning(
-            "could not pull %s (%s); trying a cached copy",
-            self._image,
-            err.decode("utf-8", "replace").strip(),
-        )
-        _t, inspect_code, _o, _e = await run_subprocess(
-            [runtime, "image", "inspect", self._image], timeout_s=15.0
-        )
-        if inspect_code != 0:
-            logger.warning("no cached %s — managed web search unavailable", self._image)
-            return False
-        return True
+        logger.info("search: managed SearXNG ready at %s", self._base_url)
 
     def _flags(self) -> list[str]:
         """Isolation + the loopback-published port + the read-only config mount.

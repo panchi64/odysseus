@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import re
 import secrets
 import shutil
@@ -39,12 +40,15 @@ from .container import (
     _BACKSTOP_GRACE_S,
     ContainerSandbox,
     detached_run_argv,
+    ensure_image,
     force_remove_container,
     hardened_flags,
     run_subprocess,
     with_in_container_timeout,
 )
 from .preview import PreviewHandle, launch_preview, stop_preview_container
+
+logger = logging.getLogger(__name__)
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -318,6 +322,7 @@ class SandboxSessionManager:
         self._previews: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
+        self._warm: asyncio.Task | None = None
 
     async def acquire(self, key: str) -> SandboxSession:
         """The session for a conversation, created (object only) on first use."""
@@ -382,16 +387,49 @@ class SandboxSessionManager:
         self._previews = {t: k for t, k in self._previews.items() if k != safe}
 
     async def start(self) -> None:
+        """Launch the idle reaper and warm the shared container image in the
+        background. A boot status line for code execution and previews is logged
+        here (both share this manager's runtime + image); the image pull runs off
+        the critical path so app startup is never blocked, then logs when ready."""
         self._reaper = asyncio.create_task(self._reaper_loop())
+        runtime = self._backend.runtime
+        image = self._backend.image
+        logger.info("sandbox: code execution ready (runtime=%s) — warming image %s", runtime, image)
+        logger.info("preview: ready (runtime=%s) — shares the sandbox image %s", runtime, image)
+        self._warm = asyncio.create_task(self._warm_image())
+
+    async def _warm_image(self) -> None:
+        """Pull the latest container image so the first code run / preview doesn't
+        pay the pull cost. Best-effort: a failure leaves the image to be pulled
+        lazily on first use rather than blocking or crashing startup."""
+        runtime = self._backend.runtime
+        if runtime is None:  # disappeared since detection — nothing to warm
+            return
+        image = self._backend.image
+        try:
+            ready = await ensure_image(runtime, image)
+        except Exception:  # noqa: BLE001 — warming must never crash the background task
+            logger.exception("sandbox: image warm-up failed unexpectedly")
+            return
+        if ready:
+            logger.info("sandbox: image %s ready", image)
+            logger.info("preview: image %s ready", image)
+        else:
+            logger.warning(
+                "sandbox/preview: image %s unavailable — first run will pull it on demand",
+                image,
+            )
 
     async def stop(self) -> None:
-        if self._reaper is not None:
-            self._reaper.cancel()
-            try:
-                await self._reaper
-            except asyncio.CancelledError:
-                pass
-            self._reaper = None
+        for task in (self._reaper, self._warm):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._reaper = None
+        self._warm = None
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:

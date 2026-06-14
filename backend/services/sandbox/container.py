@@ -21,12 +21,15 @@ keeps a container alive, builds identical containers from the same primitives.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
 from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
+
+logger = logging.getLogger(__name__)
 
 # Candidate runtimes, in preference order. Both speak the same run/exec/version CLI.
 _RUNTIMES = ("docker", "podman")
@@ -196,6 +199,31 @@ async def run_subprocess(
         await proc.wait()
         return True, 124, b"", b"sandbox execution timed out"
     return False, proc.returncode or 0, out, err
+
+
+async def ensure_image(runtime: str, image: str) -> bool:
+    """Pull ``image`` so it's cached before first use, **refreshing to the latest**
+    for its tag on every call. If the pull fails (offline) fall back to a cached
+    copy; return ``False`` only when neither a pull nor a cached copy yields the
+    image. Shared by the managed SearXNG instance and the sandbox warm-up so both
+    keep their image current with one rule."""
+    _timed_out, code, _out, err = await run_subprocess(
+        [runtime, "pull", image], timeout_s=300.0
+    )
+    if code == 0:
+        return True
+    logger.warning(
+        "could not pull %s (%s); trying a cached copy",
+        image,
+        err.decode("utf-8", "replace").strip(),
+    )
+    _t, inspect_code, _o, _e = await run_subprocess(
+        [runtime, "image", "inspect", image], timeout_s=15.0
+    )
+    if inspect_code != 0:
+        logger.warning("no cached %s available", image)
+        return False
+    return True
 
 
 class ContainerSandbox(Sandbox):

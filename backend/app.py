@@ -8,6 +8,7 @@ this is the chassis — see ``docs/architecture/README.md``.
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
@@ -40,6 +41,8 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -140,7 +143,11 @@ async def lifespan(app: FastAPI):
     )
     app.state.sandbox = sandbox_manager
     if sandbox_manager is not None:
+        # Logs its own code-execution + preview boot status and warms the image.
         await sandbox_manager.start()
+    else:
+        logger.info("sandbox: code execution disabled (no container runtime)")
+        logger.info("preview: disabled (no container runtime)")
     # Reused by the preview reverse proxy to forward HTTP to a sandbox server. No
     # redirect following — the proxy rewrites Location and returns it to the browser.
     preview_client = httpx.AsyncClient(follow_redirects=False)
