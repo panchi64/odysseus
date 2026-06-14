@@ -1,11 +1,4 @@
-import {
-  Show,
-  createEffect,
-  createSignal,
-  onMount,
-  untrack,
-  type JSX,
-} from "solid-js";
+import { Show, createEffect, createSignal, untrack, type JSX } from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Button } from "./Button";
@@ -87,8 +80,17 @@ export function Composer(props: ComposerProps): JSX.Element {
     if (key) saveDraft(key, value);
   });
 
-  onMount(() => {
-    if (props.autofocus) field?.focus();
+  // Focus the field on mount and again whenever the active conversation changes
+  // (the key transition), so a freshly opened or newly started chat is ready to
+  // type into without a click. Reading `storageKey` tracked makes the refocus
+  // fire on switch; `autofocus` is read untracked so only opted-in callers grab
+  // focus and a key change alone never enables it.
+  createEffect(() => {
+    // Returned (rather than discarded) so reading the key counts as a tracked
+    // dependency — the refocus then fires on every conversation switch.
+    const key = props.storageKey;
+    if (untrack(() => props.autofocus)) field?.focus();
+    return key;
   });
 
   const submit = () => {

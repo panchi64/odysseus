@@ -455,6 +455,7 @@ export function ChatRoomScreen(): JSX.Element {
 
         <div class="sticky bottom-0 -mx-1">
           <Composer
+            autofocus
             disabled={stream.sending()}
             streaming={stream.sending()}
             onStop={() => void stopRun()}
