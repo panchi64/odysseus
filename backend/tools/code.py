@@ -69,20 +69,25 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         network: bool = False,
         timeout_s: float = 30.0,
     ) -> dict:
-        """Run code or a shell script in an isolated Linux sandbox, cut off from
-        the host. The environment is a small Debian userland with ``python`` and
-        ``bash`` on the path. Network egress is **off** unless you set
-        ``network=True`` — do so when you need to fetch packages or data. Install
-        packages the normal way (``pip install <pkg>``) with ``network=True``; they
-        go into the writable workspace and stay available for follow-up calls. The
-        rest of the root filesystem is read-only.
+        """Run ``python`` or a ``bash`` script on your own computer — a private
+        Linux machine that is yours alone (it is not the operator's host). It runs a
+        Debian userland with ``python``, ``bash``, and the usual command-line tools
+        on the path.
 
-        The sandbox **persists across calls in this conversation**: files you write
-        and dependencies you install stay available for follow-up calls, so you can
-        run something, see an error, fix it, and re-run without starting over. It is
-        reclaimed after a stretch of inactivity (your files are kept and restored;
-        installed packages may need reinstalling). Use this for computation,
-        scripting, and iterating toward a working result.
+        Your home and working directory is ``/work`` (where your shell starts). It
+        is writable and persists across calls in this conversation: files you write
+        and packages you install stay there, so you can run something, hit an error,
+        fix it, and re-run without starting over. The rest of the filesystem is
+        read-only, and ``/tmp`` is small and temporary — keep anything that matters
+        in your working directory. After a long stretch of inactivity the machine is
+        reclaimed: your files are kept and restored, but installed packages may need
+        reinstalling.
+
+        There is no internet unless you set ``network=True`` — do so to fetch
+        packages or data. Install packages the normal way (``pip install <pkg>``
+        with ``network=True``); they land in your working directory and import on
+        later calls without needing the network again. Use it freely for
+        computation, scripting, and iterating toward a working result.
 
         The result has ``ok``, ``exit_code``, ``stdout``, ``stderr``, and
         ``timed_out``; on failure it adds a short ``error`` hint. When it fails,
@@ -129,7 +134,8 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         explanation: str,
         timeout_s: float = 120.0,
     ) -> dict:
-        """Run a command directly on the operator's host machine (NOT sandboxed).
+        """Run a command directly on the operator's host machine — their real
+        computer, not your own.
 
         Only for when the host itself must change. ``explanation`` MUST be a
         plain-language description of what the command does and its effect on the
