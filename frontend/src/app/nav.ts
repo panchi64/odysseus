@@ -42,7 +42,7 @@ export const NAV: NavSection[] = [
       {
         label: "Chat",
         href: "/chat",
-        icon: "terminal",
+        icon: "chat",
         connected: true,
         description: "Converse with local models and tool-using agents",
       },

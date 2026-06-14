@@ -32,6 +32,7 @@ export type IconName =
   | "download"
   | "upload"
   | "send"
+  | "chat"
   | "play"
   | "pause"
   | "stop"
@@ -140,8 +141,9 @@ export const icons: Record<IconName, () => JSX.Element> = {
   stop: () => <rect x="4" y="4" width="8" height="8" />,
   settings: () => (
     <>
-      <circle cx="8" cy="8" r="2.5" />
-      <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M13 3l-1.5 1.5M4.5 11.5L3 13" />
+      <path d="M2 5h12M2 11h12" />
+      <rect x="4" y="3.5" width="3" height="3" />
+      <rect x="9" y="9.5" width="3" height="3" />
     </>
   ),
   user: () => (
@@ -155,6 +157,12 @@ export const icons: Record<IconName, () => JSX.Element> = {
       <circle cx="6" cy="5" r="2.5" />
       <path d="M1 14a5 5 0 0 1 10 0" />
       <path d="M11 4a2.5 2.5 0 0 1 0 5M14 14a4 4 0 0 0-3-3.8" />
+    </>
+  ),
+  chat: () => (
+    <>
+      <path d="M2 3h12v8H6l-2 3v-3H2z" />
+      <path d="M5 6h6M5 8.5h4" />
     </>
   ),
   mail: () => (

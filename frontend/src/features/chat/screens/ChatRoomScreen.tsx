@@ -401,7 +401,7 @@ export function ChatRoomScreen(): JSX.Element {
               when={stream.messages.length}
               fallback={
                 <EmptyState
-                  icon="terminal"
+                  icon="chat"
                   message="START A CONVERSATION"
                   hint="Ask a question, request a summary, or describe a task to begin."
                 />
