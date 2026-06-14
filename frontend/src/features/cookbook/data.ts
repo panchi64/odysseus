@@ -50,7 +50,8 @@ interface CompatibleModelDTO {
   suitability: "nominal" | "warn" | "alert";
   fits: boolean;
   capabilities: CapabilitiesDTO;
-  arena_elo: number | null;
+  quality_display: number | null;
+  quality_metric: string | null;
   detail: string;
 }
 
@@ -106,7 +107,8 @@ function mapModel(r: CompatibleModelDTO): ModelEntry {
       embedding: r.capabilities.embedding,
       imageGen: r.capabilities.image_gen,
     },
-    arenaElo: r.arena_elo,
+    qualityValue: r.quality_display,
+    qualityMetric: r.quality_metric,
     description: r.detail,
   };
 }

@@ -149,7 +149,8 @@ def compatible_models(
                 suitability=suitability,
                 fits=fits,
                 capabilities=model.capabilities,
-                arena_elo=model.arena_elo,
+                quality_display=model.quality_display,
+                quality_metric=model.quality_metric,
                 quality_score=model.quality_score,
                 detail=detail,
             )

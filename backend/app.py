@@ -102,6 +102,9 @@ async def lifespan(app: FastAPI):
         catalog_ttl_s=settings.cookbook_catalog_ttl_s,
         catalog_list_limit=settings.cookbook_catalog_list_limit,
         catalog_max_models=settings.cookbook_catalog_max_models,
+        quality_source=settings.cookbook_quality_source,
+        aa_api_key=settings.artificial_analysis_api_key,
+        llm_stats_api_key=settings.llm_stats_api_key,
     )
     logger.info("cookbook: hardware + model catalog (warming in background)")
     app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())

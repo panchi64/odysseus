@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -134,6 +135,12 @@ class Settings(BaseSettings):
     cookbook_catalog_list_limit: int = 60
     cookbook_catalog_max_models: int = 24
     hf_token: str | None = None
+    # The quality signal behind the model ranking. `lmarena` is keyless (zero setup) but
+    # lags new releases; `artificial_analysis` / `llm_stats` give day-one benchmark
+    # coverage but need their (free) API key — without one, ranking degrades to LMArena.
+    cookbook_quality_source: Literal["lmarena", "artificial_analysis", "llm_stats"] = "lmarena"
+    artificial_analysis_api_key: str | None = None
+    llm_stats_api_key: str | None = None
 
     # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
     # utility call). On by default; the operator can rename either way. The

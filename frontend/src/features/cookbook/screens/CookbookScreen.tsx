@@ -73,12 +73,15 @@ const serverStatusFlag: Record<ServerStatus, Status> = {
 const CAPS_HINT =
   "Model capabilities: TOOLS — native tool/function calling; REASONING — extended thinking; VISION — image input; EMBEDDING — vector embeddings; IMAGE — image generation.";
 
+const QUALITY_HINT =
+  "Model quality from a live benchmark source (higher is better). The figure is the active source's headline metric — e.g. an LMArena Elo or an Intelligence Index — blank when the source hasn't rated the model yet (it's then ranked by its family's standing).";
+
 // One row of the compatible-models table. A `subgrid` so its cells inherit the shared
 // column tracks and line up with every other row. Read-only: the backend ranks the
 // models that fit this hardware; downloading/serving them lands with a later slice.
 function ModelRow(props: { model: ModelEntry }): JSX.Element {
   const caps = () => props.model.capabilities;
-  const elo = () => props.model.arenaElo;
+  const quality = () => props.model.qualityValue;
   return (
     <div class="col-span-full grid grid-cols-subgrid items-center gap-x-4 border-b border-line px-3 py-2 last:border-b-0">
       <span class="flex min-w-0 items-center gap-2">
@@ -89,10 +92,10 @@ function ModelRow(props: { model: ModelEntry }): JSX.Element {
       </span>
       <Text
         variant="body"
-        tone={elo() != null ? "bright" : "dim"}
+        tone={quality() != null ? "bright" : "dim"}
         class="text-right tabular-nums"
       >
-        {elo() ?? "—"}
+        {quality() != null ? Math.round(quality()!) : "—"}
       </Text>
       <span class="flex items-center gap-1">
         <Show when={caps().tools}>
@@ -434,9 +437,12 @@ export function CookbookScreen(): JSX.Element {
                           <Text variant="label" tone="dim">
                             MODEL
                           </Text>
-                          <Text variant="label" tone="dim" class="text-right">
-                            ARENA
-                          </Text>
+                          <Row gap={1} align="center" class="justify-end">
+                            <Text variant="label" tone="dim">
+                              QUALITY
+                            </Text>
+                            <InfoHint label={QUALITY_HINT} size={12} />
+                          </Row>
                           <Row gap={1} align="center">
                             <Text variant="label" tone="dim">
                               CAPABILITIES

@@ -37,8 +37,11 @@ export interface ModelEntry {
   suitability: ModelSuitability;
   downloaded: boolean;
   capabilities: ModelCapabilities;
-  /** LMArena Chatbot Arena Elo (human-preference quality), null when unranked. */
-  arenaElo: number | null;
+  /** The active quality source's headline figure (Arena Elo, Intelligence Index, …),
+   *  null when that source doesn't rank the model. */
+  qualityValue: number | null;
+  /** Short label for `qualityValue` — e.g. "ELO", "INTELLIGENCE", "SCORE". */
+  qualityMetric: string | null;
   description: string;
 }
 

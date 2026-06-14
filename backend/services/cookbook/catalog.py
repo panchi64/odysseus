@@ -21,13 +21,8 @@ import httpx
 from core.exceptions import DegradedCapabilityError
 
 from .models import CatalogModel
-from .sources import (
-    HuggingFaceCatalog,
-    LeaderboardEnricher,
-    OpenRouterEnricher,
-    compute_quality,
-    normalize_name,
-)
+from .quality import ModelQuality, QualitySource, compute_quality
+from .sources import HuggingFaceCatalog, OpenRouterEnricher, normalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +32,14 @@ class ModelCatalog:
         self,
         client: httpx.AsyncClient,
         *,
+        quality_source: QualitySource,
         hf_token: str | None = None,
         ttl_s: float = 86_400.0,
         list_limit: int = 60,
         max_models: int = 24,
     ) -> None:
         self._client = client
+        self._quality_source = quality_source
         self._hf_token = hf_token
         self._ttl_s = ttl_s
         self._list_limit = list_limit
@@ -50,9 +47,10 @@ class ModelCatalog:
         self._cache: list[CatalogModel] | None = None
         self._fetched_at: float | None = None
         self._lock = asyncio.Lock()
-        # Quality signals from the last build, reused to score search results.
-        self._elos: dict[str, int] = {}
-        self._family_rep: dict[str, int] = {}
+        # Quality signals from the last build, reused to score search results: the active
+        # source's per-model quality, and each family's frontier score (live-derived).
+        self._quality: dict[str, ModelQuality] = {}
+        self._family_rep: dict[str, float] = {}
 
     def _fresh(self) -> bool:
         return (
@@ -89,9 +87,9 @@ class ModelCatalog:
         """Models matching a free-text query, scored with the same quality signals as
         the curated catalog. Best-effort warms those signals first (cached)."""
         try:
-            await self.get()  # populate self._elos / self._family_rep (cached)
+            await self.get()  # populate self._quality / self._family_rep (cached)
         except DegradedCapabilityError:
-            pass  # search can still rank by adoption if the leaderboard is unavailable
+            pass  # search can still rank by adoption if the quality source is unavailable
         hf = HuggingFaceCatalog(self._client, token=self._hf_token)
         models = await hf.search(query, max_models=self._max_models)
         self._score(models)
@@ -106,30 +104,35 @@ class ModelCatalog:
             # Capability enrichment is optional — HF heuristics already populated flags.
             logger.warning("cookbook: OpenRouter enrichment failed; using HF heuristics",
                            exc_info=True)
-        # A failed leaderboard fetch just leaves every model on the adoption fallback.
+        # The active quality source; an empty map (offline / no key) just leaves every
+        # model on the family/adoption fallbacks. scores() is itself best-effort.
         try:
-            self._elos = await LeaderboardEnricher(self._client).elos()
+            self._quality = await self._quality_source.scores()
         except (httpx.HTTPError, ValueError, KeyError):
-            logger.warning("cookbook: leaderboard fetch failed; quality falls back to adoption",
+            logger.warning("cookbook: quality source failed; quality falls back to adoption",
                            exc_info=True)
-            self._elos = {}
-        # Family reputation, derived live: the best Arena Elo seen for each family.
+            self._quality = {}
+        # Family reputation, derived live: the best source score seen for each family.
         self._family_rep = {}
         for model in models:
-            elo = self._elos.get(normalize_name(model.id))
-            if elo is not None and model.family:
-                self._family_rep[model.family] = max(self._family_rep.get(model.family, 0), elo)
+            quality = self._quality.get(normalize_name(model.id))
+            if quality is not None and model.family:
+                self._family_rep[model.family] = max(
+                    self._family_rep.get(model.family, 0.0), quality.score
+                )
         self._score(models)
         return models
 
     def _score(self, models: list[CatalogModel]) -> None:
-        """Stamp Arena Elo + quality on each model from the cached signals. Quality is
-        own Elo, else the family's Arena standing, else an adoption proxy."""
+        """Stamp quality on each model from the cached signals: the source's own score,
+        else the family's frontier, else an adoption proxy."""
         now = datetime.now(UTC)
         for model in models:
-            model.arena_elo = self._elos.get(normalize_name(model.id))
+            quality = self._quality.get(normalize_name(model.id))
+            model.quality_display = quality.display if quality else None
+            model.quality_metric = quality.metric if quality else None
             model.quality_score = compute_quality(
-                model.arena_elo,
+                quality.score if quality else None,
                 self._family_rep.get(model.family) if model.family else None,
                 model.created_at,
                 model.downloads,

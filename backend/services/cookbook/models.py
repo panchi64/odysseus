@@ -119,13 +119,15 @@ class CatalogModel(BaseModel):
     license: str | None = None
     gated: bool = False  # requires accepting terms before download
     quants: list[QuantVariant] = Field(default_factory=list)
-    # Adoption signals (HuggingFace) — the fallback when there's no Arena Elo.
+    # Adoption signals (HuggingFace) — the fallback when the quality source misses.
     created_at: str | None = None  # ISO-8601 repo creation timestamp
     downloads: int = 0
     likes: int = 0
-    # LMArena Chatbot Arena Elo (human-preference quality), when the model is ranked.
-    arena_elo: int | None = None
-    # 0..1 quality, stamped at build time: Arena Elo where available, else adoption.
+    # The active quality source's native headline figure + its label ("ELO",
+    # "INTELLIGENCE", "SCORE"), for display; None when the source doesn't rank the model.
+    quality_display: float | None = None
+    quality_metric: str | None = None
+    # 0..1 quality, stamped at build time: the source's score, else family, else adoption.
     quality_score: float = 0.0
 
 
@@ -142,6 +144,7 @@ class CompatibleModel(BaseModel):
     suitability: Suitability
     fits: bool
     capabilities: Capabilities = Field(default_factory=Capabilities)
-    arena_elo: int | None = None
+    quality_display: float | None = None
+    quality_metric: str | None = None
     quality_score: float = 0.0
     detail: str = ""

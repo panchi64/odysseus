@@ -12,7 +12,7 @@ import pytest
 
 from core.exceptions import DegradedCapabilityError
 from services.cookbook.catalog import ModelCatalog
-from services.cookbook.sources import compute_quality
+from services.cookbook.quality import LMArenaSource, compute_quality
 
 _QWEN_BASE = "Qwen/Qwen2.5-7B-Instruct"
 
@@ -112,8 +112,14 @@ class _FakeClient:
         return _Resp([])
 
 
+def _catalog(client, **kwargs) -> ModelCatalog:
+    """A catalog wired to the keyless LMArena source over the same fake client (its
+    leaderboard rows come from the `datasets-server` branch of `_FakeClient`)."""
+    return ModelCatalog(client, quality_source=LMArenaSource(client), **kwargs)
+
+
 async def test_catalog_builds_dedupes_and_enriches():
-    catalog = await ModelCatalog(_FakeClient(), list_limit=20, max_models=10).get()
+    catalog = await _catalog(_FakeClient(), list_limit=20, max_models=10).get()
     ids = {m.id for m in catalog}
     assert _QWEN_BASE in ids  # both GGUF forks collapsed onto the base
     assert "mlx-community/Obscure-3B-Instruct-4bit" in ids
@@ -132,20 +138,23 @@ async def test_catalog_builds_dedupes_and_enriches():
     assert qwen.downloads == 5_000_000
     assert qwen.likes == 3000
     # Quality is the Arena Elo (fuzzy-joined), landing in the benchmarked upper half.
-    assert qwen.arena_elo == 1380
+    assert qwen.quality_display == 1380
+    assert qwen.quality_metric == "ELO"
     assert qwen.quality_score > 0.5
 
-    # The MLX model isn't on the leaderboard → no Elo, adoption-tier quality (≤ 0.5).
+    # The MLX model isn't on the leaderboard → no score, adoption-tier quality (≤ 0.5).
     mlx = next(m for m in catalog if m.id.startswith("mlx-community/"))
-    assert mlx.arena_elo is None
+    assert mlx.quality_display is None
+    assert mlx.quality_metric is None
     assert mlx.quality_score <= 0.5
 
 
 def test_quality_tiers():
     now = datetime(2026, 6, 14, tzinfo=UTC)
-    # Own Elo (proven) > family-rated new release > popular-but-unknown > obscure.
-    benchmarked = compute_quality(1350, None, "2023-01-01T00:00:00.000Z", 200, 2, now=now)
-    family_new = compute_quality(None, 1340, "2026-05-01T00:00:00.000Z", 1_000, 50, now=now)
+    # Own score (proven) > family-rated new release > popular-but-unknown > obscure.
+    # bench/family inputs are normalized 0..1 figures from the active quality source.
+    benchmarked = compute_quality(0.83, None, "2023-01-01T00:00:00.000Z", 200, 2, now=now)
+    family_new = compute_quality(None, 0.80, "2026-05-01T00:00:00.000Z", 1_000, 50, now=now)
     popular = compute_quality(None, None, "2026-05-01T00:00:00.000Z", 5_000_000, 3000, now=now)
     obscure = compute_quality(None, None, "2023-01-01T00:00:00.000Z", 200, 2, now=now)
     assert benchmarked > family_new > popular > obscure >= 0.0
@@ -156,27 +165,27 @@ def test_quality_tiers():
 
 async def test_capabilities_fall_back_to_hf_when_openrouter_misses():
     # OpenRouter returns nothing → tools come from the GGUF chat-template heuristic.
-    catalog = await ModelCatalog(_FakeClient(openrouter={"data": []})).get()
+    catalog = await _catalog(_FakeClient(openrouter={"data": []})).get()
     qwen = next(m for m in catalog if m.id == _QWEN_BASE)
     assert qwen.capabilities.tools  # "{%- if tools %}" in the chat template
 
 
 async def test_openrouter_failure_still_builds_the_catalog():
     client = _FakeClient(fail=lambda url: "openrouter.ai" in url)
-    catalog = await ModelCatalog(client).get()
+    catalog = await _catalog(client).get()
     assert any(m.id == _QWEN_BASE for m in catalog)  # HF spine unaffected
 
 
 async def test_degrades_when_hf_unreachable_and_no_cache():
     client = _FakeClient(fail=lambda url: "huggingface.co" in url)
     with pytest.raises(DegradedCapabilityError):
-        await ModelCatalog(client).get()
+        await _catalog(client).get()
 
 
 async def test_serves_stale_when_a_refresh_fails():
     state = {"down": False}
     client = _FakeClient(fail=lambda url: state["down"])
-    catalog = ModelCatalog(client, ttl_s=0.0)  # ttl 0 ⇒ every get re-fetches
+    catalog = _catalog(client, ttl_s=0.0)  # ttl 0 ⇒ every get re-fetches
     first = await catalog.get()
     assert first
     state["down"] = True

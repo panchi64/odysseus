@@ -17,6 +17,7 @@ import httpx
 from . import hardware
 from .catalog import ModelCatalog
 from .models import CompatibleModel, HardwareProfile
+from .quality import build_quality_source
 from .recommend import compatible_models as _compatible_models
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,20 @@ class CookbookService:
         catalog_ttl_s: float = 86_400.0,
         catalog_list_limit: int = 60,
         catalog_max_models: int = 24,
+        quality_source: str = "lmarena",
+        aa_api_key: str | None = None,
+        llm_stats_api_key: str | None = None,
     ) -> None:
+        source = build_quality_source(
+            http_client,
+            quality_source,
+            aa_api_key=aa_api_key,
+            llm_stats_api_key=llm_stats_api_key,
+        )
+        logger.info("cookbook: quality source = %s", source.name)
         self._catalog = ModelCatalog(
             http_client,
+            quality_source=source,
             hf_token=hf_token,
             ttl_s=catalog_ttl_s,
             list_limit=catalog_list_limit,

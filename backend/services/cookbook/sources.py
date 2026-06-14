@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
-from datetime import datetime
 
 import httpx
 
@@ -27,94 +25,26 @@ from .models import Capabilities, CatalogModel, QuantVariant
 
 logger = logging.getLogger(__name__)
 
-# Quality, in priority of signal strength:
-#  1. the model's own Chatbot Arena Elo (human-preference benchmark) — the gold signal;
-#  2. its FAMILY's Arena standing — a brand-new release (Gemma 4, Qwen 3.6) the arena
-#     hasn't voted on yet inherits its family's proven tier, discounted + freshness-lifted,
-#     so it ranks with its lineage rather than sinking below an older rated sibling;
-#  3. an adoption proxy (downloads/likes/recency), capped low, for unknown lineages.
-# Family reputation is derived live from which models ARE benchmarked — no maintained list.
-_ELO_MIN = 1100.0  # arena floor we map to 0
-_ELO_MAX = 1400.0  # arena ceiling we map to 1
-_BENCH_FLOOR = 0.40  # benchmarked models occupy [0.40, 1.0]
-_FAMILY_TRUST = 0.85  # how much of its family's frontier an unrated model inherits
-_FAMILY_BASE = 0.35  # floor of the family-reputation band
-_FAMILY_ELO_W = 0.50  # weight on the family frontier within that band
-_FAMILY_RECENCY_W = 0.12  # freshness lift within the family band
-_ADOPT_CEIL = 0.35  # unknown lineage tops out here (kept below any real benchmark)
-
-# Adoption-proxy weights. Likes lead — a community endorsement a flagship earns
-# (thousands) but a viral junk merge never gets (tens).
-_W_LIKES = 0.55
-_W_DOWNLOADS = 0.30
-_W_RECENCY = 0.15
-_RECENCY_HALF_LIFE_DAYS = 270.0
-
-
-def _recency(created_at: str | None, now: datetime) -> float:
-    if not created_at:
-        return 0.5
-    try:
-        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    except ValueError:
-        return 0.5
-    age_days = max((now - created).total_seconds() / 86_400.0, 0.0)
-    return 0.5 ** (age_days / _RECENCY_HALF_LIFE_DAYS)
-
-
-def _elo_norm(elo: float) -> float:
-    return min(max((elo - _ELO_MIN) / (_ELO_MAX - _ELO_MIN), 0.0), 1.0)
-
-
-def _adoption_score(created_at: str | None, downloads: int, likes: int, now: datetime) -> float:
-    likes_norm = min(math.log10(likes + 1) / 4.0, 1.0)
-    downloads_norm = min(math.log10(downloads + 1) / 7.0, 1.0)
-    return (
-        _W_LIKES * likes_norm
-        + _W_DOWNLOADS * downloads_norm
-        + _W_RECENCY * _recency(created_at, now)
-    )
-
-
-def compute_quality(
-    arena_elo: int | None,
-    family_elo: int | None,
-    created_at: str | None,
-    downloads: int,
-    likes: int,
-    *,
-    now: datetime,
-) -> float:
-    """0..1 quality from the three tiers described above."""
-    if arena_elo is not None:
-        return _BENCH_FLOOR + (1.0 - _BENCH_FLOOR) * _elo_norm(arena_elo)
-    if family_elo is not None:
-        band = _FAMILY_BASE + _FAMILY_ELO_W * _elo_norm(family_elo) * _FAMILY_TRUST
-        return min(band + _FAMILY_RECENCY_W * _recency(created_at, now), 0.97)
-    return _ADOPT_CEIL * _adoption_score(created_at, downloads, likes, now)
-
-
-# Quant/format tokens dropped before fuzzy-matching a repo id to a leaderboard name,
-# so "Qwen3-32B-4bit" and "Qwen3-32B" collapse to the same key.
-_NAME_DROP = re.compile(r"^(gguf|mlx|bf16|fp16|f16|f32|\d+bit|i?q\d.*)$", re.IGNORECASE)
+# Tokens dropped before fuzzy-matching a repo id to a benchmark-source model name. Quant/
+# format tags (so "Qwen3-32B-4bit" == "Qwen3-32B") AND role/format suffixes (so the HF
+# "Qwen/Qwen3.6-32B-Instruct" collapses onto a source's "Qwen3.6 32B") — the lossy join
+# was the main reason most models never matched a score. Size tokens ("32b") are kept;
+# they disambiguate within a family.
+_NAME_DROP = re.compile(
+    r"^(gguf|mlx|bf16|fp16|f16|f32|\d+bit|i?q\d.*|instruct|chat|it|base|preview|hf)$",
+    re.IGNORECASE,
+)
 
 
 def normalize_name(name: str) -> str:
-    """A fuzzy join key: drop the org, split on punctuation, drop quant/format tokens,
-    lowercase, concatenate. ``Qwen/Qwen2.5-7B-Instruct`` → ``qwen257binstruct``."""
+    """A fuzzy join key: drop the org, split on punctuation, drop quant/format/role
+    tokens, lowercase, concatenate. ``Qwen/Qwen3.6-32B-Instruct`` → ``qwen3632b``."""
     bare = name.rsplit("/", 1)[-1]
     parts = re.split(r"[^a-zA-Z0-9]+", bare)
     return "".join(p for p in parts if p and not _NAME_DROP.match(p)).lower()
 
 _HF_BASE = "https://huggingface.co"
 _OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models"
-# LMArena Chatbot Arena Elo, via the HF datasets-server REST API (no auth). The
-# `mathewhe/chatbot-arena-elo` dataset is an auto-updated mirror of the official
-# leaderboard (the official `lmarena-ai/leaderboard-dataset` is unreliable through
-# datasets-server). The arena lists ~250 models.
-_DATASETS_ROWS = "https://datasets-server.huggingface.co/rows"
-_ARENA_DATASET = "mathewhe/chatbot-arena-elo"
-_ARENA_MAX_ROWS = 400
 
 # Effective bits-per-weight per quant family (includes format overhead). Keyed by the
 # leading token of the quant label; used to estimate runtime memory from a param count.
@@ -417,47 +347,3 @@ class OpenRouterEnricher:
             model.capabilities.vision = "image" in modalities
             if not model.context_default and row.get("context_length"):
                 model.context_default = int(row["context_length"])
-
-
-class LeaderboardEnricher:
-    """The model-quality source: LMArena Chatbot Arena Elo (human-preference ranking).
-
-    Read from the auto-updated HF mirror of the public leaderboard via the
-    datasets-server REST API (no auth). Models are joined to catalog ids by fuzzy
-    normalized name — the arena names models without an org or quant suffix, so the
-    join covers the well-known models (exactly the ones with a meaningful Elo) and the
-    long tail simply falls back to the adoption proxy.
-    """
-
-    def __init__(self, client: httpx.AsyncClient, *, timeout_s: float = 20.0) -> None:
-        self._client = client
-        self._timeout = timeout_s
-
-    async def elos(self) -> dict[str, int]:
-        """``normalize_name`` → Arena Elo for every leaderboard entry."""
-        out: dict[str, int] = {}
-        for offset in range(0, _ARENA_MAX_ROWS, 100):
-            resp = await self._client.get(
-                _DATASETS_ROWS,
-                params={
-                    "dataset": _ARENA_DATASET,
-                    "config": "default",
-                    "split": "train",
-                    "offset": offset,
-                    "length": 100,
-                },
-                timeout=self._timeout,
-            )
-            resp.raise_for_status()
-            rows = resp.json().get("rows", [])
-            if not rows:
-                break
-            for entry in rows:
-                row = entry.get("row", {})
-                name, score = row.get("Model"), row.get("Arena Score")
-                if name and score is not None:
-                    try:
-                        out[normalize_name(name)] = int(score)
-                    except (ValueError, TypeError):
-                        continue
-        return out
