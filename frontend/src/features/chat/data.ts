@@ -470,14 +470,19 @@ export function createChatStream(
     const k = key();
     const source = initial();
     if (k === lastKey && source === lastSource) return;
+    // Record the transition before any early return below, or the bookkeeping
+    // goes stale: skipping these on the authoritative-store guard left `lastKey`
+    // pinned at its pre-adoption value, so a later transition back to that value
+    // (e.g. compare's teardown reverting the key to null) read as "no change"
+    // and the transcript never cleared.
+    lastKey = k;
+    lastSource = source;
     // The live store is authoritative for the thread we're already on: never let
     // a (re)fetch of its server history clobber it. This keeps a freshly-created
     // thread's streamed messages — including live-only fields the history
     // projection doesn't carry (preview, artifacts, runId) — when it adopts its
     // backend id, and avoids an empty flash while that history loads.
     if (k === activeConversationId && messages.length > 0) return;
-    lastKey = k;
-    lastSource = source;
     controller?.abort();
     controller = null;
     setSending(false);

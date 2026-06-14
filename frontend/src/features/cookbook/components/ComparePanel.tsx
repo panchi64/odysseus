@@ -25,8 +25,9 @@ export function ComparePanel(): JSX.Element {
     <div class="flex h-[70vh] min-h-[28rem] flex-col gap-3">
       <div class="flex items-center justify-between gap-3">
         <Text variant="micro" tone="dim">
-          One message, sent to both models at once. These threads are scratch —
-          they stay out of your chat history.
+          One message, sent to both models at once — pre-load both in your
+          inference server (e.g. LM Studio) so neither stalls on a cold load.
+          These threads are scratch and stay out of your chat history.
         </Text>
         <Show when={compare.started()}>
           <Button variant="ghost" size="sm" leading="refresh" onClick={reset}>

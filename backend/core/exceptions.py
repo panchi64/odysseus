@@ -27,6 +27,13 @@ class DegradedCapabilityError(OdysseusError):
     """An optional capability is unavailable; the caller should degrade gracefully."""
 
 
+class ModelLoadError(OdysseusError):
+    """An inference server refused a request because it couldn't bring the model
+    up (e.g. an on-demand cold-load that failed, or a concurrent-load race). The
+    message carries an operator-actionable hint — the fix is engine-side (pre-load
+    the model, let the server hold more than one), not ours."""
+
+
 class SSRFError(OdysseusError):
     """An outbound request was refused because its target resolves to a
     non-public address (loopback, private, link-local, cloud metadata) or uses a

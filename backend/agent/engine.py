@@ -28,10 +28,12 @@ from pydantic_ai import (
     UsageLimits,
 )
 from pydantic_ai.capabilities import ReinjectSystemPrompt
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
+from core.exceptions import ModelLoadError
 from prompts.agent import INSTRUCTIONS, SYSTEM_PROMPT, VERIFIER_NUDGE
 from runs import (
     ApprovalRequired,
@@ -157,6 +159,27 @@ def _park_for_approval(
     run.park(ParkedTurn(agent, messages, requests, announced))
 
 
+# On-demand inference servers (LM Studio, llama.cpp, …) reject a request for a
+# model they couldn't bring up with a terse, mechanical message. The most common
+# cause here is a side-by-side compare firing two *unloaded* models at once: the
+# server can only cold-load one at a time, so the second aborts.
+_MODEL_LOAD_MARKERS = ("failed to load model", "engine protocol startup was aborted")
+
+
+def _model_load_hint(exc: ModelHTTPError) -> str | None:
+    """An operator-actionable message if ``exc`` is an engine model-load failure,
+    else ``None`` (leave other HTTP errors with their own detail). The fix is
+    engine-side, so the hint points there rather than implying an app bug."""
+    if not any(marker in str(exc).lower() for marker in _MODEL_LOAD_MARKERS):
+        return None
+    model = exc.model_name or "the selected model"
+    return (
+        f"Couldn't load {model!r} on its inference server. Load it before use — in "
+        "LM Studio, pre-load each model you want to compare, or raise “Max loaded "
+        "models” / enable JIT so the server can hold more than one at once."
+    )
+
+
 async def _drive_turn(
     run: Run,
     agent: Agent,
@@ -203,6 +226,13 @@ async def _drive_turn(
         run.emit(LimitNotice(limit="loop", message=str(exc)))
         run.block("stopped: repeated an action without making progress")
         return _TurnResult(answer=None)
+    except ModelHTTPError as exc:
+        # Rewrite a model-couldn't-load error into something the operator can act
+        # on; let every other HTTP error propagate with its own detail.
+        hint = _model_load_hint(exc)
+        if hint is None:
+            raise
+        raise ModelLoadError(hint) from exc
 
     # Accumulate onto any prior metrics so a multi-turn run (a verifier
     # correction, or an approval resume) reports the whole run, not just the
