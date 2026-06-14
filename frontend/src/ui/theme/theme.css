@@ -257,6 +257,29 @@ body {
   color: var(--text-dim);
 }
 
+/* Rendered math (KaTeX). Math notation is the one place mono is deliberately not
+   used: real typesetting (radicals, large operators, stretchy delimiters) needs
+   KaTeX's bundled glyph metrics, which a monospace face can't provide. Everything
+   else is held to the system: monochrome (color inherited from prose, never
+   KaTeX's own), errors carried in the alert token, and spacing on the 4px grid.
+
+   Display math sits on its own line and scrolls horizontally — like code blocks
+   and tables — instead of bursting the message bubble. Its block rhythm comes
+   from the prose `* + *` rule (space-4), so KaTeX's own 1em margin is dropped.
+   It reads as a standalone readout, so it takes `text-bright`; inline math stays
+   the surrounding body tone. */
+.ody-prose .ody-math-block {
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--text-bright);
+}
+.ody-prose .katex-display {
+  margin: 0;
+}
+.ody-prose .katex-error {
+  color: var(--accent-alert);
+}
+
 /* Tables read as dense data panels: a hairline grid, square corners, tabular
    figures, and an uppercase label-styled header band. No zebra striping or
    accent fills — hierarchy comes from the header's brightness/weight alone. The

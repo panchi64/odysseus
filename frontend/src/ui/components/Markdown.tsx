@@ -6,8 +6,10 @@ import {
   type JSX,
 } from "solid-js";
 import { marked } from "marked";
+import "katex/dist/katex.min.css";
 import { cx } from "../cx";
 import { copyToClipboard } from "../clipboard";
+import { markedMath } from "./markdownMath";
 
 export interface MarkdownProps {
   /** Markdown source. Rendered with token-styled prose (.ody-prose). */
@@ -18,6 +20,7 @@ export interface MarkdownProps {
 }
 
 marked.setOptions({ gfm: true, breaks: true });
+marked.use(markedMath);
 
 /** Token-classed copy affordance injected into the top-right of each `pre`. Built
  *  as a detached node (not innerHTML) so the markup stays theme-safe and the click
