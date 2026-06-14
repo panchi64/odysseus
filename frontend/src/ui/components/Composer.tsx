@@ -1,4 +1,11 @@
-import { Show, createEffect, createSignal, onMount, type JSX } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createSignal,
+  onMount,
+  untrack,
+  type JSX,
+} from "solid-js";
 import { cx } from "../cx";
 import { Text } from "../primitives/Text";
 import { Button } from "./Button";
@@ -62,17 +69,22 @@ export function Composer(props: ComposerProps): JSX.Element {
   const [text, setText] = createSignal("");
   let field: HTMLTextAreaElement | undefined;
 
-  // Load the draft for the active key (also runs on mount, and on key change).
+  // Load the draft for the active key — runs on mount and whenever the key
+  // changes (e.g. switching conversations). This effect is the sole owner of
+  // key transitions: it swaps `text` to the incoming key's draft.
   createEffect(() => {
     const key = props.storageKey;
     setText(key ? loadDraft(key) : "");
   });
 
-  // Persist edits back to the active key.
+  // Persist edits back to the active key. Tracks only `text` — the key is read
+  // untracked so a key change never writes the outgoing draft under the incoming
+  // key (the load effect above already swapped `text`). Tracking the key here
+  // would race that load and leak a stale draft across conversations.
   createEffect(() => {
-    const key = props.storageKey;
-    if (!key) return;
-    saveDraft(key, text());
+    const value = text();
+    const key = untrack(() => props.storageKey);
+    if (key) saveDraft(key, value);
   });
 
   onMount(() => {
