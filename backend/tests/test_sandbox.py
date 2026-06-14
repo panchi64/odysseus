@@ -18,7 +18,12 @@ from services.sandbox import (
     detect_sandbox,
     run_on_host,
 )
-from services.sandbox.container import discover_runtime
+from services.sandbox.container import (
+    discover_runtime,
+    hardened_flags,
+    prepare_workspace,
+    workspace_env_defaults,
+)
 
 
 def _runtime_ready() -> bool:
@@ -97,6 +102,62 @@ def test_env_is_explicit_only(tmp_path):
     spec = SandboxSpec(command=["x"], env={"FOO": "bar"})
     argv = sandbox._run_argv("docker", spec, tmp_path)
     assert "--env FOO=bar" in " ".join(argv)
+
+
+# --- package installs redirect to the writable workspace ---------------------
+def test_workspace_env_defaults_point_under_the_workdir():
+    env = workspace_env_defaults("/work")
+    # Installs, caches, and build temp all land in the writable bind-mount.
+    assert env["PIP_USER"] == "1"
+    assert env["PYTHONUSERBASE"] == "/work/.local"
+    assert env["PIP_CACHE_DIR"].startswith("/work/")
+    assert env["TMPDIR"].startswith("/work/")
+    # Console scripts on PATH, but python/pip still resolve from the image.
+    assert env["PATH"].startswith("/work/.local/bin:")
+    assert "/usr/local/bin" in env["PATH"]
+
+
+def test_hardened_flags_inject_install_redirects(tmp_path):
+    joined = " ".join(
+        hardened_flags(
+            network=False,
+            memory="512m",
+            cpus="1.0",
+            pids_limit=256,
+            workdir="/work",
+            mount=tmp_path,
+            env={},
+        )
+    )
+    assert "--env PIP_USER=1" in joined
+    assert "--env PYTHONUSERBASE=/work/.local" in joined
+
+
+def test_explicit_env_overrides_a_default(tmp_path):
+    flags = hardened_flags(
+        network=False,
+        memory="512m",
+        cpus="1.0",
+        pids_limit=256,
+        workdir="/work",
+        mount=tmp_path,
+        env={"PIP_USER": "0"},
+    )
+    joined = " ".join(flags)
+    assert "PIP_USER=0" in joined
+    assert "PIP_USER=1" not in joined  # the caller's value wins, not duplicated
+
+
+def test_prepare_workspace_creates_the_tmpdir(tmp_path):
+    # TMPDIR must pre-exist or mktemp fails and tempfile falls back to the small
+    # tmpfs; the env points at "<workdir>/.tmp", so that subdir must be created.
+    target = workspace_env_defaults("/work")["TMPDIR"]
+    assert target == "/work/.tmp"
+    prepare_workspace(tmp_path)
+    assert (tmp_path / ".tmp").is_dir()
+    # Idempotent — a second call over an existing workspace is fine.
+    prepare_workspace(tmp_path)
+    assert (tmp_path / ".tmp").is_dir()
 
 
 # --- copy in / copy out ------------------------------------------------------

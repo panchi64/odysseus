@@ -43,6 +43,7 @@ from .container import (
     ensure_image,
     force_remove_container,
     hardened_flags,
+    prepare_workspace,
     run_subprocess,
     with_in_container_timeout,
 )
@@ -125,6 +126,13 @@ class SandboxSession:
     @property
     def is_busy(self) -> bool:
         return self._lock.locked()
+
+    @property
+    def is_warm(self) -> bool:
+        """True when the live container is already up, so a run executes at once.
+        False before the first run (or after a reap), when ``run()`` must first
+        spin the container up — a cold start the caller may want to announce."""
+        return self._running
 
     @property
     def preview(self) -> PreviewHandle | None:
@@ -239,14 +247,16 @@ class SandboxSession:
         shutil.rmtree(self.workspace, ignore_errors=True)
 
     def _ensure_workspace(self) -> None:
-        if self.workspace.exists():
-            return
-        if self.sealed.exists():
-            if not self._vault.is_unlocked:
-                raise SandboxError("cannot restore the sandbox workspace: vault is locked")
-            _restore_workspace(self.sealed.read_bytes(), self.workspace, self._vault)
-        else:
-            self.workspace.mkdir(parents=True, exist_ok=True)
+        if not self.workspace.exists():
+            if self.sealed.exists():
+                if not self._vault.is_unlocked:
+                    raise SandboxError("cannot restore the sandbox workspace: vault is locked")
+                _restore_workspace(self.sealed.read_bytes(), self.workspace, self._vault)
+            else:
+                self.workspace.mkdir(parents=True, exist_ok=True)
+        # The build-temp dir is dropped from the seal, so recreate it every time —
+        # a missing TMPDIR breaks mktemp and silently shrinks pip's scratch space.
+        prepare_workspace(self.workspace)
 
     async def _ensure_up(self) -> None:
         if self._running:

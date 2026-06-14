@@ -129,6 +129,49 @@ async def await_listening(
             await asyncio.sleep(poll_interval_s)
 
 
+# The workspace-relative build-temp dir the env points ``TMPDIR`` at. Created
+# host-side before a run (see ``prepare_workspace``): the container's root is
+# read-only, and a missing ``TMPDIR`` makes ``mktemp`` fail outright while
+# Python's ``tempfile`` silently falls back to the tiny ``/tmp`` tmpfs.
+_TMP_SUBDIR = ".tmp"
+
+
+def workspace_env_defaults(workdir: str) -> dict[str, str]:
+    """Package-manager env so installs land in the writable workspace, not the
+    read-only root: pip's ``--user`` target, caches, build temp, and console-script
+    ``bin`` all redirect under ``workdir`` (the persisted bind-mount). Without this
+    a plain ``pip install`` tries to write the immutable root and fails.
+
+    ``HOME=workdir`` is the catch-all (most tools key caches off ``$HOME``);
+    ``PIP_USER`` makes a flagless ``pip install`` target user-site, which Python
+    auto-adds to ``sys.path``; ``TMPDIR`` keeps wheel builds off the tiny ``/tmp``
+    tmpfs (``prepare_workspace`` must create it first). The ``PATH`` mirrors the
+    ``python:3.12-slim`` default (it tracks the configured image) with
+    ``{workdir}/.local/bin`` prepended for console scripts."""
+    return {
+        "HOME": workdir,
+        "PIP_USER": "1",
+        "PYTHONUSERBASE": f"{workdir}/.local",
+        "PIP_CACHE_DIR": f"{workdir}/.cache/pip",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "TMPDIR": f"{workdir}/{_TMP_SUBDIR}",
+        "PATH": (
+            f"{workdir}/.local/bin:/usr/local/bin:/usr/local/sbin:"
+            "/usr/sbin:/usr/bin:/sbin:/bin"
+        ),
+    }
+
+
+def prepare_workspace(workspace: Path) -> None:
+    """Create the writable subdirs the env defaults reference before a run.
+
+    Only ``TMPDIR`` must pre-exist — ``mktemp`` errors and ``tempfile`` falls back
+    to the small tmpfs when it's missing; pip creates its own ``--user``/cache dirs.
+    The container's read-only root can't ``mkdir`` these, so we do it host-side on
+    the bind-mount (changes are visible live in the running session container)."""
+    (workspace / _TMP_SUBDIR).mkdir(parents=True, exist_ok=True)
+
+
 def hardened_flags(
     *,
     network: bool,
@@ -169,7 +212,10 @@ def hardened_flags(
     ]
     if publish_port is not None:
         flags += ["--publish", f"127.0.0.1:0:{publish_port}"]
-    for key, value in env.items():
+    # Redirect package installs into the writable workspace; an explicit spec env
+    # always wins so a caller can override any default.
+    merged = {**workspace_env_defaults(workdir), **env}
+    for key, value in merged.items():
         flags += ["--env", f"{key}={value}"]
     return flags
 
@@ -306,6 +352,7 @@ class ContainerSandbox(Sandbox):
             raise SandboxError("no container runtime available")
 
         self._write_inputs(workspace, spec)
+        prepare_workspace(workspace)
         backstop_timed_out, exit_code, out, err = await run_subprocess(
             self._run_argv(runtime, spec, workspace),
             stdin=spec.stdin,

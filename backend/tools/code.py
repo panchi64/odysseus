@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic_ai import FunctionToolset, RunContext
 
+from runs import ToolProgress
 from services.sandbox import HostExecutionError, SandboxError, SandboxSpec, run_on_host
 
 from .deps import RunDeps
@@ -71,8 +72,10 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         """Run code or a shell script in an isolated Linux sandbox, cut off from
         the host. The environment is a small Debian userland with ``python`` and
         ``bash`` on the path. Network egress is **off** unless you set
-        ``network=True`` — do so when you need to fetch packages or data. The root
-        filesystem is read-only; only the current working directory is writable.
+        ``network=True`` — do so when you need to fetch packages or data. Install
+        packages the normal way (``pip install <pkg>``) with ``network=True``; they
+        go into the writable workspace and stay available for follow-up calls. The
+        rest of the root filesystem is read-only.
 
         The sandbox **persists across calls in this conversation**: files you write
         and dependencies you install stay available for follow-up calls, so you can
@@ -100,6 +103,18 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         )
         try:
             session = await sessions.acquire(ctx.deps.sandbox_key)
+            # A cold container takes a beat to spin up — longer still the first
+            # time, when the image must be pulled. Announce that wait so the run
+            # reads as the environment starting, not the model stalling; a warm
+            # session runs at once and needs no notice. A network call always
+            # spins a fresh throwaway container, so it's a cold start too.
+            if ctx.tool_call_id and (spec.network or not session.is_warm):
+                ctx.deps.run.emit(
+                    ToolProgress(
+                        tool_call_id=ctx.tool_call_id,
+                        partial="Starting the sandbox environment…",
+                    )
+                )
             result = await session.run(spec)
         except SandboxError as exc:
             # Any sandbox/infra failure comes back as something the model can act

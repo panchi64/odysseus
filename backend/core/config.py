@@ -89,9 +89,9 @@ class Settings(BaseSettings):
     # These names/globs are dropped from the sealed copy — virtual environments
     # and language caches are bloat that is cheaper to rebuild than to store.
     sandbox_session_seal_excludes: tuple[str, ...] = (
-        ".venv", "venv", "env", "__pycache__", "node_modules", ".git",
-        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache", "dist", "build",
-        "*.pyc", "*.pyo", "*.egg-info",
+        ".venv", "venv", "env", ".local", ".tmp", "__pycache__", "node_modules",
+        ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".cache", "dist",
+        "build", "*.pyc", "*.pyo", "*.egg-info",
     )
 
     # Meta-loop. The no-progress guard trips after this many identical tool
