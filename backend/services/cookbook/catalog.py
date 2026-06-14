@@ -21,8 +21,13 @@ import httpx
 from core.exceptions import DegradedCapabilityError
 
 from .models import CatalogModel
-from .quality import ModelQuality, QualitySource, compute_quality
-from .sources import HuggingFaceCatalog, OpenRouterEnricher, normalize_name
+from .quality import (
+    ModelQuality,
+    QualitySource,
+    family_reputation,
+    stamp_quality,
+)
+from .sources import HuggingFaceCatalog, OpenRouterEnricher
 
 logger = logging.getLogger(__name__)
 
@@ -108,34 +113,25 @@ class ModelCatalog:
         # model on the family/adoption fallbacks. scores() is itself best-effort.
         try:
             self._quality = await self._quality_source.scores()
-        except (httpx.HTTPError, ValueError, KeyError):
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.warning("cookbook: quality source failed; quality falls back to adoption",
                            exc_info=True)
             self._quality = {}
         # Family reputation, derived live: the best source score seen for each family.
-        self._family_rep = {}
-        for model in models:
-            quality = self._quality.get(normalize_name(model.id))
-            if quality is not None and model.family:
-                self._family_rep[model.family] = max(
-                    self._family_rep.get(model.family, 0.0), quality.score
-                )
-        self._score(models)
+        self._family_rep = family_reputation(models, self._quality)
+        matched = self._score(models)
+        # Surface coverage: a source that rates 0 of the catalog means quality ranking is
+        # effectively off (the whole list falls to the adoption proxy) — worth a warning,
+        # not a silent degrade, since the operator can't otherwise tell.
+        source_name = self._quality_source.name
+        dead = matched == 0 and source_name != "lmarena"
+        (logger.warning if dead else logger.info)(
+            "cookbook: quality source %s rated %d/%d catalog models",
+            source_name, matched, len(models),
+        )
         return models
 
-    def _score(self, models: list[CatalogModel]) -> None:
-        """Stamp quality on each model from the cached signals: the source's own score,
-        else the family's frontier, else an adoption proxy."""
-        now = datetime.now(UTC)
-        for model in models:
-            quality = self._quality.get(normalize_name(model.id))
-            model.quality_display = quality.display if quality else None
-            model.quality_metric = quality.metric if quality else None
-            model.quality_score = compute_quality(
-                quality.score if quality else None,
-                self._family_rep.get(model.family) if model.family else None,
-                model.created_at,
-                model.downloads,
-                model.likes,
-                now=now,
-            )
+    def _score(self, models: list[CatalogModel]) -> int:
+        """Stamp quality on each model from the cached signals (source score → family
+        frontier → adoption). Returns how many models the source rated directly."""
+        return stamp_quality(models, self._quality, self._family_rep, now=datetime.now(UTC))

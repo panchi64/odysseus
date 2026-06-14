@@ -35,41 +35,17 @@ from services.cookbook.quality import (  # noqa: E402
     LMArenaSource,
     ModelQuality,
     QualitySource,
-    compute_quality,
+    family_reputation,
+    stamp_quality,
 )
 from services.cookbook.recommend import compatible_models  # noqa: E402
-from services.cookbook.sources import (  # noqa: E402
-    HuggingFaceCatalog,
-    OpenRouterEnricher,
-    normalize_name,
-)
+from services.cookbook.sources import HuggingFaceCatalog, OpenRouterEnricher  # noqa: E402
 
 
 def _score_under(models: list[CatalogModel], scores: dict[str, ModelQuality]) -> int:
-    """Stamp quality on every model from one source's scores (same tiering as the live
-    catalog). Returns how many models matched the source directly (the coverage count)."""
-    now = datetime.now(UTC)
-    family_rep: dict[str, float] = {}
-    for model in models:
-        q = scores.get(normalize_name(model.id))
-        if q is not None and model.family:
-            family_rep[model.family] = max(family_rep.get(model.family, 0.0), q.score)
-    matched = 0
-    for model in models:
-        q = scores.get(normalize_name(model.id))
-        if q is not None:
-            matched += 1
-        model.quality_display = q.display if q else None
-        model.quality_metric = q.metric if q else None
-        model.quality_score = compute_quality(
-            q.score if q else None,
-            family_rep.get(model.family) if model.family else None,
-            model.created_at,
-            model.downloads,
-            model.likes,
-            now=now,
-        )
-    return matched
+    """Stamp quality under one source via the SAME tiering the live catalog uses, so the
+    comparison can't drift from what production computes. Returns the join coverage."""
+    return stamp_quality(models, scores, family_reputation(models, scores), now=datetime.now(UTC))
 
 
 def _print_ranking(name: str, profile: HardwareProfile, models: list[CatalogModel],

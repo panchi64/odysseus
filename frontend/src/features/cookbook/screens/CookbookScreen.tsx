@@ -95,7 +95,7 @@ function ModelRow(props: { model: ModelEntry }): JSX.Element {
         tone={quality() != null ? "bright" : "dim"}
         class="text-right tabular-nums"
       >
-        {quality() != null ? Math.round(quality()!) : "—"}
+        {quality() ?? "—"}
       </Text>
       <span class="flex items-center gap-1">
         <Show when={caps().tools}>
@@ -439,7 +439,8 @@ export function CookbookScreen(): JSX.Element {
                           </Text>
                           <Row gap={1} align="center" class="justify-end">
                             <Text variant="label" tone="dim">
-                              QUALITY
+                              {modelView.items().find((m) => m.qualityMetric)
+                                ?.qualityMetric ?? "QUALITY"}
                             </Text>
                             <InfoHint label={QUALITY_HINT} size={12} />
                           </Row>

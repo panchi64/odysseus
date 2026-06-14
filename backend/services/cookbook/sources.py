@@ -26,12 +26,15 @@ from .models import Capabilities, CatalogModel, QuantVariant
 logger = logging.getLogger(__name__)
 
 # Tokens dropped before fuzzy-matching a repo id to a benchmark-source model name. Quant/
-# format tags (so "Qwen3-32B-4bit" == "Qwen3-32B") AND role/format suffixes (so the HF
-# "Qwen/Qwen3.6-32B-Instruct" collapses onto a source's "Qwen3.6 32B") — the lossy join
-# was the main reason most models never matched a score. Size tokens ("32b") are kept;
-# they disambiguate within a family.
+# format tags (so "Qwen3-32B-4bit" == "Qwen3-32B") AND the assistant-variant suffixes
+# instruct/chat/it — all synonyms for the tuned model the sources benchmark — so the HF
+# "Qwen/Qwen3.6-32B-Instruct" / "Gemma-3-27B-it" collapses onto a source's "Qwen3.6 32B".
+# That lossy join was the main reason most models never matched a score. "base" is NOT
+# dropped: a base (pretrained) model is a genuinely different model from its instruct tune
+# and must keep a distinct key, else it would inherit the tune's score. Size tokens ("32b")
+# are kept too; they disambiguate within a family.
 _NAME_DROP = re.compile(
-    r"^(gguf|mlx|bf16|fp16|f16|f32|\d+bit|i?q\d.*|instruct|chat|it|base|preview|hf)$",
+    r"^(gguf|mlx|bf16|fp16|f16|f32|\d+bit|i?q\d.*|instruct|chat|it|preview|hf)$",
     re.IGNORECASE,
 )
 

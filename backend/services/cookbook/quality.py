@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol
 
 import httpx
 from pydantic import BaseModel
 
+from .models import CatalogModel
 from .sources import normalize_name
 
 logger = logging.getLogger(__name__)
@@ -90,8 +91,12 @@ def _recency(created_at: str | None, now: datetime) -> float:
         return 0.5
     try:
         created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, TypeError):
         return 0.5
+    # A naive timestamp (no offset) parses cleanly but can't be subtracted from the
+    # tz-aware `now` — assume UTC rather than letting the TypeError sink the build.
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
     age_days = max((now - created).total_seconds() / 86_400.0, 0.0)
     return 0.5 ** (age_days / _RECENCY_HALF_LIFE_DAYS)
 
@@ -128,6 +133,48 @@ def compute_quality(
         band = _FAMILY_BASE + _FAMILY_SCORE_W * family_score * _FAMILY_TRUST
         return min(band + _FAMILY_RECENCY_W * _recency(created_at, now), 0.97)
     return _ADOPT_CEIL * _adoption_score(created_at, downloads, likes, now)
+
+
+def family_reputation(
+    models: list[CatalogModel], scores: dict[str, ModelQuality]
+) -> dict[str, float]:
+    """Each family's frontier — the best source score among its rated members. Live-
+    derived from which catalog models the source ranks (no maintained list)."""
+    rep: dict[str, float] = {}
+    for model in models:
+        quality = scores.get(normalize_name(model.id))
+        if quality is not None and model.family:
+            rep[model.family] = max(rep.get(model.family, 0.0), quality.score)
+    return rep
+
+
+def stamp_quality(
+    models: list[CatalogModel],
+    scores: dict[str, ModelQuality],
+    family_rep: dict[str, float],
+    *,
+    now: datetime,
+) -> int:
+    """Stamp every model's ``quality_*`` from a source's score map + family frontiers
+    (the tiered `compute_quality`). Returns how many models the source rated directly
+    (the join coverage). The single place this tiering lives — the catalog and the
+    comparison harness both call it, so the decision tool can't drift from production."""
+    matched = 0
+    for model in models:
+        quality = scores.get(normalize_name(model.id))
+        if quality is not None:
+            matched += 1
+        model.quality_display = quality.display if quality else None
+        model.quality_metric = quality.metric if quality else None
+        model.quality_score = compute_quality(
+            quality.score if quality else None,
+            family_rep.get(model.family) if model.family else None,
+            model.created_at,
+            model.downloads,
+            model.likes,
+            now=now,
+        )
+    return matched
 
 
 # --- shared parse helpers ----------------------------------------------------
@@ -191,7 +238,7 @@ class LMArenaSource:
                         out[normalize_name(name)] = ModelQuality(
                             score=_elo_norm(elo), display=round(elo), metric="ELO"
                         )
-        except (httpx.HTTPError, ValueError, KeyError):
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.warning("cookbook: LMArena leaderboard fetch failed", exc_info=True)
             return out  # whatever pages we got (possibly empty); never fatal
         return out
@@ -219,7 +266,7 @@ class ArtificialAnalysisSource:
             )
             resp.raise_for_status()
             payload = resp.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.warning("cookbook: Artificial Analysis fetch failed", exc_info=True)
             return {}
         rows = payload.get("data") if isinstance(payload, dict) else payload
@@ -227,12 +274,13 @@ class ArtificialAnalysisSource:
         for row in rows or []:
             if not isinstance(row, dict):
                 continue
-            name = row.get("name") or row.get("slug")
+            name = _first_present(row, ("name", "slug"))
             evals = row.get("evaluations") if isinstance(row.get("evaluations"), dict) else {}
-            index = _as_float(
-                evals.get("artificial_analysis_intelligence_index")
-                or row.get("artificial_analysis_intelligence_index")
-            )
+            # `is not None`, not `or`: a genuine index of 0.0 is a real score, not "missing".
+            raw_index = evals.get("artificial_analysis_intelligence_index")
+            if raw_index is None:
+                raw_index = row.get("artificial_analysis_intelligence_index")
+            index = _as_float(raw_index)
             if not name or index is None:
                 continue
             quality = ModelQuality(
@@ -273,7 +321,7 @@ class LlmStatsSource:
             )
             resp.raise_for_status()
             payload = resp.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.warning("cookbook: llm-stats fetch failed", exc_info=True)
             return {}
         # Schema is undocumented — read the model list from the likely containers and the
@@ -315,10 +363,20 @@ def build_quality_source(
 ) -> QualitySource:
     """The configured source, falling back to keyless LMArena when the chosen source has
     no key (so the Cookbook still ranks with zero setup)."""
-    if name == "artificial_analysis" and aa_api_key:
-        return ArtificialAnalysisSource(client, api_key=aa_api_key, timeout_s=timeout_s)
-    if name == "llm_stats" and llm_stats_api_key:
-        return LlmStatsSource(client, api_key=llm_stats_api_key, timeout_s=timeout_s)
-    if name not in ("lmarena", "artificial_analysis", "llm_stats"):
+    if name == "artificial_analysis":
+        if aa_api_key:
+            return ArtificialAnalysisSource(client, api_key=aa_api_key, timeout_s=timeout_s)
+        logger.warning(
+            "cookbook: quality source 'artificial_analysis' selected but no API key set "
+            "(ODYSSEUS_ARTIFICIAL_ANALYSIS_API_KEY) — falling back to LMArena"
+        )
+    elif name == "llm_stats":
+        if llm_stats_api_key:
+            return LlmStatsSource(client, api_key=llm_stats_api_key, timeout_s=timeout_s)
+        logger.warning(
+            "cookbook: quality source 'llm_stats' selected but no API key set "
+            "(ODYSSEUS_LLM_STATS_API_KEY) — falling back to LMArena"
+        )
+    elif name != "lmarena":
         logger.warning("cookbook: unknown quality source %r; using LMArena", name)
     return LMArenaSource(client, timeout_s=timeout_s)

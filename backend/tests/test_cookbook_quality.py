@@ -99,6 +99,15 @@ def test_hardened_join_collapses_role_and_quant_suffixes():
     assert normalize_name("qwen3.6-32b-chat") == key
 
 
+def test_base_models_stay_distinct_from_their_instruct_tune():
+    # instruct/chat/it are synonyms for the tuned model → collapse onto the bare name a
+    # source uses; but an explicitly-labeled base/pretrained model keeps a DISTINCT key,
+    # so it can't inherit its instruct sibling's benchmark score.
+    assert normalize_name("Qwen/Qwen3-32B-Instruct") == normalize_name("Qwen3-32B")
+    assert normalize_name("Qwen/Qwen3-32B-Base") != normalize_name("Qwen/Qwen3-32B-Instruct")
+    assert normalize_name("google/gemma-3-27b-pt") != normalize_name("google/gemma-3-27b-it")
+
+
 def test_source_selection_falls_back_to_lmarena_without_a_key():
     client = _FakeClient({})
     aa = build_quality_source(client, "artificial_analysis", aa_api_key="k")
