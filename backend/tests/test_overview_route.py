@@ -10,24 +10,28 @@ def _capabilities(body) -> dict[str, dict]:
 
 
 async def test_overview_empty_workspace():
-    """A fresh workspace: no endpoints/roles/conversations/memories. Main model is
-    unconfigured (critical alert), embeddings degrade to keyword, and the sandbox
-    is absent in tests — all reported, none fabricated."""
+    """A fresh workspace: no endpoints/roles/conversations/memories. The chat model
+    capability is unconfigured (critical alert), embeddings degrade to keyword, and
+    the sandbox is absent in tests — all reported, none fabricated. The resolved
+    model itself is not reported here — it's the top-bar picker's live selection."""
     async with client_app() as (client, _app):
         resp = await client.get("/overview")
         assert resp.status_code == 200
         body = resp.json()
 
-    assert body["main_model"] is None
+    assert "main_model" not in body
+    assert "main_provider" not in body
+    assert "context_window" not in body
     assert body["endpoint_count"] == 0
     assert body["conversation_count"] == 0
     assert body["memory_count"] == 0
     assert body["active_run_count"] == 0
 
     caps = _capabilities(body)
-    assert caps["main_model"]["status"] == "alert"
-    assert caps["main_model"]["critical"] is True
-    assert caps["main_model"]["remediation_href"] == "/models/cookbook"
+    assert caps["chat_model"]["status"] == "alert"
+    assert caps["chat_model"]["critical"] is True
+    assert caps["chat_model"]["detail"] == "no provider configured"
+    assert caps["chat_model"]["remediation_href"] == "/models/cookbook"
     assert caps["embeddings"]["status"] == "warn"
     assert caps["sandbox"]["status"] == "warn"
     # Web search is managed (auto-run SearXNG); with no runtime in tests it degrades
@@ -49,29 +53,46 @@ async def test_overview_web_search_nominal_once_a_provider_is_enabled():
     assert web["detail"] == "SearXNG configured"
 
 
-async def test_overview_reports_configured_main_model():
+async def test_overview_chat_model_nominal_with_a_tool_calling_endpoint():
+    """A native-tool-calling endpoint is the precondition for chat — no `main`
+    role binding required (the picker chooses the live model)."""
     async with client_app() as (client, app):
-        endpoint = await app.state.models.create_endpoint(
+        await app.state.models.create_endpoint(
             "operator",
             name="Local",
             base_url="http://localhost:1234/v1",
             model="qwen2.5-32b",
             context_window=32768,
+            native_tools=True,
         )
-        await app.state.models.set_role("operator", "main", [endpoint.id])
-
         resp = await client.get("/overview")
         assert resp.status_code == 200
         body = resp.json()
 
-    assert body["main_model"] == "qwen2.5-32b"
-    assert body["main_provider"] == "Local"
-    assert body["context_window"] == 32768
     assert body["endpoint_count"] == 1
+    chat = _capabilities(body)["chat_model"]
+    assert chat["status"] == "nominal"
+    assert chat["detail"] == "1 endpoint"
 
-    main = _capabilities(body)["main_model"]
-    assert main["status"] == "nominal"
-    assert main["detail"] == "qwen2.5-32b"
+
+async def test_overview_chat_model_alert_when_no_endpoint_is_tool_calling():
+    """Endpoints exist but none drive tools — chat can't run, so the capability is
+    a critical alert distinct from the no-provider-at-all case."""
+    async with client_app() as (client, app):
+        await app.state.models.create_endpoint(
+            "operator",
+            name="Embed-only",
+            base_url="http://localhost:1234/v1",
+            model="nomic-embed",
+            native_tools=False,
+        )
+        body = (await client.get("/overview")).json()
+
+    assert body["endpoint_count"] == 1
+    chat = _capabilities(body)["chat_model"]
+    assert chat["status"] == "alert"
+    assert chat["critical"] is True
+    assert chat["detail"] == "no tool-calling endpoint"
 
 
 async def test_overview_counts_memories_and_conversations():

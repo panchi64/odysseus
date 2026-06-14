@@ -13,7 +13,7 @@ export interface SystemStat {
  *  counts as nominal/degraded/down) and the remediation target; the frontend
  *  only renders it. Mirrors the overview `Capability`. */
 export interface CapabilityHealth {
-  /** Stable id: `main_model` | `embeddings` | `sandbox`. */
+  /** Stable id: `chat_model` | `embeddings` | `sandbox`. */
   key: string;
   label: string;
   status: "nominal" | "warn" | "alert";
@@ -29,11 +29,6 @@ export interface CapabilityHealth {
  *  for its facts band and capability health. */
 export interface Overview {
   version: string;
-  /** The `main` role's resolved model id and the endpoint backing it, or null
-   *  when no main model is configured. */
-  mainModel: string | null;
-  mainProvider: string | null;
-  contextWindow: number | null;
   endpointCount: number;
   conversationCount: number;
   memoryCount: number;

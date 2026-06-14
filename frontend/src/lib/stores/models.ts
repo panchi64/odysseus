@@ -261,6 +261,15 @@ const store = createRoot(() => {
     const first = all[0];
     return first ? { endpointId: first.endpointId, model: first.model } : null;
   });
+  // The endpoint backing the effective pick — the single source for its metadata
+  // (provider name, context window) so consumers don't re-derive the lookup.
+  const effectiveEndpoint = createMemo<ModelEndpoint | null>(() => {
+    const sel = effective();
+    if (!sel) return null;
+    return (
+      (endpoints.latest ?? []).find((e) => e.id === sel.endpointId) ?? null
+    );
+  });
 
   return {
     selection,
@@ -271,6 +280,7 @@ const store = createRoot(() => {
     pickerGroups,
     discoveries,
     effective,
+    effectiveEndpoint,
   };
 });
 
@@ -345,4 +355,10 @@ export function effectiveValue(): string {
 /** The model id to display (or "" when nothing is configured). */
 export function selectedModelLabel(): string {
   return store.effective()?.model ?? "";
+}
+
+/** The context window of the endpoint backing the effective pick (null when
+ *  nothing is configured or the endpoint declares none). */
+export function effectiveContextWindow(): number | null {
+  return store.effectiveEndpoint()?.contextWindow ?? null;
 }

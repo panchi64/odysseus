@@ -39,10 +39,6 @@ class Capability(BaseModel):
 
 class Overview(BaseModel):
     version: str
-    # The main role's resolved model + the endpoint backing it, when configured.
-    main_model: str | None
-    main_provider: str | None
-    context_window: int | None
     endpoint_count: int
     conversation_count: int
     memory_count: int
@@ -55,10 +51,12 @@ async def get_overview(request: Request) -> Overview:
     models = deps.models(request)
     roles = await models.list_roles(OPERATOR_ID)
     endpoints = await models.list_endpoints(OPERATOR_ID)
-    by_id = {e.id: e for e in endpoints}
 
-    main_ids = roles.get("main") or []
-    main_endpoint = by_id.get(main_ids[0]) if main_ids else None
+    # The chat (`main`) model is chosen live from the top-bar picker, not bound
+    # here — so the precondition the workspace can't function without is simply
+    # that a usable chat endpoint exists. `main` requires native tool-calling
+    # (enforced at resolve), so only such endpoints count.
+    usable_chat_endpoints = [e for e in endpoints if e.native_tools]
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
     search_providers = await deps.search(request).list_providers(OPERATOR_ID)
@@ -71,24 +69,28 @@ async def get_overview(request: Request) -> Overview:
     active_runs = [r for r in deps.registry(request).list(OPERATOR_ID) if not r.is_terminal]
 
     capabilities: list[Capability] = []
-    # Main model — the one capability the workspace can't function without.
-    if main_endpoint is not None:
+    # Chat model — the one capability the workspace can't function without. The
+    # operator chooses the live model from the top-bar picker; what the backend
+    # asserts here is the precondition for that to be possible at all: at least
+    # one native-tool-calling endpoint to chat against.
+    if usable_chat_endpoints:
         capabilities.append(
             Capability(
-                key="main_model",
-                label="MAIN MODEL",
+                key="chat_model",
+                label="CHAT MODEL",
                 status="nominal",
-                detail=main_endpoint.model or main_endpoint.name,
+                detail=f"{len(usable_chat_endpoints)} endpoint"
+                + ("s" if len(usable_chat_endpoints) != 1 else ""),
                 critical=True,
             )
         )
     else:
         capabilities.append(
             Capability(
-                key="main_model",
-                label="MAIN MODEL",
+                key="chat_model",
+                label="CHAT MODEL",
                 status="alert",
-                detail="no endpoint bound",
+                detail="no tool-calling endpoint" if endpoints else "no provider configured",
                 critical=True,
                 remediation_href="/models/cookbook",
                 remediation_label="CONFIGURE",
@@ -134,9 +136,6 @@ async def get_overview(request: Request) -> Overview:
 
     return Overview(
         version=get_settings().version,
-        main_model=main_endpoint.model if main_endpoint else None,
-        main_provider=main_endpoint.name if main_endpoint else None,
-        context_window=main_endpoint.context_window if main_endpoint else None,
         endpoint_count=len(endpoints),
         conversation_count=conversation_count,
         memory_count=memory_count,

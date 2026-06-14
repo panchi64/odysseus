@@ -26,10 +26,12 @@ import {
   useChatSessions,
 } from "~/features/chat/data";
 import {
+  effectiveContextWindow,
   effectiveSelection,
   effectiveValue,
   modelPickerGroups,
   selectModelByValue,
+  selectedModelLabel,
 } from "~/lib/stores/models";
 
 /** Overall status for the header flag. Any down capability is an alert; a
@@ -225,7 +227,11 @@ export function DashboardScreen(): JSX.Element {
         >
           {(o) => (
             <SystemStrip
-              band={overviewBand(o())}
+              band={overviewBand(
+                o(),
+                selectedModelLabel(),
+                effectiveContextWindow(),
+              )}
               capabilities={o().capabilities}
             />
           )}

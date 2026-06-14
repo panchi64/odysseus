@@ -22,9 +22,6 @@ interface CapabilityDTO {
 
 interface OverviewDTO {
   version: string;
-  main_model: string | null;
-  main_provider: string | null;
-  context_window: number | null;
   endpoint_count: number;
   conversation_count: number;
   memory_count: number;
@@ -54,9 +51,6 @@ function toCapability(dto: CapabilityDTO): CapabilityHealth {
 function toOverview(dto: OverviewDTO): Overview {
   return {
     version: dto.version,
-    mainModel: dto.main_model,
-    mainProvider: dto.main_provider,
-    contextWindow: dto.context_window,
     endpointCount: dto.endpoint_count,
     conversationCount: dto.conversation_count,
     memoryCount: dto.memory_count,
@@ -86,11 +80,17 @@ function toActiveRun(dto: RunDTO): ActiveRun {
 /* ── The system strip's facts band (presentation shaping of real overview data) ─ */
 
 /** The telemetry strip as labelled cells, in glance order. Only facts the
- *  backend actually reports — no fabricated tok/s, VRAM, or uplink. */
-export function overviewBand(o: Overview): SystemStat[] {
-  const band: SystemStat[] = [{ label: "MODEL", value: o.mainModel ?? "—" }];
-  if (o.contextWindow != null)
-    band.push({ label: "CTX", value: num(o.contextWindow, 0) });
+ *  backend actually reports — no fabricated tok/s, VRAM, or uplink. The active
+ *  model + its context window are the top-bar picker's live selection (passed
+ *  in), not a backend-bound default. */
+export function overviewBand(
+  o: Overview,
+  activeModel: string,
+  contextWindow: number | null,
+): SystemStat[] {
+  const band: SystemStat[] = [{ label: "MODEL", value: activeModel || "—" }];
+  if (contextWindow != null)
+    band.push({ label: "CTX", value: num(contextWindow, 0) });
   band.push(
     { label: "THREADS", value: num(o.conversationCount, 0) },
     { label: "MEMORIES", value: num(o.memoryCount, 0) },
