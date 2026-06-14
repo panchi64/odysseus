@@ -17,6 +17,7 @@ import {
   ListRow,
   ListToolbar,
   LoadingText,
+  NotConnectedOverlay,
   PageHeader,
   Panel,
   ProgressBar,
@@ -388,9 +389,124 @@ export function CookbookScreen(): JSX.Element {
         onChange={setTab}
       />
 
+      {/* Local models, remote endpoints, and embedding are still mock surfaces;
+          the page is connected only because COMPARE is wired, so each unbuilt tab
+          carries its own inline NOT CONNECTED marker. */}
       <Show when={tab() === "local"}>
-        <Stack gap={4}>
-          <Panel label="RECOMMENDED MODELS" flush>
+        <div class="relative">
+          <Stack gap={4}>
+            <Panel label="RECOMMENDED MODELS" flush>
+              <Suspense
+                fallback={
+                  <div class="p-3">
+                    <LoadingText />
+                  </div>
+                }
+              >
+                <Show when={models.error}>
+                  <ErrorState
+                    message="FAILED TO LOAD MODELS"
+                    hint={String(models.error)}
+                  />
+                </Show>
+                <Show
+                  when={!models.error && (models() ?? []).length}
+                  fallback={
+                    <Show when={!models.error}>
+                      <EmptyState
+                        icon="layers"
+                        message="NO MODELS"
+                        hint="No models found in registry."
+                      />
+                    </Show>
+                  }
+                >
+                  <div class="border-b border-line p-3">
+                    <ListToolbar
+                      query={modelView.query()}
+                      onQueryChange={modelView.setQuery}
+                      placeholder="Search models…"
+                      sortKey={modelView.sortKey()}
+                      sortOptions={modelView.sortOptions}
+                      onSortChange={modelView.setSort}
+                      dir={modelView.dir()}
+                      onToggleDir={modelView.toggleDir}
+                      count={modelView.count()}
+                      total={modelView.total()}
+                    />
+                  </div>
+                  <Show
+                    when={modelView.items().length}
+                    fallback={
+                      <EmptyState
+                        icon="search"
+                        message="NO MATCHES"
+                        hint="No models match your search."
+                      />
+                    }
+                  >
+                    <For each={modelView.items()}>
+                      {(m) => <DownloadRow model={m} />}
+                    </For>
+                  </Show>
+                </Show>
+              </Suspense>
+            </Panel>
+
+            <Panel
+              label="RUNNING SERVERS"
+              meta={
+                <Text variant="micro" tone="dim">
+                  {servers.filter((s) => s.status === "running").length} ACTIVE
+                </Text>
+              }
+              flush
+            >
+              <Suspense
+                fallback={
+                  <div class="p-3">
+                    <LoadingText />
+                  </div>
+                }
+              >
+                <Show when={serversResource.error}>
+                  <ErrorState
+                    message="FAILED TO LOAD SERVERS"
+                    hint={String(serversResource.error)}
+                  />
+                </Show>
+                <Show when={!serversResource.error}>
+                  <Show
+                    when={servers.length}
+                    fallback={
+                      <EmptyState
+                        icon="cpu"
+                        message="NO SERVERS"
+                        hint="No model servers configured."
+                      />
+                    }
+                  >
+                    <For each={servers}>
+                      {(srv) => (
+                        <ServerRow
+                          server={srv}
+                          onToggle={toggleServer}
+                          onRetry={retryServer}
+                        />
+                      )}
+                    </For>
+                  </Show>
+                </Show>
+              </Suspense>
+            </Panel>
+          </Stack>
+          <NotConnectedOverlay />
+        </div>
+      </Show>
+
+      <Show when={tab() === "remote"}>
+        <div class="relative">
+          <Panel label="REMOTE ENDPOINTS" flush>
             <Suspense
               fallback={
                 <div class="p-3">
@@ -398,173 +514,74 @@ export function CookbookScreen(): JSX.Element {
                 </div>
               }
             >
-              <Show when={models.error}>
+              <Show when={remoteEndpoints.error}>
                 <ErrorState
-                  message="FAILED TO LOAD MODELS"
-                  hint={String(models.error)}
+                  message="FAILED TO LOAD ENDPOINTS"
+                  hint={String(remoteEndpoints.error)}
                 />
               </Show>
               <Show
-                when={!models.error && (models() ?? []).length}
+                when={
+                  !remoteEndpoints.error && (remoteEndpoints() ?? []).length
+                }
                 fallback={
-                  <Show when={!models.error}>
+                  <Show when={!remoteEndpoints.error}>
                     <EmptyState
-                      icon="layers"
-                      message="NO MODELS"
-                      hint="No models found in registry."
+                      icon="link"
+                      message="NO ENDPOINTS"
+                      hint="Add a remote model API endpoint."
                     />
                   </Show>
                 }
               >
-                <div class="border-b border-line p-3">
-                  <ListToolbar
-                    query={modelView.query()}
-                    onQueryChange={modelView.setQuery}
-                    placeholder="Search models…"
-                    sortKey={modelView.sortKey()}
-                    sortOptions={modelView.sortOptions}
-                    onSortChange={modelView.setSort}
-                    dir={modelView.dir()}
-                    onToggleDir={modelView.toggleDir}
-                    count={modelView.count()}
-                    total={modelView.total()}
-                  />
-                </div>
-                <Show
-                  when={modelView.items().length}
-                  fallback={
-                    <EmptyState
-                      icon="search"
-                      message="NO MATCHES"
-                      hint="No models match your search."
-                    />
-                  }
-                >
-                  <For each={modelView.items()}>
-                    {(m) => <DownloadRow model={m} />}
-                  </For>
-                </Show>
-              </Show>
-            </Suspense>
-          </Panel>
-
-          <Panel
-            label="RUNNING SERVERS"
-            meta={
-              <Text variant="micro" tone="dim">
-                {servers.filter((s) => s.status === "running").length} ACTIVE
-              </Text>
-            }
-            flush
-          >
-            <Suspense
-              fallback={
-                <div class="p-3">
-                  <LoadingText />
-                </div>
-              }
-            >
-              <Show when={serversResource.error}>
-                <ErrorState
-                  message="FAILED TO LOAD SERVERS"
-                  hint={String(serversResource.error)}
-                />
-              </Show>
-              <Show when={!serversResource.error}>
-                <Show
-                  when={servers.length}
-                  fallback={
-                    <EmptyState
-                      icon="cpu"
-                      message="NO SERVERS"
-                      hint="No model servers configured."
-                    />
-                  }
-                >
-                  <For each={servers}>
-                    {(srv) => (
-                      <ServerRow
-                        server={srv}
-                        onToggle={toggleServer}
-                        onRetry={retryServer}
-                      />
-                    )}
-                  </For>
-                </Show>
-              </Show>
-            </Suspense>
-          </Panel>
-        </Stack>
-      </Show>
-
-      <Show when={tab() === "remote"}>
-        <Panel label="REMOTE ENDPOINTS" flush>
-          <Suspense
-            fallback={
-              <div class="p-3">
-                <LoadingText />
-              </div>
-            }
-          >
-            <Show when={remoteEndpoints.error}>
-              <ErrorState
-                message="FAILED TO LOAD ENDPOINTS"
-                hint={String(remoteEndpoints.error)}
-              />
-            </Show>
-            <Show
-              when={!remoteEndpoints.error && (remoteEndpoints() ?? []).length}
-              fallback={
-                <Show when={!remoteEndpoints.error}>
-                  <EmptyState
-                    icon="link"
-                    message="NO ENDPOINTS"
-                    hint="Add a remote model API endpoint."
-                  />
-                </Show>
-              }
-            >
-              <For each={remoteEndpoints()}>
-                {(ep) => (
-                  <ListRow
-                    label={ep.name}
-                    leading="link"
-                    right={
-                      <Row gap={2} align="center">
-                        <Text variant="micro" tone="dim">
-                          {ep.baseUrl}
-                        </Text>
-                        <Show when={ep.latencyMs}>
+                <For each={remoteEndpoints()}>
+                  {(ep) => (
+                    <ListRow
+                      label={ep.name}
+                      leading="link"
+                      right={
+                        <Row gap={2} align="center">
                           <Text variant="micro" tone="dim">
-                            {ep.latencyMs}MS
+                            {ep.baseUrl}
                           </Text>
-                        </Show>
-                        <StatusFlag status={ep.apiKeySet ? "nominal" : "warn"}>
-                          {ep.apiKeySet ? "KEY SET" : "NO KEY"}
-                        </StatusFlag>
-                        <StatusFlag
-                          status={
-                            ep.status === "ok"
-                              ? "nominal"
-                              : ep.status === "error"
-                                ? "alert"
-                                : "idle"
-                          }
-                        >
-                          {ep.status.toUpperCase()}
-                        </StatusFlag>
-                      </Row>
-                    }
-                  />
-                )}
-              </For>
-            </Show>
-          </Suspense>
-        </Panel>
+                          <Show when={ep.latencyMs}>
+                            <Text variant="micro" tone="dim">
+                              {ep.latencyMs}MS
+                            </Text>
+                          </Show>
+                          <StatusFlag
+                            status={ep.apiKeySet ? "nominal" : "warn"}
+                          >
+                            {ep.apiKeySet ? "KEY SET" : "NO KEY"}
+                          </StatusFlag>
+                          <StatusFlag
+                            status={
+                              ep.status === "ok"
+                                ? "nominal"
+                                : ep.status === "error"
+                                  ? "alert"
+                                  : "idle"
+                            }
+                          >
+                            {ep.status.toUpperCase()}
+                          </StatusFlag>
+                        </Row>
+                      }
+                    />
+                  )}
+                </For>
+              </Show>
+            </Suspense>
+          </Panel>
+          <NotConnectedOverlay />
+        </div>
       </Show>
 
       <Show when={tab() === "embedding"}>
-        <EmbeddingPanel />
+        <div class="relative">
+          <EmbeddingPanel />
+          <NotConnectedOverlay />
+        </div>
       </Show>
 
       <Show when={tab() === "compare"}>

@@ -35,6 +35,10 @@ class ChatCreate(BaseModel):
     # (`endpoint_id`) and which model on it (`model`, discovered from the provider).
     endpoint_id: str | None = None
     model: str | None = None
+    # When creating a fresh conversation, mark it a scratch thread the listing
+    # hides (the side-by-side compare panes set this). Ignored when continuing an
+    # existing conversation.
+    ephemeral: bool = False
 
 
 class RegenerateCreate(BaseModel):
@@ -157,7 +161,9 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             raise HTTPException(status_code=404, detail="conversation not found")
         conversation_id = body.conversation_id
     else:
-        conversation_id = await store.create_conversation(OPERATOR_ID)
+        conversation_id = await store.create_conversation(
+            OPERATOR_ID, ephemeral=body.ephemeral
+        )
 
     return _submit_turn(
         request, prompt=body.prompt, conversation_id=conversation_id, models=models

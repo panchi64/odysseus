@@ -437,6 +437,12 @@ export interface ChatStreamOptions {
   onConversationStarted?: (id: string) => void;
   /** Fired when a turn finishes (done or errored) — refresh the session list. */
   onTurnComplete?: () => void;
+  /** Override the model this stream's turns run on, instead of the global picker
+   *  selection. Used by the compare panes, which each own a per-pane model. */
+  selection?: () => ModelSelection | null;
+  /** Mark a freshly-created conversation as scratch (hidden from the sidebar
+   *  listing). Used by compare panes — throwaway threads, not saved history. */
+  ephemeral?: boolean;
 }
 
 export function createChatStream(
@@ -775,7 +781,7 @@ export function createChatStream(
       content: text.trim(),
       createdAt: new Date().toISOString(),
     };
-    const selection = effectiveSelection();
+    const selection = options.selection?.() ?? effectiveSelection();
     const assistantId = nextId("a");
     const assistantMsg: ChatMessage = {
       id: assistantId,
@@ -795,6 +801,9 @@ export function createChatStream(
         conversation_id: activeConversationId ?? undefined,
         endpoint_id: selection?.endpointId,
         model: selection?.model,
+        // Only meaningful when this turn creates the conversation; the backend
+        // ignores it when continuing one.
+        ephemeral: wasNew && options.ephemeral ? true : undefined,
       });
     } catch (err) {
       toast.error(
@@ -905,7 +914,7 @@ export function createChatStream(
     );
     if (i < 0) return;
     setSending(true);
-    const sel = effectiveSelection();
+    const sel = options.selection?.() ?? effectiveSelection();
     try {
       const created = await api.post<ChatCreatedDTO>("/chat/regenerate", {
         conversation_id: activeConversationId,
@@ -943,7 +952,7 @@ export function createChatStream(
     );
     if (j < 0) return;
     setSending(true);
-    const sel = selection ?? effectiveSelection();
+    const sel = selection ?? options.selection?.() ?? effectiveSelection();
     const prompt = newText.trim();
     try {
       const created = await api.post<ChatCreatedDTO>("/chat/edit", {

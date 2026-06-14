@@ -51,3 +51,22 @@ async def test_last_used_model_tracks_the_active_branch_across_a_version_switch(
         turn = (await store.messages_view(cid))[1]
         assert await store.switch_version(cid, turn.id, 0)
         assert await _model_after_cold_read(store, cid) == "model-a"
+
+
+async def test_ephemeral_conversations_are_hidden_from_the_listing_but_readable():
+    """A compare pane's scratch thread is a real conversation — addressable and
+    resumable by id — but it must not surface in the list or the count."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+
+        normal = await store.create_conversation(OPERATOR_ID)
+        scratch = await store.create_conversation(OPERATOR_ID, ephemeral=True)
+
+        listed = {c.id for c in await store.list_conversations(OPERATOR_ID)}
+        assert normal in listed
+        assert scratch not in listed
+        assert await store.count_conversations(OPERATOR_ID) == 1
+
+        # Still a real conversation: owned, addressable, and readable by id.
+        assert await store.exists(scratch, OPERATOR_ID)
+        assert await store.get_summary(scratch, OPERATOR_ID) is not None

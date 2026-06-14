@@ -42,6 +42,11 @@ class Conversation(SQLModel, table=True):
     # step with active_leaf_id by the write-behind store; structural metadata, not
     # user content, so it stays in the clear. Null until the first answer.
     model: str | None = None
+    # A scratch conversation that the listing hides — used by the side-by-side
+    # compare surface, where each pane is a throwaway thread the operator never
+    # meant to keep. Still a fully real conversation (readable, resumable, branch-
+    # able by id); it's only omitted from the conversation list and the count.
+    ephemeral: bool = Field(default=False)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

@@ -318,9 +318,11 @@ class ConversationStore:
     async def stop(self) -> None:
         await self._worker.stop()
 
-    async def create_conversation(self, owner_id: str, title: str | None = None) -> str:
+    async def create_conversation(
+        self, owner_id: str, title: str | None = None, ephemeral: bool = False
+    ) -> str:
         def work(session: Session) -> str:
-            conversation = Conversation(owner_id=owner_id, title=title)
+            conversation = Conversation(owner_id=owner_id, title=title, ephemeral=ephemeral)
             session.add(conversation)
             session.flush()
             return conversation.id
@@ -425,6 +427,7 @@ class ConversationStore:
             conversations = session.exec(
                 select(Conversation)
                 .where(Conversation.owner_id == owner_id)
+                .where(Conversation.ephemeral == False)  # noqa: E712 — SQL boolean compare
                 .order_by(Conversation.updated_at.desc())
             ).all()
             stats = _db_stats(session, [c.id for c in conversations])
@@ -443,6 +446,7 @@ class ConversationStore:
                 select(func.count())
                 .select_from(Conversation)
                 .where(Conversation.owner_id == owner_id)
+                .where(Conversation.ephemeral == False)  # noqa: E712 — SQL boolean compare
             ).one()
 
         return await in_session(self._engine, work)

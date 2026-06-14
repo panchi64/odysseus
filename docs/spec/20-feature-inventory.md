@@ -153,11 +153,13 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 
 ### Compare (`CMP-*`)
 
-**Purpose:** Compare models side by side, blind, then reveal.
+**Purpose:** Run the same prompt against two models side by side and read their answers together.
 
-- **CMP-1 (MUST).** The user MUST be able to send the same prompt to two or more models and see their responses side by side without knowing which is which.
-- **CMP-2 (MUST).** The user MUST be able to vote for a winner; only after voting are the model identities revealed.
-- **CMP-3 (SHOULD).** Past comparisons SHOULD be viewable and deletable.
+- **CMP-1 (MUST).** The operator MUST be able to send the same prompt to two explicitly-selected models — on the same endpoint or different ones — and see their responses stream in side by side, each labelled with its model.
+- **CMP-2 (SHOULD).** Each side SHOULD be a real conversation the operator can continue turn by turn (the shared prompt box drives both), at full chat fidelity (reasoning, tools, approvals, artifacts, previews).
+- **CMP-3 (SHOULD).** Compare threads SHOULD be scratch by default — kept out of the saved chat history so a quick comparison doesn't clutter it — while remaining real, resumable conversations for the lifetime of the comparison.
+
+> Earlier drafts framed Compare as a *blind arena* (anonymized responses, vote-to-reveal, a win-rate leaderboard). That was dropped in favour of a transparent, operator-driven side-by-side: the operator chooses both models up front and reads the answers attributed, rather than guessing and voting. The blind-arena framing can return later as a separate evaluation surface if wanted; it is intentionally not part of `CMP-*` today.
 
 ### External tools (MCP) (`MCP-*`)
 

@@ -291,6 +291,19 @@ export function selectModelByValue(value: string): void {
   setSelectedModel(decodeValue(value));
 }
 
+/** Encode a structured selection into the composite string the picker uses as a
+ *  value. For surfaces that own a *local* model pick (e.g. each compare pane)
+ *  rather than the global sticky selection. */
+export function encodeModelValue(sel: ModelSelection): string {
+  return encodeChoice(sel.endpointId, sel.model);
+}
+
+/** Decode a picker composite value back to a structured selection (null if
+ *  malformed) — the read side of `encodeModelValue` for locally-owned picks. */
+export function decodeModelValue(value: string): ModelSelection | null {
+  return decodeValue(value);
+}
+
 /** The endpoint catalog resource — shared by the picker and Settings. */
 export function useEndpoints(): Resource<ModelEndpoint[]> {
   return store.endpoints;
