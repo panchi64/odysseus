@@ -74,8 +74,8 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         Debian userland with ``python``, ``bash``, and the usual command-line tools
         on the path.
 
-        Your home and working directory is ``/work`` (where your shell starts). It
-        is writable and persists across calls in this conversation: files you write
+        Your working directory is ``/work`` (where your shell starts). It is
+        writable and persists across calls in this conversation: files you write
         and packages you install stay there, so you can run something, hit an error,
         fix it, and re-run without starting over. The rest of the filesystem is
         read-only, and ``/tmp`` is small and temporary — keep anything that matters

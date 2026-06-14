@@ -107,14 +107,17 @@ def test_env_is_explicit_only(tmp_path):
 # --- package installs redirect to the writable workspace ---------------------
 def test_workspace_env_defaults_point_under_the_workdir():
     env = workspace_env_defaults("/work")
-    # Installs, caches, and build temp all land in the writable bind-mount.
+    # Installs, caches, build temp, and HOME all land in the writable bind-mount.
     assert env["PIP_USER"] == "1"
     assert env["PYTHONUSERBASE"] == "/work/.local"
     assert env["PIP_CACHE_DIR"].startswith("/work/")
     assert env["TMPDIR"].startswith("/work/")
-    # Console scripts on PATH, but python/pip still resolve from the image.
-    assert env["PATH"].startswith("/work/.local/bin:")
-    assert "/usr/local/bin" in env["PATH"]
+    # HOME is a seal-excluded scratch subdir, not the workdir itself, so $HOME
+    # caches/config don't bloat the sealed archive.
+    assert env["HOME"] == "/work/.home"
+    # PATH is left to the configured image — forcing it would break a non-Debian
+    # image's binary layout.
+    assert "PATH" not in env
 
 
 def test_hardened_flags_inject_install_redirects(tmp_path):
@@ -148,16 +151,20 @@ def test_explicit_env_overrides_a_default(tmp_path):
     assert "PIP_USER=1" not in joined  # the caller's value wins, not duplicated
 
 
-def test_prepare_workspace_creates_the_tmpdir(tmp_path):
-    # TMPDIR must pre-exist or mktemp fails and tempfile falls back to the small
-    # tmpfs; the env points at "<workdir>/.tmp", so that subdir must be created.
-    target = workspace_env_defaults("/work")["TMPDIR"]
-    assert target == "/work/.tmp"
+def test_prepare_workspace_creates_the_scratch_dirs(tmp_path):
+    # TMPDIR/HOME must pre-exist or mktemp fails (tempfile falls back to the small
+    # tmpfs) and some tools refuse to start; the env points them at "<workdir>/.tmp"
+    # and "<workdir>/.home", so those subdirs must be created.
+    env = workspace_env_defaults("/work")
+    assert env["TMPDIR"] == "/work/.tmp"
+    assert env["HOME"] == "/work/.home"
     prepare_workspace(tmp_path)
     assert (tmp_path / ".tmp").is_dir()
+    assert (tmp_path / ".home").is_dir()
     # Idempotent — a second call over an existing workspace is fine.
     prepare_workspace(tmp_path)
     assert (tmp_path / ".tmp").is_dir()
+    assert (tmp_path / ".home").is_dir()
 
 
 # --- copy in / copy out ------------------------------------------------------

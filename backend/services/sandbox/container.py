@@ -129,47 +129,54 @@ async def await_listening(
             await asyncio.sleep(poll_interval_s)
 
 
-# The workspace-relative build-temp dir the env points ``TMPDIR`` at. Created
-# host-side before a run (see ``prepare_workspace``): the container's root is
-# read-only, and a missing ``TMPDIR`` makes ``mktemp`` fail outright while
-# Python's ``tempfile`` silently falls back to the tiny ``/tmp`` tmpfs.
+# Workspace-relative dirs the env defaults point at, created host-side before a
+# run (see ``prepare_workspace``) because the container's root is read-only.
+# ``.tmp`` backs ``TMPDIR`` (a missing one makes ``mktemp`` fail and Python's
+# ``tempfile`` fall back to the tiny ``/tmp`` tmpfs); ``.home`` backs ``HOME`` so
+# tool caches/config keyed off ``$HOME`` have somewhere writable. Both are sealed
+# out (see ``Settings.sandbox_session_seal_excludes``), so they're scratch — kept
+# off the encrypted archive and recreated each run.
 _TMP_SUBDIR = ".tmp"
+_HOME_SUBDIR = ".home"
 
 
 def workspace_env_defaults(workdir: str) -> dict[str, str]:
     """Package-manager env so installs land in the writable workspace, not the
-    read-only root: pip's ``--user`` target, caches, build temp, and console-script
-    ``bin`` all redirect under ``workdir`` (the persisted bind-mount). Without this
-    a plain ``pip install`` tries to write the immutable root and fails.
+    read-only root: pip's ``--user`` target, its caches, the build temp, and a
+    writable ``HOME`` all redirect under ``workdir`` (the persisted bind-mount).
+    Without this a plain ``pip install`` tries to write the immutable root and fails.
 
-    ``HOME=workdir`` is the catch-all (most tools key caches off ``$HOME``);
-    ``PIP_USER`` makes a flagless ``pip install`` target user-site, which Python
-    auto-adds to ``sys.path``; ``TMPDIR`` keeps wheel builds off the tiny ``/tmp``
-    tmpfs (``prepare_workspace`` must create it first). The ``PATH`` mirrors the
-    ``python:3.12-slim`` default (it tracks the configured image) with
-    ``{workdir}/.local/bin`` prepended for console scripts."""
+    ``PIP_USER`` makes a flagless ``pip install`` target user-site
+    (``PYTHONUSERBASE``), which Python auto-adds to ``sys.path``; ``TMPDIR`` keeps
+    wheel builds off the tiny ``/tmp`` tmpfs (``prepare_workspace`` creates it
+    first). ``HOME`` is the catch-all for tools that key caches/config off ``$HOME``
+    — it points at a seal-excluded subdir so that state stays writable but is
+    dropped on reap instead of bloating the encrypted archive.
+
+    ``PATH`` is deliberately **not** set: forcing it would override the configured
+    image's own layout and break a non-Debian image. A ``--user`` console script
+    therefore isn't on ``PATH`` by bare name — invoke it via ``python -m`` or its
+    ``{workdir}/.local/bin/`` path."""
     return {
-        "HOME": workdir,
+        "HOME": f"{workdir}/{_HOME_SUBDIR}",
         "PIP_USER": "1",
         "PYTHONUSERBASE": f"{workdir}/.local",
         "PIP_CACHE_DIR": f"{workdir}/.cache/pip",
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "TMPDIR": f"{workdir}/{_TMP_SUBDIR}",
-        "PATH": (
-            f"{workdir}/.local/bin:/usr/local/bin:/usr/local/sbin:"
-            "/usr/sbin:/usr/bin:/sbin:/bin"
-        ),
     }
 
 
 def prepare_workspace(workspace: Path) -> None:
-    """Create the writable subdirs the env defaults reference before a run.
+    """Create the writable scratch subdirs the env defaults reference before a run.
 
-    Only ``TMPDIR`` must pre-exist — ``mktemp`` errors and ``tempfile`` falls back
-    to the small tmpfs when it's missing; pip creates its own ``--user``/cache dirs.
-    The container's read-only root can't ``mkdir`` these, so we do it host-side on
-    the bind-mount (changes are visible live in the running session container)."""
-    (workspace / _TMP_SUBDIR).mkdir(parents=True, exist_ok=True)
+    ``TMPDIR`` must pre-exist — ``mktemp`` errors and ``tempfile`` falls back to the
+    small tmpfs when it's missing; ``HOME`` must exist or some tools refuse to start.
+    pip creates its own ``--user``/cache dirs. The container's read-only root can't
+    ``mkdir`` these, so we do it host-side on the bind-mount (changes are visible
+    live in the running session container)."""
+    for sub in (_TMP_SUBDIR, _HOME_SUBDIR):
+        (workspace / sub).mkdir(parents=True, exist_ok=True)
 
 
 def hardened_flags(
@@ -340,19 +347,22 @@ class ContainerSandbox(Sandbox):
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         """One-shot: run the spec in a throwaway container over a fresh temp dir."""
         with tempfile.TemporaryDirectory(prefix="odysseus-sbx-") as tmp:
-            return await self.run_in(Path(tmp), spec)
+            workspace = Path(tmp)
+            prepare_workspace(workspace)  # a fresh temp dir has none of the scratch dirs
+            return await self.run_in(workspace, spec)
 
     async def run_in(self, workspace: Path, spec: SandboxSpec) -> SandboxResult:
         """Run the spec in a throwaway container over a caller-owned workspace.
 
         Copies named inputs in and outputs back out; the workspace itself persists
-        for the caller (the live-session network path reuses its session dir)."""
+        for the caller (the live-session network path reuses its session dir). The
+        caller owns workspace prep (``prepare_workspace``) — the session path has
+        already done it via ``_ensure_workspace``, so we don't repeat it here."""
         runtime = self.runtime
         if runtime is None:  # disappeared since detection — fail closed, don't host-run
             raise SandboxError("no container runtime available")
 
         self._write_inputs(workspace, spec)
-        prepare_workspace(workspace)
         backstop_timed_out, exit_code, out, err = await run_subprocess(
             self._run_argv(runtime, spec, workspace),
             stdin=spec.stdin,
