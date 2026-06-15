@@ -107,6 +107,8 @@ bun run build       # static SPA build
 ```
 Screens not yet wired to the backend render on typed mock data behind a stable seam; swapping in real calls doesn't move any logic into the frontend, because none lives there.
 
+> **NOTE — fonts.** The UI is set in **JetBrains Mono**; install it for the intended typography. The spinners render with **Braille** glyphs, so install a font with Braille coverage (e.g. a Nerd Font, DejaVu, or Noto) to get the best animation — without one, your terminal/OS falls back to tofu boxes.
+
 ## Security & privacy
 
 Odysseus can do powerful things on your machine — sandboxed and (with approval) host code execution, file writes, model serving, email, web research — so I don't treat security as an afterthought. The full details are in [SECURITY.md](SECURITY.md).
