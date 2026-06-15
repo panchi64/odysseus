@@ -123,7 +123,10 @@ function ModelRow(props: { model: ModelEntry }): JSX.Element {
       <Text variant="body" tone="default" class="text-right tabular-nums">
         {bytes(props.model.sizeBytes)}
       </Text>
-      <StatusFlag status={suitabilityStatus[props.model.suitability]}>
+      <StatusFlag
+        status={suitabilityStatus[props.model.suitability]}
+        class="w-[5rem] justify-center justify-self-center"
+      >
         {props.model.suitability.toUpperCase()}
       </StatusFlag>
     </div>
