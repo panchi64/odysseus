@@ -68,6 +68,45 @@ async def test_store_records_and_rehydrates_from_db(tmp_path):
     await cold.stop()
 
 
+async def test_context_footprint_reads_last_response(tmp_path):
+    """The footprint helper reconstructs the active path's most recent response
+    usage — what seeds the context meter when an existing conversation loads, and
+    what the live run reports. It is the LAST response's prompt+generation, never a
+    sum across turns."""
+    from pydantic_ai import ModelResponse
+
+    from services.conversations import context_footprint
+
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    # No turns yet → nothing to report.
+    assert context_footprint(await store.history(conv)) is None
+
+    reg = RunRegistry()
+
+    async def run_turn(text: str):
+        orch = build_chat_orchestrator(
+            text,
+            model=TestModel(custom_output_text=f"re:{text}"),
+            categories={},
+            store=store,
+            conversation_id=conv,
+        )
+        run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await run.wait()
+
+    await run_turn("hello")
+    await run_turn("again")
+
+    history = await store.history(conv)
+    last_response = next(m for m in reversed(history) if isinstance(m, ModelResponse))
+    expected = last_response.usage.input_tokens + last_response.usage.output_tokens
+    assert context_footprint(history) == expected
+    await store.stop()
+
+
 async def test_content_is_encrypted_at_rest(tmp_path):
     from sqlmodel import Session, select
 

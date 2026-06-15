@@ -22,6 +22,7 @@ from .events import (
     ApprovalRequired,
     ArtifactPublished,
     CitationAdded,
+    ContextWindow,
     ConversationTitled,
     DocumentCommitted,
     DocumentCreated,
@@ -64,6 +65,7 @@ __all__ = [
     # event bodies (re-exported for producers)
     "RunStarted",
     "RunMetrics",
+    "ContextWindow",
     "RunEnded",
     "RunError",
     "StepStarted",

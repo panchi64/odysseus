@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 PROTOCOL_VERSION = 1
 
@@ -37,12 +37,50 @@ class RunStarted(_Body):
     protocol_version: int = PROTOCOL_VERSION
 
 
+class ContextWindow(_Body):
+    """How full a model's context window is after a turn — the single owner of
+    the fullness derivation and its severity thresholds. Built by
+    :meth:`from_usage` and emitted both live (run metrics) and on load
+    (conversation detail), so clients render one shape from either source."""
+
+    used: int  # tokens occupying the window: last response's prompt + generation
+    window: int  # the model's context window
+    fraction: float  # used / window, clamped to 0–1
+    level: Literal["nominal", "warn", "alert"]
+
+    @classmethod
+    def from_used(cls, used: int | None, window: int | None) -> ContextWindow | None:
+        """Derive the window state from the context footprint (``used``), or None
+        when there's no ceiling to measure against or no footprint was reported.
+        Severity is nominal until 75% full, warn to 90%, then alert."""
+        if not window or used is None:
+            return None
+        fraction = min(1.0, used / window)
+        level = "alert" if fraction >= 0.9 else "warn" if fraction >= 0.75 else "nominal"
+        return cls(used=used, window=window, fraction=fraction, level=level)
+
+
 class RunMetrics(_Body):
     type: Literal["run.metrics"] = "run.metrics"
     steps: int = 0
     tool_calls: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # The model's context window, when known — the ceiling the derived `context`
+    # measures against. Null when the endpoint declares none.
+    context_window: int | None = None
+    # The context footprint after this turn: the *last* model response's prompt +
+    # generation (what the next turn carries forward). Deliberately NOT the run's
+    # cumulative input/output above — those sum every internal model request and
+    # would overstate fullness several-fold on tool-calling or multi-turn runs.
+    context_used: int | None = None
+
+    @computed_field
+    @property
+    def context(self) -> ContextWindow | None:
+        """The context-window fullness after this turn — null when unmeasurable
+        (no window, or no footprint). Clients render it; they never derive it."""
+        return ContextWindow.from_used(self.context_used, self.context_window)
 
 
 class RunEnded(_Body):

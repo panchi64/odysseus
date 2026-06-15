@@ -55,6 +55,10 @@ class Run:
     task: asyncio.Task[None] | None = None
     cancel_requested: bool = False
     metrics: RunMetrics | None = None
+    # The active model's context window, when known — set by the orchestrator so
+    # emitted metrics can report how full the window is. None leaves the derived
+    # context fields null (no ceiling to measure against).
+    context_window: int | None = None
     # Set once the first answer token has streamed. The AE-5.3 rule — never
     # switch endpoints after answer text has begun — is enforced against this:
     # the orchestrator refuses to re-drive a turn onto another endpoint once it

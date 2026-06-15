@@ -11,7 +11,7 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
-import { streamRun, type RunEvent } from "~/lib/stream";
+import { streamRun, type ContextWindow, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
   ApprovalDecision,
@@ -20,6 +20,7 @@ import type {
   ChatMessage,
   ChatSession,
   ChatSummary,
+  ContextUsage,
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
@@ -201,6 +202,9 @@ interface MessageDTO {
 
 interface ConversationDetailDTO extends ConversationSummaryDTO {
   messages: MessageDTO[];
+  /** Context-window state reconstructed from the last turn's usage; null when
+   *  unavailable. Seeds the meter so an existing thread shows fullness on load. */
+  context: ContextWindow | null;
 }
 
 /** A readable one-line title for a thread that the operator hasn't named. */
@@ -398,6 +402,7 @@ async function fetchSession(id: string): Promise<ChatSession> {
     title: deriveTitle(dto),
     model: "",
     messages: dto.messages.map(toMessage),
+    context: dto.context,
   };
 }
 
@@ -444,6 +449,9 @@ export interface ChatStreamOptions {
   /** Mark a freshly-created conversation as scratch (hidden from the sidebar
    *  listing). Used by compare panes — throwaway threads, not saved history. */
   ephemeral?: boolean;
+  /** The loaded conversation's context-window state, seeded alongside its history
+   *  so an existing thread shows window fullness before its next turn runs. */
+  initialContext?: () => ContextUsage | null | undefined;
 }
 
 export function createChatStream(
@@ -453,6 +461,10 @@ export function createChatStream(
 ) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
+  // The latest run's context-window state, as derived by the backend. Null until
+  // a run reports it against a known window (loaded history carries none), which
+  // is when the context meter first appears.
+  const [usage, setUsage] = createSignal<ContextUsage | null>(null);
   let controller: AbortController | null = null;
   // The run currently streaming, if any — needed to cancel it on the backend
   // (aborting the SSE alone leaves the run executing server-side).
@@ -495,6 +507,9 @@ export function createChatStream(
     // screen, so a null key always starts empty.
     const seed = k === null ? [] : source ? source.slice() : [];
     setMessages(reconcile(seed));
+    // Seed the meter from the loaded thread's reconstructed state (null for a new
+    // conversation, or one whose usage/window couldn't be determined).
+    setUsage(k === null ? null : (options.initialContext?.() ?? null));
   });
 
   function patchById(id: string, fn: (m: ChatMessage) => void): void {
@@ -700,7 +715,13 @@ export function createChatStream(
         toast.error(ev.message || "The run failed.");
         patchById(assistantId, (m) => (m.streaming = false));
         break;
-      // run.started / run.ended / step.* / run.metrics / limit.notice: no store change
+      case "run.metrics":
+        // The backend derives the window's fullness; the meter just renders it.
+        // Authoritative either way: a null context (this turn ran on a windowless
+        // model, or reported no usage) clears a stale reading rather than keeping it.
+        setUsage(ev.context);
+        break;
+      // run.started / run.ended / step.* / limit.notice: no store change
     }
   }
 
@@ -904,6 +925,9 @@ export function createChatStream(
 
   function reseatFromDetail(detail: ConversationDetailDTO): void {
     setMessages(reconcile(detail.messages.map(toMessage)));
+    // The active path moved (version switch / rewind / delete), so the window
+    // state moves with it.
+    setUsage(detail.context);
   }
 
   function toastError(err: unknown, fallback: string): void {
@@ -1072,6 +1096,7 @@ export function createChatStream(
   return {
     messages,
     sending,
+    usage,
     send,
     cancel,
     resolveApproval,
@@ -1123,6 +1148,10 @@ export function mainChat(): MainChat {
       {
         onConversationStarted: (id) => setCurrentId(id),
         onTurnComplete: () => refreshSessions(),
+        // Withheld in lockstep with the history above, so the meter seeds from the
+        // loaded thread rather than the retained value of the one just left.
+        initialContext: () =>
+          session.loading ? undefined : session()?.context,
       },
     );
     const [warmResolved, setWarmResolved] = createSignal(false);

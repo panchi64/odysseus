@@ -64,7 +64,7 @@ class ChatCreated(BaseModel):
 
 async def _resolve_models(
     request: Request, endpoint_id: str | None, model: str | None
-) -> tuple[Model, Model, ModelSettings | None]:
+) -> tuple[Model, Model, ModelSettings | None, int | None]:
     """Resolve the `main` model plus the background (utility/title) pair, raising a
     clear 4xx/503 on misconfiguration.
 
@@ -76,7 +76,7 @@ async def _resolve_models(
     # that starts and immediately errors.
     registry = deps.models(request)
     try:
-        resolved = await registry.resolve(
+        main = await registry.resolve_detailed(
             "main",
             owner_id=OPERATOR_ID,
             override_endpoint_id=endpoint_id,
@@ -86,6 +86,7 @@ async def _resolve_models(
         raise HTTPException(status_code=404, detail="model endpoint not found") from None
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    resolved = main.model
 
     # Background work — verification (opt-in) and auto-titling (on by default) —
     # runs on the cheap `utility` model, with the title call wanting its
@@ -108,7 +109,7 @@ async def _resolve_models(
             )
         utility_model = background.model
         title_settings = background.reasoning_off
-    return resolved, utility_model, title_settings
+    return resolved, utility_model, title_settings, main.context_window
 
 
 def _submit_turn(
@@ -116,7 +117,7 @@ def _submit_turn(
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None],
+    models: tuple[Model, Model, ModelSettings | None, int | None],
     ephemeral: bool = False,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models and submit the Run.
@@ -126,13 +127,14 @@ def _submit_turn(
     ``ephemeral`` threads (e.g. the compare panes) are hidden from the listing and
     show no title, so auto-titling them is invisible work that only holds the run
     open after the answer — skip it by passing no title model."""
-    resolved, utility_model, title_settings = models
+    resolved, utility_model, title_settings, context_window = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
         utility_model=utility_model,
         title_model=None if ephemeral else utility_model,
         title_settings=None if ephemeral else title_settings,
+        context_window=context_window,
         capabilities=Capabilities(
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),

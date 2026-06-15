@@ -20,12 +20,28 @@ export interface RunStarted extends Base {
   kind: string;
   protocol_version: number;
 }
+/** How full a model's context window is after a turn. The backend owns the
+ *  whole derivation (used tokens, fraction, severity); clients only render it.
+ *  Null on a metrics frame when unmeasurable (no window or no token usage). */
+export interface ContextWindow {
+  /** Tokens occupying the window (prompt + generation). */
+  used: number;
+  /** The model's context window. */
+  window: number;
+  /** How full the window is, 0–1. */
+  fraction: number;
+  /** Window severity per the backend's thresholds. */
+  level: "nominal" | "warn" | "alert";
+}
+
 export interface RunMetrics extends Base {
   type: "run.metrics";
   steps: number;
   tool_calls: number;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** The context-window fullness after this turn, or null when unmeasurable. */
+  context: ContextWindow | null;
 }
 export interface RunEnded extends Base {
   type: "run.ended";

@@ -17,9 +17,10 @@ from pydantic import BaseModel
 
 from routes import deps
 from routes.deps import OPERATOR_ID
+from runs import ContextWindow
 from services.artifacts import ArtifactView, artifact_id_from_result
 from services.conversation_view import MessageView
-from services.conversations import ConversationSummaryView
+from services.conversations import ConversationSummaryView, context_footprint
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -72,6 +73,10 @@ class MessageOut(BaseModel):
 
 class ConversationDetail(ConversationSummary):
     messages: list[MessageOut]
+    # The context-window state reconstructed from the last turn's stored usage, so
+    # an existing thread shows its fullness on load — not just after the next turn.
+    # Null when usage or a window is unavailable.
+    context: ContextWindow | None = None
 
 
 class TitleUpdate(BaseModel):
@@ -148,9 +153,20 @@ async def _detail(
     request: Request, conversation_id: str, summary: ConversationSummaryView
 ) -> ConversationDetail:
     """Assemble a conversation's full render-ready detail (active path + published
-    artifacts). Shared by the read endpoint and the navigation endpoints that
-    return the post-move thread (version switch, rewind)."""
-    messages = await deps.store(request).messages_view(conversation_id)
+    artifacts + reconstructed context-window state). Shared by the read endpoint
+    and the navigation endpoints that return the post-move thread (version switch,
+    rewind)."""
+    store = deps.store(request)
+    messages = await store.messages_view(conversation_id)
+    # Seed the context meter from the last turn's footprint; only pay to resolve the
+    # window when there's a footprint to measure against it. The window is the
+    # default ``main`` model's (no per-conversation endpoint is persisted, so that's
+    # what the next turn would run on).
+    used = context_footprint(await store.history(conversation_id))
+    context: ContextWindow | None = None
+    if used is not None:
+        window = await deps.models(request).main_context_window(OPERATOR_ID)
+        context = ContextWindow.from_used(used, window)
     # Only pay for the artifacts lookup when a turn actually published something —
     # the vast majority of conversations never call publish_artifact.
     published = any(t.name.endswith("publish_artifact") for m in messages for t in m.tools)
@@ -161,6 +177,7 @@ async def _detail(
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],
+        context=context,
     )
 
 

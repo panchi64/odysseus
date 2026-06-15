@@ -37,10 +37,13 @@ from services import llm, reasoning
 class ResolvedModel:
     """A resolved role: the model to run, plus the settings that disable its
     reasoning (empty when the model isn't a recognized thinking model). Background
-    callers that want a fast, no-reasoning pass (titling) read ``reasoning_off``."""
+    callers that want a fast, no-reasoning pass (titling) read ``reasoning_off``.
+    ``context_window`` is the primary endpoint's window (None when undeclared) —
+    the chat layer forwards it so the run can report context fullness."""
 
     model: Model
     reasoning_off: ModelSettings
+    context_window: int | None = None
 
 
 class ModelRegistry:
@@ -277,7 +280,21 @@ class ModelRegistry:
                 thinking=primary.thinking,
             )
         )
-        return ResolvedModel(model=llm.build_chain(specs), reasoning_off=reasoning_off)
+        return ResolvedModel(
+            model=llm.build_chain(specs),
+            reasoning_off=reasoning_off,
+            context_window=primary.context_window,
+        )
+
+    async def main_context_window(self, owner_id: str) -> int | None:
+        """The default ``main`` chain head's context window, resolved without
+        building a runnable model — for read paths (conversation detail) that need
+        only the ceiling. None when ``main`` is unconfigured."""
+        try:
+            specs = await self._resolve_specs("main", owner_id=owner_id)
+        except DegradedCapabilityError:
+            return None
+        return specs[0].context_window if specs else None
 
     async def resolve_embedding_spec(self, owner_id: str) -> llm.EndpointSpec:
         """The embedding endpoint as a raw spec — embeddings hit the provider's

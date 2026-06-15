@@ -46,7 +46,7 @@ from runs import (
     RunMetrics,
     RunStatus,
 )
-from services.conversations import ConversationStore
+from services.conversations import ConversationStore, context_footprint
 from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
@@ -241,16 +241,20 @@ async def _drive_turn(
     # last turn.
     usage = result.usage
     prior = run.metrics
+    output = result.output
+    messages = result.all_messages()
     run.set_metrics(
         RunMetrics(
             steps=(prior.steps if prior else 0) + usage.requests,
             tool_calls=(prior.tool_calls if prior else 0) + usage.tool_calls,
             input_tokens=_sum_tokens(prior.input_tokens if prior else None, usage.input_tokens),
             output_tokens=_sum_tokens(prior.output_tokens if prior else None, usage.output_tokens),
+            context_window=run.context_window,
+            # The footprint is this turn's last-response total, not the run's summed
+            # token counts above — so a multi-step turn doesn't overstate fullness.
+            context_used=context_footprint(messages),
         )
     )
-    output = result.output
-    messages = result.all_messages()
     if isinstance(output, DeferredToolRequests) and output.approvals:
         _park_for_approval(run, agent, messages, output, announced)
         return _TurnResult(answer=None, messages=messages)
@@ -480,6 +484,7 @@ def build_chat_orchestrator(
     capabilities: Capabilities = _NO_CAPS,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
+    context_window: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -501,6 +506,7 @@ def build_chat_orchestrator(
     """
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
+        run.context_window = context_window
         agent = _build_agent(model, categories=categories)
         announced: set[str] = set()
         history = (

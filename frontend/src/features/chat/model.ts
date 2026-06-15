@@ -2,6 +2,13 @@
  *  types, `data.ts` maps backend responses/events to them — so screens don't
  *  change when the mapping behind them does. */
 
+import type { ContextWindow } from "~/lib/stream";
+
+/** The context-window state, derived and emitted by the backend (live over the
+ *  run stream, or reconstructed on conversation load). Purely a carrier — the
+ *  UI renders it, it does not compute it. */
+export type ContextUsage = ContextWindow;
+
 export type Role = "user" | "assistant";
 
 export type ToolStatus = "running" | "ok" | "error";
@@ -170,6 +177,9 @@ export interface ChatSession {
   title: string;
   model: string;
   messages: ChatMessage[];
+  /** Context-window state reconstructed from the thread's last turn, or null
+   *  when unavailable. Seeds the header meter on load. */
+  context: ContextUsage | null;
 }
 
 export interface ChatSummary {

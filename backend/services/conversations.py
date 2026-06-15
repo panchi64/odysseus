@@ -247,6 +247,20 @@ def _active_path_model(path: list[_Node]) -> str | None:
     return next((m for m in (_model_of(n.message) for n in reversed(path)) if m), None)
 
 
+def context_footprint(messages: list[ModelMessage]) -> int | None:
+    """The context footprint after a turn: the most recent model response's prompt
+    plus its generation — the tokens the next turn carries forward. None when there
+    is no response, or the provider reported no usage (local servers often leave
+    ``input_tokens`` at 0, which we can't tell from real and so treat as unmeasured
+    rather than render a misleading 0%). Shared by the live run metrics and the
+    cold-load conversation detail so both report the same quantity."""
+    for message in reversed(messages):
+        if isinstance(message, ModelResponse):
+            usage = message.usage
+            return usage.input_tokens + (usage.output_tokens or 0) if usage.input_tokens else None
+    return None
+
+
 def _project(message: ModelMessage) -> tuple[str, str]:
     """Derive (kind, text) for listing/search from a ModelMessage."""
     kind = getattr(message, "kind", "")

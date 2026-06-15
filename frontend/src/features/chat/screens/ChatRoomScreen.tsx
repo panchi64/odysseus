@@ -40,6 +40,7 @@ import {
   useChatSessions,
 } from "../data";
 import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
+import { ContextMeter } from "../components/ContextMeter";
 import { MessageItem } from "../components/MessageItem";
 import { SessionList } from "../components/SessionList";
 
@@ -353,6 +354,9 @@ export function ChatRoomScreen(): JSX.Element {
             >
               {stream.sending() ? "STREAMING" : "IDLE"}
             </StatusFlag>
+            <Show when={stream.usage()}>
+              {(usage) => <ContextMeter usage={usage()} />}
+            </Show>
             <Menu
               trigger={
                 <Button variant="ghost" aria-label="Session actions">
