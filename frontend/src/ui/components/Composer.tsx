@@ -93,6 +93,18 @@ export function Composer(props: ComposerProps): JSX.Element {
     return key;
   });
 
+  // Re-focus when the field re-enables after a run finishes (disabled true →
+  // false), so the conversation continues without a click. Gated on `autofocus`
+  // — same opt-in as the mount/switch focus above — and only on the enabling
+  // edge, so an idle field toggling for any other reason doesn't grab focus.
+  let wasDisabled = untrack(() => props.disabled) ?? false;
+  createEffect(() => {
+    const disabled = props.disabled ?? false;
+    if (wasDisabled && !disabled && untrack(() => props.autofocus))
+      field?.focus();
+    wasDisabled = disabled;
+  });
+
   const submit = () => {
     const value = text().trim();
     if (!value || props.disabled) return;
