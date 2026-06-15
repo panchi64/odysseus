@@ -4,6 +4,7 @@ copy in/out, and the deliberate host escape hatch."""
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 
 import pytest
@@ -80,6 +81,10 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     joined = " ".join(argv)
     assert "--network none" in joined  # egress off by default
     assert "--cap-drop ALL" in joined
+    # Runs as the workspace's host owner, not the image's root: with all caps
+    # dropped an in-container root can't write the uid-owned /work, so installs
+    # fall back to the tiny /tmp tmpfs and die with ENOSPC.
+    assert f"--user {os.getuid()}:{os.getgid()}" in joined
     assert "--security-opt no-new-privileges" in joined
     assert "--read-only" in joined
     assert "--pids-limit 256" in joined

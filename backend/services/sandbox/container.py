@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -140,6 +141,21 @@ _TMP_SUBDIR = ".tmp"
 _HOME_SUBDIR = ".home"
 
 
+def workspace_owner() -> str:
+    """The ``uid:gid`` the container must run as so it can write the workspace.
+
+    The bind-mounted ``/work`` is created host-side by **this** process and owned
+    by its uid, mode 0755. We also ``--cap-drop ALL``, which strips
+    ``CAP_DAC_OVERRIDE`` — so an in-container *root* (uid 0) is bound by ordinary
+    permission bits and, owning none of ``/work``, cannot write it: every install
+    redirect (``TMPDIR``, pip's ``--user`` target/cache) then fails, ``tempfile``
+    falls back to the tiny ``/tmp`` tmpfs, and a real install dies with ENOSPC
+    despite ample disk. Running the box as the workspace's owner makes ``/work``
+    writable without re-granting any capability, and keeps files the agent creates
+    owned by this process so the seal/restore can read them."""
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def workspace_env_defaults(workdir: str) -> dict[str, str]:
     """Package-manager env so installs land in the writable workspace, not the
     read-only root: pip's ``--user`` target, its caches, the build temp, and a
@@ -201,6 +217,12 @@ def hardened_flags(
         "bridge" if network else "none",
         "--cap-drop",
         "ALL",
+        # Run as the workspace's host owner (this process), not the image's root:
+        # with all caps dropped there's no CAP_DAC_OVERRIDE, so an in-container root
+        # couldn't write the uid-owned /work and installs would fall back to the
+        # tiny /tmp tmpfs and fail with ENOSPC. See ``workspace_owner``.
+        "--user",
+        workspace_owner(),
         "--security-opt",
         "no-new-privileges",
         "--read-only",  # root fs immutable; only the mount + tmpfs are writable
