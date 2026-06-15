@@ -1,6 +1,7 @@
 import {
   createEffect,
   createResource,
+  createRoot,
   createSignal,
   onCleanup,
   type Accessor,
@@ -1082,4 +1083,55 @@ export function createChatStream(
     removeMessage,
     toggleMessagePin,
   };
+}
+
+/* ── The persistent main-chat controller ──────────────────────────────────────
+   The chat room's stream, its selected conversation, and its loaded history live
+   here — under a never-disposed root — rather than inside the screen component.
+   Navigating away and back therefore no longer tears down an in-flight turn: a
+   run started on one visit keeps streaming into this store, and re-entering the
+   room re-binds to it instead of fetching an as-yet-unpersisted (empty) thread.
+   (A turn's messages are only persisted when it finishes, so a mid-stream refetch
+   would otherwise read an empty conversation and the room would render blank.)
+
+   The compare panes still spin up their own throwaway `createChatStream`s — only
+   the single main room is this long-lived singleton. */
+export interface MainChat {
+  currentId: Accessor<string | null>;
+  setCurrentId: (id: string | null) => void;
+  stream: ReturnType<typeof createChatStream>;
+  /** Whether the one-time warm-resume entry intent has run this app session. The
+   *  flag is part of the singleton so it survives navigation — see the screen. */
+  warmResolved: Accessor<boolean>;
+  markWarmResolved: () => void;
+}
+
+let _mainChat: MainChat | undefined;
+
+/** The app-wide chat room controller — created once, then reused across mounts. */
+export function mainChat(): MainChat {
+  if (_mainChat) return _mainChat;
+  return (_mainChat = createRoot(() => {
+    const [currentId, setCurrentId] = createSignal<string | null>(null);
+    const session = useChatSession(currentId);
+    const stream = createChatStream(
+      // Withhold the source while history loads — the resource still reports the
+      // previous thread's value across a source change (Solid retains it), and
+      // feeding that to the stream would seed the wrong thread.
+      () => (session.loading ? undefined : session()?.messages),
+      currentId,
+      {
+        onConversationStarted: (id) => setCurrentId(id),
+        onTurnComplete: () => refreshSessions(),
+      },
+    );
+    const [warmResolved, setWarmResolved] = createSignal(false);
+    return {
+      currentId,
+      setCurrentId,
+      stream,
+      warmResolved,
+      markWarmResolved: () => setWarmResolved(true),
+    } satisfies MainChat;
+  }));
 }

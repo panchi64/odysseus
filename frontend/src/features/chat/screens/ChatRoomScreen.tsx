@@ -32,13 +32,11 @@ import {
   REVEAL_SPEED_MS,
   consumePendingDraft,
   consumeRequestedSession,
-  createChatStream,
   deleteConversation,
   entrySessionId,
-  refreshSessions,
+  mainChat,
   renameConversation,
   titleReveals,
-  useChatSession,
   useChatSessions,
 } from "../data";
 import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
@@ -51,24 +49,11 @@ import { SessionList } from "../components/SessionList";
  *  a thread to open or a message to start. */
 export function ChatRoomScreen(): JSX.Element {
   const sessions = useChatSessions();
-  // null = a new, unsaved conversation.
-  const [currentId, setCurrentId] = createSignal<string | null>(null);
-  const session = useChatSession(currentId);
-  // While a thread's history loads, the resource still reports the *previous*
-  // thread's messages (Solid retains a resource's last value across a source
-  // change). Feeding that stale value to the stream would seed the outgoing
-  // thread's history into the incoming one, so withhold the source until it has
-  // resolved for the current id — the stream re-seeds once it arrives.
-  const stream = createChatStream(
-    () => (session.loading ? undefined : session()?.messages),
-    currentId,
-    {
-      // A new thread adopts its backend id once persisted; the list refreshes so
-      // the sidebar reflects the new/updated thread.
-      onConversationStarted: (id) => setCurrentId(id),
-      onTurnComplete: () => refreshSessions(),
-    },
-  );
+  // The room's stream, selected conversation (null = new, unsaved), and loaded
+  // history live in a persistent module-level controller — not in this component
+  // — so navigating away mid-turn and back doesn't tear down the in-flight run.
+  const { currentId, setCurrentId, stream, warmResolved, markWarmResolved } =
+    mainChat();
 
   // Follow the stream: keep the transcript pinned to the bottom while the answer
   // arrives, yield the moment the operator scrolls up to read back, and re-attach
@@ -162,10 +147,10 @@ export function ChatRoomScreen(): JSX.Element {
   const headerModel = () =>
     currentSummary()?.model ?? (selectedModelLabel() || "NO MODEL");
 
-  // Resolve the entry intent once: new-from-overview › open-specific › recency.
-  const [resolved, setResolved] = createSignal(false);
+  // Resolve the entry intent: new-from-overview › open-specific › recency.
   createEffect(() => {
-    if (resolved()) return;
+    // Explicit cross-surface intents (the overview launchpad) are deliberate and
+    // apply on every entry — even after the one-time warm resume below.
     const draft = consumePendingDraft();
     if (draft) {
       // Only adopt an explicit pick — an empty draft (discovery not yet resolved
@@ -173,19 +158,23 @@ export function ChatRoomScreen(): JSX.Element {
       if (draft.model) setSelectedModel(draft.model);
       setCurrentId(null);
       queueMicrotask(() => void stream.send(draft.text));
-      setResolved(true);
+      markWarmResolved();
       return;
     }
     const requested = consumeRequestedSession();
     if (requested) {
       setCurrentId(requested);
-      setResolved(true);
+      markWarmResolved();
       return;
     }
+    // Recency resume is a once-per-session entry concern. The room's state is now
+    // persistent across navigation, so re-running it on every remount would yank
+    // the operator off whatever thread (or fresh composer) they'd left open.
+    if (warmResolved()) return;
     const list = sessions();
     if (!list) return; // wait for the seam to resolve
-    setCurrentId(entrySessionId(list));
-    setResolved(true);
+    if (untrack(currentId) === null) setCurrentId(entrySessionId(list));
+    markWarmResolved();
   });
 
   const startNew = () => setCurrentId(null);
