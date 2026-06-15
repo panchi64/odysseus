@@ -4,10 +4,6 @@
 
 import type { AssistantBlock, BlockKind } from "./model";
 
-/** Over this many *leading* collapsible work groups, the older ones fold into a
- *  single WORK LOG accordion so the screen isn't buried in process. */
-export const WORK_LOG_LIMIT = 5;
-
 /** The answer the operator reads — every `text` block in order. */
 export function answerText(blocks: AssistantBlock[] | undefined): string {
   return (blocks ?? [])
@@ -137,9 +133,11 @@ function isCollapsible(group: BlockGroup): boolean {
 }
 
 /* ── Compaction layout ────────────────────────────────────────────────────────
-   Fold the *leading* run of collapsible work into one accordion when it grows
-   past the limit, always leaving the active/streaming tail and everything after
-   it visible (the answer, pending actions, outputs, and live momentum). */
+   Fold *every* maximal run of consecutive collapsible work into its own WORK LOG
+   accordion, always leaving the non-collapsible blocks (the answer, pending
+   actions, outputs) and the active/streaming tail visible and in order — so the
+   turn's true think → tool → text → … narrative survives but the process recedes
+   into per-segment accordions instead of burying the screen. */
 
 export type LayoutItem =
   | { type: "group"; group: BlockGroup }
@@ -147,19 +145,26 @@ export type LayoutItem =
 
 export function planTurnLayout(
   groups: BlockGroup[],
-  opts: { limit?: number; streaming?: boolean } = {},
+  opts: { streaming?: boolean } = {},
 ): LayoutItem[] {
-  const limit = opts.limit ?? WORK_LOG_LIMIT;
-  // While streaming, the trailing group is "live" — keep it out of the fold.
+  // While streaming, the trailing group is "live" — keep it inline, never folded.
   const activeIndex = opts.streaming ? groups.length - 1 : -1;
-  let n = 0;
-  while (n < groups.length && n !== activeIndex && isCollapsible(groups[n]))
-    n++;
-  if (n <= limit) return groups.map((group) => ({ type: "group", group }));
-  return [
-    { type: "worklog", groups: groups.slice(0, n) },
-    ...groups.slice(n).map((group) => ({ type: "group", group }) as LayoutItem),
-  ];
+  const items: LayoutItem[] = [];
+  let run: BlockGroup[] = [];
+  const flush = (): void => {
+    if (run.length) items.push({ type: "worklog", groups: run });
+    run = [];
+  };
+  groups.forEach((group, i) => {
+    if (i !== activeIndex && isCollapsible(group)) {
+      run.push(group);
+    } else {
+      flush();
+      items.push({ type: "group", group });
+    }
+  });
+  flush();
+  return items;
 }
 
 /** The latest tool/host call in a set of groups, with the reasoning that led to

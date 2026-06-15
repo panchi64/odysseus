@@ -6,6 +6,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
   type JSX,
 } from "solid-js";
 import { Caret, Icon, Markdown, Text, cx } from "~/ui";
@@ -198,34 +199,36 @@ function topSpacing(items: LayoutItem[], index: number): TopSpacing {
   return isRail(items[index]) && isRail(items[index - 1]) ? "connect" : "gap";
 }
 
-/** The compacted work log: a leading run of process blocks folded into one
- *  accordion that peeks the latest call + its rationale, so a long turn doesn't
- *  bury the screen. Expanding restores the full ordered run. */
+/** The compacted work log: one run of consecutive process blocks folded into a
+ *  single accordion that peeks the latest call + its rationale, so a busy turn
+ *  doesn't bury the screen. Expanding restores the full ordered run. */
 function WorkLogAccordion(
   props: {
     groups: BlockGroup[];
+    /** Open state is owned by the turn (keyed by a stable id) so it survives the
+     *  remount when a streaming delta rebuilds the layout — a local signal here
+     *  would reset on every new block. */
+    open: boolean;
+    onToggle: () => void;
     forceOpen?: boolean;
     top?: TopSpacing;
   } & RowHandlers,
 ): JSX.Element {
-  const [open, setOpen] = createSignal(false);
-  createEffect(() => {
-    if (props.forceOpen !== undefined) setOpen(props.forceOpen);
-  });
   const peek = createMemo(() => peekLatestTool(props.groups));
 
   return (
     <div class={fullWidthTop(props.top)}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => props.onToggle()}
         class="flex w-full items-center gap-2 text-left text-dim transition-colors hover:text-text"
       >
-        <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} />
+        <Icon name={props.open ? "chevron-down" : "chevron-right"} size={12} />
         <Text variant="label" tone="dim">
-          WORK LOG · {props.groups.length} STEPS
+          WORK LOG · {props.groups.length}{" "}
+          {props.groups.length === 1 ? "STEP" : "STEPS"}
         </Text>
-        <Show when={!open() && peek()}>
+        <Show when={!props.open && peek()}>
           {(p) => (
             <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
               {p().name}
@@ -234,7 +237,7 @@ function WorkLogAccordion(
           )}
         </Show>
       </button>
-      <Show when={open()}>
+      <Show when={props.open}>
         {/* Every folded group is a rail block, so they connect into one line. */}
         <div class="mt-2">
           <For each={props.groups}>
@@ -278,6 +281,24 @@ export function TurnBlocks(
     return props.streaming && gs.length ? gs[gs.length - 1].id : null;
   });
 
+  // Each work log's open state lives here, keyed by its run's first-block id (a
+  // stable id), so it survives the `<For>` remount when a streaming delta
+  // rebuilds `layout()`. Toggling the turn-level expand/collapse-all wipes the
+  // per-log overrides so the global control re-takes command of every log.
+  const [openLogs, setOpenLogs] = createSignal<Record<string, boolean>>({});
+  createEffect(
+    on(
+      () => props.forceOpen,
+      () => setOpenLogs({}),
+      { defer: true },
+    ),
+  );
+  const logOpen = (id: string): boolean =>
+    openLogs()[id] ?? props.forceOpen ?? false;
+  const toggleLog = (id: string): void => {
+    setOpenLogs({ ...openLogs(), [id]: !logOpen(id) });
+  };
+
   return (
     <div>
       <For each={layout()}>
@@ -285,6 +306,8 @@ export function TurnBlocks(
           item.type === "worklog" ? (
             <WorkLogAccordion
               groups={item.groups}
+              open={logOpen(item.groups[0].id)}
+              onToggle={() => toggleLog(item.groups[0].id)}
               top={topSpacing(layout(), i())}
               forceOpen={props.forceOpen}
               onResolveApproval={props.onResolveApproval}
