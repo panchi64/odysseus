@@ -1,11 +1,4 @@
-import {
-  createMemo,
-  createSignal,
-  For,
-  Show,
-  Suspense,
-  type JSX,
-} from "solid-js";
+import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import {
   Button,
   Checkbox,
@@ -43,8 +36,12 @@ import type { DuplicateGroup, Memory, RecallHit } from "../model";
 export function MemoryTimelineScreen(): JSX.Element {
   const memories = useMemories();
 
+  // Read `.latest`, never the resource accessor: the InstrumentBand and the
+  // toolbar's count()/total() render outside the list's <Suspense>, so a
+  // suspending read would bubble to the app's fallback-less root <Suspense> and
+  // blank the whole page on initial load. `.latest` never suspends.
   const view = createListView<Memory>({
-    source: () => memories() ?? [],
+    source: () => memories.latest ?? [],
     search: (m) => m.content,
     sorts: {
       recent: {
@@ -57,7 +54,7 @@ export function MemoryTimelineScreen(): JSX.Element {
   });
 
   const counts = createMemo(() => {
-    const all = memories() ?? [];
+    const all = memories.latest ?? [];
     let pinned = 0;
     let embedded = 0;
     for (const m of all) {
@@ -162,7 +159,7 @@ export function MemoryTimelineScreen(): JSX.Element {
     setDedupOpen(true);
     setAuditing(true);
     try {
-      setGroups(await auditDuplicates(memories() ?? []));
+      setGroups(await auditDuplicates(memories.latest ?? []));
     } catch {
       toast.error("Audit failed.");
       setGroups([]);
@@ -244,7 +241,10 @@ export function MemoryTimelineScreen(): JSX.Element {
           />
         </div>
 
-        <Suspense
+        {/* Loading is driven by the non-suspending `.loading` flag, not <Suspense>:
+            the list source reads `memories.latest`, which never suspends. */}
+        <Show
+          when={!(memories.loading && view.items().length === 0)}
           fallback={
             <div class="p-4">
               <LoadingText />
@@ -309,7 +309,7 @@ export function MemoryTimelineScreen(): JSX.Element {
               )}
             </For>
           </Show>
-        </Suspense>
+        </Show>
       </Panel>
 
       {/* Add / edit memory */}

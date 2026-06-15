@@ -232,8 +232,14 @@ export function CookbookScreen(): JSX.Element {
     (q) => searchModels(q),
   );
   const isSearching = () => debounced().length > 0;
+  // Read `.latest`, never the resource accessor: the toolbar's count()/total()
+  // render outside the list's <Suspense>, so a suspending read here would bubble
+  // to the app's fallback-less root <Suspense> and blank the whole page on every
+  // keystroke. `.latest` keeps the prior rows on screen while a search is in flight.
   const displayModels = (): ModelEntry[] =>
-    isSearching() ? (searchResults() ?? []) : (models() ?? []);
+    isSearching() ? (searchResults.latest ?? []) : (models.latest ?? []);
+  const modelsLoading = () =>
+    isSearching() ? searchResults.loading : models.loading;
 
   const modelView = createListView<ModelEntry>({
     // Sort-only over the displayed set (curated list or search results); filtering is
@@ -325,7 +331,7 @@ export function CookbookScreen(): JSX.Element {
         subtitle="Local and remote model serving, hardware fit, embedding configuration, and side-by-side comparison."
         assetId="SYS-MDL-03.1"
         actions={
-          <Show when={hardware()}>
+          <Show when={hardware.latest}>
             {(hw) => (
               <StatusFlag status="nominal" dot>
                 {hw().backend}
@@ -408,7 +414,12 @@ export function CookbookScreen(): JSX.Element {
                     total={modelView.total()}
                   />
                 </div>
-                <Suspense
+                {/* Loading is driven by the resource's non-suspending `.loading`
+                    flag, not <Suspense>: `displayModels()` reads `.latest`, which
+                    never suspends, so a Suspense here would never fire. Prior rows
+                    stay visible during a refetch; only a cold load shows LOADING. */}
+                <Show
+                  when={!(modelsLoading() && modelView.items().length === 0)}
                   fallback={
                     <div class="p-3">
                       <LoadingText
@@ -475,7 +486,7 @@ export function CookbookScreen(): JSX.Element {
                       </div>
                     </div>
                   </Show>
-                </Suspense>
+                </Show>
               </Show>
             </Panel>
 
