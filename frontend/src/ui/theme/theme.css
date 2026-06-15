@@ -85,6 +85,17 @@ body {
   transition-duration: var(--motion-fast);
 }
 
+/* Clickable affordance. Tailwind v4's preflight drops the legacy
+   `cursor: pointer` on buttons (browser default is now the arrow), so restore it
+   for every interactive control. Disabled controls fall back to `not-allowed`. */
+:where(button, [role="button"], select, label[for]):not(:disabled) {
+  cursor: pointer;
+}
+:where(button, [role="button"], select):disabled,
+:where(button, [role="button"])[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
 /* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
 @keyframes ody-blink {
   0%,
