@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from sqlmodel import Session, select
 
-from core.db import init_db, make_engine
+from core.db import in_session, init_db, make_engine
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
+from models.registry import ModelRole
 from services.registry import ModelRegistry
 
 from ._helpers import client_app
@@ -140,6 +142,42 @@ async def test_unknown_endpoint_in_chain_is_not_found():
     reg = await _registry()
     with pytest.raises(NotFoundError):
         await reg.set_role(OWNER, "main", ["does-not-exist"])
+
+
+async def test_delete_endpoint_prunes_it_from_role_chains():
+    """Deleting an endpoint must not leave a dangling id in any chain that
+    referenced it — otherwise a later resolve trips on the missing endpoint."""
+    reg = await _registry()
+    primary = await reg.create_endpoint(OWNER, name="a", base_url="http://a/v1", model="m1")
+    backup = await reg.create_endpoint(OWNER, name="b", base_url="http://b/v1", model="m2")
+    await reg.set_role(OWNER, "main", [primary.id, backup.id])
+
+    await reg.delete_endpoint(OWNER, backup.id)
+
+    assert await reg.get_role(OWNER, "main") == [primary.id]
+
+
+async def test_main_context_window_survives_a_stale_chain():
+    """A dangling id in the ``main`` chain degrades the context meter to None
+    rather than raising — the conversation read must not 500 on it."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(
+        OWNER, name="local", base_url="http://x/v1", model="qwen", context_window=8192
+    )
+    await reg.set_role(OWNER, "main", [ep.id])
+    assert await reg.main_context_window(OWNER) == 8192
+
+    # Simulate a chain left pointing at an endpoint that no longer exists (an
+    # out-of-band delete, or a pre-prune dangling reference).
+    def plant_stale(session: Session) -> None:
+        binding = session.exec(
+            select(ModelRole).where(ModelRole.role == "main")
+        ).one()
+        binding.endpoint_ids = ["a296928be47b4011ba15a9b806fb31e4"]
+        session.add(binding)
+
+    await in_session(reg._engine, plant_stale)
+    assert await reg.main_context_window(OWNER) is None
 
 
 # --- REST surface ---------------------------------------------------------

@@ -147,6 +147,16 @@ class ModelRegistry:
             endpoint = session.get(ModelEndpoint, endpoint_id)
             if endpoint is not None:
                 session.delete(endpoint)
+            # Prune the id from every role chain that referenced it, so deleting an
+            # endpoint can never leave a dangling reference a later resolve trips on.
+            bindings = session.exec(
+                select(ModelRole).where(ModelRole.owner_id == owner_id)
+            ).all()
+            for binding in bindings:
+                if endpoint_id in binding.endpoint_ids:
+                    binding.endpoint_ids = [e for e in binding.endpoint_ids if e != endpoint_id]
+                    binding.updated_at = datetime.now(UTC)
+                    session.add(binding)
 
         await in_session(self._engine, work)
 
@@ -289,10 +299,12 @@ class ModelRegistry:
     async def main_context_window(self, owner_id: str) -> int | None:
         """The default ``main`` chain head's context window, resolved without
         building a runnable model — for read paths (conversation detail) that need
-        only the ceiling. None when ``main`` is unconfigured."""
+        only the ceiling. None when ``main`` is unconfigured — or when its chain is
+        unresolvable (e.g. a stale id left by an out-of-band delete): the context
+        meter is a read-path nicety and must never fail the conversation read."""
         try:
             specs = await self._resolve_specs("main", owner_id=owner_id)
-        except DegradedCapabilityError:
+        except (DegradedCapabilityError, NotFoundError):
             return None
         return specs[0].context_window if specs else None
 
