@@ -64,7 +64,7 @@
 | AE-1.4 in-turn self-check of deliverables | ✅ | system prompt + the `AE-5.2` verifier | Systemic counterpart below. |
 | AE-1.5 max-step bound, report on hit | ✅ | engine step ceiling | |
 | AE-1.6 optional per-turn tool-call ceiling | 🟡 | run bounds | SHOULD; ceiling seam present, not fully wired. |
-| AE-2 tool categories | 🟡 | `tools/` (`builtin`, `memory`, `code`, `preview`) | 4 of ~14 categories built; rest land with their capability. See [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md). |
+| AE-2 tool categories | 🟡 | `tools/` (`builtin`, `memory`, `conversations`, `code`, `preview`, `web`) | 6 of ~14 categories built; rest land with their capability. See [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md). |
 | AE-2.1 typed params + arg validation | ✅ | Pydantic AI tool schemas | |
 | AE-2.2 tool always returns actionable result; failure ≠ abort | ✅ | tools return error payloads, not raises | memory/code tools model this. |
 | AE-3.1 sensitive set requires explicit approval | ✅ | D20 deferred-tool pause; `tools/code.py` host tool | Mechanism built; expands as sensitive tools land. |
@@ -98,6 +98,7 @@
 | CHAT-4 summarize near context limit (utility model) | 🔭 | — | With `AE-5.4` (D6). Utility role already exists in the registry. |
 | CHAT-5 stop in-progress; resume after disconnect | ✅ | `/runs/{id}/cancel`, `runs/stream` | |
 | CHAT-6 ask AI to rewrite/rephrase a message | ⬜ | — | SHOULD; not built. |
+| CHAT-7 agent searches/reads the operator's other conversations | ✅ | `services/conversation_search` (hybrid recall + transcript read), `tools/conversations.py`, per-message embeddings in `services/conversations` drainer | Mirrors memory recall (dense+sparse, RRF; `XC-DEG-1` keyword fallback). Excludes the current + ephemeral threads; read-only, not approval-gated. |
 
 > **Supporting infra, not a named spec feature:** a **conversation read/manage surface** (`services/conversations` write-behind store, `services/conversation_view` projection, `/conversations/*`) backs the chat features — list summaries, read render-ready history projected from full-fidelity `ModelMessage` blobs, rename, delete. Conversation content is encrypted at rest (`XC-SEC-3`). A "supporting utility" per spec §inventory-tail.
 >

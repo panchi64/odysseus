@@ -71,4 +71,12 @@ class Message(SQLModel, table=True):
     pinned: bool = Field(default=False)
     text: str  # projection for listing/search
     blob: str  # one serialized ModelMessage (JSON) for resume fidelity
+    # Semantic-search vector over `text`, encrypted at rest like the projection it
+    # embeds. Null when the message has no searchable text (tool/reasoning-only
+    # turns) or the embedder was unavailable when it was persisted — such a message
+    # falls back to keyword-only recall, the same degrade memories use (EMB-2). The
+    # model/dim record the embedding space so vectors are only ever compared within it.
+    embedding_enc: str | None = None
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
     created_at: datetime = Field(default_factory=utcnow)

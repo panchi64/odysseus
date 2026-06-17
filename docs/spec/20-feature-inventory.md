@@ -18,6 +18,7 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **CHAT-4 (SHOULD — performance).** When a conversation grows near the model's context limit, older history SHOULD be summarized to stay within budget without losing the thread; summarization MAY use a separate, configurable utility model.
 - **CHAT-5 (MUST).** The user MUST be able to stop an in-progress reply, and a reply interrupted by a disconnect MUST be resumable.
 - **CHAT-6 (SHOULD).** The user SHOULD be able to ask the AI to rewrite or rephrase an existing message in the conversation.
+- **CHAT-7 (SHOULD).** During a conversation the agent SHOULD be able to search the operator's *other* conversations by meaning (with a keyword fallback when semantic search is unavailable) and read a found conversation in full, so it can draw on what was discussed elsewhere. The current conversation and scratch (compare) threads are excluded; this is a read-only capability and is not approval-gated.
 
 ---
 

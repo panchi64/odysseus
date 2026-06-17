@@ -25,7 +25,6 @@ model change degrades recall rather than corrupting it.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -37,14 +36,11 @@ from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.memory import Memory
-from services.embeddings import Embedder
-
-_RRF_K = 60  # Reciprocal Rank Fusion constant (standard default)
-_TOKEN = re.compile(r"[a-z0-9]+")
-
-
-def _tokens(text: str) -> set[str]:
-    return set(_TOKEN.findall(text.lower()))
+from services.embeddings import Embedder, decode_vector, embed_query
+from services.ranking import cosine as _cosine
+from services.ranking import matched_by as _matched_by
+from services.ranking import rrf as _rrf
+from services.ranking import tokens as _tokens
 
 
 @dataclass(frozen=True)
@@ -174,7 +170,7 @@ class MemoryStore:
         The query is embedded off the DB thread; scoring decrypts and ranks the
         working set on it. A degraded embedder (or a query that can't embed)
         collapses cleanly to keyword-only — the `MEM-2` fallback."""
-        query_vec, query_model = await self._embed_query(owner_id, query)
+        query_vec, query_model = await embed_query(self._embedder, owner_id, query)
         query_tokens = _tokens(query)
 
         def work(session: Session) -> list[RecallHit]:
@@ -192,7 +188,11 @@ class MemoryStore:
         def work(session: Session) -> list[DuplicateGroup]:
             rows = session.exec(select(Memory).where(Memory.owner_id == owner_id)).all()
             embedded = [
-                (row.id, row.embedding_model, np.asarray(self._decode(row.embedding_enc)))
+                (
+                    row.id,
+                    row.embedding_model,
+                    np.asarray(decode_vector(self._vault, row.embedding_enc)),
+                )
                 for row in rows
                 if row.embedding_enc is not None
             ]
@@ -201,13 +201,6 @@ class MemoryStore:
         return await in_session(self._engine, work)
 
     # --- internals --------------------------------------------------------
-
-    async def _embed_query(self, owner_id: str, query: str) -> tuple[np.ndarray | None, str | None]:
-        try:
-            batch = await self._embedder.embed(owner_id, [query])
-        except DegradedCapabilityError:
-            return None, None  # keyword-only fallback (MEM-2)
-        return np.asarray(batch.vectors[0], dtype=np.float64), batch.model
 
     async def _embed_for_storage(
         self, owner_id: str, content: str
@@ -243,7 +236,8 @@ class MemoryStore:
                 and memory.embedding_enc is not None
                 and memory.embedding_model == query_model
             ):
-                score = _cosine(query_vec, np.asarray(self._decode(memory.embedding_enc)))
+                vector = np.asarray(decode_vector(self._vault, memory.embedding_enc))
+                score = _cosine(query_vec, vector)
                 if score > 0:
                     dense[memory.id] = score
 
@@ -295,9 +289,6 @@ class MemoryStore:
             raise NotFoundError(f"memory {memory_id!r} not found")
         return memory
 
-    def _decode(self, embedding_enc: str) -> list[float]:
-        return json.loads(self._vault.decrypt_str(embedding_enc))
-
     @staticmethod
     def _to_view(memory: Memory, content: str) -> MemoryView:
         return MemoryView(
@@ -308,27 +299,3 @@ class MemoryStore:
             updated_at=memory.updated_at,
             has_embedding=memory.embedding_enc is not None,
         )
-
-
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    if a.shape != b.shape:
-        return 0.0
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    return float(np.dot(a, b) / denom) if denom else 0.0
-
-
-def _rrf(dense: dict[str, float], sparse: dict[str, float]) -> dict[str, float]:
-    """Reciprocal Rank Fusion of two score maps into one fused score per id."""
-    fused: dict[str, float] = {}
-    for scores in (dense, sparse):
-        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-        for rank, (mid, _score) in enumerate(ranked, start=1):
-            fused[mid] = fused.get(mid, 0.0) + 1.0 / (_RRF_K + rank)
-    return fused
-
-
-def _matched_by(mid: str, dense: dict[str, float], sparse: dict[str, float]) -> str:
-    in_dense, in_sparse = mid in dense, mid in sparse
-    if in_dense and in_sparse:
-        return "both"
-    return "semantic" if in_dense else "keyword"

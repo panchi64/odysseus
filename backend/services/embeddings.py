@@ -13,13 +13,19 @@ which the memory store catches to fall back to keyword recall (`MEM-2`).
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+import numpy as np
 from openai import AsyncOpenAI
 
 from core.exceptions import DegradedCapabilityError
+from core.vault import Vault
 from services.registry import ModelRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,3 +65,28 @@ class RegistryEmbedder:
         vectors = [item.embedding for item in response.data]
         dim = len(vectors[0]) if vectors else 0
         return EmbeddingBatch(vectors=vectors, model=spec.model, dim=dim)
+
+
+async def embed_query(
+    embedder: Embedder, owner_id: str, query: str
+) -> tuple[np.ndarray | None, str | None]:
+    """Embed a single query for hybrid recall, returning ``(vector, model)``.
+
+    A degraded embedder (no endpoint, or a query that can't embed) yields
+    ``(None, None)`` so the caller collapses to keyword-only — the `EMB-2`
+    fallback shared by every recall path."""
+    try:
+        batch = await embedder.embed(owner_id, [query])
+    except DegradedCapabilityError:
+        return None, None
+    except Exception:
+        # A transient embedder failure (timeout, 5xx) is "semantic search
+        # unavailable" too — degrade to keyword rather than failing the recall.
+        logger.exception("query embedding failed; falling back to keyword recall")
+        return None, None
+    return np.asarray(batch.vectors[0], dtype=np.float64), batch.model
+
+
+def decode_vector(vault: Vault, embedding_enc: str) -> list[float]:
+    """Open a sealed embedding back into its float vector."""
+    return json.loads(vault.decrypt_str(embedding_enc))

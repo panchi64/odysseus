@@ -34,8 +34,10 @@ from routes import (
     runs,
     search,
 )
+from routes.deps import OPERATOR_ID
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
+from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.embeddings import RegistryEmbedder
@@ -46,6 +48,21 @@ from services.search import SearchService
 from services.searxng import ManagedSearxng
 
 logger = logging.getLogger(__name__)
+
+
+async def _backfill_message_embeddings(store: ConversationStore, vault: Vault) -> None:
+    """Best-effort: once the vault is unlocked, embed any conversation messages that
+    have no vector yet (e.g. persisted before an embedding endpoint existed) so
+    cross-chat search covers the backlog, not just new turns. Runs in the background,
+    waits for unlock so it never touches sealed data, and degrades to a no-op when no
+    embedder is configured."""
+    await vault.unlocked_event.wait()
+    try:
+        count = await store.backfill_embeddings(OPERATOR_ID)
+        if count:
+            logger.info("conversation search: backfilled %d message embeddings", count)
+    except Exception:
+        logger.exception("conversation search: embedding backfill failed")
 
 
 @asynccontextmanager
@@ -81,9 +98,6 @@ async def lifespan(app: FastAPI):
         else:
             await vault.setup(settings.unlock_passphrase)
 
-    app.state.conversations = ConversationStore(engine, vault)
-    await app.state.conversations.start()
-
     # Pooled outbound client for provider model discovery (the chat model picker).
     # Connection-reused across endpoints; follows redirects (some providers 30x).
     discovery_client = httpx.AsyncClient(follow_redirects=True)
@@ -91,6 +105,24 @@ async def lifespan(app: FastAPI):
     # The model registry — role→endpoint resolution + the endpoint catalog.
     registry = ModelRegistry(engine, vault, http_client=discovery_client)
     app.state.models = registry
+    # One embedder over the registry's embedding role, shared by long-term memory and
+    # cross-chat search; degrades to keyword recall when no embedding endpoint is set.
+    embedder = RegistryEmbedder(registry)
+    # The conversation store — in-memory working tree + write-behind persistence. It
+    # embeds each persisted turn (best-effort) so conversations are semantically
+    # searchable across chats. Built after the registry so it can share the embedder.
+    app.state.conversations = ConversationStore(engine, vault, embedder)
+    await app.state.conversations.start()
+    # Cross-chat search — hybrid recall over the operator's other conversations plus
+    # a transcript read, reusing the store's active-path projection.
+    app.state.conversation_search = ConversationSearch(
+        engine, vault, embedder, app.state.conversations
+    )
+    # Lift any pre-existing backlog into the semantic index once unlocked (off the
+    # critical path; new turns are already embedded as they persist).
+    app.state.conversation_backfill = asyncio.create_task(
+        _backfill_message_embeddings(app.state.conversations, vault)
+    )
     # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
     # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
     # for its outbound calls. Hardware + catalog are warmed in the background so a slow
@@ -108,9 +140,9 @@ async def lifespan(app: FastAPI):
     )
     logger.info("cookbook: hardware + model catalog (warming in background)")
     app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())
-    # Long-term memory — embeds via the registry's embedding role; degrades to
-    # keyword recall when no embedding endpoint is configured.
-    app.state.memory = MemoryStore(engine, vault, RegistryEmbedder(registry))
+    # Long-term memory — embeds via the shared embedder; degrades to keyword recall
+    # when no embedding endpoint is configured.
+    app.state.memory = MemoryStore(engine, vault, embedder)
     # Published previews — the agent captures a sandbox file here, the frontend
     # fetches and renders it. Encrypted at rest like the rest of the operator's data.
     app.state.artifacts = ArtifactStore(engine, vault)
@@ -178,6 +210,9 @@ async def lifespan(app: FastAPI):
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
+        backfill = app.state.conversation_backfill
+        if not backfill.done():
+            backfill.cancel()
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()

@@ -206,6 +206,7 @@ async def _drive_turn(
         conversation_id=conversation_id,
         artifacts=caps.artifacts,
         search=caps.search,
+        conversation_search=caps.conversation_search,
     )
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     try:

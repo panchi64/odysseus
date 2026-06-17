@@ -30,6 +30,7 @@ ordered behind the message writes that precede them.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -41,11 +42,13 @@ from sqlalchemy import text as sa_text
 from sqlmodel import Session, select
 
 from core.db import in_session
+from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
 from services.conversation_view import MessageView, project_tree
+from services.embeddings import Embedder
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +317,13 @@ def _db_stats(
 
 
 class ConversationStore:
-    def __init__(self, engine: Engine, vault: Vault) -> None:
+    def __init__(self, engine: Engine, vault: Vault, embedder: Embedder | None = None) -> None:
         self._engine = engine
         self._vault = vault
+        # Embeds each persisted turn's text for cross-chat semantic search. Optional
+        # (and best-effort): with no embedder, or when it degrades, messages persist
+        # without a vector and recall over them falls back to keyword (EMB-2).
+        self._embedder = embedder
         self._cache: dict[str, _Tree] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._worker: WriteBehindWorker[_PersistJob] = WriteBehindWorker(
@@ -713,6 +720,11 @@ class ConversationStore:
             await self._persist_pin(job)
 
     async def _persist_messages(self, job: _PersistJob) -> None:
+        # Embed off the DB thread, before the write — vectors travel into work() as
+        # encrypted blobs keyed by row id. Best-effort: a missing/degraded embedder
+        # yields no vectors, and those messages persist for keyword-only recall.
+        vectors = await self._embed_rows(job)
+
         def work(session: Session) -> None:
             # The conversation may have been deleted while this write sat in the
             # queue — don't resurrect it as orphaned message rows.
@@ -720,6 +732,7 @@ class ConversationStore:
             if conversation is None:
                 return
             for row_id, parent_id, seq, kind, text, blob in job.rows:
+                model, dim, vector_enc = vectors.get(row_id, (None, None, None))
                 session.add(
                     Message(
                         id=row_id,
@@ -729,6 +742,9 @@ class ConversationStore:
                         kind=kind,
                         text=self._vault.encrypt_str(text),
                         blob=self._vault.encrypt_str(blob),
+                        embedding_enc=vector_enc,
+                        embedding_model=model,
+                        embedding_dim=dim,
                     )
                 )
             conversation.active_leaf_id = job.active_leaf_id
@@ -736,6 +752,92 @@ class ConversationStore:
             conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
+
+    async def _embed_rows(
+        self, job: _PersistJob
+    ) -> dict[str, tuple[str | None, int | None, str | None]]:
+        """Embed each row's searchable text for cross-chat recall, returning
+        ``row_id -> (model, dim, encrypted_vector)``. Empty when there's nothing to
+        embed or the embedder is unavailable — the write then stores no vectors."""
+        if self._embedder is None:
+            return {}
+        texts = [(row[0], row[4]) for row in job.rows if row[4].strip()]
+        if not texts:
+            return {}
+
+        def owner_of(session: Session) -> str | None:
+            conversation = session.get(Conversation, job.conversation_id)
+            return conversation.owner_id if conversation is not None else None
+
+        owner_id = await in_session(self._engine, owner_of)
+        if owner_id is None:
+            return {}
+        # Embedding is strictly best-effort: it must never fail or stall a durable
+        # write. A degraded embedder is the silent, expected case; any other error
+        # (timeout, 5xx, connection reset) is logged and the turn persists without a
+        # vector — keyword recall still covers it. Letting the embed raise here would
+        # consume the drainer's retry budget and could ultimately drop the turn.
+        try:
+            batch = await self._embedder.embed(owner_id, [text for _id, text in texts])
+        except DegradedCapabilityError:
+            return {}
+        except Exception:
+            logger.exception(
+                "embedding messages for conversation %s failed; persisting without vectors",
+                job.conversation_id,
+            )
+            return {}
+        return {
+            row_id: (batch.model, batch.dim, self._vault.encrypt_str(json.dumps(vector)))
+            for (row_id, _text), vector in zip(texts, batch.vectors, strict=False)
+        }
+
+    async def backfill_embeddings(self, owner_id: str, *, batch_size: int = 64) -> int:
+        """Best-effort: embed content-bearing messages that have no vector yet —
+        e.g. persisted before an embedding endpoint was configured. Returns how many
+        were embedded. A no-op when the embedder is unavailable, so a backlog simply
+        stays keyword-searchable until an embedder exists, then this lifts it."""
+        if self._embedder is None:
+            return 0
+
+        def pending(session: Session) -> list[tuple[str, str]]:
+            rows = session.exec(
+                select(Message.id, Message.text)
+                .join(Conversation, Message.conversation_id == Conversation.id)
+                .where(Conversation.owner_id == owner_id)
+                .where(Message.embedding_enc.is_(None))  # type: ignore[union-attr]
+            ).all()
+            return [(rid, self._vault.decrypt_str(text)) for rid, text in rows]
+
+        rows = await in_session(self._engine, pending)
+        items = [(rid, text) for rid, text in rows if text.strip()]
+        embedded = 0
+        for start in range(0, len(items), batch_size):
+            chunk = items[start : start + batch_size]
+            try:
+                batch = await self._embedder.embed(owner_id, [text for _id, text in chunk])
+            except DegradedCapabilityError:
+                break  # embedder went away mid-run — leave the rest for next time
+            except Exception:
+                logger.exception("backfill embedding failed; leaving the rest for next time")
+                break
+            # Encrypt up front so the DB closure only carries plain row updates.
+            updates = [
+                (rid, self._vault.encrypt_str(json.dumps(vector)), batch.model, batch.dim)
+                for (rid, _text), vector in zip(chunk, batch.vectors, strict=False)
+            ]
+
+            def write(session: Session, updates: list = updates) -> None:
+                for rid, vector_enc, model, dim in updates:
+                    row = session.get(Message, rid)
+                    if row is not None:
+                        row.embedding_enc = vector_enc
+                        row.embedding_model = model
+                        row.embedding_dim = dim
+
+            await in_session(self._engine, write)
+            embedded += len(chunk)
+        return embedded
 
     async def _persist_active_leaf(self, job: _PersistJob) -> None:
         def work(session: Session) -> None:

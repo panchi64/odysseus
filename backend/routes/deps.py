@@ -13,6 +13,7 @@ from core.auth import AuthManager
 from core.vault import Vault
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
+from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.memory import MemoryStore
@@ -32,6 +33,10 @@ def registry(request: Request) -> RunRegistry:
 
 def store(request: Request) -> ConversationStore:
     return request.app.state.conversations
+
+
+def conversation_search(request: Request) -> ConversationSearch:
+    return request.app.state.conversation_search
 
 
 def models(request: Request) -> ModelRegistry:
