@@ -25,11 +25,12 @@ model change degrades recall rather than corrupting it.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
-from sqlalchemy import Engine, func
+from sqlalchemy import Engine, func, or_
 from sqlmodel import Session, select
 
 from core.db import in_session
@@ -41,6 +42,8 @@ from services.ranking import cosine as _cosine
 from services.ranking import matched_by as _matched_by
 from services.ranking import rrf as _rrf
 from services.ranking import tokens as _tokens
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,61 @@ class MemoryStore:
             return self._duplicate_groups(embedded, threshold)
 
         return await in_session(self._engine, work)
+
+    async def reembed(
+        self, owner_id: str, *, current_model: str | None = None, batch_size: int = 64
+    ) -> int:
+        """Re-embed memories whose vector is missing, or was produced by a model
+        other than ``current_model`` — the heal path after the operator changes the
+        embedding model. EMB-2 segregates vectors by model, so a stale vector silently
+        falls back to keyword recall until this re-embeds it into the current space.
+        Best-effort: a degraded embedder stops the run and leaves the rest for next
+        time. Returns how many memories were re-embedded."""
+        def pending(session: Session) -> list[tuple[str, str]]:
+            # Filter stale rows in SQL so only those that need re-embedding are
+            # loaded and decrypted (not the whole table).
+            query = select(Memory).where(Memory.owner_id == owner_id)
+            if current_model is None:
+                query = query.where(Memory.embedding_enc.is_(None))  # type: ignore[union-attr]
+            else:
+                query = query.where(
+                    or_(
+                        Memory.embedding_enc.is_(None),  # type: ignore[union-attr]
+                        Memory.embedding_model != current_model,
+                    )
+                )
+            rows = session.exec(query).all()
+            return [(row.id, self._vault.decrypt_str(row.content_enc)) for row in rows]
+
+        rows = await in_session(self._engine, pending)
+        items = [(rid, text) for rid, text in rows if text.strip()]
+        embedded = 0
+        for start in range(0, len(items), batch_size):
+            chunk = items[start : start + batch_size]
+            try:
+                batch = await self._embedder.embed(owner_id, [text for _id, text in chunk])
+            except DegradedCapabilityError:
+                break  # embedder went away mid-run — leave the rest for next time
+            except Exception:
+                logger.exception("memory re-embed failed; leaving the rest for next time")
+                break
+            # Encrypt up front so the DB closure only carries plain row updates.
+            updates = [
+                (rid, self._vault.encrypt_str(json.dumps(vector)), batch.model, batch.dim)
+                for (rid, _text), vector in zip(chunk, batch.vectors, strict=False)
+            ]
+
+            def write(session: Session, updates: list = updates) -> None:
+                for rid, vector_enc, model, dim in updates:
+                    row = session.get(Memory, rid)
+                    if row is not None:
+                        row.embedding_enc = vector_enc
+                        row.embedding_model = model
+                        row.embedding_dim = dim
+
+            await in_session(self._engine, write)
+            embedded += len(chunk)
+        return embedded
 
     # --- internals --------------------------------------------------------
 

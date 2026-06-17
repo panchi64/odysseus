@@ -16,14 +16,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
-from openai import AsyncOpenAI
+from openai import APIConnectionError, AsyncOpenAI
 
 from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
-from services.registry import ModelRegistry
+from services import llm
+
+if TYPE_CHECKING:
+    from services.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -90,3 +93,33 @@ async def embed_query(
 def decode_vector(vault: Vault, embedding_enc: str) -> list[float]:
     """Open a sealed embedding back into its float vector."""
     return json.loads(vault.decrypt_str(embedding_enc))
+
+
+async def probe_embedding(spec: llm.EndpointSpec) -> int:
+    """One real ``/embeddings`` call to confirm an endpoint+model actually serves
+    vectors — the bind-time check the ``embedding`` role lacked, so a chat model (or
+    an unreachable server) can't be silently bound and degrade recall to keyword-only.
+
+    Returns the vector dimension. Raises :class:`DegradedCapabilityError` when the
+    endpoint can't be reached, or when it answers but returns no usable vector (not an
+    embeddings model). The two cases carry distinct messages so the operator can tell
+    a wrong model from a down server."""
+    async with AsyncOpenAI(
+        base_url=spec.base_url, api_key=spec.api_key or llm.NO_API_KEY
+    ) as client:
+        try:
+            response = await client.embeddings.create(model=spec.model, input=["probe"])
+        except APIConnectionError as exc:
+            raise DegradedCapabilityError(
+                f"couldn't reach endpoint {spec.base_url!r} to validate the embedding model"
+            ) from exc
+        except Exception as exc:
+            raise DegradedCapabilityError(
+                f"model {spec.model!r} did not accept an embeddings request "
+                "(is it an embeddings model?)"
+            ) from exc
+    if not response.data or not response.data[0].embedding:
+        raise DegradedCapabilityError(
+            f"model {spec.model!r} returned no vector — not an embeddings model"
+        )
+    return len(response.data[0].embedding)

@@ -41,7 +41,9 @@ def conversations_toolset() -> FunctionToolset[RunDeps]:
         return [
             {
                 "conversation_id": h.conversation_id,
-                "title": h.title,
+                # A conversation may not be auto-titled yet; never hand the model a
+                # null title (mirrors `read`'s fallback) so it can still refer to it.
+                "title": h.title or "(untitled conversation)",
                 "snippet": h.snippet,
                 "matched_by": h.matched_by,
             }

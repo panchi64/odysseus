@@ -2,7 +2,9 @@ import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
 import { refreshEndpoints, useEndpoints } from "~/lib/stores/models";
 import type {
+  EmbeddingHealth,
   EndpointInput,
+  ReindexStatus,
   RoleBindings,
   SearchProvider,
   SearchProviderInput,
@@ -53,8 +55,18 @@ export async function deleteEndpoint(id: string): Promise<void> {
 
 const [rolesTick, setRolesTick] = createSignal(0);
 
+interface RoleViewDTO {
+  endpoint_ids: string[];
+  model: string | null;
+}
+
 async function fetchRoles(): Promise<RoleBindings> {
-  return api.get<RoleBindings>("/models/roles");
+  const dto = await api.get<Record<string, RoleViewDTO>>("/models/roles");
+  const out: RoleBindings = {};
+  for (const [role, v] of Object.entries(dto)) {
+    out[role] = { endpointIds: v.endpoint_ids, model: v.model };
+  }
+  return out;
 }
 
 export function useRoles(): Resource<RoleBindings> {
@@ -62,12 +74,108 @@ export function useRoles(): Resource<RoleBindings> {
   return data;
 }
 
+/** Bind a role to an ordered chain (and, for `embedding`, a pinned model).
+ *  Errors are intentionally *not* swallowed — the backend rejects a non-embeddings
+ *  model with a 422, and the caller surfaces that detail to the operator. */
 export async function setRoleBinding(
   role: string,
   endpointIds: string[],
+  model: string | null = null,
 ): Promise<void> {
-  await api.put(`/models/roles/${role}`, { endpoint_ids: endpointIds });
+  await api.put(`/models/roles/${role}`, {
+    endpoint_ids: endpointIds,
+    model,
+  });
   setRolesTick((n) => n + 1);
+  void refreshEmbeddingHealth(); // a bind can flip recall health
+}
+
+/* ── Embedding health + re-embed (reindex) ───────────────────────────────────
+   These are LIVE-POLLED reads, so they must NOT go through `createResource` /
+   Suspense: a refetching resource re-enters its pending state and re-triggers the
+   route's `<Suspense>` fallback, flashing the whole page on every poll. Plain
+   signals update in place — the readout ticks over without disrupting the screen. */
+
+interface CapabilityDTO {
+  key: string;
+  status: string;
+  detail: string;
+}
+
+const [embeddingHealth, setEmbeddingHealth] =
+  createSignal<EmbeddingHealth | null>(null);
+
+/** The backend owns the verdict on recall health — Settings only renders it (read
+ *  off `/overview`, the home page's source of truth, not re-derived here). */
+export function useEmbeddingHealth(): () => EmbeddingHealth | null {
+  return embeddingHealth;
+}
+
+export async function refreshEmbeddingHealth(): Promise<void> {
+  try {
+    const o = await api.get<{ capabilities: CapabilityDTO[] }>("/overview");
+    const cap = o.capabilities.find((c) => c.key === "embeddings");
+    setEmbeddingHealth(
+      cap
+        ? {
+            status: cap.status as EmbeddingHealth["status"],
+            detail: cap.detail,
+          }
+        : null,
+    );
+  } catch {
+    // Keep the last known health — a transient failure shouldn't blank the badge.
+  }
+}
+
+interface ReindexStatusDTO {
+  state: string;
+  memories: number;
+  messages: number;
+  detail: string | null;
+  completed_at: string | null;
+}
+
+function toReindexStatus(d: ReindexStatusDTO): ReindexStatus {
+  return {
+    state: d.state as ReindexStatus["state"],
+    memories: d.memories,
+    messages: d.messages,
+    detail: d.detail,
+    completedAt: d.completed_at,
+  };
+}
+
+const [reindexStatus, setReindexStatus] = createSignal<ReindexStatus | null>(
+  null,
+);
+
+export function useReindexStatus(): () => ReindexStatus | null {
+  return reindexStatus;
+}
+
+/** Poll the reindex status once (drives the live progress readout in place). */
+export async function refreshReindexStatus(): Promise<void> {
+  try {
+    setReindexStatus(
+      toReindexStatus(
+        await api.get<ReindexStatusDTO>("/models/embedding/reindex"),
+      ),
+    );
+  } catch {
+    // Keep the last status on a transient poll failure.
+  }
+}
+
+/** Manually re-embed memories + the chat index against the current embedding
+ *  model (for a first index that failed, or to force a redo). The POST returns the
+ *  freshly-started status, so the readout reflects it without a round-trip. */
+export async function triggerReindex(): Promise<void> {
+  setReindexStatus(
+    toReindexStatus(
+      await api.post<ReindexStatusDTO>("/models/embedding/reindex", {}),
+    ),
+  );
 }
 
 /* ── Web search providers ──────────────────────────────────────────────────── */

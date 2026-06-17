@@ -43,6 +43,7 @@ from services.cookbook import CookbookService
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
+from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
@@ -50,19 +51,27 @@ from services.searxng import ManagedSearxng
 logger = logging.getLogger(__name__)
 
 
-async def _backfill_message_embeddings(store: ConversationStore, vault: Vault) -> None:
-    """Best-effort: once the vault is unlocked, embed any conversation messages that
-    have no vector yet (e.g. persisted before an embedding endpoint existed) so
-    cross-chat search covers the backlog, not just new turns. Runs in the background,
-    waits for unlock so it never touches sealed data, and degrades to a no-op when no
-    embedder is configured."""
+async def _backfill_embeddings(
+    conversations: ConversationStore, memory: MemoryStore, vault: Vault
+) -> None:
+    """Best-effort: once the vault is unlocked, embed any conversation messages AND
+    memories that have no vector yet (e.g. persisted before an embedding endpoint
+    existed) so semantic recall covers the backlog, not just new content. Runs in the
+    background, waits for unlock so it never touches sealed data, and degrades to a
+    no-op when no embedder is configured. Both stores are lifted symmetrically."""
     await vault.unlocked_event.wait()
     try:
-        count = await store.backfill_embeddings(OPERATOR_ID)
+        count = await conversations.backfill_embeddings(OPERATOR_ID)
         if count:
             logger.info("conversation search: backfilled %d message embeddings", count)
     except Exception:
         logger.exception("conversation search: embedding backfill failed")
+    try:
+        count = await memory.reembed(OPERATOR_ID)
+        if count:
+            logger.info("memory: backfilled %d memory embeddings", count)
+    except Exception:
+        logger.exception("memory: embedding backfill failed")
 
 
 @asynccontextmanager
@@ -118,11 +127,6 @@ async def lifespan(app: FastAPI):
     app.state.conversation_search = ConversationSearch(
         engine, vault, embedder, app.state.conversations
     )
-    # Lift any pre-existing backlog into the semantic index once unlocked (off the
-    # critical path; new turns are already embedded as they persist).
-    app.state.conversation_backfill = asyncio.create_task(
-        _backfill_message_embeddings(app.state.conversations, vault)
-    )
     # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
     # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
     # for its outbound calls. Hardware + catalog are warmed in the background so a slow
@@ -143,6 +147,18 @@ async def lifespan(app: FastAPI):
     # Long-term memory — embeds via the shared embedder; degrades to keyword recall
     # when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, embedder)
+    # Heals semantic recall after the operator changes the embedding model: EMB-2
+    # segregates vectors by model, so a swap strands every existing vector until it's
+    # re-embedded. This coordinator runs that reindex in the background (memory + the
+    # cross-chat index) and exposes its progress.
+    app.state.embedding_reindexer = EmbeddingReindexer(
+        registry, app.state.memory, app.state.conversations
+    )
+    # Lift any pre-existing backlog (messages + memories) into the semantic index once
+    # unlocked — off the critical path; new content is already embedded as it persists.
+    app.state.embedding_backfill = asyncio.create_task(
+        _backfill_embeddings(app.state.conversations, app.state.memory, vault)
+    )
     # Published previews — the agent captures a sandbox file here, the frontend
     # fetches and renders it. Encrypted at rest like the rest of the operator's data.
     app.state.artifacts = ArtifactStore(engine, vault)
@@ -210,9 +226,10 @@ async def lifespan(app: FastAPI):
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
-        backfill = app.state.conversation_backfill
+        backfill = app.state.embedding_backfill
         if not backfill.done():
             backfill.cancel()
+        app.state.embedding_reindexer.shutdown()
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()

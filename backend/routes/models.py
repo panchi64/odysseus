@@ -8,6 +8,8 @@ never returned — listings expose only ``has_api_key``.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -127,20 +129,75 @@ async def delete_endpoint(endpoint_id: str, request: Request) -> None:
 
 class RoleBinding(BaseModel):
     endpoint_ids: list[str]
+    # An explicit model on the bound endpoint — used by ``embedding`` (no
+    # per-conversation picker, unlike ``main``); ``None`` ⇒ the endpoint's default.
+    model: str | None = None
 
 
-@router.get("/roles", response_model=dict[str, list[str]])
-async def list_roles(request: Request) -> dict[str, list[str]]:
-    return await deps.models(request).list_roles(OPERATOR_ID)
+class RoleView(BaseModel):
+    endpoint_ids: list[str]
+    model: str | None = None
+
+
+@router.get("/roles", response_model=dict[str, RoleView])
+async def list_roles(request: Request) -> dict[str, RoleView]:
+    models = deps.models(request)
+    chains = await models.list_roles(OPERATOR_ID)
+    pinned = await models.list_role_models(OPERATOR_ID)
+    return {
+        role: RoleView(endpoint_ids=ids, model=pinned.get(role))
+        for role, ids in chains.items()
+    }
 
 
 @router.put("/roles/{role}", status_code=204)
 async def set_role(role: str, body: RoleBinding, request: Request) -> None:
     if role not in llm.ROLES:
         raise HTTPException(status_code=422, detail=f"unknown role {role!r}")
+    models = deps.models(request)
+    prev = None
+    if role == "embedding":
+        prev = await models.get_role_binding(OPERATOR_ID, role)
     try:
-        await deps.models(request).set_role(OPERATOR_ID, role, body.endpoint_ids)
+        await models.set_role(OPERATOR_ID, role, body.endpoint_ids, model=body.model)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="endpoint not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # A changed embedding endpoint/model strands existing vectors (EMB-2 segregates
+    # by model) — heal them in the background so semantic recall recovers without
+    # any further operator action.
+    if role == "embedding" and prev != (body.endpoint_ids, body.model):
+        deps.embedding_reindexer(request).trigger(OPERATOR_ID)
+
+
+class ReindexStatusView(BaseModel):
+    state: str  # idle | running | done | degraded | error
+    memories: int
+    messages: int
+    detail: str | None = None
+    completed_at: datetime | None = None
+
+
+def _reindex_view(status) -> ReindexStatusView:
+    return ReindexStatusView(
+        state=status.state,
+        memories=status.memories,
+        messages=status.messages,
+        detail=status.detail,
+        completed_at=status.completed_at,
+    )
+
+
+@router.post("/embedding/reindex", response_model=ReindexStatusView)
+async def trigger_embedding_reindex(request: Request) -> ReindexStatusView:
+    """Manually re-embed memories + the chat index against the current embedding
+    model — for a first index that failed, or to force a redo after a model change."""
+    reindexer = deps.embedding_reindexer(request)
+    reindexer.trigger(OPERATOR_ID)
+    return _reindex_view(reindexer.status())
+
+
+@router.get("/embedding/reindex", response_model=ReindexStatusView)
+async def embedding_reindex_status(request: Request) -> ReindexStatusView:
+    return _reindex_view(deps.embedding_reindexer(request).status())

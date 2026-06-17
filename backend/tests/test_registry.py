@@ -14,11 +14,18 @@ from core.db import in_session, init_db, make_engine
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelRole
+from services import embeddings
 from services.registry import ModelRegistry
 
 from ._helpers import client_app
 
 OWNER = "operator"
+
+
+async def _passing_probe(spec) -> int:
+    """A stub embedding probe that accepts any binding — lets role tests bind the
+    embedding role without a live ``/embeddings`` server."""
+    return 4
 
 
 async def _registry() -> ModelRegistry:
@@ -127,15 +134,55 @@ async def test_api_key_is_encrypted_at_rest():
     assert isinstance(model, OpenAIChatModel)
 
 
-async def test_tool_calling_role_rejects_non_tool_endpoint():
+async def test_tool_calling_role_rejects_non_tool_endpoint(monkeypatch):
     reg = await _registry()
     ep = await reg.create_endpoint(
         OWNER, name="no-tools", base_url="http://x/v1", model="m", native_tools=False
     )
     with pytest.raises(ValueError, match="native tool-calling"):
         await reg.set_role(OWNER, "main", [ep.id])
-    # An embedding role accepts it — tool-calling isn't required there.
+    # An embedding role accepts it — tool-calling isn't required there. (The bind-time
+    # probe is the *embeddings*-capability check, separate from tool-calling; stub it.)
+    monkeypatch.setattr(embeddings, "probe_embedding", _passing_probe)
     await reg.set_role(OWNER, "embedding", [ep.id])
+
+
+async def test_embedding_role_rejects_a_model_that_serves_no_vectors(monkeypatch):
+    # Binding the embedding role probes the endpoint; a model that doesn't return a
+    # vector (e.g. a chat model bound by mistake) is rejected up front, not silently
+    # degraded to keyword-only recall.
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="chat", base_url="http://x/v1", model="gpt-4o")
+
+    async def _failing_probe(spec):
+        raise DegradedCapabilityError(f"model {spec.model!r} returned no vector")
+
+    monkeypatch.setattr(embeddings, "probe_embedding", _failing_probe)
+    with pytest.raises(ValueError, match="no vector"):
+        await reg.set_role(OWNER, "embedding", [ep.id])
+    # Nothing was bound — the failed probe left the role unset.
+    assert await reg.get_role(OWNER, "embedding") == []
+
+
+async def test_embedding_role_persists_the_picked_model(monkeypatch):
+    # The embedding role pins an explicit model on the endpoint (its stand-in for
+    # main's per-conversation picker); the probe runs against that model and the
+    # choice is persisted for resolution.
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="multi", base_url="http://x/v1", model="default")
+
+    seen: dict = {}
+
+    async def _record_probe(spec):
+        seen["model"] = spec.model
+        return 4
+
+    monkeypatch.setattr(embeddings, "probe_embedding", _record_probe)
+    await reg.set_role(OWNER, "embedding", [ep.id], model="text-embed-3")
+    assert seen["model"] == "text-embed-3"  # probed the picked model, not the default
+    assert await reg.get_role_model(OWNER, "embedding") == "text-embed-3"
+    spec = await reg.resolve_embedding_spec(OWNER)
+    assert spec.model == "text-embed-3"  # resolution honors the pinned model
 
 
 async def test_unknown_endpoint_in_chain_is_not_found():
@@ -217,11 +264,47 @@ async def test_endpoint_crud_over_rest_hides_api_key():
         put = await client.put("/models/roles/main", json={"endpoint_ids": [endpoint_id]})
         assert put.status_code == 204
         roles = (await client.get("/models/roles")).json()
-        assert roles == {"main": [endpoint_id]}
+        assert roles == {"main": {"endpoint_ids": [endpoint_id], "model": None}}
 
         deleted = await client.delete(f"/models/endpoints/{endpoint_id}")
         assert deleted.status_code == 204
         assert (await client.get("/models/endpoints")).json() == []
+
+
+async def test_embedding_rebind_triggers_reindex(monkeypatch):
+    # Binding (or changing) the embedding role enqueues a background reindex, so a
+    # model swap heals the stranded vectors without further operator action.
+    from services.reindex import EmbeddingReindexer
+
+    monkeypatch.setattr(embeddings, "probe_embedding", _passing_probe)
+    triggered: list[str] = []
+    monkeypatch.setattr(
+        EmbeddingReindexer, "trigger", lambda self, owner: triggered.append(owner)
+    )
+
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints",
+                json={"name": "embed", "base_url": "http://x/v1", "model": "embed-m"},
+            )
+        ).json()
+        put = await client.put(
+            "/models/roles/embedding",
+            json={"endpoint_ids": [ep["id"]], "model": "embed-m"},
+        )
+        assert put.status_code == 204
+        assert triggered == ["operator"]  # the bind enqueued a reindex
+
+        # An identical re-bind does not re-trigger (nothing changed).
+        await client.put(
+            "/models/roles/embedding",
+            json={"endpoint_ids": [ep["id"]], "model": "embed-m"},
+        )
+        assert triggered == ["operator"]
+
+        status = (await client.get("/models/embedding/reindex")).json()
+        assert status["state"] == "idle"
 
 
 async def test_rest_rejects_unknown_role_and_missing_endpoint():

@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
 from pydantic_ai import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
-from sqlalchemy import Engine, delete, func
+from sqlalchemy import Engine, delete, func, or_
 from sqlalchemy import text as sa_text
 from sqlmodel import Session, select
 
@@ -793,20 +793,40 @@ class ConversationStore:
         }
 
     async def backfill_embeddings(self, owner_id: str, *, batch_size: int = 64) -> int:
-        """Best-effort: embed content-bearing messages that have no vector yet —
-        e.g. persisted before an embedding endpoint was configured. Returns how many
-        were embedded. A no-op when the embedder is unavailable, so a backlog simply
+        """Lift messages with *no* vector into the index — the startup backlog case
+        (persisted before an embedding endpoint existed). The NULL-only slice of
+        :meth:`reindex_embeddings`."""
+        return await self.reindex_embeddings(owner_id, current_model=None, batch_size=batch_size)
+
+    async def reindex_embeddings(
+        self, owner_id: str, *, current_model: str | None = None, batch_size: int = 64
+    ) -> int:
+        """Best-effort: (re-)embed content-bearing messages whose vector is missing,
+        or — when ``current_model`` is given — was produced by a different model than
+        the one now configured. The latter is the heal path after the operator changes
+        the embedding model: EMB-2 segregates vectors by model, so stale vectors fall
+        back to keyword search until re-embedded into the current space. Returns how
+        many were embedded. A no-op when the embedder is unavailable, so a backlog
         stays keyword-searchable until an embedder exists, then this lifts it."""
         if self._embedder is None:
             return 0
 
         def pending(session: Session) -> list[tuple[str, str]]:
-            rows = session.exec(
+            query = (
                 select(Message.id, Message.text)
                 .join(Conversation, Message.conversation_id == Conversation.id)
                 .where(Conversation.owner_id == owner_id)
-                .where(Message.embedding_enc.is_(None))  # type: ignore[union-attr]
-            ).all()
+            )
+            if current_model is None:
+                query = query.where(Message.embedding_enc.is_(None))  # type: ignore[union-attr]
+            else:
+                query = query.where(
+                    or_(
+                        Message.embedding_enc.is_(None),  # type: ignore[union-attr]
+                        Message.embedding_model != current_model,
+                    )
+                )
+            rows = session.exec(query).all()
             return [(rid, self._vault.decrypt_str(text)) for rid, text in rows]
 
         rows = await in_session(self._engine, pending)

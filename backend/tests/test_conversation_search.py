@@ -107,6 +107,19 @@ async def test_semantic_search_matches_paraphrase():
     await store.stop()
 
 
+async def test_search_hit_title_is_none_for_an_untitled_conversation():
+    # A conversation the background titler hasn't named yet surfaces title=None from
+    # the service — the `conversations_search` tool fills a fallback so the model is
+    # never handed a null (see tools/conversations.py).
+    _engine, _vault, store, search = await _setup(FakeEmbedder())
+    cid = await _record(store, OWNER, ("about a cat", "a fluffy cat"))
+
+    hits = await search.search(OWNER, "feline", limit=5)
+    assert hits and hits[0].conversation_id == cid
+    assert hits[0].title is None
+    await store.stop()
+
+
 async def test_keyword_search_matches_exact_token():
     _engine, _vault, store, search = await _setup(FakeEmbedder())
     cid = await _record(store, OWNER, ("note", "the gate code is 998877"))
@@ -247,6 +260,25 @@ async def test_backfill_embeds_pending_messages():
     hits = await search.search(OWNER, "feline", limit=5)
     assert hits and hits[0].conversation_id == cid
     assert hits[0].matched_by == "semantic"
+    await store.stop()
+
+
+async def test_reindex_heals_a_model_change():
+    # After the operator switches embedding models, reindex re-embeds the stale
+    # vectors into the new space so cross-chat meaning-search works again.
+    _engine, _vault, store, search = await _setup(FakeEmbedder(model="model-a"))
+    cid = await _record(store, OWNER, ("about pets", "I have a cat"))
+
+    store._embedder = FakeEmbedder(model="model-b")  # operator changed the model
+    search._embedder = FakeEmbedder(model="model-b")
+    before = await search.search(OWNER, "feline", limit=5)
+    assert all(h.matched_by != "semantic" for h in before)  # segregated
+
+    count = await store.reindex_embeddings(OWNER, current_model="model-b")
+    assert count == 2  # both content-bearing turns were on the stale model
+    after = await search.search(OWNER, "feline", limit=5)
+    assert after and after[0].conversation_id == cid
+    assert after[0].matched_by == "semantic"  # healed
     await store.stop()
 
 

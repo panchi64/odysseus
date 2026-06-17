@@ -30,7 +30,7 @@ from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
-from services import llm, reasoning
+from services import embeddings, llm, reasoning
 
 
 @dataclass(frozen=True)
@@ -174,6 +174,47 @@ class ModelRegistry:
 
         return await in_session(self._engine, work)
 
+    async def get_role_model(self, owner_id: str, role: str) -> str | None:
+        """The explicit model pinned on ``role`` (``None`` ⇒ the endpoint's default)."""
+        def work(session: Session) -> str | None:
+            binding = session.exec(
+                select(ModelRole)
+                .where(ModelRole.owner_id == owner_id)
+                .where(ModelRole.role == role)
+            ).first()
+            return binding.model if binding is not None else None
+
+        return await in_session(self._engine, work)
+
+    async def get_role_binding(
+        self, owner_id: str, role: str
+    ) -> tuple[list[str], str | None]:
+        """The role's endpoint chain and pinned model in a single read — the chain
+        and the model live on one row, so callers that need both (resolution,
+        change-detection) shouldn't pay two round-trips."""
+        def work(session: Session) -> tuple[list[str], str | None]:
+            binding = session.exec(
+                select(ModelRole)
+                .where(ModelRole.owner_id == owner_id)
+                .where(ModelRole.role == role)
+            ).first()
+            if binding is None:
+                return [], None
+            return list(binding.endpoint_ids), binding.model
+
+        return await in_session(self._engine, work)
+
+    async def list_role_models(self, owner_id: str) -> dict[str, str | None]:
+        """The explicit model pinned on each bound role — the picker counterpart to
+        :meth:`list_roles` (which returns the endpoint chains)."""
+        def work(session: Session) -> dict[str, str | None]:
+            bindings = session.exec(
+                select(ModelRole).where(ModelRole.owner_id == owner_id)
+            ).all()
+            return {b.role: b.model for b in bindings}
+
+        return await in_session(self._engine, work)
+
     async def list_roles(self, owner_id: str) -> dict[str, list[str]]:
         def work(session: Session) -> dict[str, list[str]]:
             bindings = session.exec(
@@ -183,9 +224,16 @@ class ModelRegistry:
 
         return await in_session(self._engine, work)
 
-    async def set_role(self, owner_id: str, role: str, endpoint_ids: list[str]) -> None:
+    async def set_role(
+        self, owner_id: str, role: str, endpoint_ids: list[str], *, model: str | None = None
+    ) -> None:
         """Bind ``role`` to an ordered chain. Validates each endpoint exists and
-        is owned, and that tool-driving roles use only tool-calling endpoints."""
+        is owned, that tool-driving roles use only tool-calling endpoints, and —
+        for ``embedding`` — that the bound endpoint/model actually serves vectors.
+
+        ``model`` pins an explicit model on the bound endpoint (``None`` ⇒ the
+        endpoint's default). It is the embedding role's stand-in for ``main``'s
+        per-conversation picker: a global binding, so it persists here."""
         if role not in llm.ROLES:
             raise ValueError(f"unknown model role: {role!r}")
         endpoints = [await self.get_endpoint(owner_id, eid) for eid in endpoint_ids]
@@ -195,6 +243,8 @@ class ModelRegistry:
                 raise ValueError(
                     f"role {role!r} requires native tool-calling; these lack it: {non_tool}"
                 )
+        if role == "embedding":
+            await self._validate_embedding_endpoints(endpoints, model)
 
         def work(session: Session) -> None:
             binding = session.exec(
@@ -203,13 +253,35 @@ class ModelRegistry:
                 .where(ModelRole.role == role)
             ).first()
             if binding is None:
-                session.add(ModelRole(owner_id=owner_id, role=role, endpoint_ids=endpoint_ids))
+                session.add(
+                    ModelRole(
+                        owner_id=owner_id, role=role, endpoint_ids=endpoint_ids, model=model
+                    )
+                )
             else:
                 binding.endpoint_ids = endpoint_ids
+                binding.model = model
                 binding.updated_at = datetime.now(UTC)
                 session.add(binding)
 
         await in_session(self._engine, work)
+
+    async def _validate_embedding_endpoints(
+        self, endpoints: list[ModelEndpoint], model: str | None
+    ) -> None:
+        """Probe the primary endpoint with the selected model before the binding is
+        saved, so a non-embeddings model (or an unreachable server) is rejected up
+        front rather than silently degrading recall to keyword-only after the fact.
+        Only the primary is probed — embedding resolution uses the chain head, not a
+        fallback — so a chain whose endpoints serve different embedding models isn't
+        wrongly rejected. A probe failure surfaces as ``ValueError`` → 422 at the route."""
+        if not endpoints:
+            return
+        spec = self._to_spec(endpoints[0], "embedding", model_override=model)
+        try:
+            await embeddings.probe_embedding(spec)
+        except DegradedCapabilityError as exc:
+            raise ValueError(str(exc)) from exc
 
     # --- resolution -------------------------------------------------------
 
@@ -339,11 +411,11 @@ class ModelRegistry:
         ``/embeddings`` API directly, not a Pydantic AI chat model, so the
         embedding service needs the base_url/model/key, not a built model.
         Unconfigured ⇒ degraded (recall falls back to keyword)."""
-        chain_ids = await self.get_role(owner_id, "embedding")
+        chain_ids, model = await self.get_role_binding(owner_id, "embedding")
         if not chain_ids:
             raise DegradedCapabilityError("no embedding endpoint configured")
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
-        return self._to_spec(endpoint, "embedding")
+        return self._to_spec(endpoint, "embedding", model_override=model)
 
     async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:
         """Ask the endpoint's provider which models it serves (the chat picker's

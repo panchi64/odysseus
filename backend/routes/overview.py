@@ -97,12 +97,21 @@ async def get_overview(request: Request) -> Overview:
             )
         )
     # Embeddings — present ⇒ hybrid recall; absent ⇒ keyword-only (degraded, not down).
+    # While a model change is being re-embedded, recall is partially degraded until it
+    # lands, so the detail reflects the in-flight reindex.
+    reindexing = deps.embedding_reindexer(request).status().state == "running"
+    if embedding_configured and reindexing:
+        embedding_detail = "re-indexing…"
+    elif embedding_configured:
+        embedding_detail = "hybrid recall"
+    else:
+        embedding_detail = "keyword-only recall"
     capabilities.append(
         Capability(
             key="embeddings",
             label="EMBEDDINGS",
             status="nominal" if embedding_configured else "warn",
-            detail="hybrid recall" if embedding_configured else "keyword-only recall",
+            detail=embedding_detail,
             remediation_href=None if embedding_configured else "/models/embedding",
             remediation_label=None if embedding_configured else "CONFIGURE",
         )

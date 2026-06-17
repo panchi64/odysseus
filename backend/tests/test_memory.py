@@ -129,6 +129,22 @@ async def test_embedding_model_change_is_segregated():
     assert all(h.matched_by != "semantic" for h in hits)
 
 
+async def test_reembed_heals_a_model_change():
+    # The inverse of segregation: after the operator switches embedding models,
+    # reembed lifts every memory into the new space so meaning-recall works again.
+    store = await _setup(FakeEmbedder(model="model-a"))
+    await store.remember(OWNER, "I love my cat")
+    store._embedder = FakeEmbedder(model="model-b")  # operator changed the model
+
+    before = await store.recall(OWNER, "feline", limit=5)
+    assert all(h.matched_by != "semantic" for h in before)  # segregated
+
+    count = await store.reembed(OWNER, current_model="model-b")
+    assert count == 1
+    after = await store.recall(OWNER, "feline", limit=5)
+    assert after and after[0].matched_by == "semantic"  # healed: dense matches again
+
+
 # --- CRUD + encryption ----------------------------------------------------
 
 

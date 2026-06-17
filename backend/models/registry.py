@@ -62,4 +62,8 @@ class ModelRole(SQLModel, table=True):
     # The ordered fallback chain, by endpoint id. First is primary; the rest are
     # tried in order. Stored as JSON so order and length are one row, one write.
     endpoint_ids: list[str] = Field(sa_column=Column(JSON, nullable=False, default=list))
+    # An explicit model on the bound endpoint, when the role needs to pin one that
+    # differs from the endpoint's default ``model``. Used by ``embedding`` (no
+    # per-conversation picker, unlike ``main``); ``None`` ⇒ the endpoint's default.
+    model: str | None = None
     updated_at: datetime = Field(default_factory=utcnow)

@@ -30,8 +30,34 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
 /** Roles still bound in Settings — `main` is driven by the top-bar picker. */
 export const BINDABLE_ROLES = ["utility", "embedding"] as const;
 
-/** role → ordered endpoint ids (a FallbackModel chain). */
-export type RoleBindings = Record<string, string[]>;
+/** A role binding: the ordered endpoint chain (a FallbackModel chain) plus an
+ *  optional pinned model. `model` is used by `embedding` (no per-conversation
+ *  picker like `main`); `null` ⇒ the endpoint's own default model. */
+export interface RoleBinding {
+  endpointIds: string[];
+  model: string | null;
+}
+
+/** role → its binding. */
+export type RoleBindings = Record<string, RoleBinding>;
+
+/** Progress of a background re-embed (after the embedding model changes). The
+ *  vectors of every memory + chat message are re-embedded into the new model's
+ *  space; until it finishes, semantic recall is partially degraded. */
+export interface ReindexStatus {
+  state: "idle" | "running" | "done" | "degraded" | "error";
+  memories: number;
+  messages: number;
+  detail: string | null;
+  completedAt: string | null;
+}
+
+/** The backend's authoritative read on whether semantic recall is healthy:
+ *  `nominal` (hybrid recall) or `warn` (keyword-only — no/!ready embedder). */
+export interface EmbeddingHealth {
+  status: "nominal" | "warn" | "alert";
+  detail: string;
+}
 
 /* ── Web search providers ──────────────────────────────────────────────────── */
 

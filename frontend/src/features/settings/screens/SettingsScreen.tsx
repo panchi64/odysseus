@@ -16,6 +16,7 @@ import {
   PageHeader,
   Panel,
   Row,
+  type SelectOption,
   Stack,
   StatusFlag,
   Text,
@@ -24,6 +25,7 @@ import {
   confirm,
   toast,
 } from "~/ui";
+import { isApiError } from "~/lib/api";
 import {
   createEndpoint,
   deleteEndpoint,
@@ -33,10 +35,12 @@ import {
   useRoles,
 } from "../data";
 import { BINDABLE_ROLES } from "../model";
+import { EmbeddingRoleControls } from "../components/EmbeddingRoleControls";
 import { SearchProvidersPanel } from "../components/SearchProvidersPanel";
 import {
   endpointDiscovery,
   type EndpointDiscovery,
+  modelGroups,
   type ModelEndpoint,
 } from "~/lib/stores/models";
 
@@ -146,7 +150,10 @@ export function SettingsScreen(): JSX.Element {
      A role binds to an ordered fallback chain (first = primary). The control
      below captures that order explicitly — membership *and* position — so it no
      longer rides on endpoint creation order. */
-  const chainFor = (role: string): string[] => roles()?.[role] ?? [];
+  const chainFor = (role: string): string[] =>
+    roles()?.[role]?.endpointIds ?? [];
+  const modelFor = (role: string): string | null =>
+    roles()?.[role]?.model ?? null;
   const endpointName = (id: string): string =>
     (endpoints() ?? []).find((e) => e.id === id)?.name ?? id;
   const unboundFor = (role: string): ModelEndpoint[] => {
@@ -154,11 +161,39 @@ export function SettingsScreen(): JSX.Element {
     return (endpoints() ?? []).filter((e) => !bound.has(e.id));
   };
 
-  const applyChain = async (role: string, next: string[]) => {
+  // The models the embedding role's primary endpoint serves, plus an explicit
+  // "endpoint default" choice and the current pick (so it stays selectable even
+  // if discovery missed it). The backend validates the chosen model is actually
+  // an embeddings model on bind.
+  const embeddingModelOptions = createMemo<SelectOption[]>(() => {
+    const opts: SelectOption[] = [{ value: "", label: "ENDPOINT DEFAULT" }];
+    const primary = chainFor("embedding")[0];
+    const models = primary
+      ? (
+          modelGroups().find((g) => g.endpointId === primary)?.choices ?? []
+        ).map((c) => c.model)
+      : [];
+    for (const m of models) opts.push({ value: m, label: m });
+    // Keep the current pick selectable even if discovery didn't list it.
+    const current = modelFor("embedding");
+    if (current && !models.includes(current))
+      opts.push({ value: current, label: current });
+    return opts;
+  });
+
+  // Re-bind preserves the role's pinned model unless a new one is given; a backend
+  // rejection (e.g. a non-embeddings model) surfaces its detail to the operator.
+  const applyChain = async (
+    role: string,
+    next: string[],
+    model: string | null = modelFor(role),
+  ) => {
     try {
-      await setRoleBinding(role, next);
-    } catch {
-      toast.error(`Unable to update the ${role} role.`);
+      await setRoleBinding(role, next, model);
+    } catch (e) {
+      toast.error(
+        isApiError(e) ? e.detail : `Unable to update the ${role} role.`,
+      );
     }
   };
   const addToRole = (role: string, id: string) =>
@@ -434,6 +469,16 @@ export function SettingsScreen(): JSX.Element {
                         )}
                       </For>
                     </div>
+                  </Show>
+                  <Show when={role === "embedding"}>
+                    <EmbeddingRoleControls
+                      bound={chainFor("embedding").length > 0}
+                      model={modelFor("embedding")}
+                      modelOptions={embeddingModelOptions()}
+                      onPickModel={(m) =>
+                        void applyChain("embedding", chainFor("embedding"), m)
+                      }
+                    />
                   </Show>
                 </Stack>
               )}

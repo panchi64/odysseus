@@ -18,6 +18,7 @@ from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
+from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
 from services.search import SearchService
 from services.searxng import ManagedSearxng
@@ -45,6 +46,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def embedding_reindexer(request: Request) -> EmbeddingReindexer:
+    return request.app.state.embedding_reindexer
 
 
 def search(request: Request) -> SearchService:
