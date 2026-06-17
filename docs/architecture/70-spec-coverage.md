@@ -83,7 +83,7 @@
 | AE-6.2 document content streams into a version | 🔭 | — | Deferred (D21); with `DOC-*`. |
 | AE-6.3 reasoning distinguishable from answer | ✅ | `thinking.delta` vs `answer.delta` | |
 | AE-6.4 auto-promote inline blocks to documents | 🔭 | — | Deferred (D21). |
-| AE-7.1 run survives disconnect; reconnect replays missed | ✅ | `runs/stream` (buffer + broker + `Last-Event-ID`), `runs/registry` | Not required across server restart. |
+| AE-7.1 run survives disconnect; reconnect replays missed | ✅ | `runs/stream` (buffer + broker + `Last-Event-ID`), `runs/registry`; SSE keepalive (`runs/transport`); client reattach on visibility/online + cold-read (`conversations.active_run` → frontend `createChatStream.reattachRun`) | Not required across server restart. End-to-end: in-app nav, backgrounded tab, and reload all resume the live turn. |
 | AE-8.1 native tool-calling models only | ✅ | model registry; owner profile | Out-of-scope models excluded by design. |
 
 ---

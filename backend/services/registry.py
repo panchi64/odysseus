@@ -296,6 +296,32 @@ class ModelRegistry:
             context_window=primary.context_window,
         )
 
+    async def resolve_background(
+        self,
+        *,
+        owner_id: str,
+        override_endpoint_id: str | None = None,
+        override_model: str | None = None,
+    ) -> ResolvedModel:
+        """The cheap model for background work — titling and verification — with its
+        reasoning-off settings. Resolves the ``utility`` role, degrading to the picked
+        ``main`` when ``utility`` is unbound (the picker override flows to that
+        fallback, so it works for an operator who drives chat purely through the
+        per-conversation picker). The reasoning-off settings travel with it
+        unconditionally: a thinking model must be told not to think so it doesn't spend
+        its capped output on a ``<think>`` block and die before emitting the title.
+        One home for the utility→main rule both the chat layer and the manual
+        re-title share."""
+        try:
+            return await self.resolve_detailed("utility", owner_id=owner_id)
+        except (DegradedCapabilityError, NotFoundError):
+            return await self.resolve_detailed(
+                "main",
+                owner_id=owner_id,
+                override_endpoint_id=override_endpoint_id,
+                override_model=override_model,
+            )
+
     async def main_context_window(self, owner_id: str) -> int | None:
         """The default ``main`` chain head's context window, resolved without
         building a runnable model — for read paths (conversation detail) that need

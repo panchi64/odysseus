@@ -6,13 +6,24 @@ import asyncio
 
 import pytest
 from pydantic_ai import FunctionToolset, ToolApproved
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 import agent.engine as engine
 from agent import build_chat_orchestrator, build_resume_orchestrator
-from agent.title import _clean, first_user_text, generate_title
+from agent.title import (
+    _clean,
+    all_user_text,
+    first_user_text,
+    generate_title,
+    title_from_history,
+)
 from core.config import Settings
 from core.db import init_db, make_engine
 from core.vault import Vault
@@ -372,3 +383,47 @@ async def test_title_text_extraction_from_history(tmp_path):
     history = await store.history(conv)
     assert "capital of France" in first_user_text(history)
     await store.stop()
+
+
+def test_all_user_text_joins_every_operator_turn_only():
+    # A manual re-title is named for the whole arc the operator asked across, so the
+    # extraction joins *every* user prompt in order — but still never the assistant's
+    # replies, keeping the small title model off non-operator content.
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="first question about cats")]),
+        ModelResponse(parts=[TextPart(content="an answer about cats")]),
+        ModelRequest(parts=[UserPromptPart(content="follow-up about dogs")]),
+    ]
+    joined = all_user_text(history)
+    assert "first question about cats" in joined
+    assert "follow-up about dogs" in joined
+    assert "an answer about cats" not in joined
+
+
+async def test_title_from_history_scope_picks_opening_vs_full():
+    # The auto-titler (default) names from the opening turn only; the manual re-title
+    # (full=True) spans every operator turn. One shared extraction→generate step, the
+    # only difference being which turns feed it.
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="set up a vite project")]),
+        ModelResponse(parts=[TextPart(content="ok")]),
+        ModelRequest(parts=[UserPromptPart(content="now add tailwind and a router")]),
+    ]
+
+    seen: list[str] = []
+
+    def record(_messages, _info):
+        seen.append(_messages[-1].parts[-1].content)
+        return ModelResponse(parts=[TextPart(content="A Title")])
+
+    model = FunctionModel(record)
+    assert await title_from_history(model, history) == "A Title"
+    assert "set up a vite project" in seen[-1]
+    assert "now add tailwind" not in seen[-1]
+
+    assert await title_from_history(model, history, full=True) == "A Title"
+    assert "now add tailwind" in seen[-1]
+
+
+async def test_title_from_history_empty_history_is_none():
+    assert await title_from_history(TestModel(custom_output_text="x"), []) is None

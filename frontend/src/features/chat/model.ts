@@ -172,6 +172,15 @@ export interface ChatMessage {
   pinned?: boolean;
 }
 
+/** The in-flight run driving a conversation, when one exists. Present on a cold
+ *  read taken mid-stream (e.g. a page reload) so the client can reattach to the
+ *  live run and replay what it missed instead of rendering a reply-less thread. */
+export interface ActiveRun {
+  id: string;
+  status: string;
+  lastSeq: number;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -180,6 +189,8 @@ export interface ChatSession {
   /** Context-window state reconstructed from the thread's last turn, or null
    *  when unavailable. Seeds the header meter on load. */
   context: ContextUsage | null;
+  /** Set only while a turn is still streaming server-side; null otherwise. */
+  activeRun: ActiveRun | null;
 }
 
 export interface ChatSummary {

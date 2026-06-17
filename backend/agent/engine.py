@@ -50,7 +50,7 @@ from services.conversations import ConversationStore, context_footprint
 from tools import Capabilities, RunDeps, build_agent_toolsets
 
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
-from .title import first_user_text, generate_title, last_user_text
+from .title import generate_title, last_user_text, title_from_history
 from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -383,13 +383,9 @@ async def _maybe_title(
     if not is_first_turn or title is None or store is None or conversation_id is None:
         return
     try:
-        history = await store.history(conversation_id)
-        prompt = first_user_text(history)
-        if not prompt:
-            return  # nothing to name from (e.g. a non-text opening prompt)
-        name = await generate_title(
+        name = await title_from_history(
             title.model,
-            prompt,
+            await store.history(conversation_id),
             reasoning_off=title.settings,
             timeout_s=get_settings().title_timeout_s,
         )

@@ -10,6 +10,7 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { readLS, writeLS } from "~/lib/storage";
 import { Button, cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
 import { useSession } from "~/lib/stores/session";
+import { chatBusy } from "~/lib/stores/chatActivity";
 import {
   NAV,
   searchNav,
@@ -38,15 +39,25 @@ function IndicatorSquare(props: { status: NavIndicator }): JSX.Element {
   );
 }
 
+/** The item's ambient indicator, with the live chat-streaming state overlaid on
+ *  the Chat row — so a turn that's running while the operator is off in another
+ *  section stays visible on the rail. Reactive: reads `chatBusy()`. */
+function itemIndicator(item: NavItem): NavIndicator | undefined {
+  if (item.href === "/chat" && chatBusy()) return "info";
+  return item.indicator;
+}
+
 /** Right-aligned row meta: an ambient activity square, plus a dim OFFLINE tag for
  *  surfaces not yet wired to the backend so the missing set is scannable from the
- *  rail. Returns nothing when the row carries neither. */
+ *  rail. Returns nothing when the row can carry neither. The Chat row always
+ *  renders the (reactive) square wrapper so it can light up mid-stream. */
 function navMeta(item: NavItem): JSX.Element | undefined {
   const offline = !item.connected;
-  if (!item.indicator && !offline) return undefined;
+  const dynamic = item.href === "/chat";
+  if (!item.indicator && !offline && !dynamic) return undefined;
   return (
     <span class="flex items-center gap-2">
-      <Show when={item.indicator}>
+      <Show when={itemIndicator(item)}>
         {(ind) => <IndicatorSquare status={ind()} />}
       </Show>
       <Show when={offline}>
@@ -59,7 +70,11 @@ function navMeta(item: NavItem): JSX.Element | undefined {
 }
 
 function sectionIndicator(section: NavSection): NavIndicator | undefined {
-  return section.items.find((i) => i.indicator)?.indicator;
+  for (const i of section.items) {
+    const ind = itemIndicator(i);
+    if (ind) return ind;
+  }
+  return undefined;
 }
 
 function loadCollapsed(): Record<string, boolean> {

@@ -46,6 +46,9 @@ _BASE_SETTINGS: ModelSettings = {"max_tokens": 1024, "temperature": 0.3}
 # Trim the user message fed to the namer — the topic is in the opening, and a
 # long body only slows the call without sharpening the title.
 _EXCERPT = 600
+# A manual re-title feeds every operator turn (not just the opening), so it needs a
+# wider budget to span the conversation's arc — still bounded so the call stays cheap.
+FULL_EXCERPT = 2400
 _MAX_TITLE_LEN = 60
 
 _USER_PARTS = frozenset({"UserPromptPart"})
@@ -75,6 +78,20 @@ def first_user_text(messages: list[ModelMessage]) -> str:
         if text:
             return text
     return ""
+
+
+def all_user_text(messages: list[ModelMessage]) -> str:
+    """Every user prompt in a history, joined in order — the whole arc of what the
+    operator asked. Feeds a manual re-title so the name reflects where the thread
+    actually went, not just its opening line. Assistant replies and tool output are
+    never included, keeping the small title model off injectable content (the same
+    trusted-channel discipline as the first-turn namer, just over more turns)."""
+    chunks: list[str] = []
+    for message in messages:
+        text = _part_text(message, _USER_PARTS)
+        if text:
+            chunks.append(text)
+    return "\n".join(chunks).strip()
 
 
 def last_user_text(messages: list[ModelMessage]) -> str:
@@ -109,6 +126,7 @@ async def generate_title(
     *,
     reasoning_off: ModelSettings | None = None,
     timeout_s: float | None = None,
+    excerpt: int = _EXCERPT,
 ) -> str | None:
     """Name a conversation from the user's opening message, or None on any failure.
 
@@ -119,10 +137,11 @@ async def generate_title(
     turn that produced the answer. ``reasoning_off`` is merged over the base caps
     (its source — :mod:`services.reasoning` — owns the per-provider lever);
     ``timeout_s`` bounds how long the call may run so a slow utility model cannot
-    hold the run open."""
+    hold the run open. ``excerpt`` caps the prompt fed in — the opening message for
+    the auto-titler, a wider span for a manual re-title over every operator turn."""
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
     agent = make_utility_agent(model, output_type=str, instructions=TITLE_INSTRUCTIONS)
-    user = prompt[:_EXCERPT]
+    user = prompt[:excerpt]
     try:
         run = agent.run(user, model_settings=settings)
         # asyncio.TimeoutError is an Exception subclass (caught below); CancelledError
@@ -132,3 +151,31 @@ async def generate_title(
         logger.warning("conversation title generation failed: %s", exc)
         return None
     return _clean(result.output)
+
+
+async def title_from_history(
+    model: Model,
+    history: list[ModelMessage],
+    *,
+    full: bool = False,
+    reasoning_off: ModelSettings | None = None,
+    timeout_s: float | None = None,
+) -> str | None:
+    """Name a conversation from its stored history — the one place that pairs *which*
+    operator turns feed the namer with *how much* of them. ``full`` selects the
+    manual re-title's scope (every operator turn, the wider :data:`FULL_EXCERPT`
+    budget); the default is the auto-titler's (opening message, :data:`_EXCERPT`).
+    Either way only the operator's turns are read — never the assistant's replies or
+    tool output. Returns None when there's nothing to name from or the model call
+    fails, so both the auto-titler and the manual route share one extraction→generate
+    step and only differ in how they persist/announce the result."""
+    prompt = all_user_text(history) if full else first_user_text(history)
+    if not prompt:
+        return None
+    return await generate_title(
+        model,
+        prompt,
+        reasoning_off=reasoning_off,
+        timeout_s=timeout_s,
+        excerpt=FULL_EXCERPT if full else _EXCERPT,
+    )

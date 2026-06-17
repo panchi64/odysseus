@@ -150,3 +150,56 @@ async def test_list_filters_by_owner():
 
     assert {r.id for r in reg.list(owner_id="alice")} == {a.id}
     assert {r.id for r in reg.list()} == {a.id, b.id}
+
+
+async def test_active_run_for_finds_in_flight_run():
+    reg = RunRegistry()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def orch(run):
+        started.set()
+        await release.wait()
+
+    run = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
+    )
+    await started.wait()
+
+    assert reg.active_run_for("c1", "operator") is run
+    # A different conversation, a different owner, or an unknown id → no match.
+    assert reg.active_run_for("other", "operator") is None
+    assert reg.active_run_for("c1", "intruder") is None
+
+    release.set()
+    await run.wait()
+
+    # A terminal run is no longer active — the conversation read shows no live run.
+    assert reg.active_run_for("c1", "operator") is None
+
+
+async def test_active_run_for_prefers_the_most_recent():
+    reg = RunRegistry()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def first(run):
+        await asyncio.Event().wait()  # stays non-terminal
+
+    async def second(run):
+        started.set()
+        await release.wait()
+
+    older = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=first, conversation_id="c1"
+    )
+    await asyncio.sleep(0)  # let it start so its created_at is strictly earlier
+    newer = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=second, conversation_id="c1"
+    )
+    await started.wait()
+
+    assert older.created_at < newer.created_at
+    assert reg.active_run_for("c1", "operator") is newer
+
+    release.set()
+    await newer.wait()
+    await reg.cancel(older.id)

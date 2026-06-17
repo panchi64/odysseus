@@ -45,6 +45,10 @@ class Run:
     kind: str
     owner_id: str
     stream: RunStream
+    # The conversation this run drives, when it is a chat turn. Lets a client that
+    # has only a conversation id (e.g. after a page reload) find the in-flight run
+    # to reattach to — see ``RunRegistry.active_run_for``.
+    conversation_id: str | None = None
     status: RunStatus = RunStatus.queued
     detail: str | None = None
     error: str | None = None

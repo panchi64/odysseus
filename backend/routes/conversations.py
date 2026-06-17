@@ -15,6 +15,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from agent.title import title_from_history
+from core.config import get_settings
+from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow
@@ -71,16 +74,41 @@ class MessageOut(BaseModel):
     pinned: bool = False  # the operator's durable bookmark on this turn
 
 
+class ActiveRun(BaseModel):
+    """The in-flight run driving this conversation, when one exists. A streaming
+    turn isn't persisted until it finishes, so on a cold read (e.g. a page reload
+    mid-stream) the messages alone show no answer — this points the client at the
+    run whose events it can replay and resume from ``last_seq``."""
+
+    id: str
+    status: str
+    last_seq: int
+
+
 class ConversationDetail(ConversationSummary):
     messages: list[MessageOut]
     # The context-window state reconstructed from the last turn's stored usage, so
     # an existing thread shows its fullness on load — not just after the next turn.
     # Null when usage or a window is unavailable.
     context: ContextWindow | None = None
+    # Present only while a turn is still streaming server-side — lets a reattaching
+    # client resume the live run instead of rendering a reply-less thread.
+    active_run: ActiveRun | None = None
 
 
 class TitleUpdate(BaseModel):
     title: str | None = None
+
+
+class RetitleRequest(BaseModel):
+    """The picker selection to name the thread with. The conversation does not
+    persist a per-turn endpoint, so a manual re-title resolves the title model the
+    same way a chat turn does — through the operator's current pick — rather than the
+    bare default ``main``/``utility`` roles (which a picker-driven operator may never
+    have bound). Both optional: an absent pick falls back to those defaults."""
+
+    endpoint_id: str | None = None
+    model: str | None = None
 
 
 class VersionSwitch(BaseModel):
@@ -174,10 +202,17 @@ async def _detail(
     if published:
         artifacts = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
         by_id = {a.id: a for a in artifacts}
+    run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
+    active_run = (
+        ActiveRun(id=run.id, status=run.status.value, last_seq=run.stream.last_seq)
+        if run is not None
+        else None
+    )
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],
         context=context,
+        active_run=active_run,
     )
 
 
@@ -203,6 +238,53 @@ async def rename_conversation(
     if await store.get_summary(conversation_id, OPERATOR_ID) is None:
         raise HTTPException(status_code=404, detail="conversation not found")
     await store.set_title(conversation_id, body.title)
+    summary = await store.get_summary(conversation_id, OPERATOR_ID)
+    if summary is None:  # pragma: no cover — just confirmed it exists
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return _summary(summary)
+
+
+@router.post("/{conversation_id}/retitle", response_model=ConversationSummary)
+async def retitle_conversation(
+    conversation_id: str, request: Request, body: RetitleRequest | None = None
+) -> ConversationSummary:
+    """Regenerate a thread's title on demand, from every question the operator asked
+    across the whole conversation — not just its opening line (the first-turn
+    auto-titler's input). A manual re-name exists to fix a title that the opening
+    missed or that went stale as the thread drifted, so feeding the full arc is what
+    makes it meaningful. Only the operator's turns are fed in, never assistant or
+    tool output, keeping the small title model off injectable content. Unlike the
+    fill-only-if-blank auto-titler, this overwrites unconditionally — it is a
+    deliberate operator action.
+
+    The title model is resolved exactly as a chat turn resolves its background work
+    (``utility`` → the picked ``main``), with reasoning **off** — so a thinking model
+    doesn't spend its capped output on a ``<think>`` block before emitting the title —
+    and it works for a picker-driven operator who has no default role bound."""
+    store = deps.store(request)
+    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    pick = body or RetitleRequest()
+    try:
+        title = await deps.models(request).resolve_background(
+            owner_id=OPERATOR_ID,
+            override_endpoint_id=pick.endpoint_id,
+            override_model=pick.model,
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="model endpoint not found") from None
+    except DegradedCapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    name = await title_from_history(
+        title.model,
+        await store.history(conversation_id),
+        full=True,
+        reasoning_off=title.reasoning_off,
+        timeout_s=get_settings().title_timeout_s,
+    )
+    if name is None:
+        raise HTTPException(status_code=503, detail="could not generate a title")
+    await store.set_title(conversation_id, name)
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:  # pragma: no cover — just confirmed it exists
         raise HTTPException(status_code=404, detail="conversation not found")

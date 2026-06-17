@@ -21,6 +21,12 @@ export interface RunStreamOptions {
 
 const MAX_RECONNECTS = 6;
 const RECONNECT_DELAY_MS = 500;
+// A live run flushes at least a keepalive comment every ~15s (see the backend SSE
+// transport), so a read that stalls past this is a dead connection — typically a
+// throttled background tab or a silently-dropped proxy. We cancel and reconnect
+// with Last-Event-ID rather than hang forever (which would freeze the UI as
+// "streaming"). Comfortably above the server's interval to avoid false trips.
+const READ_TIMEOUT_MS = 30_000;
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -73,7 +79,19 @@ export async function streamRun(
       const decoder = new TextDecoder();
       let buffer = "";
       for (;;) {
-        const { value, done } = await reader.read();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), READ_TIMEOUT_MS);
+          }),
+        ]).finally(() => clearTimeout(timer));
+        if (result === "timeout") {
+          // Dead connection — drop it and reconnect from lastSeq (replays the gap).
+          await reader.cancel().catch(() => {});
+          break;
+        }
+        const { value, done } = result;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let sep: number;

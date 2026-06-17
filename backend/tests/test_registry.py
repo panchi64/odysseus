@@ -144,6 +144,21 @@ async def test_unknown_endpoint_in_chain_is_not_found():
         await reg.set_role(OWNER, "main", ["does-not-exist"])
 
 
+async def test_resolve_background_falls_back_to_picked_main_when_utility_unbound():
+    """Background work (titling) resolves ``utility``, but an operator who never bound
+    it must still get a model — the picker's ``main`` override. The reasoning-off
+    settings travel with whichever resolves."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="m", base_url="http://m/v1", model="qwen3")
+    # No utility role bound; the override supplies main directly (the picker-driven
+    # operator with no default chain — the exact case the retitle 503 came from).
+    resolved = await reg.resolve_background(
+        owner_id=OWNER, override_endpoint_id=ep.id, override_model="qwen3"
+    )
+    assert resolved.model is not None
+    assert resolved.reasoning_off is not None
+
+
 async def test_delete_endpoint_prunes_it_from_role_chains():
     """Deleting an endpoint must not leave a dangling id in any chain that
     referenced it — otherwise a later resolve trips on the missing endpoint."""

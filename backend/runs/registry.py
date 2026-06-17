@@ -53,6 +53,25 @@ class RunRegistry:
             runs = [r for r in runs if r.owner_id == owner_id]
         return runs
 
+    def active_run_for(self, conversation_id: str, owner_id: str) -> Run | None:
+        """The most-recent non-terminal run driving ``conversation_id``, if any.
+
+        How a reattaching client (page reload) maps a conversation back to its
+        in-flight run: an in-flight chat turn isn't persisted until it finishes,
+        so the conversation read alone can't show a streaming answer — this points
+        the client at the run whose events it can replay and resume.
+        """
+        candidates = [
+            r
+            for r in self._runs.values()
+            if r.owner_id == owner_id
+            and r.conversation_id == conversation_id
+            and not r.is_terminal
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda r: r.created_at)
+
     # --- launch ---------------------------------------------------------------
     def submit(
         self,
@@ -61,6 +80,7 @@ class RunRegistry:
         owner_id: str,
         orchestrator: Orchestrator,
         run_id: str | None = None,
+        conversation_id: str | None = None,
         wall_clock_timeout_s: float | None | object = _UNSET,
         inactivity_timeout_s: float | None | object = _UNSET,
     ) -> Run:
@@ -68,6 +88,7 @@ class RunRegistry:
             id=run_id or uuid4().hex,
             kind=kind,
             owner_id=owner_id,
+            conversation_id=conversation_id,
             stream=RunStream(),
         )
         self._runs[run.id] = run

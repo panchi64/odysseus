@@ -14,6 +14,7 @@ import {
   Composer,
   Drawer,
   EmptyState,
+  Frames,
   Icon,
   InfoHint,
   Input,
@@ -36,6 +37,7 @@ import {
   entrySessionId,
   mainChat,
   renameConversation,
+  regenerateTitle,
   titleReveals,
   useChatSessions,
 } from "../data";
@@ -249,6 +251,24 @@ export function ChatRoomScreen(): JSX.Element {
     }
   };
 
+  const [retitling, setRetitling] = createSignal(false);
+  // A "working" throbber sits on the title while the backend names the thread —
+  // either the first-turn auto-title (stream) or a manual regenerate.
+  const titleWorking = () => stream.titlePending() || retitling();
+  const handleRegenerateTitle = async () => {
+    const id = currentId();
+    if (!id || retitling()) return;
+    setRetitling(true);
+    try {
+      await regenerateTitle(id);
+      toast.success("Title regenerated");
+    } catch {
+      toast.error("Unable to regenerate the title.");
+    } finally {
+      setRetitling(false);
+    }
+  };
+
   const handleDelete = async () => {
     const id = currentId();
     if (!id) return;
@@ -317,23 +337,28 @@ export function ChatRoomScreen(): JSX.Element {
               <Icon name="menu" size={16} />
             </button>
             <div class="flex min-w-0 flex-col gap-0.5">
-              <Show
-                when={headerReveal()}
-                fallback={
-                  <Text variant="readout" tone="bright">
-                    {headerTitle()}
-                  </Text>
-                }
-              >
-                {(title) => (
-                  <TypewriterText
-                    variant="readout"
-                    tone="bright"
-                    text={title()}
-                    speed={REVEAL_SPEED_MS}
-                  />
-                )}
-              </Show>
+              <span class="flex min-w-0 items-center gap-1.5">
+                <Show
+                  when={headerReveal()}
+                  fallback={
+                    <Text variant="readout" tone="bright">
+                      {headerTitle()}
+                    </Text>
+                  }
+                >
+                  {(title) => (
+                    <TypewriterText
+                      variant="readout"
+                      tone="bright"
+                      text={title()}
+                      speed={REVEAL_SPEED_MS}
+                    />
+                  )}
+                </Show>
+                <Show when={titleWorking()}>
+                  <Frames class="shrink-0 text-info" />
+                </Show>
+              </span>
               <span class="flex items-center gap-1.5">
                 <StatusFlag status="nominal">{headerModel()}</StatusFlag>
                 <InfoHint
@@ -352,7 +377,11 @@ export function ChatRoomScreen(): JSX.Element {
               dot={stream.sending()}
               pulse={stream.sending()}
             >
-              {stream.sending() ? "STREAMING" : "IDLE"}
+              {stream.reattaching()
+                ? "RESYNCING"
+                : stream.sending()
+                  ? "STREAMING"
+                  : "IDLE"}
             </StatusFlag>
             <Show when={stream.usage()}>
               {(usage) => <ContextMeter usage={usage()} />}
@@ -370,6 +399,12 @@ export function ChatRoomScreen(): JSX.Element {
                     icon: "edit",
                     disabled: !currentId(),
                     onSelect: openRename,
+                  },
+                  {
+                    label: "REGENERATE TITLE",
+                    icon: "refresh",
+                    disabled: !currentId(),
+                    onSelect: handleRegenerateTitle,
                   },
                   {
                     label: "DELETE CONVERSATION",

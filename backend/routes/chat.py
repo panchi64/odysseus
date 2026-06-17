@@ -98,15 +98,11 @@ async def _resolve_models(
     utility_model = resolved
     title_settings: ModelSettings | None = None
     if settings.verify_enabled or settings.title_enabled:
-        try:
-            background = await registry.resolve_detailed("utility", owner_id=OPERATOR_ID)
-        except (DegradedCapabilityError, NotFoundError):
-            background = await registry.resolve_detailed(
-                "main",
-                owner_id=OPERATOR_ID,
-                override_endpoint_id=endpoint_id,
-                override_model=model,
-            )
+        background = await registry.resolve_background(
+            owner_id=OPERATOR_ID,
+            override_endpoint_id=endpoint_id,
+            override_model=model,
+        )
         utility_model = background.model
         title_settings = background.reasoning_off
     return resolved, utility_model, title_settings, main.context_window
@@ -145,7 +141,10 @@ def _submit_turn(
         conversation_id=conversation_id,
     )
     run = deps.registry(request).submit(
-        kind="chat", owner_id=OPERATOR_ID, orchestrator=orchestrator
+        kind="chat",
+        owner_id=OPERATOR_ID,
+        orchestrator=orchestrator,
+        conversation_id=conversation_id,
     )
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 

@@ -10,10 +10,12 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
+import { setChatBusy } from "~/lib/stores/chatActivity";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import { streamRun, type ContextWindow, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
+  ActiveRun,
   ApprovalDecision,
   ArtifactRef,
   AssistantBlock,
@@ -200,11 +202,24 @@ interface MessageDTO {
   pinned?: boolean;
 }
 
+interface ActiveRunDTO {
+  id: string;
+  status: string;
+  last_seq: number;
+}
+
 interface ConversationDetailDTO extends ConversationSummaryDTO {
   messages: MessageDTO[];
   /** Context-window state reconstructed from the last turn's usage; null when
    *  unavailable. Seeds the meter so an existing thread shows fullness on load. */
   context: ContextWindow | null;
+  /** The in-flight run driving this thread, if a turn is still streaming
+   *  server-side; absent/null otherwise. Lets a cold read reattach to it. */
+  active_run?: ActiveRunDTO | null;
+}
+
+function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
+  return dto ? { id: dto.id, status: dto.status, lastSeq: dto.last_seq } : null;
 }
 
 /** A readable one-line title for a thread that the operator hasn't named. */
@@ -403,6 +418,7 @@ async function fetchSession(id: string): Promise<ChatSession> {
     model: "",
     messages: dto.messages.map(toMessage),
     context: dto.context,
+    activeRun: toActiveRun(dto.active_run),
   };
 }
 
@@ -418,6 +434,23 @@ export async function renameConversation(
   title: string,
 ): Promise<void> {
   await api.patch(`/conversations/${id}`, { title });
+  refreshSessions();
+}
+
+/** Re-derive a thread's title on demand. The backend names it from every question
+ *  the operator asked across the thread (not just the opening line, and never the
+ *  assistant's replies), then this reveals the result with the same typewriter
+ *  animation as the first-turn auto-title so both surfaces stay in lockstep. */
+export async function regenerateTitle(id: string): Promise<void> {
+  // The conversation doesn't persist its endpoint, so name it with the operator's
+  // current pick — the same selection a chat turn sends — rather than a default role
+  // the backend may not have bound.
+  const selection = effectiveSelection();
+  const summary = await api.post<ConversationSummaryDTO>(
+    `/conversations/${id}/retitle`,
+    { endpoint_id: selection?.endpointId, model: selection?.model },
+  );
+  if (summary.title) revealTitle(id, summary.title);
   refreshSessions();
 }
 
@@ -452,6 +485,10 @@ export interface ChatStreamOptions {
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
   initialContext?: () => ContextUsage | null | undefined;
+  /** The loaded conversation's in-flight run, if a turn is still streaming
+   *  server-side. Seeds a reattach on a cold read (e.g. a page reload mid-stream)
+   *  so the live answer continues instead of the thread rendering reply-less. */
+  activeRun?: () => ActiveRun | null | undefined;
 }
 
 export function createChatStream(
@@ -461,14 +498,35 @@ export function createChatStream(
 ) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
+  // A brand-new thread is auto-named during its first turn; this drives a "working"
+  // throbber on the title from that turn's start until the name lands
+  // (`conversation.titled`, which the reveal then animates) or the turn ends without
+  // one. Backend-owned outcome — the frontend only reflects the in-flight window.
+  const [titlePending, setTitlePending] = createSignal(false);
   // The latest run's context-window state, as derived by the backend. Null until
   // a run reports it against a known window (loaded history carries none), which
   // is when the context meter first appears.
   const [usage, setUsage] = createSignal<ContextUsage | null>(null);
+  // True while a reattach (replay from a known run) is folding in — drives the
+  // "RESYNCING…" affordance, distinct from a fresh turn's `sending`.
+  const [reattaching, setReattaching] = createSignal(false);
   let controller: AbortController | null = null;
   // The run currently streaming, if any — needed to cancel it on the backend
   // (aborting the SSE alone leaves the run executing server-side).
   let activeRunId: string | null = null;
+  // The highest event `seq` folded for the current run. Two purposes: (1) the
+  // resume point a reattach replays *after* (avoids re-applying the head), and
+  // (2) an idempotency guard in `foldEvent` so an overlapping old+new reader can
+  // never double-apply an append delta. Events are seq ≥ 1, so 0 = nothing folded.
+  let maxFoldedSeq = 0;
+  // The last run a cold-read reattach was kicked off for, so the load effect fires
+  // at most once per run even if the session resource re-emits the same value.
+  let reattachedRunId: string | null = null;
+  // Bumped whenever a drive is superseded (reattach aborts the prior reader, or a
+  // thread switch tears it down). A driveRun whose generation is stale skips its
+  // teardown so an aborted stalled reader can't clear the state — or refetch the
+  // wrong thread — out from under the drive that replaced it.
+  let driveGen = 0;
   // The conversation this stream is currently bound to (tracked separately from
   // the screen's `key`, which only updates once a new thread is persisted).
   let activeConversationId: string | null = key();
@@ -498,7 +556,13 @@ export function createChatStream(
     if (k === activeConversationId && messages.length > 0) return;
     controller?.abort();
     controller = null;
+    driveGen++; // supersede any in-flight drive so its finally skips teardown
     setSending(false);
+    setReattaching(false);
+    // A new thread starts a fresh event sequence; drop the prior run's fold/resume
+    // bookkeeping so its seqs don't suppress the next run's events.
+    maxFoldedSeq = 0;
+    activeRunId = null;
     activeConversationId = k;
     // A null key is a new, unsaved conversation: it has no persisted history, so
     // the only `source` here is the seam resource's *retained* value from the
@@ -561,6 +625,11 @@ export function createChatStream(
   }
 
   function foldEvent(assistantId: string, ev: RunEvent): void {
+    // Idempotency: `seq` is monotonic per run, so an event at or below the high-
+    // water mark was already folded (a reattach replay overlapping a still-live
+    // reader). Skipping it stops a re-applied `answer.delta` from doubling text.
+    if (ev.seq <= maxFoldedSeq) return;
+    maxFoldedSeq = ev.seq;
     switch (ev.type) {
       case "thinking.delta":
         patchById(assistantId, (m) => appendDelta(m, "thinking", ev.text));
@@ -708,7 +777,10 @@ export function createChatStream(
         break;
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
-        // rather than folding onto the assistant message.
+        // rather than folding onto the assistant message. The throbber clears in the
+        // run's `finally` (when the new conversation's id is adopted and the reveal
+        // can actually render), not here — clearing now would flash the bare title
+        // for the beat before that.
         revealTitle(ev.conversation_id, ev.title);
         break;
       case "run.error":
@@ -734,33 +806,120 @@ export function createChatStream(
     runId: string,
     assistantId: string,
     wasNew = false,
+    fromSeq?: number,
+    onConnected?: () => void,
   ): Promise<void> {
+    const myGen = ++driveGen;
     activeRunId = runId;
     patchById(assistantId, (m) => (m.runId = runId));
+    let connected = false;
     try {
       controller = new AbortController();
       await streamRun(runId, {
         signal: controller.signal,
-        onEvent: (ev) => foldEvent(assistantId, ev),
+        fromSeq,
+        onEvent: (ev) => {
+          // First event = the transport is live again; let a reattach drop its
+          // "RESYNCING…" badge here, so it shows only across the reconnect latency.
+          if (!connected) {
+            connected = true;
+            onConnected?.();
+          }
+          foldEvent(assistantId, ev);
+        },
       });
     } catch (err) {
-      toast.error(
-        (err as { detail?: string })?.detail ??
-          "Unable to reach the assistant.",
+      if (myGen === driveGen)
+        toast.error(
+          (err as { detail?: string })?.detail ??
+            "Unable to reach the assistant.",
+        );
+    } finally {
+      // Skip teardown when superseded by a reattach/thread-switch — that drive
+      // owns the state now, and clearing it here would race it.
+      if (myGen === driveGen) {
+        activeRunId = null;
+        patchById(assistantId, (m) => (m.streaming = false));
+        setSending(false);
+        setTitlePending(false); // turn ended — clear even if no title landed
+        if (wasNew && activeConversationId) {
+          options.onConversationStarted?.(activeConversationId);
+        }
+        options.onTurnComplete?.();
+        // Adopt the backend's authoritative ids + version metadata for the turn
+        // just recorded — without this the live message keeps its client id and a
+        // stale version count, so the ‹k/n› cycler never appears and a later
+        // regenerate/edit/delete/pin would address an id the backend doesn't know.
+        await adoptServerMeta();
+      }
+    }
+  }
+
+  /** Reattach to a run that's already streaming (or just finished) and fold what
+   *  we missed, then continue live. Two callers:
+   *  - resume after a stalled/dropped transport (a backgrounded tab): the
+   *    assistant message still exists, so replay from `fromSeq` = the last seq we
+   *    folded — only the tail re-applies (the seq guard drops the overlap).
+   *  - a cold read mid-stream (page reload): no assistant turn exists yet, so seed
+   *    an empty one bound to the run and replay the whole buffer (`fromSeq` 0).
+   *  Reuses `driveRun`, so the shared finally clears streaming/sending and
+   *  reconciles the persisted turn once the run ends. */
+  async function reattachRun(
+    runId: string,
+    opts: { fromSeq: number },
+  ): Promise<void> {
+    // Abort a stalled/old reader first so it can't keep folding beside the new one
+    // (its drive is superseded by the generation bump inside the next driveRun).
+    controller?.abort();
+    controller = null;
+    let assistantId = messages.find(
+      (m) => m.runId === runId && m.role === "assistant",
+    )?.id;
+    const seeded = assistantId === undefined;
+    if (assistantId === undefined) {
+      assistantId = nextId("a");
+      const assistantMsg: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        blocks: [],
+        streaming: true,
+        runId,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages(produce((m) => m.push(assistantMsg)));
+    } else {
+      patchById(assistantId, (m) => (m.streaming = true));
+    }
+    maxFoldedSeq = opts.fromSeq;
+    setSending(true);
+    setReattaching(true);
+    try {
+      // Clears RESYNCING on the first folded event; the finally is the safety net
+      // for a reattach that never connects (e.g. an immediate 404).
+      await driveRun(runId, assistantId, false, opts.fromSeq, () =>
+        setReattaching(false),
       );
     } finally {
-      activeRunId = null;
-      patchById(assistantId, (m) => (m.streaming = false));
-      setSending(false);
-      if (wasNew && activeConversationId) {
-        options.onConversationStarted?.(activeConversationId);
+      setReattaching(false);
+    }
+    // A freshly-seeded turn that folded nothing means the run was gone (evicted, or
+    // lost to a server restart): fall back to the persisted thread so a finished
+    // answer still shows rather than a blank assistant turn.
+    if (
+      seeded &&
+      maxFoldedSeq === opts.fromSeq &&
+      activeConversationId !== null
+    ) {
+      try {
+        reseatFromDetail(
+          await api.get<ConversationDetailDTO>(
+            `/conversations/${activeConversationId}`,
+          ),
+        );
+      } catch {
+        // Leave the seed; the next navigation/refresh reconciles it.
       }
-      options.onTurnComplete?.();
-      // Adopt the backend's authoritative ids + version metadata for the turn
-      // just recorded — without this the live message keeps its client id and a
-      // stale version count, so the ‹k/n› cycler never appears and a later
-      // regenerate/edit/delete/pin would address an id the backend doesn't know.
-      await adoptServerMeta();
     }
   }
 
@@ -802,6 +961,9 @@ export function createChatStream(
     setSending(true);
 
     const wasNew = activeConversationId === null;
+    // A fresh, non-ephemeral thread gets auto-named during this turn; show the
+    // working throbber on the title until it lands. Ephemeral threads aren't titled.
+    if (wasNew && !options.ephemeral) setTitlePending(true);
     const userMsg: ChatMessage = {
       id: nextId("u"),
       role: "user",
@@ -839,6 +1001,7 @@ export function createChatStream(
       );
       patchById(assistantId, (m) => (m.streaming = false));
       setSending(false);
+      setTitlePending(false);
       return;
     }
     activeConversationId = created.conversation_id;
@@ -1091,14 +1254,34 @@ export function createChatStream(
     }
   }
 
+  // Cold-read reattach: a thread loaded mid-stream carries its in-flight run
+  // (`options.activeRun`), so resume it — fold the full replay onto a freshly
+  // seeded assistant turn and continue live — instead of rendering the thread
+  // reply-less. The source is withheld (→ undefined) while history loads, so this
+  // never fires on an empty seed; it runs once per run (`reattachedRunId`) and not
+  // for a run we're already driving.
+  createEffect(() => {
+    const ar = options.activeRun?.();
+    if (!ar || ar.id === reattachedRunId || ar.id === activeRunId) return;
+    reattachedRunId = ar.id;
+    void reattachRun(ar.id, { fromSeq: 0 });
+  });
+
   onCleanup(() => controller?.abort());
 
   return {
     messages,
     sending,
+    titlePending,
+    reattaching,
     usage,
+    /** The run currently streaming into this store, or null. */
+    activeRunId: () => activeRunId,
+    /** Highest event seq folded so far — the resume point for a reattach. */
+    lastSeq: () => maxFoldedSeq,
     send,
     cancel,
+    reattachRun,
     resolveApproval,
     resolveHostCommands,
     regenerate,
@@ -1152,8 +1335,37 @@ export function mainChat(): MainChat {
         // loaded thread rather than the retained value of the one just left.
         initialContext: () =>
           session.loading ? undefined : session()?.context,
+        // Same lockstep: the in-flight run of the loaded thread, for a cold-read
+        // reattach (a page reload mid-stream).
+        activeRun: () => (session.loading ? undefined : session()?.activeRun),
       },
     );
+    // Reattach when the tab returns to the foreground or the network comes back.
+    // A backgrounded tab throttles the SSE reader until it stalls; on return we
+    // replay from the last folded seq — resuming a still-live run or folding the
+    // tail of one that finished while we were away (which clears the frozen
+    // streaming state via the drive's finally). No-op when nothing is in flight.
+    const resume = () => {
+      const runId = stream.activeRunId();
+      const inFlight =
+        stream.sending() || stream.messages.some((m) => m.streaming);
+      if (runId && inFlight) {
+        void stream.reattachRun(runId, { fromSeq: stream.lastSeq() });
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", resume);
+    onCleanup(() => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", resume);
+    });
+    // Mirror the main room's streaming state to the global flag the nav rail reads,
+    // so the Chat item shows a live indicator while a turn runs — even from another
+    // section. Only the main room drives it (compare panes are ephemeral).
+    createEffect(() => setChatBusy(stream.sending()));
     const [warmResolved, setWarmResolved] = createSignal(false);
     return {
       currentId,
