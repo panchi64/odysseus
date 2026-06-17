@@ -14,10 +14,12 @@ import logging
 
 import httpx
 
+from services.credentials import CredentialStore
+
 from . import hardware
 from .catalog import ModelCatalog
 from .models import CompatibleModel, HardwareProfile
-from .quality import build_quality_source
+from .quality import QualitySource, build_quality_source
 from .recommend import compatible_models as _compatible_models
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,8 @@ class CookbookService:
         self,
         http_client: httpx.AsyncClient,
         *,
+        credentials: CredentialStore,
+        owner_id: str,
         hf_token: str | None = None,
         catalog_ttl_s: float = 86_400.0,
         catalog_list_limit: int = 60,
@@ -36,23 +40,45 @@ class CookbookService:
         aa_api_key: str | None = None,
         llm_stats_api_key: str | None = None,
     ) -> None:
-        source = build_quality_source(
-            http_client,
-            quality_source,
-            aa_api_key=aa_api_key,
-            llm_stats_api_key=llm_stats_api_key,
-        )
-        logger.info("cookbook: quality source = %s", source.name)
+        self._http = http_client
+        self._credentials = credentials
+        self._owner_id = owner_id
+        self._source_name = quality_source
+        # Env-provided keys are the fallback when nothing is set in the credential store.
+        self._aa_env = aa_api_key
+        self._llm_env = llm_stats_api_key
+        self._hf_env = hf_token
         self._catalog = ModelCatalog(
             http_client,
-            quality_source=source,
-            hf_token=hf_token,
+            resolve_runtime=self._resolve_runtime,
             ttl_s=catalog_ttl_s,
             list_limit=catalog_list_limit,
             max_models=catalog_max_models,
         )
         self._profile: HardwareProfile | None = None
         self._lock = asyncio.Lock()
+
+    async def _resolve_runtime(self) -> tuple[QualitySource, str | None]:
+        """The active quality source + HF token for a catalog build. Operator-set keys
+        (the credential store) override the env defaults; ``build_quality_source`` falls
+        back to keyless LMArena when the chosen source has no key either way. While the
+        vault is locked the store yields ``None`` and we use the env fallback."""
+
+        async def keyed(service: str, env: str | None) -> str | None:
+            return await self._credentials.get_secret(self._owner_id, service) or env
+
+        aa = await keyed("artificial_analysis", self._aa_env)
+        llm = await keyed("llm_stats", self._llm_env)
+        hf = await keyed("huggingface", self._hf_env)
+        source = build_quality_source(
+            self._http, self._source_name, aa_api_key=aa, llm_stats_api_key=llm
+        )
+        return source, hf
+
+    def invalidate_catalog(self) -> None:
+        """Drop the cached catalog so the next request rebuilds with current credentials
+        (called when an outbound credential changes)."""
+        self._catalog.invalidate()
 
     async def detect(self) -> HardwareProfile:
         """The host hardware profile, probed once and cached."""

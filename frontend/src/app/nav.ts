@@ -180,7 +180,9 @@ export const NAV: NavSection[] = [
         label: "API Tokens",
         href: "/admin/tokens",
         icon: "key",
-        description: "Issue and revoke API access tokens",
+        description:
+          "Keys for outbound services (model benchmarks, HuggingFace)",
+        connected: true,
       },
       {
         label: "Vault",

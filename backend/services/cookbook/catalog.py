@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import httpx
@@ -37,15 +38,16 @@ class ModelCatalog:
         self,
         client: httpx.AsyncClient,
         *,
-        quality_source: QualitySource,
-        hf_token: str | None = None,
+        resolve_runtime: Callable[[], Awaitable[tuple[QualitySource, str | None]]],
         ttl_s: float = 86_400.0,
         list_limit: int = 60,
         max_models: int = 24,
     ) -> None:
         self._client = client
-        self._quality_source = quality_source
-        self._hf_token = hf_token
+        # Resolves the active quality source + HF token at build time (from the credential
+        # store, env fallback), so a newly-pasted key applies on the next build — not boot.
+        self._resolve_runtime = resolve_runtime
+        self._hf_token: str | None = None  # cached from the last build, reused by search
         self._ttl_s = ttl_s
         self._list_limit = list_limit
         self._max_models = max_models
@@ -88,6 +90,11 @@ class ModelCatalog:
         self._fetched_at = None
         return await self.get()
 
+    def invalidate(self) -> None:
+        """Mark the cache stale so the next ``get()`` rebuilds — e.g. after a credential
+        change, so a new quality-source key takes effect without a restart."""
+        self._fetched_at = None
+
     async def search(self, query: str) -> list[CatalogModel]:
         """Models matching a free-text query, scored with the same quality signals as
         the curated catalog. Best-effort warms those signals first (cached)."""
@@ -101,6 +108,9 @@ class ModelCatalog:
         return models
 
     async def _build(self) -> list[CatalogModel]:
+        # Resolve the active source + HF token now (picks up an operator-set key); cache
+        # the token so a later search() reuses it without re-resolving.
+        source, self._hf_token = await self._resolve_runtime()
         hf = HuggingFaceCatalog(self._client, token=self._hf_token)
         models = await hf.fetch(limit=self._list_limit, max_models=self._max_models)
         try:
@@ -112,7 +122,7 @@ class ModelCatalog:
         # The active quality source; an empty map (offline / no key) just leaves every
         # model on the family/adoption fallbacks. scores() is itself best-effort.
         try:
-            self._quality = await self._quality_source.scores()
+            self._quality = await source.scores()
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             logger.warning("cookbook: quality source failed; quality falls back to adoption",
                            exc_info=True)
@@ -123,11 +133,10 @@ class ModelCatalog:
         # Surface coverage: a source that rates 0 of the catalog means quality ranking is
         # effectively off (the whole list falls to the adoption proxy) — worth a warning,
         # not a silent degrade, since the operator can't otherwise tell.
-        source_name = self._quality_source.name
-        dead = matched == 0 and source_name != "lmarena"
+        dead = matched == 0 and source.name != "lmarena"
         (logger.warning if dead else logger.info)(
             "cookbook: quality source %s rated %d/%d catalog models",
-            source_name, matched, len(models),
+            source.name, matched, len(models),
         )
         return models
 

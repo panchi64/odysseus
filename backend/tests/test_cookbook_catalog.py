@@ -113,9 +113,13 @@ class _FakeClient:
 
 
 def _catalog(client, **kwargs) -> ModelCatalog:
-    """A catalog wired to the keyless LMArena source over the same fake client (its
-    leaderboard rows come from the `datasets-server` branch of `_FakeClient`)."""
-    return ModelCatalog(client, quality_source=LMArenaSource(client), **kwargs)
+    """A catalog whose runtime resolver yields the keyless LMArena source (its leaderboard
+    rows come from the `datasets-server` branch of `_FakeClient`) and no HF token."""
+
+    async def resolve_runtime():
+        return LMArenaSource(client), None
+
+    return ModelCatalog(client, resolve_runtime=resolve_runtime, **kwargs)
 
 
 async def test_catalog_builds_dedupes_and_enriches():

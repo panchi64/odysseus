@@ -16,6 +16,7 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
+from services.credentials import CredentialStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -72,6 +73,10 @@ def sandbox_sessions(request: Request) -> SandboxSessionManager | None:
 
 def cookbook(request: Request) -> CookbookService:
     return request.app.state.cookbook
+
+
+def credentials(request: Request) -> CredentialStore:
+    return request.app.state.credentials
 
 
 def vault(request: Request) -> Vault:

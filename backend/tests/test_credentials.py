@@ -1,0 +1,112 @@
+"""Outbound service credentials — encryption at rest, write-only routes, lock-aware
+degrade, and the on-change hook. No network."""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+from sqlmodel import Session, select
+
+from core.db import init_db, make_engine
+from core.exceptions import NotFoundError
+from core.vault import Vault
+from models.credentials import ServiceCredential
+from services.credentials import CredentialStore
+from tests._helpers import client_app
+
+OWNER = "operator"
+
+
+async def _make():
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")
+    await vault.setup("pw")
+    return CredentialStore(engine, vault), engine, vault
+
+
+async def test_set_get_roundtrip_and_status():
+    store, _engine, _vault = await _make()
+    await store.set_key(OWNER, "artificial_analysis", "aa-secret-123")
+    assert await store.get_secret(OWNER, "artificial_analysis") == "aa-secret-123"
+    assert await store.status(OWNER) == {"artificial_analysis": True}
+    # An unset service has no key.
+    assert await store.get_secret(OWNER, "llm_stats") is None
+
+
+async def test_set_is_an_upsert():
+    store, _engine, _vault = await _make()
+    await store.set_key(OWNER, "llm_stats", "first")
+    await store.set_key(OWNER, "llm_stats", "second")
+    assert await store.get_secret(OWNER, "llm_stats") == "second"
+
+
+async def test_key_is_encrypted_at_rest():
+    store, engine, vault = await _make()
+    await store.set_key(OWNER, "huggingface", "hf-token-xyz")
+    with Session(engine) as session:
+        row = session.exec(select(ServiceCredential)).one()
+    assert row.api_key_enc is not None
+    assert "hf-token-xyz" not in row.api_key_enc  # sealed, not plaintext
+    assert vault.decrypt_str(row.api_key_enc) == "hf-token-xyz"
+
+
+async def test_clear_removes_the_key():
+    store, _engine, _vault = await _make()
+    await store.set_key(OWNER, "llm_stats", "k")
+    await store.clear_key(OWNER, "llm_stats")
+    assert await store.get_secret(OWNER, "llm_stats") is None
+    assert await store.status(OWNER) == {}
+    # Setting an empty key is also a clear.
+    await store.set_key(OWNER, "llm_stats", "k")
+    await store.set_key(OWNER, "llm_stats", "")
+    assert await store.get_secret(OWNER, "llm_stats") is None
+
+
+async def test_unknown_service_rejected():
+    store, _engine, _vault = await _make()
+    with pytest.raises(NotFoundError):
+        await store.set_key(OWNER, "not-a-service", "k")
+    with pytest.raises(NotFoundError):
+        await store.clear_key(OWNER, "not-a-service")
+
+
+async def test_locked_vault_yields_none_not_a_crash():
+    store, _engine, vault = await _make()
+    await store.set_key(OWNER, "artificial_analysis", "secret")
+    vault.lock()
+    # Consumers (the Cookbook at boot) must degrade, never raise.
+    assert await store.get_secret(OWNER, "artificial_analysis") is None
+
+
+async def test_on_change_fires_after_writes():
+    store, _engine, _vault = await _make()
+    hits = []
+    store.on_change(lambda: hits.append(1))
+    await store.set_key(OWNER, "llm_stats", "k")
+    await store.clear_key(OWNER, "llm_stats")
+    assert len(hits) == 2
+
+
+async def test_credentials_route_set_list_clear_and_never_leaks_key():
+    async with client_app() as (client, _app):
+        resp = await client.get("/credentials")
+        assert resp.status_code == 200
+        by_service = {c["service"]: c for c in resp.json()}
+        assert {"artificial_analysis", "llm_stats", "huggingface"} <= by_service.keys()
+        assert by_service["artificial_analysis"]["has_key"] is False
+
+        resp = await client.put("/credentials/artificial_analysis", json={"api_key": "sk-secret"})
+        assert resp.status_code == 200
+        assert resp.json()["has_key"] is True
+        assert "sk-secret" not in resp.text  # the key is never echoed back
+
+        resp = await client.get("/credentials")
+        assert {c["service"]: c["has_key"] for c in resp.json()}["artificial_analysis"] is True
+
+        assert (await client.put("/credentials/bogus", json={"api_key": "x"})).status_code == 404
+
+        resp = await client.delete("/credentials/artificial_analysis")
+        assert resp.status_code == 200 and resp.json()["has_key"] is False

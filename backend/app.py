@@ -26,6 +26,7 @@ from routes import (
     chat,
     conversations,
     cookbook,
+    credentials,
     health,
     memory,
     models,
@@ -40,6 +41,7 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
+from services.credentials import CredentialStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -127,13 +129,19 @@ async def lifespan(app: FastAPI):
     app.state.conversation_search = ConversationSearch(
         engine, vault, embedder, app.state.conversations
     )
+    # Outbound service credentials — the operator's API keys for third-party services
+    # (the Cookbook's quality benchmarks + its HuggingFace token), sealed with the vault.
+    app.state.credentials = CredentialStore(engine, vault)
     # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
     # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
     # for its outbound calls. Hardware + catalog are warmed in the background so a slow
     # `system_profiler` or the first catalog pull never blocks boot; first request falls
-    # back to lazy-detect if the warm-up hasn't finished.
+    # back to lazy-detect if the warm-up hasn't finished. Quality-source keys resolve from
+    # the credential store at build time (env as fallback).
     app.state.cookbook = CookbookService(
         discovery_client,
+        credentials=app.state.credentials,
+        owner_id=OPERATOR_ID,
         hf_token=settings.hf_token,
         catalog_ttl_s=settings.cookbook_catalog_ttl_s,
         catalog_list_limit=settings.cookbook_catalog_list_limit,
@@ -142,6 +150,9 @@ async def lifespan(app: FastAPI):
         aa_api_key=settings.artificial_analysis_api_key,
         llm_stats_api_key=settings.llm_stats_api_key,
     )
+    # A credential change rebuilds the catalog on next request, so a newly-pasted key
+    # applies without a restart.
+    app.state.credentials.on_change(app.state.cookbook.invalidate_catalog)
     logger.info("cookbook: hardware + model catalog (warming in background)")
     app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())
     # Long-term memory — embeds via the shared embedder; degrades to keyword recall
@@ -270,6 +281,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(artifacts.router)
     app.include_router(previews.router)
     app.include_router(search.router)
+    app.include_router(credentials.router)
     return app
 
 
