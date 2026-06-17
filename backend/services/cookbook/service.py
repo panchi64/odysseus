@@ -14,7 +14,7 @@ import logging
 
 import httpx
 
-from services.credentials import CredentialStore
+from services.credential_store import CredentialStore
 
 from . import hardware
 from .catalog import ModelCatalog

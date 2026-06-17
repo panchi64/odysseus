@@ -12,8 +12,8 @@ from sqlmodel import Session, select
 from core.db import init_db, make_engine
 from core.exceptions import NotFoundError
 from core.vault import Vault
-from models.credentials import ServiceCredential
-from services.credentials import CredentialStore
+from models.service_credential import ServiceCredential
+from services.credential_store import CredentialStore
 from tests._helpers import client_app
 
 OWNER = "operator"

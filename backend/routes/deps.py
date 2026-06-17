@@ -16,7 +16,7 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
-from services.credentials import CredentialStore
+from services.credential_store import CredentialStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer

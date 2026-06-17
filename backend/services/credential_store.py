@@ -23,7 +23,7 @@ from sqlmodel import Session, select
 from core.db import in_session
 from core.exceptions import NotFoundError
 from core.vault import Vault, VaultLocked
-from models.credentials import ServiceCredential
+from models.service_credential import ServiceCredential
 
 logger = logging.getLogger(__name__)
 

@@ -21,12 +21,12 @@ from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.vault import Vault
 from routes import (
+    api_tokens,
     artifacts,
     auth,
     chat,
     conversations,
     cookbook,
-    credentials,
     health,
     memory,
     models,
@@ -41,7 +41,7 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
-from services.credentials import CredentialStore
+from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -281,7 +281,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(artifacts.router)
     app.include_router(previews.router)
     app.include_router(search.router)
-    app.include_router(credentials.router)
+    app.include_router(api_tokens.router)
     return app
 
 

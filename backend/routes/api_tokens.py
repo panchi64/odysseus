@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from services.credentials import KNOWN_SERVICES
+from services.credential_store import KNOWN_SERVICES
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
