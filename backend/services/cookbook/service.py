@@ -15,14 +15,23 @@ import logging
 import httpx
 
 from services.credential_store import CredentialStore
+from services.settings_store import SettingsStore
 
 from . import hardware
 from .catalog import ModelCatalog
 from .models import CompatibleModel, HardwareProfile
-from .quality import QualitySource, build_quality_source
+from .quality import (
+    QUALITY_SOURCE_IDS,
+    QUALITY_SOURCES,
+    QualitySource,
+    build_quality_source,
+)
 from .recommend import compatible_models as _compatible_models
 
 logger = logging.getLogger(__name__)
+
+# The persisted-settings key holding the operator's chosen ranking source.
+_SOURCE_SETTING = "cookbook.quality_source"
 
 
 class CookbookService:
@@ -31,6 +40,7 @@ class CookbookService:
         http_client: httpx.AsyncClient,
         *,
         credentials: CredentialStore,
+        settings: SettingsStore,
         owner_id: str,
         hf_token: str | None = None,
         catalog_ttl_s: float = 86_400.0,
@@ -42,8 +52,10 @@ class CookbookService:
     ) -> None:
         self._http = http_client
         self._credentials = credentials
+        self._settings = settings
         self._owner_id = owner_id
-        self._source_name = quality_source
+        # The env default; the operator's persisted choice (if any) overrides it.
+        self._default_source = quality_source
         # Env-provided keys are the fallback when nothing is set in the credential store.
         self._aa_env = aa_api_key
         self._llm_env = llm_stats_api_key
@@ -71,9 +83,42 @@ class CookbookService:
         llm = await keyed("llm_stats", self._llm_env)
         hf = await keyed("huggingface", self._hf_env)
         source = build_quality_source(
-            self._http, self._source_name, aa_api_key=aa, llm_stats_api_key=llm
+            self._http, await self.active_source(), aa_api_key=aa, llm_stats_api_key=llm
         )
         return source, hf
+
+    async def active_source(self) -> str:
+        """The operator's chosen ranking source, falling back to the env default. A
+        stale/invalid stored value is ignored."""
+        stored = await self._settings.get(self._owner_id, _SOURCE_SETTING)
+        return stored if stored in QUALITY_SOURCE_IDS else self._default_source
+
+    async def set_source(self, source: str) -> None:
+        """Persist the ranking source and rebuild the catalog under it on next request."""
+        if source not in QUALITY_SOURCE_IDS:
+            raise ValueError(f"unknown quality source {source!r}")
+        await self._settings.set(self._owner_id, _SOURCE_SETTING, source)
+        self._catalog.invalidate()
+
+    async def source_options(self) -> list[dict]:
+        """Each selectable source + whether a key is available for it (a stored credential
+        or the env fallback) — so the UI can flag a keyed source the operator can't use yet."""
+        status = await self._credentials.status(self._owner_id)
+        env_key = {"artificial_analysis": self._aa_env, "llm_stats": self._llm_env}
+        options: list[dict] = []
+        for source in QUALITY_SOURCES:
+            has_key = not source.requires_key or (
+                status.get(source.id, False) or bool(env_key.get(source.id))
+            )
+            options.append(
+                {
+                    "id": source.id,
+                    "label": source.label,
+                    "requires_key": source.requires_key,
+                    "has_key": has_key,
+                }
+            )
+        return options
 
     def invalidate_catalog(self) -> None:
         """Drop the cached catalog so the next request rebuilds with current credentials

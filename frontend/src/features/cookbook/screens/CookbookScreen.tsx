@@ -25,6 +25,7 @@ import {
   Panel,
   Readout,
   Row,
+  Select,
   Stack,
   StatusFlag,
   Tabs,
@@ -43,6 +44,8 @@ import {
   useCookbookModels,
   useRunningServers,
   useRemoteEndpoints,
+  useQualitySource,
+  setQualitySource,
   searchModels,
 } from "../data";
 import type { ModelEntry, RunningServer, ServerStatus } from "../model";
@@ -75,6 +78,45 @@ const CAPS_HINT =
 
 const QUALITY_HINT =
   "Model quality from a live benchmark source (higher is better). The figure is the active source's headline metric — e.g. an LMArena Elo or an Intelligence Index — blank when the source hasn't rated the model yet (it's then ranked by its family's standing).";
+
+// The "RANK BY" control: switches the live benchmark source the backend ranks with. A
+// keyed source without a token is still selectable (the backend falls back) but flagged,
+// with a pointer to the API Tokens page.
+function RankBySelect(): JSX.Element {
+  const source = useQualitySource();
+  const change = async (id: string) => {
+    const opt = source.latest?.options.find((o) => o.id === id);
+    try {
+      await setQualitySource(id);
+      toast.success(`Ranking by ${opt?.label ?? id}`);
+      if (opt?.requiresKey && !opt.hasKey) {
+        toast.info(
+          `Add an API token for ${opt.label} (API Tokens) to activate it.`,
+        );
+      }
+    } catch {
+      toast.error("Unable to change the ranking source.");
+    }
+  };
+  return (
+    <Show when={source.latest}>
+      <Row gap={2} align="center">
+        <Text variant="label" tone="dim">
+          RANK BY
+        </Text>
+        <Select
+          value={source.latest?.active}
+          onChange={(v) => void change(v)}
+          options={(source.latest?.options ?? []).map((o) => ({
+            value: o.id,
+            label:
+              o.requiresKey && !o.hasKey ? `${o.label} (needs key)` : o.label,
+          }))}
+        />
+      </Row>
+    </Show>
+  );
+}
 
 // One row of the compatible-models table. A `subgrid` so its cells inherit the shared
 // column tracks and line up with every other row. Read-only: the backend ranks the
@@ -388,7 +430,7 @@ export function CookbookScreen(): JSX.Element {
       <Show when={tab() === "local"}>
         <div class="relative">
           <Stack gap={4}>
-            <Panel label="COMPATIBLE MODELS" flush>
+            <Panel label="COMPATIBLE MODELS" flush meta={<RankBySelect />}>
               <Show
                 when={!models.error}
                 fallback={

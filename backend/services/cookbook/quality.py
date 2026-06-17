@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -56,6 +57,25 @@ class QualitySource(Protocol):
     async def scores(self) -> dict[str, ModelQuality]:
         """``normalize_name`` → quality for every model the source ranks."""
         ...
+
+
+@dataclass(frozen=True)
+class QualitySourceInfo:
+    """A selectable ranking source. ``requires_key`` ones use the same-id credential
+    (e.g. source ``artificial_analysis`` ← the ``artificial_analysis`` API token)."""
+
+    id: str
+    label: str
+    requires_key: bool
+
+
+# The sources the operator can rank by. LMArena is keyless (the zero-setup default).
+QUALITY_SOURCES: tuple[QualitySourceInfo, ...] = (
+    QualitySourceInfo("lmarena", "LMArena", False),
+    QualitySourceInfo("artificial_analysis", "Artificial Analysis", True),
+    QualitySourceInfo("llm_stats", "llm-stats.com", True),
+)
+QUALITY_SOURCE_IDS = frozenset(s.id for s in QUALITY_SOURCES)
 
 
 # --- the tiered 0..1 scorer (source → family → adoption) --------------------

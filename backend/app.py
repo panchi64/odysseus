@@ -49,6 +49,7 @@ from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.settings_store import SettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,8 @@ async def lifespan(app: FastAPI):
     # Outbound service credentials — the operator's API keys for third-party services
     # (the Cookbook's quality benchmarks + its HuggingFace token), sealed with the vault.
     app.state.credentials = CredentialStore(engine, vault)
+    # Small persisted operator preferences (e.g. the Cookbook's active quality source).
+    app.state.settings_store = SettingsStore(engine)
     # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
     # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
     # for its outbound calls. Hardware + catalog are warmed in the background so a slow
@@ -141,6 +144,7 @@ async def lifespan(app: FastAPI):
     app.state.cookbook = CookbookService(
         discovery_client,
         credentials=app.state.credentials,
+        settings=app.state.settings_store,
         owner_id=OPERATOR_ID,
         hf_token=settings.hf_token,
         catalog_ttl_s=settings.cookbook_catalog_ttl_s,

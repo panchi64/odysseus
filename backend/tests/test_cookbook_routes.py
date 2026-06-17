@@ -102,3 +102,36 @@ async def test_compatible_degrades_to_empty(monkeypatch):
         resp = await client.get("/models/cookbook/compatible")
         assert resp.status_code == 200
         assert resp.json() == {"models": [], "available": False}
+
+
+async def test_quality_source_get_set_and_key_status(monkeypatch):
+    monkeypatch.setattr(CookbookService, "warmup", _no_warmup)
+    async with client_app() as (client, _app):
+        # Default is keyless LMArena; the keyed sources have no key yet.
+        body = (await client.get("/models/cookbook/quality-source")).json()
+        assert body["active"] == "lmarena"
+        opts = {o["id"]: o for o in body["options"]}
+        assert set(opts) == {"lmarena", "artificial_analysis", "llm_stats"}
+        assert opts["lmarena"]["has_key"] is True
+        assert opts["artificial_analysis"]["requires_key"] is True
+        assert opts["artificial_analysis"]["has_key"] is False
+
+        # Switching the source persists and is reflected on the next read.
+        resp = await client.put(
+            "/models/cookbook/quality-source", json={"source": "artificial_analysis"}
+        )
+        assert resp.status_code == 200 and resp.json()["active"] == "artificial_analysis"
+        again = await client.get("/models/cookbook/quality-source")
+        assert again.json()["active"] == "artificial_analysis"
+
+        # An unknown source is rejected.
+        bad = await client.put("/models/cookbook/quality-source", json={"source": "bogus"})
+        assert bad.status_code == 422
+
+        # Setting that source's API token flips its has_key.
+        await client.put("/credentials/artificial_analysis", json={"api_key": "sk-x"})
+        opts = {
+            o["id"]: o
+            for o in (await client.get("/models/cookbook/quality-source")).json()["options"]
+        }
+        assert opts["artificial_analysis"]["has_key"] is True

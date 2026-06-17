@@ -9,7 +9,7 @@ fabricated list, never a 500.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from core.exceptions import DegradedCapabilityError
@@ -23,6 +23,22 @@ class CompatibleModels(BaseModel):
     models: list[CompatibleModel]
     # False when the live catalog couldn't be sourced (offline, no cache yet).
     available: bool
+
+
+class QualitySourceOption(BaseModel):
+    id: str
+    label: str
+    requires_key: bool
+    has_key: bool
+
+
+class QualitySourceState(BaseModel):
+    active: str
+    options: list[QualitySourceOption]
+
+
+class QualitySourceUpdate(BaseModel):
+    source: str
 
 
 @router.get("/hardware", response_model=HardwareProfile)
@@ -54,6 +70,28 @@ async def search_models(request: Request, q: str = "") -> CompatibleModels:
     except DegradedCapabilityError:
         return CompatibleModels(models=[], available=False)
     return CompatibleModels(models=models, available=True)
+
+
+async def _quality_source_state(service) -> QualitySourceState:
+    return QualitySourceState(
+        active=await service.active_source(),
+        options=[QualitySourceOption(**o) for o in await service.source_options()],
+    )
+
+
+@router.get("/quality-source", response_model=QualitySourceState)
+async def get_quality_source(request: Request) -> QualitySourceState:
+    return await _quality_source_state(deps.cookbook(request))
+
+
+@router.put("/quality-source", response_model=QualitySourceState)
+async def set_quality_source(body: QualitySourceUpdate, request: Request) -> QualitySourceState:
+    service = deps.cookbook(request)
+    try:
+        await service.set_source(body.source)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="unknown quality source") from None
+    return await _quality_source_state(service)
 
 
 @router.post("/compatible", response_model=CompatibleModels)

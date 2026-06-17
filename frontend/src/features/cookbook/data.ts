@@ -1,4 +1,4 @@
-import { createResource, type Resource } from "solid-js";
+import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
 import { bytes } from "~/lib/format";
 import type {
@@ -119,9 +119,66 @@ async function fetchHardware(): Promise<HardwareInfo> {
   );
 }
 
+// Bumped when the active quality source changes, so the compatible list re-ranks.
+const [modelsTick, setModelsTick] = createSignal(0);
+
 async function fetchModels(): Promise<ModelEntry[]> {
   const res = await api.get<CompatibleModelsDTO>("/models/cookbook/compatible");
   return res.models.map(mapModel);
+}
+
+// --- quality source (the "RANK BY" selector) -------------------------------
+
+interface QualitySourceOptionDTO {
+  id: string;
+  label: string;
+  requires_key: boolean;
+  has_key: boolean;
+}
+interface QualitySourceStateDTO {
+  active: string;
+  options: QualitySourceOptionDTO[];
+}
+
+export interface QualitySourceOption {
+  id: string;
+  label: string;
+  requiresKey: boolean;
+  hasKey: boolean;
+}
+export interface QualitySourceState {
+  active: string;
+  options: QualitySourceOption[];
+}
+
+const [sourceTick, setSourceTick] = createSignal(0);
+
+async function fetchQualitySource(): Promise<QualitySourceState> {
+  const dto = await api.get<QualitySourceStateDTO>(
+    "/models/cookbook/quality-source",
+  );
+  return {
+    active: dto.active,
+    options: dto.options.map((o) => ({
+      id: o.id,
+      label: o.label,
+      requiresKey: o.requires_key,
+      hasKey: o.has_key,
+    })),
+  };
+}
+
+export function useQualitySource(): Resource<QualitySourceState> {
+  const [data] = createResource(sourceTick, fetchQualitySource);
+  return data;
+}
+
+/** Switch the ranking source; the backend persists it and rebuilds the catalog, so we
+ *  refresh both the selector state and the compatible list. */
+export async function setQualitySource(source: string): Promise<void> {
+  await api.put("/models/cookbook/quality-source", { source });
+  setSourceTick((n) => n + 1);
+  setModelsTick((n) => n + 1);
 }
 
 /** Search the full model catalog for a free-text query, scored against the host —
@@ -149,7 +206,7 @@ export function useHardware(): Resource<HardwareInfo> {
 }
 
 export function useCookbookModels(): Resource<ModelEntry[]> {
-  const [data] = createResource(fetchModels);
+  const [data] = createResource(modelsTick, fetchModels);
   return data;
 }
 
