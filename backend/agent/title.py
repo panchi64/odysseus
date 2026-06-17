@@ -1,25 +1,30 @@
-"""Naming a fresh conversation — a fast, reasoning-off utility call.
+"""Naming a fresh conversation — a fast, best-effort-reasoning-off utility call.
 
 After a brand-new conversation's first turn lands, the chassis asks the utility
 model for a short descriptive title so the operator never has to name a thread.
 The thread is named for what the *operator* asked — only the first user message is
 fed to the namer, never the assistant's reply — so the title mirrors the request,
-not the answer. The task is trivial, so the call is deliberately cheap and must
-never tax the turn it follows: reasoning is disabled and the output is capped. The
-engine emits the result as ``conversation.titled`` and persists it; the frontend
-reveals it with a typing animation.
+not the answer. The task is trivial, so the call is deliberately cheap. The engine
+emits the result as ``conversation.titled`` and persists it; the frontend reveals
+it with a typing animation.
 
-How reasoning is disabled is **not** decided here — it is provider-shaped and
-lives in :mod:`services.reasoning`. The caller resolves the model and its
-reasoning-off :class:`~pydantic_ai.settings.ModelSettings` together (the registry
-does this) and hands both in, so this module stays free of per-lab levers and a
-strict endpoint that has no off-switch simply reasons normally.
+Reasoning is requested *off* — provider-shaped, decided in :mod:`services.reasoning`;
+the caller resolves the model and its reasoning-off
+:class:`~pydantic_ai.settings.ModelSettings` together (the registry does this) and
+hands both in, so this module stays free of per-lab levers. But some runtimes ignore
+that lever (e.g. LM Studio drops OpenAI ``chat_template_kwargs``, and the Qwen 2507+
+line dropped the ``/no_think`` soft-switch), so a model can reason anyway. We don't
+fight that here — we *tolerate* it: the caller hands in a generous ``max_tokens`` so a
+``<think>`` block has room to clear *and* still emit the title, and :func:`_clean`
+strips any ``<think>…</think>`` the runtime inlined into the content. A strict endpoint
+with no off-switch simply reasons within that budget.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from pydantic_ai import ModelMessage
 from pydantic_ai.models import Model
@@ -31,17 +36,26 @@ from .meta import make_utility_agent
 
 logger = logging.getLogger(__name__)
 
-# Output-capped base settings; the caller's reasoning-off settings are merged on
-# top. ``max_tokens`` is response-level (it bounds the model's output, never the
-# prompt), so it must fit everything the model emits before the title — including a
-# ``<think>`` block when reasoning is on. The cap is a ceiling, not a cost: when the
-# reasoning-off lever takes (recognized family AND a runtime that honors it) the
-# model emits the handful of title words and stops early, so the headroom is free;
-# when a runtime ignores the lever (e.g. Ollama/LM Studio drop OpenAI
-# ``chat_template_kwargs``) the think block is response tokens too, so a tight cap
-# would be spent thinking and the call would die before producing a title. Keep it
-# generous enough to clear a titling think block.
+# Output-capped base settings; the caller's reasoning-off settings (and per-call
+# ``max_tokens``) are merged on top. ``max_tokens`` is response-level (it bounds the
+# model's output, never the prompt), so it must fit everything the model emits before
+# the title — including a ``<think>`` block when a runtime ignores the reasoning-off
+# lever. The cap is a ceiling, not a cost: when reasoning is genuinely off the model
+# emits the handful of title words and stops early, so the headroom is free; when it
+# reasons anyway the think block is response tokens too, so the caller raises the cap
+# (see :data:`core.config` ``title_max_tokens`` / ``retitle_max_tokens``) to clear it.
+# This base value is the floor for callers that pass none (e.g. tests).
 _BASE_SETTINGS: ModelSettings = {"max_tokens": 1024, "temperature": 0.3}
+
+# A reasoning model that the runtime didn't keep off inlines its chain-of-thought as a
+# ``<think>…</think>`` block in the content (rather than a separate reasoning channel
+# Pydantic AI would surface as a ``ThinkingPart``). Strip it so the title is taken from
+# the words after it, never from a line of reasoning. No-op when there's no think block.
+# The close is optional (``$`` under DOTALL): a model that exhausts ``max_tokens`` while
+# still reasoning emits an *unclosed* ``<think>`` whose partial content Pydantic AI still
+# returns — strip that to end-of-string so a half-thought never becomes the title.
+# Case-insensitive since the tag casing is the model/template's choice, not ours.
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
 
 # Trim the user message fed to the namer — the topic is in the opening, and a
 # long body only slows the call without sharpening the title.
@@ -108,7 +122,10 @@ def _clean(raw: str) -> str | None:
     """Sanitize the model's reply into a single-line title, or None if empty.
 
     Models tend to wrap titles in quotes, prepend ``Title:``, or add a trailing
-    period; strip those so the stored/animated name is clean."""
+    period; strip those so the stored/animated name is clean. A reasoning model the
+    runtime didn't keep off prepends a ``<think>…</think>`` block — drop it first so
+    the title is read from the words after it, not from the reasoning."""
+    raw = _THINK_BLOCK.sub("", raw)
     line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
     line = line.strip("\"'`").strip()
     for prefix in ("title:", "title -", "thread:"):
@@ -127,6 +144,7 @@ async def generate_title(
     reasoning_off: ModelSettings | None = None,
     timeout_s: float | None = None,
     excerpt: int = _EXCERPT,
+    max_tokens: int | None = None,
 ) -> str | None:
     """Name a conversation from the user's opening message, or None on any failure.
 
@@ -138,8 +156,12 @@ async def generate_title(
     (its source — :mod:`services.reasoning` — owns the per-provider lever);
     ``timeout_s`` bounds how long the call may run so a slow utility model cannot
     hold the run open. ``excerpt`` caps the prompt fed in — the opening message for
-    the auto-titler, a wider span for a manual re-title over every operator turn."""
+    the auto-titler, a wider span for a manual re-title over every operator turn.
+    ``max_tokens`` overrides the base output cap so a runtime that ignores the
+    reasoning-off lever still has room to think *and* emit the title."""
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
+    if max_tokens is not None:
+        settings["max_tokens"] = max_tokens
     agent = make_utility_agent(model, output_type=str, instructions=TITLE_INSTRUCTIONS)
     user = prompt[:excerpt]
     try:
@@ -160,6 +182,7 @@ async def title_from_history(
     full: bool = False,
     reasoning_off: ModelSettings | None = None,
     timeout_s: float | None = None,
+    max_tokens: int | None = None,
 ) -> str | None:
     """Name a conversation from its stored history — the one place that pairs *which*
     operator turns feed the namer with *how much* of them. ``full`` selects the
@@ -178,4 +201,5 @@ async def title_from_history(
         reasoning_off=reasoning_off,
         timeout_s=timeout_s,
         excerpt=FULL_EXCERPT if full else _EXCERPT,
+        max_tokens=max_tokens,
     )

@@ -62,6 +62,21 @@ def _bodies(run):
         ("  Multi\nLine\nReply  ", "Multi"),
         ("`Quoted Backticks`", "Quoted Backticks"),
         ("   ", None),
+        # A reasoning model the runtime didn't keep off inlines its thinking as a
+        # <think> block; the title must come from the words after it, not the reasoning.
+        ("<think>weigh the options</think>\nClean Title", "Clean Title"),
+        (
+            "<think>line one\nline two\nstill thinking</think>\nTitle After Reasoning",
+            "Title After Reasoning",
+        ),
+        ("<think>only reasoning, no title</think>", None),
+        # Casing is the model/template's choice, not ours — strip case-insensitively.
+        ("<THINK>reasoning</THINK>\nCapitalized Tag Title", "Capitalized Tag Title"),
+        # An unclosed block (model exhausted max_tokens mid-think; Pydantic AI still
+        # returns the partial content) must strip to end-of-string, never leak a
+        # half-thought as the title.
+        ("<think>ran out of budget while still reasoning about the", None),
+        ("<think>partial reasoning\nmore reasoning, no close tag", None),
     ],
 )
 def test_clean_sanitizes_model_replies(raw, expected):
@@ -92,6 +107,27 @@ async def test_generate_title_merges_reasoning_off_without_error():
         reasoning_off={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
     )
     assert title == "A Title"
+
+
+async def test_generate_title_strips_inlined_think_block():
+    # A runtime that ignored the reasoning-off lever returns the think block inline in
+    # the content; the title is read from after </think>, not from the reasoning.
+    model = TestModel(custom_output_text="<think>let me think</think>\nGreat Title")
+    title = await generate_title(model, "name this")
+    assert title == "Great Title"
+
+
+async def test_generate_title_applies_max_tokens_override():
+    # The per-call max_tokens overrides the base cap so a think block has room to clear.
+    captured: dict = {}
+
+    async def capture(messages, info):
+        captured["settings"] = dict(info.model_settings or {})
+        return ModelResponse(parts=[TextPart("A Title")])
+
+    title = await generate_title(FunctionModel(capture), "q", max_tokens=4096)
+    assert title == "A Title"
+    assert captured["settings"]["max_tokens"] == 4096
 
 
 # --- engine wiring ----------------------------------------------------------

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 import agent.engine as engine
-from agent.meta import LoopBreaker, LoopDetected, Verdict
+from agent.meta import LoopBreaker, LoopDetected, Verdict, make_utility_judge
 from core.config import Settings
 from runs import RunRegistry, RunStatus
 
@@ -44,6 +46,27 @@ async def test_run_blocks_when_loop_detected(monkeypatch):
 
 
 # --- Verifier ----------------------------------------------------------------
+async def test_utility_judge_forwards_reasoning_off_settings():
+    # The judge is background work that needn't reason: its model_settings (the
+    # utility model's reasoning-off settings) must reach the model call.
+    captured: dict = {}
+
+    async def capture(messages, info):
+        captured["settings"] = dict(info.model_settings or {})
+        tool = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args={"ok": True})])
+
+    judge = make_utility_judge(
+        FunctionModel(capture),
+        model_settings={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    )
+    verdict = await judge("the request", "the answer")
+    assert verdict.ok is True
+    assert captured["settings"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
 async def test_verifier_disabled_by_default():
     calls = []
 

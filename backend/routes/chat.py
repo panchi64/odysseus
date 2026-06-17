@@ -123,13 +123,14 @@ def _submit_turn(
     ``ephemeral`` threads (e.g. the compare panes) are hidden from the listing and
     show no title, so auto-titling them is invisible work that only holds the run
     open after the answer — skip it by passing no title model."""
-    resolved, utility_model, title_settings, context_window = models
+    resolved, utility_model, background_settings, context_window = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
         utility_model=utility_model,
+        utility_settings=background_settings,
         title_model=None if ephemeral else utility_model,
-        title_settings=None if ephemeral else title_settings,
+        title_settings=None if ephemeral else background_settings,
         context_window=context_window,
         capabilities=Capabilities(
             memory=deps.memory(request),

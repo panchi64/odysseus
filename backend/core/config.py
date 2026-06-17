@@ -142,12 +142,21 @@ class Settings(BaseSettings):
     artificial_analysis_api_key: str | None = None
     llm_stats_api_key: str | None = None
 
-    # Auto-titling: name a fresh thread from its first exchange (a reasoning-off
-    # utility call). On by default; the operator can rename either way. The
-    # title call is best-effort and bounded by `title_timeout_s` so a slow or
-    # stuck utility model can't hold the run open.
+    # Auto-titling: name a fresh thread from its first exchange (a best-effort
+    # reasoning-off utility call). On by default; the operator can rename either way.
+    # The title call is best-effort and bounded by `title_timeout_s` so a slow or
+    # stuck utility model can't hold the run open. `title_max_tokens` is the output
+    # cap: reasoning is requested off, but a runtime that ignores the lever (e.g.
+    # LM Studio + Qwen) reasons anyway, so the cap must leave room for a `<think>`
+    # block plus the title. The auto path runs concurrently and is awaited before the
+    # run finalizes, so it stays tight; the manual re-title spans every operator turn
+    # (a longer think block) and is a deliberate, awaited operator action, so it gets
+    # a wider budget and its own longer timeout.
     title_enabled: bool = True
     title_timeout_s: float = 20.0
+    title_max_tokens: int = 2048
+    retitle_timeout_s: float = 60.0
+    retitle_max_tokens: int = 4096
 
 
 @lru_cache

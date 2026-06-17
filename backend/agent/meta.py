@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 
 from prompts.utility import JUDGE_INSTRUCTIONS
 
@@ -68,16 +69,24 @@ class Verdict(BaseModel):
 Judge = Callable[[str, str], Awaitable[Verdict]]
 
 
-def make_utility_judge(model: Model) -> Judge:
+def make_utility_judge(
+    model: Model, *, model_settings: ModelSettings | None = None
+) -> Judge:
     """The default judge — asks the given utility model whether the task was
     satisfied. The model is resolved from the registry's ``utility`` role by the
-    caller, so the judge itself carries no resolution dependency."""
+    caller, so the judge itself carries no resolution dependency. ``model_settings``
+    carries that model's reasoning-off settings (best-effort, like the namer's): the
+    judge is background work that needn't reason, so request it off — a runtime that
+    honors the lever answers faster, and the structured ``Verdict`` output is parsed
+    from the tool call regardless of any reasoning the model emits anyway."""
 
     async def judge(request: str, answer: str) -> Verdict:
         agent = make_utility_agent(
             model, output_type=Verdict, instructions=JUDGE_INSTRUCTIONS
         )
-        result = await agent.run(f"Request:\n{request}\n\nResponse:\n{answer}")
+        result = await agent.run(
+            f"Request:\n{request}\n\nResponse:\n{answer}", model_settings=model_settings
+        )
         return result.output
 
     return judge

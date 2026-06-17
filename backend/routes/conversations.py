@@ -258,9 +258,12 @@ async def retitle_conversation(
     deliberate operator action.
 
     The title model is resolved exactly as a chat turn resolves its background work
-    (``utility`` → the picked ``main``), with reasoning **off** — so a thinking model
-    doesn't spend its capped output on a ``<think>`` block before emitting the title —
-    and it works for a picker-driven operator who has no default role bound."""
+    (``utility`` → the picked ``main``), requesting reasoning **off** — and it works
+    for a picker-driven operator who has no default role bound. The full-arc input here
+    is longer than the auto-titler's opening-message excerpt, so a model whose runtime
+    ignores the reasoning-off lever (e.g. LM Studio + Qwen) produces a longer ``<think>``
+    block; the wider ``retitle_max_tokens`` budget and ``retitle_timeout_s`` give it room
+    to think *and* emit the title, which :func:`agent.title` then strips clean."""
     store = deps.store(request)
     if await store.get_summary(conversation_id, OPERATOR_ID) is None:
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -280,7 +283,8 @@ async def retitle_conversation(
         await store.history(conversation_id),
         full=True,
         reasoning_off=title.reasoning_off,
-        timeout_s=get_settings().title_timeout_s,
+        timeout_s=get_settings().retitle_timeout_s,
+        max_tokens=get_settings().retitle_max_tokens,
     )
     if name is None:
         raise HTTPException(status_code=503, detail="could not generate a title")

@@ -389,6 +389,7 @@ async def _maybe_title(
             await store.history(conversation_id),
             reasoning_off=title.settings,
             timeout_s=get_settings().title_timeout_s,
+            max_tokens=get_settings().title_max_tokens,
         )
         await _announce_title(run, name, store=store, conversation_id=conversation_id)
     except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
@@ -434,6 +435,7 @@ def _start_title(
             prompt,
             reasoning_off=title.settings,
             timeout_s=get_settings().title_timeout_s,
+            max_tokens=get_settings().title_max_tokens,
         )
     )
 
@@ -476,6 +478,7 @@ def build_chat_orchestrator(
     categories: Any = None,
     judge: Judge | None = None,
     utility_model: Model | None = None,
+    utility_settings: ModelSettings | None = None,
     title_model: Model | None = None,
     title_settings: ModelSettings | None = None,
     capabilities: Capabilities = _NO_CAPS,
@@ -493,7 +496,9 @@ def build_chat_orchestrator(
     registry, with any per-conversation override). ``categories`` overrides the
     tool catalog. The verifier's judge is ``judge`` if injected, else one built
     from ``utility_model`` when given; with neither, verification is skipped (a
-    graceful degradation when no utility model is configured). With ``store`` +
+    graceful degradation when no utility model is configured). ``utility_settings``
+    carries that model's reasoning-off settings so the judge, like the namer, requests
+    reasoning off. With ``store`` +
     ``conversation_id`` the turn continues prior history and persists its new
     messages; without them it runs stateless. The verifier only runs when enabled
     in settings (and, by default, only on tool-producing turns). With
@@ -543,7 +548,11 @@ def build_chat_orchestrator(
                 and settings.verify_enabled
                 and _should_verify(settings, run)
             ):
-                judging = judge or (make_utility_judge(utility_model) if utility_model else None)
+                judging = judge or (
+                    make_utility_judge(utility_model, model_settings=utility_settings)
+                    if utility_model
+                    else None
+                )
                 if judging is not None:  # no judge and no utility model → skip (degraded)
                     # On a regenerate (prompt is None) the request to judge against is
                     # the last user turn already in history.
