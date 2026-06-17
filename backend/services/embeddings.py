@@ -20,7 +20,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 from openai import APIConnectionError, AsyncOpenAI
+from sqlalchemy import Engine
+from sqlmodel import Session
 
+from core.db import in_session
 from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from services import llm
@@ -90,9 +93,60 @@ async def embed_query(
     return np.asarray(batch.vectors[0], dtype=np.float64), batch.model
 
 
+def encode_vector(vault: Vault, vector: list[float]) -> str:
+    """Seal a float vector for storage (the inverse of :func:`decode_vector`)."""
+    return vault.encrypt_str(json.dumps(vector))
+
+
 def decode_vector(vault: Vault, embedding_enc: str) -> list[float]:
     """Open a sealed embedding back into its float vector."""
     return json.loads(vault.decrypt_str(embedding_enc))
+
+
+async def embed_and_seal_rows(
+    *,
+    engine: Engine,
+    vault: Vault,
+    embedder: Embedder,
+    owner_id: str,
+    model_cls: type,
+    pending: list[tuple[str, str]],
+    batch_size: int = 64,
+) -> int:
+    """Embed ``(row_id, text)`` pairs in batches and seal each vector back onto its
+    row's ``embedding_enc``/``embedding_model``/``embedding_dim`` columns. ``model_cls``
+    is the SQLModel table carrying those columns.
+
+    The one (re-)indexing loop shared by memory and conversations, so the
+    embed→seal→write step lives once. Best-effort: a degraded or failing embedder
+    stops the run and leaves the rest for next time. Returns how many rows were sealed."""
+    embedded = 0
+    for start in range(0, len(pending), batch_size):
+        chunk = pending[start : start + batch_size]
+        try:
+            batch = await embedder.embed(owner_id, [text for _id, text in chunk])
+        except DegradedCapabilityError:
+            break  # embedder went away mid-run — leave the rest for next time
+        except Exception:
+            logger.exception("embedding rows failed; leaving the rest for next time")
+            break
+        # Seal up front so the DB closure only carries plain row updates.
+        updates = [
+            (rid, encode_vector(vault, vector), batch.model, batch.dim)
+            for (rid, _text), vector in zip(chunk, batch.vectors, strict=False)
+        ]
+
+        def write(session: Session, updates: list = updates) -> None:
+            for rid, vector_enc, model, dim in updates:
+                row = session.get(model_cls, rid)
+                if row is not None:
+                    row.embedding_enc = vector_enc
+                    row.embedding_model = model
+                    row.embedding_dim = dim
+
+        await in_session(engine, write)
+        embedded += len(chunk)
+    return embedded
 
 
 async def probe_embedding(spec: llm.EndpointSpec) -> int:

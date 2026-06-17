@@ -30,7 +30,6 @@ ordered behind the message writes that precede them.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -48,7 +47,7 @@ from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
 from services.conversation_view import MessageView, project_tree
-from services.embeddings import Embedder
+from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 
 logger = logging.getLogger(__name__)
 
@@ -788,7 +787,7 @@ class ConversationStore:
             )
             return {}
         return {
-            row_id: (batch.model, batch.dim, self._vault.encrypt_str(json.dumps(vector)))
+            row_id: (batch.model, batch.dim, encode_vector(self._vault, vector))
             for (row_id, _text), vector in zip(texts, batch.vectors, strict=False)
         }
 
@@ -831,33 +830,16 @@ class ConversationStore:
 
         rows = await in_session(self._engine, pending)
         items = [(rid, text) for rid, text in rows if text.strip()]
-        embedded = 0
-        for start in range(0, len(items), batch_size):
-            chunk = items[start : start + batch_size]
-            try:
-                batch = await self._embedder.embed(owner_id, [text for _id, text in chunk])
-            except DegradedCapabilityError:
-                break  # embedder went away mid-run — leave the rest for next time
-            except Exception:
-                logger.exception("backfill embedding failed; leaving the rest for next time")
-                break
-            # Encrypt up front so the DB closure only carries plain row updates.
-            updates = [
-                (rid, self._vault.encrypt_str(json.dumps(vector)), batch.model, batch.dim)
-                for (rid, _text), vector in zip(chunk, batch.vectors, strict=False)
-            ]
-
-            def write(session: Session, updates: list = updates) -> None:
-                for rid, vector_enc, model, dim in updates:
-                    row = session.get(Message, rid)
-                    if row is not None:
-                        row.embedding_enc = vector_enc
-                        row.embedding_model = model
-                        row.embedding_dim = dim
-
-            await in_session(self._engine, write)
-            embedded += len(chunk)
-        return embedded
+        assert self._embedder is not None  # guarded at the top of this method
+        return await embed_and_seal_rows(
+            engine=self._engine,
+            vault=self._vault,
+            embedder=self._embedder,
+            owner_id=owner_id,
+            model_cls=Message,
+            pending=items,
+            batch_size=batch_size,
+        )
 
     async def _persist_active_leaf(self, job: _PersistJob) -> None:
         def work(session: Session) -> None:

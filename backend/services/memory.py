@@ -24,8 +24,6 @@ model change degrades recall rather than corrupting it.
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -37,13 +35,17 @@ from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.memory import Memory
-from services.embeddings import Embedder, decode_vector, embed_query
+from services.embeddings import (
+    Embedder,
+    decode_vector,
+    embed_and_seal_rows,
+    embed_query,
+    encode_vector,
+)
 from services.ranking import cosine as _cosine
 from services.ranking import matched_by as _matched_by
 from services.ranking import rrf as _rrf
 from services.ranking import tokens as _tokens
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -230,33 +232,15 @@ class MemoryStore:
 
         rows = await in_session(self._engine, pending)
         items = [(rid, text) for rid, text in rows if text.strip()]
-        embedded = 0
-        for start in range(0, len(items), batch_size):
-            chunk = items[start : start + batch_size]
-            try:
-                batch = await self._embedder.embed(owner_id, [text for _id, text in chunk])
-            except DegradedCapabilityError:
-                break  # embedder went away mid-run — leave the rest for next time
-            except Exception:
-                logger.exception("memory re-embed failed; leaving the rest for next time")
-                break
-            # Encrypt up front so the DB closure only carries plain row updates.
-            updates = [
-                (rid, self._vault.encrypt_str(json.dumps(vector)), batch.model, batch.dim)
-                for (rid, _text), vector in zip(chunk, batch.vectors, strict=False)
-            ]
-
-            def write(session: Session, updates: list = updates) -> None:
-                for rid, vector_enc, model, dim in updates:
-                    row = session.get(Memory, rid)
-                    if row is not None:
-                        row.embedding_enc = vector_enc
-                        row.embedding_model = model
-                        row.embedding_dim = dim
-
-            await in_session(self._engine, write)
-            embedded += len(chunk)
-        return embedded
+        return await embed_and_seal_rows(
+            engine=self._engine,
+            vault=self._vault,
+            embedder=self._embedder,
+            owner_id=owner_id,
+            model_cls=Memory,
+            pending=items,
+            batch_size=batch_size,
+        )
 
     # --- internals --------------------------------------------------------
 
@@ -271,7 +255,7 @@ class MemoryStore:
         except DegradedCapabilityError:
             return None, None, None
         vector = batch.vectors[0]
-        return batch.model, batch.dim, self._vault.encrypt_str(json.dumps(vector))
+        return batch.model, batch.dim, encode_vector(self._vault, vector)
 
     def _rank(
         self,
