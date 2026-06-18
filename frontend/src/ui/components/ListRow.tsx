@@ -112,9 +112,16 @@ export function ListRow(props: ListRowProps): JSX.Element {
       <span
         class="flex shrink-0 items-center gap-2"
         onClick={
-          // In selectable rows the right slot holds its own controls (Menu,
-          // copy) — clicking them must not toggle the row's selection.
-          local.selectable ? (e) => e.stopPropagation() : undefined
+          // The right slot can hold its own controls (Menu, copy). On any
+          // interactive row their clicks must not trigger the row itself —
+          // stop the bubble so a selectable row doesn't toggle, and cancel the
+          // default so a link row doesn't navigate out from under an open menu.
+          interactive()
+            ? (e) => {
+                e.stopPropagation();
+                if (local.href) e.preventDefault();
+              }
+            : undefined
         }
       >
         <Show when={local.right}>{local.right}</Show>

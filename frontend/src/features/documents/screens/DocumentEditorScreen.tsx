@@ -1,6 +1,7 @@
 import {
   createSignal,
   createEffect,
+  createMemo,
   on,
   For,
   Show,
@@ -29,6 +30,9 @@ import {
   saveDocument,
   useDocumentDetail,
 } from "../data";
+import { lineDiff } from "../diff";
+import { DocumentDiff } from "../components/DocumentDiff";
+import { RenameDialog } from "../components/RenameDialog";
 import type { DocVersion } from "../model";
 
 export function DocumentEditorScreen(props: { id: string }): JSX.Element {
@@ -41,10 +45,11 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
   );
   const [showSaved, setShowSaved] = createSignal(false);
 
-  // Version preview modal
+  // Version diff modal
   const [previewVersion, setPreviewVersion] = createSignal<DocVersion | null>(
     null,
   );
+  const [renameOpen, setRenameOpen] = createSignal(false);
 
   // Seed body once when detail loads. Reset when the document id changes so a reused
   // editor instance doesn't keep the previous document's draft.
@@ -85,6 +90,11 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
     } catch {
       toast.error("Could not save document");
     }
+  }
+
+  async function handleRename(title: string): Promise<void> {
+    await saveDocument(props.id, { title });
+    toast.success(`Renamed to "${title}"`);
   }
 
   async function handleRestoreVersion(v: DocVersion): Promise<void> {
@@ -166,15 +176,25 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
           </StatusFlag>
         }
         actions={
-          <Button
-            variant={showSaved() ? "default" : "primary"}
-            leading={showSaved() ? "check" : "download"}
-            size="sm"
-            disabled={!isDirty()}
-            onClick={() => void handleSave()}
-          >
-            {showSaved() ? "SAVED" : "SAVE"}
-          </Button>
+          <>
+            <Button
+              variant="ghost"
+              leading="pen"
+              size="sm"
+              onClick={() => setRenameOpen(true)}
+            >
+              RENAME
+            </Button>
+            <Button
+              variant={showSaved() ? "default" : "primary"}
+              leading={showSaved() ? "check" : "download"}
+              size="sm"
+              disabled={!isDirty()}
+              onClick={() => void handleSave()}
+            >
+              {showSaved() ? "SAVED" : "SAVE"}
+            </Button>
+          </>
         }
         aside={toolsPanel}
       >
@@ -186,46 +206,71 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
         />
       </EditorShell>
 
-      {/* Version preview modal */}
+      {/* Version diff modal — what this version changed vs. the one before it. */}
       <Show when={previewVersion()}>
-        {(v) => (
-          <Modal
-            open={true}
-            onClose={() => setPreviewVersion(null)}
-            title={v().label}
-            class="max-w-2xl"
-            footer={
-              <>
-                <Button variant="ghost" onClick={() => setPreviewVersion(null)}>
-                  CLOSE
-                </Button>
-                <Button
-                  variant="danger"
-                  leading="clock"
-                  onClick={() => void handleRestoreVersion(v())}
-                >
-                  RESTORE THIS VERSION
-                </Button>
-              </>
-            }
-          >
-            <Stack gap={3}>
-              <Text variant="micro" tone="dim">
-                {v().author} · {timestamp(v().createdAt)}
-              </Text>
-              <div class="border border-line bg-raised p-3">
-                <Text
-                  variant="body"
-                  tone="default"
-                  class="whitespace-pre-wrap font-mono"
-                >
-                  {v().body}
-                </Text>
-              </div>
-            </Stack>
-          </Modal>
-        )}
+        {(v) => {
+          // The predecessor snapshot (version N-1); the first version diffs
+          // against an empty document, so its diff is the initial content.
+          const prev = createMemo(() =>
+            (detail()?.versions ?? []).find(
+              (x) => x.version === v().version - 1,
+            ),
+          );
+          const result = createMemo(() =>
+            lineDiff(prev()?.body ?? "", v().body),
+          );
+          return (
+            <Modal
+              open={true}
+              onClose={() => setPreviewVersion(null)}
+              title={`CHANGES IN ${v().label}`}
+              class="max-w-3xl"
+              footer={
+                <>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setPreviewVersion(null)}
+                  >
+                    CLOSE
+                  </Button>
+                  <Button
+                    variant="danger"
+                    leading="clock"
+                    onClick={() => void handleRestoreVersion(v())}
+                  >
+                    RESTORE THIS VERSION
+                  </Button>
+                </>
+              }
+            >
+              <Stack gap={3}>
+                <Row gap={3} align="center">
+                  <Text variant="micro" tone="dim">
+                    {v().author} · {timestamp(v().createdAt)} · vs{" "}
+                    {prev()?.label ?? "EMPTY"}
+                  </Text>
+                  <Row gap={2} align="center">
+                    <Text variant="micro" tone="nominal" class="tabular-nums">
+                      +{result().added}
+                    </Text>
+                    <Text variant="micro" tone="alert" class="tabular-nums">
+                      −{result().removed}
+                    </Text>
+                  </Row>
+                </Row>
+                <DocumentDiff result={result()} />
+              </Stack>
+            </Modal>
+          );
+        }}
       </Show>
+
+      <RenameDialog
+        open={renameOpen()}
+        currentTitle={detail()?.title ?? ""}
+        onClose={() => setRenameOpen(false)}
+        onSubmit={handleRename}
+      />
     </Suspense>
   );
 }

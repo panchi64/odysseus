@@ -26,7 +26,9 @@ import {
   deleteDocument,
   archiveDocument,
   unarchiveDocument,
+  saveDocument,
 } from "../data";
+import { RenameDialog } from "../components/RenameDialog";
 import type { DocStatus, DocumentSummary } from "../model";
 
 const statusMap: Record<DocStatus, Status> = {
@@ -48,6 +50,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
   const documents = (): DocumentSummary[] => docsResource() ?? [];
   const [tab, setTab] = createSignal<DocStatus>("active");
   const [selectMode, setSelectMode] = createSignal(false);
+  const [renaming, setRenaming] = createSignal<DocumentSummary | null>(null);
 
   const inTab = () => documents().filter((d) => d.status === tab());
 
@@ -147,6 +150,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
         },
       },
     });
+  }
+
+  async function handleRename(id: string, title: string): Promise<void> {
+    await saveDocument(id, { title });
+    toast.success(`Renamed to "${title}"`);
   }
 
   function toggleSelectMode(): void {
@@ -289,6 +297,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
                           }
                           items={[
                             {
+                              label: "RENAME",
+                              icon: "pen",
+                              onSelect: () => setRenaming(doc),
+                            },
+                            {
                               label:
                                 doc.status === "active" ? "ARCHIVE" : "RESTORE",
                               icon: "archive",
@@ -311,6 +324,13 @@ export function DocumentsLibraryScreen(): JSX.Element {
           </Show>
         </Suspense>
       </Panel>
+
+      <RenameDialog
+        open={renaming() !== null}
+        currentTitle={renaming()?.title ?? ""}
+        onClose={() => setRenaming(null)}
+        onSubmit={(title) => handleRename(renaming()!.id, title)}
+      />
     </Stack>
   );
 }
