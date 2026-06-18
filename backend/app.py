@@ -27,6 +27,7 @@ from routes import (
     chat,
     conversations,
     cookbook,
+    corpus,
     health,
     memory,
     models,
@@ -41,6 +42,14 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
+from services.corpus import (
+    ConversationAdapter,
+    CorpusChunkStore,
+    CorpusIndex,
+    FolderAdapter,
+    MemoryAdapter,
+    default_surface_stubs,
+)
 from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
@@ -55,13 +64,17 @@ logger = logging.getLogger(__name__)
 
 
 async def _backfill_embeddings(
-    conversations: ConversationStore, memory: MemoryStore, vault: Vault
+    conversations: ConversationStore,
+    memory: MemoryStore,
+    chunk_store: CorpusChunkStore,
+    vault: Vault,
 ) -> None:
-    """Best-effort: once the vault is unlocked, embed any conversation messages AND
-    memories that have no vector yet (e.g. persisted before an embedding endpoint
-    existed) so semantic recall covers the backlog, not just new content. Runs in the
-    background, waits for unlock so it never touches sealed data, and degrades to a
-    no-op when no embedder is configured. Both stores are lifted symmetrically."""
+    """Best-effort: once the vault is unlocked, embed any conversation messages,
+    memories, AND corpus chunks that have no vector yet (e.g. persisted before an
+    embedding endpoint existed) so semantic recall covers the backlog, not just new
+    content. Runs in the background, waits for unlock so it never touches sealed data,
+    and degrades to a no-op when no embedder is configured. Every store is lifted
+    symmetrically."""
     await vault.unlocked_event.wait()
     try:
         count = await conversations.backfill_embeddings(OPERATOR_ID)
@@ -75,6 +88,12 @@ async def _backfill_embeddings(
             logger.info("memory: backfilled %d memory embeddings", count)
     except Exception:
         logger.exception("memory: embedding backfill failed")
+    try:
+        count = await chunk_store.reembed(OPERATOR_ID)
+        if count:
+            logger.info("corpus: backfilled %d chunk embeddings", count)
+    except Exception:
+        logger.exception("corpus: embedding backfill failed")
 
 
 @asynccontextmanager
@@ -162,17 +181,36 @@ async def lifespan(app: FastAPI):
     # Long-term memory — embeds via the shared embedder; degrades to keyword recall
     # when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, embedder)
+    # The knowledge corpus — one retrieval index fed by many source adapters. The
+    # rich stores (memory, cross-chat search) plug in untouched; chunked content
+    # (folders now) lands in the generic chunk store. The folder adapter's indexer is
+    # lock-aware (parks while the vault is locked). Surfaces not yet built enroll as
+    # stub adapters so the /rag list shows every planned source from day one. Built
+    # before the reindexer so the corpus shares the EMB-2 heal path below.
+    chunk_store = CorpusChunkStore(engine, vault, embedder)
+    app.state.corpus_chunk_store = chunk_store
     # Heals semantic recall after the operator changes the embedding model: EMB-2
     # segregates vectors by model, so a swap strands every existing vector until it's
-    # re-embedded. This coordinator runs that reindex in the background (memory + the
-    # cross-chat index) and exposes its progress.
+    # re-embedded. This coordinator runs that reindex in the background (memory, the
+    # cross-chat index, and the corpus chunk store) and exposes its progress.
     app.state.embedding_reindexer = EmbeddingReindexer(
-        registry, app.state.memory, app.state.conversations
+        registry, app.state.memory, app.state.conversations, chunk_store
     )
-    # Lift any pre-existing backlog (messages + memories) into the semantic index once
-    # unlocked — off the critical path; new content is already embedded as it persists.
+    folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
+    corpus_index = CorpusIndex(embedder, registry, chunk_store, folder_adapter)
+    corpus_index.register(folder_adapter)
+    corpus_index.register(MemoryAdapter(app.state.memory))
+    corpus_index.register(ConversationAdapter(app.state.conversation_search))
+    for stub in default_surface_stubs():
+        corpus_index.register(stub)
+    app.state.corpus = corpus_index
+    app.state.corpus_folder = folder_adapter
+    await folder_adapter.start()
+    # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
+    # semantic index once unlocked — off the critical path; new content is already
+    # embedded as it persists.
     app.state.embedding_backfill = asyncio.create_task(
-        _backfill_embeddings(app.state.conversations, app.state.memory, vault)
+        _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault)
     )
     # Published previews — the agent captures a sandbox file here, the frontend
     # fetches and renders it. Encrypted at rest like the rest of the operator's data.
@@ -251,6 +289,7 @@ async def lifespan(app: FastAPI):
         await searxng.stop()
         if sandbox_manager is not None:
             await sandbox_manager.stop()
+        await folder_adapter.stop()
         await app.state.conversations.stop()
 
 
@@ -282,6 +321,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models.router)
     app.include_router(cookbook.router)
     app.include_router(memory.router)
+    app.include_router(corpus.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)
     app.include_router(search.router)

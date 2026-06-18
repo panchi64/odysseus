@@ -81,13 +81,14 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **SEARCH-2 (MUST).** It MUST be able to fetch and extract the readable content of result pages.
 - **SEARCH-3 (SHOULD).** Results SHOULD be ranked for relevance, and SHOULD be cached with a freshness window appropriate to the query.
 
-### Personal knowledge base (`RAG-*`)
+### Knowledge base — unified retrieval corpus (`RAG-*`)
 
-**Purpose:** Index a folder of the user's own documents so the agent can retrieve from them by meaning.
+**Purpose:** Present one semantically-searchable corpus the agent retrieves from by meaning. The corpus aggregates two kinds of source: the in-app content surfaces (documents, uploads, gallery, memory, research), which are indexed automatically as their content changes, and operator-added host folders, which are crawled and indexed on demand. Each remains a distinct, separately-managed source within the single index.
 
-- **RAG-1 (MUST).** The user MUST be able to point the system at a local document collection and have it indexed for semantic retrieval, separate from chat uploads and the document editor.
+- **RAG-1 (MUST).** The user MUST be able to point the system at a local document collection (a host folder) and have it indexed for semantic retrieval as one source within the corpus.
 - **RAG-2 (MUST).** Indexed content MUST be retrievable by meaning during chat and agent tasks, and the index MUST be re-buildable as the source files change.
-- **RAG-3 (SHOULD).** The user SHOULD be able to see what is indexed and its status, and remove items from the index.
+- **RAG-3 (SHOULD).** The user SHOULD be able to see every source and its index status from one place, reindex a source, and remove operator-added folders from the index.
+- **RAG-4 (SHOULD).** The in-app content surfaces (documents, uploads, gallery, memory, research) SHOULD be enrolled in the corpus automatically — including non-text media (e.g. images) once the system has processed them into retrievable text — and SHOULD be reachable for management from the knowledge base view without being removable as sources (they are owned by their own surfaces).
 
 ### Code runner (`RUN-*`)
 

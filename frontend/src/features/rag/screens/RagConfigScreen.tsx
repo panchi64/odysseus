@@ -6,6 +6,7 @@ import {
   Suspense,
   type JSX,
 } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
@@ -24,6 +25,7 @@ import {
   Tooltip,
   confirm,
   toast,
+  type MenuItem,
   type Status,
 } from "~/ui";
 import { relativeTime, timestamp } from "~/lib/format";
@@ -35,7 +37,7 @@ import {
   restoreRagSource,
   createReindexController,
 } from "../data";
-import type { RagIndexStatus } from "../model";
+import type { RagIndexStatus, RagSource } from "../model";
 
 const indexStatusFlag: Record<RagIndexStatus, Status> = {
   indexed: "nominal",
@@ -45,6 +47,7 @@ const indexStatusFlag: Record<RagIndexStatus, Status> = {
 };
 
 export function RagConfigScreen(): JSX.Element {
+  const navigate = useNavigate();
   const sources = useRagSources();
   const stats = useIndexStats();
   const [newPath, setNewPath] = createSignal("");
@@ -88,10 +91,10 @@ export function RagConfigScreen(): JSX.Element {
     });
   }
 
-  async function handleRemove(id: string, path: string, docCount: number) {
+  async function handleRemove(id: string, label: string, docCount: number) {
     const ok = await confirm({
       title: `Remove source?`,
-      detail: `"${path}" (${docCount} docs) will be removed from the knowledge base. Indexed data will be lost and retrieval for dependent chats may degrade.`,
+      detail: `"${label}" (${docCount} docs) will be removed from the knowledge base. Indexed data will be lost and retrieval for dependent chats may degrade.`,
       confirmLabel: "REMOVE",
       tone: "alert",
     });
@@ -110,20 +113,98 @@ export function RagConfigScreen(): JSX.Element {
     });
   }
 
-  function handleReindex(id: string, path: string) {
+  function handleReindex(id: string, label: string) {
     reindex(id);
-    toast.info(`Reindexing ${path}…`);
+    toast.info(`Reindexing ${label}…`);
   }
 
+  const surfaces = () => sources().filter((s) => s.kind === "surface");
+  const folders = () => sources().filter((s) => s.kind === "folder");
   const errorSources = () => sources().filter((s) => s.status === "error");
-  const healthySources = () =>
-    sources().filter((s) => s.status !== "indexed" && s.status !== "indexing");
+  const degradedSources = () =>
+    sources().filter((s) => s.status === "stale" || s.status === "error");
+
+  /** One indexed-source row, shared by both the surfaces and folders panels —
+   *  the only difference is the menu actions each kind supports. */
+  function sourceRow(source: RagSource): JSX.Element {
+    const reindexing = () => reindexingIds().has(source.id);
+    const menuItems: MenuItem[] =
+      source.kind === "surface"
+        ? [
+            {
+              label: "OPEN",
+              icon: "arrow-right",
+              onSelect: () => {
+                if (source.href) navigate(source.href);
+              },
+            },
+            {
+              label: reindexing() ? "REINDEXING…" : "REINDEX",
+              icon: "refresh",
+              onSelect: () => handleReindex(source.id, source.label),
+            },
+          ]
+        : [
+            {
+              label: reindexing() ? "REINDEXING…" : "REINDEX",
+              icon: "refresh",
+              onSelect: () => handleReindex(source.id, source.label),
+            },
+            {
+              label: "VIEW DOCS",
+              icon: "library",
+              onSelect: () => toast.info("Document browser coming in Phase 2"),
+            },
+            {
+              label: "REMOVE",
+              icon: "trash",
+              danger: true,
+              onSelect: () =>
+                void handleRemove(source.id, source.label, source.docCount),
+            },
+          ];
+
+    return (
+      <ListRow
+        label={source.label}
+        leading={source.icon}
+        right={
+          <span class="flex items-center gap-3 shrink-0">
+            <Text variant="micro" tone="dim">
+              {source.docCount} DOCS
+            </Text>
+            <Text variant="micro" tone="dim">
+              {relativeTime(source.lastIndexedAt)}
+            </Text>
+            <Show
+              when={reindexing()}
+              fallback={
+                <StatusFlag status={indexStatusFlag[source.status]}>
+                  {source.status.toUpperCase()}
+                </StatusFlag>
+              }
+            >
+              <StatusFlag status="info">INDEXING…</StatusFlag>
+            </Show>
+            <Menu
+              trigger={
+                <span class="px-1 text-dim hover:text-bright">
+                  <Text variant="micro">···</Text>
+                </span>
+              }
+              items={menuItems}
+            />
+          </span>
+        }
+      />
+    );
+  }
 
   return (
     <Stack gap={6}>
       <PageHeader
         title="KNOWLEDGE BASE"
-        subtitle="RAG source collections and index configuration."
+        subtitle="The unified retrieval corpus — every source the assistant can search."
         assetId="ODY-RAG-01.0"
         actions={
           <Row gap={2}>
@@ -172,83 +253,38 @@ export function RagConfigScreen(): JSX.Element {
         </Panel>
       </Show>
 
-      <Panel label="INDEXED SOURCES" flush>
+      <Panel label="CORPUS SURFACES" flush>
         <Show
-          when={sources().length > 0}
+          when={surfaces().length > 0}
           fallback={
             <EmptyState
-              icon="database"
-              message="NO SOURCES"
-              hint="Add a folder path to start indexing."
+              icon="library"
+              message="NO SURFACES"
+              hint="Documents, uploads, gallery, memory and research index here automatically."
             />
           }
         >
-          <For each={sources()}>
-            {(source) => (
-              <ListRow
-                label={source.path}
-                leading="archive"
-                right={
-                  <span class="flex items-center gap-3 shrink-0">
-                    <Text variant="micro" tone="dim">
-                      {source.docCount} DOCS
-                    </Text>
-                    <Text variant="micro" tone="dim">
-                      {relativeTime(source.lastIndexedAt)}
-                    </Text>
-                    <Show
-                      when={reindexingIds().has(source.id)}
-                      fallback={
-                        <StatusFlag status={indexStatusFlag[source.status]}>
-                          {source.status.toUpperCase()}
-                        </StatusFlag>
-                      }
-                    >
-                      <StatusFlag status="info">INDEXING…</StatusFlag>
-                    </Show>
-                    <Menu
-                      trigger={
-                        <span class="px-1 text-dim hover:text-bright">
-                          <Text variant="micro">···</Text>
-                        </span>
-                      }
-                      items={[
-                        {
-                          label: reindexingIds().has(source.id)
-                            ? "REINDEXING…"
-                            : "REINDEX",
-                          icon: "refresh",
-                          onSelect: () => handleReindex(source.id, source.path),
-                        },
-                        {
-                          label: "VIEW DOCS",
-                          icon: "library",
-                          onSelect: () =>
-                            toast.info("Document browser coming in Phase 2"),
-                        },
-                        {
-                          label: "REMOVE",
-                          icon: "trash",
-                          danger: true,
-                          onSelect: () =>
-                            void handleRemove(
-                              source.id,
-                              source.path,
-                              source.docCount,
-                            ),
-                        },
-                      ]}
-                    />
-                  </span>
-                }
-              />
-            )}
-          </For>
+          <For each={surfaces()}>{(source) => sourceRow(source)}</For>
         </Show>
       </Panel>
 
-      {/* Add source */}
-      <Panel label="ADD SOURCE">
+      <Panel label="INDEXED FOLDERS" flush>
+        <Show
+          when={folders().length > 0}
+          fallback={
+            <EmptyState
+              icon="archive"
+              message="NO FOLDERS"
+              hint="Add a host folder path below to start indexing."
+            />
+          }
+        >
+          <For each={folders()}>{(source) => sourceRow(source)}</For>
+        </Show>
+      </Panel>
+
+      {/* Add folder source */}
+      <Panel label="ADD FOLDER">
         <Stack gap={3}>
           <Row gap={3} align="end">
             <div class="flex-1">
@@ -280,21 +316,21 @@ export function RagConfigScreen(): JSX.Element {
       </Panel>
 
       {/* Index health */}
-      <Show when={healthySources().length > 0}>
+      <Show when={degradedSources().length > 0}>
         <Panel label="INDEX HEALTH" state="alert">
           <Stack gap={2}>
             <Text variant="body" tone="warn">
               One or more sources are stale or unreachable. Retrieval quality
               may be degraded for affected collections.
             </Text>
-            <For each={healthySources()}>
+            <For each={degradedSources()}>
               {(source) => (
                 <Row gap={2} align="center">
                   <StatusFlag status={indexStatusFlag[source.status]}>
                     {source.status.toUpperCase()}
                   </StatusFlag>
                   <Text variant="body" class="font-mono">
-                    {source.path}
+                    {source.label}
                   </Text>
                   <Text variant="micro" tone="dim">
                     last: {timestamp(source.lastIndexedAt)}
@@ -309,24 +345,26 @@ export function RagConfigScreen(): JSX.Element {
                       <Button
                         variant="ghost"
                         leading="refresh"
-                        onClick={() => handleReindex(source.id, source.path)}
+                        onClick={() => handleReindex(source.id, source.label)}
                       >
                         RETRY
                       </Button>
                     </Tooltip>
-                    <Button
-                      variant="danger"
-                      leading="trash"
-                      onClick={() =>
-                        void handleRemove(
-                          source.id,
-                          source.path,
-                          source.docCount,
-                        )
-                      }
-                    >
-                      REMOVE
-                    </Button>
+                    <Show when={source.kind === "folder"}>
+                      <Button
+                        variant="danger"
+                        leading="trash"
+                        onClick={() =>
+                          void handleRemove(
+                            source.id,
+                            source.label,
+                            source.docCount,
+                          )
+                        }
+                      >
+                        REMOVE
+                      </Button>
+                    </Show>
                   </Show>
                 </Row>
               )}

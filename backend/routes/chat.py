@@ -138,6 +138,7 @@ def _submit_turn(
             artifacts=deps.artifacts(request),
             search=deps.search(request),
             conversation_search=deps.conversation_search(request),
+            corpus=deps.corpus(request),
         ),
         store=deps.store(request),
         conversation_id=conversation_id,

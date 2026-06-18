@@ -1,10 +1,11 @@
-"""Re-embed memories + the cross-chat index when the embedding model changes.
+"""Re-embed memories, the cross-chat index, and the corpus when the embedding model
+changes.
 
 Changing the ``embedding`` role strands every existing vector: EMB-2 segregates by
-model, so prior memories and chat messages drop to keyword-only recall until they're
-re-embedded into the new space. This coordinator runs that heal in the background —
-off the request path — and exposes a small status so the UI can show progress and
-signal that recall is partially degraded until it finishes.
+model, so prior memories, chat messages, and corpus chunks drop to keyword-only recall
+until they're re-embedded into the new space. This coordinator runs that heal in the
+background — off the request path — and exposes a small status so the UI can show
+progress and signal that recall is partially degraded until it finishes.
 
 A single reindex runs at a time per process; a fresh trigger supersedes an in-flight
 one (the latest embedding model wins). It is best-effort: a degraded embedder or a
@@ -21,6 +22,7 @@ from datetime import UTC, datetime
 
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from services.conversations import ConversationStore
+from services.corpus.chunk_store import CorpusChunkStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 
@@ -34,6 +36,7 @@ class ReindexStatus:
     state: str  # idle | running | done | degraded | error
     memories: int  # memories re-embedded in the current/last run
     messages: int  # chat messages re-embedded in the current/last run
+    chunks: int = 0  # corpus chunks re-embedded in the current/last run
     detail: str | None = None
     completed_at: datetime | None = None
 
@@ -44,10 +47,12 @@ class EmbeddingReindexer:
         registry: ModelRegistry,
         memory: MemoryStore,
         conversations: ConversationStore,
+        chunks: CorpusChunkStore,
     ) -> None:
         self._registry = registry
         self._memory = memory
         self._conversations = conversations
+        self._chunks = chunks
         self._status = ReindexStatus(state="idle", memories=0, messages=0)
         self._task: asyncio.Task | None = None
 
@@ -88,6 +93,7 @@ class EmbeddingReindexer:
             messages = await self._conversations.reindex_embeddings(
                 owner_id, current_model=spec.model
             )
+            chunks = await self._chunks.reembed(owner_id, current_model=spec.model)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -100,8 +106,12 @@ class EmbeddingReindexer:
             state="done",
             memories=memories,
             messages=messages,
+            chunks=chunks,
             completed_at=datetime.now(UTC),
         )
         logger.info(
-            "embedding reindex: re-embedded %d memories, %d messages", memories, messages
+            "embedding reindex: re-embedded %d memories, %d messages, %d chunks",
+            memories,
+            messages,
+            chunks,
         )

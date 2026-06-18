@@ -17,6 +17,7 @@ from runs import Run
 if TYPE_CHECKING:
     from services.artifacts import ArtifactStore
     from services.conversation_search import ConversationSearch
+    from services.corpus import CorpusIndex
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
@@ -34,6 +35,7 @@ class Capabilities:
     artifacts: ArtifactStore | None = None
     search: SearchService | None = None
     conversation_search: ConversationSearch | None = None
+    corpus: CorpusIndex | None = None
 
 
 @dataclass
@@ -59,6 +61,9 @@ class RunDeps:
     # Cross-chat search over the operator's other conversations. None ⇒ the
     # conversation tools say so (graceful degradation).
     conversation_search: ConversationSearch | None = None
+    # The unified knowledge corpus (folders + memory + conversations as sources).
+    # None ⇒ the corpus tool says so.
+    corpus: CorpusIndex | None = None
 
     @property
     def sandbox_key(self) -> str:

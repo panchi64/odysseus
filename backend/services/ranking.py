@@ -46,6 +46,19 @@ def rrf(dense: dict[str, float], sparse: dict[str, float]) -> dict[str, float]:
     return fused
 
 
+def rrf_lists(ranked_lists: list[list[str]]) -> dict[str, float]:
+    """Reciprocal Rank Fusion of N already-ordered id lists into one fused score
+    per id. Each list is one retriever's result, best-first; an id's fused score sums
+    ``1 / (RRF_K + position)`` across the lists it appears in. Purely rank-based, so
+    lists whose raw scores live on different scales (a memory's fused score vs. a
+    folder chunk's cosine) combine without any normalization."""
+    fused: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, mid in enumerate(ranked, start=1):
+            fused[mid] = fused.get(mid, 0.0) + 1.0 / (RRF_K + rank)
+    return fused
+
+
 def matched_by(mid: str, dense: dict[str, float], sparse: dict[str, float]) -> str:
     """How an id surfaced: ``both``, ``semantic`` (dense only), or ``keyword``."""
     in_dense, in_sparse = mid in dense, mid in sparse

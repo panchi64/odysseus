@@ -1,0 +1,36 @@
+"""The knowledge corpus — one retrieval index over many pluggable sources.
+
+``CorpusIndex`` is the capability: it fans a query out to registered
+:class:`SourceAdapter` instances and RRF-fuses their hits into one ranking, and it
+owns the ``/rag`` surface reads (source list, stats, folder lifecycle). The existing
+rich stores (memory, conversations) enroll as wrapper adapters untouched; chunked
+content (folders now, more later) lands in the generic ``corpus_chunk`` store via
+:class:`CorpusChunkStore`. See ``services/CLAUDE.md``.
+"""
+
+from __future__ import annotations
+
+from services.corpus.adapter import CorpusHit, SourceAdapter, SourceStatus
+from services.corpus.chunk_store import CorpusChunkStore
+from services.corpus.folder import FolderAdapter
+from services.corpus.index import CorpusIndex, CorpusStats
+from services.corpus.wrappers import (
+    ConversationAdapter,
+    MemoryAdapter,
+    StubSurfaceAdapter,
+    default_surface_stubs,
+)
+
+__all__ = [
+    "ConversationAdapter",
+    "CorpusChunkStore",
+    "CorpusHit",
+    "CorpusIndex",
+    "CorpusStats",
+    "FolderAdapter",
+    "MemoryAdapter",
+    "SourceAdapter",
+    "SourceStatus",
+    "StubSurfaceAdapter",
+    "default_surface_stubs",
+]

@@ -19,12 +19,14 @@ export function useRagSources(): () => RagSource[] {
   return () => sourcesStore;
 }
 
-/** Add a new source. Returns the new source entry. */
+/** Add a new folder source. Returns the new source entry. */
 export function addRagSource(path: string): RagSource {
   const id = `rs-${Date.now()}`;
   const entry: RagSource = {
     id,
-    path,
+    kind: "folder",
+    label: path,
+    icon: "archive",
     docCount: 0,
     status: "indexing",
     lastIndexedAt: new Date().toISOString(),

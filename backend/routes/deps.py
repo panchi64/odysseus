@@ -16,6 +16,7 @@ from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
+from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -39,6 +40,10 @@ def store(request: Request) -> ConversationStore:
 
 def conversation_search(request: Request) -> ConversationSearch:
     return request.app.state.conversation_search
+
+
+def corpus(request: Request) -> CorpusIndex:
+    return request.app.state.corpus
 
 
 def models(request: Request) -> ModelRegistry:

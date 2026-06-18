@@ -46,22 +46,35 @@ export const NAV: NavSection[] = [
         connected: true,
         description: "Converse with local models and tool-using agents",
       },
-      {
-        label: "Research",
-        href: "/research",
-        icon: "research",
-        description: "Run deep, multi-source research reports",
-      },
     ],
   },
   {
     title: "Knowledge",
     items: [
       {
+        label: "Knowledge Base",
+        href: "/rag",
+        icon: "library",
+        description:
+          "The unified retrieval corpus — every source the assistant can search (RAG)",
+      },
+      {
         label: "Documents",
         href: "/documents",
         icon: "file",
         description: "Write and edit documents with AI assistance",
+      },
+      {
+        label: "Uploads",
+        href: "/uploads",
+        icon: "upload",
+        description: "Files you've uploaded for the assistant to use",
+      },
+      {
+        label: "Gallery",
+        href: "/gallery",
+        icon: "image",
+        description: "Generated and uploaded images, processed into the corpus",
       },
       {
         label: "Memory",
@@ -71,34 +84,10 @@ export const NAV: NavSection[] = [
         description: "Long-term facts the assistant remembers about you",
       },
       {
-        label: "Skills",
-        href: "/skills",
-        icon: "layers",
-        description: "Reusable instructions and capabilities for agents",
-      },
-      {
-        label: "Gallery",
-        href: "/gallery",
-        icon: "image",
-        description: "Generated and uploaded images",
-      },
-      {
-        label: "Uploads",
-        href: "/uploads",
-        icon: "upload",
-        description: "Files you've uploaded for the assistant to use",
-      },
-      {
-        label: "Knowledge Base",
-        href: "/rag",
-        icon: "library",
-        description: "Searchable document collections for retrieval (RAG)",
-      },
-      {
-        label: "Code Runner",
-        href: "/code",
-        icon: "code",
-        description: "Run code snippets in a sandbox",
+        label: "Research",
+        href: "/research",
+        icon: "research",
+        description: "Deep, multi-source research reports, kept as reference",
       },
     ],
   },
@@ -126,9 +115,20 @@ export const NAV: NavSection[] = [
     ],
   },
   {
-    title: "Models & Infra",
-    defaultCollapsed: true,
+    title: "Agent",
     items: [
+      {
+        label: "Skills",
+        href: "/skills",
+        icon: "layers",
+        description: "Reusable instructions and capabilities for agents",
+      },
+      {
+        label: "MCP",
+        href: "/mcp",
+        icon: "plug",
+        description: "Manage Model Context Protocol tool servers",
+      },
       {
         label: "Cookbook",
         href: "/models/cookbook",
@@ -139,12 +139,12 @@ export const NAV: NavSection[] = [
         description:
           "Serve and manage local models, embeddings, and side-by-side comparison",
       },
-      {
-        label: "MCP",
-        href: "/mcp",
-        icon: "plug",
-        description: "Manage Model Context Protocol tool servers",
-      },
+    ],
+  },
+  {
+    title: "Models & Infra",
+    defaultCollapsed: true,
+    items: [
       {
         label: "Integrations",
         href: "/integrations",
@@ -195,6 +195,12 @@ export const NAV: NavSection[] = [
         href: "/backup",
         icon: "archive",
         description: "Back up and restore your data",
+      },
+      {
+        label: "Code Runner",
+        href: "/code",
+        icon: "code",
+        description: "Run code snippets in a sandbox",
       },
       {
         label: "Shell",

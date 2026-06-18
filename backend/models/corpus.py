@@ -1,0 +1,78 @@
+"""Knowledge-corpus schema — the generic chunk store + the folder source registry.
+
+The corpus is **one retrieval index** fed by many *sources* (the rich stores —
+memory, conversations — plug in as adapters untouched; chunked reference content
+— host folders now, uploads/gallery/research/document bodies later — lands here).
+
+Two tables:
+
+- ``CorpusChunk`` — the generic chunk store. One source item (a file) becomes
+  *many* chunks (a token-window slice of its text). Each chunk carries the same
+  at-rest posture as every other recall vector: the text and its embedding are
+  **encrypted at rest** under the vault (an embedding is invertible enough to leak
+  its text, so it is sealed too — which is why recall is brute-force-in-Python over
+  the decrypted working set rather than an in-DB plaintext ANN index; see decision
+  D18). Structural metadata (owner, source, ordinal, content hash, embedding
+  provenance, timestamps) stays in the clear so the DB can segregate stale
+  embeddings (`EMB-2`) and dedup on re-index.
+- ``CorpusSource`` — the operator-added **folder** registry (path + crawl status).
+
+The chunk's embedding ``model`` + ``dim`` are recorded (`EMB-2`): when the operator
+changes the embedding model, existing vectors are a different space, so retrieve
+falls back to keyword for them until a rebuild re-embeds them.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlmodel import Field, SQLModel, UniqueConstraint
+
+from models._fields import new_id, utcnow
+
+
+class CorpusChunk(SQLModel, table=True):
+    __tablename__ = "corpus_chunk"
+    # Idempotent (re)index: the same file content never inserts twice for a source.
+    __table_args__ = (UniqueConstraint("owner_id", "source_id", "content_hash"),)
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str = Field(index=True)
+    # Which adapter produced this chunk (e.g. "folder") and which source instance.
+    source_kind: str = Field(index=True)
+    source_id: str = Field(index=True)
+    # A human-traceable pointer back to the origin, "<path>#<char-offset>".
+    external_ref: str
+    # sha256 of the chunk text — the dedup/idempotency key (a re-crawl of unchanged
+    # content hashes to the same value, so the unique constraint skips the re-insert).
+    content_hash: str = Field(index=True)
+    # The chunk's position within its source item (0-based), for stable ordering.
+    ordinal: int = 0
+    # AEAD ciphertext of the chunk text (the source of truth for retrieval).
+    text_enc: str
+    # AEAD ciphertext of the embedding (a JSON float array); None until embedded
+    # (a chunk is inserted with a null vector, then the backfill seals it).
+    embedding_enc: str | None = None
+    # Embedding provenance for EMB-2: which model/space produced the vector.
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CorpusSource(SQLModel, table=True):
+    __tablename__ = "corpus_source"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str = Field(index=True)
+    # Only "folder" today — the operator-added host path. Surfaces are virtual
+    # adapters (not rows): they manage their own content on their own pages.
+    kind: str = Field(default="folder")
+    # The host path the crawler walks.
+    path: str
+    # indexed | indexing | stale | error — the crawl state the /rag list renders.
+    status: str = Field(default="indexing")
+    # A short reason code for the last failure (e.g. "PATH NOT FOUND"), else None.
+    error_hint: str | None = None
+    last_indexed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utcnow)
