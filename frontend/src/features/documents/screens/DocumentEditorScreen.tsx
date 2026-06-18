@@ -119,23 +119,6 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
 
   const toolsPanel = () => (
     <>
-      <Panel label="VERSION HISTORY" flush>
-        <For each={detail()?.versions ?? []}>
-          {(v) => (
-            <ListRow
-              label={v.label}
-              leading="clock"
-              onClick={() => setPreviewVersion(v)}
-              right={
-                <Text variant="micro" tone="dim">
-                  {timestamp(v.createdAt).slice(0, 10)}
-                </Text>
-              }
-            />
-          )}
-        </For>
-      </Panel>
-
       {/* AI Assist — DOC-3 (streaming rewrite/suggest) lands in a later slice. */}
       <Panel label="AI ASSIST">
         <Tooltip label="Available in Phase 2">
@@ -151,6 +134,33 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
             </Button>
           </Row>
         </Tooltip>
+      </Panel>
+
+      <Panel
+        label="VERSION HISTORY"
+        flush
+        meta={
+          <Text variant="micro" tone="dim" class="tabular-nums">
+            {detail()?.versions?.length ?? 0}
+          </Text>
+        }
+      >
+        <div class="max-h-80 overflow-y-auto">
+          <For each={detail()?.versions ?? []}>
+            {(v) => (
+              <ListRow
+                label={v.label}
+                leading="clock"
+                onClick={() => setPreviewVersion(v)}
+                right={
+                  <Text variant="micro" tone="dim">
+                    {timestamp(v.createdAt).slice(0, 10)}
+                  </Text>
+                }
+              />
+            )}
+          </For>
+        </div>
       </Panel>
     </>
   );
