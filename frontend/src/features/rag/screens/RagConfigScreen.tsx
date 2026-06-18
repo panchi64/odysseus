@@ -1,4 +1,5 @@
 import {
+  createEffect,
   createSignal,
   For,
   onCleanup,
@@ -17,7 +18,6 @@ import {
   Menu,
   PageHeader,
   Panel,
-  ProgressBar,
   Row,
   Stack,
   StatusFlag,
@@ -28,14 +28,16 @@ import {
   type MenuItem,
   type Status,
 } from "~/ui";
+import { isApiError } from "~/lib/api";
 import { relativeTime, timestamp } from "~/lib/format";
 import {
   useRagSources,
   useIndexStats,
+  refreshCorpus,
   addRagSource,
   removeRagSource,
-  restoreRagSource,
-  createReindexController,
+  reindexSource,
+  rebuildAllFolders,
 } from "../data";
 import type { RagIndexStatus, RagSource } from "../model";
 
@@ -46,49 +48,58 @@ const indexStatusFlag: Record<RagIndexStatus, Status> = {
   error: "alert",
 };
 
+/** Surface a failed backend action without leaking raw errors. */
+function reportError(fallback: string, err: unknown): void {
+  toast.error(isApiError(err) ? err.detail : fallback);
+}
+
 export function RagConfigScreen(): JSX.Element {
   const navigate = useNavigate();
   const sources = useRagSources();
   const stats = useIndexStats();
   const [newPath, setNewPath] = createSignal("");
   const [rebuilding, setRebuilding] = createSignal(false);
-  const [rebuildProgress, setRebuildProgress] = createSignal(0);
 
-  const { reindexingIds, reindex } = createReindexController();
+  const all = (): RagSource[] => sources() ?? [];
+  const surfaces = () => all().filter((s) => s.kind === "surface");
+  const folders = () => all().filter((s) => s.kind === "folder");
+  const errorSources = () => all().filter((s) => s.status === "error");
+  const degradedSources = () =>
+    all().filter((s) => s.status === "stale" || s.status === "error");
+  const anyIndexing = () => all().some((s) => s.status === "indexing");
 
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
+  // Indexing runs server-side off the request path; poll the source list while any
+  // source is mid-index so its status flips here when the backend finishes. The timer
+  // lives in this consuming layer, not the data seam.
+  createEffect(() => {
+    if (!anyIndexing()) return;
+    const timer = setInterval(refreshCorpus, 1500);
+    onCleanup(() => clearInterval(timer));
+  });
 
-  function startRebuild() {
+  async function startRebuild() {
     if (rebuilding()) return;
     setRebuilding(true);
-    setRebuildProgress(0);
-    const steps = [5, 12, 23, 38, 51, 64, 75, 87, 95, 100];
-    steps.forEach((v, i) =>
-      timers.push(
-        setTimeout(
-          () => {
-            setRebuildProgress(v);
-            if (v === 100)
-              setTimeout(() => {
-                setRebuilding(false);
-                toast.success("Index rebuild complete");
-              }, 600);
-          },
-          i * 500 + 300,
-        ),
-      ),
-    );
+    try {
+      await rebuildAllFolders(all());
+      toast.success("Rebuild started");
+    } catch (err) {
+      reportError("Rebuild failed", err);
+    } finally {
+      setRebuilding(false);
+    }
   }
 
-  function handleAddSource() {
+  async function handleAddSource() {
     const path = newPath().trim();
     if (!path) return;
-    addRagSource(path);
-    setNewPath("");
-    toast.success(`Source added — indexing started`, {
-      duration: 5000,
-    });
+    try {
+      await addRagSource(path);
+      setNewPath("");
+      toast.success("Source added — indexing started", { duration: 5000 });
+    } catch (err) {
+      reportError("Could not add source", err);
+    }
   }
 
   async function handleRemove(id: string, label: string, docCount: number) {
@@ -99,35 +110,35 @@ export function RagConfigScreen(): JSX.Element {
       tone: "alert",
     });
     if (!ok) return;
-    const removed = removeRagSource(id);
-    toast.success(`Source removed`, {
-      action: removed
-        ? {
-            label: "UNDO",
-            onClick: () => {
-              restoreRagSource(removed);
-              toast.info("Source restored");
-            },
-          }
-        : undefined,
-    });
+    try {
+      await removeRagSource(id);
+      toast.success("Source removed", {
+        action: {
+          label: "UNDO",
+          onClick: () => {
+            void addRagSource(label)
+              .then(() => toast.info("Source restored — reindexing"))
+              .catch((err) => reportError("Could not restore source", err));
+          },
+        },
+      });
+    } catch (err) {
+      reportError("Could not remove source", err);
+    }
   }
 
-  function handleReindex(id: string, label: string) {
-    reindex(id);
-    toast.info(`Reindexing ${label}…`);
+  async function handleReindex(id: string, label: string) {
+    try {
+      await reindexSource(id);
+      toast.info(`Reindexing ${label}…`);
+    } catch (err) {
+      reportError("Could not reindex", err);
+    }
   }
-
-  const surfaces = () => sources().filter((s) => s.kind === "surface");
-  const folders = () => sources().filter((s) => s.kind === "folder");
-  const errorSources = () => sources().filter((s) => s.status === "error");
-  const degradedSources = () =>
-    sources().filter((s) => s.status === "stale" || s.status === "error");
 
   /** One indexed-source row, shared by both the surfaces and folders panels —
    *  the only difference is the menu actions each kind supports. */
   function sourceRow(source: RagSource): JSX.Element {
-    const reindexing = () => reindexingIds().has(source.id);
     const menuItems: MenuItem[] =
       source.kind === "surface"
         ? [
@@ -139,16 +150,16 @@ export function RagConfigScreen(): JSX.Element {
               },
             },
             {
-              label: reindexing() ? "REINDEXING…" : "REINDEX",
+              label: "REINDEX",
               icon: "refresh",
-              onSelect: () => handleReindex(source.id, source.label),
+              onSelect: () => void handleReindex(source.id, source.label),
             },
           ]
         : [
             {
-              label: reindexing() ? "REINDEXING…" : "REINDEX",
+              label: "REINDEX",
               icon: "refresh",
-              onSelect: () => handleReindex(source.id, source.label),
+              onSelect: () => void handleReindex(source.id, source.label),
             },
             {
               label: "VIEW DOCS",
@@ -174,18 +185,13 @@ export function RagConfigScreen(): JSX.Element {
               {source.docCount} DOCS
             </Text>
             <Text variant="micro" tone="dim">
-              {relativeTime(source.lastIndexedAt)}
+              {source.lastIndexedAt ? relativeTime(source.lastIndexedAt) : "—"}
             </Text>
-            <Show
-              when={reindexing()}
-              fallback={
-                <StatusFlag status={indexStatusFlag[source.status]}>
-                  {source.status.toUpperCase()}
-                </StatusFlag>
-              }
-            >
-              <StatusFlag status="info">INDEXING…</StatusFlag>
-            </Show>
+            <StatusFlag status={indexStatusFlag[source.status]}>
+              {source.status === "indexing"
+                ? "INDEXING…"
+                : source.status.toUpperCase()}
+            </StatusFlag>
             <Menu
               trigger={
                 <span class="px-1 text-dim hover:text-bright">
@@ -214,7 +220,7 @@ export function RagConfigScreen(): JSX.Element {
             <Button
               variant={rebuilding() ? "default" : "primary"}
               leading="refresh"
-              onClick={startRebuild}
+              onClick={() => void startRebuild()}
               disabled={rebuilding()}
             >
               {rebuilding() ? "REBUILDING..." : "REBUILD INDEX"}
@@ -242,46 +248,37 @@ export function RagConfigScreen(): JSX.Element {
         />
       </Suspense>
 
-      <Show when={rebuilding()}>
-        <Panel label="REBUILD IN PROGRESS">
-          <ProgressBar
-            value={rebuildProgress()}
-            label={`INDEXING DOCUMENTS — ${rebuildProgress()}%`}
-            tone="info"
-            showValue
-          />
+      <Suspense fallback={<LoadingText />}>
+        <Panel label="CORPUS SURFACES" flush>
+          <Show
+            when={surfaces().length > 0}
+            fallback={
+              <EmptyState
+                icon="library"
+                message="NO SURFACES"
+                hint="Documents, uploads, gallery, memory and research index here automatically."
+              />
+            }
+          >
+            <For each={surfaces()}>{(source) => sourceRow(source)}</For>
+          </Show>
         </Panel>
-      </Show>
 
-      <Panel label="CORPUS SURFACES" flush>
-        <Show
-          when={surfaces().length > 0}
-          fallback={
-            <EmptyState
-              icon="library"
-              message="NO SURFACES"
-              hint="Documents, uploads, gallery, memory and research index here automatically."
-            />
-          }
-        >
-          <For each={surfaces()}>{(source) => sourceRow(source)}</For>
-        </Show>
-      </Panel>
-
-      <Panel label="INDEXED FOLDERS" flush>
-        <Show
-          when={folders().length > 0}
-          fallback={
-            <EmptyState
-              icon="archive"
-              message="NO FOLDERS"
-              hint="Add a host folder path below to start indexing."
-            />
-          }
-        >
-          <For each={folders()}>{(source) => sourceRow(source)}</For>
-        </Show>
-      </Panel>
+        <Panel label="INDEXED FOLDERS" flush>
+          <Show
+            when={folders().length > 0}
+            fallback={
+              <EmptyState
+                icon="archive"
+                message="NO FOLDERS"
+                hint="Add a host folder path below to start indexing."
+              />
+            }
+          >
+            <For each={folders()}>{(source) => sourceRow(source)}</For>
+          </Show>
+        </Panel>
+      </Suspense>
 
       {/* Add folder source */}
       <Panel label="ADD FOLDER">
@@ -294,7 +291,8 @@ export function RagConfigScreen(): JSX.Element {
                 value={newPath()}
                 onInput={(e) => setNewPath(e.currentTarget.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && newPath().trim()) handleAddSource();
+                  if (e.key === "Enter" && newPath().trim())
+                    void handleAddSource();
                 }}
                 type="text"
               />
@@ -303,7 +301,7 @@ export function RagConfigScreen(): JSX.Element {
               variant="primary"
               leading="plus"
               disabled={!newPath().trim()}
-              onClick={handleAddSource}
+              onClick={() => void handleAddSource()}
             >
               ADD
             </Button>
@@ -333,7 +331,10 @@ export function RagConfigScreen(): JSX.Element {
                     {source.label}
                   </Text>
                   <Text variant="micro" tone="dim">
-                    last: {timestamp(source.lastIndexedAt)}
+                    last:{" "}
+                    {source.lastIndexedAt
+                      ? timestamp(source.lastIndexedAt)
+                      : "—"}
                   </Text>
                   <Show when={source.errorHint}>
                     <Text variant="micro" tone="alert">
@@ -345,7 +346,9 @@ export function RagConfigScreen(): JSX.Element {
                       <Button
                         variant="ghost"
                         leading="refresh"
-                        onClick={() => handleReindex(source.id, source.label)}
+                        onClick={() =>
+                          void handleReindex(source.id, source.label)
+                        }
                       >
                         RETRY
                       </Button>

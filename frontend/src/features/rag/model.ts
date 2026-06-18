@@ -24,14 +24,17 @@ export interface RagSource {
   href?: string;
   docCount: number;
   status: RagIndexStatus;
-  lastIndexedAt: string;
+  /** Null for surfaces that report no timestamp and folders not yet indexed. */
+  lastIndexedAt: string | null;
   /** Short reason code for the last error, e.g. "PATH NOT FOUND". Phase 2 populated by backend. */
   errorHint?: string;
 }
 
 export interface RagIndexStats {
-  embeddingModel: string;
-  dims: number;
+  /** Null when no embedding endpoint is configured (recall is keyword-only). */
+  embeddingModel: string | null;
+  /** Null until the active embedding model's dimensionality is known. */
+  dims: number | null;
   totalDocs: number;
   totalCollections: number;
   storeSize: string;

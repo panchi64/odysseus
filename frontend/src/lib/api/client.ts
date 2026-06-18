@@ -77,8 +77,10 @@ async function request<T>(
     onExpire?.();
   }
   if (!res.ok) throw await toApiError(res);
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  // Empty-body successes (204 No Content, 202 Accepted for async work) carry no JSON;
+  // read text first and parse only when there's something to parse.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const api = {

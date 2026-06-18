@@ -1,105 +1,65 @@
-import {
-  createResource,
-  createSignal,
-  onCleanup,
-  type Resource,
-} from "solid-js";
-import { createStore, produce } from "solid-js/store";
-import type { RagIndexStats, RagSource, RagIndexStatus } from "./model";
-import { mockIndexStats, mockRagSources } from "./mocks";
+import { createResource, createSignal, type Resource } from "solid-js";
+import { api } from "~/lib/api";
+import type { RagIndexStats, RagSource } from "./model";
 
-/* ── Sources — mutable local store so Phase-1 actions are visible ───────── */
+/* ── The seam ─────────────────────────────────────────────────────────────
+ * The backend's /corpus out-shapes are already camelCase and match RagSource /
+ * RagIndexStats one-for-one, so the DTOs ARE the seam types — no remapping. The
+ * backend is the source of truth; every action mutates there and we refetch. */
 
-const [sourcesStore, setSourcesStore] = createStore<RagSource[]>(
-  mockRagSources.map((s) => ({ ...s })),
-);
+const [tick, setTick] = createSignal(0);
 
-/** Read-only accessor for the sources list. */
-export function useRagSources(): () => RagSource[] {
-  return () => sourcesStore;
+/** Refetch the source list + stats (both resources track this signal). */
+export function refreshCorpus(): void {
+  setTick((n) => n + 1);
 }
 
-/** Add a new folder source. Returns the new source entry. */
-export function addRagSource(path: string): RagSource {
-  const id = `rs-${Date.now()}`;
-  const entry: RagSource = {
-    id,
-    kind: "folder",
-    label: path,
-    icon: "archive",
-    docCount: 0,
-    status: "indexing",
-    lastIndexedAt: new Date().toISOString(),
-  };
-  setSourcesStore(produce((list) => list.push(entry)));
-  return entry;
-}
-
-/** Remove a source by id. */
-export function removeRagSource(id: string): RagSource | undefined {
-  const removed = sourcesStore.find((s) => s.id === id);
-  setSourcesStore((list) => list.filter((s) => s.id !== id));
-  return removed;
-}
-
-/** Restore a source (undo remove). */
-export function restoreRagSource(source: RagSource): void {
-  setSourcesStore(produce((list) => list.push(source)));
-}
-
-/** Trigger a reindex on a source — transitions it through indexing → indexed. */
-export function createReindexController() {
-  const [reindexingIds, setReindexingIds] = createSignal<Set<string>>(
-    new Set(),
+export function useRagSources(): Resource<RagSource[]> {
+  const [data] = createResource(tick, () =>
+    api.get<RagSource[]>("/corpus/sources"),
   );
-  const timers: ReturnType<typeof setTimeout>[] = [];
-
-  function reindex(id: string): void {
-    if (reindexingIds().has(id)) return;
-    setReindexingIds((prev) => new Set([...prev, id]));
-    setSourcesStore(
-      (s) => s.id === id,
-      produce((s) => {
-        s.status = "indexing" as RagIndexStatus;
-      }),
-    );
-    timers.push(
-      setTimeout(
-        () => {
-          setSourcesStore(
-            (s) => s.id === id,
-            produce((s) => {
-              s.status = "indexed" as RagIndexStatus;
-              s.lastIndexedAt = new Date().toISOString();
-              s.docCount =
-                s.docCount > 0
-                  ? s.docCount
-                  : Math.floor(Math.random() * 50) + 10;
-            }),
-          );
-          setReindexingIds((prev) => {
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
-        },
-        3000 + Math.random() * 1500,
-      ),
-    );
-  }
-
-  onCleanup(() => timers.forEach(clearTimeout));
-
-  return { reindexingIds, reindex };
-}
-
-/* ── Index stats ────────────────────────────────────────────────────────── */
-
-async function fetchIndexStats(): Promise<RagIndexStats> {
-  return mockIndexStats;
+  return data;
 }
 
 export function useIndexStats(): Resource<RagIndexStats> {
-  const [data] = createResource(fetchIndexStats);
+  const [data] = createResource(tick, () =>
+    api.get<RagIndexStats>("/corpus/stats"),
+  );
   return data;
+}
+
+/* ── Mutations (backend-owned; refresh on completion) ─────────────────────── */
+
+/** Register a host folder as a corpus source; indexing starts server-side. */
+export async function addRagSource(path: string): Promise<void> {
+  await api.post("/corpus/folders", { path });
+  refreshCorpus();
+}
+
+/** Remove an operator-added folder source and its indexed chunks. */
+export async function removeRagSource(id: string): Promise<void> {
+  await api.del(`/corpus/folders/${id}`);
+  refreshCorpus();
+}
+
+/** Reindex one source — heal a surface's embeddings, or re-crawl a folder. */
+export async function reindexSource(id: string): Promise<void> {
+  await api.post(`/corpus/sources/${id}/reindex`);
+  refreshCorpus();
+}
+
+/** Re-crawl one folder source from scratch. */
+export async function rebuildSource(id: string): Promise<void> {
+  await api.post(`/corpus/sources/${id}/rebuild`);
+  refreshCorpus();
+}
+
+/** Re-crawl every operator-added folder (the global "rebuild index" action).
+ *  Surfaces own their own content, so only folders are rebuilt here. */
+export async function rebuildAllFolders(sources: RagSource[]): Promise<void> {
+  const folders = sources.filter((s) => s.kind === "folder");
+  await Promise.all(
+    folders.map((s) => api.post(`/corpus/sources/${s.id}/rebuild`)),
+  );
+  refreshCorpus();
 }

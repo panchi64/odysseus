@@ -55,6 +55,7 @@ export const NAV: NavSection[] = [
         label: "Knowledge Base",
         href: "/rag",
         icon: "library",
+        connected: true,
         description:
           "The unified retrieval corpus — every source the assistant can search (RAG)",
       },
