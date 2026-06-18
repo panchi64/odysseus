@@ -4,10 +4,12 @@ export type DocStatus = "active" | "archived";
 
 export interface DocVersion {
   id: string;
+  /** Monotonic version number the backend restores by. */
+  version: number;
   label: string;
   author: string;
   createdAt: string;
-  /** Snapshot body text for restore/preview (Phase 1: mock content). */
+  /** Snapshot body text for restore/preview. */
   body: string;
 }
 

@@ -64,6 +64,7 @@ export const NAV: NavSection[] = [
         href: "/documents",
         icon: "file",
         description: "Write and edit documents with AI assistance",
+        connected: true,
       },
       {
         label: "Uploads",

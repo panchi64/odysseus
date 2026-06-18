@@ -18,6 +18,7 @@ from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
+from services.documents import DocumentStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -52,6 +53,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def documents(request: Request) -> DocumentStore:
+    return request.app.state.documents
 
 
 def embedding_reindexer(request: Request) -> EmbeddingReindexer:

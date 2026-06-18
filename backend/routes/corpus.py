@@ -13,11 +13,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
-from pydantic.alias_generators import to_camel
+from pydantic import BaseModel
 
 from core.exceptions import NotFoundError
 from routes import deps
+from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.corpus import CorpusStats, SourceStatus
 
@@ -34,11 +34,7 @@ _SURFACE_ICONS = {
 }
 
 
-class _CamelModel(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-
-
-class CorpusSourceOut(_CamelModel):
+class CorpusSourceOut(CamelModel):
     id: str
     kind: str
     label: str
@@ -50,7 +46,7 @@ class CorpusSourceOut(_CamelModel):
     error_hint: str | None = None
 
 
-class CorpusStatsOut(_CamelModel):
+class CorpusStatsOut(CamelModel):
     embedding_model: str | None
     dims: int | None
     total_docs: int

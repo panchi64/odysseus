@@ -108,18 +108,23 @@ class CorpusChunkStore:
         owner_id: str,
         source_id: str | None = None,
         *,
+        source_kind: str | None = None,
         current_model: str | None = None,
         batch_size: int = 64,
     ) -> int:
         """Embed chunks whose vector is missing, or was produced by a model other than
         ``current_model`` (the EMB-2 heal path after an embedding-model change). Scoped
-        to ``source_id`` when given, else the owner's whole chunk store. Reuses the one
-        shared embed→seal loop. Returns how many chunks were embedded."""
+        to one ``source_id`` or one ``source_kind`` when given, else the owner's whole
+        chunk store (the global heal). A per-surface heal passes its ``source_kind`` so
+        it touches only its own chunks, not every other surface's. Reuses the one shared
+        embed→seal loop. Returns how many chunks were embedded."""
 
         def pending(session: Session) -> list[tuple[str, str]]:
             query = select(CorpusChunk).where(CorpusChunk.owner_id == owner_id)
             if source_id is not None:
                 query = query.where(CorpusChunk.source_id == source_id)
+            if source_kind is not None:
+                query = query.where(CorpusChunk.source_kind == source_kind)
             if current_model is None:
                 query = query.where(CorpusChunk.embedding_enc.is_(None))  # type: ignore[union-attr]
             else:
@@ -155,6 +160,32 @@ class CorpusChunkStore:
                 .select_from(CorpusChunk)
                 .where(CorpusChunk.owner_id == owner_id, CorpusChunk.source_id == source_id)
             ).one()
+
+        return await in_session(self._engine, work)
+
+    async def count_items(
+        self, owner_id: str, source_kind: str, source_id: str | None = None
+    ) -> int:
+        """How many distinct source *items* a kind has indexed (never decrypts).
+
+        An item is one origin document/file, regardless of how many chunks it split
+        into — the count the ``/rag`` row labels "DOCS". An item is identified by its
+        ``external_ref`` with the trailing ``#<offset>`` stripped (``upsert`` always
+        appends that, so the base is the file path or document id). Scoped to one
+        ``source_id`` when given (a single folder's file count), else the whole kind
+        (e.g. every document). ``external_ref`` is structural/unencrypted, so this only
+        loads short ref strings. Splitting on the *last* ``#`` keeps paths that contain
+        ``#`` intact."""
+
+        def work(session: Session) -> int:
+            query = select(CorpusChunk.external_ref).where(
+                CorpusChunk.owner_id == owner_id,
+                CorpusChunk.source_kind == source_kind,
+            )
+            if source_id is not None:
+                query = query.where(CorpusChunk.source_id == source_id)
+            refs = session.exec(query).all()
+            return len({ref.rsplit("#", 1)[0] for ref in refs})
 
         return await in_session(self._engine, work)
 

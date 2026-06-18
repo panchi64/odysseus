@@ -1,7 +1,14 @@
-import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
+import {
+  createSignal,
+  createEffect,
+  on,
+  For,
+  Show,
+  Suspense,
+  type JSX,
+} from "solid-js";
 import {
   Button,
-  Divider,
   EditorShell,
   ListRow,
   LoadingText,
@@ -12,11 +19,16 @@ import {
   StatusFlag,
   Text,
   Textarea,
+  Tooltip,
   confirm,
   toast,
 } from "~/ui";
 import { timestamp } from "~/lib/format";
-import { createAiAssistStream, useDocumentDetail } from "../data";
+import {
+  restoreDocumentVersion,
+  saveDocument,
+  useDocumentDetail,
+} from "../data";
 import type { DocVersion } from "../model";
 
 export function DocumentEditorScreen(props: { id: string }): JSX.Element {
@@ -28,15 +40,26 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
     undefined,
   );
   const [showSaved, setShowSaved] = createSignal(false);
-  const assist = createAiAssistStream();
 
   // Version preview modal
   const [previewVersion, setPreviewVersion] = createSignal<DocVersion | null>(
     null,
   );
 
-  // Seed body once when detail loads
+  // Seed body once when detail loads. Reset when the document id changes so a reused
+  // editor instance doesn't keep the previous document's draft.
   let seeded = false;
+  createEffect(
+    on(
+      () => props.id,
+      () => {
+        seeded = false;
+        setBody(undefined);
+        setSavedSnapshot(undefined);
+      },
+      { defer: true },
+    ),
+  );
   const getBody = () => {
     if (!seeded && detail()?.body) {
       seeded = true;
@@ -50,13 +73,18 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
     return getBody() !== baseline;
   };
 
-  function handleSave(): void {
+  async function handleSave(): Promise<void> {
     if (!isDirty()) return;
-    // Phase 1: mock save — persist snapshot and show feedback
-    setSavedSnapshot(getBody());
-    setShowSaved(true);
-    toast.success("Document saved");
-    setTimeout(() => setShowSaved(false), 2000);
+    const next = getBody();
+    try {
+      await saveDocument(props.id, { body: next });
+      setSavedSnapshot(next);
+      setShowSaved(true);
+      toast.success("Document saved");
+      setTimeout(() => setShowSaved(false), 2000);
+    } catch {
+      toast.error("Could not save document");
+    }
   }
 
   async function handleRestoreVersion(v: DocVersion): Promise<void> {
@@ -67,9 +95,16 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
       tone: "alert",
     });
     if (!ok) return;
-    setBody(v.body);
-    setPreviewVersion(null);
-    toast.success(`Restored to ${v.label}`);
+    try {
+      await restoreDocumentVersion(props.id, v.version);
+      // Reflect the restored body locally so the editor isn't left dirty against it.
+      setBody(v.body);
+      setSavedSnapshot(v.body);
+      setPreviewVersion(null);
+      toast.success(`Restored to ${v.label}`);
+    } catch {
+      toast.error("Could not restore version");
+    }
   }
 
   const toolsPanel = () => (
@@ -91,82 +126,21 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
         </For>
       </Panel>
 
-      {/* AI Assist */}
+      {/* AI Assist — DOC-3 (streaming rewrite/suggest) lands in a later slice. */}
       <Panel label="AI ASSIST">
-        <Stack gap={3}>
+        <Tooltip label="Available in Phase 2">
           <Row gap={2} wrap>
-            <Button
-              variant="default"
-              size="sm"
-              leading="pen"
-              onClick={() => assist.runAssist("rewrite")}
-              disabled={assist.streaming()}
-            >
+            <Button variant="default" size="sm" leading="pen" disabled>
               REWRITE
             </Button>
-            <Button
-              variant="default"
-              size="sm"
-              leading="note"
-              onClick={() => assist.runAssist("summarize")}
-              disabled={assist.streaming()}
-            >
+            <Button variant="default" size="sm" leading="note" disabled>
               SUMMARIZE
             </Button>
-            <Button
-              variant="default"
-              size="sm"
-              leading="compare"
-              onClick={() => assist.runAssist("suggest")}
-              disabled={assist.streaming()}
-            >
+            <Button variant="default" size="sm" leading="compare" disabled>
               SUGGEST
             </Button>
           </Row>
-
-          <Show when={assist.suggestion() || assist.streaming()}>
-            <Divider />
-            <div class="flex flex-col gap-2">
-              <Row gap={2} align="center">
-                <StatusFlag
-                  status={assist.streaming() ? "info" : "nominal"}
-                  dot={assist.streaming()}
-                >
-                  {assist.streaming() ? "GENERATING" : "SUGGESTION"}
-                </StatusFlag>
-              </Row>
-              <div class="border border-line bg-raised p-3">
-                <Text variant="body" tone="default" class="whitespace-pre-wrap">
-                  {assist.suggestion()}
-                  {assist.streaming() && (
-                    <span class="animate-pulse text-info">▌</span>
-                  )}
-                </Text>
-              </div>
-              <Show when={!assist.streaming() && assist.suggestion()}>
-                <Row gap={2}>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    leading="check"
-                    onClick={() =>
-                      setBody((b) => (b ?? "") + "\n\n" + assist.suggestion())
-                    }
-                  >
-                    APPLY
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => assist.runAssist("dismiss")}
-                  >
-                    DISMISS
-                  </Button>
-                </Row>
-              </Show>
-            </div>
-          </Show>
-        </Stack>
+        </Tooltip>
       </Panel>
     </>
   );
@@ -197,7 +171,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
             leading={showSaved() ? "check" : "download"}
             size="sm"
             disabled={!isDirty()}
-            onClick={handleSave}
+            onClick={() => void handleSave()}
           >
             {showSaved() ? "SAVED" : "SAVE"}
           </Button>

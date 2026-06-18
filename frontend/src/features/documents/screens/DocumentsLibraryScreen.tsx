@@ -17,13 +17,15 @@ import {
   toast,
   type Status,
 } from "~/ui";
+import { useNavigate } from "@solidjs/router";
 import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import {
-  useDocumentList,
+  useDocuments,
+  createDocument,
   deleteDocument,
-  restoreDocument,
-  toggleArchiveDocument,
+  archiveDocument,
+  unarchiveDocument,
 } from "../data";
 import type { DocStatus, DocumentSummary } from "../model";
 
@@ -41,7 +43,9 @@ function WordCount(props: { words: number }): JSX.Element {
 }
 
 export function DocumentsLibraryScreen(): JSX.Element {
-  const documents = useDocumentList();
+  const navigate = useNavigate();
+  const docsResource = useDocuments();
+  const documents = (): DocumentSummary[] => docsResource() ?? [];
   const [tab, setTab] = createSignal<DocStatus>("active");
   const [selectMode, setSelectMode] = createSignal(false);
 
@@ -70,6 +74,17 @@ export function DocumentsLibraryScreen(): JSX.Element {
   const totalArchived = () =>
     documents().filter((d) => d.status === "archived").length;
 
+  async function handleNew(): Promise<void> {
+    try {
+      const id = await createDocument("Untitled", "");
+      navigate(`/documents/${id}`);
+    } catch {
+      toast.error("Could not create document");
+    }
+  }
+
+  // Hard delete is irreversible (the confirm says so), so it carries no UNDO —
+  // unlike archive below, which round-trips through the backend's restore.
   async function handleDelete(doc: DocumentSummary): Promise<void> {
     const ok = await confirm({
       title: `Delete "${doc.title}"?`,
@@ -78,13 +93,12 @@ export function DocumentsLibraryScreen(): JSX.Element {
       tone: "alert",
     });
     if (!ok) return;
-    deleteDocument(doc.id);
-    toast.success(`Deleted "${doc.title}"`, {
-      action: {
-        label: "UNDO",
-        onClick: () => restoreDocument(doc),
-      },
-    });
+    try {
+      await deleteDocument(doc.id);
+      toast.success(`Deleted "${doc.title}"`);
+    } catch {
+      toast.error(`Could not delete "${doc.title}"`);
+    }
   }
 
   async function handleBulkDelete(): Promise<void> {
@@ -97,28 +111,40 @@ export function DocumentsLibraryScreen(): JSX.Element {
       tone: "alert",
     });
     if (!ok) return;
-    docs.forEach((d) => deleteDocument(d.id));
-    view.clearSelection();
-    toast.success(
-      `Deleted ${docs.length} document${docs.length > 1 ? "s" : ""}`,
-      {
-        action: {
-          label: "UNDO",
-          onClick: () => docs.forEach((d) => restoreDocument(d)),
-        },
-      },
+    // allSettled so one failure (e.g. a doc already removed elsewhere) doesn't abandon
+    // the rest or swallow feedback — report whatever didn't delete.
+    const results = await Promise.allSettled(
+      docs.map((d) => deleteDocument(d.id)),
     );
+    view.clearSelection();
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed) {
+      toast.error(`Could not delete ${failed} of ${docs.length} documents`);
+    } else {
+      toast.success(
+        `Deleted ${docs.length} document${docs.length > 1 ? "s" : ""}`,
+      );
+    }
   }
 
-  function handleArchive(doc: DocumentSummary): void {
-    const next: DocStatus = doc.status === "active" ? "archived" : "active";
-    const prev: DocStatus = doc.status;
-    toggleArchiveDocument(doc.id, next);
-    const label = next === "archived" ? "Archived" : "Restored";
-    toast.success(`${label} "${doc.title}"`, {
+  async function handleArchive(doc: DocumentSummary): Promise<void> {
+    const toArchived = doc.status === "active";
+    const apply = (archived: boolean) =>
+      archived ? archiveDocument(doc.id) : unarchiveDocument(doc.id);
+    try {
+      await apply(toArchived);
+    } catch {
+      toast.error(
+        `Could not ${toArchived ? "archive" : "restore"} "${doc.title}"`,
+      );
+      return;
+    }
+    toast.success(`${toArchived ? "Archived" : "Restored"} "${doc.title}"`, {
       action: {
         label: "UNDO",
-        onClick: () => toggleArchiveDocument(doc.id, prev),
+        onClick: () => {
+          apply(!toArchived).catch(() => toast.error("Could not undo"));
+        },
       },
     });
   }
@@ -137,7 +163,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
         subtitle="Personal knowledge base and working notes."
         assetId="ODY-DOC-01.0"
         actions={
-          <Button variant="primary" leading="plus">
+          <Button
+            variant="primary"
+            leading="plus"
+            onClick={() => void handleNew()}
+          >
             NEW DOCUMENT
           </Button>
         }
@@ -262,7 +292,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
                               label:
                                 doc.status === "active" ? "ARCHIVE" : "RESTORE",
                               icon: "archive",
-                              onSelect: () => handleArchive(doc),
+                              onSelect: () => void handleArchive(doc),
                             },
                             {
                               label: "DELETE",

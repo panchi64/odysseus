@@ -28,6 +28,7 @@ from routes import (
     conversations,
     cookbook,
     corpus,
+    documents,
     health,
     memory,
     models,
@@ -50,7 +51,9 @@ from services.corpus import (
     MemoryAdapter,
     default_surface_stubs,
 )
+from services.corpus.documents import DocumentsAdapter
 from services.credential_store import CredentialStore
+from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
@@ -197,15 +200,24 @@ async def lifespan(app: FastAPI):
         registry, app.state.memory, app.state.conversations, chunk_store
     )
     folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
+    # The documents surface: an in-app source whose bodies are chunked into the same
+    # corpus_chunk store as folders. The DocumentStore owns the rows and calls the
+    # adapter to (re)index after each write; the adapter owns chunking/sealing/embedding
+    # on its own lock-aware worker.
+    documents_adapter = DocumentsAdapter(engine, chunk_store, vault.unlocked_event)
+    app.state.documents = DocumentStore(engine, vault, documents_adapter)
     corpus_index = CorpusIndex(embedder, registry, chunk_store, folder_adapter)
     corpus_index.register(folder_adapter)
     corpus_index.register(MemoryAdapter(app.state.memory))
     corpus_index.register(ConversationAdapter(app.state.conversation_search))
+    corpus_index.register(documents_adapter)
     for stub in default_surface_stubs():
         corpus_index.register(stub)
     app.state.corpus = corpus_index
     app.state.corpus_folder = folder_adapter
+    app.state.corpus_documents = documents_adapter
     await folder_adapter.start()
+    await documents_adapter.start()
     # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
     # semantic index once unlocked — off the critical path; new content is already
     # embedded as it persists.
@@ -290,6 +302,7 @@ async def lifespan(app: FastAPI):
         if sandbox_manager is not None:
             await sandbox_manager.stop()
         await folder_adapter.stop()
+        await documents_adapter.stop()
         await app.state.conversations.stop()
 
 
@@ -321,6 +334,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models.router)
     app.include_router(cookbook.router)
     app.include_router(memory.router)
+    app.include_router(documents.router)
     app.include_router(corpus.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)

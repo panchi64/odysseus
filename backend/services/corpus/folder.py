@@ -149,7 +149,11 @@ class FolderAdapter(SourceAdapter):
                     source_id=source.id,
                     kind="folder",
                     label=source.path,
-                    doc_count=await self._chunks.count(owner_id, source.id),
+                    # Item (file) count, not chunk count, so the /rag "DOCS" column means
+                    # the same thing across every source.
+                    doc_count=await self._chunks.count_items(
+                        owner_id, self.source_kind, source.id
+                    ),
                     status=source.status,
                     last_indexed_at=source.last_indexed_at,
                     error_hint=source.error_hint,
@@ -158,7 +162,10 @@ class FolderAdapter(SourceAdapter):
         return statuses
 
     async def reindex(self, owner_id: str, *, current_model: str | None = None) -> int:
-        return await self._chunks.reembed(owner_id, current_model=current_model)
+        # Scoped to folder chunks — reindexing one surface shouldn't re-embed every other.
+        return await self._chunks.reembed(
+            owner_id, source_kind=self.source_kind, current_model=current_model
+        )
 
     # --- indexing ---------------------------------------------------------
 
