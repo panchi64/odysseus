@@ -125,9 +125,9 @@ async def get_overview(request: Request) -> Overview:
             detail="container runtime" if sandbox_present else "no runtime — disabled",
         )
     )
-    # Web search — the backend's managed SearXNG (or an operator-configured
-    # provider that overrides it) ⇒ search/fetch available; neither ⇒ disabled
-    # (degraded, not down — e.g. no container runtime, or the instance still booting).
+    # Web search — the backend's managed SearXNG (or an operator-configured provider that
+    # overrides it) ⇒ search available; neither ⇒ disabled (degraded, not down — e.g. no
+    # container runtime, or the instance still booting).
     if provider_enabled:
         search_detail = "SearXNG configured"
     elif managed_search_ready:
@@ -140,6 +140,18 @@ async def get_overview(request: Request) -> Overview:
             label="WEB SEARCH",
             status="nominal" if web_search_configured else "warn",
             detail=search_detail,
+        )
+    )
+    # Web fetch — a separate capability from search: a containerized headless browser
+    # renders pages. It can be down independently (no runtime, image pull failed, still
+    # bringing up), so it gets its own row rather than being folded into web search.
+    fetch_available = deps.browser(request).available
+    capabilities.append(
+        Capability(
+            key="web_fetch",
+            label="WEB FETCH",
+            status="nominal" if fetch_available else "warn",
+            detail="containerized browser" if fetch_available else "no runtime — unavailable",
         )
     )
 

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
+    from services.webfetch import BrowserFetcher
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class Capabilities:
     sandbox_sessions: SandboxSessionManager | None = None
     artifacts: ArtifactStore | None = None
     search: SearchService | None = None
+    fetcher: BrowserFetcher | None = None
     conversation_search: ConversationSearch | None = None
     corpus: CorpusIndex | None = None
 
@@ -56,8 +58,11 @@ class RunDeps:
     # Where the agent's published previews are captured (the `preview` tool reads a
     # sandbox file and hands its bytes here). None ⇒ previews unavailable.
     artifacts: ArtifactStore | None = None
-    # The web capability (search + guarded fetch). None ⇒ web tools say so.
+    # Web search over the configured provider. None ⇒ the search tool says so.
     search: SearchService | None = None
+    # Web fetch — render a page in a headless browser + extract to Markdown. None ⇒ the
+    # fetch tool says so (e.g. the Chromium binary is absent).
+    fetcher: BrowserFetcher | None = None
     # Cross-chat search over the operator's other conversations. None ⇒ the
     # conversation tools say so (graceful degradation).
     conversation_search: ConversationSearch | None = None

@@ -69,6 +69,7 @@ from services.settings_store import SettingsStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
+from services.webfetch import BrowserFetcher, ManagedBrowser
 
 logger = logging.getLogger(__name__)
 
@@ -288,9 +289,9 @@ async def lifespan(app: FastAPI):
     )
     app.state.searxng = searxng
     await searxng.start()
-    # The web capability — search via the managed SearXNG (or an operator-configured
-    # provider) + a guarded direct fetch. Its own outbound client does NOT follow
-    # redirects: fetch follows them by hand so it can re-run the SSRF guard on every hop.
+    # Web search — query the managed SearXNG (or an operator-configured provider). Its own
+    # outbound client does NOT follow redirects: an unguarded redirect off the JSON API
+    # would be an SSRF hole, so the search path simply refuses to follow one.
     web_client = httpx.AsyncClient(follow_redirects=False)
     app.state.web_client = web_client
     app.state.search = SearchService(
@@ -299,9 +300,33 @@ async def lifespan(app: FastAPI):
         http_client=web_client,
         managed_url=lambda: searxng.base_url,
         timeout_s=settings.web_fetch_timeout_s,
-        max_bytes=settings.web_fetch_max_bytes,
-        max_redirects=settings.web_fetch_max_redirects,
         result_limit=settings.web_search_result_limit,
+    )
+    # Web fetch — a containerized headless Chromium (same runtime as the sandbox/SearXNG)
+    # + the render-and-extract fetcher. The open web is treated as always-dynamic, so every
+    # fetch loads the page in the browser (its JS runs) and extracts the rendered DOM to
+    # Markdown. Bring-up is best-effort in the background: no runtime / a failed pull leaves
+    # the browser unavailable and web fetch degrades, like managed search.
+    browser = ManagedBrowser(
+        enabled=settings.web_fetch_enabled,
+        image=settings.web_fetch_image,
+        startup_timeout_s=settings.web_fetch_startup_timeout_s,
+        concurrency=settings.web_fetch_concurrency,
+        user_agent=settings.web_fetch_user_agent,
+        locale=settings.web_fetch_locale,
+        timezone_id=settings.web_fetch_timezone,
+        runtime_pref=settings.sandbox_runtime,
+    )
+    app.state.browser = browser
+    await browser.start()
+    app.state.fetcher = BrowserFetcher(
+        browser=browser,
+        timeout_s=settings.web_fetch_timeout_s,
+        wait_until=settings.web_fetch_wait_until,
+        render_wait_ms=settings.web_fetch_render_wait_ms,
+        block_media=settings.web_fetch_block_media,
+        max_bytes=settings.web_fetch_max_bytes,
+        min_chars=settings.web_fetch_min_chars,
     )
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
@@ -345,6 +370,7 @@ async def lifespan(app: FastAPI):
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()
+        await browser.stop()
         await searxng.stop()
         if sandbox_manager is not None:
             await sandbox_manager.stop()

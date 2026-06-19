@@ -206,6 +206,7 @@ async def _drive_turn(
         conversation_id=conversation_id,
         artifacts=caps.artifacts,
         search=caps.search,
+        fetcher=caps.fetcher,
         conversation_search=caps.conversation_search,
         corpus=caps.corpus,
     )

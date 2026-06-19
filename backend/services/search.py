@@ -1,44 +1,33 @@
-"""Web search and fetch — the agent's window onto the open web.
+"""Web search over a SearXNG instance — the agent's window onto the open web.
 
-Two capabilities over a SearXNG instance — by default the backend's own managed
-one (`services.searxng`), needing no operator setup; an enabled provider in the
-DB-backed registry overrides it (a custom/remote instance):
-
-- **search** queries the active SearXNG instance's JSON API and returns the
-  hits (title, url, snippet).
-- **fetch** retrieves a single URL directly and extracts its main content as
-  Markdown — guarded against SSRF (the target host is re-validated on every
-  redirect hop) and bounded by a timeout, a byte cap, and a redirect cap.
-
-Both mark their results as untrusted (:func:`core.untrusted.wrap_untrusted`) before
-they reach the model — web content is data, never instructions. The provider
+By default the backend's own managed instance (`services.searxng`), needing no operator
+setup; an enabled provider in the DB-backed registry overrides it (a custom/remote
+instance). **search** queries the active instance's JSON API and returns the hits (title,
+url, snippet); the snippets are marked untrusted (:func:`core.untrusted.wrap_untrusted`)
+before they reach the model — web content is data, never instructions. The provider
 catalog is owner-scoped and managed like the model registry (encrypted key seam,
-``in_session`` writes). The service raises domain errors only; the tool layer
-translates them into Pydantic AI ``ModelRetry`` (recoverable) or a degradation
-message (terminal), keeping this service reusable by non-agent callers.
+``in_session`` writes). The service raises domain errors only; the tool/route layers map
+them to retries or HTTP, keeping it reusable by non-agent callers.
+
+Fetching a page's *content* is a separate capability — :mod:`services.webfetch` renders
+the page in a headless browser and extracts it to Markdown.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import urljoin
 
 import httpx
-import trafilatura
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError, WebFetchError
-from core.ssrf import assert_public_url
+from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.untrusted import wrap_untrusted
 from core.vault import Vault
 from models.search import SearchProvider
-
-_REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 
 
 @dataclass(frozen=True)
@@ -49,15 +38,6 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-
-
-@dataclass(frozen=True)
-class FetchedPage:
-    """A fetched page's main content as Markdown, untrusted-wrapped."""
-
-    url: str
-    title: str | None
-    content: str
 
 
 @dataclass(frozen=True)
@@ -72,15 +52,13 @@ class _SearchTarget:
 
 
 class SearchService:
-    """The web capability: a SearXNG-backed search plus a guarded direct fetch.
+    """SearXNG-backed web search + the owner-scoped provider catalog.
 
-    ``http_client`` is the pooled outbound client (``follow_redirects=False`` so
-    fetch controls redirects for per-hop SSRF re-validation); None ⇒ a transient
-    client per call (the path tests take). ``managed_url`` returns the backend's
-    self-managed SearXNG URL (or ``None`` until it is ready) — the zero-config
-    default used when the operator has configured no provider of their own. The
-    bounds default to the configured settings and are injected so tests can shrink
-    them.
+    ``http_client`` is the pooled outbound client (``follow_redirects=False`` — an
+    unguarded redirect off the JSON API would be an SSRF hole, so search refuses to follow
+    one); None ⇒ a transient client per call (the path tests take). ``managed_url`` returns
+    the backend's self-managed SearXNG URL (or ``None`` until it is ready) — the zero-config
+    default used when the operator has configured no provider of their own.
     """
 
     def __init__(
@@ -91,8 +69,6 @@ class SearchService:
         http_client: httpx.AsyncClient | None = None,
         managed_url: Callable[[], str | None] | None = None,
         timeout_s: float = 15.0,
-        max_bytes: int = 2_000_000,
-        max_redirects: int = 5,
         result_limit: int = 10,
     ) -> None:
         self._engine = engine
@@ -100,8 +76,6 @@ class SearchService:
         self._http_client = http_client
         self._managed_url = managed_url
         self._timeout_s = timeout_s
-        self._max_bytes = max_bytes
-        self._max_redirects = max_redirects
         self._result_limit = result_limit
 
     # --- provider catalog -------------------------------------------------
@@ -208,7 +182,7 @@ class SearchService:
             return _SearchTarget(base_url=managed, engines=[], params={}, api_key=None)
         raise DegradedCapabilityError("no web search provider configured")
 
-    # --- search & fetch ---------------------------------------------------
+    # --- search -----------------------------------------------------------
 
     async def search(
         self, owner_id: str, query: str, *, limit: int | None = None
@@ -230,8 +204,7 @@ class SearchService:
         owns = self._http_client is None
         try:
             # No redirect-following: the provider answers /search?format=json
-            # directly, and an unguarded redirect would be an SSRF hole (the fetch
-            # path guards every hop; this path simply refuses to follow).
+            # directly, and an unguarded redirect would be an SSRF hole — so refuse it.
             resp = await client.get(
                 url, params=params, headers=headers, timeout=self._timeout_s, follow_redirects=False
             )
@@ -260,66 +233,3 @@ class SearchService:
             )
             for r in results[:limit]
         ]
-
-    async def fetch(self, owner_id: str, url: str) -> FetchedPage:
-        """Fetch a single URL and extract its main content as Markdown. SSRF-guarded
-        (re-checked on each redirect), timeout/byte/redirect bounded. Raises
-        :class:`SSRFError` (refused) or :class:`WebFetchError` (unreadable)."""
-        await assert_public_url(url)
-        client = self._http_client or httpx.AsyncClient(follow_redirects=False)
-        owns = self._http_client is None
-        try:
-            raw, final_url = await self._get_with_redirects(client, url)
-        except httpx.HTTPError as exc:
-            raise WebFetchError(f"could not fetch {url!r}: {exc}") from exc
-        finally:
-            if owns:
-                await client.aclose()
-        return await asyncio.to_thread(self._extract, final_url, raw)
-
-    async def _get_with_redirects(
-        self, client: httpx.AsyncClient, url: str
-    ) -> tuple[bytes, str]:
-        """Follow redirects manually, re-running the SSRF guard on every hop, and
-        return the raw body (capped at ``max_bytes``) and the final URL. The body
-        is left as bytes so the extractor can detect the page's own charset."""
-        current = url
-        for _ in range(self._max_redirects + 1):
-            async with client.stream(
-                "GET", current, timeout=self._timeout_s, follow_redirects=False
-            ) as resp:
-                if resp.status_code in _REDIRECT_STATUS:
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise WebFetchError(f"redirect without a location from {current!r}")
-                    current = urljoin(current, location)
-                    await assert_public_url(current)
-                    continue
-                if resp.status_code >= 400:
-                    raise WebFetchError(f"{current!r} returned HTTP {resp.status_code}")
-                # Fixed-size reads bound peak memory: stop the moment the cap is
-                # reached so a huge (or decompression-bomb) body can't be buffered.
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total >= self._max_bytes:
-                        break
-                return b"".join(chunks)[: self._max_bytes], current
-        raise WebFetchError(f"too many redirects fetching {url!r}")
-
-    def _extract(self, url: str, raw: bytes) -> FetchedPage:
-        # Parse once; trafilatura detects the charset from the raw bytes (HTTP
-        # header / <meta> / BOM), avoiding a wrong-encoding decode and a second parse.
-        tree = trafilatura.load_html(raw)
-        if tree is None:
-            raise WebFetchError(f"could not parse {url!r}")
-        body = trafilatura.extract(
-            tree, output_format="markdown", include_links=True, with_metadata=False
-        )
-        if not body:
-            raise WebFetchError(f"no readable content at {url!r}")
-        metadata = trafilatura.extract_metadata(tree)
-        title = metadata.title if metadata is not None else None
-        return FetchedPage(url=url, title=title, content=wrap_untrusted(body, source=url))

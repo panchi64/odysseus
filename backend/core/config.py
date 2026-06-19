@@ -105,13 +105,37 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
-    # Web access (search + fetch). These bound the direct, SSRF-guarded fetch: how
-    # long to wait, how big a page to read, and how many redirect hops to follow
-    # (each re-checked by the guard). `web_search_result_limit` caps results.
+    # Web search. `web_search_result_limit` caps results from the SearXNG provider.
+    web_search_result_limit: int = 10
+
+    # Web fetch. The open web is treated as always-dynamic: every page is rendered in a
+    # headless Chromium that runs in its own loopback-bound container (isolating untrusted
+    # page JS from the host), driven over CDP; the rendered DOM is extracted to Markdown.
+    # `image` tracks :latest (refreshed each boot, like SearXNG — CDP is version-tolerant);
+    # `enabled` turns fetch off (degrades); `startup_timeout_s` bounds container bring-up;
+    # `timeout_s` bounds navigation/render; `max_bytes` caps the rendered HTML/text handed
+    # to the extractor; `wait_until` is Playwright's load milestone with `render_wait_ms`
+    # an extra settle delay; `concurrency` bounds simultaneous contexts; `block_media` drops
+    # images/media/fonts (speed + smaller SSRF surface); `min_chars` is the length below
+    # which extraction falls back to innerText. The browser is stealthed to present as a
+    # normal user's Chrome (so sites return what a person would see): `user_agent` empty ⇒
+    # derive a realistic one from the engine version; `locale`/`timezone` set the context.
+    # Every outbound request — initial, redirects, subresources — is re-checked by the guard.
+    web_fetch_enabled: bool = True
+    web_fetch_image: str = "chromedp/headless-shell:latest"
+    web_fetch_startup_timeout_s: float = 45.0
     web_fetch_timeout_s: float = 15.0
     web_fetch_max_bytes: int = 2_000_000
-    web_fetch_max_redirects: int = 5
-    web_search_result_limit: int = 10
+    web_fetch_wait_until: Literal["load", "domcontentloaded", "networkidle", "commit"] = (
+        "domcontentloaded"
+    )
+    web_fetch_render_wait_ms: int = 250
+    web_fetch_concurrency: int = 4
+    web_fetch_block_media: bool = True
+    web_fetch_min_chars: int = 200
+    web_fetch_user_agent: str = ""
+    web_fetch_locale: str = "en-US"
+    web_fetch_timezone: str = "America/New_York"
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox

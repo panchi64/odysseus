@@ -137,6 +137,7 @@ def _submit_turn(
             sandbox_sessions=deps.sandbox_sessions(request),
             artifacts=deps.artifacts(request),
             search=deps.search(request),
+            fetcher=deps.fetcher(request),
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
         ),

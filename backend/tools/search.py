@@ -1,9 +1,10 @@
-"""Web tools — the agent's thin adapter over the web (search + fetch) capability.
+"""Web tools — the agent's thin adapters over the web capabilities.
 
-Two verbs over :class:`~services.search.SearchService` reached through ``RunDeps``
-(no logic here — it lives in the service the REST surface also uses). The results
-are typed dataclasses Pydantic AI serializes for the model, already
-untrusted-wrapped by the service.
+Two verbs reached through ``RunDeps``: ``search`` over
+:class:`~services.search.SearchService` (SearXNG) and ``fetch`` over
+:class:`~services.webfetch.BrowserFetcher` (render the page in a headless browser, extract
+to Markdown). No logic here — it lives in the services. The results are typed dataclasses
+Pydantic AI serializes for the model, already untrusted-wrapped by the service.
 
 Failure handling leans on the engine: a *recoverable* fetch failure (a blocked or
 unreadable URL) raises :class:`ModelRetry`, so Pydantic AI feeds the reason back
@@ -18,7 +19,8 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
-from services.search import FetchedPage, SearchResult
+from services.search import SearchResult
+from services.webfetch import FetchedPage
 
 from .deps import RunDeps
 
@@ -48,7 +50,7 @@ def web_toolset() -> FunctionToolset[RunDeps]:
 
         Use after `search` to read a result in full. If a URL can't be fetched you
         will be told why — pick a different source."""
-        svc = ctx.deps.search
+        svc = ctx.deps.fetcher
         if svc is None:
             return "Web fetch is unavailable."
         try:

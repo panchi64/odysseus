@@ -27,6 +27,7 @@ from services.sandbox import SandboxSessionManager
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.uploads import UploadStore
+from services.webfetch import BrowserFetcher, ManagedBrowser
 
 # Single operator: every record is attributed to this owner until a second human
 # exists (the ownership seam). One constant so routes don't each redefine it.
@@ -75,6 +76,14 @@ def embedding_reindexer(request: Request) -> EmbeddingReindexer:
 
 def search(request: Request) -> SearchService:
     return request.app.state.search
+
+
+def fetcher(request: Request) -> BrowserFetcher:
+    return request.app.state.fetcher
+
+
+def browser(request: Request) -> ManagedBrowser:
+    return request.app.state.browser
 
 
 def searxng(request: Request) -> ManagedSearxng:

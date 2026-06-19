@@ -1,10 +1,8 @@
-"""Web capability: provider CRUD + encryption, SearXNG search, guarded fetch, and
-the agent reaching it through the toolset stack."""
+"""Web search: provider CRUD + encryption, SearXNG search, and the agent reaching it
+through the toolset stack. (Page fetching lives in test_webfetch.py.)"""
 
 from __future__ import annotations
 
-import ipaddress
-import socket
 import tempfile
 from pathlib import Path
 
@@ -13,29 +11,12 @@ import pytest
 from sqlmodel import Session
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
+from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from models.search import SearchProvider
 from services.search import SearchService
 
 OWNER = "operator"
-
-_ARTICLE = """<html><head><title>Edible Plants</title></head><body><article>
-<h1>Foraging Guide</h1>
-<p>The dandelion is entirely edible, from root to flower, and grows almost everywhere.</p>
-<p>Always positively identify a plant before eating any part of it in the wild.</p>
-</article></body></html>"""
-
-
-def _fake_getaddrinfo(host, port, *args, **kwargs):
-    """Resolve IP literals to themselves, anything else to a fixed public IP — so
-    redirect-to-private is exercised while hostnames stay offline-safe."""
-    try:
-        ip = str(ipaddress.ip_address(host))
-    except ValueError:
-        ip = "93.184.216.34"
-    family = socket.AF_INET6 if ":" in ip else socket.AF_INET
-    return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port or 0))]
 
 
 async def _make_service(handler, **bounds) -> SearchService:
@@ -173,55 +154,6 @@ async def test_search_does_not_follow_redirects():
     await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
     with pytest.raises(DegradedCapabilityError):
         await svc.search(OWNER, "q")
-
-
-# --- fetch ------------------------------------------------------------------
-
-
-async def test_fetch_extracts_markdown_and_wraps(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
-    svc = await _make_service(lambda req: httpx.Response(200, html=_ARTICLE))
-    page = await svc.fetch(OWNER, "https://forage.example/guide")
-
-    assert page.title == "Edible Plants" or "Foraging" in (page.title or "")
-    assert "Foraging Guide" in page.content  # heading survived → markdown extraction ran
-    assert "dandelion" in page.content
-    assert "BEGIN UNTRUSTED CONTENT" in page.content
-    assert "source=https://forage.example/guide" in page.content
-
-
-async def test_fetch_refuses_private_target(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
-    svc = await _make_service(lambda req: httpx.Response(200, html=_ARTICLE))
-    with pytest.raises(SSRFError):
-        await svc.fetch(OWNER, "http://10.0.0.1/admin")
-
-
-async def test_fetch_revalidates_ssrf_on_redirect(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        # Public host redirects to a private one — must be caught on the hop.
-        return httpx.Response(302, headers={"location": "http://192.168.0.1/secret"})
-
-    svc = await _make_service(handler)
-    with pytest.raises(SSRFError):
-        await svc.fetch(OWNER, "https://public.example/start")
-
-
-async def test_fetch_caps_response_size(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
-    # A tiny byte cap truncates the body to an unparseable fragment → no content.
-    svc = await _make_service(lambda req: httpx.Response(200, html=_ARTICLE), max_bytes=10)
-    with pytest.raises(WebFetchError):
-        await svc.fetch(OWNER, "https://forage.example/guide")
-
-
-async def test_fetch_http_error_is_web_fetch_error(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
-    svc = await _make_service(lambda req: httpx.Response(404))
-    with pytest.raises(WebFetchError):
-        await svc.fetch(OWNER, "https://forage.example/missing")
 
 
 # --- agent reaches the capability through the toolset stack ----------------

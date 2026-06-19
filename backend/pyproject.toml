@@ -20,8 +20,12 @@ dependencies = [
     # Cross-platform CPU/RAM facts for the Cookbook hardware probe (GPU/VRAM stay on
     # subprocess probes). Portable wheels for all target POSIX hosts.
     "psutil>=6",
-    # Web fetch: main-content extraction with native Markdown output
-    # (output_format="markdown"). Pulls lxml transitively.
+    # Web fetch: pages are rendered in a headless Chromium that runs in a container and is
+    # driven over CDP (services/webfetch) — so Playwright is the client only, with NO local
+    # browser binary to install. trafilatura is the top-scoring open-source main-content
+    # extractor — run here over the rendered HTML string (not as a fetcher), emitting
+    # Markdown natively (output_format="markdown"). Pulls lxml transitively.
+    "playwright>=1.49",
     "trafilatura>=2.0",
     "langdetect>=1.0.9",
     "pypdfium2>=5.10.1",
