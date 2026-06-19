@@ -315,6 +315,9 @@ async def lifespan(app: FastAPI):
         user_agent=settings.web_fetch_user_agent,
         locale=settings.web_fetch_locale,
         timezone_id=settings.web_fetch_timezone,
+        cookie_ttl_s=settings.web_fetch_cookie_ttl_s,
+        cookie_max=settings.web_fetch_cookie_max,
+        proxy_image=settings.web_fetch_proxy_image,
         runtime_pref=settings.sandbox_runtime,
     )
     app.state.browser = browser
@@ -324,9 +327,11 @@ async def lifespan(app: FastAPI):
         timeout_s=settings.web_fetch_timeout_s,
         wait_until=settings.web_fetch_wait_until,
         render_wait_ms=settings.web_fetch_render_wait_ms,
-        block_media=settings.web_fetch_block_media,
         max_bytes=settings.web_fetch_max_bytes,
         min_chars=settings.web_fetch_min_chars,
+        min_interval_s=settings.web_fetch_min_interval_s,
+        challenge_waits=settings.web_fetch_challenge_waits,
+        challenge_wait_ms=settings.web_fetch_challenge_wait_ms,
     )
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).

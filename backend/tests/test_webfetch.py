@@ -17,9 +17,11 @@ from contextlib import asynccontextmanager
 import pytest
 
 from core.exceptions import SSRFError, WebFetchError
-from services.webfetch import BrowserFetcher, FetchedPage, ManagedBrowser
+from services.webfetch import BrowserFetcher, FetchedPage, ManagedBrowser, proxy_script
+from services.webfetch.cookies import DomainCookieJar
 from services.webfetch.extract import extract
-from services.webfetch.guard import RequestGuard
+from services.webfetch.fetcher import _looks_like_challenge
+from services.webfetch.throttle import DomainThrottle
 
 OWNER = "operator"
 
@@ -63,88 +65,156 @@ def test_extract_empty_returns_none():
     assert body is None
 
 
-# --- SSRF request guard (no browser; IP literals resolve offline) ----------
+# --- SSRF proxy sidecar (no browser; IP literals resolve offline) ----------
 
 
-class _FakeFrame:
-    def __init__(self, *, main: bool) -> None:
-        self.parent_frame = None if main else object()
+def test_proxy_blocklist_matches_core_ssrf():
+    # The sidecar runs with none of our code on its path, so it carries a copy of the SSRF
+    # predicate. This guards against the copy drifting from the source of truth.
+    import ipaddress
+
+    from core import ssrf as core_ssrf
+
+    samples = [
+        "8.8.8.8", "1.1.1.1", "93.184.216.34",          # public
+        "127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1",  # loopback / private
+        "169.254.169.254", "100.64.0.1", "224.0.0.1", "0.0.0.0",  # metadata / cgnat / mcast
+        "::1", "fe80::1", "2606:4700:4700::1111", "fd00:ec2::254",  # ipv6
+    ]
+    for s in samples:
+        ip = ipaddress.ip_address(s)
+        assert proxy_script._is_blocked(ip) == core_ssrf._is_blocked(ip), s
 
 
-class _FakeRequest:
-    def __init__(self, url: str, *, resource_type: str = "document", main: bool = True) -> None:
-        self.url = url
-        self.resource_type = resource_type
-        self.frame = _FakeFrame(main=main)
-
-    def is_navigation_request(self) -> bool:
-        return self.resource_type == "document"
-
-
-class _FakeRoute:
-    def __init__(self, request: _FakeRequest) -> None:
-        self.request = request
-        self.action: str | None = None
-
-    async def abort(self) -> None:
-        self.action = "abort"
-
-    async def continue_(self) -> None:
-        self.action = "continue"
+async def _proxy_request(raw: bytes) -> bytes:
+    """Run one request through the proxy's dispatcher on loopback; return the first reply line."""
+    server = await asyncio.start_server(proxy_script._dispatch, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    task = asyncio.create_task(server.serve_forever())
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(raw)
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=5)
+        writer.close()
+        return line
+    finally:
+        server.close()
+        task.cancel()
 
 
-async def test_guard_blocks_private_navigation_and_records_it():
-    route = _FakeRoute(_FakeRequest("http://10.0.0.1/admin"))
-    guard = RequestGuard(block_media=True)
-    await guard.handle(route)  # type: ignore[arg-type]
-    assert route.action == "abort"
-    assert guard.blocked_navigation == "http://10.0.0.1/admin"
+async def test_proxy_refuses_private_connect():
+    # A CONNECT to a private host is refused (403) before any tunnel opens — no network.
+    line = await _proxy_request(b"CONNECT 10.0.0.1:443 HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n")
+    assert b"403" in line
 
 
-async def test_guard_allows_public_request():
-    route = _FakeRoute(_FakeRequest("http://93.184.216.34/page"))
-    guard = RequestGuard(block_media=True)
-    await guard.handle(route)  # type: ignore[arg-type]
-    assert route.action == "continue"
-    assert guard.blocked_navigation is None
+async def test_proxy_refuses_metadata_http():
+    line = await _proxy_request(
+        b"GET http://169.254.169.254/latest/meta-data/ HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    assert b"403" in line
 
 
-async def test_guard_blocks_media_when_enabled():
-    route = _FakeRoute(_FakeRequest("http://93.184.216.34/banner.png", resource_type="image"))
-    guard = RequestGuard(block_media=True)
-    await guard.handle(route)  # type: ignore[arg-type]
-    assert route.action == "abort"
+async def test_proxy_rejects_malformed_request():
+    assert b"400" in await _proxy_request(b"not a real request line\r\n\r\n")
 
 
-async def test_guard_allows_inert_scheme():
-    route = _FakeRoute(_FakeRequest("data:text/html,<p>hi</p>"))
-    guard = RequestGuard(block_media=True)
-    await guard.handle(route)  # type: ignore[arg-type]
-    assert route.action == "continue"
+# --- cookie jar: per-domain, TTL'd, bounded (no browser) -------------------
 
 
-class _DetachedFrameRequest:
-    """A request whose frame access raises — models a frame detached mid-flight."""
-
-    url = "http://10.0.0.1/admin"
-    resource_type = "document"
-
-    def is_navigation_request(self) -> bool:
-        return True
-
-    @property
-    def frame(self):
-        raise RuntimeError("frame detached")
+def test_cookie_jar_seeds_by_host_suffix():
+    jar = DomainCookieJar(ttl_s=100, max_entries=10)
+    jar.store([{"name": "sess", "value": "1", "domain": ".reddit.com", "path": "/"}])
+    assert [c["name"] for c in jar.seed_for("https://www.reddit.com/r/x")] == ["sess"]
+    assert jar.seed_for("https://example.com/") == []  # different site → nothing
 
 
-async def test_guard_survives_detached_frame_on_blocked_nav():
-    # A private target whose frame access raises must still resolve the route (abort), not
-    # throw out of the handler and leave the request hanging until the timeout budget.
-    route = _FakeRoute(_DetachedFrameRequest())  # type: ignore[arg-type]
-    guard = RequestGuard(block_media=True)
-    await guard.handle(route)  # type: ignore[arg-type]
-    assert route.action == "abort"
-    assert guard.blocked_navigation is None  # detection failed safe; the route still aborted
+def test_cookie_jar_drops_source_expired_cookie():
+    jar = DomainCookieJar(ttl_s=100, max_entries=10)
+    jar.store([{"name": "old", "value": "1", "domain": "x.com", "path": "/", "expires": 1.0}])
+    assert jar.seed_for("https://x.com/") == []  # already past its own expiry
+
+
+def test_cookie_jar_later_set_overwrites_and_caps():
+    jar = DomainCookieJar(ttl_s=100, max_entries=2)
+    jar.store([{"name": "a", "value": "1", "domain": "x.com", "path": "/"}])
+    jar.store([{"name": "a", "value": "2", "domain": "x.com", "path": "/"}])  # same key
+    jar.store([{"name": "b", "value": "1", "domain": "x.com", "path": "/"}])
+    jar.store([{"name": "c", "value": "1", "domain": "x.com", "path": "/"}])  # evicts oldest (a)
+    got = {c["name"]: c["value"] for c in jar.seed_for("https://x.com/")}
+    assert got == {"b": "1", "c": "1"}
+
+
+def test_cookie_jar_evicts_on_ttl(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("services.webfetch.cookies.time.monotonic", lambda: clock["t"])
+    jar = DomainCookieJar(ttl_s=10, max_entries=10)
+    jar.store([{"name": "s", "value": "1", "domain": "x.com", "path": "/"}])
+    clock["t"] += 5
+    assert [c["name"] for c in jar.seed_for("https://x.com/")] == ["s"]  # within TTL
+    clock["t"] += 10
+    assert jar.seed_for("https://x.com/") == []  # past TTL → evicted
+
+
+# --- per-domain throttle (no browser) --------------------------------------
+
+
+async def test_throttle_spaces_same_host():
+    throttle = DomainThrottle(min_interval_s=0.05)
+    start = asyncio.get_event_loop().time()
+    async with throttle.slot("https://x.com/a"):
+        pass
+    async with throttle.slot("https://x.com/b"):
+        pass
+    assert asyncio.get_event_loop().time() - start >= 0.05  # second waited out the gap
+
+
+async def test_throttle_does_not_block_distinct_hosts():
+    throttle = DomainThrottle(min_interval_s=10.0)
+    start = asyncio.get_event_loop().time()
+    async with throttle.slot("https://a.com/"):
+        pass
+    async with throttle.slot("https://b.com/"):  # different host → no wait
+        pass
+    assert asyncio.get_event_loop().time() - start < 1.0
+
+
+async def test_throttle_disabled_is_noop():
+    async with DomainThrottle(min_interval_s=0.0).slot("https://a.com/"):
+        pass  # never waits, never raises
+
+
+async def test_throttle_prune_keeps_a_locked_host(monkeypatch):
+    # At the tracking cap, pruning must skip a host whose lock is held — else two same-host
+    # fetches would acquire different locks and run in parallel (the race the throttle prevents).
+    monkeypatch.setattr("services.webfetch.throttle._MAX_TRACKED", 1)
+    throttle = DomainThrottle(min_interval_s=0.01)
+    release = asyncio.Event()
+
+    async def hold_a():
+        async with throttle.slot("https://a.com/"):
+            await release.wait()
+
+    task = asyncio.create_task(hold_a())
+    await asyncio.sleep(0.05)  # let it acquire a.com's slot
+    async with throttle.slot("https://b.com/"):  # at cap ⇒ triggers a prune
+        pass
+    assert "a.com" in throttle._slots  # locked host survived the prune
+    release.set()
+    await task
+
+
+# --- challenge-interstitial detection (no browser) -------------------------
+
+
+def test_detects_challenge_interstitial():
+    assert _looks_like_challenge("<title>Just a moment...</title>", "Checking your browser")
+    assert _looks_like_challenge("<div class='challenge-platform'></div>", "")
+
+
+def test_normal_page_is_not_a_challenge():
+    assert not _looks_like_challenge("<h1>Guide</h1>", "Real content about foraging dandelions")
 
 
 # --- BrowserFetcher: pre-flight + degrade (no browser) ---------------------
@@ -191,7 +261,7 @@ class _DroppingBrowser:
     available = True
 
     @asynccontextmanager
-    async def context(self):
+    async def context(self, url=None):
         raise RuntimeError("browser is not available")
         yield  # pragma: no cover - unreachable
 
@@ -257,12 +327,46 @@ async def test_containerized_browser_renders_js_extracts_and_is_stealthed(monkey
         # 2) The browser presents as a normal user's Chrome, not an automated headless one.
         async with browser.context() as ctx:
             probe = await ctx.new_page()
+            await browser.apply_stealth(probe)  # client-hint/UA-metadata override
             await probe.goto("data:text/html,<p>ok</p>", wait_until="domcontentloaded")
             assert await probe.evaluate("() => navigator.webdriver") in (False, None)
             user_agent = await probe.evaluate("() => navigator.userAgent")
             assert "HeadlessChrome" not in user_agent and "Chrome/" in user_agent
             assert await probe.evaluate("() => typeof window.chrome") == "object"
             assert await probe.evaluate("() => navigator.languages.length") > 0
+            # A fuller window.chrome (app/csi), not the bare { runtime } stub a probe spots.
+            assert await probe.evaluate("() => typeof window.chrome.app") == "object"
+            assert await probe.evaluate("() => typeof window.chrome.csi") == "function"
+            # Named plugin entries — the old [1,2,3,4,5] left plugins[0].name undefined.
+            assert await probe.evaluate("() => navigator.plugins.length") == 5
+            assert await probe.evaluate("() => navigator.plugins[0].name") == "PDF Viewer"
+            # The WebGL renderer agrees with the Linux UA — the old spoof leaked a macOS
+            # 'Intel Iris' string under a Linux UA, a cross-check a fingerprinter flags.
+            renderer = await probe.evaluate(
+                "() => { const c = document.createElement('canvas').getContext('webgl');"
+                " return c ? c.getParameter(37446) : ''; }"
+            )
+            assert "Iris" not in renderer and ("Mesa" in renderer or "ANGLE" in renderer)
+
+        # 3) Client hints agree with the UA (the tell a patched UA string alone misses):
+        # the headless shell's 'HeadlessChrome' brand must be gone from navigator.userAgentData
+        # and the Sec-CH-UA it derives. userAgentData needs a secure context, which a
+        # route-fulfilled https URL provides offline — no network egress.
+        async with browser.context() as ctx:
+            async def _ok(route):
+                await route.fulfill(status=200, content_type="text/html", body="<p>ok</p>")
+
+            await ctx.route("https://stealth.local/**", _ok)
+            probe = await ctx.new_page()
+            await browser.apply_stealth(probe)
+            await probe.goto("https://stealth.local/", wait_until="domcontentloaded")
+            assert await probe.evaluate("() => isSecureContext") is True
+            brands = await probe.evaluate(
+                "() => navigator.userAgentData.brands.map(b => b.brand)"
+            )
+            assert brands and not any("HeadlessChrome" in b for b in brands)
+            assert any("Chrome" in b for b in brands)
+            assert await probe.evaluate("() => navigator.userAgentData.platform") == "Linux"
     finally:
         await browser.stop()
 

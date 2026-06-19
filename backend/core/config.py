@@ -115,14 +115,21 @@ class Settings(BaseSettings):
     # `enabled` turns fetch off (degrades); `startup_timeout_s` bounds container bring-up;
     # `timeout_s` bounds navigation/render; `max_bytes` caps the rendered HTML/text handed
     # to the extractor; `wait_until` is Playwright's load milestone with `render_wait_ms`
-    # an extra settle delay; `concurrency` bounds simultaneous contexts; `block_media` drops
-    # images/media/fonts (speed + smaller SSRF surface); `min_chars` is the length below
-    # which extraction falls back to innerText. The browser is stealthed to present as a
-    # normal user's Chrome (so sites return what a person would see): `user_agent` empty ⇒
-    # derive a realistic one from the engine version; `locale`/`timezone` set the context.
-    # Every outbound request — initial, redirects, subresources — is re-checked by the guard.
+    # an extra settle delay; `concurrency` bounds simultaneous contexts; `min_chars` is the
+    # length below which extraction falls back to innerText. The browser is stealthed to
+    # present as a normal user's Chrome (so sites return what a person would see):
+    # `user_agent` empty ⇒ derive a realistic one from the engine version; `locale`/`timezone`
+    # set the context. SSRF is enforced out-of-browser by a proxy sidecar (`proxy_image` —
+    # a stock python image the SSRF script is mounted into; tracks :latest), so every request
+    # is gated without the in-browser interception bot walls detect.
+    # `cookie_ttl_s` (>0 enables) caches a site's cookies in-memory across fetches so a
+    # solved JS/bot challenge's clearance carries forward, bounded by TTL + `cookie_max`;
+    # `min_interval_s` (>0 enables) is the minimum gap between fetches to the same host
+    # (politeness vs rate limits); `challenge_waits`/`challenge_wait_ms` let a render that
+    # looks like a bot-wall interstitial settle and be re-snapshotted instead of returned.
     web_fetch_enabled: bool = True
     web_fetch_image: str = "chromedp/headless-shell:latest"
+    web_fetch_proxy_image: str = "python:alpine"
     web_fetch_startup_timeout_s: float = 45.0
     web_fetch_timeout_s: float = 15.0
     web_fetch_max_bytes: int = 2_000_000
@@ -131,11 +138,15 @@ class Settings(BaseSettings):
     )
     web_fetch_render_wait_ms: int = 250
     web_fetch_concurrency: int = 4
-    web_fetch_block_media: bool = True
     web_fetch_min_chars: int = 200
     web_fetch_user_agent: str = ""
     web_fetch_locale: str = "en-US"
     web_fetch_timezone: str = "America/New_York"
+    web_fetch_cookie_ttl_s: float = 1800.0
+    web_fetch_cookie_max: int = 2000
+    web_fetch_min_interval_s: float = 1.0
+    web_fetch_challenge_waits: int = 2
+    web_fetch_challenge_wait_ms: int = 5000
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox
