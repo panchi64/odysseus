@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlmodel import Session
 
 from core.db import _ALEMBIC_INI, init_db, make_engine
+from core.exceptions import SchemaMigrationError
 
 
 def _head_revision() -> str:
@@ -43,3 +45,35 @@ def test_init_db_is_idempotent():
     init_db(engine)
     init_db(engine)
     assert "conversations" in set(inspect(engine).get_table_names())
+
+
+def test_init_db_reports_orphaned_revision():
+    # A dev DB left stamped at a deleted/regenerated migration can't be traced to
+    # head; the guard surfaces the DB's revision and the head, not a raw traceback.
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    with Session(engine) as session:
+        session.exec(text("UPDATE alembic_version SET version_num = 'deadbeef0000'"))
+        session.commit()
+
+    with pytest.raises(SchemaMigrationError) as exc_info:
+        init_db(engine)
+    message = str(exc_info.value)
+    assert "deadbeef0000" in message  # the orphaned stamp, surfaced verbatim
+    assert _head_revision() in message
+
+
+def test_init_db_reports_schema_drift():
+    # Stamp claims head, but a table physically lacks a column the model declares —
+    # the `no such column` class. Caught at boot with the table/column named.
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    with Session(engine) as session:
+        session.exec(text("ALTER TABLE uploads DROP COLUMN note"))
+        session.commit()
+
+    with pytest.raises(SchemaMigrationError) as exc_info:
+        init_db(engine)
+    message = str(exc_info.value)
+    assert "uploads" in message
+    assert "note" in message

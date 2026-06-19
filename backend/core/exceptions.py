@@ -50,6 +50,14 @@ class SSRFError(OdysseusError):
     disallowed scheme — a server-side request forgery guard."""
 
 
+class SchemaMigrationError(OdysseusError):
+    """Bringing the DB to head failed because its recorded revision and/or its
+    physical schema disagree with the migration scripts — typically a dev DB left
+    stamped at a deleted or regenerated migration. Carries an operator-actionable
+    diagnostic (DB path, stamped vs head revision) in place of the raw Alembic /
+    SQLAlchemy traceback; raised at startup, aborting the boot."""
+
+
 class WebFetchError(OdysseusError):
     """A web fetch failed for a single URL in a way the caller can retry against a
     different source — a network error, a non-OK status, too many redirects, or a
