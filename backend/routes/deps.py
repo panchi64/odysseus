@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from core.auth import AuthManager
+from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import RunRegistry
 from services.artifacts import ArtifactStore
@@ -25,6 +26,7 @@ from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.uploads import UploadStore
 
 # Single operator: every record is attributed to this owner until a second human
 # exists (the ownership seam). One constant so routes don't each redefine it.
@@ -57,6 +59,14 @@ def memory(request: Request) -> MemoryStore:
 
 def documents(request: Request) -> DocumentStore:
     return request.app.state.documents
+
+
+def uploads(request: Request) -> UploadStore:
+    return request.app.state.uploads
+
+
+def upload_rate_limiter(request: Request) -> RateLimiter:
+    return request.app.state.upload_rate_limiter
 
 
 def embedding_reindexer(request: Request) -> EmbeddingReindexer:

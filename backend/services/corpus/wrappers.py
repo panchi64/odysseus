@@ -163,7 +163,6 @@ class StubSurfaceAdapter(SourceAdapter):
 def default_surface_stubs() -> list[StubSurfaceAdapter]:
     """The planned content surfaces, each a stub until its pipeline is built."""
     return [
-        StubSurfaceAdapter("surf-uploads", "Uploads", "upload", "/uploads"),
         StubSurfaceAdapter("surf-gallery", "Gallery", "image", "/gallery"),
         StubSurfaceAdapter("surf-research", "Research", "research", "/research"),
     ]

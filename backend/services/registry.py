@@ -394,6 +394,21 @@ class ModelRegistry:
                 override_model=override_model,
             )
 
+    async def resolve_vision(self, owner_id: str) -> Model:
+        """A vision-capable model for OCR/extraction of scanned PDFs (`UP-2`).
+
+        There is no bound ``vision`` role yet, so this resolves by *capability*: every
+        endpoint the operator flagged ``vision`` (with a model set), wrapped as a
+        fallback chain. Vision extraction doesn't drive tools, so a non-tool endpoint
+        is fine — ``_to_spec`` only gates native tool-calling for the tool-driving
+        roles, and ``"vision"`` isn't one. Unconfigured ⇒ a degraded capability: the
+        extractor records that a scanned PDF couldn't be read rather than failing the
+        upload, and the operator can configure a vision endpoint and retry."""
+        endpoints = [e for e in await self.list_endpoints(owner_id) if e.vision and e.model]
+        if not endpoints:
+            raise DegradedCapabilityError("no vision-capable model endpoint configured")
+        return llm.build_chain([self._to_spec(endpoint, "vision") for endpoint in endpoints])
+
     async def main_context_window(self, owner_id: str) -> int | None:
         """The default ``main`` chain head's context window, resolved without
         building a runnable model — for read paths (conversation detail) that need

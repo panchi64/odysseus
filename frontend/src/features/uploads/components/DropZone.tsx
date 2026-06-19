@@ -1,13 +1,14 @@
 import { createSignal, type JSX } from "solid-js";
-import { Box, Button, cx, Icon, Stack, Text, toast, Tooltip } from "~/ui";
-import { addMockUpload } from "../data";
+import { Box, Button, cx, Icon, Stack, Text } from "~/ui";
 
 interface DropZoneProps {
-  onFileAdded?: (name: string) => void;
+  /** Hand the chosen/dropped files to the screen, which uploads them. */
+  onFiles: (files: File[]) => void;
 }
 
 export function DropZone(props: DropZoneProps): JSX.Element {
   const [isDragging, setIsDragging] = createSignal(false);
+  let input: HTMLInputElement | undefined;
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
@@ -22,16 +23,14 @@ export function DropZone(props: DropZoneProps): JSX.Element {
     e.preventDefault();
     setIsDragging(false);
     const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
-    for (const file of files) {
-      addMockUpload(file.name);
-    }
-    toast.success(
-      files.length === 1
-        ? `"${files[0].name}" queued for extraction`
-        : `${files.length} files queued for extraction`,
-    );
-    props.onFileAdded?.(files[0]?.name ?? "");
+    if (files.length) props.onFiles(files);
+  }
+
+  function handlePick(e: Event) {
+    const target = e.currentTarget as HTMLInputElement;
+    const files = Array.from(target.files ?? []);
+    if (files.length) props.onFiles(files);
+    target.value = ""; // allow re-picking the same file
   }
 
   return (
@@ -53,17 +52,22 @@ export function DropZone(props: DropZoneProps): JSX.Element {
       />
       <Stack gap={1} class="items-center">
         <Text variant="label" tone={isDragging() ? "info" : "dim"}>
-          {isDragging() ? "DROP TO QUEUE" : "DROP FILES HERE"}
+          {isDragging() ? "DROP TO UPLOAD" : "DROP FILES HERE"}
         </Text>
         <Text variant="micro" tone="dim">
           PDF, image, and document formats accepted · max 50 MB
         </Text>
       </Stack>
-      <Tooltip label="File upload available in Phase 2" side="bottom">
-        <Button variant="default" leading="upload" disabled>
-          BROWSE FILES
-        </Button>
-      </Tooltip>
+      <input
+        ref={input}
+        type="file"
+        multiple
+        class="hidden"
+        onChange={handlePick}
+      />
+      <Button variant="default" leading="upload" onClick={() => input?.click()}>
+        BROWSE FILES
+      </Button>
     </Box>
   );
 }

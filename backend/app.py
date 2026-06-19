@@ -16,9 +16,11 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from agent.vision import VisionTranscriber
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
+from core.ratelimit import RateLimiter
 from core.vault import Vault
 from routes import (
     api_tokens,
@@ -36,6 +38,7 @@ from routes import (
     previews,
     runs,
     search,
+    uploads,
 )
 from routes.deps import OPERATOR_ID
 from runs import RunRegistry
@@ -52,6 +55,7 @@ from services.corpus import (
     default_surface_stubs,
 )
 from services.corpus.documents import DocumentsAdapter
+from services.corpus.uploads import UploadsAdapter
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
@@ -62,8 +66,34 @@ from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.settings_store import SettingsStore
+from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
+from services.upload_mineru import MinerUExtractor
+from services.uploads import UploadStore
 
 logger = logging.getLogger(__name__)
+
+
+def _build_upload_extractor(
+    registry: ModelRegistry, settings: Settings
+) -> UploadExtractor:
+    """Pick the upload extraction engine. The built-in (pypdfium2 text + vision OCR) is
+    always available; when MinerU is pinned or detected on the host it goes in front,
+    with the built-in as the fallback so a missing/broken/out-of-resources MinerU
+    degrades to a working extraction instead of an error. The original bytes are kept
+    sealed regardless, so a built-in extraction can be re-run through MinerU later."""
+    basic = BasicExtractor(
+        VisionTranscriber(registry, timeout_s=settings.upload_ocr_timeout_s),
+        max_pages=settings.upload_extract_max_pages,
+    )
+    if settings.upload_extractor == "basic":
+        return basic
+    if settings.upload_extractor == "mineru" or MinerUExtractor.is_available():
+        logger.info("uploads: MinerU extraction enabled (high-fidelity, degrades to built-in)")
+        return FallbackExtractor(
+            MinerUExtractor(timeout_s=settings.upload_mineru_timeout_s), basic
+        )
+    logger.info("uploads: built-in extraction (MinerU not detected on host)")
+    return basic
 
 
 async def _backfill_embeddings(
@@ -206,18 +236,35 @@ async def lifespan(app: FastAPI):
     # on its own lock-aware worker.
     documents_adapter = DocumentsAdapter(engine, chunk_store, vault.unlocked_event)
     app.state.documents = DocumentStore(engine, vault, documents_adapter)
+    # The uploads surface: a file's bytes are stored sealed; its extracted text (native
+    # PDF text + vision OCR for scanned pages) is chunked into the same corpus_chunk
+    # store. The UploadStore owns the rows and drains extraction off the request path on
+    # its own lock-aware worker; the adapter indexes the extracted text after each run.
+    # Vision OCR runs a model, so it lives in the engine layer (VisionTranscriber) and is
+    # injected into the services-layer extractor through a narrow seam.
+    uploads_adapter = UploadsAdapter(engine, chunk_store, vault.unlocked_event)
+    upload_extractor = _build_upload_extractor(registry, settings)
+    app.state.uploads = UploadStore(engine, vault, uploads_adapter, upload_extractor)
+    app.state.upload_rate_limiter = RateLimiter(
+        rate_per_second=settings.upload_rate_per_minute / 60.0,
+        burst=settings.upload_rate_burst,
+    )
     corpus_index = CorpusIndex(embedder, registry, chunk_store, folder_adapter)
     corpus_index.register(folder_adapter)
     corpus_index.register(MemoryAdapter(app.state.memory))
     corpus_index.register(ConversationAdapter(app.state.conversation_search))
     corpus_index.register(documents_adapter)
+    corpus_index.register(uploads_adapter)
     for stub in default_surface_stubs():
         corpus_index.register(stub)
     app.state.corpus = corpus_index
     app.state.corpus_folder = folder_adapter
     app.state.corpus_documents = documents_adapter
+    app.state.corpus_uploads = uploads_adapter
     await folder_adapter.start()
     await documents_adapter.start()
+    await uploads_adapter.start()
+    await app.state.uploads.start()
     # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
     # semantic index once unlocked — off the critical path; new content is already
     # embedded as it persists.
@@ -303,6 +350,8 @@ async def lifespan(app: FastAPI):
             await sandbox_manager.stop()
         await folder_adapter.stop()
         await documents_adapter.stop()
+        await uploads_adapter.stop()
+        await app.state.uploads.stop()
         await app.state.conversations.stop()
 
 
@@ -335,6 +384,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(cookbook.router)
     app.include_router(memory.router)
     app.include_router(documents.router)
+    app.include_router(uploads.router)
     app.include_router(corpus.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)

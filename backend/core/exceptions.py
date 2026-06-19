@@ -34,6 +34,16 @@ class ModelLoadError(OdysseusError):
     the model, let the server hold more than one), not ours."""
 
 
+class RateLimitedError(OdysseusError):
+    """An action was refused because the caller exceeded its allowed rate. Carries
+    the number of seconds to wait before retrying so the route can surface a
+    ``Retry-After`` (uploads are rate-limited to protect the service, `UP-4`)."""
+
+    def __init__(self, retry_after_s: float) -> None:
+        super().__init__(f"rate limit exceeded; retry in {retry_after_s:.1f}s")
+        self.retry_after_s = retry_after_s
+
+
 class SSRFError(OdysseusError):
     """An outbound request was refused because its target resolves to a
     non-public address (loopback, private, link-local, cloud metadata) or uses a

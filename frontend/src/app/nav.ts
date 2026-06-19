@@ -71,6 +71,7 @@ export const NAV: NavSection[] = [
         href: "/uploads",
         icon: "upload",
         description: "Files you've uploaded for the assistant to use",
+        connected: true,
       },
       {
         label: "Gallery",

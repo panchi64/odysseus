@@ -1,12 +1,23 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  Suspense,
+  type JSX,
+} from "solid-js";
 import {
   Button,
   EmptyState,
   InstrumentBand,
   ListRow,
+  LoadingText,
   PageHeader,
   Panel,
-  ProgressBar,
   Row,
   Stack,
   StatusFlag,
@@ -18,9 +29,12 @@ import {
 import { bytes } from "~/lib/format";
 import {
   useUploads,
-  removeUpload,
-  restoreUpload,
-  retryExtraction,
+  useUploadDetail,
+  refreshUploads,
+  refreshUploadDetail,
+  uploadFile,
+  deleteUpload,
+  retryUpload,
 } from "../data";
 import { DropZone } from "../components/DropZone";
 import { UploadDetailPanel } from "../components/UploadDetailPanel";
@@ -40,57 +54,82 @@ const statusMap: Record<
 };
 
 export function UploadsScreen(): JSX.Element {
-  const uploads = useUploads();
-  const [selected, setSelected] = createSignal<Upload | null>(null);
+  const uploadsResource = useUploads();
+  const uploads = () => uploadsResource() ?? [];
+  const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const detail = useUploadDetail(selectedId);
 
   const doneCount = () => uploads().filter((u) => u.status === "done").length;
   const extractingCount = () =>
-    uploads().filter((u) => u.status === "extracting").length;
+    uploads().filter((u) => u.status === "extracting" || u.status === "queued")
+      .length;
   const errorCount = () => uploads().filter((u) => u.status === "error").length;
 
-  async function handleDelete(upload: Upload, e: MouseEvent) {
+  // Extraction runs off the request path on the backend, so poll the list while
+  // anything is still queued/extracting. One stable interval (created once, not
+  // recreated on every list refresh) that no-ops when nothing is in flight.
+  const inFlight = () =>
+    uploads().some((u) => u.status === "queued" || u.status === "extracting");
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (inFlight()) refreshUploads();
+    }, 1500);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  // Refetch the open file's detail only when *its own* status changes — not on every
+  // poll — so a selected DONE file isn't re-decrypted/re-sent every 1.5s while other
+  // files are still extracting.
+  const selectedStatus = createMemo(
+    () => uploads().find((u) => u.id === selectedId())?.status,
+  );
+  createEffect(
+    on(selectedStatus, () => {
+      if (selectedId()) refreshUploadDetail();
+    }),
+  );
+
+  async function handleUpload(files: File[]): Promise<void> {
+    const results = await Promise.allSettled(files.map((f) => uploadFile(f)));
+    const failed = results.filter((r) => r.status === "rejected").length;
+    const ok = results.length - failed;
+    if (ok) toast.success(`${ok} file${ok > 1 ? "s" : ""} uploaded`);
+    if (failed) toast.error(`${failed} file${failed > 1 ? "s" : ""} failed`);
+  }
+
+  async function handleDelete(upload: Upload, e: MouseEvent): Promise<void> {
     e.stopPropagation();
     const ok = await confirm({
       title: `Delete "${upload.name}"?`,
-      detail: "This cannot be undone.",
+      detail: "This permanently removes the file and its extracted text.",
       confirmLabel: "DELETE",
       tone: "alert",
     });
     if (!ok) return;
-
-    if (selected()?.id === upload.id) setSelected(null);
-    removeUpload(upload.id);
-    toast.success(`Deleted "${upload.name}"`, {
-      action: {
-        label: "UNDO",
-        onClick: () => {
-          restoreUpload(upload);
-          toast.success(`Restored "${upload.name}"`);
-        },
-      },
-    });
+    if (selectedId() === upload.id) setSelectedId(null);
+    try {
+      await deleteUpload(upload.id);
+      toast.success(`Deleted "${upload.name}"`);
+    } catch {
+      toast.error(`Could not delete "${upload.name}"`);
+    }
   }
 
-  function handleRetry(upload: Upload) {
-    retryExtraction(upload.id);
-    // Update selected to reflect new status from the reactive store
-    setSelected(null);
-    toast.info(`Retrying extraction for "${upload.name}"…`);
+  async function handleRetry(upload: Upload): Promise<void> {
+    try {
+      await retryUpload(upload.id);
+      toast.info(`Re-extracting "${upload.name}"…`);
+    } catch {
+      toast.error("Could not retry extraction");
+    }
   }
 
   return (
     <Stack gap={6}>
       <PageHeader
         title="UPLOADS"
-        subtitle="PDF extraction, OCR, and form field detection."
+        subtitle="File storage with PDF text + vision extraction."
         assetId="ODY-UPL-01.0"
-        actions={
-          <Tooltip label="File upload available in Phase 2" side="bottom">
-            <Button variant="primary" leading="upload" disabled>
-              UPLOAD
-            </Button>
-          </Tooltip>
-        }
       />
 
       <Show when={uploads().length > 0}>
@@ -108,31 +147,37 @@ export function UploadsScreen(): JSX.Element {
         />
       </Show>
 
-      <DropZone />
+      <DropZone onFiles={(files) => void handleUpload(files)} />
 
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-5">
         {/* Upload list */}
         <div class="lg:col-span-2">
           <Panel label="FILES" flush>
-            <Show
-              when={uploads().length > 0}
+            <Suspense
               fallback={
-                <EmptyState
-                  icon="file"
-                  message="NO UPLOADS"
-                  hint="Drop files above or click UPLOAD."
-                />
+                <div class="p-4">
+                  <LoadingText />
+                </div>
               }
             >
-              <For each={uploads()}>
-                {(upload) => {
-                  const info = statusMap[upload.status];
-                  return (
-                    <Stack gap={0}>
+              <Show
+                when={uploads().length > 0}
+                fallback={
+                  <EmptyState
+                    icon="file"
+                    message="NO UPLOADS"
+                    hint="Drop files above or click BROWSE FILES."
+                  />
+                }
+              >
+                <For each={uploads()}>
+                  {(upload) => {
+                    const info = statusMap[upload.status];
+                    return (
                       <ListRow
                         label={upload.name}
-                        selected={selected()?.id === upload.id}
-                        onClick={() => setSelected(upload)}
+                        selected={selectedId() === upload.id}
+                        onClick={() => setSelectedId(upload.id)}
                         leading="file"
                         right={
                           <Row gap={2} align="center">
@@ -150,86 +195,78 @@ export function UploadsScreen(): JSX.Element {
                                 variant="ghost"
                                 size="sm"
                                 leading="trash"
-                                onClick={(e) => handleDelete(upload, e)}
+                                onClick={(e) => void handleDelete(upload, e)}
                                 aria-label={`Delete ${upload.name}`}
                               />
                             </Tooltip>
                           </Row>
                         }
                       />
-                      <Show when={upload.status === "extracting"}>
-                        <div class="px-3 pb-2">
-                          <ProgressBar
-                            value={upload.extractionProgress}
-                            tone="info"
-                            showValue
-                          />
-                        </div>
-                      </Show>
-                    </Stack>
-                  );
-                }}
-              </For>
-            </Show>
+                    );
+                  }}
+                </For>
+              </Show>
+            </Suspense>
           </Panel>
         </div>
 
         {/* Detail panel */}
         <div class="lg:col-span-3">
           <Show
-            when={selected()}
+            when={selectedId()}
             fallback={
               <EmptyState
                 icon="file"
                 message="SELECT A FILE"
-                hint="Choose a document from the list to view extracted content and form fields."
+                hint="Choose a file from the list to view its extracted text."
               />
             }
           >
-            {(upload) => {
-              // Derive the live upload from the store so status changes reflect
-              const liveUpload = () =>
-                uploads().find((u) => u.id === upload().id) ?? upload();
-
-              return (
-                <Show
-                  when={liveUpload().status === "done"}
-                  fallback={
-                    <Show
-                      when={liveUpload().status === "error"}
-                      fallback={
-                        <EmptyState
-                          icon="clock"
-                          message={
-                            liveUpload().status === "extracting"
-                              ? "EXTRACTING…"
-                              : "QUEUED"
-                          }
-                          hint="Extraction in progress. Check back shortly."
-                        />
-                      }
-                    >
-                      <EmptyState
-                        icon="warning"
-                        message="EXTRACTION FAILED"
-                        hint="Extraction failed. Retry below or try a different file."
-                        action={
-                          <Button
-                            variant="default"
-                            leading="refresh"
-                            onClick={() => handleRetry(liveUpload())}
-                          >
-                            RETRY EXTRACTION
-                          </Button>
+            <Suspense fallback={<LoadingText label="LOADING FILE" />}>
+              <Show when={detail()}>
+                {(upload) => (
+                  <Show
+                    when={upload().status === "done"}
+                    fallback={
+                      <Show
+                        when={upload().status === "error"}
+                        fallback={
+                          <EmptyState
+                            icon="clock"
+                            message={
+                              upload().status === "extracting"
+                                ? "EXTRACTING…"
+                                : "QUEUED"
+                            }
+                            hint="Extraction in progress. This updates automatically."
+                          />
                         }
-                      />
-                    </Show>
-                  }
-                >
-                  <UploadDetailPanel upload={liveUpload()} />
-                </Show>
-              );
-            }}
+                      >
+                        <EmptyState
+                          icon="warning"
+                          message="EXTRACTION FAILED"
+                          hint={
+                            upload().note ??
+                            "Extraction failed. Retry below or try a different file."
+                          }
+                          action={
+                            <Button
+                              variant="default"
+                              leading="refresh"
+                              onClick={() => void handleRetry(upload())}
+                            >
+                              RETRY EXTRACTION
+                            </Button>
+                          }
+                        />
+                      </Show>
+                    }
+                  >
+                    <UploadDetailPanel upload={upload()} />
+                  </Show>
+                )}
+              </Show>
+            </Suspense>
           </Show>
         </div>
       </div>

@@ -10,9 +10,7 @@ directly; the frontend should still host it in a sandboxed iframe.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
-from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
@@ -20,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
+from routes.http import content_disposition
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -47,16 +46,6 @@ class ArtifactOut(BaseModel):
     created_at: datetime
 
 
-def _content_disposition(filename: str) -> str:
-    """A safe inline Content-Disposition for an agent-chosen (untrusted) filename.
-
-    The quoted form is reduced to a conservative ASCII token (so a ``"`` or
-    newline can't break out of the header or inject another), and the full name
-    rides in the RFC 5987 ``filename*`` field, percent-encoded."""
-    ascii_token = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "artifact"
-    return f"inline; filename=\"{ascii_token}\"; filename*=UTF-8''{quote(filename, safe='')}"
-
-
 @router.get("", response_model=list[ArtifactOut])
 async def list_artifacts(conversation_id: str, request: Request) -> list[ArtifactOut]:
     views = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
@@ -78,5 +67,10 @@ async def get_artifact_content(artifact_id: str, request: Request) -> Response:
         blob = await deps.artifacts(request).content(OPERATOR_ID, artifact_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="artifact not found") from None
-    headers = {**_PREVIEW_HEADERS, "Content-Disposition": _content_disposition(blob.filename)}
+    headers = {
+        **_PREVIEW_HEADERS,
+        "Content-Disposition": content_disposition(
+            blob.filename, inline=True, fallback="artifact"
+        ),
+    }
     return Response(content=blob.content, media_type=blob.content_type, headers=headers)

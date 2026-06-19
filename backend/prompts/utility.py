@@ -19,6 +19,17 @@ TITLE_INSTRUCTIONS = (
     "preamble, no explanation."
 )
 
+# Transcribes a scanned/image-only PDF page handed to a vision model (UP-2). The
+# output is retained as the upload's extracted text and indexed into the corpus, so
+# it must be the transcription alone — no description, no commentary, no apology when
+# a page is blank.
+OCR_INSTRUCTIONS = (
+    "You transcribe text from document page images. Reproduce all readable text "
+    "exactly, in natural reading order, preserving line and paragraph breaks. Do not "
+    "describe the image, add commentary, or summarize. If a page has no readable "
+    "text, return an empty response. Output only the transcribed text."
+)
+
 # The deliverable judge behind the verifier. Rules whether a turn actually did what
 # was asked; its ``reason`` feeds the corrective nudge (``prompts.agent``), so it
 # must be specific about what's missing.

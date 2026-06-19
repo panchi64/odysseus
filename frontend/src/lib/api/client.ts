@@ -90,6 +90,24 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   del: <T = void>(path: string) => request<T>("DELETE", path),
+  /** POST a multipart form (file upload). The browser sets the multipart
+   *  Content-Type+boundary itself, so we must NOT set it here. Bearer auth and the
+   *  401/423 handling match the JSON path. */
+  async postForm<T>(path: string, form: FormData): Promise<T> {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: authHeaders(),
+      credentials: "omit",
+      body: form,
+    });
+    if (res.status === 401 || res.status === 423) {
+      clearToken();
+      onExpire?.();
+    }
+    if (!res.ok) throw await toApiError(res);
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  },
   /** Fetch raw bytes (auth-gated content like artifacts) for a blob URL. */
   async getBlob(path: string): Promise<Blob> {
     const res = await fetch(`${API_BASE}${path}`, {

@@ -2,23 +2,20 @@
 
 export type UploadStatus = "queued" | "extracting" | "done" | "error";
 
-export interface FormField {
-  name: string;
-  value: string;
-}
-
 export interface Upload {
   id: string;
   name: string;
   mime: string;
   sizeBytes: number;
   status: UploadStatus;
-  /** Progress 0-100 when status === "extracting". */
-  extractionProgress?: number;
-  /** Extracted text content (OCR or PDF parse). */
+  /** Extracted text content (native PDF text or vision OCR). Present on detail. */
   extractedText?: string;
-  /** Detected fillable form fields. */
-  formFields?: FormField[];
   /** True when scanned / vision-extracted (not native PDF text). */
   vision?: boolean;
+  /** Which extractor produced the text: "basic" (built-in), "mineru" (high-fidelity),
+   *  or "manual" (operator-corrected). Lets the UI flag built-in extractions. */
+  extractor?: string;
+  /** A short note when extraction was bounded or degraded (e.g. no vision model,
+   *  pages skipped), or the failure reason when status is "error". */
+  note?: string;
 }

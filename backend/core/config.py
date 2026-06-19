@@ -158,6 +158,27 @@ class Settings(BaseSettings):
     retitle_timeout_s: float = 60.0
     retitle_max_tokens: int = 4096
 
+    # Uploads (UP-*). A file is accepted, stored encrypted at rest, and its text
+    # extracted off the request path. `upload_max_bytes` caps a single file.
+    # Uploads are rate-limited to protect the service (UP-4): a per-operator token
+    # bucket holding `upload_rate_burst` tokens, refilling at `upload_rate_per_minute`.
+    # `upload_extract_max_pages` bounds extraction cost — vision OCR is one model call
+    # per scanned page — and pages beyond it are recorded as skipped, never dropped
+    # silently. `upload_ocr_timeout_s` bounds a single page's vision call.
+    upload_max_bytes: int = 50_000_000
+    upload_rate_per_minute: float = 30.0
+    upload_rate_burst: int = 10
+    upload_extract_max_pages: int = 50
+    upload_ocr_timeout_s: float = 120.0
+    # Extraction engine. `auto` uses MinerU (high-fidelity Markdown — layout, tables,
+    # formulas) when the `mineru` tool is detected on the host, falling back to the
+    # zero-setup built-in (pypdfium2 text + vision OCR) otherwise; `mineru`/`basic`
+    # pin one. MinerU is detected, not bundled (like the container runtime) and runs as
+    # a transient subprocess, so its heavy models load per-extraction and free on exit.
+    # `upload_mineru_timeout_s` bounds one MinerU run before degrading to the built-in.
+    upload_extractor: Literal["auto", "mineru", "basic"] = "auto"
+    upload_mineru_timeout_s: float = 300.0
+
 
 @lru_cache
 def get_settings() -> Settings:
