@@ -811,6 +811,13 @@ export function createChatStream(
   ): Promise<void> {
     const myGen = ++driveGen;
     activeRunId = runId;
+    // Re-anchor the fold high-water mark to this run's sequence. Each run owns a
+    // fresh event stream whose seq restarts at 1, so a new turn (fromSeq omitted →
+    // 0) must drop the *previous* run's mark — otherwise its early events (seq ≤
+    // that stale mark) are suppressed in `foldEvent` and the answer streams in
+    // blank until the counter catches up (or never, if this turn is shorter). A
+    // reattach passes `fromSeq` = the last seq it folded, replaying only the gap.
+    maxFoldedSeq = fromSeq ?? 0;
     patchById(assistantId, (m) => (m.runId = runId));
     let connected = false;
     try {
@@ -891,7 +898,8 @@ export function createChatStream(
     } else {
       patchById(assistantId, (m) => (m.streaming = true));
     }
-    maxFoldedSeq = opts.fromSeq;
+    // `driveRun` re-anchors `maxFoldedSeq` to the `fromSeq` passed below, so the
+    // resume replays only the gap after the last folded event.
     setSending(true);
     setReattaching(true);
     try {
@@ -931,14 +939,23 @@ export function createChatStream(
    *  Best-effort: a failed read leaves the optimistic store in place. */
   async function adoptServerMeta(): Promise<void> {
     if (activeConversationId === null) return;
+    const convAtStart = activeConversationId;
+    const lenAtStart = messages.length;
     let detail: ConversationDetailDTO;
     try {
       detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${activeConversationId}`,
+        `/conversations/${convAtStart}`,
       );
     } catch {
       return;
     }
+    // Bail if the store moved under us while the read was in flight: the operator
+    // started another turn (length changed — the composer re-enabled the instant
+    // streaming stopped) or switched threads. Reconciling now would reseat over the
+    // new turn's optimistic messages and freeze its stream; that turn reconciles
+    // itself when it completes.
+    if (activeConversationId !== convAtStart || messages.length !== lenAtStart)
+      return;
     const server = detail.messages;
     if (server.length !== messages.length) {
       reseatFromDetail(detail);
