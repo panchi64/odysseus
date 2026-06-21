@@ -81,10 +81,10 @@ async def _service(tmp_path: Path, vram_bytes: int) -> tuple[ServingService, Mod
 
 async def _seed_resident(service: ServingService, repo: str) -> None:
     """Mark a model as already running (no real process) so it counts against memory."""
-    row = await service._get_or_create_row(
+    row = await service._store.get_or_create(
         OWNER, EngineKind.llama_cpp, repo, Workload.chat, "q4_k_m"
     )
-    await service._update_row(row.id, state=ServeState.running, port=51000)
+    await service._store.update(row.id, state=ServeState.running, port=51000)
 
 
 async def test_serve_refused_when_a_resident_model_leaves_no_room(tmp_path: Path):

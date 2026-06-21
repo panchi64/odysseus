@@ -1,20 +1,10 @@
 import { createResource, For, Show, type JSX } from "solid-js";
-import {
-  Button,
-  EmptyState,
-  ListRow,
-  LoadingText,
-  Panel,
-  Resource,
-  Row,
-  Stack,
-  Text,
-} from "~/ui";
-import { bytes } from "~/lib/format";
+import { EmptyState, LoadingText, Panel, Resource, Stack, Text } from "~/ui";
 import { fetchCatalog, inFlightRepos, useManagedModels } from "../serving";
 import { useManagedModelActions } from "../serving-actions";
 import type { CatalogEntry } from "../model";
 import { ManagedModelRow } from "./ManagedModelRow";
+import { CatalogRow } from "./CatalogRow";
 
 /** The EMBEDDING tab's "serve locally" affordance: pick a curated GGUF embedding
  *  model → DOWNLOAD & SERVE it via llama.cpp bound to the `embedding` role, which
@@ -88,33 +78,14 @@ export function EmbeddingServePanel(): JSX.Element {
           {(entries) => (
             <For each={entries()}>
               {(entry) => (
-                <ListRow
-                  label={entry.label}
+                <CatalogRow
+                  entry={entry}
                   leading="database"
-                  right={
-                    <Row gap={2} align="center">
-                      <Show when={entry.params}>
-                        <Text variant="micro" tone="dim">
-                          {entry.params}
-                        </Text>
-                      </Show>
-                      <Show when={entry.approxBytes != null}>
-                        <Text variant="micro" tone="dim">
-                          {bytes(entry.approxBytes!)}
-                        </Text>
-                      </Show>
-                      <Button
-                        size="sm"
-                        leading="play"
-                        disabled={inFlight().has(entry.repo)}
-                        onClick={() => void serveEmbedding(entry)}
-                      >
-                        {inFlight().has(entry.repo)
-                          ? "SERVING"
-                          : "DOWNLOAD & SERVE"}
-                      </Button>
-                    </Row>
-                  }
+                  actionIcon="play"
+                  actionLabel="DOWNLOAD & SERVE"
+                  busyLabel="SERVING"
+                  inFlight={inFlight().has(entry.repo)}
+                  onAction={() => void serveEmbedding(entry)}
                 />
               )}
             </For>

@@ -63,10 +63,10 @@ async def test_reconcile_clean_slates_running_rows_and_kills_orphans(tmp_path: P
         sys.executable, "-c", "import time; time.sleep(30)"
     )
     # Seed a managed row as if it were running before the restart.
-    row = await service._get_or_create_row(
+    row = await service._store.get_or_create(
         OWNER, EngineKind.llama_cpp, "acme/m", Workload.chat, None
     )
-    await service._update_row(
+    await service._store.update(
         row.id,
         state=ServeState.running,
         pid=orphan.pid,
@@ -77,7 +77,7 @@ async def test_reconcile_clean_slates_running_rows_and_kills_orphans(tmp_path: P
     await service.reconcile_on_startup()
 
     # The row is clean-slated (stopped, port + pid cleared) …
-    reconciled = await service._get_row(row.id)
+    reconciled = await service._store.get(row.id)
     assert reconciled is not None
     assert reconciled.state == ServeState.stopped.value
     assert reconciled.port is None and reconciled.pid is None
@@ -94,12 +94,12 @@ async def test_reconcile_clean_slates_running_rows_and_kills_orphans(tmp_path: P
 async def test_reconcile_is_a_noop_when_nothing_was_running(tmp_path: Path):
     service, _registry = await _service(tmp_path)
     # A stopped row is already terminal — reconcile must leave it untouched.
-    row = await service._get_or_create_row(
+    row = await service._store.get_or_create(
         OWNER, EngineKind.llama_cpp, "acme/m", Workload.chat, None
     )
-    await service._update_row(row.id, state=ServeState.stopped)
+    await service._store.update(row.id, state=ServeState.stopped)
 
     await service.reconcile_on_startup()
 
-    reconciled = await service._get_row(row.id)
+    reconciled = await service._store.get(row.id)
     assert reconciled is not None and reconciled.state == ServeState.stopped.value
