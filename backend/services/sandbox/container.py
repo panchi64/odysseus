@@ -28,6 +28,8 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from core import net
+
 from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
 
 logger = logging.getLogger(__name__)
@@ -113,21 +115,13 @@ async def await_listening(
     host_port: int, timeout_s: float, *, poll_interval_s: float = 0.25
 ) -> None:
     """Poll a loopback host port until a TCP connection succeeds, or time out —
-    the readiness probe shared by every server we wait on to bind."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while True:
-        try:
-            _reader, writer = await asyncio.open_connection("127.0.0.1", host_port)
-            writer.close()
-            await writer.wait_closed()
-            return
-        except (OSError, ConnectionError):
-            if loop.time() >= deadline:
-                raise SandboxError(
-                    f"the server did not start listening within {timeout_s:.0f}s"
-                ) from None
-            await asyncio.sleep(poll_interval_s)
+    the readiness probe shared by every server we wait on to bind. Thin wrapper over
+    the neutral ``core.net`` probe that preserves the ``SandboxError`` contract its
+    callers (sandbox sessions, previews, SearXNG, web fetch) already handle."""
+    try:
+        await net.await_listening(host_port, timeout_s, poll_interval_s=poll_interval_s)
+    except TimeoutError as exc:
+        raise SandboxError(str(exc)) from None
 
 
 # Workspace-relative dirs the env defaults point at, created host-side before a

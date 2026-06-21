@@ -106,10 +106,10 @@ async def test_download_flow_creates_and_completes_a_managed_model(monkeypatch):
         assert final["hf_repo"] == "acme/model-GGUF" and final["quant"] == "q4_k_m"
 
 
-async def test_serve_unavailable_engine_returns_502(monkeypatch):
+async def test_serve_unavailable_engine_returns_409(monkeypatch):
     # Force MLX unavailable so the test is host-independent (it's genuinely available on
-    # an Apple-Silicon dev host) and exercises only the unavailable→502 mapping — without
-    # kicking off a real engine install/serve in the background.
+    # an Apple-Silicon dev host) and exercises only the unavailable→409 mapping (a host
+    # precondition, not an upstream failure) — without kicking off a real install/serve.
     async def unavailable(self) -> bool:
         return False
 
@@ -118,7 +118,7 @@ async def test_serve_unavailable_engine_returns_502(monkeypatch):
         resp = await client.post(
             "/models/serving/serve", json={"engine": "mlx", "repo": "mlx-community/whatever"}
         )
-        assert resp.status_code == 502
+        assert resp.status_code == 409
 
 
 async def test_stop_unknown_model_returns_404():

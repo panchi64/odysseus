@@ -22,7 +22,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
-from core.exceptions import NotFoundError, ServingError
+from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from core.vault import Vault
 from models._fields import utcnow
 from models.serving import ManagedModel
@@ -42,7 +42,7 @@ from .models import (
     Workload,
 )
 from .paths import ServingPaths
-from .supervisor import ProcessSupervisor
+from .supervisor import EngineExitedDuringStartup, ProcessSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,9 @@ _ACTIVE_STATES = frozenset(
 )
 # States that hold memory right now — what the headroom guard sums against the budget.
 _RESIDENT_STATES = frozenset({ServeState.running.value, ServeState.starting.value})
+# How many times to (re)allocate a port and spawn before giving up — closes the
+# bind-to-0 → spawn race where the allocated port is taken before the engine binds it.
+_SPAWN_ATTEMPTS = 3
 
 
 def _human_gb(n: int) -> str:
@@ -109,7 +112,9 @@ class ServingService:
     def _adapter(self, engine: EngineKind) -> EngineAdapter:
         adapter = self._adapters.get(engine)
         if adapter is None:
-            raise ServingError(f"the {engine.value} engine is not supported on this host")
+            raise ServingUnavailableError(
+                f"the {engine.value} engine is not supported on this host"
+            )
         return adapter
 
     async def _ready_adapter(self, engine: EngineKind) -> EngineAdapter:
@@ -117,7 +122,9 @@ class ServingService:
         place (located or fetched). Used by ``serve``; ``download`` needs only format."""
         adapter = self._adapter(engine)
         if not await adapter.is_available():
-            raise ServingError(f"the {engine.value} engine is not available on this host")
+            raise ServingUnavailableError(
+                f"the {engine.value} engine is not available on this host"
+            )
         await adapter.ensure_engine()
         return adapter
 
@@ -163,7 +170,7 @@ class ServingService:
             return
         free = max(usable - committed, 0)
         running = ", ".join(r.hf_repo for r in resident) or "none currently"
-        raise ServingError(
+        raise ServingUnavailableError(
             f"not enough memory to serve {repo}: it needs ~{_human_gb(need)} but only "
             f"~{_human_gb(free)} of the ~{_human_gb(usable)} budget is free. "
             f"Stop a running model to make room (currently running: {running})."
@@ -239,7 +246,9 @@ class ServingService:
         fast."""
         adapter = self._adapter(engine)
         if not await adapter.is_available():
-            raise ServingError(f"the {engine.value} engine is not available on this host")
+            raise ServingUnavailableError(
+                f"the {engine.value} engine is not available on this host"
+            )
         async with self._serve_lock:
             # Admission is serialized so two concurrent serves can't both pass the headroom
             # check against a stale resident set and then oversubscribe memory. The check
@@ -291,16 +300,8 @@ class ServingService:
 
             await self._update_row(managed_id, state=ServeState.starting, last_error=None)
             model_id = adapter.resolved_model_id(repo, artifact)
-            port = self._supervisor.allocate_port()
-            spec = adapter.serve_spec(artifact, port, Workload(row.workload), model_id)
-            base_url = adapter.health_url(port)
-            proc = await self._supervisor.spawn(
-                managed_id,
-                spec,
-                port,
-                base_url=base_url,
-                on_crash=self._make_on_crash(),
-                log_path=self._paths.log_file(managed_id),
+            proc, port, base_url = await self._spawn_engine(
+                managed_id, adapter, artifact, Workload(row.workload), model_id
             )
             endpoint = await self._ensure_endpoint(owner_id, row, base_url, model_id, adapter)
             # Bind the role before declaring "running", so that state means fully usable
@@ -329,6 +330,41 @@ class ServingService:
             await self._update_row(
                 managed_id, state=ServeState.error, last_error="serving the model failed"
             )
+
+    async def _spawn_engine(
+        self,
+        managed_id: str,
+        adapter: EngineAdapter,
+        artifact: Path,
+        workload: Workload,
+        model_id: str,
+    ):
+        """Allocate a port, build the engine argv, and spawn it — retrying on a fresh port
+        when the engine exits before it binds (the bind-to-0 → spawn race, or a port taken
+        out from under us). A startup *timeout* (a slow-loading model) is not retried."""
+        for attempt in range(_SPAWN_ATTEMPTS):
+            port = self._supervisor.allocate_port()
+            spec = adapter.serve_spec(artifact, port, workload, model_id)
+            base_url = adapter.health_url(port)
+            try:
+                proc = await self._supervisor.spawn(
+                    managed_id,
+                    spec,
+                    port,
+                    base_url=base_url,
+                    on_crash=self._make_on_crash(),
+                    log_path=self._paths.log_file(managed_id),
+                )
+            except EngineExitedDuringStartup:
+                if attempt == _SPAWN_ATTEMPTS - 1:
+                    raise
+                logger.warning(
+                    "serving: engine for %s exited during startup; retrying on a fresh port",
+                    managed_id,
+                )
+                continue
+            return proc, port, base_url
+        raise EngineExitedDuringStartup("the engine could not be started")  # unreachable
 
     async def _bind_role(
         self,

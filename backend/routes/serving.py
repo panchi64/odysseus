@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.exceptions import NotFoundError, ServingError
+from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from services.serving import (
@@ -63,6 +63,8 @@ async def download_model(request: Request, body: DownloadRequest) -> ManagedMode
         return await deps.serving(request).download(
             OPERATOR_ID, body.engine, body.repo, workload=body.workload, quant=body.quant
         )
+    except ServingUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except ServingError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
@@ -78,6 +80,8 @@ async def serve_model(request: Request, body: ServeRequest) -> ManagedModelView:
             workload=body.workload,
             quant=body.quant,
         )
+    except ServingUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except ServingError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
 

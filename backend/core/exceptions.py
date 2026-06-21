@@ -69,3 +69,11 @@ class ServingError(OdysseusError):
     download that couldn't fetch the repo, an engine runtime that wouldn't install
     or start, or a request against an engine that isn't available on this host.
     Carries a plain-language message; never contains a secret (local servers have none)."""
+
+
+class ServingUnavailableError(ServingError):
+    """A serving request can't be satisfied by the host's current state — the engine
+    isn't available/supported here, or there isn't enough memory to fit the model
+    alongside what's already running. A precondition the operator resolves (free room,
+    pick another engine), not an engine/upstream failure — so routes map it to 409,
+    distinct from the 502 a genuine download/launch failure gets."""

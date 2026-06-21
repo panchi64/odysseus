@@ -5,8 +5,8 @@ server, wait for it to actually serve (TCP listening **then** a ``/v1/models`` r
 watch it for crashes, and stop it gracefully (SIGTERM → wait → SIGKILL). Each process's
 stdout/stderr is captured to a log file so a failed startup can surface its tail.
 
-A small local readiness probe is used instead of the sandbox's ``await_listening`` to keep
-serving from depending on the sandbox package (and its ``SandboxError``).
+Readiness rides the shared ``core.net.await_listening`` probe (TCP bind) plus a serving-
+specific ``/v1/models`` HTTP check (it is actually serving, not merely bound).
 """
 
 from __future__ import annotations
@@ -23,12 +23,20 @@ from pathlib import Path
 
 import httpx
 
+from core import net
 from core.exceptions import ServingError
 
 logger = logging.getLogger(__name__)
 
 # on_crash(managed_id, returncode): the engine exited without a deliberate stop.
 OnCrash = Callable[[str, int | None], Awaitable[None]]
+
+
+class EngineExitedDuringStartup(ServingError):
+    """The engine process exited before it began listening — a fast failure (a port
+    already in use, an immediate crash). Distinct from a startup *timeout* so the caller
+    can cheaply retry on a fresh port (closing the bind-to-0 → spawn race) without
+    re-waiting the full timeout on a model that simply takes a long time to load."""
 
 
 @dataclass(frozen=True)
@@ -111,7 +119,9 @@ class ProcessSupervisor:
             await self.stop(managed_id)
             tail = _read_tail(log_path)
             detail = f"{exc}" + (f"\n{tail}" if tail else "")
-            raise ServingError(f"the engine failed to start: {detail}") from exc
+            # Preserve the subclass (EngineExitedDuringStartup) so the caller can retry a
+            # fast bind failure on a fresh port without re-waiting the full timeout.
+            raise type(exc)(f"the engine failed to start: {detail}") from exc
 
         running.watchdog = asyncio.create_task(self._watch(running, on_crash))
         return running
@@ -156,29 +166,28 @@ class ProcessSupervisor:
     ) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._startup_timeout_s
-        # 1) TCP: wait for the server to bind the port.
-        while True:
-            if proc.returncode is not None:
-                raise ServingError("the engine process exited during startup")
-            try:
-                _reader, writer = await asyncio.open_connection("127.0.0.1", port)
-                writer.close()
-                with suppress(Exception):
-                    await writer.wait_closed()
-                break
-            except (OSError, ConnectionError):
-                if loop.time() >= deadline:
-                    raise ServingError(
-                        f"the engine did not start listening within "
-                        f"{self._startup_timeout_s:.0f}s"
-                    ) from None
-                await asyncio.sleep(self._poll_interval_s)
+        # 1) TCP: wait for the server to bind the port (failing fast if it exits first).
+        try:
+            await net.await_listening(
+                port,
+                max(0.0, deadline - loop.time()),
+                poll_interval_s=self._poll_interval_s,
+                is_alive=lambda: proc.returncode is None,
+            )
+        except ConnectionError:
+            raise EngineExitedDuringStartup(
+                "the engine process exited during startup"
+            ) from None
+        except TimeoutError:
+            raise ServingError(
+                f"the engine did not start listening within {self._startup_timeout_s:.0f}s"
+            ) from None
         # 2) HTTP: wait for an OpenAI-compatible /v1/models response (it is serving,
         # not merely bound). 5xx is "not ready yet"; anything below is good enough.
         async with httpx.AsyncClient(timeout=5.0) as client:
             while True:
                 if proc.returncode is not None:
-                    raise ServingError("the engine process exited during startup")
+                    raise EngineExitedDuringStartup("the engine process exited during startup")
                 try:
                     resp = await client.get(f"{base_url}/models")
                     if resp.status_code < 500:
