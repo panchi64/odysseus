@@ -53,15 +53,31 @@ class CorpusIndex:
     # --- retrieval --------------------------------------------------------
 
     async def retrieve(
-        self, owner_id: str, query: str, *, sources: list[str] | None = None, limit: int = 8
+        self,
+        owner_id: str,
+        query: str,
+        *,
+        sources: list[str] | None = None,
+        source_ids: list[str] | None = None,
+        limit: int = 8,
     ) -> list[CorpusHit]:
         """Fan the query out to the selected sources and RRF-fuse the results.
 
-        ``sources`` filters to a subset of adapter kinds (default: all). A degraded
-        embedder collapses every source to keyword-only — the same fallback memory and
-        conversation recall already use."""
+        ``sources`` filters to a subset of adapter kinds (default: all). ``source_ids``
+        instead targets specific chunked sources by id (e.g. a chat's own attached files,
+        whose ids the agent reads from the attachment marker): it goes straight to the
+        chunk store across kinds — no adapter fan-out or cross-source fusion needed for a
+        single logical group — and still honors ``kb_excluded``, so an excluded file is
+        unreachable even by id. A degraded embedder collapses every source to keyword-only
+        — the same fallback memory and conversation recall already use."""
         query_vec, query_model = await embed_query(self._embedder, owner_id, query)
         query_tokens = ranking.tokens(query)
+
+        if source_ids:
+            return await self._chunks.retrieve(
+                owner_id, None, query_vec, query_model, query_tokens,
+                limit=limit, source_ids=source_ids,
+            )
 
         selected = [
             adapter

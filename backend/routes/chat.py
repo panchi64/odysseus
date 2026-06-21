@@ -35,6 +35,10 @@ class ChatCreate(BaseModel):
     # (`endpoint_id`) and which model on it (`model`, discovered from the provider).
     endpoint_id: str | None = None
     model: str | None = None
+    # Files the operator attached to this message (existing upload ids — the client
+    # uploads first via POST /uploads, then sends the ids here). They're handed to the
+    # model for this turn and enrolled in the knowledge base via the upload pipeline.
+    attachment_ids: list[str] = []
     # When creating a fresh conversation, mark it a scratch thread the listing
     # hides (the side-by-side compare panes set this). Ignored when continuing an
     # existing conversation.
@@ -55,6 +59,9 @@ class EditCreate(BaseModel):
     prompt: str  # the edited message
     endpoint_id: str | None = None
     model: str | None = None
+    # Attachments for the edited turn — a fresh user request, so the same direct-inject
+    # path as a new message (regenerate, which adds no new request, takes none).
+    attachment_ids: list[str] = []
 
 
 class ChatCreated(BaseModel):
@@ -64,7 +71,7 @@ class ChatCreated(BaseModel):
 
 async def _resolve_models(
     request: Request, endpoint_id: str | None, model: str | None
-) -> tuple[Model, Model, ModelSettings | None, int | None]:
+) -> tuple[Model, Model, ModelSettings | None, int | None, bool]:
     """Resolve the `main` model plus the background (utility/title) pair, raising a
     clear 4xx/503 on misconfiguration.
 
@@ -105,7 +112,7 @@ async def _resolve_models(
         )
         utility_model = background.model
         title_settings = background.reasoning_off
-    return resolved, utility_model, title_settings, main.context_window
+    return resolved, utility_model, title_settings, main.context_window, main.vision
 
 
 def _submit_turn(
@@ -113,7 +120,8 @@ def _submit_turn(
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None, int | None],
+    models: tuple[Model, Model, ModelSettings | None, int | None, bool],
+    attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models and submit the Run.
@@ -123,7 +131,7 @@ def _submit_turn(
     ``ephemeral`` threads (e.g. the compare panes) are hidden from the listing and
     show no title, so auto-titling them is invisible work that only holds the run
     open after the answer — skip it by passing no title model."""
-    resolved, utility_model, background_settings, context_window = models
+    resolved, utility_model, background_settings, context_window, vision = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
@@ -143,6 +151,9 @@ def _submit_turn(
         ),
         store=deps.store(request),
         conversation_id=conversation_id,
+        uploads=deps.uploads(request),
+        attachment_ids=attachment_ids,
+        vision=vision,
     )
     run = deps.registry(request).submit(
         kind="chat",
@@ -153,10 +164,28 @@ def _submit_turn(
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
+async def _validate_attachments(request: Request, attachment_ids: list[str]) -> None:
+    """Every attached id must name an upload the operator owns — reject foreign/unknown
+    ids with a clear 404 rather than silently dropping them at run time."""
+    if not attachment_ids:
+        return
+    uploads = deps.uploads(request)
+    for upload_id in attachment_ids:
+        # Cheap ownership check — decrypts nothing (resolve_attachments opens the bytes/text
+        # later, only for ids that survive to run time).
+        if not await uploads.owns(OPERATOR_ID, upload_id):
+            raise HTTPException(
+                status_code=404, detail=f"attachment {upload_id!r} not found"
+            )
+
+
 @router.post("", status_code=202, response_model=ChatCreated)
 async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
-    if not body.prompt.strip():
+    # A turn needs *something* to act on: text, or at least one attached file ("here,
+    # look at this").
+    if not body.prompt.strip() and not body.attachment_ids:
         raise HTTPException(status_code=422, detail="prompt must not be empty")
+    await _validate_attachments(request, body.attachment_ids)
 
     # Resolve before creating/continuing — a model failure shouldn't leave an
     # empty orphan conversation behind.
@@ -179,6 +208,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         prompt=body.prompt,
         conversation_id=conversation_id,
         models=models,
+        attachment_ids=body.attachment_ids,
         ephemeral=body.ephemeral,
     )
 
@@ -206,8 +236,9 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
     """Re-ask a changed request: branch from the edited user turn's parent and run
     with the new prompt, recording a new version of that turn (and a fresh answer)
     beside the original."""
-    if not body.prompt.strip():
+    if not body.prompt.strip() and not body.attachment_ids:
         raise HTTPException(status_code=422, detail="prompt must not be empty")
+    await _validate_attachments(request, body.attachment_ids)
     store = deps.store(request)
     if not await store.exists(body.conversation_id, OPERATOR_ID):
         raise HTTPException(status_code=404, detail="conversation not found")
@@ -215,5 +246,9 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
     if not await store.edit_point(body.conversation_id, body.message_id):
         raise HTTPException(status_code=404, detail="message not found")
     return _submit_turn(
-        request, prompt=body.prompt, conversation_id=body.conversation_id, models=models
+        request,
+        prompt=body.prompt,
+        conversation_id=body.conversation_id,
+        models=models,
+        attachment_ids=body.attachment_ids,
     )

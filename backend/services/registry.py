@@ -39,11 +39,15 @@ class ResolvedModel:
     reasoning (empty when the model isn't a recognized thinking model). Background
     callers that want a fast, no-reasoning pass (titling) read ``reasoning_off``.
     ``context_window`` is the primary endpoint's window (None when undeclared) —
-    the chat layer forwards it so the run can report context fullness."""
+    the chat layer forwards it so the run can report context fullness. ``vision`` is
+    true only when **every** endpoint in the resolved fallback chain can see — the chat
+    layer reads it to decide whether an attached image is handed over as pixels or as
+    its extracted text, and a failover must never land image bytes on a blind model."""
 
     model: Model
     reasoning_off: ModelSettings
     context_window: int | None = None
+    vision: bool = False
 
 
 class ModelRegistry:
@@ -366,6 +370,10 @@ class ModelRegistry:
             model=llm.build_chain(specs),
             reasoning_off=reasoning_off,
             context_window=primary.context_window,
+            # Vision holds only if *every* endpoint in the fallback chain can see —
+            # otherwise a failover from the primary onto a text-only endpoint would be
+            # handed image bytes it can't interpret. AND across the chain, not the head.
+            vision=all(spec.vision for spec in specs),
         )
 
     async def resolve_background(

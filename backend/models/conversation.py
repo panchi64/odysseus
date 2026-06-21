@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from models._fields import new_id, utcnow
@@ -71,6 +71,12 @@ class Message(SQLModel, table=True):
     pinned: bool = Field(default=False)
     text: str  # projection for listing/search
     blob: str  # one serialized ModelMessage (JSON) for resume fidelity
+    # Upload ids the operator attached to this turn (a user request). The blob carries
+    # only a compact marker for them — never the file bytes/text — so the file is not
+    # replayed into context on every later turn (the agent pulls it from the corpus on
+    # demand); these ids are the durable link the UI renders as chips and a regenerate
+    # re-resolves to re-supply the file for the active turn. Opaque ids, so in the clear.
+    attachment_ids: list[str] = Field(sa_column=Column(JSON, nullable=False, default=list))
     # Semantic-search vector over `text`, encrypted at rest like the projection it
     # embeds. Null when the message has no searchable text (tool/reasoning-only
     # turns) or the embedder was unavailable when it was persisted — such a message

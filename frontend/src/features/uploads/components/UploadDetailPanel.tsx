@@ -8,10 +8,15 @@ import {
   StatusFlag,
   Text,
   Textarea,
+  Toggle,
   toast,
 } from "~/ui";
 import { bytes } from "~/lib/format";
-import { correctUploadText, downloadUpload } from "../data";
+import {
+  correctUploadText,
+  downloadUpload,
+  setUploadKbExcluded,
+} from "../data";
 import type { Upload } from "../model";
 
 interface UploadDetailPanelProps {
@@ -59,6 +64,17 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
     }
   }
 
+  async function handleToggleKb(inKb: boolean): Promise<void> {
+    try {
+      await setUploadKbExcluded(props.upload.id, !inKb);
+      toast.success(
+        inKb ? "Added to knowledge base" : "Excluded from knowledge base",
+      );
+    } catch {
+      toast.error("Could not update knowledge base membership");
+    }
+  }
+
   const flag = () => extractorFlag(props.upload.extractor);
 
   return (
@@ -83,8 +99,15 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
           <Text variant="label" tone="bright">
             {props.upload.name}
           </Text>
-          <Row gap={2}>
+          <Row gap={2} justify="between" align="center">
             <Field label="TYPE" value={props.upload.mime} orientation="row" />
+            <Row gap={2} align="center">
+              <Toggle
+                checked={!props.upload.kbExcluded}
+                onChange={(inKb) => void handleToggleKb(inKb)}
+                label="IN KNOWLEDGE BASE"
+              />
+            </Row>
           </Row>
           <Show when={props.upload.note}>
             <Text variant="micro" tone="warn">

@@ -42,6 +42,7 @@ import {
   useChatSessions,
 } from "../data";
 import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
+import { createComposerAttachments } from "~/features/uploads/data";
 import { ContextMeter } from "../components/ContextMeter";
 import { MessageItem } from "../components/MessageItem";
 import { SessionList } from "../components/SessionList";
@@ -160,7 +161,7 @@ export function ChatRoomScreen(): JSX.Element {
       // on the overview) must not clobber the operator's sticky selection.
       if (draft.model) setSelectedModel(draft.model);
       setCurrentId(null);
-      queueMicrotask(() => void stream.send(draft.text));
+      queueMicrotask(() => void stream.send(draft.text, draft.attachmentIds));
       markWarmResolved();
       return;
     }
@@ -229,6 +230,15 @@ export function ChatRoomScreen(): JSX.Element {
 
   // Per-conversation draft key, so an unsent message is restored on return.
   const composerKey = () => `chat:${currentId() ?? "new"}`;
+
+  // File attachments for the next turn. Transient (not persisted like the draft):
+  // switching threads discards any still-attached files so they don't ride along
+  // to a different conversation.
+  const attachments = createComposerAttachments();
+  createEffect(() => {
+    currentId();
+    untrack(() => attachments.clear());
+  });
 
   // Rename
   const [renameOpen, setRenameOpen] = createSignal(false);
@@ -487,7 +497,8 @@ export function ChatRoomScreen(): JSX.Element {
             disabled={stream.sending()}
             streaming={stream.sending()}
             onStop={() => void stopRun()}
-            onSend={(text) => void stream.send(text)}
+            onSend={(text, ids) => void stream.send(text, ids)}
+            attachments={attachments}
             storageKey={composerKey()}
           />
         </div>

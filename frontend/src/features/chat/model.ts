@@ -170,6 +170,9 @@ export interface ChatMessage {
   versionCount?: number;
   /** Whether the operator has pinned this turn (backend-owned). */
   pinned?: boolean;
+  /** User turns: ids of the uploads attached to this message. Rendered as
+   *  read-only chips on the sent turn; absent/empty on assistant turns. */
+  attachmentIds?: string[];
 }
 
 /** The in-flight run driving a conversation, when one exists. Present on a cold

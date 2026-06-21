@@ -4,6 +4,7 @@ import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import { MessageActions } from "./MessageActions";
+import { MessageAttachments } from "./MessageAttachments";
 import { TurnBlocks } from "./TurnBlocks";
 import { TurnProgressRail } from "./TurnProgressRail";
 
@@ -165,13 +166,20 @@ function UserTurn(props: {
       <Show
         when={editing()}
         fallback={
-          <Text
-            variant="body"
-            tone="bright"
-            class="max-w-[80%] whitespace-pre-wrap break-words text-right"
-          >
-            {m().content}
-          </Text>
+          <>
+            <Show when={m().content}>
+              <Text
+                variant="body"
+                tone="bright"
+                class="max-w-[80%] whitespace-pre-wrap break-words text-right"
+              >
+                {m().content}
+              </Text>
+            </Show>
+            <Show when={m().attachmentIds?.length}>
+              <MessageAttachments ids={m().attachmentIds!} />
+            </Show>
+          </>
         }
       >
         <div class="w-full max-w-[80%]">

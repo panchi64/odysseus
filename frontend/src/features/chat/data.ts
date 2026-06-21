@@ -123,21 +123,25 @@ function revealTitle(id: string, title: string): void {
 /* ── Cross-surface entry intents ──────────────────────────────────────────────
    The overview launchpad hands the chat screen what to do on arrival. */
 
-const [_pendingDraft, _setPendingDraft] = createSignal<{
+interface PendingDraft {
   text: string;
   model: ModelSelection | null;
-} | null>(null);
+  /** Ids of uploads attached on the launchpad, carried into the first turn. */
+  attachmentIds?: string[];
+}
+
+const [_pendingDraft, _setPendingDraft] = createSignal<PendingDraft | null>(
+  null,
+);
 
 export function startConversation(
   text: string,
   model: ModelSelection | null,
+  attachmentIds?: string[],
 ): void {
-  _setPendingDraft({ text, model });
+  _setPendingDraft({ text, model, attachmentIds });
 }
-export function consumePendingDraft(): {
-  text: string;
-  model: ModelSelection | null;
-} | null {
+export function consumePendingDraft(): PendingDraft | null {
   const v = _pendingDraft();
   if (v) _setPendingDraft(null);
   return v;
@@ -200,6 +204,8 @@ interface MessageDTO {
   version_count?: number;
   /** Whether the operator has pinned this turn. */
   pinned?: boolean;
+  /** User turns: ids of the uploads attached to this message. */
+  attachment_ids?: string[];
 }
 
 interface ActiveRunDTO {
@@ -348,6 +354,7 @@ function toMessage(dto: MessageDTO): ChatMessage {
     versionIndex: dto.version_index,
     versionCount: dto.version_count,
     pinned: dto.pinned,
+    attachmentIds: dto.attachment_ids,
   };
   if (dto.role !== "assistant") return base;
   // Cold history is still flat (no recorded emission order), so reconstruct the
@@ -973,8 +980,12 @@ export function createChatStream(
     );
   }
 
-  async function send(text: string): Promise<void> {
-    if (!text.trim() || sending()) return;
+  async function send(
+    text: string,
+    attachmentIds: string[] = [],
+  ): Promise<void> {
+    // A turn needs either prompt text or at least one attachment to send.
+    if ((!text.trim() && attachmentIds.length === 0) || sending()) return;
     setSending(true);
 
     const wasNew = activeConversationId === null;
@@ -986,6 +997,7 @@ export function createChatStream(
       role: "user",
       content: text.trim(),
       createdAt: new Date().toISOString(),
+      attachmentIds: attachmentIds.length ? attachmentIds : undefined,
     };
     const selection = options.selection?.() ?? effectiveSelection();
     const assistantId = nextId("a");
@@ -1007,6 +1019,7 @@ export function createChatStream(
         conversation_id: activeConversationId ?? undefined,
         endpoint_id: selection?.endpointId,
         model: selection?.model,
+        attachment_ids: attachmentIds,
         // Only meaningful when this turn creates the conversation; the backend
         // ignores it when continuing one.
         ephemeral: wasNew && options.ephemeral ? true : undefined,
@@ -1155,12 +1168,15 @@ export function createChatStream(
     messageId: string,
     newText: string,
     selection?: ModelSelection | null,
+    attachmentIds?: string[],
   ): Promise<void> {
-    if (activeConversationId === null || sending() || !newText.trim()) return;
     const j = messages.findIndex(
       (m) => m.id === messageId && m.role === "user",
     );
-    if (j < 0) return;
+    if (j < 0 || activeConversationId === null || sending()) return;
+    // Reuse the turn's existing attachments unless the caller supplies a new set.
+    const ids = attachmentIds ?? messages[j].attachmentIds ?? [];
+    if (!newText.trim() && ids.length === 0) return;
     setSending(true);
     const sel = selection ?? options.selection?.() ?? effectiveSelection();
     const prompt = newText.trim();
@@ -1171,8 +1187,13 @@ export function createChatStream(
         prompt,
         endpoint_id: sel?.endpointId,
         model: sel?.model,
+        attachment_ids: ids,
       });
-      const editedUser: ChatMessage = { ...messages[j], content: prompt };
+      const editedUser: ChatMessage = {
+        ...messages[j],
+        content: prompt,
+        attachmentIds: ids.length ? ids : undefined,
+      };
       const assistantId = nextId("a");
       const assistantMsg: ChatMessage = {
         id: assistantId,

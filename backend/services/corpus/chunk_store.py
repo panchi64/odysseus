@@ -19,7 +19,7 @@ import hashlib
 
 import numpy as np
 from sqlalchemy import Engine, func, or_
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, select, update
 
 from core.db import in_session
 from core.vault import Vault
@@ -44,11 +44,20 @@ class CorpusChunkStore:
     # --- write path -------------------------------------------------------
 
     async def upsert(
-        self, owner_id: str, source_kind: str, source_id: str, base_ref: str, chunks: list[Chunk]
+        self,
+        owner_id: str,
+        source_kind: str,
+        source_id: str,
+        base_ref: str,
+        chunks: list[Chunk],
+        *,
+        kb_excluded: bool = False,
     ) -> int:
         """Insert each chunk's sealed text with a null vector, skipping any whose
         content hash already exists for this source (idempotent reindex). Returns
-        how many new chunks were inserted."""
+        how many new chunks were inserted. ``kb_excluded`` is stamped on every new
+        chunk so a source that's currently scoped out of the knowledge base stays out
+        across a reindex (the source row is authoritative; the caller passes its state)."""
         prepared = [
             (
                 content_hash(chunk.text),
@@ -83,6 +92,7 @@ class CorpusChunkStore:
                         content_hash=chash,
                         ordinal=ordinal,
                         text_enc=text_enc,
+                        kb_excluded=kb_excluded,
                     )
                 )
                 inserted += 1
@@ -99,6 +109,26 @@ class CorpusChunkStore:
                     CorpusChunk.owner_id == owner_id,
                     CorpusChunk.source_id == source_id,
                 )
+            )
+
+        await in_session(self._engine, work)
+
+    async def set_excluded(self, owner_id: str, source_id: str, value: bool) -> None:
+        """Flip ``kb_excluded`` on every chunk a source contributed — the retroactive
+        knowledge-base toggle. The write itself needs no vault key (a clear column), but
+        callers serialize it against (re)index jobs via their lock-aware worker (the
+        uploads adapter does), so in practice it parks while the vault is locked. The
+        denormalized flag is what ambient ``retrieve`` filters on, so this is what makes
+        an already-indexed file vanish from (or return to) general recall. Idempotent."""
+
+        def work(session: Session) -> None:
+            session.exec(
+                update(CorpusChunk)
+                .where(
+                    CorpusChunk.owner_id == owner_id,
+                    CorpusChunk.source_id == source_id,
+                )
+                .values(kb_excluded=value)
             )
 
         await in_session(self._engine, work)
@@ -178,6 +208,9 @@ class CorpusChunkStore:
         ``#`` intact."""
 
         def work(session: Session) -> int:
+            # Counts indexed items regardless of kb_excluded — the /rag DOCS readout
+            # reflects what's been indexed/managed, not what ambient recall returns; an
+            # excluded file is still indexed and reachable from the uploads page.
             query = select(CorpusChunk.external_ref).where(
                 CorpusChunk.owner_id == owner_id,
                 CorpusChunk.source_kind == source_kind,
@@ -204,25 +237,37 @@ class CorpusChunkStore:
     async def retrieve(
         self,
         owner_id: str,
-        source_kind: str,
+        source_kind: str | None,
         query_vec: np.ndarray | None,
         query_model: str | None,
         query_tokens: set[str],
         *,
         limit: int,
         source_id: str | None = None,
+        source_ids: list[str] | None = None,
     ) -> list[CorpusHit]:
         """Hybrid recall over a source's chunks, scored but **unfused** (the index
-        fuses across sources). Filtered to ``source_kind`` (and ``source_id`` when a
-        single source is targeted). A degraded query vector collapses to sparse-only."""
+        fuses across sources). Filtered to ``source_kind`` (pass ``None`` to span every
+        kind — a targeted read by id), to one ``source_id``, or to a set of
+        ``source_ids`` (e.g. a chat's own attached files). ``kb_excluded`` governs
+        **ambient recall only**: a kind-scoped/fan-out read hides excluded chunks, but an
+        explicit ``source_ids`` fetch overrides exclusion — a caller that names a file
+        (the chat reading its own attachment from the marker) still gets it, while it
+        stays out of every other chat's general recall. A degraded query vector collapses
+        to sparse-only."""
 
         def work(session: Session) -> list[CorpusHit]:
-            query = select(CorpusChunk).where(
-                CorpusChunk.owner_id == owner_id,
-                CorpusChunk.source_kind == source_kind,
-            )
+            query = select(CorpusChunk).where(CorpusChunk.owner_id == owner_id)
+            if source_kind is not None:
+                query = query.where(CorpusChunk.source_kind == source_kind)
             if source_id is not None:
                 query = query.where(CorpusChunk.source_id == source_id)
+            if source_ids is not None:
+                # Explicit by-id fetch — overrides exclusion (see docstring).
+                query = query.where(CorpusChunk.source_id.in_(source_ids))  # type: ignore[attr-defined]
+            else:
+                # Ambient recall: a file scoped out of the knowledge base is hidden.
+                query = query.where(CorpusChunk.kb_excluded == False)  # noqa: E712 — SQL boolean
             rows = session.exec(query).all()
             return self._rank(rows, query_vec, query_model, query_tokens, limit)
 

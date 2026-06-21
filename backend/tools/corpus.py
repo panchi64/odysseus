@@ -25,13 +25,24 @@ def corpus_toolset() -> FunctionToolset[RunDeps]:
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
     @toolset.tool
-    async def retrieve(ctx: RunContext[RunDeps], query: str, limit: int = 8) -> list[dict]:
-        """Retrieve relevant passages from the knowledge corpus (folders, memory, and
-        past conversations) by meaning, with a keyword fallback."""
+    async def retrieve(
+        ctx: RunContext[RunDeps],
+        query: str,
+        limit: int = 8,
+        source_ids: list[str] | None = None,
+    ) -> list[dict]:
+        """Retrieve relevant passages from the knowledge corpus (folders, memory, uploaded
+        files, and past conversations) by meaning, with a keyword fallback. ``source_ids``
+        scopes the search to specific file sources by id — e.g. a file attached to this
+        conversation, whose id appears in its attachment marker; an explicit-id read returns
+        the file even if it's been excluded from the knowledge base. Leave ``source_ids``
+        unset for normal recall across every source."""
         index = ctx.deps.corpus
         if index is None:
             return [{"error": "The knowledge corpus is unavailable."}]
-        hits = await index.retrieve(ctx.deps.owner_id, query, limit=limit)
+        hits = await index.retrieve(
+            ctx.deps.owner_id, query, source_ids=source_ids or None, limit=limit
+        )
         return [
             {
                 "source": hit.source_id,

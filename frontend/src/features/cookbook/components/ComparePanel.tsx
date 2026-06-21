@@ -45,7 +45,7 @@ export function ComparePanel(): JSX.Element {
         disabled={compare.sending() || !compare.ready()}
         streaming={compare.sending()}
         onStop={() => void stop()}
-        onSend={(text) => compare.send(text)}
+        onSend={(text, ids) => compare.send(text, ids)}
         placeholder={
           compare.ready()
             ? "Message both models…"

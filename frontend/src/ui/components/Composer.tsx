@@ -1,6 +1,17 @@
-import { Show, createEffect, createSignal, untrack, type JSX } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createSignal,
+  untrack,
+  type Accessor,
+  type JSX,
+} from "solid-js";
 import { cx } from "../cx";
+import { Icon } from "../primitives/Icon";
 import { Text } from "../primitives/Text";
+import { HIDDEN_FILE_INPUT, useFileDrop } from "../primitives/useFileDrop";
+import { AttachmentChip, type ComposerAttachment } from "./AttachmentChip";
 import { Button } from "./Button";
 
 // Self-contained guarded storage: the design system does not depend on ~/lib, so
@@ -30,8 +41,24 @@ function saveDraft(key: string, value: string): void {
   }
 }
 
+/**
+ * Attachment controller injected by the feature layer. The design system can't
+ * reach the uploads data seam, so the Composer owns the *chips* but not the
+ * upload/poll — the feature hands it this. The Composer reads `items` to render,
+ * drives `attach`/`remove`/`toggleKbExcluded` from the chip controls, reads the
+ * ready ids on SEND, and calls `clear` after a send.
+ */
+export interface ComposerAttachmentsApi {
+  items: Accessor<ComposerAttachment[]>;
+  attach: (files: File[]) => void;
+  remove: (id: string) => void;
+  toggleKbExcluded: (id: string) => void;
+  clear: () => void;
+}
+
 export interface ComposerProps {
-  onSend: (text: string) => void;
+  /** Receives the trimmed text and the ids of every ready attachment. */
+  onSend: (text: string, attachmentIds: string[]) => void;
   disabled?: boolean;
   /** A run is generating: the SEND button becomes a STOP button wired to
    *  `onStop`, so the interrupt control sits where the user's focus already is. */
@@ -49,6 +76,9 @@ export interface ComposerProps {
   storageKey?: string;
   /** Inline controls placed in the action row, e.g. a model selector. */
   controls?: JSX.Element;
+  /** File-attachment controller. When supplied, the Composer shows an attach
+   *  button + drag-drop and renders the attachment chips; omit to hide them. */
+  attachments?: ComposerAttachmentsApi;
   class?: string;
 }
 
@@ -56,11 +86,22 @@ export interface ComposerProps {
  * Message input. Enter sends; Shift+Enter inserts a newline. Drafts auto-save to
  * localStorage (per `storageKey`) and restore on return, so an interrupted or
  * resumed message is never lost. Cosmetic difference between the docked bar and
- * the hero field is the `size` prop — never a forked component.
+ * the hero field is the `size` prop — never a forked component. When an
+ * `attachments` controller is supplied, files can be attached (drop or pick) and
+ * ride along with the message; a send needs either text or ≥1 ready attachment.
  */
 export function Composer(props: ComposerProps): JSX.Element {
   const [text, setText] = createSignal("");
   let field: HTMLTextAreaElement | undefined;
+
+  const items = () => props.attachments?.items() ?? [];
+  const readyIds = () =>
+    items()
+      .filter((a) => a.status === "ready")
+      .map((a) => a.id);
+  const hasReady = () => readyIds().length > 0;
+
+  const drop = useFileDrop((files) => props.attachments?.attach(files));
 
   // Load the draft for the active key — runs on mount and whenever the key
   // changes (e.g. switching conversations). This effect is the sole owner of
@@ -105,11 +146,14 @@ export function Composer(props: ComposerProps): JSX.Element {
     wasDisabled = disabled;
   });
 
+  const canSend = () =>
+    !props.disabled && (Boolean(text().trim()) || hasReady());
+
   const submit = () => {
-    const value = text().trim();
-    if (!value || props.disabled) return;
-    props.onSend(value);
+    if (!canSend()) return;
+    props.onSend(text().trim(), readyIds());
     setText(""); // clears the persisted draft via the effect above
+    props.attachments?.clear();
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -166,6 +210,50 @@ export function Composer(props: ComposerProps): JSX.Element {
     />
   );
 
+  // The attach affordance: a button that opens the picker plus the hidden input
+  // the file-drop hook clicks. Only mounted when an attachments controller is
+  // wired, so non-attachment surfaces are unchanged.
+  const attachBtn = (
+    <Show when={props.attachments}>
+      <Button
+        variant="ghost"
+        size={lg() ? "md" : "sm"}
+        leading="upload"
+        aria-label="Attach files"
+        disabled={props.disabled}
+        onClick={drop.openPicker}
+      />
+      <input
+        ref={drop.bindInput}
+        {...HIDDEN_FILE_INPUT}
+        {...drop.inputHandlers}
+      />
+    </Show>
+  );
+
+  // Attachment chips, above the field. Each shows status, a KB-membership
+  // toggle, and a remove control. The wrapping margin is the docked bar's; the
+  // hero stacks it with the field via the column gap.
+  const chips = (
+    <Show when={props.attachments && items().length > 0}>
+      <div class={cx("flex flex-wrap gap-2", !lg() && "mb-2")}>
+        <For each={items()}>
+          {(a) => (
+            <AttachmentChip
+              name={a.name}
+              status={a.status}
+              kbExcluded={a.kbExcluded}
+              onToggleKbExcluded={() =>
+                props.attachments?.toggleKbExcluded(a.id)
+              }
+              onRemove={() => props.attachments?.remove(a.id)}
+            />
+          )}
+        </For>
+      </div>
+    </Show>
+  );
+
   // While a run streams, the primary action interrupts rather than sends — the
   // STOP button stays clickable even though the field is disabled mid-stream.
   const actionBtn = (
@@ -175,7 +263,7 @@ export function Composer(props: ComposerProps): JSX.Element {
         <Button
           variant="primary"
           trailing="send"
-          disabled={props.disabled || !text().trim()}
+          disabled={!canSend()}
           onClick={submit}
         >
           SEND
@@ -188,12 +276,36 @@ export function Composer(props: ComposerProps): JSX.Element {
     </Show>
   );
 
+  // A subtle full-surface highlight while files hover the composer, so the drop
+  // target reads clearly without a separate dashed zone.
+  const dropOverlay = (
+    <Show when={props.attachments && drop.isDragging()}>
+      <div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-info bg-info/10">
+        <Text variant="label" tone="info">
+          <span class="inline-flex items-center gap-2">
+            <Icon name="upload" size={16} />
+            DROP TO ATTACH
+          </span>
+        </Text>
+      </div>
+    </Show>
+  );
+
   return (
     <Show
       when={lg()}
       fallback={
-        <div class={cx("border-t border-line bg-surface p-3", props.class)}>
+        <div
+          class={cx(
+            "relative border-t border-line bg-surface p-3",
+            props.class,
+          )}
+          {...(props.attachments ? drop.dropHandlers : {})}
+        >
+          {dropOverlay}
+          {chips}
           <div class="flex items-end gap-2">
+            {attachBtn}
             {textarea}
             <Show when={props.controls}>{props.controls}</Show>
             {actionBtn}
@@ -203,20 +315,24 @@ export function Composer(props: ComposerProps): JSX.Element {
     >
       <div
         class={cx(
-          "flex flex-col gap-3 border-2 border-line bg-surface p-4 transition-colors focus-within:border-bright",
+          "relative flex flex-col gap-3 border-2 border-line bg-surface p-4 transition-colors focus-within:border-bright",
           props.class,
         )}
+        {...(props.attachments ? drop.dropHandlers : {})}
       >
+        {dropOverlay}
         <Show when={props.title}>
           <Text variant="label" tone="dim">
             {props.title}
           </Text>
         </Show>
+        {chips}
         {textarea}
         <div class="flex items-center justify-between gap-2">
-          <Show when={props.controls} fallback={<span />}>
-            {props.controls}
-          </Show>
+          <div class="flex items-center gap-2">
+            {attachBtn}
+            <Show when={props.controls}>{props.controls}</Show>
+          </div>
           {actionBtn}
         </div>
       </div>

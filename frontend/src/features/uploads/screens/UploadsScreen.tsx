@@ -35,6 +35,7 @@ import {
   uploadFile,
   deleteUpload,
   retryUpload,
+  setUploadKbExcluded,
 } from "../data";
 import { DropZone } from "../components/DropZone";
 import { UploadDetailPanel } from "../components/UploadDetailPanel";
@@ -124,6 +125,21 @@ export function UploadsScreen(): JSX.Element {
     }
   }
 
+  async function handleToggleKb(upload: Upload, e: MouseEvent): Promise<void> {
+    e.stopPropagation();
+    const exclude = !upload.kbExcluded;
+    try {
+      await setUploadKbExcluded(upload.id, exclude);
+      toast.success(
+        exclude
+          ? `Excluded "${upload.name}" from the knowledge base`
+          : `Added "${upload.name}" to the knowledge base`,
+      );
+    } catch {
+      toast.error("Could not update knowledge base membership");
+    }
+  }
+
   return (
     <Stack gap={6}>
       <PageHeader
@@ -187,6 +203,28 @@ export function UploadsScreen(): JSX.Element {
                             <StatusFlag status={info.status}>
                               {info.label}
                             </StatusFlag>
+                            <Tooltip
+                              label={
+                                upload.kbExcluded
+                                  ? "Excluded from knowledge base — click to include"
+                                  : "In knowledge base — click to exclude"
+                              }
+                              side="left"
+                            >
+                              <Button
+                                variant={
+                                  upload.kbExcluded ? "ghost" : "default"
+                                }
+                                size="sm"
+                                leading="database"
+                                onClick={(e) => void handleToggleKb(upload, e)}
+                                aria-label={
+                                  upload.kbExcluded
+                                    ? `Include ${upload.name} in knowledge base`
+                                    : `Exclude ${upload.name} from knowledge base`
+                                }
+                              />
+                            </Tooltip>
                             <Tooltip
                               label={`Delete "${upload.name}"`}
                               side="left"

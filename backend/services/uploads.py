@@ -65,6 +65,7 @@ class UploadView:
     extractor: str | None
     extracted_text: str | None
     note: str | None
+    kb_excluded: bool
     created_at: datetime
     updated_at: datetime
 
@@ -83,6 +84,7 @@ class UploadSummaryView:
     extractor: str | None
     has_text: bool
     note: str | None
+    kb_excluded: bool
     created_at: datetime
     updated_at: datetime
 
@@ -211,6 +213,30 @@ class UploadStore:
 
         view = await in_session(self._engine, work)
         self._adapter.index_upload(owner_id, upload_id, text)
+        return view
+
+    async def set_kb_excluded(
+        self, owner_id: str, upload_id: str, value: bool
+    ) -> UploadView:
+        """Toggle whether this upload is part of the knowledge base — retroactively. Flips
+        the authoritative flag on the row and restamps its corpus chunks, so it's filtered
+        out of (``True``) or back into (``False``) every ``corpus.retrieve``. The bytes,
+        extracted text, and the chunks themselves stay put, so it's a cheap, reversible
+        scope change — not a delete."""
+
+        def work(session: Session) -> UploadView:
+            # Ownership check folded into the one write (no separate _require round-trip).
+            upload = session.get(Upload, upload_id)
+            if upload is None or upload.owner_id != owner_id:
+                raise NotFoundError(f"upload {upload_id!r} not found")
+            upload.kb_excluded = value
+            upload.updated_at = datetime.now(UTC)
+            session.add(upload)
+            session.flush()
+            return self._view_from_row(upload)
+
+        view = await in_session(self._engine, work)
+        self._adapter.set_excluded(owner_id, upload_id, value)
         return view
 
     async def retry(self, owner_id: str, upload_id: str) -> UploadView:
@@ -400,12 +426,19 @@ class UploadStore:
 
         return await in_session(self._engine, work)
 
-    async def _require(self, owner_id: str, upload_id: str) -> None:
+    async def owns(self, owner_id: str, upload_id: str) -> bool:
+        """Whether ``upload_id`` names an upload owned by ``owner_id`` — a cheap existence
+        check that decrypts nothing (unlike ``get``, which opens the sealed filename and
+        the whole extracted text). The chat route validates attachment ids with this."""
+
         def work(session: Session) -> bool:
             upload = session.get(Upload, upload_id)
             return upload is not None and upload.owner_id == owner_id
 
-        if not await in_session(self._engine, work):
+        return await in_session(self._engine, work)
+
+    async def _require(self, owner_id: str, upload_id: str) -> None:
+        if not await self.owns(owner_id, upload_id):
             raise NotFoundError(f"upload {upload_id!r} not found")
 
     def _view_from_row(self, upload: Upload) -> UploadView:
@@ -430,6 +463,7 @@ class UploadStore:
             extractor=upload.extractor,
             has_text=upload.has_text,
             note=upload.note,
+            kb_excluded=upload.kb_excluded,
             created_at=upload.created_at,
             updated_at=upload.updated_at,
         )
@@ -446,6 +480,7 @@ class UploadStore:
             extractor=upload.extractor,
             extracted_text=text,
             note=upload.note,
+            kb_excluded=upload.kb_excluded,
             created_at=upload.created_at,
             updated_at=upload.updated_at,
         )

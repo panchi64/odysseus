@@ -93,18 +93,20 @@ export function createResearchRun() {
     findingsExtracted: 0,
     progress: 0,
     query: "",
+    attachmentIds: [],
     error: null,
   });
 
   const timers: ReturnType<typeof setTimeout>[] = [];
   const after = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
 
-  function run(query: string) {
+  function run(query: string, attachmentIds: string[] = []) {
     if (!query.trim() || running()) return;
     setRunning(true);
     setState(
       produce((s) => {
         s.query = query.trim();
+        s.attachmentIds = attachmentIds;
         s.phase = "PLANNING";
         s.round = 1;
         s.sourcesFound = 0;

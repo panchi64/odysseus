@@ -43,6 +43,11 @@ export {
 export { Stack, type StackProps, type GapStep } from "./primitives/Stack";
 export { Row, type RowProps } from "./primitives/Row";
 export { Icon, type IconProps } from "./primitives/Icon";
+export {
+  useFileDrop,
+  HIDDEN_FILE_INPUT,
+  type FileDropApi,
+} from "./primitives/useFileDrop";
 export { type IconName } from "./icons/registry";
 
 // spec components
@@ -61,6 +66,12 @@ export {
 } from "./components/InstrumentBand";
 export { Tile, type TileProps } from "./components/Tile";
 export { Chip, type ChipProps } from "./components/Chip";
+export {
+  AttachmentChip,
+  type AttachmentChipProps,
+  type ComposerAttachment,
+  type AttachmentStatus,
+} from "./components/AttachmentChip";
 export { ListRow, type ListRowProps } from "./components/ListRow";
 export { ListToolbar, type ListToolbarProps } from "./components/ListToolbar";
 export {
@@ -77,7 +88,11 @@ export {
 } from "./components/Button";
 export { Input, type InputProps } from "./components/Input";
 export { Textarea, type TextareaProps } from "./components/Textarea";
-export { Composer, type ComposerProps } from "./components/Composer";
+export {
+  Composer,
+  type ComposerProps,
+  type ComposerAttachmentsApi,
+} from "./components/Composer";
 export { Markdown, type MarkdownProps } from "./components/Markdown";
 export { Caret, type CaretProps } from "./components/Caret";
 export { Frames, type FramesProps } from "./components/Frames";

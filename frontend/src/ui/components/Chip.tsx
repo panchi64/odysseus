@@ -12,7 +12,10 @@ export interface ChipProps {
   class?: string;
 }
 
-const base =
+/** The bordered micro-pill base — the single source of truth for the chip look.
+ *  Shared so richer chip-shaped components (e.g. `AttachmentChip`) inherit a
+ *  design-system change here instead of copying the string. */
+export const CHIP_BASE =
   "inline-flex items-center gap-1 border border-line px-2 py-1 text-micro text-dim";
 
 /** Compact bordered token for short labels / selectable suggestions. Static by
@@ -36,13 +39,13 @@ export function Chip(props: ChipProps): JSX.Element {
   return (
     <Show
       when={local.onClick}
-      fallback={<span class={cx(base, local.class)}>{body}</span>}
+      fallback={<span class={cx(CHIP_BASE, local.class)}>{body}</span>}
     >
       <button
         type="button"
         onClick={() => local.onClick!()}
         class={cx(
-          base,
+          CHIP_BASE,
           "text-left transition-colors hover:border-bright hover:text-bright",
           local.class,
         )}

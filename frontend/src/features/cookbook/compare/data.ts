@@ -35,7 +35,7 @@ export interface ComparePane {
   /** The live chat stream — one backend Run per turn. */
   stream: ReturnType<typeof createChatStream>;
   /** Send a turn on this pane, tracking it so teardown can await it settling. */
-  send: (text: string) => void;
+  send: (text: string, attachmentIds?: string[]) => void;
   /** Cancel and return to a fresh ephemeral conversation (keeps the model pick). */
   reset: () => void;
 }
@@ -43,7 +43,7 @@ export interface ComparePane {
 export interface CompareController {
   panes: readonly [ComparePane, ComparePane];
   /** Fan the prompt to both panes — one message, two models. */
-  send: (text: string) => void;
+  send: (text: string, attachmentIds?: string[]) => void;
   /** Cancel both in-flight runs. */
   cancel: () => Promise<void>;
   /** Clear both transcripts and start fresh conversations (models kept). */
@@ -108,9 +108,9 @@ function createComparePane(
   // before that resolves would either miss the id (orphan) or fight the late
   // re-bind, so reset/cleanup await this first.
   let inflight: Promise<void> | null = null;
-  const send = (text: string) => {
+  const send = (text: string, attachmentIds?: string[]) => {
     committed = true; // sending locks the pane's model for this comparison
-    inflight = stream.send(text).finally(() => {
+    inflight = stream.send(text, attachmentIds).finally(() => {
       inflight = null;
     });
   };
@@ -161,9 +161,9 @@ export function createCompareController(): CompareController {
   const paneB = createComparePane(defaultB);
   const panes = [paneA, paneB] as const;
 
-  const send = (text: string) => {
-    if (!text.trim()) return;
-    for (const p of panes) p.send(text);
+  const send = (text: string, attachmentIds?: string[]) => {
+    if (!text.trim() && !(attachmentIds && attachmentIds.length)) return;
+    for (const p of panes) p.send(text, attachmentIds);
   };
   const cancel = () =>
     Promise.all(panes.map((p) => p.stream.cancel())).then(() => undefined);

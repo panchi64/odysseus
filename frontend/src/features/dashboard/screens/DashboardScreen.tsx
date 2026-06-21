@@ -33,6 +33,7 @@ import {
   selectModelByValue,
   selectedModelLabel,
 } from "~/lib/stores/models";
+import { createComposerAttachments } from "~/features/uploads/data";
 
 /** Overall status for the header flag. Any down capability is an alert; a
  *  degraded *critical* capability is a warning. Non-critical degradations
@@ -55,6 +56,8 @@ export function DashboardScreen(): JSX.Element {
   const { data: overview, refetch: refetchOverview } = useOverview();
   const { data: runs } = useActiveRuns();
   const sessions = useChatSessions();
+  // Files attached on the launchpad ride into the conversation's first turn.
+  const attachments = createComposerAttachments();
 
   // The resume target: the newest still-warm thread (or none).
   const entryId = createMemo(() => {
@@ -92,8 +95,8 @@ export function DashboardScreen(): JSX.Element {
     return triggering.map((c) => `${c.label}: ${c.detail}`).join(" · ");
   };
 
-  const handleStart = (text: string) => {
-    startConversation(text, effectiveSelection());
+  const handleStart = (text: string, attachmentIds: string[]) => {
+    startConversation(text, effectiveSelection(), attachmentIds);
     navigate("/chat");
   };
   const openThread = (id: string) => {
@@ -137,6 +140,7 @@ export function DashboardScreen(): JSX.Element {
             storageKey="home-new"
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
+            attachments={attachments}
             controls={
               <Combobox
                 groups={modelPickerGroups()}

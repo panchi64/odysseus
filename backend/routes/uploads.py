@@ -18,7 +18,6 @@ import math
 from datetime import datetime
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel
 
 from core.config import get_settings
 from core.exceptions import NotFoundError, RateLimitedError
@@ -44,6 +43,8 @@ class UploadSummaryOut(CamelModel):
     extractor: str | None = None
     has_text: bool
     note: str | None = None
+    # Whether the operator has scoped this file out of the knowledge base.
+    kb_excluded: bool
     created_at: datetime
     updated_at: datetime
 
@@ -58,12 +59,18 @@ class UploadOut(CamelModel):
     extractor: str | None = None
     extracted_text: str | None = None
     note: str | None = None
+    kb_excluded: bool
     created_at: datetime
     updated_at: datetime
 
 
-class TextCorrection(BaseModel):
-    text: str
+class UploadPatch(CamelModel):
+    """A partial update of an upload. Either field may be sent on its own: ``text`` is
+    an operator correction of the extracted text (`UP-2`); ``kbExcluded`` toggles
+    knowledge-base membership (retroactive). Sending neither is a no-op read."""
+
+    text: str | None = None
+    kb_excluded: bool | None = None
 
 
 def _summary_out(view: UploadSummaryView) -> UploadSummaryOut:
@@ -77,6 +84,7 @@ def _summary_out(view: UploadSummaryView) -> UploadSummaryOut:
         extractor=view.extractor,
         has_text=view.has_text,
         note=view.note,
+        kb_excluded=view.kb_excluded,
         created_at=view.created_at,
         updated_at=view.updated_at,
     )
@@ -93,6 +101,7 @@ def _out(view: UploadView) -> UploadOut:
         extractor=view.extractor,
         extracted_text=view.extracted_text,
         note=view.note,
+        kb_excluded=view.kb_excluded,
         created_at=view.created_at,
         updated_at=view.updated_at,
     )
@@ -166,11 +175,20 @@ async def download_upload(upload_id: str, request: Request) -> Response:
 
 
 @router.patch("/{upload_id}", response_model=UploadOut)
-async def correct_upload_text(
-    upload_id: str, body: TextCorrection, request: Request
+async def patch_upload(
+    upload_id: str, body: UploadPatch, request: Request
 ) -> UploadOut:
+    """Correct the extracted text, toggle knowledge-base membership, or both. Each is
+    applied independently so the frontend can send just the field it changed."""
+    store = deps.uploads(request)
     try:
-        view = await deps.uploads(request).correct_text(OPERATOR_ID, upload_id, body.text)
+        view: UploadView | None = None
+        if body.text is not None:
+            view = await store.correct_text(OPERATOR_ID, upload_id, body.text)
+        if body.kb_excluded is not None:
+            view = await store.set_kb_excluded(OPERATOR_ID, upload_id, body.kb_excluded)
+        if view is None:
+            view = await store.get(OPERATOR_ID, upload_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="upload not found") from None
     return _out(view)

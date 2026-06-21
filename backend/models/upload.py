@@ -72,6 +72,12 @@ class Upload(SQLModel, table=True):
     has_text: bool = Field(default=False)
     # True when a vision model produced (some of) the text — an image-only/scanned PDF.
     vision: bool = Field(default=False)
+    # Whether the operator has scoped this file out of the knowledge base. Clear
+    # metadata (not content): when true the upload's corpus chunks are filtered out
+    # of every `corpus.retrieve`, so it's no longer referenced from any chat — while
+    # the bytes/extracted text and the chunks themselves stay sealed, so flipping it
+    # back is instant. Default false: a fresh upload joins the corpus seamlessly.
+    kb_excluded: bool = Field(default=False)
     # Which extractor produced the current text: "basic" (the built-in fallback) or
     # "mineru" (high-fidelity), or "manual" once the operator corrects it. Clear
     # metadata, null until extracted — lets the UI flag fallback extractions as

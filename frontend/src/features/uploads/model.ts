@@ -18,4 +18,7 @@ export interface Upload {
   /** A short note when extraction was bounded or degraded (e.g. no vision model,
    *  pages skipped), or the failure reason when status is "error". */
   note?: string;
+  /** When true, the file's text is excluded from the knowledge base / retrieval
+   *  corpus (still stored and attachable, just not indexed for recall). */
+  kbExcluded?: boolean;
 }

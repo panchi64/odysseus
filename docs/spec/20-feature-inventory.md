@@ -13,7 +13,7 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 **Purpose:** Hold a conversation with a model, optionally drawing on tools, attachments, and linked content.
 
 - **CHAT-1 (MUST).** The user MUST be able to send a message containing text, links, and file attachments, and receive a streamed reply.
-- **CHAT-2 (MUST).** Linked URLs and uploaded files MUST be made available to the model as context for the reply.
+- **CHAT-2 (MUST).** Linked URLs and uploaded files MUST be made available to the model as context for the reply. For the turn a file is attached the model gets it directly (the image itself for a vision-capable model, the extracted text otherwise); for later turns and other conversations the file remains *available to reference* through the knowledge base (the agent pulls it on demand) rather than being re-injected into every prompt.
 - **CHAT-3 (MUST).** Every message runs through the agent path: the full set of permitted tools is offered and the model itself decides whether to call any — including none, for a message that needs only a direct answer. There is no separate pre-classification step that routes a message away from the agent.
 - **CHAT-4 (SHOULD — performance).** When a conversation grows near the model's context limit, older history SHOULD be summarized to stay within budget without losing the thread; summarization MAY use a separate, configurable utility model.
 - **CHAT-5 (MUST).** The user MUST be able to stop an in-progress reply, and a reply interrupted by a disconnect MUST be resumable.
@@ -88,7 +88,7 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **RAG-1 (MUST).** The user MUST be able to point the system at a local document collection (a host folder) and have it indexed for semantic retrieval as one source within the corpus.
 - **RAG-2 (MUST).** Indexed content MUST be retrievable by meaning during chat and agent tasks, and the index MUST be re-buildable as the source files change.
 - **RAG-3 (SHOULD).** The user SHOULD be able to see every source and its index status from one place, reindex a source, and remove operator-added folders from the index.
-- **RAG-4 (SHOULD).** The in-app content surfaces (documents, uploads, gallery, memory, research) SHOULD be enrolled in the corpus automatically — including non-text media (e.g. images) once the system has processed them into retrievable text — and SHOULD be reachable for management from the knowledge base view without being removable as sources (they are owned by their own surfaces).
+- **RAG-4 (SHOULD).** The in-app content surfaces (documents, uploads, gallery, memory, research) SHOULD be enrolled in the corpus automatically — including non-text media (e.g. images) once the system has processed them into retrievable text — and SHOULD be reachable for management from the knowledge base view without being removable as sources (they are owned by their own surfaces). An auto-enrolled **upload** (including a file attached in chat) SHOULD additionally carry a per-file **exclude-from-knowledge-base** toggle the operator can flip at any time: excluding it removes it from corpus retrieval everywhere (retroactively, and reversibly), without deleting the file from the surface that owns it. This refines "not removable as sources" — the source stays; the operator can scope an individual file out of retrieval.
 
 ### Code runner (`RUN-*`)
 

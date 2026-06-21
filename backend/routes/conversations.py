@@ -72,6 +72,8 @@ class MessageOut(BaseModel):
     version_index: int = 0
     version_count: int = 1
     pinned: bool = False  # the operator's durable bookmark on this turn
+    # Upload ids the operator attached to this (user) turn — rendered as file chips.
+    attachment_ids: list[str] = []
 
 
 class ActiveRun(BaseModel):
@@ -174,6 +176,7 @@ def _message(view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
         version_index=view.version_index,
         version_count=view.version_count,
         pinned=view.pinned,
+        attachment_ids=view.attachment_ids,
     )
 
 

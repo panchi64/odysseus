@@ -1,7 +1,8 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import {
   Button,
   Chip,
+  Composer,
   ErrorState,
   InstrumentBand,
   LoadingText,
@@ -10,16 +11,16 @@ import {
   Stack,
   StatusFlag,
   Text,
-  Textarea,
 } from "~/ui";
 import { num } from "~/lib/format";
+import { createComposerAttachments } from "~/features/uploads/data";
 import type { ResearchRunState, ResearchPhase } from "../model";
 import { PhaseTrack } from "./PhaseTrack";
 
 interface RunPanelProps {
   running: boolean;
   state: ResearchRunState;
-  onRun: (query: string) => void;
+  onRun: (query: string, attachmentIds: string[]) => void;
 }
 
 const statusForPhase = (phase: ResearchPhase, running: boolean) => {
@@ -36,20 +37,9 @@ const EXAMPLE_QUERIES = [
 
 /** Compose panel: query input + live phase/progress display. */
 export function RunPanel(props: RunPanelProps): JSX.Element {
-  const [query, setQuery] = createSignal("");
-
-  const submit = () => {
-    const q = query().trim();
-    if (!q || props.running) return;
-    props.onRun(q);
-  };
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      submit();
-    }
-  };
+  // Supporting files attach via the same uploads pipeline as chat; the run
+  // references their ids. The Composer owns the field, draft, and attach chips.
+  const attachments = createComposerAttachments();
 
   const hasError = () => Boolean(props.state.error);
 
@@ -78,16 +68,7 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
         }
       >
         <Stack gap={3}>
-          <Textarea
-            rows={3}
-            placeholder="What do you want to research? Be specific — the engine will plan, search, read, and synthesize."
-            value={query()}
-            onInput={(e) => setQuery(e.currentTarget.value)}
-            onKeyDown={onKeyDown}
-            disabled={props.running}
-            hint="Ctrl+Enter to run"
-          />
-          <Show when={!props.running && !query().trim()}>
+          <Show when={!props.running}>
             <Stack gap={2}>
               <Text variant="micro" tone="dim">
                 TRY AN EXAMPLE
@@ -95,25 +76,22 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
               <div class="flex flex-wrap gap-2">
                 <For each={EXAMPLE_QUERIES}>
                   {(example) => (
-                    <Chip onClick={() => setQuery(example)}>{example}</Chip>
+                    <Chip onClick={() => props.onRun(example, [])}>
+                      {example}
+                    </Chip>
                   )}
                 </For>
               </div>
             </Stack>
           </Show>
-          <div class="flex items-center justify-between gap-3">
-            <Text variant="micro" tone="dim">
-              Ctrl+Enter to run · multi-round deep synthesis
-            </Text>
-            <Button
-              variant="primary"
-              leading="research"
-              disabled={props.running || !query().trim()}
-              onClick={submit}
-            >
-              {props.running ? "RUNNING…" : "RUN RESEARCH"}
-            </Button>
-          </div>
+          <Composer
+            size="md"
+            disabled={props.running}
+            attachments={attachments}
+            storageKey="research:query"
+            placeholder="What do you want to research? Be specific — the engine will plan, search, read, and synthesize."
+            onSend={(query, ids) => props.onRun(query, ids)}
+          />
         </Stack>
       </Panel>
 
@@ -123,7 +101,9 @@ export function RunPanel(props: RunPanelProps): JSX.Element {
           <ErrorState
             message={`SYNTHESIS FAILED — ${props.state.error ?? "Unknown error"}`}
             hint="The research run encountered an error. Retry the same query or modify it and try again."
-            onRetry={submit}
+            onRetry={() =>
+              props.onRun(props.state.query, props.state.attachmentIds)
+            }
             retryLabel="RETRY"
           />
         </Panel>

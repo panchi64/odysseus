@@ -63,6 +63,9 @@ class MessageView:
     version_count: int = 1
     # The operator's durable pin on this turn (a bookmark), from the branch node.
     pinned: bool = False
+    # Upload ids the operator attached to this (user) turn — the frontend renders them
+    # as file chips. Empty for assistant turns and turns sent without attachments.
+    attachment_ids: list[str] = field(default_factory=list)
 
 
 def _user_text(content: Any) -> str:

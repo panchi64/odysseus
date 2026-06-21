@@ -56,6 +56,11 @@ class CorpusChunk(SQLModel, table=True):
     # Embedding provenance for EMB-2: which model/space produced the vector.
     embedding_model: str | None = None
     embedding_dim: int | None = None
+    # Denormalized from the chunk's source (e.g. an upload's `kb_excluded`) so recall
+    # filters in the DB without a per-source join: a chunk with this set is dropped
+    # from every retrieve. Indexed for the `where kb_excluded = false` recall scan.
+    # The source row stays authoritative; a toggle restamps its chunks here.
+    kb_excluded: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

@@ -21,8 +21,11 @@ from dataclasses import dataclass
 
 import numpy as np
 from sqlalchemy import Engine
+from sqlmodel import Session
 
+from core.db import in_session
 from core.worker import WriteBehindWorker
+from models.upload import Upload
 from services.chunking import chunk_text
 from services.corpus.adapter import CorpusHit, SourceAdapter, SourceStatus
 from services.corpus.chunk_store import CorpusChunkStore
@@ -41,6 +44,21 @@ class UploadIndexJob:
     text: str | None
 
 
+@dataclass(frozen=True)
+class UploadExcludeJob:
+    """A queued restamp of one upload's chunks' ``kb_excluded`` — the retroactive
+    knowledge-base toggle. Routed through the same worker as (re)index/remove so it can
+    never race a queued reindex of the same upload."""
+
+    owner_id: str
+    upload_id: str
+    kb_excluded: bool
+
+
+# What the uploads worker drains: an index/remove or a KB-exclusion restamp.
+UploadJob = UploadIndexJob | UploadExcludeJob
+
+
 class UploadsAdapter(SourceAdapter):
     source_kind = "uploads"
     SOURCE_ID = "surf-uploads"
@@ -48,8 +66,8 @@ class UploadsAdapter(SourceAdapter):
     def __init__(self, engine: Engine, chunk_store: CorpusChunkStore, unlocked) -> None:
         self._engine = engine
         self._chunks = chunk_store
-        self._worker: WriteBehindWorker[UploadIndexJob] = WriteBehindWorker(
-            self._index, name="corpus-uploads", unlocked=unlocked
+        self._worker: WriteBehindWorker[UploadJob] = WriteBehindWorker(
+            self._handle, name="corpus-uploads", unlocked=unlocked
         )
 
     async def start(self) -> None:
@@ -70,6 +88,12 @@ class UploadsAdapter(SourceAdapter):
         """Queue removal of an upload's chunks (delete). Routed through the worker so it
         can't race a still-queued index of the same upload."""
         self._worker.submit(UploadIndexJob(owner_id, upload_id, None))
+
+    def set_excluded(self, owner_id: str, upload_id: str, value: bool) -> None:
+        """Queue a restamp of the upload's chunks' ``kb_excluded`` — the retroactive
+        knowledge-base toggle. Same worker as index/remove, so it serializes behind any
+        queued reindex of this upload and can't be undone by one."""
+        self._worker.submit(UploadExcludeJob(owner_id, upload_id, value))
 
     # --- adapter contract -------------------------------------------------
 
@@ -105,17 +129,34 @@ class UploadsAdapter(SourceAdapter):
 
     # --- indexing ---------------------------------------------------------
 
-    async def _index(self, job: UploadIndexJob) -> None:
-        """Clear the upload's existing chunks, then (when text is present) chunk, seal,
-        and embed it. The worker handler — runs only while the vault is unlocked, since
-        it seals text + vectors."""
+    async def _handle(self, job: UploadJob) -> None:
+        """The worker handler. An exclusion restamp is a clear-column flip; an index job
+        clears the upload's existing chunks, then (when text is present) chunks, seals,
+        and embeds it. Runs only while the vault is unlocked, since indexing seals text +
+        vectors."""
+        if isinstance(job, UploadExcludeJob):
+            await self._chunks.set_excluded(job.owner_id, job.upload_id, job.kb_excluded)
+            return
         await self._chunks.delete_source(job.owner_id, job.upload_id)
         if job.text is None:
             return  # removal — nothing to re-insert
         chunks = chunk_text(job.text)
         if not chunks:
             return
+        # Stamp the upload's *current* exclusion onto the rebuilt chunks (read live, so a
+        # reindex of an already-excluded file doesn't quietly re-admit it to the corpus).
+        excluded = await self._is_excluded(job.owner_id, job.upload_id)
         await self._chunks.upsert(
-            job.owner_id, self.source_kind, job.upload_id, job.upload_id, chunks
+            job.owner_id, self.source_kind, job.upload_id, job.upload_id, chunks,
+            kb_excluded=excluded,
         )
         await self._chunks.reembed(job.owner_id, job.upload_id)
+
+    async def _is_excluded(self, owner_id: str, upload_id: str) -> bool:
+        """The upload row's authoritative ``kb_excluded`` (False if it's gone)."""
+
+        def work(session: Session) -> bool:
+            upload = session.get(Upload, upload_id)
+            return bool(upload and upload.owner_id == owner_id and upload.kb_excluded)
+
+        return await in_session(self._engine, work)

@@ -54,6 +54,8 @@ export interface ResearchRunState {
   /** 0–100 */
   progress: number;
   query: string;
+  /** Ids of uploads attached to the run as supporting context. */
+  attachmentIds: string[];
   /** Set when the run fails; null otherwise. */
   error: string | null;
 }

@@ -57,7 +57,7 @@ _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 # A persistence-ready message row, still plaintext: (id, parent_id, seq, kind,
 # text, blob). The drainer encrypts text + blob just before the write (lock-aware
 # side of the queue), so a vault lock mid-turn parks the write rather than losing it.
-_Row = tuple[str, str | None, int, str, str, str]
+_Row = tuple[str, str | None, int, str, str, str, list[str]]
 
 
 @dataclass
@@ -96,6 +96,10 @@ class _Node:
     seq: int
     message: ModelMessage
     pinned: bool = False
+    # Upload ids the operator attached to this turn (a user request). Held alongside the
+    # message so the conversation detail can render attachment chips without re-reading the
+    # row; the message blob itself carries only the marker, never the file content.
+    attachment_ids: list[str] = field(default_factory=list)
 
 
 class _Tree:
@@ -274,6 +278,35 @@ def _project(message: ModelMessage) -> tuple[str, str]:
     return kind, text
 
 
+def _prompt_text(content: object) -> str:
+    """The operator's typed text from a user-prompt content value. The engine builds an
+    attachment turn's content as ``[prompt, *attachment_parts]``, so the leading string is
+    the prompt; a bare string is already it. Deliberately *not* a join (unlike ``_project``
+    / ``conversation_view._user_text``) — a join would also slurp the injected file text
+    this strip exists to drop."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and content and isinstance(content[0], str):
+        return content[0]
+    return ""
+
+
+def with_attachment_marker(message: ModelMessage, marker: str) -> None:
+    """Replace a user request's attachment content (the image/text the engine appended for
+    the live turn) with ``marker`` in place, keeping the operator's typed prompt — so the
+    persisted blob and the in-memory tree carry a reference, never the file itself (the
+    knowledge corpus is the durable path back to the content). Owned by the store because
+    *what gets persisted* is the store's concern; ``record`` applies it as it serializes.
+    A no-op without a marker or on a non-request message."""
+    if not marker or not isinstance(message, ModelRequest):
+        return
+    for part in message.parts:
+        if isinstance(part, UserPromptPart):
+            text = _prompt_text(part.content)
+            part.content = f"{text}\n\n{marker}".strip() if text else marker
+            return  # one user-prompt part per request carries the attachments
+
+
 def _db_stats(
     session: Session, conversation_ids: list[str]
 ) -> dict[str, tuple[int, str | None]]:
@@ -374,7 +407,9 @@ class ConversationStore:
 
             def work(
                 session: Session,
-            ) -> tuple[list[tuple[str, str | None, int, bool, str]], str | None]:
+            ) -> tuple[
+                list[tuple[str, str | None, int, bool, str, list[str]]], str | None
+            ]:
                 rows = session.exec(
                     select(Message)
                     .where(Message.conversation_id == conversation_id)
@@ -382,11 +417,14 @@ class ConversationStore:
                 ).all()
                 conversation = session.get(Conversation, conversation_id)
                 active = conversation.active_leaf_id if conversation is not None else None
-                return [(r.id, r.parent_id, r.seq, r.pinned, r.blob) for r in rows], active
+                return [
+                    (r.id, r.parent_id, r.seq, r.pinned, r.blob, r.attachment_ids)
+                    for r in rows
+                ], active
 
             rows, active = await in_session(self._engine, work)
             tree = _Tree()
-            for row_id, parent_id, seq, pinned, blob in rows:  # pre-sorted by seq
+            for row_id, parent_id, seq, pinned, blob, attachment_ids in rows:  # pre-sorted by seq
                 message = _MESSAGE.validate_json(self._vault.decrypt_str(blob))
                 tree.add(
                     _Node(
@@ -395,6 +433,7 @@ class ConversationStore:
                         seq=seq,
                         message=message,
                         pinned=pinned,
+                        attachment_ids=attachment_ids,
                     )
                 )
             tree.active_leaf_id = active if active in tree.nodes else tree.fallback_leaf()
@@ -500,6 +539,7 @@ class ConversationStore:
             node = tree.nodes.get(view.id)
             if node is not None:
                 view.pinned = node.pinned
+                view.attachment_ids = node.attachment_ids
             siblings = tree.siblings(view.id)
             if siblings:
                 view.version_count = len(siblings)
@@ -551,21 +591,42 @@ class ConversationStore:
         self._cache.pop(conversation_id, None)
         self._locks.pop(conversation_id, None)
 
-    def record(self, conversation_id: str, new_messages: list[ModelMessage]) -> None:
+    def record(
+        self,
+        conversation_id: str,
+        new_messages: list[ModelMessage],
+        attachment_ids: list[str] | None = None,
+        marker: str | None = None,
+    ) -> None:
         """Hot path: extend the tree off the active leaf and queue the durable write.
 
         Only projects and serializes here (no vault) — the drainer encrypts just
         before the write, on the lock-aware side of the queue. New messages branch
-        automatically when a prior regenerate/edit moved the active leaf back."""
+        automatically when a prior regenerate/edit moved the active leaf back.
+        ``attachment_ids``/``marker`` belong to the turn's user request (the first one):
+        the ids are stamped on its node + row (chip rendering), and when a ``marker`` is
+        given the request's attachment content is stripped to it before serialize — so
+        the file is never replayed into context on a later turn. Stripping lives here
+        (not in the engine) because *what the durable blob contains* is the store's job."""
         if not new_messages:
             return
         tree = self._cache.setdefault(conversation_id, _Tree())
         added = tree.append_chain(new_messages)
         rows: list[_Row] = []
+        stamped = False
         for node in added:
+            # The attached files belong to this turn's user request (the first one); strip
+            # its content to the marker and stamp the ids before we project/serialize.
+            if not stamped and getattr(node.message, "kind", "") == "request":
+                if attachment_ids:
+                    node.attachment_ids = list(attachment_ids)
+                with_attachment_marker(node.message, marker or "")
+                stamped = True
             kind, text = _project(node.message)
             blob = _MESSAGE.dump_json(node.message).decode()
-            rows.append((node.id, node.parent_id, node.seq, kind, text, blob))
+            rows.append(
+                (node.id, node.parent_id, node.seq, kind, text, blob, node.attachment_ids)
+            )
         self._worker.submit(
             _PersistJob(
                 kind="messages",
@@ -730,7 +791,7 @@ class ConversationStore:
             conversation = session.get(Conversation, job.conversation_id)
             if conversation is None:
                 return
-            for row_id, parent_id, seq, kind, text, blob in job.rows:
+            for row_id, parent_id, seq, kind, text, blob, attachment_ids in job.rows:
                 model, dim, vector_enc = vectors.get(row_id, (None, None, None))
                 session.add(
                     Message(
@@ -741,6 +802,7 @@ class ConversationStore:
                         kind=kind,
                         text=self._vault.encrypt_str(text),
                         blob=self._vault.encrypt_str(blob),
+                        attachment_ids=attachment_ids,
                         embedding_enc=vector_enc,
                         embedding_model=model,
                         embedding_dim=dim,
