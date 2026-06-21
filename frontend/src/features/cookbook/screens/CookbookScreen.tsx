@@ -1,21 +1,19 @@
 import { createSignal, Show, Suspense, type JSX } from "solid-js";
 import {
-  EmptyState,
   InstrumentBand,
   LoadingText,
   NotConnectedOverlay,
   PageHeader,
-  Panel,
-  Row,
   Stack,
   StatusFlag,
   Tabs,
-  Text,
 } from "~/ui";
 import { useHardware } from "../data";
 import { EmbeddingPanel } from "../components/EmbeddingPanel";
+import { EmbeddingServePanel } from "../components/EmbeddingServePanel";
 import { ComparePanel } from "../components/ComparePanel";
 import { GetStartedPanel } from "../components/GetStartedPanel";
+import { LocalModelsPanel } from "../components/LocalModelsPanel";
 
 export function CookbookScreen(): JSX.Element {
   const hardware = useHardware();
@@ -81,52 +79,29 @@ export function CookbookScreen(): JSX.Element {
         onChange={setTab}
       />
 
-      {/* LOCAL MODELS shows the live hardware readout (above) plus a signpost: local
-          download & serve isn't wired yet, so it points to Get Started and external
-          model catalogues rather than a leaderboard. */}
+      {/* LOCAL MODELS shows the live hardware readout (above) plus the recommended
+          inference engines, the curated catalog for this host, and the managed
+          models with download / serve / stop / delete controls. */}
       <Show when={tab() === "local"}>
-        <Panel label="LOCAL MODELS" flush>
-          <EmptyState
-            icon="cpu"
-            message="LOCAL SERVE COMING SOON"
-            hint="Local download & serve is coming. To run a model now, set one up in Get Started."
-            action={
-              <Row gap={4} align="center">
-                <a
-                  href="https://huggingface.co/models"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="underline-offset-2 hover:underline"
-                >
-                  <Text variant="label" tone="info">
-                    Browse models online ↗
-                  </Text>
-                </a>
-                <a
-                  href="https://openrouter.ai/models"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="underline-offset-2 hover:underline"
-                >
-                  <Text variant="label" tone="info">
-                    OpenRouter models ↗
-                  </Text>
-                </a>
-              </Row>
-            }
-          />
-        </Panel>
+        <LocalModelsPanel />
       </Show>
 
       <Show when={tab() === "getstarted"}>
         <GetStartedPanel />
       </Show>
 
+      {/* EMBEDDING is partly wired: the serve-locally affordance is connected
+          (download + serve a GGUF embedding model, bound to the embedding role);
+          the model-swap + index-stats UI below is still mock, so it keeps the
+          inline NOT CONNECTED overlay. */}
       <Show when={tab() === "embedding"}>
-        <div class="relative">
-          <EmbeddingPanel />
-          <NotConnectedOverlay />
-        </div>
+        <Stack gap={6}>
+          <EmbeddingServePanel />
+          <div class="relative">
+            <EmbeddingPanel />
+            <NotConnectedOverlay />
+          </div>
+        </Stack>
       </Show>
 
       <Show when={tab() === "compare"}>

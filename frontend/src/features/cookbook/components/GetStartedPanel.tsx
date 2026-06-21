@@ -21,6 +21,7 @@ import {
   presetToEndpointInput,
 } from "../presets";
 import { connectAndSelectEndpoint, useRemoteEndpoints } from "../data";
+import { LocalSetupForm } from "./LocalSetupForm";
 
 /** The guided "it just works" setup: pick a provider preset → paste a key →
  *  "Connect & use this". The backend tests the connection and a sensible default
@@ -32,8 +33,8 @@ import { connectAndSelectEndpoint, useRemoteEndpoints } from "../data";
 export function GetStartedPanel(): JSX.Element {
   const endpoints = useRemoteEndpoints();
 
-  // `null` = the two-choice entry; "remote" = the guided form is open.
-  const [mode, setMode] = createSignal<null | "remote">(null);
+  // `null` = the two-choice entry; "remote"/"local" = that guided form is open.
+  const [mode, setMode] = createSignal<null | "remote" | "local">(null);
   const [presetId, setPresetId] = createSignal(PROVIDER_PRESETS[0].id);
   const [apiKey, setApiKey] = createSignal("");
   const [connecting, setConnecting] = createSignal(false);
@@ -92,9 +93,9 @@ export function GetStartedPanel(): JSX.Element {
       <Panel label="GET STARTED">
         <Stack gap={4}>
           <Text variant="micro" tone="dim">
-            Connect a model and start chatting. Pick a provider, paste a key,
-            and we wire it up — testing the connection and selecting a model for
-            you.
+            Connect a model and start chatting — bring your own remote API, or
+            download and serve one locally on this machine. Either way we wire
+            it up and select a model for you.
           </Text>
 
           {/* Two-choice entry. */}
@@ -114,20 +115,26 @@ export function GetStartedPanel(): JSX.Element {
                   </Text>
                 </Stack>
               </button>
-              <div class="flex-1 cursor-not-allowed border border-line bg-surface p-4 opacity-40">
+              <button
+                type="button"
+                onClick={() => setMode("local")}
+                class="flex-1 border border-line bg-surface p-4 text-left transition-colors hover:border-bright"
+              >
                 <Stack gap={1}>
-                  <Row gap={2} align="center">
-                    <Text variant="label" tone="default">
-                      RUN LOCALLY
-                    </Text>
-                    <StatusFlag status="idle">COMING SOON</StatusFlag>
-                  </Row>
+                  <Text variant="label" tone="bright">
+                    RUN LOCALLY
+                  </Text>
                   <Text variant="micro" tone="dim">
                     Download and serve a model on this machine.
                   </Text>
                 </Stack>
-              </div>
+              </button>
             </Row>
+          </Show>
+
+          {/* Guided local-serve flow. */}
+          <Show when={mode() === "local"}>
+            <LocalSetupForm onDone={() => setMode(null)} />
           </Show>
 
           {/* Guided remote-API form. */}

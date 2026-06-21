@@ -46,3 +46,89 @@ export interface GuidedConnectInput {
   /** The pasted key — empty when the preset needs none (e.g. a local server). */
   apiKey: string;
 }
+
+// --- Local model serving (LOCAL MODELS tab) --------------------------------
+
+/** A local inference engine Odysseus can serve models with. */
+export type EngineKind = "llama.cpp" | "mlx";
+
+/** What a model is served for. */
+export type Workload = "chat" | "embedding" | "vision";
+
+/** Lifecycle state of a managed (downloaded/served) model. */
+export type ServeState =
+  | "stopped"
+  | "downloading"
+  | "starting"
+  | "running"
+  | "error";
+
+/** A curated catalog model the host can run on a given engine — display-only. */
+export interface CatalogEntry {
+  /** Hugging Face repo id (the durable identity). */
+  repo: string;
+  /** Human label for the row. */
+  label: string;
+  engine: EngineKind;
+  workload: Workload;
+  /** Parameter count, display-formatted (e.g. "8B"), or null when unknown. */
+  params: string | null;
+  /** Quantization tag (e.g. "Q4_K_M"), or null. */
+  quant: string | null;
+  /** Approximate on-disk size in bytes, or null when unknown. */
+  approxBytes: number | null;
+  /** Whether the model supports native tool-calling. */
+  nativeTools: boolean;
+  /** Maximum context window in tokens, or null when unknown. */
+  contextWindow: number | null;
+  /** Short operator-facing note, or null. */
+  notes: string | null;
+}
+
+/** A ranked engine recommendation for the current host. */
+export interface EngineRecommendation {
+  engine: EngineKind;
+  /** 1-based rank; rank 1 leads. */
+  rank: number;
+  /** Whether the engine can run on this host right now. */
+  available: boolean;
+  /** Why this engine is (or isn't) recommended. */
+  reason: string;
+  /** The workloads this engine covers on this host. */
+  workloads: Workload[];
+  /** A small curated set of models to run on this engine. */
+  recommendedModels: CatalogEntry[];
+}
+
+/** Live download progress for a managed model — mirrors the backend's HF download
+ *  stream. `fraction` is 0..1 (not a percent); `totalBytes`/`fraction` are null
+ *  until the backend knows the size, which is when a determinate bar can show. */
+export interface DownloadProgress {
+  /** Bytes downloaded so far. */
+  downloadedBytes: number;
+  /** Total bytes to download, or null when unknown. */
+  totalBytes: number | null;
+  /** Completion fraction in 0..1, or null when unknown. */
+  fraction: number | null;
+  /** The file currently downloading, or null. */
+  file: string | null;
+}
+
+/** A model Odysseus is managing (downloaded and/or served). */
+export interface ManagedModel {
+  id: string;
+  engine: EngineKind;
+  workload: Workload;
+  /** Hugging Face repo id. */
+  hfRepo: string;
+  quant: string | null;
+  state: ServeState;
+  /** The endpoint this model is served through, when running. */
+  endpointId: string | null;
+  endpointName: string | null;
+  port: number | null;
+  /** The last error string when `state === "error"`. */
+  lastError: string | null;
+  /** Live download progress, present while `state === "downloading"`. */
+  progress: DownloadProgress | null;
+}

@@ -62,3 +62,10 @@ class WebFetchError(OdysseusError):
     """A web fetch failed for a single URL in a way the caller can retry against a
     different source — a network error, a non-OK status, too many redirects, or a
     page with no extractable content. Distinct from a missing capability."""
+
+
+class ServingError(OdysseusError):
+    """A local model-serving action failed in a way the operator can act on — a
+    download that couldn't fetch the repo, an engine runtime that wouldn't install
+    or start, or a request against an engine that isn't available on this host.
+    Carries a plain-language message; never contains a secret (local servers have none)."""

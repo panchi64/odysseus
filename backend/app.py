@@ -38,6 +38,7 @@ from routes import (
     previews,
     runs,
     search,
+    serving,
     uploads,
 )
 from routes.deps import OPERATOR_ID
@@ -65,6 +66,7 @@ from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.serving import ServingPaths, ServingService
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -209,6 +211,21 @@ async def lifespan(app: FastAPI):
     app.state.embedding_reindexer = EmbeddingReindexer(
         registry, app.state.memory, app.state.conversations, chunk_store
     )
+    # Local model serving — download a HuggingFace model and supervise an inference
+    # engine (llama.cpp universal baseline; MLX on Apple Silicon) as a subprocess that
+    # registers as a 127.0.0.1 endpoint. Binding a freshly-served embedding model heals
+    # the corpus via the reindexer (built just above). Engines from a prior process can't
+    # be adopted across a restart, so reconcile clean-slates any mid-flight rows
+    # (best-effort, never blocks startup); shutdown stops them gracefully in `finally`.
+    app.state.serving = ServingService(
+        engine,
+        vault,
+        registry,
+        app.state.cookbook,
+        ServingPaths(settings.data_dir),
+        reindexer=app.state.embedding_reindexer,
+    )
+    await app.state.serving.reconcile_on_startup()
     folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
     # The documents surface: an in-app source whose bodies are chunked into the same
     # corpus_chunk store as folders. The DocumentStore owns the rows and calls the
@@ -351,6 +368,7 @@ async def lifespan(app: FastAPI):
         if not backfill.done():
             backfill.cancel()
         app.state.embedding_reindexer.shutdown()
+        await app.state.serving.shutdown()
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()
@@ -392,6 +410,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(overview.router)
     app.include_router(models.router)
     app.include_router(cookbook.router)
+    app.include_router(serving.router)
     app.include_router(memory.router)
     app.include_router(documents.router)
     app.include_router(uploads.router)

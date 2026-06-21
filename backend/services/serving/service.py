@@ -1,0 +1,637 @@
+"""ServingService — the capability facade for local model serving.
+
+The single home for the lifecycle logic the route calls (and, later, an
+approval-gated agent tool). A served model is registered as a normal
+``ModelEndpoint`` so it flows through the existing resolve→role→chat path with no
+agent-engine changes; this service owns everything around that — recommending an
+engine, downloading the model, supervising the engine subprocess, and tracking
+the managed-model rows.
+
+Built incrementally per the phased plan. The MLX adapter is the remaining slice.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import suppress
+from pathlib import Path
+from typing import Protocol
+
+from sqlalchemy import Engine
+from sqlmodel import Session, select
+
+from core.db import in_session
+from core.exceptions import NotFoundError, ServingError
+from core.vault import Vault
+from models._fields import utcnow
+from models.serving import ManagedModel
+from services.cookbook import CookbookService
+from services.registry import ModelRegistry
+
+from . import recommend
+from .adapters import EngineAdapter, build_adapters
+from .catalog import CATALOG
+from .download import DownloadManager
+from .models import (
+    CatalogEntry,
+    EngineKind,
+    EngineRecommendation,
+    ManagedModelView,
+    ServeState,
+    Workload,
+)
+from .paths import ServingPaths
+from .supervisor import ProcessSupervisor
+
+logger = logging.getLogger(__name__)
+
+# States that imply a live process or in-flight job — what a restart must clean up,
+# since the supervisor's process table didn't survive the prior process.
+_ACTIVE_STATES = frozenset(
+    {ServeState.running.value, ServeState.starting.value, ServeState.downloading.value}
+)
+# States that hold memory right now — what the headroom guard sums against the budget.
+_RESIDENT_STATES = frozenset({ServeState.running.value, ServeState.starting.value})
+
+
+def _human_gb(n: int) -> str:
+    return f"{n / 1024**3:.1f} GB"
+
+
+class Reindexer(Protocol):
+    """The slice of the embedding reindexer this service needs — just the trigger.
+    Kept as a Protocol so serving stays decoupled from ``services.reindex``."""
+
+    def trigger(self, owner_id: str) -> None: ...
+
+
+class ServingService:
+    def __init__(
+        self,
+        db_engine: Engine,
+        vault: Vault,
+        registry: ModelRegistry,
+        cookbook: CookbookService,
+        paths: ServingPaths,
+        *,
+        adapters: dict[EngineKind, EngineAdapter] | None = None,
+        supervisor: ProcessSupervisor | None = None,
+        reindexer: Reindexer | None = None,
+    ) -> None:
+        self._db = db_engine
+        self._vault = vault
+        self._registry = registry
+        self._cookbook = cookbook
+        self._paths = paths
+        self._downloads = DownloadManager(vault)
+        self._adapters = adapters if adapters is not None else build_adapters(paths)
+        self._supervisor = supervisor or ProcessSupervisor()
+        self._reindexer = reindexer
+        # In-flight serve jobs (download → spawn → register), one per managed model.
+        self._serve_tasks: dict[str, asyncio.Task] = {}
+        # Serializes serve admission so the headroom check and the state reservation it
+        # guards are atomic (two concurrent serves can't both pass a stale resident set).
+        self._serve_lock = asyncio.Lock()
+
+    # --- recommendation + catalog (pure, hardware-driven) -----------------
+
+    async def recommend_engine(self, owner_id: str) -> list[EngineRecommendation]:
+        profile = await self._cookbook.detect()
+        return recommend.recommend(profile)
+
+    async def list_catalog(self, engine: EngineKind, workload: Workload) -> list[CatalogEntry]:
+        budget = recommend.vram_budget(await self._cookbook.detect())
+        return recommend.models_for(engine, workload, budget)
+
+    # --- engine selection -------------------------------------------------
+
+    def _adapter(self, engine: EngineKind) -> EngineAdapter:
+        adapter = self._adapters.get(engine)
+        if adapter is None:
+            raise ServingError(f"the {engine.value} engine is not supported on this host")
+        return adapter
+
+    async def _ready_adapter(self, engine: EngineKind) -> EngineAdapter:
+        """An adapter that can actually serve here — available and with its runtime in
+        place (located or fetched). Used by ``serve``; ``download`` needs only format."""
+        adapter = self._adapter(engine)
+        if not await adapter.is_available():
+            raise ServingError(f"the {engine.value} engine is not available on this host")
+        await adapter.ensure_engine()
+        return adapter
+
+    # --- headroom guard ---------------------------------------------------
+
+    def _catalog_bytes(self, engine: EngineKind, repo: str) -> int | None:
+        """The curated footprint estimate for a model, or ``None`` for a repo we can't
+        size (a free-text one not in the catalog)."""
+        for e in CATALOG:
+            if e.engine == engine and e.repo == repo and e.approx_bytes is not None:
+                return e.approx_bytes
+        return None
+
+    def _catalog_context_window(self, engine: EngineKind, repo: str) -> int | None:
+        """The curated context window for a model, or ``None`` for a free-text repo not
+        in the catalog (falls back to the adapter's hint at registration)."""
+        for e in CATALOG:
+            if e.engine == engine and e.repo == repo:
+                return e.context_window
+        return None
+
+    async def _check_headroom(self, owner_id: str, engine: EngineKind, repo: str) -> None:
+        """Pre-flight memory guard: refuse to serve a model that can't fit alongside what's
+        already resident, with a plain-language message naming the models to stop. Purely
+        a fast-fail before any download/spawn. Best-effort by design — a model we can't
+        size (free-text, not in the catalog) or an unknown budget skips the check rather
+        than blocking a serve we can't reason about (degrade toward allowing)."""
+        need = self._catalog_bytes(engine, repo)
+        if need is None:
+            return
+        usable = recommend.usable_budget(recommend.vram_budget(await self._cookbook.detect()))
+        if usable is None:
+            return
+        resident = [
+            r
+            for r in await self._list_rows(owner_id)
+            if r.state in _RESIDENT_STATES and r.hf_repo != repo
+        ]
+        committed = sum(
+            self._catalog_bytes(EngineKind(r.engine), r.hf_repo) or 0 for r in resident
+        )
+        if need + committed <= usable:
+            return
+        free = max(usable - committed, 0)
+        running = ", ".join(r.hf_repo for r in resident) or "none currently"
+        raise ServingError(
+            f"not enough memory to serve {repo}: it needs ~{_human_gb(need)} but only "
+            f"~{_human_gb(free)} of the ~{_human_gb(usable)} budget is free. "
+            f"Stop a running model to make room (currently running: {running})."
+        )
+
+    # --- downloads --------------------------------------------------------
+
+    async def download(
+        self,
+        owner_id: str,
+        engine: EngineKind,
+        repo: str,
+        *,
+        workload: Workload = Workload.chat,
+        quant: str | None = None,
+    ) -> ManagedModelView:
+        """Download a model's artifact off the request path. Returns the managed-model
+        row immediately (state ``downloading``); the UI polls ``status`` for progress."""
+        row = await self._get_or_create_row(owner_id, engine, repo, workload, quant)
+        # Re-downloading must not overwrite an artifact a live engine has memory-mapped:
+        # tear down any in-flight serve/engine for this model and disable its endpoint
+        # first, then reset the row to a clean downloading state.
+        await self._halt(owner_id, row.id)
+        if row.endpoint_id:
+            with suppress(NotFoundError):
+                await self._registry.update_endpoint(owner_id, row.endpoint_id, enabled=False)
+        await self._update_row(
+            row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
+        )
+        self._start_download(row, engine, repo, quant)
+        refreshed = await self._get_row(row.id)
+        return self._to_view(refreshed or row)
+
+    def _start_download(
+        self, row: ManagedModel, engine: EngineKind, repo: str, quant: str | None
+    ) -> None:
+        """Kick off the background fetch for an existing row (shared by download + serve)."""
+        run = self._adapter(engine).download_run(repo, quant)
+        dest = self._paths.model_dir(engine.value, repo)
+        self._downloads.start(row.id, dest, run=run, on_complete=self._make_on_complete(row.id))
+
+    def _make_on_complete(self, managed_id: str):
+        async def on_complete(artifact, error) -> None:
+            if error:
+                await self._update_row(managed_id, state=ServeState.error, last_error=error)
+            else:
+                await self._update_row(
+                    managed_id,
+                    state=ServeState.stopped,
+                    artifact_path=str(artifact),
+                    last_error=None,
+                )
+
+        return on_complete
+
+    # --- serve / stop / delete -------------------------------------------
+
+    async def serve(
+        self,
+        owner_id: str,
+        engine: EngineKind,
+        repo: str,
+        *,
+        role: str | None = None,
+        workload: Workload = Workload.chat,
+        quant: str | None = None,
+    ) -> ManagedModelView:
+        """Make a model usable: download (if needed) → launch the engine → register it
+        as an endpoint → bind ``role`` (when given). **Non-blocking** — returns the row
+        immediately and runs the slow work in the background, so the UI polls ``status``
+        for ``downloading`` → ``starting`` → ``running`` (and surfaces ``error`` with a
+        reason). Engine availability is checked up front so an unsupported engine fails
+        fast."""
+        adapter = self._adapter(engine)
+        if not await adapter.is_available():
+            raise ServingError(f"the {engine.value} engine is not available on this host")
+        async with self._serve_lock:
+            # Admission is serialized so two concurrent serves can't both pass the headroom
+            # check against a stale resident set and then oversubscribe memory. The check
+            # runs before the row is created, so a refused serve leaves no trace.
+            await self._check_headroom(owner_id, engine, repo)
+            row = await self._get_or_create_row(owner_id, engine, repo, workload, quant)
+            # Cancel any prior in-flight serve for this model so it can't finish and
+            # resurrect it; the new background job stops any engine still running for this
+            # id before it re-spawns (supervisor.spawn clears the prior process first).
+            await self._cancel_serve_task(row.id)
+            await self._update_row(
+                row.id, state=ServeState.starting, last_error=None, port=None, pid=None
+            )
+            task = asyncio.create_task(
+                self._serve_bg(owner_id, row.id, engine, repo, role, quant)
+            )
+            self._serve_tasks[row.id] = task
+            task.add_done_callback(self._make_serve_task_pruner(row.id))
+        refreshed = await self._get_row(row.id)
+        return self._to_view(refreshed or row)
+
+    async def _serve_bg(
+        self,
+        owner_id: str,
+        managed_id: str,
+        engine: EngineKind,
+        repo: str,
+        role: str | None,
+        quant: str | None,
+    ) -> None:
+        """The background half of ``serve``: ensure the runtime, download if needed,
+        spawn, register, bind. All failures land on the row as ``error`` + a reason."""
+        try:
+            adapter = await self._ready_adapter(engine)
+            row = await self._get_row(managed_id)
+            if row is None:
+                return
+            artifact = Path(row.artifact_path) if row.artifact_path else None
+            if artifact is None or not artifact.exists():
+                await self._update_row(managed_id, state=ServeState.downloading, last_error=None)
+                self._start_download(row, engine, repo, quant)
+                await self._downloads.wait(managed_id)
+                row = await self._get_row(managed_id)
+                if row is None or row.state == ServeState.error.value:
+                    return  # download failed — the row already carries the error
+                artifact = Path(row.artifact_path) if row.artifact_path else None
+            if artifact is None or not artifact.exists():
+                raise ServingError("the model artifact is missing after download")
+
+            await self._update_row(managed_id, state=ServeState.starting, last_error=None)
+            model_id = adapter.resolved_model_id(repo, artifact)
+            port = self._supervisor.allocate_port()
+            spec = adapter.serve_spec(artifact, port, Workload(row.workload), model_id)
+            base_url = adapter.health_url(port)
+            proc = await self._supervisor.spawn(
+                managed_id,
+                spec,
+                port,
+                base_url=base_url,
+                on_crash=self._make_on_crash(),
+                log_path=self._paths.log_file(managed_id),
+            )
+            endpoint = await self._ensure_endpoint(owner_id, row, base_url, model_id, adapter)
+            # Bind the role before declaring "running", so that state means fully usable
+            # (a rejected bind surfaces as last_error but leaves the engine up).
+            bind_error = (
+                await self._bind_role(
+                    owner_id, role, endpoint.id, model_id, Workload(row.workload)
+                )
+                if role is not None
+                else None
+            )
+            await self._update_row(
+                managed_id,
+                state=ServeState.running,
+                port=port,
+                pid=proc.pid,
+                endpoint_id=endpoint.id,
+                last_error=bind_error,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ServingError as exc:
+            await self._update_row(managed_id, state=ServeState.error, last_error=str(exc))
+        except Exception:
+            logger.exception("serving: serve failed for %s", managed_id)
+            await self._update_row(
+                managed_id, state=ServeState.error, last_error="serving the model failed"
+            )
+
+    async def _bind_role(
+        self,
+        owner_id: str,
+        role: str,
+        endpoint_id: str,
+        model_id: str,
+        workload: Workload,
+    ) -> str | None:
+        """Bind ``role`` to the served endpoint. Returns an error string when the
+        registry rejects the bind (e.g. a non-tool-calling model for a tool-driving
+        role, or a model that doesn't actually serve vectors) so the caller can surface
+        it as ``last_error`` without tearing the running engine down — else ``None``."""
+        # The embedding role pins the model explicitly (no per-conversation picker);
+        # chat roles use the endpoint's default (which we set to model_id).
+        pin = model_id if workload == Workload.embedding else None
+        # A changed embedding binding strands existing vectors (EMB-2 segregates by
+        # model), so capture the prior binding to decide whether a reindex is needed.
+        prev = (
+            await self._registry.get_role_binding(owner_id, role)
+            if role == "embedding"
+            else None
+        )
+        try:
+            await self._registry.set_role(owner_id, role, [endpoint_id], model=pin)
+        except ValueError as exc:
+            return str(exc)
+        # Heal semantic recall in the background when the embedding endpoint/model
+        # actually changed — the same trigger the manual role-set route fires.
+        if (
+            role == "embedding"
+            and self._reindexer is not None
+            and prev != ([endpoint_id], pin)
+        ):
+            self._reindexer.trigger(owner_id)
+        return None
+
+    def _make_serve_task_pruner(self, managed_id: str):
+        """A done-callback that drops a finished serve task from the table — but only if
+        it's still the current one (a re-serve may have replaced it)."""
+
+        def prune(task: asyncio.Task) -> None:
+            if self._serve_tasks.get(managed_id) is task:
+                self._serve_tasks.pop(managed_id, None)
+
+        return prune
+
+    async def _cancel_serve_task(self, managed_id: str) -> None:
+        """Cancel and await any in-flight serve job for a model, so a stop / delete /
+        re-serve can't be silently undone by the background job finishing afterward
+        (which would resurrect the engine and re-enable its endpoint)."""
+        task = self._serve_tasks.pop(managed_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _halt(self, owner_id: str, managed_id: str) -> None:
+        """Tear down everything live for a model: the in-flight serve task, the download
+        job, and the running engine. Leaves the row/endpoint for the caller to settle."""
+        await self._cancel_serve_task(managed_id)
+        await self._downloads.cancel(managed_id)
+        await self._supervisor.stop(managed_id)
+
+    async def stop(self, owner_id: str, managed_id: str) -> ManagedModelView:
+        row = await self._get_owned_row(owner_id, managed_id)
+        await self._halt(owner_id, managed_id)
+        if row.endpoint_id:
+            with suppress(NotFoundError):
+                await self._registry.update_endpoint(owner_id, row.endpoint_id, enabled=False)
+        await self._update_row(managed_id, state=ServeState.stopped, port=None, pid=None)
+        refreshed = await self._get_row(managed_id)
+        return self._to_view(refreshed or row)
+
+    async def delete(self, owner_id: str, managed_id: str) -> None:
+        row = await self._get_owned_row(owner_id, managed_id)
+        await self._halt(owner_id, managed_id)
+        if row.endpoint_id:
+            with suppress(NotFoundError):
+                await self._registry.delete_endpoint(owner_id, row.endpoint_id)
+        await self._delete_row(managed_id)
+
+    def _make_on_crash(self):
+        async def on_crash(managed_id: str, returncode: int | None) -> None:
+            await self._update_row(
+                managed_id,
+                state=ServeState.error,
+                port=None,
+                pid=None,
+                last_error=f"the engine exited unexpectedly (code {returncode})",
+            )
+            row = await self._get_row(managed_id)
+            if row and row.endpoint_id:
+                with suppress(NotFoundError):
+                    await self._registry.update_endpoint(
+                        row.owner_id, row.endpoint_id, enabled=False
+                    )
+
+        return on_crash
+
+    async def _ensure_endpoint(
+        self,
+        owner_id: str,
+        row: ManagedModel,
+        base_url: str,
+        model_id: str,
+        adapter: EngineAdapter,
+    ):
+        """Register (or refresh) the registry endpoint for a served model. Re-serving
+        reuses the same endpoint so its role bindings survive a stop/start cycle."""
+        if row.endpoint_id:
+            try:
+                await self._registry.update_endpoint(
+                    owner_id,
+                    row.endpoint_id,
+                    base_url=base_url,
+                    model=model_id,
+                    enabled=True,
+                    native_tools=adapter.native_tools_default,
+                )
+                return await self._registry.get_endpoint(owner_id, row.endpoint_id)
+            except NotFoundError:
+                pass  # endpoint deleted out from under us — recreate below
+        # Prefer the catalog's real context window for this model; fall back to the
+        # adapter's generic hint for a free-text repo we don't have a curated value for.
+        context_window = (
+            self._catalog_context_window(EngineKind(row.engine), row.hf_repo)
+            or adapter.context_window_hint
+        )
+        return await self._registry.create_endpoint(
+            owner_id,
+            name=f"Local · {row.hf_repo}",
+            base_url=base_url,
+            model=model_id,
+            native_tools=adapter.native_tools_default,
+            vision=Workload(row.workload) == Workload.vision,
+            context_window=context_window,
+        )
+
+    # --- managed-model status --------------------------------------------
+
+    async def status(self, owner_id: str) -> list[ManagedModelView]:
+        """Every managed model's current state, with live download progress and the
+        bound endpoint's name overlaid. The persisted row state is the source of truth."""
+        rows = await self._list_rows(owner_id)
+        endpoints = await self._registry.list_endpoints(owner_id)
+        names = {e.id: e.name for e in endpoints}
+        views: list[ManagedModelView] = []
+        for row in rows:
+            view = self._to_view(row)
+            if row.endpoint_id:
+                view.endpoint_name = names.get(row.endpoint_id)
+            progress = self._downloads.progress(row.id)
+            if progress is not None:
+                view.progress = progress
+            views.append(view)
+        return views
+
+    async def reconcile_on_startup(self) -> None:
+        """Clean up after a prior process: any model left mid-flight (running / starting
+        / downloading) is clean-slated. We can't adopt an orphan engine — its process
+        handle didn't survive the restart — so we best-effort terminate the recorded pid,
+        mark the row ``stopped`` (clearing port/pid), and disable its endpoint so resolve
+        skips the dead port while the role binding survives. Re-serving then allocates a
+        fresh port. Fully best-effort: a reconcile failure must never block startup."""
+        try:
+            rows = await self._active_rows()
+        except Exception:
+            logger.exception("serving: reconcile could not load managed models")
+            return
+        for row in rows:
+            if row.pid is not None:
+                self._supervisor.terminate_orphan(row.pid)
+            with suppress(Exception):
+                await self._update_row(
+                    row.id, state=ServeState.stopped, port=None, pid=None
+                )
+            if row.endpoint_id:
+                with suppress(Exception):
+                    await self._registry.update_endpoint(
+                        row.owner_id, row.endpoint_id, enabled=False
+                    )
+        if rows:
+            logger.info("serving: reconciled %d managed model(s) to stopped", len(rows))
+
+    async def shutdown(self) -> None:
+        """Stop every running engine and cancel in-flight serve/download work (lifespan
+        teardown)."""
+        for task in list(self._serve_tasks.values()):
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        await self._supervisor.stop_all()
+        await self._downloads.shutdown()
+
+    async def _list_rows(self, owner_id: str) -> list[ManagedModel]:
+        def work(session: Session) -> list[ManagedModel]:
+            return list(
+                session.exec(
+                    select(ManagedModel)
+                    .where(ManagedModel.owner_id == owner_id)
+                    .order_by(ManagedModel.created_at)
+                ).all()
+            )
+
+        return await in_session(self._db, work)
+
+    async def _active_rows(self) -> list[ManagedModel]:
+        """Every owner's managed models still in a non-terminal state — what startup
+        reconcile must clean-slate."""
+
+        def work(session: Session) -> list[ManagedModel]:
+            return list(
+                session.exec(
+                    select(ManagedModel).where(ManagedModel.state.in_(_ACTIVE_STATES))  # type: ignore[attr-defined]
+                ).all()
+            )
+
+        return await in_session(self._db, work)
+
+    async def _get_row(self, managed_id: str) -> ManagedModel | None:
+        def work(session: Session) -> ManagedModel | None:
+            return session.get(ManagedModel, managed_id)
+
+        return await in_session(self._db, work)
+
+    async def _get_owned_row(self, owner_id: str, managed_id: str) -> ManagedModel:
+        row = await self._get_row(managed_id)
+        if row is None or row.owner_id != owner_id:
+            raise NotFoundError(f"managed model {managed_id!r} not found")
+        return row
+
+    async def _delete_row(self, managed_id: str) -> None:
+        def work(session: Session) -> None:
+            row = session.get(ManagedModel, managed_id)
+            if row is not None:
+                session.delete(row)
+
+        await in_session(self._db, work)
+
+    async def _get_or_create_row(
+        self,
+        owner_id: str,
+        engine: EngineKind,
+        repo: str,
+        workload: Workload,
+        quant: str | None,
+    ) -> ManagedModel:
+        """One row per (owner, engine, repo) — re-downloading reuses it."""
+
+        def work(session: Session) -> ManagedModel:
+            existing = session.exec(
+                select(ManagedModel).where(
+                    ManagedModel.owner_id == owner_id,
+                    ManagedModel.engine == engine.value,
+                    ManagedModel.hf_repo == repo,
+                )
+            ).first()
+            if existing is not None:
+                existing.workload = workload.value
+                existing.quant = quant
+                existing.updated_at = utcnow()
+                session.add(existing)
+                session.flush()
+                session.refresh(existing)
+                return existing
+            row = ManagedModel(
+                owner_id=owner_id,
+                engine=engine.value,
+                workload=workload.value,
+                hf_repo=repo,
+                quant=quant,
+                state=ServeState.downloading.value,
+            )
+            session.add(row)
+            session.flush()
+            session.refresh(row)
+            return row
+
+        return await in_session(self._db, work)
+
+    async def _update_row(self, managed_id: str, **fields) -> None:
+        def work(session: Session) -> None:
+            row = session.get(ManagedModel, managed_id)
+            if row is None:
+                return
+            for key, value in fields.items():
+                setattr(row, key, value.value if isinstance(value, ServeState) else value)
+            row.updated_at = utcnow()
+            session.add(row)
+
+        await in_session(self._db, work)
+
+    def _to_view(self, row: ManagedModel) -> ManagedModelView:
+        return ManagedModelView(
+            id=row.id,
+            engine=EngineKind(row.engine),
+            workload=Workload(row.workload),
+            hf_repo=row.hf_repo,
+            quant=row.quant,
+            state=ServeState(row.state),
+            endpoint_id=row.endpoint_id,
+            port=row.port,
+            last_error=row.last_error,
+        )

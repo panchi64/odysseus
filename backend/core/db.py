@@ -55,14 +55,30 @@ def make_engine(url: str) -> Engine:
     if ":memory:" in url:
         _CONN_LOCKS[engine] = threading.Lock()
 
-    # SQLite leaves foreign keys *off* per connection unless asked — without this
-    # the declared FKs (e.g. Message → Conversation) enforce nothing, so a stray
-    # conversation_id would silently orphan rows. Turn it on for every connection.
     @event.listens_for(engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _record):  # type: ignore[no-untyped-def]
+    def _configure_connection(dbapi_connection, _record):  # type: ignore[no-untyped-def]
+        # pysqlite ships a legacy transaction model: it runs DDL in autocommit and opens
+        # a transaction only before the first DML. That makes schema migrations
+        # non-atomic — a migration that fails partway leaves its already-committed
+        # leading statement (e.g. a batch rebuild's `_alembic_tmp_*` staging table)
+        # stranded, with nothing to roll it back, wedging the next startup. Setting the
+        # DBAPI isolation level to None hands transaction control to SQLAlchemy, which
+        # then issues an explicit BEGIN (see the "begin" handler) so DDL is fully
+        # transactional and a failed migration rolls back whole, residue and all.
+        dbapi_connection.isolation_level = None
+
+        # SQLite leaves foreign keys *off* per connection unless asked — without this
+        # the declared FKs (e.g. Message → Conversation) enforce nothing, so a stray
+        # conversation_id would silently orphan rows. Turn it on for every connection.
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+
+    @event.listens_for(engine, "begin")
+    def _emit_begin(connection):  # type: ignore[no-untyped-def]
+        # With pysqlite handed over to autocommit above, SQLAlchemy must emit the BEGIN
+        # itself; without this no transaction is ever opened and every statement commits.
+        connection.exec_driver_sql("BEGIN")
 
     return engine
 

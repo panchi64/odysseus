@@ -469,6 +469,11 @@ class ModelRegistry:
         if not chain_ids:
             raise DegradedCapabilityError("no embedding endpoint configured")
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
+        # A disabled endpoint is skipped everywhere, exactly as chat resolution skips it
+        # (a stopped/crashed locally-served model disables its endpoint but keeps the role
+        # binding). Degrade to keyword recall rather than resolving to the dead port.
+        if not endpoint.enabled:
+            raise DegradedCapabilityError(f"embedding endpoint {endpoint.name!r} is disabled")
         return self._to_spec(endpoint, "embedding", model_override=model)
 
     async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:

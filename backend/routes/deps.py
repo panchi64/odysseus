@@ -26,6 +26,7 @@ from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.serving import ServingService
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
 
@@ -102,6 +103,10 @@ def sandbox_sessions(request: Request) -> SandboxSessionManager | None:
 
 def cookbook(request: Request) -> CookbookService:
     return request.app.state.cookbook
+
+
+def serving(request: Request) -> ServingService:
+    return request.app.state.serving
 
 
 def credentials(request: Request) -> CredentialStore:
