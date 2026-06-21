@@ -1,25 +1,15 @@
-"""The Cookbook capability — hardware detection + hardware-fit model recommendation.
+"""The Cookbook capability — host hardware detection.
 
-`CookbookService` is the facade; the value types describe the host and the catalog.
-Download/serve (the rest of the Cookbook) build on this package as they land.
+`CookbookService` is the facade; `HardwareProfile` (and its nested types) describe the
+host. Download/serve (the rest of the Cookbook) build on this package as they land.
 """
 
 from __future__ import annotations
 
-from .models import (
-    Capabilities,
-    CatalogModel,
-    CompatibleModel,
-    HardwareProfile,
-    QuantVariant,
-)
+from .models import HardwareProfile
 from .service import CookbookService
 
 __all__ = [
-    "Capabilities",
-    "CatalogModel",
-    "CompatibleModel",
     "CookbookService",
     "HardwareProfile",
-    "QuantVariant",
 ]

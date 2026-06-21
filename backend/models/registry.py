@@ -48,6 +48,19 @@ class ModelEndpoint(SQLModel, table=True):
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
+    # Disable-without-delete: a benched endpoint keeps its config (key, capability
+    # flags, role memberships) but is skipped by resolution and hidden from the
+    # picker — so a flaky provider can be parked, then restored, without re-setup.
+    enabled: bool = True
+    # Last connection-test outcome — operator-facing health, all **cleartext**
+    # structural metadata (never the key). ``last_status`` is ``"untested"`` until
+    # the first probe; ``last_error_category`` is a stable machine token the UI maps
+    # to an icon; ``last_error_detail`` is the plain-language sentence rendered
+    # verbatim (the backend owns the wording, the frontend never categorizes).
+    last_status: str | None = None  # "ok" | "error" | "untested"
+    last_error_category: str | None = None  # connection-test category (see _categorize_probe)
+    last_error_detail: str | None = None
+    last_checked_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

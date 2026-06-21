@@ -1,9 +1,8 @@
-"""Cookbook value types — the hardware profile and the model catalog shapes.
+"""Cookbook value types — the host hardware profile.
 
 Plain Pydantic models (nothing persisted here yet, so no SQLModel / Alembic). The
 load-bearing rule is **degrade, don't crash**: every probed hardware field is
-optional, so an absent probe leaves a ``null`` rather than sinking the profile. The
-catalog/recommendation types mirror what the frontend's LOCAL MODELS tab renders.
+optional, so an absent probe leaves a ``null`` rather than sinking the profile.
 """
 
 from __future__ import annotations
@@ -25,14 +24,6 @@ class ComputeBackend(StrEnum):
     cuda = "cuda"
     rocm = "rocm"
     cpu = "cpu"
-
-
-class Suitability(StrEnum):
-    """How well a model fits the host, in the frontend's three-state vocabulary."""
-
-    nominal = "nominal"
-    warn = "warn"
-    alert = "alert"
 
 
 # --- hardware profile -------------------------------------------------------
@@ -73,8 +64,7 @@ class ServingRuntime(BaseModel):
 
 class HardwareProfile(BaseModel):
     """A snapshot of what the host can run. ``compute_backend`` is the primary
-    accelerator family; ``simulated`` marks an operator-supplied what-if profile
-    (the hardware-simulation seam) rather than a live probe."""
+    accelerator family."""
 
     cpu: CpuInfo = Field(default_factory=CpuInfo)
     memory: MemoryInfo = Field(default_factory=MemoryInfo)
@@ -82,69 +72,3 @@ class HardwareProfile(BaseModel):
     compute_backend: ComputeBackend = ComputeBackend.cpu
     platform: PlatformInfo
     runtimes: list[ServingRuntime] = Field(default_factory=list)
-    simulated: bool = False
-    source: str = "probe"  # "probe" | "simulated"
-
-
-# --- model catalog ----------------------------------------------------------
-
-
-class Capabilities(BaseModel):
-    """What a model can do — enriched from OpenRouter where available, else
-    derived from HuggingFace metadata heuristics."""
-
-    tools: bool = False
-    vision: bool = False
-    thinking: bool = False
-    embedding: bool = False
-    image_gen: bool = False
-
-
-class QuantVariant(BaseModel):
-    label: str  # "Q4_K_M", "Q8_0", "MLX-4bit", …
-    bits_per_weight: float
-    size_bytes: int  # exact on-disk download size
-
-
-class CatalogModel(BaseModel):
-    """One distinct model (quant forks collapsed into ``quants``)."""
-
-    id: str  # the HF repo id of the canonical/base model
-    name: str
-    family: str | None = None  # "qwen", "llama", "deepseek", …
-    params_b: float | None = None  # billions of parameters
-    context_default: int | None = None
-    capabilities: Capabilities = Field(default_factory=Capabilities)
-    description: str | None = None
-    license: str | None = None
-    gated: bool = False  # requires accepting terms before download
-    quants: list[QuantVariant] = Field(default_factory=list)
-    # Adoption signals (HuggingFace) — the fallback when the quality source misses.
-    created_at: str | None = None  # ISO-8601 repo creation timestamp
-    downloads: int = 0
-    likes: int = 0
-    # The active quality source's native headline figure + its label ("ELO",
-    # "INTELLIGENCE", "SCORE"), for display; None when the source doesn't rank the model.
-    quality_display: float | None = None
-    quality_metric: str | None = None
-    # 0..1 quality, stamped at build time: the source's score, else family, else adoption.
-    quality_score: float = 0.0
-
-
-class CompatibleModel(BaseModel):
-    """A single (model, quant) option scored against a hardware profile. The list is
-    ranked, not curated — there is deliberately no 'recommended' pick to maintain."""
-
-    model_id: str
-    name: str
-    params_b: float | None
-    quant: str
-    size_bytes: int
-    est_runtime_bytes: int
-    suitability: Suitability
-    fits: bool
-    capabilities: Capabilities = Field(default_factory=Capabilities)
-    quality_display: float | None = None
-    quality_metric: str | None = None
-    quality_score: float = 0.0
-    detail: str = ""

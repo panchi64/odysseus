@@ -1,6 +1,11 @@
 import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
-import { refreshEndpoints, useEndpoints } from "~/lib/stores/models";
+import {
+  refreshEndpoints,
+  setEndpointEnabled,
+  testEndpoint,
+  useEndpoints,
+} from "~/lib/stores/models";
 import type {
   EmbeddingHealth,
   EndpointInput,
@@ -12,8 +17,10 @@ import type {
 
 // The endpoint catalog (read) is owned by the shared models store so the chat
 // picker and Settings share one fetch and one type; this module owns the writes
-// (CRUD + role bindings) and the role read.
-export { useEndpoints };
+// (CRUD + role bindings) and the role read. Health probe + enable/disable are
+// also store-owned (they cascade to the shared picker) and re-exported here so
+// the screen reaches everything through this one seam.
+export { useEndpoints, testEndpoint, setEndpointEnabled };
 
 /** Map form values to the backend's snake_case body. `apiKey` undefined is
  *  omitted (leave unchanged); "" clears it. */
@@ -28,14 +35,21 @@ function toBody(input: Partial<EndpointInput>): Record<string, unknown> {
   if (input.nativeTools !== undefined) body.native_tools = input.nativeTools;
   if (input.vision !== undefined) body.vision = input.vision;
   if (input.thinking !== undefined) body.thinking = input.thinking;
+  if (input.enabled !== undefined) body.enabled = input.enabled;
   return body;
 }
 
 /* ── Endpoints (writes) ───────────────────────────────────────────────────── */
 
-export async function createEndpoint(input: EndpointInput): Promise<void> {
-  await api.post("/models/endpoints", toBody(input));
+/** Create an endpoint and return its backend id (the guided cookbook flow needs
+ *  it to test + auto-select the new connection; the Settings form ignores it). */
+export async function createEndpoint(input: EndpointInput): Promise<string> {
+  const created = await api.post<{ id: string }>(
+    "/models/endpoints",
+    toBody(input),
+  );
   refreshEndpoints();
+  return created.id;
 }
 
 export async function updateEndpoint(

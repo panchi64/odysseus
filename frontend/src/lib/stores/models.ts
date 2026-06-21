@@ -27,6 +27,18 @@ export interface ModelSelection {
   model: string;
 }
 
+/** The verdict of the last reachability probe (null until first tested). The
+ *  backend owns these tokens; the frontend renders them, never re-categorizes. */
+export type EndpointStatus = "ok" | "error" | "untested";
+export type EndpointErrorCategory =
+  | "ok"
+  | "auth"
+  | "rate_limited"
+  | "timeout"
+  | "unreachable"
+  | "bad_response"
+  | "server_error";
+
 /** The operator's view of a configured endpoint (the shared read shape). */
 export interface ModelEndpoint {
   id: string;
@@ -41,6 +53,24 @@ export interface ModelEndpoint {
   nativeTools: boolean;
   vision: boolean;
   thinking: boolean;
+  /** Whether this endpoint is active — disabled endpoints are hidden from the
+   *  picker and skipped in fallback chains (the backend enforces both). */
+  enabled: boolean;
+  /** The last probe verdict (null until first tested). */
+  lastStatus: EndpointStatus | null;
+  lastErrorCategory: EndpointErrorCategory | null;
+  /** A plain-language sentence the backend authored — rendered verbatim. */
+  lastErrorDetail: string | null;
+  /** ISO-8601 timestamp of the last probe (null until first tested). */
+  lastCheckedAt: string | null;
+}
+
+/** The result of probing one endpoint (also persisted server-side). */
+export interface EndpointTestResult {
+  status: "ok" | "error";
+  errorCategory: EndpointErrorCategory;
+  errorDetail: string;
+  checkedAt: string;
 }
 
 /** One model served by one endpoint, for the picker. */
@@ -115,6 +145,17 @@ interface EndpointView {
   native_tools: boolean;
   vision: boolean;
   thinking: boolean;
+  enabled: boolean;
+  last_status: EndpointStatus | null;
+  last_error_category: EndpointErrorCategory | null;
+  last_error_detail: string | null;
+  last_checked_at: string | null;
+}
+interface EndpointTestDTO {
+  status: "ok" | "error";
+  error_category: EndpointErrorCategory;
+  error_detail: string;
+  checked_at: string;
 }
 interface EndpointModelsDTO {
   models: string[];
@@ -134,6 +175,11 @@ export function toEndpoint(dto: EndpointView): ModelEndpoint {
     nativeTools: dto.native_tools,
     vision: dto.vision,
     thinking: dto.thinking,
+    enabled: dto.enabled,
+    lastStatus: dto.last_status,
+    lastErrorCategory: dto.last_error_category,
+    lastErrorDetail: dto.last_error_detail,
+    lastCheckedAt: dto.last_checked_at,
   };
 }
 
@@ -154,23 +200,30 @@ async function fetchEndpoints(): Promise<ModelEndpoint[]> {
   return rows.map(toEndpoint);
 }
 
+/** Discover the models one endpoint's provider serves (`GET …/{id}/models`).
+ *  The single owner of that call — discovery and the guided connect flow both go
+ *  through it. `supported` distinguishes a working-but-empty models API from one
+ *  that couldn't be reached; on any failure it reads as unsupported + empty. */
+export async function fetchEndpointModels(
+  id: string,
+): Promise<EndpointModelsDTO> {
+  try {
+    return await api.get<EndpointModelsDTO>(`/models/endpoints/${id}/models`, {
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    });
+  } catch {
+    return { models: [], supported: false };
+  }
+}
+
 async function fetchDiscovery(
   endpoints: ModelEndpoint[],
 ): Promise<EndpointResult[]> {
   return Promise.all(
     endpoints.map(async (e): Promise<EndpointResult> => {
-      let models: string[] = [];
-      let supported = false;
-      try {
-        const res = await api.get<EndpointModelsDTO>(
-          `/models/endpoints/${e.id}/models`,
-          { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) },
-        );
-        models = res.models;
-        supported = res.supported;
-      } catch {
-        /* unreachable / timeout → unsupported, fall back to the default */
-      }
+      const res = await fetchEndpointModels(e.id);
+      let models = res.models;
+      const supported = res.supported;
       const discovered = models.length;
       // Always keep the configured default selectable, leading the list.
       if (e.model && !models.includes(e.model)) models = [e.model, ...models];
@@ -212,8 +265,41 @@ const store = createRoot(() => {
     fetchEndpoints,
   );
 
+  // Disabled endpoints are excluded at the picker's source: discovery only runs
+  // over live endpoints, so `groups`/`choices`/`pickerGroups` never offer one and
+  // `effective()` auto-falls to the next live choice. (Settings reads the full
+  // catalog directly off `endpoints` to still show disabled rows.)
+  // Discovery's source is the *discovery-relevant* projection of the live
+  // endpoints — id + model + baseUrl + whether a key is set. A health-only
+  // refresh (last_status/last_error_*/last_checked_at change after a probe or a
+  // toggle on another endpoint) must NOT re-trigger the per-endpoint /models
+  // fetch for every endpoint, so the memo keeps its identity when only those
+  // fields moved. Membership still changes when `enabled` flips (the picker must
+  // update), so that re-fires discovery as intended.
+  const liveEndpoints = createMemo<ModelEndpoint[] | false>(
+    () => {
+      const all = endpoints.latest;
+      return all ? all.filter((e) => e.enabled) : false;
+    },
+    false,
+    {
+      equals: (prev, next) => {
+        if (prev === false || next === false) return prev === next;
+        if (prev.length !== next.length) return false;
+        return prev.every((a, i) => {
+          const b = next[i];
+          return (
+            a.id === b.id &&
+            a.model === b.model &&
+            a.baseUrl === b.baseUrl &&
+            a.hasApiKey === b.hasApiKey
+          );
+        });
+      },
+    },
+  );
   const [discovery] = createResource(
-    () => (session.isAuthenticated ? (endpoints.latest ?? false) : false),
+    () => (session.isAuthenticated ? liveEndpoints() : false),
     fetchDiscovery,
   );
 
@@ -322,6 +408,33 @@ export function useEndpoints(): Resource<ModelEndpoint[]> {
 /** Re-read the catalog (after a create/update/delete); cascades to discovery. */
 export function refreshEndpoints(): void {
   store.setEndpointsTick((t) => t + 1);
+}
+
+/** Probe an endpoint now. The backend persists the verdict, so we re-read the
+ *  catalog afterwards to reflect the new `last_*` fields; the verdict is also
+ *  returned so the caller can surface it immediately. */
+export async function testEndpoint(id: string): Promise<EndpointTestResult> {
+  const dto = await api.post<EndpointTestDTO>(
+    `/models/endpoints/${id}/test`,
+    {},
+  );
+  refreshEndpoints();
+  return {
+    status: dto.status,
+    errorCategory: dto.error_category,
+    errorDetail: dto.error_detail,
+    checkedAt: dto.checked_at,
+  };
+}
+
+/** Enable/disable an endpoint, then re-read the catalog (cascades to the picker,
+ *  which excludes disabled endpoints at its source). */
+export async function setEndpointEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  await api.patch(`/models/endpoints/${id}`, { enabled });
+  refreshEndpoints();
 }
 
 /** Endpoints with at least one selectable model, grouped for the picker. */

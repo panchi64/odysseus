@@ -112,6 +112,36 @@ async def discover_models(
     return ids
 
 
+async def probe_endpoint(
+    spec: EndpointSpec, *, client: httpx.AsyncClient | None = None
+) -> None:
+    """Check an endpoint's reachability + auth with one lightweight request.
+
+    Unlike :func:`discover_models` — which collapses every failure into
+    ``DegradedCapabilityError`` — this lets the **typed** httpx error propagate so the
+    caller (the registry's connection test) can tell auth from rate-limit from timeout
+    from unreachable. Probes the same ``GET {base_url}/models`` discovery uses. Returns
+    ``None`` on a healthy, parseable 2xx; otherwise raises ``httpx.HTTPStatusError``
+    (non-2xx), ``httpx.TimeoutException``, ``httpx.ConnectError`` / other
+    ``httpx.TransportError``, or ``ValueError`` (a body that isn't JSON).
+    """
+    url = spec.base_url.rstrip("/") + "/models"
+    headers = (
+        {"Authorization": f"Bearer {spec.api_key}"}
+        if spec.api_key and spec.api_key != NO_API_KEY
+        else {}
+    )
+    timeout = httpx.Timeout(8.0, connect=3.0)
+    http = client or httpx.AsyncClient(follow_redirects=True)
+    try:
+        response = await http.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        response.json()  # a recognized provider answers JSON; a non-JSON body is bad_response
+    finally:
+        if client is None:
+            await http.aclose()
+
+
 def _extract_model_ids(payload: object) -> list[str] | None:
     """Pull model identifiers out of whichever shape a provider returned.
 

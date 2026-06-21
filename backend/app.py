@@ -65,7 +65,6 @@ from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
-from services.settings_store import SettingsStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -183,34 +182,14 @@ async def lifespan(app: FastAPI):
     app.state.conversation_search = ConversationSearch(
         engine, vault, embedder, app.state.conversations
     )
-    # Outbound service credentials — the operator's API keys for third-party services
-    # (the Cookbook's quality benchmarks + its HuggingFace token), sealed with the vault.
+    # Outbound service credentials — the operator's API keys for third-party services,
+    # sealed with the vault.
     app.state.credentials = CredentialStore(engine, vault)
-    # Small persisted operator preferences (e.g. the Cookbook's active quality source).
-    app.state.settings_store = SettingsStore(engine)
-    # The Cookbook — host hardware detection + a live, cached model catalog (HuggingFace
-    # specs + OpenRouter capability flags). Reuses the redirect-following discovery client
-    # for its outbound calls. Hardware + catalog are warmed in the background so a slow
-    # `system_profiler` or the first catalog pull never blocks boot; first request falls
-    # back to lazy-detect if the warm-up hasn't finished. Quality-source keys resolve from
-    # the credential store at build time (env as fallback).
-    app.state.cookbook = CookbookService(
-        discovery_client,
-        credentials=app.state.credentials,
-        settings=app.state.settings_store,
-        owner_id=OPERATOR_ID,
-        hf_token=settings.hf_token,
-        catalog_ttl_s=settings.cookbook_catalog_ttl_s,
-        catalog_list_limit=settings.cookbook_catalog_list_limit,
-        catalog_max_models=settings.cookbook_catalog_max_models,
-        quality_source=settings.cookbook_quality_source,
-        aa_api_key=settings.artificial_analysis_api_key,
-        llm_stats_api_key=settings.llm_stats_api_key,
-    )
-    # A credential change rebuilds the catalog on next request, so a newly-pasted key
-    # applies without a restart.
-    app.state.credentials.on_change(app.state.cookbook.invalidate_catalog)
-    logger.info("cookbook: hardware + model catalog (warming in background)")
+    # The Cookbook — host hardware detection. The probe is warmed in the background so a
+    # slow `system_profiler` never blocks boot; the first request falls back to
+    # lazy-detect if the warm-up hasn't finished.
+    app.state.cookbook = CookbookService()
+    logger.info("cookbook: hardware detection (warming in background)")
     app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())
     # Long-term memory — embeds via the shared embedder; degrades to keyword recall
     # when no embedding endpoint is configured.

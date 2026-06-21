@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -14,7 +15,7 @@ from core.db import in_session, init_db, make_engine
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelRole
-from services import embeddings
+from services import embeddings, llm
 from services.registry import ModelRegistry
 
 from ._helpers import client_app
@@ -370,3 +371,159 @@ def test_extract_model_ids_handles_provider_shapes():
     assert _extract_model_ids({"object": "list", "data": []}) == []
     # Unrecognized payload → None (no models API), distinct from empty.
     assert _extract_model_ids({"foo": "bar"}) is None
+
+
+# --- endpoint health & disable -------------------------------------------
+
+
+async def test_test_endpoint_categorizes_probe_failures(monkeypatch):
+    """The connection test turns each probe outcome into a stable category + a
+    plain-language detail that never carries the key — categorization is the backend's
+    policy, not the frontend's."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(
+        OWNER, name="p", base_url="http://x/v1", model="m", api_key="super-secret"
+    )
+    req = httpx.Request("GET", "http://x/v1/models")
+
+    # HTTP status → category: 404/405 (no models API) reads as healthy/reachable; 5xx is
+    # a distinct server error; only an unexpected 4xx is "bad_response".
+    for code, category in [
+        (401, "auth"),
+        (403, "auth"),
+        (429, "rate_limited"),
+        (404, "ok"),
+        (405, "ok"),
+        (500, "server_error"),
+        (503, "server_error"),
+        (418, "bad_response"),
+    ]:
+
+        async def _probe(spec, *, client=None, _code=code):
+            raise httpx.HTTPStatusError(
+                "e", request=req, response=httpx.Response(_code, request=req)
+            )
+
+        monkeypatch.setattr(llm, "probe_endpoint", _probe)
+        health = await reg.test_endpoint(OWNER, ep.id)
+        assert health.error_category == category, code
+        assert health.status == ("ok" if category == "ok" else "error")
+        assert "super-secret" not in health.error_detail
+
+    # Transport failures: a connect timeout is unreachable (the host never answered); a
+    # read timeout is a slow-but-alive provider; a bad body can't be understood.
+    for exc, category in [
+        (httpx.ConnectTimeout("slow"), "unreachable"),
+        (httpx.ReadTimeout("slow"), "timeout"),
+        (httpx.ConnectError("refused"), "unreachable"),
+        (ValueError("not json"), "bad_response"),
+    ]:
+
+        async def _probe_exc(spec, *, client=None, _exc=exc):
+            raise _exc
+
+        monkeypatch.setattr(llm, "probe_endpoint", _probe_exc)
+        health = await reg.test_endpoint(OWNER, ep.id)
+        assert health.error_category == category
+        assert health.status == "error"
+        assert "super-secret" not in health.error_detail  # the key never leaks into the detail
+
+
+async def test_test_endpoint_records_ok_and_persists(monkeypatch):
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="p", base_url="http://x/v1", model="m")
+
+    async def _ok(spec, *, client=None):
+        return None
+
+    monkeypatch.setattr(llm, "probe_endpoint", _ok)
+    health = await reg.test_endpoint(OWNER, ep.id)
+    assert health.status == "ok" and health.error_category == "ok"
+    # Persisted on the row so the catalog list shows health without re-probing per row.
+    saved = await reg.get_endpoint(OWNER, ep.id)
+    assert saved.last_status == "ok"
+    assert saved.last_checked_at is not None
+
+
+async def test_test_endpoint_unknown_is_not_found():
+    reg = await _registry()
+    with pytest.raises(NotFoundError):
+        await reg.test_endpoint(OWNER, "does-not-exist")
+
+
+async def test_disabled_endpoint_via_main_override_is_degraded():
+    """A disabled endpoint chosen via the per-conversation main override is rejected,
+    not silently run — the same invariant the role-chain path enforces."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="picked", base_url="http://p/v1", model="m")
+    await reg.update_endpoint(OWNER, ep.id, enabled=False)
+    with pytest.raises(DegradedCapabilityError):
+        await reg.resolve(
+            "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="m"
+        )
+
+
+async def test_disabled_endpoint_is_skipped_in_role_chain():
+    """A disabled endpoint falls through to the next in the chain — the pre-emptive
+    side of the runtime FallbackModel failover."""
+    reg = await _registry()
+    primary = await reg.create_endpoint(OWNER, name="a", base_url="http://a/v1", model="m1")
+    backup = await reg.create_endpoint(OWNER, name="b", base_url="http://b/v1", model="m2")
+    await reg.set_role(OWNER, "utility", [primary.id, backup.id])
+
+    await reg.update_endpoint(OWNER, primary.id, enabled=False)
+    model = await reg.resolve("utility", owner_id=OWNER)
+    assert isinstance(model, OpenAIChatModel)
+    assert not isinstance(model, FallbackModel)  # only the live backup remains
+    assert model.model_name == "m2"
+
+
+async def test_all_disabled_chain_is_degraded():
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="a", base_url="http://a/v1", model="m1")
+    await reg.set_role(OWNER, "utility", [ep.id])
+    await reg.update_endpoint(OWNER, ep.id, enabled=False)
+    with pytest.raises(DegradedCapabilityError):
+        await reg.resolve("utility", owner_id=OWNER)
+
+
+async def test_endpoint_test_route_returns_verdict_and_reflects_on_list(monkeypatch):
+    async def _ok(spec, *, client=None):
+        return None
+
+    monkeypatch.setattr(llm, "probe_endpoint", _ok)
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints",
+                json={"name": "p", "base_url": "http://x/v1", "model": "m"},
+            )
+        ).json()
+        assert ep["enabled"] is True and ep["last_status"] is None
+        resp = await client.post(f"/models/endpoints/{ep['id']}/test")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok" and body["error_category"] == "ok"
+        assert "checked_at" in body
+        # The verdict rides the endpoint listing for at-a-glance health.
+        listed = (await client.get("/models/endpoints")).json()[0]
+        assert listed["last_status"] == "ok"
+
+
+async def test_endpoint_test_route_404_for_unknown():
+    async with client_app() as (client, _app):
+        assert (await client.post("/models/endpoints/nope/test")).status_code == 404
+
+
+async def test_patch_endpoint_enabled_round_trips():
+    async with client_app() as (client, _app):
+        ep = (
+            await client.post(
+                "/models/endpoints",
+                json={"name": "p", "base_url": "http://x/v1", "model": "m"},
+            )
+        ).json()
+        assert ep["enabled"] is True
+        patched = await client.patch(f"/models/endpoints/{ep['id']}", json={"enabled": False})
+        assert patched.status_code == 200
+        assert patched.json()["enabled"] is False

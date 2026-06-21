@@ -20,6 +20,9 @@ export interface EndpointInput {
   nativeTools: boolean;
   vision: boolean;
   thinking: boolean;
+  /** Whether the endpoint is active. Omitted from the create/edit form (which
+   *  defaults it on the backend); carried so the row toggle can PATCH it. */
+  enabled?: boolean;
 }
 
 /** The named roles the agent resolves through ordered endpoint chains. `main`

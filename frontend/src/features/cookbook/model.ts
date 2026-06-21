@@ -18,49 +18,31 @@ export interface HardwareInfo {
   runtimes: RuntimeInfo[];
 }
 
-export type ModelSuitability = "nominal" | "warn" | "alert";
-
-export interface ModelCapabilities {
-  tools: boolean;
-  vision: boolean;
-  reasoning: boolean;
-  embedding: boolean;
-  imageGen: boolean;
-}
-
-export interface ModelEntry {
+/** A curated provider preset for the guided setup — display-only presentation
+ *  config (no secrets, no policy). Prefills the endpoint form and carries a
+ *  non-authoritative model hint the connect flow prefers discovery over. */
+export interface ProviderPreset {
   id: string;
   name: string;
-  params: string;
-  quant: string;
-  sizeBytes: number;
-  suitability: ModelSuitability;
-  downloaded: boolean;
-  capabilities: ModelCapabilities;
-  /** The active quality source's headline figure (Arena Elo, Intelligence Index, …),
-   *  null when that source doesn't rank the model. */
-  qualityValue: number | null;
-  /** Short label for `qualityValue` — e.g. "ELO", "INTELLIGENCE", "SCORE". */
-  qualityMetric: string | null;
-  description: string;
-}
-
-export type ServerStatus = "running" | "stopped" | "starting" | "error";
-
-export interface RunningServer {
-  id: string;
-  model: string;
-  port: number;
-  status: ServerStatus;
-  tokensPerSec?: number;
-  contextLen?: number;
-}
-
-export interface RemoteEndpoint {
-  id: string;
-  name: string;
+  /** OpenAI-compatible base URL prefilled into the form (operator-overridable). */
   baseUrl: string;
-  apiKeySet: boolean;
-  status: "ok" | "error" | "untested";
-  latencyMs?: number;
+  /** Whether this provider needs an API key — drives the "needs a key" badge. */
+  requiresKey: boolean;
+  /** Where the operator gets a key (or, for local, sets the server up). */
+  docsUrl: string;
+  /** Capability defaults seeded into the new endpoint (operator-overridable). */
+  nativeTools: boolean;
+  vision: boolean;
+  thinking: boolean;
+  /** A conservative starting-model hint — only a fallback; the connect flow
+   *  prefers the provider's real discovered list so stale names self-heal. */
+  suggestedModel?: string;
+}
+
+/** What the guided "Connect & use this" button captures: the chosen preset and
+ *  the (optional) key the operator pasted. Everything else comes from the preset. */
+export interface GuidedConnectInput {
+  preset: ProviderPreset;
+  /** The pasted key — empty when the preset needs none (e.g. a local server). */
+  apiKey: string;
 }

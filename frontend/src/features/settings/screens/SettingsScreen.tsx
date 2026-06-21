@@ -9,8 +9,6 @@ import {
 import {
   Button,
   EmptyState,
-  Field,
-  Input,
   LoadingText,
   Modal,
   PageHeader,
@@ -23,20 +21,31 @@ import {
   ThemeToggle,
   Toggle,
   confirm,
+  cx,
   toast,
 } from "~/ui";
 import { isApiError } from "~/lib/api";
 import {
   createEndpoint,
   deleteEndpoint,
+  setEndpointEnabled,
   setRoleBinding,
+  testEndpoint,
   updateEndpoint,
   useEndpoints,
   useRoles,
 } from "../data";
 import { BINDABLE_ROLES } from "../model";
 import { EmbeddingRoleControls } from "../components/EmbeddingRoleControls";
+import {
+  EndpointForm,
+  type EndpointFormValues,
+} from "../components/EndpointForm";
 import { SearchProvidersPanel } from "../components/SearchProvidersPanel";
+import {
+  EndpointHealthFlag,
+  healthStatus,
+} from "../components/EndpointHealthFlag";
 import {
   endpointDiscovery,
   type EndpointDiscovery,
@@ -44,62 +53,77 @@ import {
   type ModelEndpoint,
 } from "~/lib/stores/models";
 
+/** Health accent → dot color, for the inline fallback-chain dots (matching the
+ *  overview's SystemStrip dot convention). */
+const dotClass: Record<"nominal" | "alert" | "idle", string> = {
+  nominal: "bg-nominal",
+  alert: "bg-alert",
+  idle: "bg-dim",
+};
+
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
   const roles = useRoles();
 
-  /* ── Endpoint form ──────────────────────────────────────────────────────── */
+  /* ── Endpoint form ──────────────────────────────────────────────────────────
+     One form, shared with the guided cookbook tab via <EndpointForm/>; this
+     screen drives it in `advanced` mode (all fields). The field values are held
+     as a single record so the form stays a pure presentation control. */
+  const BLANK_FORM: EndpointFormValues = {
+    name: "",
+    baseUrl: "",
+    model: "",
+    apiKey: "",
+    contextWindow: "",
+    nativeTools: true,
+    vision: false,
+    thinking: false,
+  };
   const [formOpen, setFormOpen] = createSignal(false);
   const [editing, setEditing] = createSignal<ModelEndpoint | null>(null);
-  const [name, setName] = createSignal("");
-  const [baseUrl, setBaseUrl] = createSignal("");
-  const [model, setModel] = createSignal("");
-  const [apiKey, setApiKey] = createSignal("");
-  const [contextWindow, setContextWindow] = createSignal("");
-  const [nativeTools, setNativeTools] = createSignal(true);
-  const [vision, setVision] = createSignal(false);
-  const [thinking, setThinking] = createSignal(false);
+  const [form, setForm] = createSignal<EndpointFormValues>(BLANK_FORM);
+  const setField = <K extends keyof EndpointFormValues>(
+    key: K,
+    value: EndpointFormValues[K],
+  ) => setForm((f) => ({ ...f, [key]: value }));
   const [saving, setSaving] = createSignal(false);
 
   const openCreate = () => {
     setEditing(null);
-    setName("");
-    setBaseUrl("");
-    setModel("");
-    setApiKey("");
-    setContextWindow("");
-    setNativeTools(true);
-    setVision(false);
-    setThinking(false);
+    setForm(BLANK_FORM);
     setFormOpen(true);
   };
   const openEdit = (ep: ModelEndpoint) => {
     setEditing(ep);
-    setName(ep.name);
-    setBaseUrl(ep.baseUrl);
-    setModel(ep.model ?? "");
-    setApiKey("");
-    setContextWindow(ep.contextWindow != null ? String(ep.contextWindow) : "");
-    setNativeTools(ep.nativeTools);
-    setVision(ep.vision);
-    setThinking(ep.thinking);
+    setForm({
+      name: ep.name,
+      baseUrl: ep.baseUrl,
+      model: ep.model ?? "",
+      apiKey: "",
+      contextWindow: ep.contextWindow != null ? String(ep.contextWindow) : "",
+      nativeTools: ep.nativeTools,
+      vision: ep.vision,
+      thinking: ep.thinking,
+    });
     setFormOpen(true);
   };
 
-  const valid = () => name().trim() !== "" && baseUrl().trim() !== "";
+  const valid = () => form().name.trim() !== "" && form().baseUrl.trim() !== "";
 
   const save = async () => {
     if (!valid() || saving()) return;
     setSaving(true);
-    const cw = contextWindow().trim();
-    const m = model().trim();
+    const f = form();
+    const cw = f.contextWindow.trim();
+    const m = f.model.trim();
+    const apiKey = f.apiKey;
     const fields = {
-      name: name().trim(),
-      baseUrl: baseUrl().trim(),
+      name: f.name.trim(),
+      baseUrl: f.baseUrl.trim(),
       contextWindow: cw ? Number(cw) : null,
-      nativeTools: nativeTools(),
-      vision: vision(),
-      thinking: thinking(),
+      nativeTools: f.nativeTools,
+      vision: f.vision,
+      thinking: f.thinking,
     };
     try {
       const target = editing();
@@ -109,14 +133,14 @@ export function SettingsScreen(): JSX.Element {
         await updateEndpoint(target.id, {
           ...fields,
           model: m,
-          ...(apiKey() ? { apiKey: apiKey() } : {}),
+          ...(apiKey ? { apiKey } : {}),
         });
         toast.success("Endpoint updated");
       } else {
         await createEndpoint({
           ...fields,
           model: m || undefined,
-          apiKey: apiKey() || undefined,
+          apiKey: apiKey || undefined,
         });
         toast.success("Endpoint added");
       }
@@ -146,6 +170,34 @@ export function SettingsScreen(): JSX.Element {
     }
   };
 
+  /* ── Health probe + enable/disable ──────────────────────────────────────────
+     TEST probes the endpoint now (the backend persists the verdict, which the
+     re-read reflects on the row) and surfaces the backend's verbatim detail.
+     The toggle PATCHes `enabled`; disabling drops the endpoint from the picker. */
+  const [testing, setTesting] = createSignal<string | null>(null);
+  const runTest = async (ep: ModelEndpoint) => {
+    if (testing()) return;
+    setTesting(ep.id);
+    try {
+      const verdict = await testEndpoint(ep.id);
+      if (verdict.status === "ok")
+        toast.success(`"${ep.name}" — ${verdict.errorDetail}`);
+      else toast.error(`"${ep.name}" — ${verdict.errorDetail}`);
+    } catch {
+      toast.error(`Unable to test "${ep.name}".`);
+    } finally {
+      setTesting(null);
+    }
+  };
+  const toggleEnabled = async (ep: ModelEndpoint) => {
+    try {
+      await setEndpointEnabled(ep.id, !ep.enabled);
+      toast.success(ep.enabled ? "Endpoint disabled" : "Endpoint enabled");
+    } catch {
+      toast.error("Unable to update the endpoint.");
+    }
+  };
+
   /* ── Role bindings ──────────────────────────────────────────────────────────
      A role binds to an ordered fallback chain (first = primary). The control
      below captures that order explicitly — membership *and* position — so it no
@@ -154,8 +206,16 @@ export function SettingsScreen(): JSX.Element {
     roles()?.[role]?.endpointIds ?? [];
   const modelFor = (role: string): string | null =>
     roles()?.[role]?.model ?? null;
-  const endpointName = (id: string): string =>
-    (endpoints() ?? []).find((e) => e.id === id)?.name ?? id;
+  const endpointById = (id: string): ModelEndpoint | undefined =>
+    (endpoints() ?? []).find((e) => e.id === id);
+  const endpointName = (id: string): string => endpointById(id)?.name ?? id;
+  // A chain member's health for the fallback-chain dots: a disabled endpoint
+  // reads as dead (the chain auto-switches past it), else its last probe verdict.
+  const chainHealth = (id: string): "nominal" | "alert" | "idle" => {
+    const ep = endpointById(id);
+    if (!ep || !ep.enabled) return "alert";
+    return healthStatus(ep.lastStatus);
+  };
   const unboundFor = (role: string): ModelEndpoint[] => {
     const bound = new Set(chainFor(role));
     return (endpoints() ?? []).filter((e) => !bound.has(e.id));
@@ -316,11 +376,18 @@ export function SettingsScreen(): JSX.Element {
                     gap={3}
                     class="border-b border-line py-2 last:border-0"
                   >
-                    <Stack gap={1} class="min-w-0">
+                    <Stack
+                      gap={1}
+                      class={`min-w-0 ${ep.enabled ? "" : "opacity-40"}`}
+                    >
                       <Row gap={2} align="center">
                         <Text variant="label" tone="bright">
                           {ep.name}
                         </Text>
+                        <EndpointHealthFlag status={ep.lastStatus} />
+                        <Show when={!ep.enabled}>
+                          <StatusFlag status="warn">DISABLED</StatusFlag>
+                        </Show>
                         <Show when={ep.hasApiKey}>
                           <StatusFlag status="nominal">KEY</StatusFlag>
                         </Show>
@@ -341,8 +408,29 @@ export function SettingsScreen(): JSX.Element {
                       <Text variant="micro" tone="dim" class="truncate">
                         {ep.model ? `${ep.model} · ${ep.baseUrl}` : ep.baseUrl}
                       </Text>
+                      {/* Backend-authored failure sentence — rendered verbatim. */}
+                      <Show
+                        when={ep.lastStatus === "error" && ep.lastErrorDetail}
+                      >
+                        <Text variant="micro" tone="alert">
+                          {ep.lastErrorDetail}
+                        </Text>
+                      </Show>
                     </Stack>
                     <span class="flex shrink-0 items-center gap-2">
+                      <Toggle
+                        checked={ep.enabled}
+                        onChange={() => void toggleEnabled(ep)}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leading="refresh"
+                        disabled={testing() === ep.id}
+                        onClick={() => void runTest(ep)}
+                      >
+                        {testing() === ep.id ? "TESTING…" : "TEST"}
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -374,7 +462,7 @@ export function SettingsScreen(): JSX.Element {
             Bind endpoints to each role as an ordered fallback chain (first =
             primary). `utility` runs background verification; `embedding` powers
             memory recall. The chat (`main`) model is chosen from the model
-            picker in the top bar.
+            picker in the top bar. Auto-switches past dead/disabled endpoints.
           </Text>
           <Show
             when={(endpoints() ?? []).length}
@@ -411,6 +499,13 @@ export function SettingsScreen(): JSX.Element {
                               <Text variant="micro" tone="dim">
                                 {i() + 1}
                               </Text>
+                              <span
+                                class={cx(
+                                  "inline-block size-1.5 shrink-0 rounded-full",
+                                  dotClass[chainHealth(id)],
+                                )}
+                                aria-hidden="true"
+                              />
                               <Text
                                 variant="label"
                                 tone="default"
@@ -497,52 +592,12 @@ export function SettingsScreen(): JSX.Element {
         class="max-w-lg"
       >
         <Stack gap={3}>
-          <Input
-            label="NAME"
-            value={name()}
-            onInput={(e) => setName(e.currentTarget.value)}
-            placeholder="e.g. local-qwen"
+          <EndpointForm
+            variant="advanced"
+            editing={!!editing()}
+            values={form()}
+            onChange={setField}
           />
-          <Input
-            label="BASE URL"
-            value={baseUrl()}
-            onInput={(e) => setBaseUrl(e.currentTarget.value)}
-            placeholder="http://localhost:11434/v1"
-          />
-          <Input
-            label="DEFAULT MODEL (optional)"
-            value={model()}
-            onInput={(e) => setModel(e.currentTarget.value)}
-            placeholder="qwen2.5-coder:32b"
-            hint="Models are discovered from the provider and picked in the top bar. Set a default only as a fallback for providers without a models API."
-          />
-          <Input
-            label={
-              editing() ? "API KEY (blank = unchanged)" : "API KEY (optional)"
-            }
-            type="password"
-            value={apiKey()}
-            onInput={(e) => setApiKey(e.currentTarget.value)}
-            placeholder="••••••••"
-          />
-          <Input
-            label="CONTEXT WINDOW (optional)"
-            value={contextWindow()}
-            onInput={(e) => setContextWindow(e.currentTarget.value)}
-            placeholder="32768"
-          />
-          <Row gap={4} align="center" justify="between">
-            <Field label="NATIVE TOOLS" orientation="row" value="" />
-            <Toggle checked={nativeTools()} onChange={setNativeTools} />
-          </Row>
-          <Row gap={4} align="center" justify="between">
-            <Field label="VISION" orientation="row" value="" />
-            <Toggle checked={vision()} onChange={setVision} />
-          </Row>
-          <Row gap={4} align="center" justify="between">
-            <Field label="THINKING" orientation="row" value="" />
-            <Toggle checked={thinking()} onChange={setThinking} />
-          </Row>
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setFormOpen(false)}>
               CANCEL

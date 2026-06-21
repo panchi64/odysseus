@@ -31,6 +31,7 @@ class EndpointCreate(BaseModel):
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
+    enabled: bool = True
 
 
 class EndpointUpdate(BaseModel):
@@ -42,6 +43,7 @@ class EndpointUpdate(BaseModel):
     native_tools: bool | None = None
     vision: bool | None = None
     thinking: bool | None = None
+    enabled: bool | None = None
 
 
 class EndpointView(BaseModel):
@@ -54,6 +56,14 @@ class EndpointView(BaseModel):
     native_tools: bool
     vision: bool
     thinking: bool
+    # Disable-without-delete + last connection-test health. ``last_*`` carry the
+    # backend's verdict verbatim so the catalog list shows at-a-glance status without
+    # a probe per row; they are null until the endpoint has been tested.
+    enabled: bool
+    last_status: str | None
+    last_error_category: str | None
+    last_error_detail: str | None
+    last_checked_at: datetime | None
 
 
 def _view(endpoint: ModelEndpoint) -> EndpointView:
@@ -67,6 +77,11 @@ def _view(endpoint: ModelEndpoint) -> EndpointView:
         native_tools=endpoint.native_tools,
         vision=endpoint.vision,
         thinking=endpoint.thinking,
+        enabled=endpoint.enabled,
+        last_status=endpoint.last_status,
+        last_error_category=endpoint.last_error_category,
+        last_error_detail=endpoint.last_error_detail,
+        last_checked_at=endpoint.last_checked_at,
     )
 
 
@@ -107,6 +122,31 @@ async def list_endpoint_models(endpoint_id: str, request: Request) -> EndpointMo
     except DegradedCapabilityError:
         return EndpointModels(models=[], supported=False)
     return EndpointModels(models=models, supported=True)
+
+
+class EndpointHealth(BaseModel):
+    """A connection test's verdict — backend-categorized, rendered verbatim by the UI."""
+
+    status: str  # "ok" | "error"
+    error_category: str  # ok|auth|rate_limited|timeout|unreachable|bad_response|server_error
+    error_detail: str
+    checked_at: datetime
+
+
+@router.post("/endpoints/{endpoint_id}/test", response_model=EndpointHealth)
+async def check_endpoint(endpoint_id: str, request: Request) -> EndpointHealth:
+    """Probe the endpoint now and return its health. The category and the plain-language
+    detail are decided by the backend — the frontend never maps HTTP codes to messages."""
+    try:
+        health = await deps.models(request).test_endpoint(OPERATOR_ID, endpoint_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="endpoint not found") from None
+    return EndpointHealth(
+        status=health.status,
+        error_category=health.error_category,
+        error_detail=health.error_detail,
+        checked_at=health.checked_at,
+    )
 
 
 @router.patch("/endpoints/{endpoint_id}", response_model=EndpointView)

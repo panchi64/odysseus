@@ -1,13 +1,23 @@
-import { createResource, createSignal, type Resource } from "solid-js";
+import { createResource, type Resource } from "solid-js";
 import { api } from "~/lib/api";
 import { bytes } from "~/lib/format";
-import type {
-  HardwareInfo,
-  ModelEntry,
-  RunningServer,
-  RemoteEndpoint,
-} from "./model";
-import { mockRemoteEndpoints } from "./mocks";
+import {
+  fetchEndpointModels,
+  refreshEndpoints,
+  setSelectedModel,
+  testEndpoint,
+  useEndpoints,
+  type ModelEndpoint,
+} from "~/lib/stores/models";
+import { toast } from "~/ui";
+// The canonical endpoint writers (own the POST/PATCH + body mapping) — reused,
+// not re-implemented, so there is one create/update path.
+import {
+  createEndpoint as createEndpointWrite,
+  updateEndpoint as updateEndpointWrite,
+} from "~/features/settings/data";
+import { presetToEndpointInput } from "./presets";
+import type { GuidedConnectInput, HardwareInfo } from "./model";
 
 // --- backend DTOs (snake_case) — mapped to model.ts types below ------------
 
@@ -30,34 +40,6 @@ interface HardwareProfileDTO {
   compute_backend: "metal" | "cuda" | "rocm" | "cpu";
   platform: { system: string; release: string; arch: string };
   runtimes: { name: string; version: string | null; available: boolean }[];
-}
-
-interface CapabilitiesDTO {
-  tools: boolean;
-  vision: boolean;
-  thinking: boolean;
-  embedding: boolean;
-  image_gen: boolean;
-}
-
-interface CompatibleModelDTO {
-  model_id: string;
-  name: string;
-  params_b: number | null;
-  quant: string;
-  size_bytes: number;
-  est_runtime_bytes: number;
-  suitability: "nominal" | "warn" | "alert";
-  fits: boolean;
-  capabilities: CapabilitiesDTO;
-  quality_display: number | null;
-  quality_metric: string | null;
-  detail: string;
-}
-
-interface CompatibleModelsDTO {
-  models: CompatibleModelDTO[];
-  available: boolean;
 }
 
 const BACKEND_LABEL: Record<string, string> = {
@@ -90,114 +72,10 @@ function mapHardware(p: HardwareProfileDTO): HardwareInfo {
   };
 }
 
-function mapModel(r: CompatibleModelDTO): ModelEntry {
-  return {
-    id: r.model_id,
-    name: r.name,
-    params: r.params_b != null ? `${r.params_b}B` : "—",
-    quant: r.quant,
-    sizeBytes: r.size_bytes,
-    suitability: r.suitability,
-    // Download tracking lands with the download flow; the list is read-only.
-    downloaded: false,
-    capabilities: {
-      tools: r.capabilities.tools,
-      vision: r.capabilities.vision,
-      reasoning: r.capabilities.thinking,
-      embedding: r.capabilities.embedding,
-      imageGen: r.capabilities.image_gen,
-    },
-    qualityValue: r.quality_display,
-    qualityMetric: r.quality_metric,
-    description: r.detail,
-  };
-}
-
 async function fetchHardware(): Promise<HardwareInfo> {
   return mapHardware(
     await api.get<HardwareProfileDTO>("/models/cookbook/hardware"),
   );
-}
-
-// Bumped when the active quality source changes, so the compatible list re-ranks.
-const [modelsTick, setModelsTick] = createSignal(0);
-
-async function fetchModels(): Promise<ModelEntry[]> {
-  const res = await api.get<CompatibleModelsDTO>("/models/cookbook/compatible");
-  return res.models.map(mapModel);
-}
-
-// --- quality source (the "RANK BY" selector) -------------------------------
-
-interface QualitySourceOptionDTO {
-  id: string;
-  label: string;
-  requires_key: boolean;
-  has_key: boolean;
-}
-interface QualitySourceStateDTO {
-  active: string;
-  options: QualitySourceOptionDTO[];
-}
-
-export interface QualitySourceOption {
-  id: string;
-  label: string;
-  requiresKey: boolean;
-  hasKey: boolean;
-}
-export interface QualitySourceState {
-  active: string;
-  options: QualitySourceOption[];
-}
-
-const [sourceTick, setSourceTick] = createSignal(0);
-
-async function fetchQualitySource(): Promise<QualitySourceState> {
-  const dto = await api.get<QualitySourceStateDTO>(
-    "/models/cookbook/quality-source",
-  );
-  return {
-    active: dto.active,
-    options: dto.options.map((o) => ({
-      id: o.id,
-      label: o.label,
-      requiresKey: o.requires_key,
-      hasKey: o.has_key,
-    })),
-  };
-}
-
-export function useQualitySource(): Resource<QualitySourceState> {
-  const [data] = createResource(sourceTick, fetchQualitySource);
-  return data;
-}
-
-/** Switch the ranking source; the backend persists it and rebuilds the catalog, so we
- *  refresh both the selector state and the compatible list. */
-export async function setQualitySource(source: string): Promise<void> {
-  await api.put("/models/cookbook/quality-source", { source });
-  setSourceTick((n) => n + 1);
-  setModelsTick((n) => n + 1);
-}
-
-/** Search the full model catalog for a free-text query, scored against the host —
- *  for checking a specific model the operator heard about. */
-export async function searchModels(query: string): Promise<ModelEntry[]> {
-  const res = await api.get<CompatibleModelsDTO>(
-    `/models/cookbook/search?q=${encodeURIComponent(query)}`,
-  );
-  return res.models.map(mapModel);
-}
-
-async function fetchServers(): Promise<RunningServer[]> {
-  // Local serving isn't built yet (COOK-4) — the backend serves nothing, so there
-  // are no running servers to report. Honest empty rather than a fabricated list.
-  return [];
-}
-
-async function fetchRemoteEndpoints(): Promise<RemoteEndpoint[]> {
-  return mockRemoteEndpoints;
 }
 
 export function useHardware(): Resource<HardwareInfo> {
@@ -205,17 +83,99 @@ export function useHardware(): Resource<HardwareInfo> {
   return data;
 }
 
-export function useCookbookModels(): Resource<ModelEntry[]> {
-  const [data] = createResource(modelsTick, fetchModels);
-  return data;
+/** The configured endpoints, read from the shared models store — the same single
+ *  `/models/endpoints` fetch the top-bar picker and Settings share. No second
+ *  source of truth; the guided tab just renders what already-connected providers
+ *  exist. */
+export function useRemoteEndpoints(): Resource<ModelEndpoint[]> {
+  return useEndpoints();
 }
 
-export function useRunningServers(): Resource<RunningServer[]> {
-  const [data] = createResource(fetchServers);
-  return data;
-}
+/** The guided "Connect & use this" flow: create the endpoint from a preset +
+ *  pasted key, then **prove it works** (the backend test verdict — never the
+ *  201-create), then auto-select a sensible default model so the operator never
+ *  has to pick. On failure the endpoint is left created so they can fix the key
+ *  and retest from Settings. Returns true on a working connection.
+ *
+ *  This composes presentation-layer seams only; the backend re-resolves the
+ *  selection at send time — the model pick here is an optimistic echo. */
+export async function connectAndSelectEndpoint(
+  input: GuidedConnectInput,
+): Promise<boolean> {
+  const { preset, apiKey } = input;
+  const body = presetToEndpointInput(preset, apiKey);
 
-export function useRemoteEndpoints(): Resource<RemoteEndpoint[]> {
-  const [data] = createResource(fetchRemoteEndpoints);
-  return data;
+  // The backend enforces a unique (owner_id, name); the flow always uses the
+  // preset's name. So reuse an existing same-named endpoint (a prior attempt that
+  // tested badly, or a pre-existing one) by UPDATING it instead of re-POSTing the
+  // same name — that would 500. Retry-after-bad-key then just works.
+  const existing = (useEndpoints().latest ?? []).find(
+    (e) => e.name === preset.name,
+  );
+  let endpointId: string;
+  try {
+    if (existing) {
+      await updateEndpointWrite(existing.id, body);
+      endpointId = existing.id;
+    } else {
+      endpointId = await createEndpointWrite(body);
+    }
+  } catch {
+    toast.error("Unable to create the connection.");
+    return false;
+  }
+
+  // Success is the backend's reachability verdict, not the create/update.
+  let verdict;
+  try {
+    verdict = await testEndpoint(endpointId);
+  } catch {
+    // The endpoint exists but the probe never landed — refresh so it appears in
+    // the Connected Providers list (the operator retests it from there/Settings).
+    refreshEndpoints();
+    toast.error(`Created "${preset.name}", but the connection test failed.`);
+    return false;
+  }
+
+  if (verdict.status !== "ok") {
+    // Leave the endpoint created — the operator fixes the key / retests in
+    // Settings. testEndpoint already refreshed the catalog with the persisted
+    // verdict, so the row reflects the failure.
+    toast.error(verdict.errorDetail);
+    return false;
+  }
+
+  // Pick a default model without making the operator choose: prefer the
+  // provider's live discovered list (so a stale preset hint self-heals), and only
+  // fall back to the preset hint / configured default when discovery is empty.
+  const discovered = await fetchEndpointModels(endpointId);
+  const model =
+    discovered.models.length > 0
+      ? preset.suggestedModel &&
+        discovered.models.includes(preset.suggestedModel)
+        ? preset.suggestedModel
+        : discovered.models[0]
+      : preset.suggestedModel;
+
+  if (model) {
+    setSelectedModel({ endpointId, model });
+    toast.success(`Connected "${preset.name}" — using ${model}.`);
+  } else {
+    // Connected, but nothing is selectable: the provider advertised no models and
+    // the preset gave no hint — so don't point the operator at an empty top bar.
+    // `supported` tells whether the model list could even be read.
+    const note = discovered.supported
+      ? ""
+      : " (its model list couldn't be read)";
+    toast.success(
+      `Connected "${preset.name}", but it isn't serving any models yet${note} — ` +
+        `start one on the provider, or set a model in Settings.`,
+    );
+  }
+
+  // Re-read the catalog ONCE, now that the endpoint is tested + selected, so the
+  // Connected Providers list and the picker reflect the final state (testEndpoint
+  // and fetchEndpointModels work by id and didn't need it refreshed first).
+  refreshEndpoints();
+  return true;
 }

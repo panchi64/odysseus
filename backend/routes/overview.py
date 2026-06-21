@@ -56,7 +56,7 @@ async def get_overview(request: Request) -> Overview:
     # here — so the precondition the workspace can't function without is simply
     # that a usable chat endpoint exists. `main` requires native tool-calling
     # (enforced at resolve), so only such endpoints count.
-    usable_chat_endpoints = [e for e in endpoints if e.native_tools]
+    usable_chat_endpoints = [e for e in endpoints if e.native_tools and e.enabled]
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
     search_providers = await deps.search(request).list_providers(OPERATOR_ID)
@@ -85,12 +85,22 @@ async def get_overview(request: Request) -> Overview:
             )
         )
     else:
+        # Name the actual blocker so the operator knows what to fix: nothing set up at
+        # all, vs. a usable endpoint exists but is disabled, vs. none can drive tools.
+        if not endpoints:
+            chat_detail = "no provider configured"
+        elif any(e.native_tools for e in endpoints):
+            # Tool-calling endpoint(s) exist but none are enabled — re-enabling one fixes
+            # chat, even when a non-tool endpoint happens to be enabled.
+            chat_detail = "all tool-calling endpoints disabled"
+        else:
+            chat_detail = "no tool-calling endpoint"
         capabilities.append(
             Capability(
                 key="chat_model",
                 label="CHAT MODEL",
                 status="alert",
-                detail="no tool-calling endpoint" if endpoints else "no provider configured",
+                detail=chat_detail,
                 critical=True,
                 remediation_href="/models/cookbook",
                 remediation_label="CONFIGURE",

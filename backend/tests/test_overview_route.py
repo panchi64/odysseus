@@ -95,6 +95,26 @@ async def test_overview_chat_model_alert_when_no_endpoint_is_tool_calling():
     assert chat["detail"] == "no tool-calling endpoint"
 
 
+async def test_overview_chat_model_alert_when_only_endpoint_is_disabled():
+    """Disabling the sole chat endpoint flips the critical capability to alert — a
+    disabled endpoint is skipped by resolution, so it can't back chat."""
+    async with client_app() as (client, app):
+        ep = await app.state.models.create_endpoint(
+            "operator",
+            name="Local",
+            base_url="http://localhost:1234/v1",
+            model="qwen2.5-32b",
+            native_tools=True,
+        )
+        await app.state.models.update_endpoint("operator", ep.id, enabled=False)
+        body = (await client.get("/overview")).json()
+
+    chat = _capabilities(body)["chat_model"]
+    assert chat["status"] == "alert"
+    assert chat["critical"] is True
+    assert chat["detail"] == "all tool-calling endpoints disabled"
+
+
 async def test_overview_counts_memories_and_conversations():
     async with client_app() as (client, app):
         await app.state.memory.remember("operator", "the operator prefers dark mode")
