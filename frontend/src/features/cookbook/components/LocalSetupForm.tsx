@@ -129,6 +129,11 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                     {eng().engine}
                   </Text>
                 </Row>
+                <Show when={!eng().installed}>
+                  <Text variant="micro" tone="dim">
+                    Downloads engine (~once) on first serve.
+                  </Text>
+                </Show>
                 <Show
                   when={models().length}
                   fallback={

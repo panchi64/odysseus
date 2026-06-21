@@ -1,4 +1,11 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import {
+  createEffect,
+  createResource,
+  createSignal,
+  For,
+  Show,
+  type JSX,
+} from "solid-js";
 import {
   Button,
   Chip,
@@ -17,6 +24,9 @@ import {
 import { bytes } from "~/lib/format";
 import {
   downloadModel,
+  fetchModelsDir,
+  inFlightRepos,
+  updateModelsDir,
   useManagedModels,
   useRecommendations,
   type ManagedModelsController,
@@ -50,6 +60,13 @@ function EngineRow(props: { rec: EngineRecommendation }): JSX.Element {
       <Text variant="micro" tone="dim">
         {props.rec.reason}
       </Text>
+      <Show when={props.rec.available}>
+        <Text variant="micro" tone="dim">
+          {props.rec.installed
+            ? "Ready — engine runtime is installed."
+            : "Downloads engine (~once) on first serve."}
+        </Text>
+      </Show>
       <Show when={props.rec.workloads.length}>
         <Row gap={2} align="center" class="flex-wrap">
           <For each={props.rec.workloads}>
@@ -164,6 +181,67 @@ function RepoDownloadForm(props: {
   );
 }
 
+/** Where new model downloads are written. Loads the current dir and lets the
+ *  operator point it elsewhere. Validation is the backend's job — it returns 400
+ *  with a reason — so the only client-side gate is non-empty; the displayed value
+ *  refreshes from the stored absolute path the backend returns. */
+function ModelsDirSection(): JSX.Element {
+  const [dir, { mutate, refetch }] = createResource(fetchModelsDir);
+  const [value, setValue] = createSignal("");
+  const [saving, setSaving] = createSignal(false);
+
+  // Prefill the field once the current dir loads (and on a successful save).
+  createEffect(() => {
+    const current = dir.latest;
+    if (current != null) setValue(current);
+  });
+
+  const canSave = () => value().trim().length > 0 && !saving();
+
+  async function save(): Promise<void> {
+    if (!canSave()) return;
+    setSaving(true);
+    try {
+      const stored = await updateModelsDir(value().trim());
+      mutate(stored);
+      setValue(stored);
+      toast.success("Models directory updated");
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Couldn't update the models directory",
+      );
+      void refetch();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Panel label="MODELS DIRECTORY">
+      <Stack gap={3}>
+        <Row gap={3} align="end" class="flex-wrap">
+          <div class="min-w-0 flex-1">
+            <Input
+              label="DIRECTORY"
+              placeholder="/path/to/models"
+              value={value()}
+              onInput={(e) => setValue(e.currentTarget.value)}
+              disabled={dir.loading}
+            />
+          </div>
+          <Button leading="check" disabled={!canSave()} onClick={save}>
+            {saving() ? "SAVING…" : "SAVE"}
+          </Button>
+        </Row>
+        <Text variant="micro" tone="dim">
+          Applies to new downloads — existing models stay where they are.
+        </Text>
+      </Stack>
+    </Panel>
+  );
+}
+
 /** The LOCAL MODELS tab body: the ranked inference engines for this host, the
  *  curated model catalog from the top available engine (each row downloadable),
  *  a free-text repo download, and the live managed-models list with serve/stop/
@@ -189,15 +267,9 @@ export function LocalModelsPanel(): JSX.Element {
     return recs.find((r) => r.available)?.engine ?? null;
   };
 
-  // A repo is "in flight" while it already has a downloading/starting managed
-  // model — used to disable its catalog DOWNLOAD button so it can't double-fire.
-  const inFlightRepos = () =>
-    new Set(
-      managed
-        .models()
-        .filter((m) => m.state === "downloading" || m.state === "starting")
-        .map((m) => m.hfRepo),
-    );
+  // The repos with an in-flight download/start — used to disable a catalog
+  // DOWNLOAD button so it can't double-fire.
+  const inFlight = () => inFlightRepos(managed.models());
 
   async function startDownload(input: {
     engine: EngineKind;
@@ -280,7 +352,7 @@ export function LocalModelsPanel(): JSX.Element {
               {(entry) => (
                 <CatalogRow
                   entry={entry}
-                  inFlight={inFlightRepos().has(entry.repo)}
+                  inFlight={inFlight().has(entry.repo)}
                   onDownload={() =>
                     void startDownload({
                       engine: entry.engine,
@@ -306,6 +378,8 @@ export function LocalModelsPanel(): JSX.Element {
           }}
         />
       </Panel>
+
+      <ModelsDirSection />
 
       <ManagedModelsPanel controller={managed} actions={actions} />
     </Stack>

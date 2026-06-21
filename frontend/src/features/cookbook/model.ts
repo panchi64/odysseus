@@ -92,6 +92,9 @@ export interface EngineRecommendation {
   rank: number;
   /** Whether the engine can run on this host right now. */
   available: boolean;
+  /** Whether the engine runtime is already present (no first-serve download).
+   *  `available && !installed` means it's fetched on first serve. */
+  installed: boolean;
   /** Why this engine is (or isn't) recommended. */
   reason: string;
   /** The workloads this engine covers on this host. */

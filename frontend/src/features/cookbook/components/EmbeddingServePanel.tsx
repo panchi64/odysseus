@@ -11,7 +11,7 @@ import {
   Text,
 } from "~/ui";
 import { bytes } from "~/lib/format";
-import { fetchCatalog, useManagedModels } from "../serving";
+import { fetchCatalog, inFlightRepos, useManagedModels } from "../serving";
 import { useManagedModelActions } from "../serving-actions";
 import type { CatalogEntry } from "../model";
 import { ManagedModelRow } from "./ManagedModelRow";
@@ -34,14 +34,9 @@ export function EmbeddingServePanel(): JSX.Element {
   const embeddingModels = () =>
     managed.models().filter((m) => m.workload === "embedding");
 
-  // A repo is "in flight" while it already has a downloading/starting managed model —
-  // used to disable its DOWNLOAD & SERVE button so it can't double-fire.
-  const inFlightRepos = () =>
-    new Set(
-      embeddingModels()
-        .filter((m) => m.state === "downloading" || m.state === "starting")
-        .map((m) => m.hfRepo),
-    );
+  // The repos with an in-flight embedding download/serve — used to disable their
+  // DOWNLOAD & SERVE button so it can't double-fire.
+  const inFlight = () => inFlightRepos(embeddingModels());
 
   function serveEmbedding(entry: CatalogEntry): Promise<void> {
     return actions.serve({
@@ -111,10 +106,10 @@ export function EmbeddingServePanel(): JSX.Element {
                       <Button
                         size="sm"
                         leading="play"
-                        disabled={inFlightRepos().has(entry.repo)}
+                        disabled={inFlight().has(entry.repo)}
                         onClick={() => void serveEmbedding(entry)}
                       >
-                        {inFlightRepos().has(entry.repo)
+                        {inFlight().has(entry.repo)
                           ? "SERVING"
                           : "DOWNLOAD & SERVE"}
                       </Button>

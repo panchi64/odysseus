@@ -35,6 +35,7 @@ interface EngineRecommendationDTO {
   engine: string;
   rank: number;
   available: boolean;
+  installed?: boolean;
   reason: string;
   workloads: string[];
   recommended_models: CatalogEntryDTO[];
@@ -83,6 +84,7 @@ function mapRecommendation(d: EngineRecommendationDTO): EngineRecommendation {
     engine: d.engine as EngineKind,
     rank: d.rank,
     available: d.available,
+    installed: d.installed ?? false,
     reason: d.reason,
     workloads: d.workloads as Workload[],
     recommendedModels: d.recommended_models.map(mapCatalogEntry),
@@ -206,17 +208,48 @@ export async function deleteModel(id: string): Promise<void> {
   await api.del(`/models/serving/${id}`);
 }
 
+// --- models directory settings ---------------------------------------------
+
+interface ModelsDirSettingsDTO {
+  models_dir: string;
+}
+
+/** The absolute directory new model downloads are written to. */
+export async function fetchModelsDir(): Promise<string> {
+  const dto = await api.get<ModelsDirSettingsDTO>("/models/serving/settings");
+  return dto.models_dir;
+}
+
+/** Point new downloads at `path`. The backend is the authority — it validates the
+ *  path and returns 400 with a `detail` reason — so it returns the stored absolute
+ *  path to display back. */
+export async function updateModelsDir(path: string): Promise<string> {
+  const dto = await api.put<ModelsDirSettingsDTO>("/models/serving/settings", {
+    models_dir: path,
+  });
+  return dto.models_dir;
+}
+
+// --- in-flight helpers (shared by the local/embedding panels) --------------
+
+/** A model state is "in flight" while its download/start is still progressing. */
+export function isInFlight(state: ServeState): boolean {
+  return state === "downloading" || state === "starting";
+}
+
+/** The set of `hfRepo`s with an in-flight managed model — used to disable a repo's
+ *  download/serve action so it can't double-fire while one is already running. */
+export function inFlightRepos(models: ManagedModel[]): Set<string> {
+  return new Set(
+    models.filter((m) => isInFlight(m.state)).map((m) => m.hfRepo),
+  );
+}
+
 // --- hooks (mirror useHardware) --------------------------------------------
 
 export function useRecommendations(): Resource<EngineRecommendation[]> {
   const [data] = createResource(fetchRecommendations);
   return data;
-}
-
-/** A managed model is "in flight" while its download/start is still progressing —
- *  this is what drives the polling cadence below. */
-function isInFlight(m: ManagedModel): boolean {
-  return m.state === "downloading" || m.state === "starting";
 }
 
 /** The managed-models controller the panel consumes. */
@@ -258,7 +291,7 @@ export function useManagedModels(intervalMs = 1500): ManagedModelsController {
       setModels(next);
       // Keep polling while anything is in flight; otherwise this fetch was the
       // settle that lands the terminal states, so stand the timer down.
-      if (next.some(isInFlight)) ensureTimer();
+      if (next.some((m) => isInFlight(m.state))) ensureTimer();
       else stopTimer();
     } catch {
       // Transient errors leave the last list on screen; the next poll retries.
