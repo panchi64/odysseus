@@ -21,8 +21,7 @@ from pathlib import Path
 
 from core.exceptions import ServingError
 
-from .. import hf
-from ..download import DownloadRun
+from ..download import DownloadSpec, worker_spec
 from ..models import EngineKind, Workload
 from ..paths import ServingPaths
 from ..supervisor import ServeSpec
@@ -64,6 +63,10 @@ class MlxAdapter(EngineAdapter):
         # is present-but-unavailable (the service degrades, never crashes).
         return platform.system() == "Darwin" and platform.machine() == "arm64"
 
+    async def is_installed(self) -> bool:
+        # The isolated venv's server script is already built — serving won't run uv.
+        return await self.is_available() and self._locate() is not None
+
     async def ensure_engine(self) -> None:
         if self._script and Path(self._script).exists():
             return
@@ -74,14 +77,10 @@ class MlxAdapter(EngineAdapter):
         logger.info("serving: creating an isolated MLX venv and installing %s", _REQUIREMENT)
         self._script = await asyncio.to_thread(self._install)
 
-    def download_run(self, repo: str, quant: str | None) -> DownloadRun:
-        def run(dest: Path, set_total):
-            # MLX serves a safetensors snapshot, not a single quantized file — quant is
-            # baked into the repo (e.g. `…-4bit`), so it's ignored here.
-            set_total(hf.snapshot_size(repo))
-            return hf.fetch_snapshot(repo, dest)
-
-        return run
+    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+        # MLX serves a safetensors snapshot, not a single quantized file — quant is baked
+        # into the repo (e.g. `…-4bit`), so the worker fetches the whole repo snapshot.
+        return worker_spec("snapshot", repo, dest)
 
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str

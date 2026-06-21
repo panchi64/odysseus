@@ -60,7 +60,8 @@ class EngineRecommendation(BaseModel):
 
     engine: EngineKind
     rank: int  # 1 = best fit for this host
-    available: bool
+    available: bool  # can run here (platform ok + runtime present or fetchable)
+    installed: bool = False  # runtime already present (no install/download on first serve)
     reason: str
     workloads: list[Workload] = Field(default_factory=list)
     recommended_models: list[CatalogEntry] = Field(default_factory=list)

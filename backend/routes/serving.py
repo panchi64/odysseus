@@ -40,6 +40,10 @@ class ServeRequest(BaseModel):
     quant: str | None = None
 
 
+class ModelsDirBody(BaseModel):
+    models_dir: str
+
+
 @router.get("/recommendations", response_model=list[EngineRecommendation])
 async def get_recommendations(request: Request) -> list[EngineRecommendation]:
     return await deps.serving(request).recommend_engine(OPERATOR_ID)
@@ -50,6 +54,20 @@ async def get_catalog(
     request: Request, engine: EngineKind, workload: Workload = Workload.chat
 ) -> list[CatalogEntry]:
     return await deps.serving(request).list_catalog(engine, workload)
+
+
+@router.get("/settings", response_model=ModelsDirBody)
+async def get_serving_settings(request: Request) -> ModelsDirBody:
+    return ModelsDirBody(models_dir=await deps.serving(request).get_models_dir(OPERATOR_ID))
+
+
+@router.put("/settings", response_model=ModelsDirBody)
+async def update_serving_settings(request: Request, body: ModelsDirBody) -> ModelsDirBody:
+    try:
+        stored = await deps.serving(request).set_models_dir(OPERATOR_ID, body.models_dir)
+    except ServingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return ModelsDirBody(models_dir=stored)
 
 
 @router.get("/models", response_model=list[ManagedModelView])

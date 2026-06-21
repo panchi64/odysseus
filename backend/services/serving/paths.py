@@ -22,9 +22,14 @@ class ServingPaths:
     def models_dir(self) -> Path:
         return self._root / "models"
 
-    def model_dir(self, engine: str, repo: str) -> Path:
-        """Where a model's downloaded artifact lives: ``serving/models/<engine>/<repo>``."""
-        return self.models_dir / engine / _safe(repo)
+    def model_dir(self, engine: str, repo: str, *, root: Path | None = None) -> Path:
+        """Where a model's downloaded artifact lives: ``<root>/<engine>/<repo>``.
+
+        ``root`` defaults to the built-in ``serving/models`` dir; the service passes the
+        operator's configured models directory when one is set (the layout under it is
+        identical, so a relocation is just a different root)."""
+        base = root if root is not None else self.models_dir
+        return base / engine / _safe(repo)
 
     @property
     def engines_dir(self) -> Path:

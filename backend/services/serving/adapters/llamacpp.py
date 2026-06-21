@@ -25,8 +25,7 @@ import httpx
 
 from core.exceptions import ServingError
 
-from .. import hf
-from ..download import DownloadRun
+from ..download import DownloadSpec, worker_spec
 from ..models import EngineKind, Workload
 from ..paths import ServingPaths
 from ..supervisor import ServeSpec
@@ -63,6 +62,10 @@ class LlamaCppAdapter(EngineAdapter):
         # platform. ensure_engine surfaces the rare case where it can't be obtained.
         return True
 
+    async def is_installed(self) -> bool:
+        # Already cached, overridden, or on PATH — serving won't fetch a release binary.
+        return self._binary is not None or self._locate() is not None
+
     async def ensure_engine(self) -> None:
         if self._binary and Path(self._binary).exists():
             return
@@ -73,13 +76,9 @@ class LlamaCppAdapter(EngineAdapter):
         logger.info("serving: no llama-server found; fetching a prebuilt binary")
         self._binary = await self._fetch()
 
-    def download_run(self, repo: str, quant: str | None) -> DownloadRun:
-        def run(dest: Path, set_total):
-            filename = hf.gguf_filename(repo, quant)
-            set_total(hf.file_size(repo, filename))
-            return hf.fetch_file(repo, filename, dest)
-
-        return run
+    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+        # The worker resolves the GGUF file matching `quant` and fetches just that file.
+        return worker_spec("file", repo, dest, quant=quant)
 
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str

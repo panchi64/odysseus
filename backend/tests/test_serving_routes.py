@@ -7,7 +7,7 @@ depend on the test host.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import sys
 
 from services.cookbook.models import (
     Accelerator,
@@ -17,7 +17,9 @@ from services.cookbook.models import (
     MemoryInfo,
     PlatformInfo,
 )
+from services.serving.adapters.llamacpp import LlamaCppAdapter
 from services.serving.adapters.mlx import MlxAdapter
+from services.serving.download import DownloadSpec
 from tests._helpers import client_app
 
 _GB = 1024**3
@@ -68,20 +70,21 @@ async def test_recommendations_catalog_and_status(monkeypatch):
 
 
 async def test_download_flow_creates_and_completes_a_managed_model(monkeypatch):
-    # Stub the HuggingFace seam so no network/download happens — the fake fetch just
-    # writes a file into the destination the manager hands it.
-    monkeypatch.setattr(
-        "services.serving.hf.gguf_filename", lambda repo, quant: "model.q4_k_m.gguf"
+    # Downloads run in a child process, so swap the llama.cpp download spec for a stub
+    # child that writes an artifact and reports it — no network/HF, no cross-process
+    # monkeypatch needed.
+    stub = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "d = Path(sys.argv[1]); d.mkdir(parents=True, exist_ok=True)\n"
+        "(d / 'model.gguf').write_bytes(b'0123456789')\n"
+        "print('ARTIFACT ' + str(d / 'model.gguf'), flush=True)\n"
     )
-    monkeypatch.setattr("services.serving.hf.file_size", lambda repo, filename: 10)
 
-    def fake_fetch_file(repo: str, filename: str, dest: Path) -> Path:
-        dest.mkdir(parents=True, exist_ok=True)
-        target = dest / filename
-        target.write_bytes(b"0123456789")
-        return target
+    def fake_spec(self, repo, quant, dest):
+        return DownloadSpec(argv=[sys.executable, "-c", stub, str(dest)])
 
-    monkeypatch.setattr("services.serving.hf.fetch_file", fake_fetch_file)
+    monkeypatch.setattr(LlamaCppAdapter, "download_spec", fake_spec)
 
     async with client_app() as (client, _app):
         resp = await client.post(

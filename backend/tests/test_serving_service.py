@@ -8,7 +8,7 @@ existing ``ModelRegistry`` path unchanged.
 from __future__ import annotations
 
 import asyncio
-import threading
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,9 @@ from services.serving import (
     Workload,
 )
 from services.serving.adapters.fake import FakeAdapter
+from services.serving.download import DownloadSpec
 from services.serving.supervisor import ProcessSupervisor
+from services.settings_store import SettingsStore
 
 OWNER = "operator"
 
@@ -42,21 +44,30 @@ class _FakeReindexer:
 
 
 class _GatedAdapter(FakeAdapter):
-    """A FakeAdapter whose download blocks until the test releases it, so a stop/delete
-    can deterministically race a serve that's still in flight."""
+    """A FakeAdapter whose download child blocks until a sentinel file appears, so a
+    stop/delete can deterministically race a serve that's still downloading. ``release``
+    drops the sentinel; ``stop``/``delete`` instead kill the child outright."""
 
-    def __init__(self) -> None:
+    def __init__(self, gate: Path) -> None:
         super().__init__()
-        self.release = threading.Event()
+        self._gate = gate
 
-    def download_run(self, repo: str, quant: str | None):
-        inner = super().download_run(repo, quant)
+    def release(self) -> None:
+        self._gate.touch()
 
-        def run(dest, set_total):
-            self.release.wait(timeout=10)
-            return inner(dest, set_total)
-
-        return run
+    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+        code = (
+            "import sys, time\n"
+            "from pathlib import Path\n"
+            "gate = Path(sys.argv[1]); dest = Path(sys.argv[2])\n"
+            "dest.mkdir(parents=True, exist_ok=True)\n"
+            "deadline = time.time() + 30\n"
+            "while not gate.exists() and time.time() < deadline:\n"
+            "    time.sleep(0.05)\n"
+            "art = dest / 'model.gguf'; art.write_bytes(b'GGUF')\n"
+            "print('ARTIFACT ' + str(art), flush=True)\n"
+        )
+        return DownloadSpec(argv=[sys.executable, "-c", code, str(self._gate), str(dest)])
 
 
 async def _wait_settled(service: ServingService, managed_id: str, timeout: float = 20.0):
@@ -89,6 +100,7 @@ async def _service(
         adapters={EngineKind.llama_cpp: adapter or FakeAdapter()},
         supervisor=ProcessSupervisor(startup_timeout_s=15.0, poll_interval_s=0.1),
         reindexer=reindexer,
+        settings=SettingsStore(engine),
     )
     return service, registry
 
@@ -192,37 +204,37 @@ async def test_serve_with_unknown_engine_raises(tmp_path: Path):
 async def test_stop_during_serve_does_not_resurrect(tmp_path: Path):
     # A stop while the serve is still in flight must cancel the background job so it can't
     # finish later and resurrect the model (re-spawn the engine, re-register an endpoint).
-    adapter = _GatedAdapter()
+    adapter = _GatedAdapter(tmp_path / "release.gate")
     service, registry = await _service(tmp_path, adapter=adapter)
     try:
         started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
         assert started.state in (ServeState.starting, ServeState.downloading)
         stopped = await service.stop(OWNER, started.id)
         assert stopped.state == ServeState.stopped
-        # Release the (now-cancelled) download thread; the row must stay stopped.
-        adapter.release.set()
+        # Release the gate; the (killed) download must not resurrect the row.
+        adapter.release()
         await asyncio.sleep(0.3)
         view = next(m for m in await service.status(OWNER) if m.id == started.id)
         assert view.state == ServeState.stopped and view.port is None
         # The cancelled serve never registered an endpoint.
         assert await registry.list_endpoints(OWNER) == []
     finally:
-        adapter.release.set()
+        adapter.release()
         await service.shutdown()
 
 
 async def test_delete_during_serve_leaves_nothing(tmp_path: Path):
-    adapter = _GatedAdapter()
+    adapter = _GatedAdapter(tmp_path / "release.gate")
     service, registry = await _service(tmp_path, adapter=adapter)
     try:
         started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
         await service.delete(OWNER, started.id)
-        adapter.release.set()
+        adapter.release()
         await asyncio.sleep(0.3)
         assert await service.status(OWNER) == []
         assert await registry.list_endpoints(OWNER) == []
     finally:
-        adapter.release.set()
+        adapter.release()
         await service.shutdown()
 
 
@@ -283,5 +295,45 @@ async def test_serve_threads_catalog_context_window(tmp_path: Path, monkeypatch)
         assert view.state == ServeState.running
         endpoint = await registry.get_endpoint(OWNER, view.endpoint_id)
         assert endpoint.context_window == 32768
+    finally:
+        await service.shutdown()
+
+
+async def test_models_dir_setting_routes_downloads(tmp_path: Path):
+    service, _registry = await _service(tmp_path)
+    try:
+        custom = tmp_path / "external" / "models"
+        stored = await service.set_models_dir(OWNER, str(custom))
+        assert stored == str(custom)
+        assert await service.get_models_dir(OWNER) == str(custom)
+
+        view = await service.download(
+            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
+        )
+        for _ in range(200):
+            row = next((m for m in await service.status(OWNER) if m.id == view.id), None)
+            if row and row.state == ServeState.stopped:
+                break
+            await asyncio.sleep(0.02)
+        # The artifact landed under the configured directory, not the default data dir.
+        assert (custom / "llama.cpp" / "acme__Model-GGUF").exists()
+
+        with pytest.raises(ServingError):
+            await service.set_models_dir(OWNER, "relative/not/absolute")
+    finally:
+        await service.shutdown()
+
+
+async def test_recommend_overlays_installed_from_adapters(tmp_path: Path):
+    # The FakeAdapter (registered for llama.cpp) reports installed; an engine with no
+    # registered adapter (mlx here) is not installed. `available` stays profile-derived.
+    service, _registry = await _service(tmp_path)
+    try:
+        recs = await service.recommend_engine(OWNER)
+        llama = next(r for r in recs if r.engine == EngineKind.llama_cpp)
+        assert llama.installed is True
+        mlx = next((r for r in recs if r.engine == EngineKind.mlx), None)
+        if mlx is not None:
+            assert mlx.installed is False
     finally:
         await service.shutdown()

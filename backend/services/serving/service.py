@@ -28,6 +28,7 @@ from models._fields import utcnow
 from models.serving import ManagedModel
 from services.cookbook import CookbookService
 from services.registry import ModelRegistry
+from services.settings_store import SettingsStore
 
 from . import recommend
 from .adapters import EngineAdapter, build_adapters
@@ -58,8 +59,24 @@ _RESIDENT_STATES = frozenset({ServeState.running.value, ServeState.starting.valu
 _SPAWN_ATTEMPTS = 3
 
 
+# The operator-settable preference key for the local models directory.
+_MODELS_DIR_KEY = "serving.models_dir"
+
+
 def _human_gb(n: int) -> str:
     return f"{n / 1024**3:.1f} GB"
+
+
+def _ensure_writable_dir(path: Path) -> None:
+    """Create ``path`` if needed and confirm we can write into it (blocking — run in a
+    thread). Raises ``ServingError`` with the OS reason if it can't be used."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".odysseus-write-test"
+        probe.touch()
+        probe.unlink()
+    except OSError as exc:
+        raise ServingError(f"that models directory isn't usable: {exc}") from exc
 
 
 class Reindexer(Protocol):
@@ -81,6 +98,7 @@ class ServingService:
         adapters: dict[EngineKind, EngineAdapter] | None = None,
         supervisor: ProcessSupervisor | None = None,
         reindexer: Reindexer | None = None,
+        settings: SettingsStore | None = None,
     ) -> None:
         self._db = db_engine
         self._vault = vault
@@ -91,6 +109,7 @@ class ServingService:
         self._adapters = adapters if adapters is not None else build_adapters(paths)
         self._supervisor = supervisor or ProcessSupervisor()
         self._reindexer = reindexer
+        self._settings = settings
         # In-flight serve jobs (download → spawn → register), one per managed model.
         self._serve_tasks: dict[str, asyncio.Task] = {}
         # Serializes serve admission so the headroom check and the state reservation it
@@ -101,11 +120,47 @@ class ServingService:
 
     async def recommend_engine(self, owner_id: str) -> list[EngineRecommendation]:
         profile = await self._cookbook.detect()
-        return recommend.recommend(profile)
+        recs = recommend.recommend(profile)
+        # `available` (can the host run it) is already honest from the profile; overlay
+        # `installed` (is the runtime actually present) so the UI shows "ready" vs
+        # "downloads the engine on first use" instead of guessing.
+        for rec in recs:
+            adapter = self._adapters.get(rec.engine)
+            rec.installed = bool(rec.available and adapter and await adapter.is_installed())
+        return recs
 
     async def list_catalog(self, engine: EngineKind, workload: Workload) -> list[CatalogEntry]:
         budget = recommend.vram_budget(await self._cookbook.detect())
         return recommend.models_for(engine, workload, budget)
+
+    # --- models directory (operator-settable) -----------------------------
+
+    async def get_models_dir(self, owner_id: str) -> str:
+        """The directory downloaded artifacts land in — the operator's configured path,
+        or the built-in default under the data dir."""
+        if self._settings is not None:
+            configured = await self._settings.get(owner_id, _MODELS_DIR_KEY)
+            if configured:
+                return configured
+        return str(self._paths.models_dir)
+
+    async def set_models_dir(self, owner_id: str, path: str) -> str:
+        """Point new downloads at ``path`` (created if absent). Validates it's an absolute,
+        writable directory; models already on disk keep their recorded artifact paths.
+        Returns the stored absolute path. Raises ``ServingError`` if it can't be used."""
+        target = Path(path).expanduser()
+        if not target.is_absolute():
+            raise ServingError("the models directory must be an absolute path")
+        if self._settings is None:
+            raise ServingError("settings storage is not available")
+        await asyncio.to_thread(_ensure_writable_dir, target)
+        await self._settings.set(owner_id, _MODELS_DIR_KEY, str(target))
+        return str(target)
+
+    async def _model_dest(self, owner_id: str, engine: EngineKind, repo: str) -> Path:
+        """Where this model's artifact should be fetched, under the configured root."""
+        root = Path(await self.get_models_dir(owner_id))
+        return self._paths.model_dir(engine.value, repo, root=root)
 
     # --- engine selection -------------------------------------------------
 
@@ -200,17 +255,18 @@ class ServingService:
         await self._update_row(
             row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
         )
-        self._start_download(row, engine, repo, quant)
+        dest = await self._model_dest(owner_id, engine, repo)
+        self._start_download(row, engine, repo, quant, dest)
         refreshed = await self._get_row(row.id)
         return self._to_view(refreshed or row)
 
     def _start_download(
-        self, row: ManagedModel, engine: EngineKind, repo: str, quant: str | None
+        self, row: ManagedModel, engine: EngineKind, repo: str, quant: str | None, dest: Path
     ) -> None:
-        """Kick off the background fetch for an existing row (shared by download + serve)."""
-        run = self._adapter(engine).download_run(repo, quant)
-        dest = self._paths.model_dir(engine.value, repo)
-        self._downloads.start(row.id, dest, run=run, on_complete=self._make_on_complete(row.id))
+        """Kick off the background fetch for an existing row (shared by download + serve).
+        ``dest`` is resolved by the async caller so it honors the operator's models dir."""
+        spec = self._adapter(engine).download_spec(repo, quant, dest)
+        self._downloads.start(row.id, dest, spec=spec, on_complete=self._make_on_complete(row.id))
 
     def _make_on_complete(self, managed_id: str):
         async def on_complete(artifact, error) -> None:
@@ -289,7 +345,8 @@ class ServingService:
             artifact = Path(row.artifact_path) if row.artifact_path else None
             if artifact is None or not artifact.exists():
                 await self._update_row(managed_id, state=ServeState.downloading, last_error=None)
-                self._start_download(row, engine, repo, quant)
+                dest = await self._model_dest(owner_id, engine, repo)
+                self._start_download(row, engine, repo, quant, dest)
                 await self._downloads.wait(managed_id)
                 row = await self._get_row(managed_id)
                 if row is None or row.state == ServeState.error.value:

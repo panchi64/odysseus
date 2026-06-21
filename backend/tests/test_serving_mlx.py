@@ -1,7 +1,7 @@
 """MlxAdapter — the pure, runtime-free bits (no mlx-openai-server / network needed).
 
 Covers ``serve_spec`` argv shape, ``resolved_model_id``, capability flags, and the
-Apple-Silicon gating in ``is_available``. ``ensure_engine``/``download_run`` (which would
+Apple-Silicon gating in ``is_available``. ``ensure_engine``/``download_spec`` (which would
 create a venv or hit HuggingFace) are deliberately not exercised here.
 """
 

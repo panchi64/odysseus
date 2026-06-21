@@ -1,18 +1,27 @@
-"""Off-request model downloads with lock-aware, polled progress.
+"""Off-request model downloads — lock-aware, polled progress, killable.
 
-A download is one long job per managed model: a background task that waits for the
-vault to unlock (model files land under ``data/``), runs the blocking HuggingFace fetch
-in a thread, and exposes a progress snapshot the status endpoint polls — the
-``EmbeddingReindexer`` shape (one big job + a snapshot), not the write-behind queue
-(many small items). Progress is read by polling the destination's on-disk size against a
-best-effort total, so it stays decoupled from ``huggingface_hub`` internals. Transient
-failures retry with bounded backoff; a job can be cancelled.
+A download is one long job per managed model: a background task that waits for the vault
+to unlock (model files land under ``data/``), runs the blocking HuggingFace fetch in a
+**child process** so it can be killed cleanly, and exposes a progress snapshot the status
+endpoint polls. Cancelling a job kills the child (and its group) and drops the partial
+artifact — unlike a worker thread, which can't be interrupted mid-fetch.
+
+The child is described by a ``DownloadSpec`` (an argv, like the supervisor's ``ServeSpec``)
+each adapter supplies, so the engine-specific fetch logic stays in the adapter/worker and
+this manager stays engine-agnostic. The worker reports two control lines on stdout —
+``TOTAL <bytes>`` (when known) and ``ARTIFACT <path>`` (on success); progress is polled
+from the destination's on-disk size, so it stays decoupled from ``huggingface_hub``.
+Transient failures retry with bounded backoff.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import sys
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -24,11 +33,41 @@ from .models import DownloadProgress, ServeState
 
 logger = logging.getLogger(__name__)
 
-# run(dest, set_total) -> artifact_path. Blocking; executed in a worker thread. It does
-# the actual fetch and may report the total size it expects via ``set_total``.
-DownloadRun = Callable[[Path, Callable[[int | None], None]], Path]
 # on_complete(artifact_path | None, error | None): persist the terminal outcome.
 OnComplete = Callable[[Path | None, str | None], Awaitable[None]]
+
+# The backend code root (parent of the ``services`` package) — the cwd the worker child
+# runs in so ``python -m services.serving.download_worker`` resolves.
+_CODE_ROOT = Path(__file__).resolve().parents[2]
+_WORKER_MODULE = "services.serving.download_worker"
+
+
+@dataclass(frozen=True)
+class DownloadSpec:
+    """How to launch the child process that fetches one model's artifact into ``dest``."""
+
+    argv: list[str]
+    env: dict[str, str] | None = None
+    cwd: Path | None = None
+
+
+def worker_spec(mode: str, repo: str, dest: Path, *, quant: str | None = None) -> DownloadSpec:
+    """A spec that runs the bundled HuggingFace download worker — used by the real engine
+    adapters (the test double returns its own stub spec). ``mode`` is ``file`` (a single
+    GGUF, llama.cpp) or ``snapshot`` (a repo tree, MLX)."""
+    argv = [
+        sys.executable, "-m", _WORKER_MODULE,
+        "--mode", mode, "--repo", repo, "--dest", str(dest),
+    ]
+    if quant:
+        argv += ["--quant", quant]
+    # Quiet HF's tqdm so the child's stdout carries only our control lines.
+    env = {**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"}
+    return DownloadSpec(argv=argv, env=env, cwd=_CODE_ROOT)
+
+
+class DownloadFailed(Exception):
+    """A download attempt failed (retryable up to the cap)."""
 
 
 @dataclass
@@ -66,13 +105,13 @@ class DownloadManager:
         managed_id: str,
         dest: Path,
         *,
-        run: DownloadRun,
+        spec: DownloadSpec,
         on_complete: OnComplete,
     ) -> None:
         """Schedule (or restart) the download of one managed model."""
         self._discard(managed_id)
         job = _Job(progress=DownloadProgress(), state=ServeState.downloading)
-        job.task = asyncio.create_task(self._run(managed_id, job, dest, run, on_complete))
+        job.task = asyncio.create_task(self._run(managed_id, job, dest, spec, on_complete))
         self._jobs[managed_id] = job
 
     async def wait(self, managed_id: str) -> None:
@@ -106,22 +145,24 @@ class DownloadManager:
         managed_id: str,
         job: _Job,
         dest: Path,
-        run: DownloadRun,
+        spec: DownloadSpec,
         on_complete: OnComplete,
     ) -> None:
         try:
             # Park until the vault is unlocked — model files land under data/, and a
             # download is only useful once the operator is actually working anyway.
             await self._vault.unlocked_event.wait()
-            dest.mkdir(parents=True, exist_ok=True)
-            artifact = await self._download(job, dest, run)
+            artifact = await self._download(job, dest, spec)
             if job.progress.total_bytes:
                 job.progress.downloaded_bytes = job.progress.total_bytes
             job.progress.fraction = 1.0
             job.state = ServeState.stopped
             await on_complete(artifact, None)
         except asyncio.CancelledError:
+            # Killed mid-fetch — drop the partial artifact so a later serve re-downloads
+            # cleanly rather than launching against a truncated file.
             job.state = ServeState.error
+            await asyncio.to_thread(_remove_dir, dest)
             raise
         except Exception as exc:  # noqa: BLE001 — any failure is reported, not raised on
             logger.exception("serving: download failed for %s", managed_id)
@@ -129,31 +170,69 @@ class DownloadManager:
             with suppress(Exception):
                 await on_complete(None, str(exc))
 
-    async def _download(self, job: _Job, dest: Path, run: DownloadRun) -> Path:
-        def set_total(n: int | None) -> None:
-            job.progress.total_bytes = n
-
+    async def _download(self, job: _Job, dest: Path, spec: DownloadSpec) -> Path:
         attempt = 0
         while True:
             attempt += 1
-            future = asyncio.ensure_future(asyncio.to_thread(run, dest, set_total))
-            poller = asyncio.ensure_future(self._poll(job, dest, future))
+            dest.mkdir(parents=True, exist_ok=True)
             try:
-                return await future
+                return await self._run_once(job, dest, spec)
             except asyncio.CancelledError:
-                future.cancel()
                 raise
-            except Exception:
+            except DownloadFailed:
                 if attempt >= self._max_attempts:
                     raise
                 await asyncio.sleep(self._base_backoff_s * 2 ** (attempt - 1))
-            finally:
-                poller.cancel()
-                with suppress(asyncio.CancelledError):
-                    await poller
 
-    async def _poll(self, job: _Job, dest: Path, future: asyncio.Future) -> None:
-        while not future.done():
+    async def _run_once(self, job: _Job, dest: Path, spec: DownloadSpec) -> Path:
+        proc = await asyncio.create_subprocess_exec(
+            *spec.argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=spec.env,
+            cwd=str(spec.cwd) if spec.cwd else None,
+            start_new_session=True,  # own process group, so cancel can kill the whole tree
+        )
+        holder: dict[str, str] = {}
+        tail: deque[str] = deque(maxlen=20)
+        reader = asyncio.ensure_future(self._read_control(proc, job, holder, tail))
+        poller = asyncio.ensure_future(self._poll(job, dest, proc))
+        try:
+            returncode = await proc.wait()
+        except asyncio.CancelledError:
+            _kill_group(proc)
+            with suppress(Exception):
+                await proc.wait()
+            raise
+        finally:
+            poller.cancel()
+            with suppress(asyncio.CancelledError):
+                await poller
+            with suppress(Exception):
+                await reader  # drains to EOF, capturing the artifact line + error tail
+        if returncode != 0:
+            raise DownloadFailed("\n".join(tail) or f"the downloader exited with code {returncode}")
+        artifact = holder.get("artifact")
+        if artifact is None:
+            raise DownloadFailed("the downloader did not report an artifact")
+        return Path(artifact)
+
+    async def _read_control(
+        self, proc: asyncio.subprocess.Process, job: _Job, holder: dict[str, str], tail: deque[str]
+    ) -> None:
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip("\n")
+            if line.startswith("TOTAL "):
+                with suppress(ValueError):
+                    job.progress.total_bytes = int(line[len("TOTAL ") :].strip())
+            elif line.startswith("ARTIFACT "):
+                holder["artifact"] = line[len("ARTIFACT ") :].strip()
+            elif line.strip():
+                tail.append(line)
+
+    async def _poll(self, job: _Job, dest: Path, proc: asyncio.subprocess.Process) -> None:
+        while proc.returncode is None:
             size = await asyncio.to_thread(_dir_size, dest)
             job.progress.downloaded_bytes = size
             if job.progress.total_bytes:
@@ -161,12 +240,30 @@ class DownloadManager:
             await asyncio.sleep(self._poll_interval_s)
 
 
+def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the child's process group (POSIX). Downloads carry no state worth a
+    graceful stop, and the partial artifact is removed by the caller."""
+    with suppress(ProcessLookupError, OSError):
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+
+
+def _remove_dir(path: Path) -> None:
+    import shutil  # noqa: PLC0415 — local to keep the import off the hot path
+
+    with suppress(OSError):
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _dir_size(path: Path) -> int:
-    """Bytes currently on disk under ``path`` (incomplete temp files included)."""
+    """Bytes currently on disk under ``path``, excluding HuggingFace's ``.cache`` staging
+    (blobs/locks it writes under ``local_dir`` before materializing the final file) so
+    progress tracks the real artifact rather than double-counting cache copies."""
     if not path.exists():
         return 0
     total = 0
     for child in path.rglob("*"):
+        if ".cache" in child.parts:
+            continue
         with suppress(OSError):
             if child.is_file():
                 total += child.stat().st_size

@@ -67,6 +67,7 @@ from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingPaths, ServingService
+from services.settings_store import SettingsStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -217,6 +218,7 @@ async def lifespan(app: FastAPI):
     # the corpus via the reindexer (built just above). Engines from a prior process can't
     # be adopted across a restart, so reconcile clean-slates any mid-flight rows
     # (best-effort, never blocks startup); shutdown stops them gracefully in `finally`.
+    app.state.settings_store = SettingsStore(engine)
     app.state.serving = ServingService(
         engine,
         vault,
@@ -224,6 +226,7 @@ async def lifespan(app: FastAPI):
         app.state.cookbook,
         ServingPaths(settings.data_dir),
         reindexer=app.state.embedding_reindexer,
+        settings=app.state.settings_store,
     )
     await app.state.serving.reconcile_on_startup()
     folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)

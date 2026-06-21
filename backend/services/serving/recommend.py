@@ -5,8 +5,9 @@ decision: **llama.cpp is the universal baseline** (chat + embeddings, every
 platform), and **MLX is an Apple-Silicon chat speed upgrade** layered on top.
 
 ``available`` is computed from the profile here (MLX needs arm64 macOS; llama.cpp
-runs everywhere). The service overlays the adapters' real ``is_available()`` once
-they exist, but the honest default lets the read-only surface ship first.
+runs everywhere). The service overlays each adapter's real ``is_installed()`` onto
+the result so the UI can distinguish a ready runtime from one that will be fetched
+on first serve.
 """
 
 from __future__ import annotations
