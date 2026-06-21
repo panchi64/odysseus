@@ -18,6 +18,7 @@ import {
 import { refreshEndpoints } from "~/lib/stores/models";
 import { serveModel, useManagedModels, useRecommendations } from "../serving";
 import { DownloadProgress } from "./DownloadProgress";
+import { EngineInstallHint } from "./EngineInstallHint";
 import { ServeStateFlag } from "./ServeStateFlag";
 
 /** The least-friction "RUN LOCALLY" path: the backend's top available engine is
@@ -129,11 +130,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                     {eng().engine}
                   </Text>
                 </Row>
-                <Show when={!eng().installed}>
-                  <Text variant="micro" tone="dim">
-                    Downloads engine (~once) on first serve.
-                  </Text>
-                </Show>
+                <EngineInstallHint installed={eng().installed} />
                 <Show
                   when={models().length}
                   fallback={

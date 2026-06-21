@@ -102,19 +102,23 @@ _LLAMA_EMBED: tuple[CatalogEntry, ...] = (
 CATALOG: tuple[CatalogEntry, ...] = _LLAMA_CHAT + _MLX_CHAT + _LLAMA_EMBED
 
 
+def _entry_for(engine: EngineKind, repo: str) -> CatalogEntry | None:
+    """The catalog entry for a model, or ``None`` for a free-text repo not in it."""
+    for e in CATALOG:
+        if e.engine == engine and e.repo == repo:
+            return e
+    return None
+
+
 def bytes_for(engine: EngineKind, repo: str) -> int | None:
     """The curated on-disk/VRAM footprint estimate for a model, or ``None`` for a repo
     not in the catalog (a free-text one we can't size)."""
-    for e in CATALOG:
-        if e.engine == engine and e.repo == repo and e.approx_bytes is not None:
-            return e.approx_bytes
-    return None
+    entry = _entry_for(engine, repo)
+    return entry.approx_bytes if entry is not None else None
 
 
 def context_window_for(engine: EngineKind, repo: str) -> int | None:
     """The curated context window for a model, or ``None`` for a free-text repo not in
     the catalog (the caller falls back to the adapter's hint)."""
-    for e in CATALOG:
-        if e.engine == engine and e.repo == repo:
-            return e.context_window
-    return None
+    entry = _entry_for(engine, repo)
+    return entry.context_window if entry is not None else None

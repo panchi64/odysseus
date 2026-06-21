@@ -192,6 +192,24 @@ async def test_serve_embedding_binds_role_and_triggers_reindex(tmp_path: Path):
         await service.shutdown()
 
 
+async def test_delete_removes_the_artifact_directory(tmp_path: Path):
+    service, _registry = await _service(tmp_path)
+    try:
+        started = await service.serve(
+            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
+        )
+        view = await _wait_settled(service, started.id)
+        assert view.state == ServeState.running
+        row = await service._store.get(view.id)
+        model_dir = Path(row.artifact_path).parent
+        assert model_dir.exists()
+
+        await service.delete(OWNER, view.id)
+        assert not model_dir.exists()  # the downloaded artifact is removed, not leaked
+    finally:
+        await service.shutdown()
+
+
 async def test_serve_with_unknown_engine_raises(tmp_path: Path):
     service, _registry = await _service(tmp_path)
     try:

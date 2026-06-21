@@ -64,7 +64,15 @@ class LlamaCppAdapter(EngineAdapter):
 
     async def is_installed(self) -> bool:
         # Already cached, overridden, or on PATH — serving won't fetch a release binary.
-        return self._binary is not None or self._locate() is not None
+        # _locate walks the engine dir + scans PATH, so run it off the event loop and
+        # cache the hit: the recommendation surface calls this on every poll.
+        if self._binary and Path(self._binary).exists():
+            return True
+        located = await asyncio.to_thread(self._locate)
+        if located:
+            self._binary = located
+            return True
+        return False
 
     async def ensure_engine(self) -> None:
         if self._binary and Path(self._binary).exists():

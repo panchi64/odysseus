@@ -7,7 +7,7 @@ import { fetchModelsDir, updateModelsDir } from "../serving";
  *  with a reason — so the only client-side gate is non-empty; the displayed value
  *  refreshes from the stored absolute path the backend returns. */
 export function ModelsDirSection(): JSX.Element {
-  const [dir, { mutate, refetch }] = createResource(fetchModelsDir);
+  const [dir, { mutate }] = createResource(fetchModelsDir);
   const [value, setValue] = createSignal("");
   const [saving, setSaving] = createSignal(false);
 
@@ -28,11 +28,12 @@ export function ModelsDirSection(): JSX.Element {
       setValue(stored);
       toast.success("Models directory updated");
     } catch (err) {
+      // Keep the operator's input so they can correct and retry — the stored value
+      // didn't change, so don't refetch (it would overwrite the field via the effect).
       toast.error(
         (err as { detail?: string })?.detail ??
           "Couldn't update the models directory",
       );
-      void refetch();
     } finally {
       setSaving(false);
     }

@@ -146,6 +146,33 @@ async def test_cancel_kills_the_child_and_drops_partial(tmp_path: Path):
     assert not dest.exists()  # the partial artifact was dropped
 
 
+async def test_download_retries_when_the_worker_cant_spawn(tmp_path: Path, monkeypatch):
+    # A transient spawn failure (OSError from create_subprocess_exec) must be retried up
+    # to the cap, not fail the download on the first attempt.
+    mgr = _manager(_vault(), max_attempts=3)
+    calls = {"n": 0}
+
+    async def boom(*args, **kwargs):
+        calls["n"] += 1
+        raise OSError("cannot fork")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boom)
+
+    done = asyncio.Event()
+    result: dict = {}
+
+    async def on_complete(artifact, error):
+        result["artifact"], result["error"] = artifact, error
+        done.set()
+
+    dest = tmp_path / "m"
+    mgr.start("m", dest, spec=_stub_spec(dest), on_complete=on_complete)
+    await asyncio.wait_for(done.wait(), timeout=10)
+
+    assert result["artifact"] is None and "could not start" in result["error"]
+    assert calls["n"] == 3  # retried up to the cap, not failed on the first spawn error
+
+
 def test_dir_size_excludes_hf_cache(tmp_path: Path):
     assert _dir_size(tmp_path / "missing") == 0
     (tmp_path / "a").write_bytes(b"123")

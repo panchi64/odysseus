@@ -185,14 +185,19 @@ class DownloadManager:
                 await asyncio.sleep(self._base_backoff_s * 2 ** (attempt - 1))
 
     async def _run_once(self, job: _Job, dest: Path, spec: DownloadSpec) -> Path:
-        proc = await asyncio.create_subprocess_exec(
-            *spec.argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=spec.env,
-            cwd=str(spec.cwd) if spec.cwd else None,
-            start_new_session=True,  # own process group, so cancel can kill the whole tree
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *spec.argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=spec.env,
+                cwd=str(spec.cwd) if spec.cwd else None,
+                start_new_session=True,  # own process group, so cancel kills the whole tree
+            )
+        except OSError as exc:
+            # A transient spawn failure (EAGAIN, too many fds, fork failure) is retryable,
+            # like any other download attempt — surface it as such, not a hard error.
+            raise DownloadFailed(f"could not start the download worker: {exc}") from exc
         holder: dict[str, str] = {}
         tail: deque[str] = deque(maxlen=20)
         reader = asyncio.ensure_future(self._read_control(proc, job, holder, tail))

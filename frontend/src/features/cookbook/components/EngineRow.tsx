@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from "solid-js";
 import { Chip, Row, Stack, StatusFlag, Text } from "~/ui";
 import type { EngineRecommendation } from "../model";
+import { EngineInstallHint } from "./EngineInstallHint";
 
 /** A single ranked engine: name, availability flag, reason, and workloads. The
  *  rank-1 engine leads. Read-only — an engine is a serving runtime, not a model,
@@ -25,11 +26,7 @@ export function EngineRow(props: { rec: EngineRecommendation }): JSX.Element {
         {props.rec.reason}
       </Text>
       <Show when={props.rec.available}>
-        <Text variant="micro" tone="dim">
-          {props.rec.installed
-            ? "Ready — engine runtime is installed."
-            : "Downloads engine (~once) on first serve."}
-        </Text>
+        <EngineInstallHint installed={props.rec.installed} />
       </Show>
       <Show when={props.rec.workloads.length}>
         <Row gap={2} align="center" class="flex-wrap">

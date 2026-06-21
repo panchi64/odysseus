@@ -36,7 +36,7 @@ from .models import (
     ServeState,
     Workload,
 )
-from .paths import ServingPaths
+from .paths import ServingPaths, _safe
 from .store import ManagedModelStore
 from .supervisor import EngineExitedDuringStartup, ProcessSupervisor
 
@@ -47,6 +47,19 @@ logger = logging.getLogger(__name__)
 _SPAWN_ATTEMPTS = 3
 # The operator-settable preference key for the local models directory.
 _MODELS_DIR_KEY = "serving.models_dir"
+
+
+def _remove_model_dir(artifact_path: str, repo: str) -> None:
+    """Best-effort remove a deleted model's on-disk directory (blocking — run in a thread).
+    Resolves the per-model dir from the recorded artifact — the dir itself for an MLX
+    snapshot, the parent for a llama.cpp ``.gguf`` file — and only removes it when it's the
+    expected ``_safe(repo)`` directory, never a broader tree."""
+    import shutil  # noqa: PLC0415 — local to keep the import off the hot path
+
+    p = Path(artifact_path)
+    model_dir = p if p.is_dir() else p.parent
+    if model_dir.name == _safe(repo):
+        shutil.rmtree(model_dir, ignore_errors=True)
 
 
 def _ensure_writable_dir(path: Path) -> None:
@@ -450,6 +463,8 @@ class ServingService:
         if row.endpoint_id:
             with suppress(NotFoundError):
                 await self._registry.delete_endpoint(owner_id, row.endpoint_id)
+        if row.artifact_path:
+            await asyncio.to_thread(_remove_model_dir, row.artifact_path, row.hf_repo)
         await self._store.delete(managed_id)
 
     def _make_on_crash(self):
