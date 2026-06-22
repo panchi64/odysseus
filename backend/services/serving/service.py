@@ -22,21 +22,21 @@ from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from core.vault import Vault
 from models.serving import ManagedModel
 from services.cookbook import CookbookService
+from services.credential_store import CredentialStore
 from services.registry import ModelRegistry
 from services.settings_store import SettingsStore
 
-from . import catalog, headroom, recommend
+from . import headroom, recommend
 from .adapters import EngineAdapter, build_adapters
 from .download import DownloadManager
 from .models import (
-    CatalogEntry,
     EngineKind,
     EngineRecommendation,
     ManagedModelView,
     ServeState,
     Workload,
 )
-from .paths import ServingPaths, _safe
+from .paths import ServingPaths, _safe, dir_size
 from .store import ManagedModelStore
 from .supervisor import EngineExitedDuringStartup, ProcessSupervisor
 
@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 _SPAWN_ATTEMPTS = 3
 # The operator-settable preference key for the local models directory.
 _MODELS_DIR_KEY = "serving.models_dir"
+# The credential-store id the operator's optional HuggingFace token is stored under.
+_HF_SERVICE = "huggingface"
 
 
 def _remove_model_dir(artifact_path: str, repo: str) -> None:
@@ -60,6 +62,17 @@ def _remove_model_dir(artifact_path: str, repo: str) -> None:
     model_dir = p if p.is_dir() else p.parent
     if model_dir.name == _safe(repo):
         shutil.rmtree(model_dir, ignore_errors=True)
+
+
+def _artifact_bytes(path: Path) -> int:
+    """Bytes a downloaded artifact holds on disk (blocking — run in a thread): the file
+    itself for a llama.cpp GGUF, or the summed snapshot for an MLX repo. ``0`` when the
+    path is gone."""
+    if path.is_file():
+        with suppress(OSError):
+            return path.stat().st_size
+        return 0
+    return dir_size(path)
 
 
 def _ensure_writable_dir(path: Path) -> None:
@@ -94,6 +107,7 @@ class ServingService:
         supervisor: ProcessSupervisor | None = None,
         reindexer: Reindexer | None = None,
         settings: SettingsStore | None = None,
+        credentials: CredentialStore | None = None,
     ) -> None:
         self._store = ManagedModelStore(db_engine)
         self._vault = vault
@@ -105,6 +119,7 @@ class ServingService:
         self._supervisor = supervisor or ProcessSupervisor()
         self._reindexer = reindexer
         self._settings = settings
+        self._credentials = credentials
         # In-flight serve jobs (download → spawn → register), one per managed model.
         self._serve_tasks: dict[str, asyncio.Task] = {}
         # Serializes serve admission so the headroom check and the state reservation it
@@ -123,10 +138,6 @@ class ServingService:
             adapter = self._adapters.get(rec.engine)
             rec.installed = bool(rec.available and adapter and await adapter.is_installed())
         return recs
-
-    async def list_catalog(self, engine: EngineKind, workload: Workload) -> list[CatalogEntry]:
-        budget = recommend.vram_budget(await self._cookbook.detect())
-        return recommend.models_for(engine, workload, budget)
 
     # --- models directory (operator-settable) -----------------------------
 
@@ -178,19 +189,45 @@ class ServingService:
         await adapter.ensure_engine()
         return adapter
 
-    async def _check_headroom(self, owner_id: str, engine: EngineKind, repo: str) -> None:
-        """Pre-flight memory guard. Gathers the budget + resident rows, then defers the
-        size math + refusal to ``headroom.check``. Skips the work entirely for a model we
-        can't size (free-text, not in the catalog) — degrade toward allowing."""
-        if catalog.bytes_for(engine, repo) is None:
-            return
+    async def _hf_token(self, owner_id: str) -> str | None:
+        """The operator's optional HuggingFace token (faster downloads + gated repos), or
+        ``None`` when unset, the vault is locked, or no credential store is wired."""
+        if self._credentials is None:
+            return None
+        return await self._credentials.get_secret(owner_id, _HF_SERVICE)
+
+    async def _headroom_inputs(
+        self, owner_id: str, engine: EngineKind, repo: str, quant: str | None
+    ) -> tuple[int | None, int | None]:
+        """The resident-independent inputs to the pre-flight guard — the usable VRAM
+        budget and the candidate's HuggingFace-reported size. Gathered **off the serve
+        lock**, since the HF round-trip mustn't serialize concurrent serves; either value
+        ``None`` (unknown budget, or a candidate we can't size) disables the guard."""
         usable = recommend.usable_budget(recommend.vram_budget(await self._cookbook.detect()))
-        resident = [
-            r
-            for r in await self._store.list_rows(owner_id)
-            if r.state in headroom.RESIDENT_STATES and r.hf_repo != repo
-        ]
-        headroom.check(engine=engine, repo=repo, resident_rows=resident, usable_budget=usable)
+        if usable is None:
+            return None, None
+        token = await self._hf_token(owner_id)
+        need = await asyncio.to_thread(
+            self._adapter(engine).download_size, repo, quant, token
+        )
+        return usable, need
+
+    async def _check_headroom(
+        self, owner_id: str, repo: str, usable: int | None, need_bytes: int | None
+    ) -> None:
+        """The in-lock half of the guard: snapshot the resident models, size them from
+        their on-disk artifacts, and defer the refusal to ``headroom.check``. Cheap (local
+        fs stats), so the resident snapshot and the decision stay atomic under the serve
+        lock; the slow inputs were gathered by ``_headroom_inputs`` beforehand."""
+        if usable is None or need_bytes is None:
+            return
+        resident: list[tuple[str, int]] = []
+        for r in await self._store.list_rows(owner_id):
+            if r.state not in headroom.RESIDENT_STATES or r.hf_repo == repo or not r.artifact_path:
+                continue
+            size = await asyncio.to_thread(_artifact_bytes, Path(r.artifact_path))
+            resident.append((r.hf_repo, size))
+        headroom.check(repo=repo, need_bytes=need_bytes, resident=resident, usable_budget=usable)
 
     # --- downloads --------------------------------------------------------
 
@@ -217,16 +254,24 @@ class ServingService:
             row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
         )
         dest = await self._model_dest(owner_id, engine, repo)
-        self._start_download(row, engine, repo, quant, dest)
+        token = await self._hf_token(owner_id)
+        self._start_download(row, engine, repo, quant, dest, token)
         refreshed = await self._store.get(row.id)
         return self._store.to_view(refreshed or row)
 
     def _start_download(
-        self, row: ManagedModel, engine: EngineKind, repo: str, quant: str | None, dest: Path
+        self,
+        row: ManagedModel,
+        engine: EngineKind,
+        repo: str,
+        quant: str | None,
+        dest: Path,
+        token: str | None,
     ) -> None:
         """Kick off the background fetch for an existing row (shared by download + serve).
-        ``dest`` is resolved by the async caller so it honors the operator's models dir."""
-        spec = self._adapter(engine).download_spec(repo, quant, dest)
+        ``dest`` is resolved by the async caller so it honors the operator's models dir;
+        ``token`` is the operator's optional HuggingFace token."""
+        spec = self._adapter(engine).download_spec(repo, quant, dest, token)
         self._downloads.start(row.id, dest, spec=spec, on_complete=self._make_on_complete(row.id))
 
     def _make_on_complete(self, managed_id: str):
@@ -266,11 +311,14 @@ class ServingService:
             raise ServingUnavailableError(
                 f"the {engine.value} engine is not available on this host"
             )
+        # Gather the guard's slow inputs (a HuggingFace size lookup) before taking the
+        # lock, so concurrent serves don't serialize on a network round-trip.
+        usable, need = await self._headroom_inputs(owner_id, engine, repo, quant)
         async with self._serve_lock:
             # Admission is serialized so two concurrent serves can't both pass the headroom
             # check against a stale resident set and then oversubscribe memory. The check
             # runs before the row is created, so a refused serve leaves no trace.
-            await self._check_headroom(owner_id, engine, repo)
+            await self._check_headroom(owner_id, repo, usable, need)
             row = await self._store.get_or_create(owner_id, engine, repo, workload, quant)
             # Cancel any prior in-flight serve for this model so it can't finish and
             # resurrect it; the new background job stops any engine still running for this
@@ -307,7 +355,8 @@ class ServingService:
             if artifact is None or not artifact.exists():
                 await self._store.update(managed_id, state=ServeState.downloading, last_error=None)
                 dest = await self._model_dest(owner_id, engine, repo)
-                self._start_download(row, engine, repo, quant, dest)
+                token = await self._hf_token(owner_id)
+                self._start_download(row, engine, repo, quant, dest, token)
                 await self._downloads.wait(managed_id)
                 row = await self._store.get(managed_id)
                 if row is None or row.state == ServeState.error.value:
@@ -508,12 +557,9 @@ class ServingService:
                 return await self._registry.get_endpoint(owner_id, row.endpoint_id)
             except NotFoundError:
                 pass  # endpoint deleted out from under us — recreate below
-        # Prefer the catalog's real context window for this model; fall back to the
-        # adapter's generic hint for a free-text repo we don't have a curated value for.
-        context_window = (
-            catalog.context_window_for(EngineKind(row.engine), row.hf_repo)
-            or adapter.context_window_hint
-        )
+        # The endpoint carries the engine's generic context-window hint; the operator can
+        # refine it on the endpoint if a specific repo supports more.
+        context_window = adapter.context_window_hint
         return await self._registry.create_endpoint(
             owner_id,
             name=f"Local · {row.hf_repo}",

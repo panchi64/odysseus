@@ -21,8 +21,8 @@ class EngineAdapter(ABC):
     kind: EngineKind
     workloads: frozenset[Workload]
     # Capability defaults seeded onto the registered endpoint. Tool-driving roles
-    # require native tool-calling (AE-8.1); the curated catalog keeps chat models to
-    # those with reliable tool support.
+    # require native tool-calling (AE-8.1); the operator is expected to point chat
+    # roles at instruct models that support it.
     native_tools_default: bool = True
     context_window_hint: int | None = None
 
@@ -46,9 +46,21 @@ class EngineAdapter(ABC):
         ``ServingError`` if it can't be made available."""
 
     @abstractmethod
-    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
         """How to launch the child process that fetches the model (in this engine's
-        format) into ``dest`` — run and killed by the download manager."""
+        format) into ``dest`` — run and killed by the download manager. ``token`` is the
+        operator's optional HuggingFace token (faster downloads + gated repos)."""
+
+    def download_size(
+        self, repo: str, quant: str | None, token: str | None = None
+    ) -> int | None:
+        """Best-effort total download footprint in bytes, for the pre-flight headroom
+        guard (blocking — run in a thread). ``None`` when it can't be determined, so the
+        guard degrades toward allowing. Real adapters query the HuggingFace API in their
+        own format (one GGUF file vs the whole snapshot); the default declines to size."""
+        return None
 
     @abstractmethod
     def serve_spec(

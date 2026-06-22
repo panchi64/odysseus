@@ -17,6 +17,7 @@ from core.db import init_db, make_engine
 from core.exceptions import DegradedCapabilityError, NotFoundError, ServingError
 from core.vault import Vault
 from services.cookbook import CookbookService
+from services.credential_store import CredentialStore
 from services.registry import ModelRegistry
 from services.serving import (
     EngineKind,
@@ -55,7 +56,9 @@ class _GatedAdapter(FakeAdapter):
     def release(self) -> None:
         self._gate.touch()
 
-    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
         code = (
             "import sys, time\n"
             "from pathlib import Path\n"
@@ -80,17 +83,36 @@ async def _wait_settled(service: ServingService, managed_id: str, timeout: float
     return view
 
 
+class _TokenCapturingAdapter(FakeAdapter):
+    """Records the HuggingFace token handed to ``download_spec`` so a test can assert the
+    operator's stored token is threaded into the fetch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tokens: list[str | None] = []
+
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
+        self.tokens.append(token)
+        return super().download_spec(repo, quant, dest, token)
+
+
 async def _service(
     tmp_path: Path,
     *,
     reindexer: _FakeReindexer | None = None,
     adapter: FakeAdapter | None = None,
+    hf_token: str | None = None,
 ) -> tuple[ServingService, ModelRegistry]:
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
     vault = Vault(tmp_path / "keyfile.json")
     await vault.setup("test-passphrase")
     registry = ModelRegistry(engine, vault)
+    credentials = CredentialStore(engine, vault)
+    if hf_token is not None:
+        await credentials.set_key(OWNER, "huggingface", hf_token)
     service = ServingService(
         engine,
         vault,
@@ -101,6 +123,7 @@ async def _service(
         supervisor=ProcessSupervisor(startup_timeout_s=15.0, poll_interval_s=0.1),
         reindexer=reindexer,
         settings=SettingsStore(engine),
+        credentials=credentials,
     )
     return service, registry
 
@@ -276,43 +299,45 @@ async def test_embedding_resolution_skips_a_disabled_endpoint(tmp_path: Path):
         await service.shutdown()
 
 
-async def test_serve_threads_catalog_context_window(tmp_path: Path, monkeypatch):
-    # A curated catalog repo carries a real context window; the served endpoint must carry
-    # it through (rather than the adapter's generic hint or None).
-    from services.cookbook.models import (
-        Accelerator,
-        AcceleratorKind,
-        ComputeBackend,
-        HardwareProfile,
-        MemoryInfo,
-        PlatformInfo,
-    )
-
-    gb = 1024**3
-
-    async def big_host(self) -> HardwareProfile:
-        return HardwareProfile(
-            memory=MemoryInfo(total_bytes=128 * gb, available_bytes=120 * gb),
-            accelerators=[
-                Accelerator(
-                    name="Apple M3 Max", kind=AcceleratorKind.metal,
-                    vram_bytes=96 * gb, unified=True,
-                )
-            ],
-            compute_backend=ComputeBackend.metal,
-            platform=PlatformInfo(system="Darwin", release="24", arch="arm64"),
+async def test_hf_token_is_threaded_into_downloads(tmp_path: Path):
+    # The operator's stored HuggingFace token rides the fetch (faster downloads + gated
+    # repos); the adapter receives it so it lands in the download child's env.
+    adapter = _TokenCapturingAdapter()
+    service, _registry = await _service(tmp_path, adapter=adapter, hf_token="hf_secrettoken")
+    try:
+        await service.download(
+            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
         )
+        assert adapter.tokens == ["hf_secrettoken"]
+    finally:
+        await service.shutdown()
 
-    monkeypatch.setattr("services.cookbook.service.CookbookService.detect", big_host)
+
+async def test_downloads_carry_no_token_when_unset(tmp_path: Path):
+    # No stored token → the fetch runs anonymously (a token is optional, never required).
+    adapter = _TokenCapturingAdapter()
+    service, _registry = await _service(tmp_path, adapter=adapter)
+    try:
+        await service.download(
+            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
+        )
+        assert adapter.tokens == [None]
+    finally:
+        await service.shutdown()
+
+
+async def test_serve_carries_adapter_context_window_hint(tmp_path: Path):
+    # With no curated catalog, the served endpoint carries the engine adapter's generic
+    # context-window hint (the operator can refine it on the endpoint afterwards).
     service, registry = await _service(tmp_path)
     try:
         started = await service.serve(
-            OWNER, EngineKind.llama_cpp, "Qwen/Qwen2.5-7B-Instruct-GGUF", quant="q4_k_m"
+            OWNER, EngineKind.llama_cpp, "acme/Some-GGUF", quant="q4_k_m"
         )
         view = await _wait_settled(service, started.id)
         assert view.state == ServeState.running
         endpoint = await registry.get_endpoint(OWNER, view.endpoint_id)
-        assert endpoint.context_window == 32768
+        assert endpoint.context_window == 4096  # FakeAdapter.context_window_hint
     finally:
         await service.shutdown()
 

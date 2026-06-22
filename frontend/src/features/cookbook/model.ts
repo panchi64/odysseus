@@ -63,28 +63,6 @@ export type ServeState =
   | "running"
   | "error";
 
-/** A curated catalog model the host can run on a given engine — display-only. */
-export interface CatalogEntry {
-  /** Hugging Face repo id (the durable identity). */
-  repo: string;
-  /** Human label for the row. */
-  label: string;
-  engine: EngineKind;
-  workload: Workload;
-  /** Parameter count, display-formatted (e.g. "8B"), or null when unknown. */
-  params: string | null;
-  /** Quantization tag (e.g. "Q4_K_M"), or null. */
-  quant: string | null;
-  /** Approximate on-disk size in bytes, or null when unknown. */
-  approxBytes: number | null;
-  /** Whether the model supports native tool-calling. */
-  nativeTools: boolean;
-  /** Maximum context window in tokens, or null when unknown. */
-  contextWindow: number | null;
-  /** Short operator-facing note, or null. */
-  notes: string | null;
-}
-
 /** A ranked engine recommendation for the current host. */
 export interface EngineRecommendation {
   engine: EngineKind;
@@ -99,8 +77,6 @@ export interface EngineRecommendation {
   reason: string;
   /** The workloads this engine covers on this host. */
   workloads: Workload[];
-  /** A small curated set of models to run on this engine. */
-  recommendedModels: CatalogEntry[];
 }
 
 /** Live download progress for a managed model — mirrors the backend's HF download

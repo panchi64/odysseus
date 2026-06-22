@@ -1,9 +1,9 @@
-"""Local model serving surface — recommend an engine, browse the catalog, manage
-locally-served models.
+"""Local model serving surface — recommend an engine and manage locally-served models.
 
 Thin: the route maps the request to ``ServingService`` and its results back out.
 Snake-case bodies mirror the sibling ``/models/cookbook/hardware`` surface (both
-expose hardware-shaped value types). Download/serve/stop land in later slices.
+expose hardware-shaped value types). There is no curated catalog — the operator points
+an engine at any HuggingFace repo and it downloads + serves.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from services.serving import (
-    CatalogEntry,
     EngineKind,
     EngineRecommendation,
     ManagedModelView,
@@ -47,13 +46,6 @@ class ModelsDirBody(BaseModel):
 @router.get("/recommendations", response_model=list[EngineRecommendation])
 async def get_recommendations(request: Request) -> list[EngineRecommendation]:
     return await deps.serving(request).recommend_engine(OPERATOR_ID)
-
-
-@router.get("/catalog", response_model=list[CatalogEntry])
-async def get_catalog(
-    request: Request, engine: EngineKind, workload: Workload = Workload.chat
-) -> list[CatalogEntry]:
-    return await deps.serving(request).list_catalog(engine, workload)
 
 
 @router.get("/settings", response_model=ModelsDirBody)

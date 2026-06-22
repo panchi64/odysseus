@@ -1,4 +1,4 @@
-"""The local-serving route surface — recommendations, catalog, and status.
+"""The local-serving route surface — recommendations and status.
 
 Hardware detection is stubbed to an Apple-Silicon profile so the assertions don't
 depend on the test host.
@@ -39,7 +39,7 @@ def _apple_profile() -> HardwareProfile:
     )
 
 
-async def test_recommendations_catalog_and_status(monkeypatch):
+async def test_recommendations_and_status(monkeypatch):
     async def fake_detect(self) -> HardwareProfile:
         return _apple_profile()
 
@@ -51,19 +51,6 @@ async def test_recommendations_catalog_and_status(monkeypatch):
         body = recs.json()
         assert body[0]["engine"] == "mlx" and body[0]["available"] is True
         assert any(r["engine"] == "llama.cpp" and r["available"] for r in body)
-
-        catalog = await client.get(
-            "/models/serving/catalog", params={"engine": "llama.cpp", "workload": "chat"}
-        )
-        assert catalog.status_code == 200
-        entries = catalog.json()
-        assert entries and all(e["engine"] == "llama.cpp" for e in entries)
-
-        embed = await client.get(
-            "/models/serving/catalog", params={"engine": "llama.cpp", "workload": "embedding"}
-        )
-        assert embed.status_code == 200
-        assert all(e["workload"] == "embedding" for e in embed.json())
 
         models = await client.get("/models/serving/models")
         assert models.status_code == 200 and models.json() == []
@@ -81,7 +68,7 @@ async def test_download_flow_creates_and_completes_a_managed_model(monkeypatch):
         "print('ARTIFACT ' + str(d / 'model.gguf'), flush=True)\n"
     )
 
-    def fake_spec(self, repo, quant, dest):
+    def fake_spec(self, repo, quant, dest, token=None):
         return DownloadSpec(argv=[sys.executable, "-c", stub, str(dest)])
 
     monkeypatch.setattr(LlamaCppAdapter, "download_spec", fake_spec)

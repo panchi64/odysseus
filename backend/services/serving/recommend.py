@@ -14,11 +14,10 @@ from __future__ import annotations
 
 from services.cookbook.models import ComputeBackend, HardwareProfile
 
-from .catalog import CATALOG
-from .models import CatalogEntry, EngineKind, EngineRecommendation, Workload
+from .models import EngineKind, EngineRecommendation, Workload
 
 # Leave headroom below the raw budget — weights aren't the only thing resident
-# (KV cache, runtime, the OS). A model is "fits" when its estimate is under this.
+# (KV cache, runtime, the OS). The pre-flight guard fits a model under this slice.
 _FIT_FRACTION = 0.9
 
 
@@ -36,23 +35,6 @@ def usable_budget(budget: int | None) -> int | None:
     held back (KV cache, runtime, the OS). ``None`` when the budget is unknown. This is
     the ceiling the pre-flight headroom guard sums running models against."""
     return int(budget * _FIT_FRACTION) if budget is not None else None
-
-
-def fits(entry: CatalogEntry, budget: int | None) -> bool:
-    """Whether a model plausibly fits the budget. Unknown size or budget ⇒ keep it
-    (degrade toward showing more, not hiding); the operator sees the size hint."""
-    if budget is None or entry.approx_bytes is None:
-        return True
-    return entry.approx_bytes <= budget * _FIT_FRACTION
-
-
-def models_for(engine: EngineKind, workload: Workload, budget: int | None) -> list[CatalogEntry]:
-    """The catalog entries for an engine+workload that fit the budget — shared by the
-    recommendation surface and the catalog endpoint so both filter identically."""
-    return [
-        e for e in CATALOG
-        if e.engine == engine and e.workload == workload and fits(e, budget)
-    ]
 
 
 def _is_apple_silicon(profile: HardwareProfile) -> bool:
@@ -73,7 +55,6 @@ _BACKEND_REASON: dict[ComputeBackend, str] = {
 def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
     """Rank the engines for this host. llama.cpp is always available; MLX leads for
     chat on Apple Silicon and is listed as known-but-unavailable elsewhere."""
-    budget = vram_budget(profile)
     apple = _is_apple_silicon(profile)
 
     recs: list[EngineRecommendation] = []
@@ -85,7 +66,6 @@ def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
                 engine=EngineKind.mlx, rank=1, available=True,
                 reason="Fastest on Apple Silicon for chat (Metal-native MLX).",
                 workloads=[Workload.chat],
-                recommended_models=models_for(EngineKind.mlx, Workload.chat, budget),
             )
         )
         llama_rank = 2
@@ -100,7 +80,6 @@ def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
             engine=EngineKind.llama_cpp, rank=llama_rank, available=True,
             reason=llama_reason,
             workloads=[Workload.chat, Workload.embedding],
-            recommended_models=models_for(EngineKind.llama_cpp, Workload.chat, budget),
         )
     )
 
@@ -111,7 +90,6 @@ def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
                 engine=EngineKind.mlx, rank=llama_rank + 1, available=False,
                 reason="Apple Silicon only — not available on this host.",
                 workloads=[Workload.chat],
-                recommended_models=[],
             )
         )
 

@@ -7,7 +7,6 @@ import {
 } from "solid-js";
 import { api } from "~/lib/api";
 import type {
-  CatalogEntry,
   DownloadProgress,
   EngineKind,
   EngineRecommendation,
@@ -18,19 +17,6 @@ import type {
 
 // --- backend DTOs (snake_case) — mapped to model.ts types below ------------
 
-interface CatalogEntryDTO {
-  repo: string;
-  label: string;
-  engine: string;
-  workload: string;
-  params: string | null;
-  quant: string | null;
-  approx_bytes: number | null;
-  native_tools: boolean;
-  context_window: number | null;
-  notes: string | null;
-}
-
 interface EngineRecommendationDTO {
   engine: string;
   rank: number;
@@ -38,7 +24,6 @@ interface EngineRecommendationDTO {
   installed?: boolean;
   reason: string;
   workloads: string[];
-  recommended_models: CatalogEntryDTO[];
 }
 
 interface DownloadProgressDTO {
@@ -64,21 +49,6 @@ interface ManagedModelViewDTO {
 
 // --- mappers (presentation only — no domain logic) -------------------------
 
-function mapCatalogEntry(d: CatalogEntryDTO): CatalogEntry {
-  return {
-    repo: d.repo,
-    label: d.label,
-    engine: d.engine as EngineKind,
-    workload: d.workload as Workload,
-    params: d.params,
-    quant: d.quant,
-    approxBytes: d.approx_bytes,
-    nativeTools: d.native_tools,
-    contextWindow: d.context_window,
-    notes: d.notes,
-  };
-}
-
 function mapRecommendation(d: EngineRecommendationDTO): EngineRecommendation {
   return {
     engine: d.engine as EngineKind,
@@ -87,7 +57,6 @@ function mapRecommendation(d: EngineRecommendationDTO): EngineRecommendation {
     installed: d.installed ?? false,
     reason: d.reason,
     workloads: d.workloads as Workload[],
-    recommendedModels: d.recommended_models.map(mapCatalogEntry),
   };
 }
 
@@ -125,17 +94,6 @@ export async function fetchRecommendations(): Promise<EngineRecommendation[]> {
     "/models/serving/recommendations",
   );
   return dto.map(mapRecommendation);
-}
-
-/** The curated catalog for an engine + workload. */
-export async function fetchCatalog(
-  engine: EngineKind,
-  workload: Workload,
-): Promise<CatalogEntry[]> {
-  const dto = await api.get<CatalogEntryDTO[]>(
-    `/models/serving/catalog?engine=${encodeURIComponent(engine)}&workload=${encodeURIComponent(workload)}`,
-  );
-  return dto.map(mapCatalogEntry);
 }
 
 /** Models Odysseus is currently managing. */

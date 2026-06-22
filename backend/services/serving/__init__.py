@@ -9,7 +9,6 @@ adapter; llama.cpp is the universal baseline and MLX an Apple-Silicon speed upgr
 from __future__ import annotations
 
 from .models import (
-    CatalogEntry,
     DownloadProgress,
     EngineKind,
     EngineRecommendation,
@@ -21,7 +20,6 @@ from .paths import ServingPaths
 from .service import ServingService
 
 __all__ = [
-    "CatalogEntry",
     "DownloadProgress",
     "EngineKind",
     "EngineRecommendation",

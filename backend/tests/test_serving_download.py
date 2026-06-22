@@ -12,8 +12,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from services.serving.download import DownloadManager, DownloadSpec, _dir_size
+from services.serving.download import DownloadManager, DownloadSpec
 from services.serving.models import ServeState
+from services.serving.paths import dir_size
 
 
 def _vault(*, unlocked: bool = True) -> SimpleNamespace:
@@ -174,11 +175,11 @@ async def test_download_retries_when_the_worker_cant_spawn(tmp_path: Path, monke
 
 
 def test_dir_size_excludes_hf_cache(tmp_path: Path):
-    assert _dir_size(tmp_path / "missing") == 0
+    assert dir_size(tmp_path / "missing") == 0
     (tmp_path / "a").write_bytes(b"123")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "b").write_bytes(b"45")
     # HuggingFace stages blobs under <local_dir>/.cache — excluded from the size.
     (tmp_path / ".cache").mkdir()
     (tmp_path / ".cache" / "blob").write_bytes(b"ignored!")
-    assert _dir_size(tmp_path) == 5
+    assert dir_size(tmp_path) == 5

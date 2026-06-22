@@ -227,6 +227,7 @@ async def lifespan(app: FastAPI):
         ServingPaths(settings.data_dir),
         reindexer=app.state.embedding_reindexer,
         settings=app.state.settings_store,
+        credentials=app.state.credentials,
     )
     await app.state.serving.reconcile_on_startup()
     folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)

@@ -87,7 +87,9 @@ class FakeAdapter(EngineAdapter):
     async def ensure_engine(self) -> None:
         return None
 
-    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
         return DownloadSpec(argv=[sys.executable, "-c", _STUB_DOWNLOAD, str(dest)])
 
     def serve_spec(

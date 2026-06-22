@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import {
   Button,
   EmptyState,
+  ExternalLink,
   LoadingText,
   Panel,
   Row,
@@ -158,18 +159,11 @@ export function GetStartedPanel(): JSX.Element {
                 }}
               />
               <Show when={preset().docsUrl}>
-                <a
-                  href={preset().docsUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="underline-offset-2 hover:underline"
-                >
-                  <Text variant="micro" tone="info">
-                    {preset().requiresKey
-                      ? "Get an API key ↗"
-                      : "Set up the local server ↗"}
-                  </Text>
-                </a>
+                <ExternalLink href={preset().docsUrl}>
+                  {preset().requiresKey
+                    ? "Get an API key ↗"
+                    : "Set up the local server ↗"}
+                </ExternalLink>
               </Show>
               <Row gap={2} justify="end">
                 <Button

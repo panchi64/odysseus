@@ -90,6 +90,10 @@ export {
 export { Input, type InputProps } from "./components/Input";
 export { Textarea, type TextareaProps } from "./components/Textarea";
 export {
+  ExternalLink,
+  type ExternalLinkProps,
+} from "./components/ExternalLink";
+export {
   Composer,
   type ComposerProps,
   type ComposerAttachmentsApi,

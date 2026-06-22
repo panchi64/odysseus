@@ -1,16 +1,7 @@
 import { For, Show, type JSX } from "solid-js";
-import {
-  EmptyState,
-  LoadingText,
-  Panel,
-  Resource,
-  Stack,
-  Text,
-  toast,
-} from "~/ui";
+import { EmptyState, LoadingText, Panel, Resource, Stack, toast } from "~/ui";
 import {
   downloadModel,
-  inFlightRepos,
   useManagedModels,
   useRecommendations,
   type ManagedModelsController,
@@ -19,30 +10,25 @@ import {
   useManagedModelActions,
   type ManagedModelActions,
 } from "../serving-actions";
-import type { CatalogEntry, EngineKind, EngineRecommendation } from "../model";
+import type { EngineKind, Workload } from "../model";
 import { ManagedModelRow } from "./ManagedModelRow";
 import { EngineRow } from "./EngineRow";
-import { CatalogRow } from "./CatalogRow";
 import { RepoDownloadForm } from "./RepoDownloadForm";
+import { RepoFinderHint } from "./RepoFinderHint";
+import { HfTokenNotice } from "./HfTokenNotice";
 import { ModelsDirSection } from "./ModelsDirSection";
 
-/** The LOCAL MODELS tab body: the ranked inference engines for this host, the
- *  curated model catalog from the top available engine (each row downloadable),
- *  a free-text repo download, and the live managed-models list with serve/stop/
- *  delete controls.
+/** The LOCAL MODELS tab body: the ranked inference engines for this host, a
+ *  free-text Hugging Face repo download (with guidance + an optional HF token step),
+ *  and the live managed-models list with serve/stop/delete controls.
  *
- *  Presentation-only: the backend ranks the engines, curates the catalog, and
- *  owns every lifecycle transition; this surface relays the operator's intent and
- *  renders the backend's reported state. */
+ *  Presentation-only: the backend ranks the engines and owns every lifecycle
+ *  transition; this surface relays the operator's intent and renders the reported
+ *  state. There is no curated model list — the operator points at any HF repo. */
 export function LocalModelsPanel(): JSX.Element {
   const recommendations = useRecommendations();
   const managed = useManagedModels();
   const actions = useManagedModelActions(managed);
-
-  // Lead with the rank-1 engine; the curated catalog comes from the top
-  // *available* engine's recommended models (the backend already ranked them).
-  const topAvailable = (recs: EngineRecommendation[]) =>
-    recs.find((r) => r.available) ?? recs[0];
 
   // The engine the free-text download targets — the top available one.
   const downloadEngine = (): EngineKind | null => {
@@ -51,15 +37,11 @@ export function LocalModelsPanel(): JSX.Element {
     return recs.find((r) => r.available)?.engine ?? null;
   };
 
-  // The repos with an in-flight download/start — used to disable a catalog
-  // DOWNLOAD button so it can't double-fire.
-  const inFlight = () => inFlightRepos(managed.models());
-
   async function startDownload(input: {
     engine: EngineKind;
     repo: string;
     quant?: string;
-    workload?: CatalogEntry["workload"];
+    workload?: Workload;
   }): Promise<void> {
     try {
       await downloadModel(input);
@@ -104,67 +86,20 @@ export function LocalModelsPanel(): JSX.Element {
         </Resource>
       </Panel>
 
-      <Panel
-        label="CURATED CATALOG"
-        meta={
-          <Text variant="micro" tone="dim">
-            MODELS THIS HOST CAN RUN
-          </Text>
-        }
-        flush
-      >
-        <Resource
-          data={recommendations}
-          loadingLabel="LOADING CATALOG"
-          errorMessage="FAILED TO LOAD CATALOG"
-          isEmpty={(v) => topAvailable(v)?.recommendedModels.length === 0}
-          loading={
-            <div class="p-3">
-              <LoadingText />
-            </div>
-          }
-          empty={
-            <EmptyState
-              icon="database"
-              message="NO CURATED MODELS"
-              hint="No models are curated for the available engine yet."
-            />
-          }
-        >
-          {(recs) => (
-            <For each={topAvailable(recs())?.recommendedModels ?? []}>
-              {(entry) => (
-                <CatalogRow
-                  entry={entry}
-                  leading="cpu"
-                  actionIcon="download"
-                  actionLabel="DOWNLOAD"
-                  busyLabel="DOWNLOADING"
-                  inFlight={inFlight().has(entry.repo)}
-                  onAction={() =>
-                    void startDownload({
-                      engine: entry.engine,
-                      repo: entry.repo,
-                      quant: entry.quant ?? undefined,
-                      workload: entry.workload,
-                    })
-                  }
-                />
-              )}
-            </For>
-          )}
-        </Resource>
-      </Panel>
-
-      <Panel label="DOWNLOAD BY HUGGING FACE REPO">
-        <RepoDownloadForm
-          engine={downloadEngine()}
-          onDownload={(repo, quant) => {
-            const engine = downloadEngine();
-            if (!engine) return Promise.resolve();
-            return startDownload({ engine, repo, quant, workload: "chat" });
-          }}
-        />
+      <Panel label="DOWNLOAD A MODEL">
+        <Stack gap={3}>
+          <RepoFinderHint engine={downloadEngine()} workload="chat" />
+          <RepoDownloadForm
+            engine={downloadEngine()}
+            showQuant={downloadEngine() === "llama.cpp"}
+            onDownload={(repo, quant) => {
+              const engine = downloadEngine();
+              if (!engine) return Promise.resolve();
+              return startDownload({ engine, repo, quant, workload: "chat" });
+            }}
+          />
+          <HfTokenNotice />
+        </Stack>
       </Panel>
 
       <ModelsDirSection />

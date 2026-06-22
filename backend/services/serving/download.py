@@ -30,6 +30,7 @@ from pathlib import Path
 from core.vault import Vault
 
 from .models import DownloadProgress, ServeState
+from .paths import dir_size
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +52,14 @@ class DownloadSpec:
     cwd: Path | None = None
 
 
-def worker_spec(mode: str, repo: str, dest: Path, *, quant: str | None = None) -> DownloadSpec:
+def worker_spec(
+    mode: str, repo: str, dest: Path, *, quant: str | None = None, token: str | None = None
+) -> DownloadSpec:
     """A spec that runs the bundled HuggingFace download worker — used by the real engine
     adapters (the test double returns its own stub spec). ``mode`` is ``file`` (a single
-    GGUF, llama.cpp) or ``snapshot`` (a repo tree, MLX)."""
+    GGUF, llama.cpp) or ``snapshot`` (a repo tree, MLX). An optional ``token`` (never
+    required — only for faster downloads + gated repos) rides the child env as
+    ``HF_TOKEN``, which ``huggingface_hub`` picks up automatically."""
     argv = [
         sys.executable, "-m", _WORKER_MODULE,
         "--mode", mode, "--repo", repo, "--dest", str(dest),
@@ -63,6 +68,8 @@ def worker_spec(mode: str, repo: str, dest: Path, *, quant: str | None = None) -
         argv += ["--quant", quant]
     # Quiet HF's tqdm so the child's stdout carries only our control lines.
     env = {**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"}
+    if token:
+        env["HF_TOKEN"] = token
     return DownloadSpec(argv=argv, env=env, cwd=_CODE_ROOT)
 
 
@@ -238,7 +245,7 @@ class DownloadManager:
 
     async def _poll(self, job: _Job, dest: Path, proc: asyncio.subprocess.Process) -> None:
         while proc.returncode is None:
-            size = await asyncio.to_thread(_dir_size, dest)
+            size = await asyncio.to_thread(dir_size, dest)
             job.progress.downloaded_bytes = size
             if job.progress.total_bytes:
                 job.progress.fraction = min(1.0, size / job.progress.total_bytes)
@@ -257,19 +264,3 @@ def _remove_dir(path: Path) -> None:
 
     with suppress(OSError):
         shutil.rmtree(path, ignore_errors=True)
-
-
-def _dir_size(path: Path) -> int:
-    """Bytes currently on disk under ``path``, excluding HuggingFace's ``.cache`` staging
-    (blobs/locks it writes under ``local_dir`` before materializing the final file) so
-    progress tracks the real artifact rather than double-counting cache copies."""
-    if not path.exists():
-        return 0
-    total = 0
-    for child in path.rglob("*"):
-        if ".cache" in child.parts:
-            continue
-        with suppress(OSError):
-            if child.is_file():
-                total += child.stat().st_size
-    return total

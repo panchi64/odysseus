@@ -25,6 +25,7 @@ import httpx
 
 from core.exceptions import ServingError
 
+from .. import hf
 from ..download import DownloadSpec, worker_spec
 from ..models import EngineKind, Workload
 from ..paths import ServingPaths
@@ -84,9 +85,21 @@ class LlamaCppAdapter(EngineAdapter):
         logger.info("serving: no llama-server found; fetching a prebuilt binary")
         self._binary = await self._fetch()
 
-    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
         # The worker resolves the GGUF file matching `quant` and fetches just that file.
-        return worker_spec("file", repo, dest, quant=quant)
+        return worker_spec("file", repo, dest, quant=quant, token=token)
+
+    def download_size(
+        self, repo: str, quant: str | None, token: str | None = None
+    ) -> int | None:
+        # Size the single GGUF that the serve will actually fetch (the quant-matched one).
+        try:
+            filename = hf.gguf_filename(repo, quant, token)
+        except ServingError:
+            return None
+        return hf.file_size(repo, filename, token)
 
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str

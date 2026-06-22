@@ -35,27 +35,13 @@ class ServeState(StrEnum):
     error = "error"
 
 
-class CatalogEntry(BaseModel):
-    """One curated, hardware-fittable model the operator can download + serve."""
-
-    repo: str  # HuggingFace repo id
-    label: str  # operator-facing name
-    engine: EngineKind
-    workload: Workload
-    params: str | None = None  # "7B", "14B", …
-    quant: str | None = None  # GGUF quant tag, when applicable
-    approx_bytes: int | None = None  # on-disk/VRAM footprint estimate, for fit
-    native_tools: bool = True  # AE-8.1: tool-driving roles need this
-    context_window: int | None = None
-    notes: str | None = None
-
-
 class EngineRecommendation(BaseModel):
-    """An engine ranked for the host, with the models it can run.
+    """An engine ranked for the host.
 
     ``available`` reflects whether the engine can actually run here (platform +
     runtime). An unavailable engine is still listed (with ``reason``) so the UI is
-    honest about what the host supports.
+    honest about what the host supports. The operator points the engine at any
+    HuggingFace repo — there is no curated model list to keep current.
     """
 
     engine: EngineKind
@@ -64,7 +50,6 @@ class EngineRecommendation(BaseModel):
     installed: bool = False  # runtime already present (no install/download on first serve)
     reason: str
     workloads: list[Workload] = Field(default_factory=list)
-    recommended_models: list[CatalogEntry] = Field(default_factory=list)
 
 
 class DownloadProgress(BaseModel):

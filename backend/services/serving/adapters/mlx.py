@@ -21,6 +21,7 @@ from pathlib import Path
 
 from core.exceptions import ServingError
 
+from .. import hf
 from ..download import DownloadSpec, worker_spec
 from ..models import EngineKind, Workload
 from ..paths import ServingPaths
@@ -77,10 +78,18 @@ class MlxAdapter(EngineAdapter):
         logger.info("serving: creating an isolated MLX venv and installing %s", _REQUIREMENT)
         self._script = await asyncio.to_thread(self._install)
 
-    def download_spec(self, repo: str, quant: str | None, dest: Path) -> DownloadSpec:
+    def download_spec(
+        self, repo: str, quant: str | None, dest: Path, token: str | None = None
+    ) -> DownloadSpec:
         # MLX serves a safetensors snapshot, not a single quantized file — quant is baked
         # into the repo (e.g. `…-4bit`), so the worker fetches the whole repo snapshot.
-        return worker_spec("snapshot", repo, dest)
+        return worker_spec("snapshot", repo, dest, token=token)
+
+    def download_size(
+        self, repo: str, quant: str | None, token: str | None = None
+    ) -> int | None:
+        # MLX fetches the whole repo snapshot — size every sibling file.
+        return hf.snapshot_size(repo, token=token)
 
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str
