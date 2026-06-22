@@ -1,18 +1,9 @@
 import { splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
-import { Text, type TextTone } from "../primitives/Text";
+import { Text } from "../primitives/Text";
+import { StatusDot, statusTone, type Status } from "./StatusDot";
 
-/** Semantic status. Each maps to exactly one accent (§4 color discipline). */
-export type Status = "idle" | "live" | "nominal" | "warn" | "alert" | "info";
-
-const statusTone: Record<Status, TextTone> = {
-  idle: "dim",
-  live: "nominal",
-  nominal: "nominal",
-  warn: "warn",
-  alert: "alert",
-  info: "info",
-};
+export type { Status };
 
 export interface StatusFlagProps {
   /** Drives the accent color + border. Defaults to idle (neutral, at rest). */
@@ -46,15 +37,7 @@ export function StatusFlag(props: StatusFlagProps): JSX.Element {
         local.class,
       )}
     >
-      {local.dot && (
-        <span
-          class={cx(
-            "inline-block size-1.5 rounded-full bg-current",
-            local.pulse && "ody-pulse",
-          )}
-          aria-hidden="true"
-        />
-      )}
+      {local.dot && <StatusDot status={status()} pulse={local.pulse} />}
       <Text variant="label" tone={tone()}>
         {local.children}
       </Text>

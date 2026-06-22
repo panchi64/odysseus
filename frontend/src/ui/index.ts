@@ -59,6 +59,7 @@ export {
   type StatusFlagProps,
   type Status,
 } from "./components/StatusFlag";
+export { StatusDot, type StatusDotProps } from "./components/StatusDot";
 export {
   InstrumentBand,
   type InstrumentBandProps,

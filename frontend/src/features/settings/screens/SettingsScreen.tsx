@@ -16,12 +16,12 @@ import {
   Row,
   type SelectOption,
   Stack,
+  StatusDot,
   StatusFlag,
   Text,
   ThemeToggle,
   Toggle,
   confirm,
-  cx,
   toast,
 } from "~/ui";
 import { isApiError } from "~/lib/api";
@@ -52,14 +52,6 @@ import {
   modelGroups,
   type ModelEndpoint,
 } from "~/lib/stores/models";
-
-/** Health accent → dot color, for the inline fallback-chain dots (matching the
- *  overview's SystemStrip dot convention). */
-const dotClass: Record<"nominal" | "alert" | "idle", string> = {
-  nominal: "bg-nominal",
-  alert: "bg-alert",
-  idle: "bg-dim",
-};
 
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
@@ -499,13 +491,7 @@ export function SettingsScreen(): JSX.Element {
                               <Text variant="micro" tone="dim">
                                 {i() + 1}
                               </Text>
-                              <span
-                                class={cx(
-                                  "inline-block size-1.5 shrink-0 rounded-full",
-                                  dotClass[chainHealth(id)],
-                                )}
-                                aria-hidden="true"
-                              />
+                              <StatusDot status={chainHealth(id)} />
                               <Text
                                 variant="label"
                                 tone="default"

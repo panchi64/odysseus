@@ -1,15 +1,6 @@
 import { For, type JSX } from "solid-js";
-import { Marquee, Text, cx } from "~/ui";
+import { Marquee, StatusDot, Text } from "~/ui";
 import type { CapabilityHealth, SystemStat } from "../model";
-
-/** Maps a capability to its semantic dot color: green when up, so an operator can
- *  confirm at a glance that services like web search and code execution are live —
- *  warn/alert carry their own accent when degraded or down. */
-const dotClass: Record<CapabilityHealth["status"], string> = {
-  nominal: "bg-nominal",
-  warn: "bg-warn",
-  alert: "bg-alert",
-};
 
 export interface SystemStripProps {
   band: SystemStat[];
@@ -49,13 +40,7 @@ export function SystemStrip(props: SystemStripProps): JSX.Element {
           <For each={props.capabilities}>
             {(cap) => (
               <span class="inline-flex items-center gap-1">
-                <span
-                  class={cx(
-                    "inline-block size-1.5 rounded-full",
-                    dotClass[cap.status],
-                  )}
-                  aria-hidden="true"
-                />
+                <StatusDot status={cap.status} />
                 <Text
                   variant="label"
                   tone={cap.status === "nominal" ? "dim" : cap.status}
