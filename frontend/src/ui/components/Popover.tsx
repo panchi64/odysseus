@@ -21,6 +21,9 @@ export interface PopoverProps {
   panel: (api: { close: () => void }) => JSX.Element;
   /** Horizontal alignment of the panel. Default left. */
   align?: "left" | "right";
+  /** Full-width field layout: the root and panel fill their container and the
+   *  panel spans the trigger width (ignores `align`). Default inline/content. */
+  block?: boolean;
   /** Extra classes for the panel (width, max-height, layout). */
   panelClass?: string;
   class?: string;
@@ -44,14 +47,23 @@ export function Popover(props: PopoverProps): JSX.Element {
   });
 
   return (
-    <div class={cx("relative inline-flex", props.class)}>
+    <div
+      class={cx(
+        props.block ? "relative flex w-full" : "relative inline-flex",
+        props.class,
+      )}
+    >
       {props.trigger({ open, setOpen, close })}
       <Show when={open()}>
         <div class="fixed inset-0 z-40" onClick={close} />
         <div
           class={cx(
             "absolute top-full z-50 mt-1 border border-line bg-surface",
-            props.align === "right" ? "right-0" : "left-0",
+            props.block
+              ? "inset-x-0"
+              : props.align === "right"
+                ? "right-0"
+                : "left-0",
             props.panelClass,
           )}
         >
