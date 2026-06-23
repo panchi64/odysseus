@@ -139,6 +139,20 @@ class ServingService:
             rec.installed = bool(rec.available and adapter and await adapter.is_installed())
         return recs
 
+    async def list_repo_quants(
+        self, owner_id: str, engine: EngineKind, repo: str
+    ) -> list[str]:
+        """The quantizations available in ``repo`` for ``engine`` — the quant picker's
+        options. Best-effort and non-raising: an engine that bakes the quant into the repo
+        id (MLX), an unsupported engine, or an unreachable hub yields ``[]``, so the UI
+        degrades to the engine's default pick. The repo is operator-supplied free text."""
+        repo = repo.strip()
+        adapter = self._adapters.get(engine)
+        if not repo or adapter is None:
+            return []
+        token = await self._hf_token(owner_id)
+        return await asyncio.to_thread(adapter.list_quants, repo, token)
+
     # --- models directory (operator-settable) -----------------------------
 
     async def get_models_dir(self, owner_id: str) -> str:

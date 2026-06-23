@@ -62,6 +62,14 @@ class EngineAdapter(ABC):
         own format (one GGUF file vs the whole snapshot); the default declines to size."""
         return None
 
+    def list_quants(self, repo: str, token: str | None = None) -> list[str]:
+        """The distinct quantizations this engine could serve from ``repo``, for the
+        picker's quant dropdown (blocking — run in a thread). Best-effort: ``[]`` when the
+        engine bakes the quant into the repo id (MLX) or the listing can't be obtained, so
+        the UI degrades to the engine's default pick. llama.cpp overrides to introspect
+        the repo's GGUF files."""
+        return []
+
     @abstractmethod
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str

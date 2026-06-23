@@ -1,5 +1,5 @@
 import { Show, type JSX } from "solid-js";
-import { ExternalLink, Stack, Text } from "~/ui";
+import { ExternalLink, Row, Stack, Text } from "~/ui";
 import type { EngineKind, Workload } from "../model";
 
 /** Guidance for the free-text repo flow: what to paste and where to find it. The backend
@@ -8,6 +8,7 @@ import type { EngineKind, Workload } from "../model";
  *
  *  Presentation-only — static copy + an outbound link. */
 const HF = "https://huggingface.co/models";
+const UNSLOTH = "https://huggingface.co/unsloth";
 
 function finder(
   engine: EngineKind | null,
@@ -41,13 +42,21 @@ export function RepoFinderHint(props: {
       <Text variant="micro" tone="dim">
         <Show
           when={props.workload === "embedding"}
-          fallback="Paste any Hugging Face repo id below. Choose an instruct model with native tool-calling (e.g. Qwen, Llama 3.x) so the agent can use tools."
+          fallback="Paste any Hugging Face repo id. Choose an instruct model with native tool-calling (e.g. Qwen, Llama 3.x) so the agent can use tools."
         >
-          Paste any GGUF embedding repo id below. The knowledge base re-indexes
-          into its vector space automatically.
+          Paste any GGUF embedding repo id. The knowledge base re-indexes into
+          its vector space automatically.
         </Show>
       </Text>
-      <ExternalLink href={link().href}>{link().label}</ExternalLink>
+      <Row gap={2} align="baseline" wrap>
+        <ExternalLink href={link().href}>{link().label}</ExternalLink>
+        <Show when={props.workload === "chat" && props.engine !== "mlx"}>
+          <Text variant="micro" tone="dim">
+            · we're fond of the{" "}
+            <ExternalLink href={UNSLOTH}>unsloth team's quants ↗</ExternalLink>
+          </Text>
+        </Show>
+      </Row>
     </Stack>
   );
 }

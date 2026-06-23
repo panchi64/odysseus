@@ -101,6 +101,11 @@ class LlamaCppAdapter(EngineAdapter):
             return None
         return hf.file_size(repo, filename, token)
 
+    def list_quants(self, repo: str, token: str | None = None) -> list[str]:
+        # The GGUF quants present in the repo, for the operator to pick among; an empty
+        # list ⇒ the UI falls back to letting `gguf_filename` pick the default on serve.
+        return hf.list_gguf_quants(repo, token)
+
     def serve_spec(
         self, artifact: Path, port: int, workload: Workload, model_id: str
     ) -> ServeSpec:

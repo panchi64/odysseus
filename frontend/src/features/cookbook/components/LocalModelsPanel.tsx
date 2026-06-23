@@ -2,6 +2,7 @@ import { For, Show, type JSX } from "solid-js";
 import { EmptyState, LoadingText, Panel, Resource, Stack, toast } from "~/ui";
 import {
   downloadModel,
+  useEngineSelection,
   useManagedModels,
   useRecommendations,
   type ManagedModelsController,
@@ -12,7 +13,8 @@ import {
 } from "../serving-actions";
 import type { EngineKind, Workload } from "../model";
 import { ManagedModelRow } from "./ManagedModelRow";
-import { EngineRow } from "./EngineRow";
+import { EnginePicker } from "./EnginePicker";
+import { EngineSwitchNote } from "./EngineSwitchNote";
 import { RepoDownloadForm } from "./RepoDownloadForm";
 import { RepoFinderHint } from "./RepoFinderHint";
 import { HfTokenNotice } from "./HfTokenNotice";
@@ -30,12 +32,10 @@ export function LocalModelsPanel(): JSX.Element {
   const managed = useManagedModels();
   const actions = useManagedModelActions(managed);
 
-  // The engine the free-text download targets — the top available one.
-  const downloadEngine = (): EngineKind | null => {
-    const recs = recommendations.latest;
-    if (!recs) return null;
-    return recs.find((r) => r.available)?.engine ?? null;
-  };
+  // The selected engine (preselected to the host's top pick, self-healing) drives the
+  // free-text download below.
+  const [selectedEngine, setSelectedEngine] =
+    useEngineSelection(recommendations);
 
   async function startDownload(input: {
     engine: EngineKind;
@@ -77,23 +77,24 @@ export function LocalModelsPanel(): JSX.Element {
           }
         >
           {(recs) => (
-            <Stack gap={0}>
-              <For each={[...recs()].sort((a, b) => a.rank - b.rank)}>
-                {(rec) => <EngineRow rec={rec} />}
-              </For>
-            </Stack>
+            <EnginePicker
+              recs={recs()}
+              selected={selectedEngine()}
+              onSelect={setSelectedEngine}
+            />
           )}
         </Resource>
       </Panel>
 
       <Panel label="DOWNLOAD A MODEL">
         <Stack gap={3}>
-          <RepoFinderHint engine={downloadEngine()} workload="chat" />
+          <EngineSwitchNote />
+          <RepoFinderHint engine={selectedEngine()} workload="chat" />
           <RepoDownloadForm
-            engine={downloadEngine()}
-            showQuant={downloadEngine() === "llama.cpp"}
+            engine={selectedEngine()}
+            showQuant={selectedEngine() === "llama.cpp"}
             onDownload={(repo, quant) => {
-              const engine = downloadEngine();
+              const engine = selectedEngine();
               if (!engine) return Promise.resolve();
               return startDownload({ engine, repo, quant, workload: "chat" });
             }}

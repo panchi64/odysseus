@@ -48,6 +48,14 @@ async def get_recommendations(request: Request) -> list[EngineRecommendation]:
     return await deps.serving(request).recommend_engine(OPERATOR_ID)
 
 
+@router.get("/repo-quants", response_model=list[str])
+async def get_repo_quants(request: Request, repo: str, engine: EngineKind) -> list[str]:
+    """The quantizations available in ``repo`` for ``engine`` — the quant picker's options.
+    Best-effort: an empty list means no selectable quants (the engine bakes the quant into
+    the repo id, or the repo couldn't be introspected)."""
+    return await deps.serving(request).list_repo_quants(OPERATOR_ID, engine, repo)
+
+
 @router.get("/settings", response_model=ModelsDirBody)
 async def get_serving_settings(request: Request) -> ModelsDirBody:
     return ModelsDirBody(models_dir=await deps.serving(request).get_models_dir(OPERATOR_ID))

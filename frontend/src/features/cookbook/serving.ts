@@ -1,9 +1,11 @@
 import {
+  createEffect,
   createResource,
   createSignal,
   onCleanup,
   type Accessor,
   type Resource,
+  type Setter,
 } from "solid-js";
 import { api } from "~/lib/api";
 import type {
@@ -94,6 +96,17 @@ export async function fetchRecommendations(): Promise<EngineRecommendation[]> {
     "/models/serving/recommendations",
   );
   return dto.map(mapRecommendation);
+}
+
+/** The quantizations available in `repo` for `engine` — the quant picker's options.
+ *  Empty when the engine bakes the quant into the repo id (MLX) or the repo can't be
+ *  introspected, so the UI degrades to the engine's default pick. */
+export async function fetchRepoQuants(
+  repo: string,
+  engine: EngineKind,
+): Promise<string[]> {
+  const params = new URLSearchParams({ repo, engine });
+  return api.get<string[]>(`/models/serving/repo-quants?${params.toString()}`);
 }
 
 /** Models Odysseus is currently managing. */
@@ -195,6 +208,19 @@ export function isInFlight(state: ServeState): boolean {
   return state === "downloading" || state === "starting";
 }
 
+/** The top-ranked engine that can run on this host right now — the picker's default
+ *  selection and the engine a free-text download targets until the operator picks
+ *  another. `null` when nothing is available (or the recommendations haven't loaded). */
+export function topAvailableEngine(
+  recs: EngineRecommendation[] | undefined,
+): EngineKind | null {
+  if (!recs) return null;
+  return (
+    [...recs].sort((a, b) => a.rank - b.rank).find((r) => r.available)
+      ?.engine ?? null
+  );
+}
+
 /** The set of `hfRepo`s with an in-flight managed model — used to disable a repo's
  *  download/serve action so it can't double-fire while one is already running. */
 export function inFlightRepos(models: ManagedModel[]): Set<string> {
@@ -208,6 +234,25 @@ export function inFlightRepos(models: ManagedModel[]): Set<string> {
 export function useRecommendations(): Resource<EngineRecommendation[]> {
   const [data] = createResource(fetchRecommendations);
   return data;
+}
+
+/** Owns the engine selection for the local-serve forms: preselect the top engine the host
+ *  can run, and self-heal if the ranking shifts under a now-invalid pick — while leaving a
+ *  deliberate operator override in place as long as it stays available. Returns the
+ *  selected-engine accessor and its setter (mirrors `createSignal`). */
+export function useEngineSelection(
+  recommendations: Resource<EngineRecommendation[]>,
+): [Accessor<EngineKind | null>, Setter<EngineKind | null>] {
+  const [selected, setSelected] = createSignal<EngineKind | null>(null);
+  createEffect(() => {
+    const recs = recommendations.latest;
+    if (!recs) return;
+    const cur = selected();
+    const stillValid =
+      cur != null && recs.some((r) => r.engine === cur && r.available);
+    if (!stillValid) setSelected(topAvailableEngine(recs));
+  });
+  return [selected, setSelected];
 }
 
 /** The managed-models controller the panel consumes. */
