@@ -7,7 +7,6 @@ import {
   Suspense,
   type JSX,
 } from "solid-js";
-import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
@@ -54,7 +53,6 @@ function reportError(fallback: string, err: unknown): void {
 }
 
 export function RagConfigScreen(): JSX.Element {
-  const navigate = useNavigate();
   const sources = useRagSources();
   const stats = useIndexStats();
   const [newPath, setNewPath] = createSignal("");
@@ -137,18 +135,13 @@ export function RagConfigScreen(): JSX.Element {
   }
 
   /** One indexed-source row, shared by both the surfaces and folders panels —
-   *  the only difference is the menu actions each kind supports. */
+   *  the only difference is the menu actions each kind supports. Surfaces link
+   *  to the page that manages them, so the whole row is a navigable link. */
   function sourceRow(source: RagSource): JSX.Element {
+    const href = source.kind === "surface" ? source.href : undefined;
     const menuItems: MenuItem[] =
       source.kind === "surface"
         ? [
-            {
-              label: "OPEN",
-              icon: "arrow-right",
-              onSelect: () => {
-                if (source.href) navigate(source.href);
-              },
-            },
             {
               label: "REINDEX",
               icon: "refresh",
@@ -179,6 +172,7 @@ export function RagConfigScreen(): JSX.Element {
       <ListRow
         label={source.label}
         leading={source.icon}
+        href={href}
         right={
           <span class="flex items-center gap-3 shrink-0">
             <Text variant="micro" tone="dim">
