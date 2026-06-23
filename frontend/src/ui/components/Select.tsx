@@ -53,7 +53,11 @@ export function Select(props: SelectProps): JSX.Element {
           {...rest}
         >
           <For each={local.options}>
-            {(opt) => <option value={opt.value}>{opt.label}</option>}
+            {(opt) => (
+              <option value={opt.value} selected={opt.value === local.value}>
+                {opt.label}
+              </option>
+            )}
           </For>
         </select>
         <Icon
