@@ -8,6 +8,7 @@ import {
 } from "solid-js";
 import {
   Button,
+  Frames,
   Row,
   Select,
   type SelectOption,
@@ -102,9 +103,16 @@ export function EmbeddingRoleControls(
       </Show>
 
       <Row align="center" justify="between" gap={2}>
-        <Text variant="micro" tone={running() ? "warn" : "dim"}>
-          {statusLine()}
-        </Text>
+        <Row align="center" gap={2}>
+          {/* The throbber makes the background re-embed legible as live work —
+              so the operator can tie an unexpected GPU spike to this action. */}
+          <Show when={running()}>
+            <Frames class="text-warn" />
+          </Show>
+          <Text variant="micro" tone={running() ? "warn" : "dim"}>
+            {statusLine()}
+          </Text>
+        </Row>
         <Button
           variant="ghost"
           size="sm"

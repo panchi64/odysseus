@@ -241,7 +241,9 @@ export function SettingsScreen(): JSX.Element {
     model: string | null = modelFor(role),
   ) => {
     try {
-      await setRoleBinding(role, next, model);
+      const reindexStarted = await setRoleBinding(role, next, model);
+      if (reindexStarted)
+        toast.info("Re-embedding memories and chats for the new model…");
     } catch (e) {
       toast.error(
         isApiError(e) ? e.detail : `Unable to update the ${role} role.`,

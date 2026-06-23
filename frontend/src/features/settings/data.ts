@@ -90,18 +90,28 @@ export function useRoles(): Resource<RoleBindings> {
 
 /** Bind a role to an ordered chain (and, for `embedding`, a pinned model).
  *  Errors are intentionally *not* swallowed — the backend rejects a non-embeddings
- *  model with a 422, and the caller surfaces that detail to the operator. */
+ *  model with a 422, and the caller surfaces that detail to the operator.
+ *
+ *  Returns whether the bind kicked off a background re-embed — only possible for
+ *  the `embedding` role, and only when the endpoint/model actually changed — so
+ *  the caller can acknowledge the work the operator just set in motion. */
 export async function setRoleBinding(
   role: string,
   endpointIds: string[],
   model: string | null = null,
-): Promise<void> {
+): Promise<boolean> {
   await api.put(`/models/roles/${role}`, {
     endpoint_ids: endpointIds,
     model,
   });
   setRolesTick((n) => n + 1);
   void refreshEmbeddingHealth(); // a bind can flip recall health
+  // A changed embedding endpoint/model strands existing vectors, so the backend
+  // heals them with a background re-embed. Pull the just-started status so the
+  // live readout (and its poller) reflect it; report whether one kicked off.
+  if (role !== "embedding") return false;
+  await refreshReindexStatus();
+  return reindexStatus()?.state === "running";
 }
 
 /* ── Embedding health + re-embed (reindex) ───────────────────────────────────
