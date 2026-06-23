@@ -134,39 +134,31 @@ export function RagConfigScreen(): JSX.Element {
     }
   }
 
-  /** One indexed-source row, shared by both the surfaces and folders panels —
-   *  the only difference is the menu actions each kind supports. Surfaces link
-   *  to the page that manages them, so the whole row is a navigable link. */
+  /** One indexed-source row, shared by both the surfaces and folders panels.
+   *  Surfaces link to the page that manages them (the whole row is a navigable
+   *  link) and expose their single REINDEX action as a direct icon button;
+   *  folders are static rows whose three actions live behind an overflow menu. */
   function sourceRow(source: RagSource): JSX.Element {
     const href = source.kind === "surface" ? source.href : undefined;
-    const menuItems: MenuItem[] =
-      source.kind === "surface"
-        ? [
-            {
-              label: "REINDEX",
-              icon: "refresh",
-              onSelect: () => void handleReindex(source.id, source.label),
-            },
-          ]
-        : [
-            {
-              label: "REINDEX",
-              icon: "refresh",
-              onSelect: () => void handleReindex(source.id, source.label),
-            },
-            {
-              label: "VIEW DOCS",
-              icon: "library",
-              onSelect: () => toast.info("Document browser coming in Phase 2"),
-            },
-            {
-              label: "REMOVE",
-              icon: "trash",
-              danger: true,
-              onSelect: () =>
-                void handleRemove(source.id, source.label, source.docCount),
-            },
-          ];
+    const folderMenuItems: MenuItem[] = [
+      {
+        label: "REINDEX",
+        icon: "refresh",
+        onSelect: () => void handleReindex(source.id, source.label),
+      },
+      {
+        label: "VIEW DOCS",
+        icon: "library",
+        onSelect: () => toast.info("Document browser coming in Phase 2"),
+      },
+      {
+        label: "REMOVE",
+        icon: "trash",
+        danger: true,
+        onSelect: () =>
+          void handleRemove(source.id, source.label, source.docCount),
+      },
+    ];
 
     return (
       <ListRow
@@ -186,14 +178,29 @@ export function RagConfigScreen(): JSX.Element {
                 ? "INDEXING…"
                 : source.status.toUpperCase()}
             </StatusFlag>
-            <Menu
-              trigger={
-                <span class="px-1 text-dim hover:text-bright">
-                  <Text variant="micro">···</Text>
-                </span>
+            <Show
+              when={source.kind === "folder"}
+              fallback={
+                <Tooltip label="Reindex this surface" side="top">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leading="refresh"
+                    aria-label="Reindex this surface"
+                    onClick={() => void handleReindex(source.id, source.label)}
+                  />
+                </Tooltip>
               }
-              items={menuItems}
-            />
+            >
+              <Menu
+                trigger={
+                  <span class="px-1 text-dim hover:text-bright">
+                    <Text variant="micro">···</Text>
+                  </span>
+                }
+                items={folderMenuItems}
+              />
+            </Show>
           </span>
         }
       />
