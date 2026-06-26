@@ -92,7 +92,6 @@ export function LocalModelsPanel(): JSX.Element {
           <RepoFinderHint engine={selectedEngine()} workload="chat" />
           <RepoDownloadForm
             engine={selectedEngine()}
-            showQuant={selectedEngine() === "llama.cpp"}
             onDownload={(repo, quant) => {
               const engine = selectedEngine();
               if (!engine) return Promise.resolve();

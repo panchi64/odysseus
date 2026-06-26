@@ -75,6 +75,49 @@ def test_list_gguf_quants_degrades_to_empty_on_error(monkeypatch):
     assert hf.list_gguf_quants("org/model") == []
 
 
+def _fake_repo(monkeypatch, files):
+    class FakeHfApi:
+        def __init__(self, token=None):
+            pass
+
+        def list_repo_files(self, repo):
+            return files
+
+    monkeypatch.setattr("huggingface_hub.HfApi", FakeHfApi)
+
+
+def test_gguf_filename_matches_quant_label_not_substring(monkeypatch):
+    # "f16" is a substring of "bf16", and the BF16 file has the shorter name the old loose
+    # match preferred — so a substring match would serve BF16 for an F16 request.
+    _fake_repo(
+        monkeypatch,
+        ["some-long-prefix-F16.gguf", "BF16.gguf", "config.json"],
+    )
+    assert hf.gguf_filename("org/model", "F16") == "some-long-prefix-F16.gguf"
+    assert hf.gguf_filename("org/model", "BF16") == "BF16.gguf"
+
+
+def test_gguf_filename_prefers_base_over_shards_case_insensitively(monkeypatch):
+    _fake_repo(
+        monkeypatch,
+        [
+            "Model-Q4_K_M-00001-of-00002.gguf",
+            "Model-Q4_K_M-00002-of-00002.gguf",
+            "Model-Q4_K_M.gguf",  # base single-file — shortest, wins
+        ],
+    )
+    assert hf.gguf_filename("org/model", "q4_k_m") == "Model-Q4_K_M.gguf"
+
+
+def test_gguf_filename_degrades_to_default_for_unavailable_quant(monkeypatch):
+    # A quant the repo doesn't offer (and a bare "Q4" that no exact label equals) falls back
+    # to the engine's default pick — the shortest GGUF — never a different specific quant.
+    files = ["Model-Q4_K_M.gguf", "Model-Q8_0.gguf"]
+    _fake_repo(monkeypatch, files)
+    assert hf.gguf_filename("org/model", "Q2_K") == min(files, key=len)
+    assert hf.gguf_filename("org/model", "Q4") == min(files, key=len)
+
+
 def _apple_profile() -> HardwareProfile:
     return HardwareProfile(
         memory=MemoryInfo(total_bytes=128 * _GB, available_bytes=100 * _GB),

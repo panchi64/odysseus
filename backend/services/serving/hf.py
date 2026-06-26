@@ -75,10 +75,14 @@ def list_gguf_quants(repo: str, token: str | None = None) -> list[str]:
 
 
 def gguf_filename(repo: str, quant: str | None, token: str | None = None) -> str:
-    """Resolve which GGUF in ``repo`` to fetch — preferring one matching ``quant``.
+    """Resolve which GGUF in ``repo`` to fetch — preferring one whose quant matches ``quant``.
 
-    Picks the shortest matching name so a base single-file GGUF wins over its split
-    shards (``…-00001-of-00002.gguf``), which need separate handling."""
+    Matches on the same bounded ``quant_label`` the picker enumerates with, so the served
+    file's quant is exactly the one chosen — never a loose substring that could resolve to a
+    different GGUF (a ``F16`` request must not serve a ``BF16`` file, nor ``Q4`` a ``Q4_K_M``).
+    Among files sharing that quant, picks the shortest name so a base single-file GGUF wins
+    over its split shards (``…-00001-of-00002.gguf``), which need separate handling. An absent
+    or unrecognized quant degrades to the engine's default pick rather than a wrong file."""
     from huggingface_hub import HfApi
 
     try:
@@ -88,8 +92,9 @@ def gguf_filename(repo: str, quant: str | None, token: str | None = None) -> str
     ggufs = [f for f in files if f.lower().endswith(".gguf")]
     if not ggufs:
         raise ServingError(f"{repo} has no GGUF files to serve with llama.cpp")
-    if quant:
-        matches = [f for f in ggufs if quant.lower() in f.lower()]
+    want = quant_label(quant) if quant else None
+    if want:
+        matches = [f for f in ggufs if quant_label(f) == want]
         if matches:
             return min(matches, key=len)
     return min(ggufs, key=len)
