@@ -2,18 +2,27 @@ import { createSignal, For, Show, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text } from "~/ui";
 import { formatArgs } from "../data";
 import type { Approval, ApprovalDecision } from "../model";
+import {
+  ConversationGrantToggle,
+  createGrantToggle,
+} from "./ConversationGrantToggle";
 
 /**
  * The operator's decision point for sensitive actions the agent paused on. The
  * backend requires a single response covering *every* pending call, so we collect
  * an approve/deny per approval and submit them together once all are decided. The
  * run resumes on the same open stream — no reload.
+ *
+ * Each approval also offers an opt-in "allow for the rest of this conversation"
+ * grant (off by default): when checked and approved, the backend records a grant so
+ * that tool auto-approves for the rest of the conversation instead of re-prompting.
  */
 export function ApprovalCard(props: {
   approvals: Approval[];
   onSubmit: (decisions: ApprovalDecision[]) => void | Promise<void>;
 }): JSX.Element {
   const [decisions, setDecisions] = createSignal<Record<string, boolean>>({});
+  const grant = createGrantToggle();
   const [submitting, setSubmitting] = createSignal(false);
 
   const decide = (toolCallId: string, approved: boolean) =>
@@ -28,6 +37,7 @@ export function ApprovalCard(props: {
     const payload: ApprovalDecision[] = props.approvals.map((a) => ({
       tool_call_id: a.toolCallId,
       approved: decisions()[a.toolCallId],
+      scope: grant.scope(a.name, decisions()[a.toolCallId]),
     }));
     try {
       await props.onSubmit(payload);
@@ -85,6 +95,10 @@ export function ApprovalCard(props: {
                     DENY
                   </Button>
                 </Row>
+                <ConversationGrantToggle
+                  checked={grant.isAllowed(approval.name)}
+                  onChange={(v) => grant.set(approval.name, v)}
+                />
               </Stack>
             );
           }}

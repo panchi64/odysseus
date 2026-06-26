@@ -360,3 +360,26 @@ async def rewind(conversation_id: str, message_id: str, request: Request) -> Con
     if not await store.rewind(conversation_id, message_id):
         raise HTTPException(status_code=404, detail="message not found")
     return await _detail(request, conversation_id, summary)
+
+
+class ApprovalGrantOut(BaseModel):
+    """A live conversation-scoped tool auto-approval grant, for the operator's
+    visible + revocable list."""
+
+    tool_name: str
+    expires_at: datetime
+
+
+@router.get("/{conversation_id}/grants", response_model=list[ApprovalGrantOut])
+async def list_grants(conversation_id: str, request: Request) -> list[ApprovalGrantOut]:
+    """The tools the operator allowed to auto-approve for the rest of this conversation."""
+    await _require_owned(request, conversation_id)
+    grants = await deps.approval_grants(request).list(OPERATOR_ID, conversation_id)
+    return [ApprovalGrantOut(tool_name=g.tool_name, expires_at=g.expires_at) for g in grants]
+
+
+@router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)
+async def revoke_grant(conversation_id: str, tool_name: str, request: Request) -> None:
+    """Revoke a conversation auto-approval — the next call to that tool asks again."""
+    await _require_owned(request, conversation_id)
+    await deps.approval_grants(request).revoke(OPERATOR_ID, conversation_id, tool_name)

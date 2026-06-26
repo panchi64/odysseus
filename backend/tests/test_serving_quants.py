@@ -118,6 +118,26 @@ def test_gguf_filename_degrades_to_default_for_unavailable_quant(monkeypatch):
     assert hf.gguf_filename("org/model", "Q4") == min(files, key=len)
 
 
+def test_gguf_filename_falls_back_to_substring_for_unrecognized_quant(monkeypatch):
+    # A stored quant the label parser doesn't recognize (free-text from an older build, or
+    # a quant family the matcher omits like ternary TQ1_0) must still resolve to a file
+    # carrying it via a loose substring match — not silently serve the shortest default.
+    _fake_repo(
+        monkeypatch,
+        ["short.gguf", "Model-TQ1_0.gguf", "Model-Q4_K_M.gguf"],
+    )
+    assert hf.gguf_filename("org/model", "TQ1_0") == "Model-TQ1_0.gguf"
+    # Free-text "k_m" isn't a label, but substring-matches the K_M file (over the default).
+    assert hf.gguf_filename("org/model", "k_m") == "Model-Q4_K_M.gguf"
+
+
+def test_gguf_filename_unrecognized_quant_with_no_substring_match_degrades(monkeypatch):
+    # An unrecognized quant that matches no filename still degrades to the default pick.
+    files = ["Model-Q4_K_M.gguf", "Model-Q8_0.gguf"]
+    _fake_repo(monkeypatch, files)
+    assert hf.gguf_filename("org/model", "nonsense") == min(files, key=len)
+
+
 def _apple_profile() -> HardwareProfile:
     return HardwareProfile(
         memory=MemoryInfo(total_bytes=128 * _GB, available_bytes=100 * _GB),

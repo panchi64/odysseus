@@ -1,6 +1,11 @@
 import { For, Show, createEffect, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
+import { HOST_COMMAND_TOOL } from "../data";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
+import {
+  ConversationGrantToggle,
+  createGrantToggle,
+} from "./ConversationGrantToggle";
 
 const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
   pending: { status: "warn", label: "AWAITING APPROVAL" },
@@ -29,24 +34,41 @@ export function HostCommandCard(props: {
    *  expanded; the command line and decision controls always stay visible. */
   open?: boolean;
 }): JSX.Element {
-  const [decisions, setDecisions] = createSignal<Record<string, boolean>>({});
+  // Each decision captures its grant scope at the instant that command is decided,
+  // not at batch-submit — so toggling the checkbox after a command is approved can't
+  // retroactively change (or lose) that command's already-locked grant choice.
+  type Decision = { approved: boolean; scope: ApprovalDecision["scope"] };
+  const [decisions, setDecisions] = createSignal<Record<string, Decision>>({});
+  const grant = createGrantToggle();
   const [submitting, setSubmitting] = createSignal(false);
 
   const pending = () => props.commands.filter((c) => c.phase === "pending");
-  const isComplete = (d: Record<string, boolean>) =>
+  const isComplete = (d: Record<string, Decision>) =>
     pending().every((c) => c.toolCallId in d);
   const allDecided = () => isComplete(decisions());
 
   async function decide(toolCallId: string, approved: boolean): Promise<void> {
     if (submitting()) return;
-    const next = { ...decisions(), [toolCallId]: approved };
+    // Lock in this command's grant choice now (host commands are all one tool, so the
+    // opt-in is keyed by that tool name) rather than re-reading the checkbox at submit.
+    const next = {
+      ...decisions(),
+      [toolCallId]: {
+        approved,
+        scope: grant.scope(HOST_COMMAND_TOOL, approved),
+      },
+    };
     setDecisions(next);
     // Hold until every pending command is answered, then submit them together —
     // the resume requires decisions covering exactly the pending calls.
     if (!isComplete(next)) return;
     setSubmitting(true);
     const payload: ApprovalDecision[] = Object.entries(next).map(
-      ([tool_call_id, ok]) => ({ tool_call_id, approved: ok }),
+      ([tool_call_id, d]) => ({
+        tool_call_id,
+        approved: d.approved,
+        scope: d.scope,
+      }),
     );
     try {
       await props.onSubmit(payload);
@@ -61,10 +83,12 @@ export function HostCommandCard(props: {
         {(command) => (
           <Terminal
             command={command}
-            decided={decisions()[command.toolCallId]}
+            decided={decisions()[command.toolCallId]?.approved}
             held={command.toolCallId in decisions() && !allDecided()}
             submitting={submitting()}
             open={props.open}
+            sessionAllowed={grant.isAllowed(HOST_COMMAND_TOOL)}
+            onToggleSession={(v) => grant.set(HOST_COMMAND_TOOL, v)}
             onDecide={decide}
           />
         )}
@@ -83,6 +107,9 @@ function Terminal(props: {
   submitting?: boolean;
   /** When defined, controls the runtime-output collapse; defaults to expanded. */
   open?: boolean;
+  /** Whether approving this command also grants it for the rest of the conversation. */
+  sessionAllowed?: boolean;
+  onToggleSession?: (allow: boolean) => void;
   onDecide: (toolCallId: string, approved: boolean) => void;
 }): JSX.Element {
   const c = () => props.command;
@@ -141,26 +168,36 @@ function Terminal(props: {
               </Text>
             }
           >
-            <Row gap={2}>
-              <Button
-                variant="primary"
-                size="sm"
-                leading="check"
+            <Stack gap={2}>
+              {/* The grant opt-in sits *above* the decision so it reads naturally; its
+                  state is captured into this command's decision the moment APPROVE is
+                  clicked (see `decide`), so set it before approving. */}
+              <ConversationGrantToggle
+                checked={props.sessionAllowed}
                 disabled={props.submitting}
-                onClick={() => props.onDecide(c().toolCallId, true)}
-              >
-                APPROVE & RUN
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                leading="close"
-                disabled={props.submitting}
-                onClick={() => props.onDecide(c().toolCallId, false)}
-              >
-                DENY
-              </Button>
-            </Row>
+                onChange={(v) => props.onToggleSession?.(v)}
+              />
+              <Row gap={2}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  leading="check"
+                  disabled={props.submitting}
+                  onClick={() => props.onDecide(c().toolCallId, true)}
+                >
+                  APPROVE & RUN
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  leading="close"
+                  disabled={props.submitting}
+                  onClick={() => props.onDecide(c().toolCallId, false)}
+                >
+                  DENY
+                </Button>
+              </Row>
+            </Stack>
           </Show>
         </Show>
 

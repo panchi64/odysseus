@@ -43,6 +43,7 @@ from routes import (
 )
 from routes.deps import OPERATOR_ID
 from runs import RunRegistry
+from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
@@ -219,6 +220,7 @@ async def lifespan(app: FastAPI):
     # be adopted across a restart, so reconcile clean-slates any mid-flight rows
     # (best-effort, never blocks startup); shutdown stops them gracefully in `finally`.
     app.state.settings_store = SettingsStore(engine)
+    app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)
     app.state.serving = ServingService(
         engine,
         vault,

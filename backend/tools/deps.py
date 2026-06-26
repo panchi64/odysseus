@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from runs import Run
 
 if TYPE_CHECKING:
+    from services.approval_grants import ApprovalGrantStore
     from services.artifacts import ArtifactStore
     from services.conversation_search import ConversationSearch
     from services.corpus import CorpusIndex
@@ -38,6 +39,10 @@ class Capabilities:
     fetcher: BrowserFetcher | None = None
     conversation_search: ConversationSearch | None = None
     corpus: CorpusIndex | None = None
+    # Conversation-scoped tool auto-approval grants. The engine consults this to
+    # auto-approve a deferred tool the operator allowed for the conversation; None
+    # ⇒ every deferred call falls back to strict per-call approval.
+    grants: ApprovalGrantStore | None = None
 
 
 @dataclass

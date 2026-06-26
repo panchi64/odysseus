@@ -213,4 +213,16 @@ export interface ApprovalDecision {
   approved: boolean;
   message?: string;
   override_args?: Record<string, unknown>;
+  /** "conversation" also records an auto-approval grant so this tool isn't
+   *  re-prompted for the rest of the conversation; "once" (default) is this
+   *  call only. Only acted on by the backend when `approved` is true. */
+  scope?: "once" | "conversation";
+}
+
+/** A live conversation-scoped tool auto-approval grant — the operator's
+ *  visible + revocable record of what auto-approves for the rest of the thread. The
+ *  TTL is backend-owned and not surfaced here (the strip shows the tool name only). */
+export interface ApprovalGrant {
+  /** The namespaced tool name that auto-approves, e.g. "corpus_retrieve". */
+  toolName: string;
 }

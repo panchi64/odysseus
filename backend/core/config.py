@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     # Set False to judge every answer.
     verify_heuristic: bool = True
 
+    # Approval grants. When the operator approves a deferred tool call with the
+    # "allow for this conversation" option, that tool auto-approves in that
+    # conversation for this long before lapsing back to strict per-call approval.
+    approval_grant_ttl_s: float = 86400.0
+
     # Web search. `web_search_result_limit` caps results from the SearXNG provider.
     web_search_result_limit: int = 10
 

@@ -33,6 +33,7 @@ import {
   REVEAL_SPEED_MS,
   consumePendingDraft,
   consumeRequestedSession,
+  conversationGrantsRevision,
   deleteConversation,
   entrySessionId,
   mainChat,
@@ -44,6 +45,7 @@ import {
 import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ContextMeter } from "../components/ContextMeter";
+import { ConversationGrants } from "../components/ConversationGrants";
 import { MessageItem } from "../components/MessageItem";
 import { SessionList } from "../components/SessionList";
 
@@ -428,6 +430,11 @@ export function ChatRoomScreen(): JSX.Element {
             />
           </div>
         </header>
+
+        <ConversationGrants
+          conversationId={currentId}
+          revalidate={conversationGrantsRevision}
+        />
 
         <div class="relative flex min-h-0 flex-1 flex-col">
           <div

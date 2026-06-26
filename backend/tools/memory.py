@@ -14,6 +14,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, RunContext
 
 from .deps import RunDeps
+from .recall_gate import gate_global_recall
 
 
 def memory_toolset() -> FunctionToolset[RunDeps]:
@@ -31,6 +32,10 @@ def memory_toolset() -> FunctionToolset[RunDeps]:
     @toolset.tool
     async def recall(ctx: RunContext[RunDeps], query: str, limit: int = 5) -> list[dict]:
         """Recall relevant memories by meaning (with keyword fallback)."""
+        # Relevance recall over long-term memory is global knowledge-base recall, so it
+        # is approval-gated (AE-3.8) just like the corpus read — otherwise it would be an
+        # ungated path to the same content the corpus gate protects.
+        gate_global_recall(ctx)
         store = ctx.deps.memory
         if store is None:
             return [{"error": "Memory is unavailable."}]

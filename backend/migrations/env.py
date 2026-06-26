@@ -24,6 +24,7 @@ from sqlmodel import SQLModel
 
 # Import every model module so its tables register on SQLModel.metadata.
 import models.app_setting  # noqa: F401
+import models.approval_grant  # noqa: F401
 import models.artifact  # noqa: F401
 import models.conversation  # noqa: F401
 import models.corpus  # noqa: F401

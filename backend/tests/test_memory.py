@@ -247,12 +247,18 @@ async def test_agent_memory_tool_reaches_the_store():
     from tools import Capabilities
     from tools.memory import memory_toolset
 
+    from ._helpers import granting_store
+
     store = await _setup(FakeEmbedder())
+    # recall is AE-3.8-gated; grant it so the TestModel's recall call auto-approves inline
+    # and the turn drives both tools through to the store instead of parking.
+    grants = await granting_store(OWNER, "c", "memory_recall")
     orch = build_chat_orchestrator(
         "note something",
         model=TestModel(custom_output_text="done"),
         categories={"memory": memory_toolset()},
-        capabilities=Capabilities(memory=store),
+        capabilities=Capabilities(memory=store, grants=grants),
+        conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()

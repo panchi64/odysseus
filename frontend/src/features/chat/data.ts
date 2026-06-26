@@ -17,6 +17,7 @@ import { toast } from "~/ui";
 import type {
   ActiveRun,
   ApprovalDecision,
+  ApprovalGrant,
   ArtifactRef,
   AssistantBlock,
   ChatMessage,
@@ -464,6 +465,38 @@ export async function regenerateTitle(id: string): Promise<void> {
 export async function deleteConversation(id: string): Promise<void> {
   await api.del(`/conversations/${id}`);
   refreshSessions();
+}
+
+// Bumped when an approval is submitted that records a conversation grant, so the
+// AUTO-APPROVED strip refetches at approve time rather than waiting for the next
+// stream-state toggle (the run is already mid-flight when the grant is made).
+const [grantsRevision, setGrantsRevision] = createSignal(0);
+export const conversationGrantsRevision = grantsRevision;
+
+interface ApprovalGrantDTO {
+  tool_name: string;
+  // The backend also returns `expires_at`; the strip shows only the tool name, so it's
+  // intentionally not mapped into the seam type.
+}
+
+/** The tools the operator allowed to auto-approve for the rest of this conversation. */
+export async function fetchGrants(
+  conversationId: string,
+): Promise<ApprovalGrant[]> {
+  const rows = await api.get<ApprovalGrantDTO[]>(
+    `/conversations/${conversationId}/grants`,
+  );
+  return rows.map((r) => ({ toolName: r.tool_name }));
+}
+
+/** Revoke a conversation auto-approval — the next call to that tool asks again. */
+export async function revokeGrant(
+  conversationId: string,
+  toolName: string,
+): Promise<void> {
+  await api.del(
+    `/conversations/${conversationId}/grants/${encodeURIComponent(toolName)}`,
+  );
 }
 
 /* ── Streaming controller ─────────────────────────────────────────────────────
@@ -1079,6 +1112,11 @@ export function createChatStream(
     try {
       await api.post(`/runs/${msg.runId}/approve`, { decisions });
       patchById(messageId, optimistic);
+      // A recorded conversation grant must show on the strip now, not on the next
+      // stream toggle — nudge the grants resource to refetch.
+      if (decisions.some((d) => d.scope === "conversation")) {
+        setGrantsRevision((n) => n + 1);
+      }
     } catch (err) {
       toast.error(
         (err as { detail?: string })?.detail ??

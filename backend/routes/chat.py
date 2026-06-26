@@ -148,6 +148,7 @@ def _submit_turn(
             fetcher=deps.fetcher(request),
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
+            grants=deps.approval_grants(request),
         ),
         store=deps.store(request),
         conversation_id=conversation_id,

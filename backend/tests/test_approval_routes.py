@@ -88,6 +88,66 @@ async def test_approve_rejects_unknown_and_unparked(monkeypatch):
         assert resp.status_code == 409
 
 
+async def test_approve_with_conversation_scope_records_grant(monkeypatch):
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 202
+
+        # The grant is recorded and visible on the conversation's grants surface.
+        granted = await app.state.approval_grants.active("operator", conv_id)
+        assert approval.tool_name in granted
+        listed = (await client.get(f"/conversations/{conv_id}/grants")).json()
+        assert any(g["tool_name"] == approval.tool_name for g in listed)
+
+
+async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
+    # The grant is written *before* resume (so the resumed turn's inline check sees it),
+    # but a resume that can't be accepted must leave no standing auto-approval behind.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        approval = run.parked_payload.requests.approvals[0]
+        conv_id = run.conversation_id
+
+        async def fail_resume(run_id, orchestrator):
+            return None
+
+        monkeypatch.setattr(app.state.runs, "resume", fail_resume)
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={
+                "decisions": [
+                    {
+                        "tool_call_id": approval.tool_call_id,
+                        "approved": True,
+                        "scope": "conversation",
+                    }
+                ]
+            },
+        )
+        assert resp.status_code == 409
+        granted = await app.state.approval_grants.active("operator", conv_id)
+        assert approval.tool_name not in granted
+
+
 async def test_approve_rejects_decision_mismatch(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):

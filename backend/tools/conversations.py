@@ -15,6 +15,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, RunContext
 
 from .deps import RunDeps
+from .recall_gate import gate_global_recall
 
 
 def conversations_toolset() -> FunctionToolset[RunDeps]:
@@ -29,6 +30,11 @@ def conversations_toolset() -> FunctionToolset[RunDeps]:
         means nothing matched — conclude from that rather than rephrasing endlessly.
         Pass a conversation id from a result to ``conversations_read`` for the full
         thread."""
+        # Relevance recall across the operator's other conversations is global
+        # knowledge-base recall, so it is approval-gated (AE-3.8) like the corpus read.
+        # ``read`` below is an explicit-id read of one already-surfaced thread, so it
+        # passes through ungated.
+        gate_global_recall(ctx)
         svc = ctx.deps.conversation_search
         if svc is None:
             return [{"error": "Conversation search is unavailable."}]

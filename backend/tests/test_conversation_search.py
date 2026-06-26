@@ -296,14 +296,20 @@ async def test_agent_conversation_tools_reach_the_service():
     from tools import Capabilities
     from tools.conversations import conversations_toolset
 
+    from ._helpers import granting_store
+
     _engine, _vault, store, search = await _setup(FakeEmbedder())
     await _record(store, OWNER, ("about a cat", "a fluffy cat"))
 
+    # search is AE-3.8-gated (read passes through); grant it so the TestModel's search
+    # call auto-approves inline and the turn drives both tools through without parking.
+    grants = await granting_store(OWNER, "c", "conversations_search")
     orch = build_chat_orchestrator(
         "look across my chats",
         model=TestModel(custom_output_text="done"),
         categories={"conversations": conversations_toolset()},
-        capabilities=Capabilities(conversation_search=search),
+        capabilities=Capabilities(conversation_search=search, grants=grants),
+        conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
@@ -320,11 +326,17 @@ async def test_conversation_tools_degrade_when_unwired():
     from tools import Capabilities
     from tools.conversations import conversations_toolset
 
+    from ._helpers import granting_store
+
+    # Grant search past its AE-3.8 gate so the turn reaches the degrade path (the gate
+    # fires before the tool sees that the capability is unwired) and reports unavailable.
+    grants = await granting_store(OWNER, "c", "conversations_search")
     orch = build_chat_orchestrator(
         "look across my chats",
         model=TestModel(custom_output_text="done"),
         categories={"conversations": conversations_toolset()},
-        capabilities=Capabilities(),
+        capabilities=Capabilities(grants=grants),
+        conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()

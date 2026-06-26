@@ -26,6 +26,8 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
+    RunUsage,
+    ToolApproved,
     UsageLimitExceeded,
     UsageLimits,
 )
@@ -46,6 +48,7 @@ from runs import (
     RunMetrics,
     RunStatus,
 )
+from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.uploads import UploadStore
 from tools import Capabilities, RunDeps, build_agent_toolsets
@@ -80,6 +83,10 @@ class ParkedTurn:
     message_history: list[ModelMessage]
     requests: DeferredToolRequests
     announced: set[str] = field(default_factory=set)
+    # Calls already auto-approved by an active conversation grant — surfaced to the
+    # operator (no approval.required event for them) but merged back into the resume's
+    # decisions so the single DeferredToolResults still covers every deferred call.
+    pre_approved: dict[str, ToolApproved] = field(default_factory=dict)
     # Persistence context, attached by the orchestrator: the conversation and
     # the index from which messages are still unpersisted (so a resume records
     # the parked turn's messages too, once it finally completes).
@@ -149,8 +156,15 @@ def _park_for_approval(
     messages: list[ModelMessage],
     requests: DeferredToolRequests,
     announced: set[str],
+    *,
+    pre_approved: dict[str, ToolApproved] | None = None,
 ) -> None:
+    # Only the calls still awaiting the operator are announced; any pre-approved by an
+    # active grant ride silently on the parked payload and merge into the resume.
+    pre_approved = pre_approved or {}
     for call in requests.approvals:
+        if call.tool_call_id in pre_approved:
+            continue
         args = call.args_as_dict()
         # A tool may hand the operator a plain-language explanation via an
         # `explanation` argument (the host-execution path requires one); surface
@@ -165,7 +179,7 @@ def _park_for_approval(
                 explanation=explanation if isinstance(explanation, str) else None,
             )
         )
-    run.park(ParkedTurn(agent, messages, requests, announced))
+    run.park(ParkedTurn(agent, messages, requests, announced, pre_approved=pre_approved))
 
 
 # On-demand inference servers (LM Studio, llama.cpp, …) reject a request for a
@@ -217,59 +231,91 @@ async def _drive_turn(
         conversation_search=caps.conversation_search,
         corpus=caps.corpus,
     )
+    # A turn may run as several segments: the initial model pass, then a continuation
+    # for each batch of deferred calls a conversation grant auto-approves. They share
+    # ONE usage budget, ONE no-progress guard, and ONE usage accumulator, so the *whole*
+    # turn is bounded — a granted tool the model keeps re-calling can't reset the guards
+    # (or grow the call stack) by deferring on each hop; it trips the loop/usage stop.
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
-    try:
-        async with agent.iter(
-            prompt,
-            deps=deps,
-            message_history=message_history,
-            deferred_tool_results=deferred_results,
-            usage_limits=limits,
-        ) as agent_run:
-            await stream_agent_run(agent_run, run, announced=announced, loop_breaker=loop_breaker)
-            result = agent_run.result
-    except UsageLimitExceeded as exc:
-        # Hit a usage bound — stop and report state, don't error.
-        run.emit(LimitNotice(limit="steps", message=str(exc)))
-        run.block("usage limit reached")
-        return _TurnResult(answer=None)
-    except LoopDetected as exc:
-        # No-progress guard tripped — stop and report state, don't error.
-        run.emit(LimitNotice(limit="loop", message=str(exc)))
-        run.block("stopped: repeated an action without making progress")
-        return _TurnResult(answer=None)
-    except ModelHTTPError as exc:
-        # Rewrite a model-couldn't-load error into something the operator can act
-        # on; let every other HTTP error propagate with its own detail.
-        hint = _model_load_hint(exc)
-        if hint is None:
-            raise
-        raise ModelLoadError(hint) from exc
+    usage = RunUsage()
+    # Metrics from any earlier segment of this run (a verifier correction, an approval
+    # resume); captured once so the per-hop accumulation below never double-counts.
+    base = run.metrics
+    while True:
+        try:
+            async with agent.iter(
+                prompt,
+                deps=deps,
+                message_history=message_history,
+                deferred_tool_results=deferred_results,
+                usage_limits=limits,
+                usage=usage,
+            ) as agent_run:
+                await stream_agent_run(
+                    agent_run, run, announced=announced, loop_breaker=loop_breaker
+                )
+                result = agent_run.result
+        except UsageLimitExceeded as exc:
+            # Hit a usage bound — stop and report state, don't error.
+            run.emit(LimitNotice(limit="steps", message=str(exc)))
+            run.block("usage limit reached")
+            return _TurnResult(answer=None)
+        except LoopDetected as exc:
+            # No-progress guard tripped — stop and report state, don't error.
+            run.emit(LimitNotice(limit="loop", message=str(exc)))
+            run.block("stopped: repeated an action without making progress")
+            return _TurnResult(answer=None)
+        except ModelHTTPError as exc:
+            # Rewrite a model-couldn't-load error into something the operator can act
+            # on; let every other HTTP error propagate with its own detail.
+            hint = _model_load_hint(exc)
+            if hint is None:
+                raise
+            raise ModelLoadError(hint) from exc
 
-    # Accumulate onto any prior metrics so a multi-turn run (a verifier
-    # correction, or an approval resume) reports the whole run, not just the
-    # last turn.
-    usage = result.usage
-    prior = run.metrics
-    output = result.output
-    messages = result.all_messages()
-    run.set_metrics(
-        RunMetrics(
-            steps=(prior.steps if prior else 0) + usage.requests,
-            tool_calls=(prior.tool_calls if prior else 0) + usage.tool_calls,
-            input_tokens=_sum_tokens(prior.input_tokens if prior else None, usage.input_tokens),
-            output_tokens=_sum_tokens(prior.output_tokens if prior else None, usage.output_tokens),
-            context_window=run.context_window,
-            # The footprint is this turn's last-response total, not the run's summed
-            # token counts above — so a multi-step turn doesn't overstate fullness.
-            context_used=context_footprint(messages),
+        output = result.output
+        messages = result.all_messages()
+        # ``usage`` accumulates across hops, so add it onto the pre-turn ``base`` once —
+        # ``base`` already holds earlier segments' totals.
+        run.set_metrics(
+            RunMetrics(
+                steps=(base.steps if base else 0) + usage.requests,
+                tool_calls=(base.tool_calls if base else 0) + usage.tool_calls,
+                input_tokens=_sum_tokens(base.input_tokens if base else None, usage.input_tokens),
+                output_tokens=_sum_tokens(
+                    base.output_tokens if base else None, usage.output_tokens
+                ),
+                context_window=run.context_window,
+                # The footprint is the last response's total, not the run's summed token
+                # counts above — so a multi-step turn doesn't overstate fullness.
+                context_used=context_footprint(messages),
+            )
         )
-    )
-    if isinstance(output, DeferredToolRequests) and output.approvals:
-        _park_for_approval(run, agent, messages, output, announced)
-        return _TurnResult(answer=None, messages=messages)
-    answer = output if isinstance(output, str) else None
-    return _TurnResult(answer=answer, messages=messages)
+        if not (isinstance(output, DeferredToolRequests) and output.approvals):
+            answer = output if isinstance(output, str) else None
+            return _TurnResult(answer=answer, messages=messages)
+
+        # A tool the operator allowed for this conversation auto-approves without a
+        # prompt; the rest still park for a decision. Grants are conversation-scoped,
+        # so a stateless (no-conversation) turn always asks.
+        granted: set[str] = set()
+        if caps.grants is not None and conversation_id is not None:
+            granted = await caps.grants.active(run.owner_id, conversation_id)
+        pre_approved = {
+            call.tool_call_id: ToolApproved()
+            for call in output.approvals
+            if covered_by_grant(call.tool_name, granted)
+        }
+        manual = [c for c in output.approvals if c.tool_call_id not in pre_approved]
+        if manual:
+            _park_for_approval(run, agent, messages, output, announced, pre_approved=pre_approved)
+            return _TurnResult(answer=None, messages=messages)
+        # Every deferred call is grant-covered — continue the SAME turn inline (no
+        # operator round-trip), reusing the shared budget/guard/usage above. The auto-run
+        # tool still streams its tool.started/completed, so it stays visible.
+        prompt = None
+        message_history = messages
+        deferred_results = DeferredToolResults(approvals=pre_approved)
 
 
 def _should_verify(settings: Any, run: Run) -> bool:

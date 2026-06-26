@@ -13,6 +13,7 @@ from core.auth import AuthManager
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import RunRegistry
+from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
@@ -57,6 +58,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def approval_grants(request: Request) -> ApprovalGrantStore:
+    return request.app.state.approval_grants
 
 
 def documents(request: Request) -> DocumentStore:

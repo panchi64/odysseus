@@ -19,6 +19,7 @@ from pydantic_ai import FunctionToolset, RunContext
 from core.untrusted import wrap_untrusted
 
 from .deps import RunDeps
+from .recall_gate import gate_global_recall
 
 
 def corpus_toolset() -> FunctionToolset[RunDeps]:
@@ -37,6 +38,14 @@ def corpus_toolset() -> FunctionToolset[RunDeps]:
         conversation, whose id appears in its attachment marker; an explicit-id read returns
         the file even if it's been excluded from the knowledge base. Leave ``source_ids``
         unset for normal recall across every source."""
+        # Global recall (no explicit source) pulls untrusted knowledge-base content into
+        # the operator's context, so it is approval-gated (AE-3.8) — the operator can deny
+        # a search they know is irrelevant before its hits reach the model. An explicit-id
+        # read is content the operator already chose to provide (an attached file), so it
+        # passes through. ``not source_ids`` covers both an unset list and an empty one,
+        # which line 53 also collapses to a global recall.
+        if not source_ids:
+            gate_global_recall(ctx)
         index = ctx.deps.corpus
         if index is None:
             return [{"error": "The knowledge corpus is unavailable."}]

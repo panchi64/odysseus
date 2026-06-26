@@ -35,6 +35,22 @@ def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=(
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
 
+async def granting_store(owner: str, conv: str, *tool_names: str, ttl_s: float = 3600):
+    """An ``ApprovalGrantStore`` on a throwaway DB that pre-grants ``tool_names`` in
+    ``conv``. Lets a ``TestModel``-driven wiring test (which calls every offered tool)
+    drive an AE-3.8-gated recall tool through to its service — the active grant makes the
+    engine auto-approve it inline instead of parking on the approval prompt."""
+    from core.db import init_db, make_engine
+    from services.approval_grants import ApprovalGrantStore
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    store = ApprovalGrantStore(engine, ttl_s)
+    for name in tool_names:
+        await store.grant(owner, conv, name)
+    return store
+
+
 @asynccontextmanager
 async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "test-passphrase"):
     """A booted app + async client, backed by a throwaway in-memory DB.

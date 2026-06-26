@@ -8,7 +8,7 @@ Run is a feature concern (chat/agent/research routes), not here — those call
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ from pydantic_ai import ToolApproved, ToolDenied
 from agent import ParkedTurn, build_resume_orchestrator
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
+from services.approval_grants import covered_by_grant
 from tools import Capabilities
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -103,6 +104,9 @@ class ApprovalDecision(BaseModel):
     approved: bool
     message: str | None = None  # shown to the model on denial
     override_args: dict[str, Any] | None = None  # replace args on approval
+    # "conversation" records an auto-approval grant for this tool so the same call
+    # isn't re-prompted for the rest of the conversation; "once" is this call only.
+    scope: Literal["once", "conversation"] = "once"
 
 
 class ApprovalDecisions(BaseModel):
@@ -120,7 +124,10 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         raise HTTPException(status_code=409, detail=f"run is not awaiting approval ({run.status})")
 
     parked: ParkedTurn = run.parked_payload
-    pending = {call.tool_call_id for call in parked.requests.approvals}
+    # The operator only decides the calls that weren't already auto-approved by an
+    # active conversation grant; those ride on the parked payload and merge back below.
+    tool_by_id = {call.tool_call_id: call.tool_name for call in parked.requests.approvals}
+    pending = set(tool_by_id) - set(parked.pre_approved)
     provided = {d.tool_call_id for d in body.decisions}
     if provided != pending:
         raise HTTPException(
@@ -128,10 +135,36 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             detail=f"decisions must cover exactly the pending calls: {sorted(pending)}",
         )
 
+    grants = deps.approval_grants(request)
+    # Re-validate the grant-driven pre-approvals against the *current* grants: a grant
+    # the operator revoked — or that lapsed by TTL — while the run was parked must not
+    # still auto-run its call.
+    active = (
+        await grants.active(deps.OPERATOR_ID, parked.conversation_id)
+        if parked.pre_approved and parked.conversation_id is not None
+        else set()
+    )
     decisions: dict[str, ToolApproved | ToolDenied] = {}
+    for call_id in parked.pre_approved:
+        if covered_by_grant(tool_by_id.get(call_id), active):
+            decisions[call_id] = ToolApproved()
+        else:
+            # The grant was revoked or expired while parked; either way it no longer
+            # covers the call, so don't assert a cause the transcript can't stand behind.
+            decisions[call_id] = ToolDenied(
+                message="This tool's conversation auto-approval is no longer in effect."
+            )
+
+    # New "allow for this conversation" grants the operator chose this batch. Deduped:
+    # two calls to the same tool both opting in map to a single grant.
+    to_grant: list[str] = []
     for decision in body.decisions:
         if decision.approved:
             decisions[decision.tool_call_id] = ToolApproved(override_args=decision.override_args)
+            if decision.scope == "conversation" and parked.conversation_id is not None:
+                tool_name = tool_by_id[decision.tool_call_id]
+                if tool_name not in to_grant:
+                    to_grant.append(tool_name)
         else:
             decisions[decision.tool_call_id] = ToolDenied(
                 message=decision.message or "The operator denied this action."
@@ -148,9 +181,23 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             fetcher=deps.fetcher(request),
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
+            grants=grants,
         ),
         store=deps.store(request),
     )
+    # Record grants *before* resuming: resume only schedules the turn (it doesn't await
+    # it), and the resumed turn's inline grant check must see them, or a tool re-called
+    # within that same turn would re-prompt despite the operator's "allow for this
+    # conversation". If the resume can't be accepted, roll the new grants back so a dead
+    # run leaves no standing auto-approval behind (these tools had no active grant before,
+    # else their calls wouldn't have been pending).
+    conv_id = parked.conversation_id
+    if to_grant and conv_id is not None:
+        for tool_name in to_grant:
+            await grants.grant(deps.OPERATOR_ID, conv_id, tool_name)
     if await registry.resume(run_id, orchestrator) is None:
+        if to_grant and conv_id is not None:
+            for tool_name in to_grant:
+                await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name)
         raise HTTPException(status_code=409, detail="run could not be resumed")
     return {"status": "resuming"}

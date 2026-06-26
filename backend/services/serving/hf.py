@@ -81,8 +81,10 @@ def gguf_filename(repo: str, quant: str | None, token: str | None = None) -> str
     file's quant is exactly the one chosen — never a loose substring that could resolve to a
     different GGUF (a ``F16`` request must not serve a ``BF16`` file, nor ``Q4`` a ``Q4_K_M``).
     Among files sharing that quant, picks the shortest name so a base single-file GGUF wins
-    over its split shards (``…-00001-of-00002.gguf``), which need separate handling. An absent
-    or unrecognized quant degrades to the engine's default pick rather than a wrong file."""
+    over its split shards (``…-00001-of-00002.gguf``), which need separate handling. A quant
+    string the label parser doesn't recognize falls back to a loose substring match (so an
+    operator's exact, free-text choice still resolves); an absent quant — or one that matches
+    nothing — degrades to the engine's default pick rather than a wrong file."""
     from huggingface_hub import HfApi
 
     try:
@@ -95,6 +97,15 @@ def gguf_filename(repo: str, quant: str | None, token: str | None = None) -> str
     want = quant_label(quant) if quant else None
     if want:
         matches = [f for f in ggufs if quant_label(f) == want]
+        if matches:
+            return min(matches, key=len)
+    elif quant:
+        # The stored quant isn't one the label parser recognizes — e.g. a free-text value
+        # carried from an older build (``k_m``, ``q4km``) or a quant family the matcher
+        # omits (ternary ``TQ1_0``). Fall back to a loose substring match so the operator's
+        # exact choice still resolves to *a* file carrying it, rather than silently serving
+        # the default GGUF (a different, often lower-precision, model than they picked).
+        matches = [f for f in ggufs if quant.lower() in f.lower()]
         if matches:
             return min(matches, key=len)
     return min(ggufs, key=len)

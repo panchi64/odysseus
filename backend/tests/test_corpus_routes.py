@@ -76,6 +76,8 @@ async def test_agent_corpus_tool_retrieves_indexed_folder_content():
     from tools import Capabilities
     from tools.corpus import corpus_toolset
 
+    from ._helpers import granting_store
+
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "note.txt").write_text("the secret gate code is 4455")
         async with client_app() as (client, app):
@@ -83,11 +85,15 @@ async def test_agent_corpus_tool_retrieves_indexed_folder_content():
             source_id = created.json()["id"]
             await _wait_indexed(client, source_id)
 
+            # global recall is AE-3.8-gated; grant it so the TestModel's source-less
+            # retrieve auto-approves inline and drives through to the live index.
+            grants = await granting_store("operator", "c", "corpus_retrieve")
             orch = build_chat_orchestrator(
                 "look something up",
                 model=TestModel(custom_output_text="done"),
                 categories={"corpus": corpus_toolset()},
-                capabilities=Capabilities(corpus=app.state.corpus),
+                capabilities=Capabilities(corpus=app.state.corpus, grants=grants),
+                conversation_id="c",
             )
             run = RunRegistry().submit(kind="chat", owner_id="operator", orchestrator=orch)
             await run.wait()
