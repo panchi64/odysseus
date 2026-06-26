@@ -78,6 +78,11 @@ class Upload(SQLModel, table=True):
     # the bytes/extracted text and the chunks themselves stay sealed, so flipping it
     # back is instant. Default false: a fresh upload joins the corpus seamlessly.
     kb_excluded: bool = Field(default=False)
+    # The operator's gallery favorite on this image — clear metadata (a UI flag, not
+    # content), mirroring kb_excluded. Lets the gallery surface a starred subset without
+    # decrypting anything; default false. Meaningful only for image uploads, but cheap
+    # and harmless on any row.
+    favorite: bool = Field(default=False)
     # Which extractor produced the current text: "basic" (the built-in fallback) or
     # "mineru" (high-fidelity), or "manual" once the operator corrects it. Clear
     # metadata, null until extracted — lets the UI flag fallback extractions as

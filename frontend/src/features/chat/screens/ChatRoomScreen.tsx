@@ -26,6 +26,7 @@ import {
   Text,
   TypewriterText,
   confirm,
+  confirmChoice,
   toast,
   type MenuItem,
 } from "~/ui";
@@ -36,6 +37,7 @@ import {
   conversationGrantsRevision,
   deleteConversation,
   entrySessionId,
+  fetchOrphanImageAttachments,
   mainChat,
   renameConversation,
   regenerateTitle,
@@ -281,25 +283,63 @@ export function ChatRoomScreen(): JSX.Element {
     }
   };
 
+  // Gate a delete that may strand image attachments. Probes the backend for the
+  // images this delete would orphan; if any, raises the 3-way keep/purge prompt,
+  // otherwise the plain confirm. Returns the chosen `purgeImages`, or null to
+  // abort. A failed probe falls back to the plain confirm (keep images) so the
+  // delete stays usable.
+  const resolveDeleteChoice = async (
+    conversationId: string,
+    title: string,
+    baseDetail: string,
+    messageId?: string,
+  ): Promise<boolean | null> => {
+    let orphans: string[] = [];
+    try {
+      orphans = await fetchOrphanImageAttachments(conversationId, messageId);
+    } catch {
+      // Probe failed — fall through to the plain confirm below.
+    }
+    if (orphans.length === 0) {
+      const ok = await confirm({
+        title,
+        detail: baseDetail,
+        confirmLabel: "DELETE",
+        tone: "alert",
+      });
+      return ok ? false : null;
+    }
+    const n = orphans.length;
+    const choice = await confirmChoice({
+      title,
+      detail: `${baseDetail} ${n} image attachment${
+        n > 1 ? "s" : ""
+      } would be left unused — delete them too or keep them in the gallery?`,
+      confirmLabel: "DELETE IMAGES",
+      secondaryLabel: "KEEP IMAGES",
+      cancelLabel: "CANCEL",
+      tone: "alert",
+    });
+    if (choice === "cancel") return null;
+    return choice === "primary";
+  };
+
   const handleDelete = async () => {
     const id = currentId();
     if (!id) return;
-    if (
-      !(await confirm({
-        title: "Delete this conversation?",
-        detail: "This permanently removes the thread and its history.",
-        confirmLabel: "DELETE",
-        tone: "alert",
-      }))
-    )
-      return;
+    const purgeImages = await resolveDeleteChoice(
+      id,
+      "Delete this conversation?",
+      "This permanently removes the thread and its history.",
+    );
+    if (purgeImages === null) return;
     try {
       // Deleting a thread mid-stream must stop its generation: cancel the live
       // run first (while it still exists) so the backend halts it, rather than
       // leaving it generating into a conversation that's about to be gone —
       // aborting the local SSE alone wouldn't stop the run server-side.
       if (stream.sending()) await stream.cancel();
-      await deleteConversation(id);
+      await deleteConversation(id, purgeImages);
       startNew();
       toast.success("Conversation deleted");
     } catch {
@@ -468,17 +508,17 @@ export function ChatRoomScreen(): JSX.Element {
                       void stream.rewind(message.id);
                     }}
                     onDelete={async () => {
-                      if (
-                        await confirm({
-                          title: "Delete this message?",
-                          detail: "This removes it and everything after it.",
-                          confirmLabel: "DELETE",
-                          tone: "alert",
-                        })
-                      ) {
-                        await stream.removeMessage(message.id);
-                        toast.success("Message deleted");
-                      }
+                      const id = currentId();
+                      if (!id) return;
+                      const purgeImages = await resolveDeleteChoice(
+                        id,
+                        "Delete this message?",
+                        "This removes it and everything after it.",
+                        message.id,
+                      );
+                      if (purgeImages === null) return;
+                      await stream.removeMessage(message.id, purgeImages);
+                      toast.success("Message deleted");
                     }}
                   />
                 )}

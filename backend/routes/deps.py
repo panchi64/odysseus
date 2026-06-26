@@ -21,6 +21,7 @@ from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
+from services.gallery import GalleryService
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -70,6 +71,10 @@ def documents(request: Request) -> DocumentStore:
 
 def uploads(request: Request) -> UploadStore:
     return request.app.state.uploads
+
+
+def gallery(request: Request) -> GalleryService:
+    return request.app.state.gallery
 
 
 def upload_rate_limiter(request: Request) -> RateLimiter:

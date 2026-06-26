@@ -9,10 +9,11 @@ as a render-ready projection — the durable record stays full-fidelity
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from agent.title import title_from_history
@@ -24,6 +25,8 @@ from runs import ContextWindow
 from services.artifacts import ArtifactView, artifact_id_from_result
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView, context_footprint
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -298,12 +301,12 @@ async def retitle_conversation(
     return _summary(summary)
 
 
-@router.delete("/{conversation_id}", status_code=204)
-async def delete_conversation(conversation_id: str, request: Request) -> None:
-    store = deps.store(request)
-    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    await store.delete_conversation(conversation_id)
+class OrphanImageAttachments(BaseModel):
+    """Image uploads that *this* delete would leave referenced by nothing surviving — the
+    set the operator is asked to keep or purge. Empty ⇒ delete straight through (no prompt
+    needed). Only images are listed; other attachments (e.g. PDFs) are never auto-purged."""
+
+    upload_ids: list[str]
 
 
 async def _require_owned(request: Request, conversation_id: str) -> ConversationSummaryView:
@@ -313,17 +316,94 @@ async def _require_owned(request: Request, conversation_id: str) -> Conversation
     return summary
 
 
+async def _image_orphans(
+    request: Request, conversation_id: str, *, message_id: str | None
+) -> list[str]:
+    """The image uploads that the proposed delete would orphan — computed before the delete
+    runs (the doomed turns must still be in the tree), filtered to ``image/*``, and minus any
+    the operator has curated (favorited or filed into an album), which are kept regardless of
+    where they were first attached. The store's check spares any image still referenced by a
+    surviving branch or another chat; the gallery's spares the ones deliberately collected."""
+    candidates = await deps.store(request).orphaned_attachments_for_delete(
+        OPERATOR_ID, conversation_id, message_id=message_id
+    )
+    images = await deps.uploads(request).image_ids(OPERATOR_ID, candidates)
+    curated = await deps.gallery(request).curated_image_ids(OPERATOR_ID, images)
+    return [uid for uid in images if uid not in curated]
+
+
+async def _purge_uploads(request: Request, upload_ids: list[str]) -> None:
+    """Hard-delete the chosen image uploads (bytes + corpus chunks + album memberships
+    cascade). Best-effort per id, run after the conversation/message is already deleted: one
+    already gone (a race) or otherwise failing to delete is logged and skipped, so it never
+    aborts the remaining purges or 500s a delete the operator already saw succeed."""
+    uploads = deps.uploads(request)
+    for upload_id in upload_ids:
+        try:
+            await uploads.delete(OPERATOR_ID, upload_id)
+        except NotFoundError:
+            pass
+        except Exception:  # noqa: BLE001 — one bad purge mustn't strand the others
+            logger.exception("failed to purge orphaned image upload %s", upload_id)
+
+
+@router.get(
+    "/{conversation_id}/orphan-image-attachments", response_model=OrphanImageAttachments
+)
+async def orphan_image_attachments(
+    conversation_id: str,
+    request: Request,
+    message_id: str | None = Query(default=None, alias="messageId"),
+) -> OrphanImageAttachments:
+    """Pre-delete probe: which image attachments would lose their last reference if this
+    message (``message_id``) or the whole conversation (omit it) were deleted. The frontend
+    asks this first and only prompts keep-or-delete when the list is non-empty."""
+    await _require_owned(request, conversation_id)
+    upload_ids = await _image_orphans(request, conversation_id, message_id=message_id)
+    return OrphanImageAttachments(upload_ids=upload_ids)
+
+
+@router.delete("/{conversation_id}", status_code=204)
+async def delete_conversation(
+    conversation_id: str,
+    request: Request,
+    purge_images: bool = Query(default=False, alias="purgeImages"),
+) -> None:
+    """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
+    the image attachments this would orphan; the default keeps them in the gallery."""
+    store = deps.store(request)
+    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    orphans = (
+        await _image_orphans(request, conversation_id, message_id=None)
+        if purge_images
+        else []
+    )
+    await store.delete_conversation(conversation_id)
+    await _purge_uploads(request, orphans)
+
+
 @router.delete("/{conversation_id}/messages/{message_id}", response_model=ConversationDetail)
 async def delete_message(
-    conversation_id: str, message_id: str, request: Request
+    conversation_id: str,
+    message_id: str,
+    request: Request,
+    purge_images: bool = Query(default=False, alias="purgeImages"),
 ) -> ConversationDetail:
     """Remove a turn and everything after it on every branch (its subtree). The
-    active path falls back to the deleted turn's parent. Returns the resulting
-    thread so the client reseats in one round-trip (like version switch / rewind)."""
+    active path falls back to the deleted turn's parent. With ``purgeImages=true`` the
+    image attachments this orphans are deleted too (default keeps them). Returns the
+    resulting thread so the client reseats in one round-trip (like version switch / rewind)."""
     store = deps.store(request)
     summary = await _require_owned(request, conversation_id)
+    orphans = (
+        await _image_orphans(request, conversation_id, message_id=message_id)
+        if purge_images
+        else []
+    )
     if not await store.delete_message(conversation_id, message_id):
         raise HTTPException(status_code=404, detail="message not found")
+    await _purge_uploads(request, orphans)
     return await _detail(request, conversation_id, summary)
 
 

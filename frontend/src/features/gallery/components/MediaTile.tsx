@@ -1,35 +1,42 @@
-import { For, Show, type JSX } from "solid-js";
-import { Box, Button, Icon, Row, Stack, Text } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { Button, Icon, ImageFrame, Row, Stack, Text } from "~/ui";
+import { useAuthedBlobUrl } from "~/lib/api";
 import { bytes, relativeTime } from "~/lib/format";
 import type { MediaItem } from "../model";
+import { thumbnailPath } from "../data";
 
 interface MediaTileProps {
   item: MediaItem;
   selected?: boolean;
   /** When true, the tile renders a selection checkbox and the whole tile toggles
-   *  selection instead of opening the detail drawer. */
+   *  selection instead of opening the viewer. */
   selectMode?: boolean;
   onSelect: () => void;
   onToggleFavorite: () => void;
+  /** Open the detail drawer (per-image controls) — hidden in select mode. */
+  onOpenDetail: () => void;
 }
 
 export function MediaTile(props: MediaTileProps): JSX.Element {
+  const thumb = useAuthedBlobUrl(() => thumbnailPath(props.item.id));
+
   return (
     <div
       class="group relative flex flex-col gap-2 border border-line bg-surface p-2 transition-colors hover:border-dim hover:bg-raised cursor-pointer"
       classList={{ "border-bright bg-raised": props.selected }}
       onClick={props.onSelect}
     >
-      {/* Placeholder tile */}
-      <Box class="relative aspect-square w-full border border-line bg-bg flex items-center justify-center">
-        <Icon
-          name={props.item.type === "video" ? "play" : "image"}
-          size={28}
-          class="text-dim"
+      <div class="relative">
+        <ImageFrame
+          src={thumb()}
+          error={thumb.error !== undefined}
+          alt={props.item.title}
+          fit="cover"
+          class="aspect-square w-full"
         />
         <Show when={props.selectMode}>
           <span
-            class="absolute left-1.5 top-1.5 flex size-4 items-center justify-center rounded-ctl border bg-bg transition-colors"
+            class="absolute left-1.5 top-1.5 flex size-4 items-center justify-center rounded-ctl border bg-bg"
             classList={{
               "border-bright text-bright": props.selected,
               "border-line text-transparent": !props.selected,
@@ -41,32 +48,37 @@ export function MediaTile(props: MediaTileProps): JSX.Element {
             </Show>
           </span>
         </Show>
-      </Box>
+      </div>
 
       <Stack gap={1}>
         <Row align="center" justify="between" gap={1}>
           <Text variant="micro" tone="bright" class="truncate min-w-0 flex-1">
             {props.item.title}
           </Text>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              props.onToggleFavorite();
-            }}
-            leading={props.item.favorite ? "dot" : "dot"}
-            class={props.item.favorite ? "text-warn" : "text-dim"}
-          />
-        </Row>
-        <Row gap={1} wrap>
-          <For each={props.item.tags.slice(0, 2)}>
-            {(tag) => (
-              <Text variant="micro" tone="dim" class="border border-line px-1">
-                {tag}
-              </Text>
-            )}
-          </For>
+          <Show when={!props.selectMode}>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={props.item.favorite ? "Unfavorite" : "Favorite"}
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onToggleFavorite();
+              }}
+              leading="dot"
+              class={props.item.favorite ? "text-warn" : "text-dim"}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="Details"
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onOpenDetail();
+              }}
+              leading="settings"
+              class="text-dim"
+            />
+          </Show>
         </Row>
         <Row align="center" justify="between" gap={1}>
           <Text variant="micro" tone="dim">

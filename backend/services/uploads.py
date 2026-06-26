@@ -66,6 +66,7 @@ class UploadView:
     extracted_text: str | None
     note: str | None
     kb_excluded: bool
+    favorite: bool
     created_at: datetime
     updated_at: datetime
 
@@ -85,8 +86,20 @@ class UploadSummaryView:
     has_text: bool
     note: str | None
     kb_excluded: bool
+    favorite: bool
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class UploadHead:
+    """Clear metadata for serving decisions — mime, content digest, byte size — with no
+    decryption. Lets the image/thumbnail routes set a content-addressed ETag and answer a
+    conditional request (304) without ever unsealing the file bytes."""
+
+    mime: str
+    sha256: str
+    size_bytes: int
 
 
 @dataclass(frozen=True)
@@ -239,6 +252,25 @@ class UploadStore:
         self._adapter.set_excluded(owner_id, upload_id, value)
         return view
 
+    async def set_favorite(
+        self, owner_id: str, upload_id: str, value: bool
+    ) -> UploadView:
+        """Toggle the operator's gallery favorite on an image. A clear-column flip, like
+        ``set_kb_excluded`` but with no corpus restamp — favorite is a UI affordance, not a
+        knowledge-base property, so it touches the row alone."""
+
+        def work(session: Session) -> UploadView:
+            upload = session.get(Upload, upload_id)
+            if upload is None or upload.owner_id != owner_id:
+                raise NotFoundError(f"upload {upload_id!r} not found")
+            upload.favorite = value
+            upload.updated_at = datetime.now(UTC)
+            session.add(upload)
+            session.flush()
+            return self._view_from_row(upload)
+
+        return await in_session(self._engine, work)
+
     async def retry(self, owner_id: str, upload_id: str) -> UploadView:
         """Re-queue extraction for an upload (e.g. after configuring a vision model for a
         scanned PDF). Resets it to queued and clears the prior note."""
@@ -306,6 +338,41 @@ class UploadStore:
                 mime=upload.mime,
                 content=self._vault.decrypt_bytes(upload.blob_enc),
             )
+
+        return await in_session(self._engine, work)
+
+    async def head(self, owner_id: str, upload_id: str) -> UploadHead | None:
+        """Clear serving metadata (mime, content digest, byte size) for an upload, or None
+        if it isn't this owner's. Decrypts nothing — the image/thumbnail routes use it to
+        ETag a response and answer a conditional request without unsealing the bytes."""
+
+        def work(session: Session) -> UploadHead | None:
+            upload = session.get(Upload, upload_id)
+            if upload is None or upload.owner_id != owner_id:
+                return None
+            return UploadHead(
+                mime=upload.mime, sha256=upload.sha256, size_bytes=upload.size_bytes
+            )
+
+        return await in_session(self._engine, work)
+
+    async def image_ids(self, owner_id: str, ids: list[str]) -> list[str]:
+        """Of ``ids``, those that name this owner's image files (``image/*``). A cheap
+        clear-column filter that decrypts nothing — the delete-choice flow uses it to keep
+        the keep/purge prompt to images, and to purge only images."""
+        wanted = list(dict.fromkeys(ids))  # de-dupe, preserve order
+        if not wanted:
+            return []
+
+        def work(session: Session) -> list[str]:
+            rows = session.exec(
+                select(Upload.id).where(
+                    Upload.owner_id == owner_id,
+                    Upload.id.in_(wanted),  # type: ignore[attr-defined]
+                    Upload.mime.startswith("image/"),  # type: ignore[attr-defined]
+                )
+            ).all()
+            return list(rows)
 
         return await in_session(self._engine, work)
 
@@ -464,6 +531,7 @@ class UploadStore:
             has_text=upload.has_text,
             note=upload.note,
             kb_excluded=upload.kb_excluded,
+            favorite=upload.favorite,
             created_at=upload.created_at,
             updated_at=upload.updated_at,
         )
@@ -481,6 +549,7 @@ class UploadStore:
             extracted_text=text,
             note=upload.note,
             kb_excluded=upload.kb_excluded,
+            favorite=upload.favorite,
             created_at=upload.created_at,
             updated_at=upload.updated_at,
         )

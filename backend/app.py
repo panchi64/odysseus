@@ -31,6 +31,7 @@ from routes import (
     cookbook,
     corpus,
     documents,
+    gallery,
     health,
     memory,
     models,
@@ -61,6 +62,7 @@ from services.corpus.uploads import UploadsAdapter
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
+from services.gallery import GalleryService
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -252,6 +254,12 @@ async def lifespan(app: FastAPI):
         rate_per_second=settings.upload_rate_per_minute / 60.0,
         burst=settings.upload_rate_burst,
     )
+    # The gallery — a presentation lens over the image uploads plus the operator's custom
+    # albums. Owns no image bytes: it reads the uploads store (for the images) and the
+    # conversation store (for chat-vs-imported provenance), and curates albums of its own.
+    app.state.gallery = GalleryService(
+        engine, vault, app.state.conversations, app.state.uploads
+    )
     corpus_index = CorpusIndex(embedder, registry, chunk_store, folder_adapter)
     corpus_index.register(folder_adapter)
     corpus_index.register(MemoryAdapter(app.state.memory))
@@ -420,6 +428,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(memory.router)
     app.include_router(documents.router)
     app.include_router(uploads.router)
+    app.include_router(gallery.router)
     app.include_router(corpus.router)
     app.include_router(artifacts.router)
     app.include_router(previews.router)

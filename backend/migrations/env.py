@@ -29,6 +29,7 @@ import models.artifact  # noqa: F401
 import models.conversation  # noqa: F401
 import models.corpus  # noqa: F401
 import models.document  # noqa: F401
+import models.gallery  # noqa: F401
 import models.memory  # noqa: F401
 import models.registry  # noqa: F401
 import models.search  # noqa: F401

@@ -79,6 +79,7 @@ export {
   RegistrationFrame,
   type RegistrationFrameProps,
 } from "./components/RegistrationFrame";
+export { ImageFrame, type ImageFrameProps } from "./components/ImageFrame";
 
 // controls
 export {
@@ -121,6 +122,11 @@ export { Toggle, type ToggleProps } from "./components/Toggle";
 export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";
 export { Modal, type ModalProps } from "./components/Modal";
 export { Drawer, type DrawerProps } from "./components/Drawer";
+export {
+  Lightbox,
+  type LightboxProps,
+  type LightboxItem,
+} from "./components/Lightbox";
 export { Tooltip, type TooltipProps } from "./components/Tooltip";
 export { InfoHint, type InfoHintProps } from "./components/InfoHint";
 export {
@@ -150,9 +156,12 @@ export {
 } from "./components/Toast";
 export {
   confirm,
+  confirmChoice,
   ConfirmHost,
   type ConfirmTone,
+  type ConfirmChoice,
   type ConfirmOptions,
+  type ConfirmChoiceOptions,
 } from "./components/Confirm";
 export {
   ForbiddenView,

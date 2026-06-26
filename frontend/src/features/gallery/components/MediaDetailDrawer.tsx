@@ -1,97 +1,40 @@
-import { createSignal, For, onCleanup, Show, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import {
-  Box,
   Button,
   Divider,
   Drawer,
   Field,
-  Icon,
-  ProgressBar,
+  ImageFrame,
   Row,
   Stack,
   StatusFlag,
   Text,
-  Tooltip,
-  toast,
+  Toggle,
 } from "~/ui";
+import { useAuthedBlobUrl } from "~/lib/api";
 import { bytes, date } from "~/lib/format";
-import type { MediaItem } from "../model";
-
-type AIAction = "upscale" | "inpaint" | "denoise" | "style-transfer" | null;
-
-const AI_ACTION_META: Record<
-  NonNullable<AIAction>,
-  { label: string; tooltip: string; variantSuffix: string }
-> = {
-  upscale: {
-    label: "UPSCALE",
-    tooltip:
-      "Increase resolution 2×. Saves as a new variant; original is preserved.",
-    variantSuffix: "upscaled",
-  },
-  inpaint: {
-    label: "INPAINT",
-    tooltip:
-      "Fill or restore selected regions. Saves as a new variant; original is preserved.",
-    variantSuffix: "inpainted",
-  },
-  denoise: {
-    label: "DENOISE",
-    tooltip:
-      "Reduce noise and artifacts. Saves as a new variant; original is preserved.",
-    variantSuffix: "denoised",
-  },
-  "style-transfer": {
-    label: "STYLE XFER",
-    tooltip:
-      "Apply a style preset. Saves as a new variant; original is preserved.",
-    variantSuffix: "styled",
-  },
-};
+import type { Album, MediaItem } from "../model";
+import { fullImagePath } from "../data";
 
 interface MediaDetailDrawerProps {
   item: MediaItem | null;
   open: boolean;
   onClose: () => void;
+  /** Custom albums only (system buckets aren't user-assignable). */
+  albums: Album[];
+  onToggleFavorite: (item: MediaItem) => void;
+  onToggleKbExcluded: (item: MediaItem) => void;
+  /** Add to / remove from a custom album (member = the desired next state). */
+  onToggleAlbum: (item: MediaItem, albumId: string, member: boolean) => void;
+  onDownload: (item: MediaItem) => void;
+  onDelete: (item: MediaItem) => void;
 }
 
 export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
-  const [activeAction, setActiveAction] = createSignal<AIAction>(null);
-  const [progress, setProgress] = createSignal(0);
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
-
-  function runAction(action: NonNullable<AIAction>) {
-    if (activeAction()) return;
-    setActiveAction(action);
-    setProgress(0);
-    const iv = setInterval(() => {
-      setProgress((p) => {
-        if (p >= 100) {
-          clearInterval(iv);
-          const item = props.item;
-          if (item) {
-            const meta = AI_ACTION_META[action];
-            const ext = item.title.includes(".")
-              ? item.title.slice(item.title.lastIndexOf("."))
-              : "";
-            const base = item.title.includes(".")
-              ? item.title.slice(0, item.title.lastIndexOf("."))
-              : item.title;
-            const variantName = `${base}_${meta.variantSuffix}${ext}`;
-            toast.success(`NEW VARIANT SAVED: ${variantName}`, {
-              duration: 5000,
-            });
-          }
-          const t = setTimeout(() => setActiveAction(null), 600);
-          timers.push(t);
-          return 100;
-        }
-        return p + 4;
-      });
-    }, 60);
-    timers.push(iv);
-  }
+  // Resolve the full image only while the drawer is open and an item is set.
+  const preview = useAuthedBlobUrl(() =>
+    props.open && props.item ? fullImagePath(props.item.id) : undefined,
+  );
 
   return (
     <Drawer
@@ -106,42 +49,30 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
       >
         {(item) => (
           <Stack gap={4}>
-            {/* Preview */}
-            <Box class="aspect-square w-full border border-line bg-bg flex items-center justify-center">
-              <Stack gap={2} class="items-center">
-                <Icon
-                  name={item().type === "video" ? "play" : "image"}
-                  size={40}
-                  class="text-dim"
-                />
-                <Text variant="micro" tone="dim">
-                  PREVIEW PLACEHOLDER
-                </Text>
-              </Stack>
-            </Box>
+            <ImageFrame
+              src={preview()}
+              error={preview.error !== undefined}
+              alt={item().title}
+              fit="contain"
+              class="aspect-square w-full"
+            />
 
             <Stack gap={2}>
               <Text variant="label" tone="bright">
                 {item().title}
               </Text>
               <Row gap={2} wrap>
-                <StatusFlag
-                  status={item().type === "video" ? "info" : "nominal"}
-                >
-                  {item().type.toUpperCase()}
-                </StatusFlag>
+                <StatusFlag status="nominal">IMAGE</StatusFlag>
                 <Show when={item().favorite}>
                   <StatusFlag status="warn">FAVORITE</StatusFlag>
+                </Show>
+                <Show when={item().kbExcluded}>
+                  <StatusFlag>KB-EXCLUDED</StatusFlag>
                 </Show>
               </Row>
             </Stack>
 
             <Stack gap={1}>
-              <Field
-                label="ALBUM"
-                value={item().album.toUpperCase()}
-                orientation="row"
-              />
               <Field
                 label="SIZE"
                 value={bytes(item().sizeBytes)}
@@ -154,101 +85,99 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
               />
             </Stack>
 
-            <Stack gap={1}>
-              <Text variant="label" tone="dim">
-                TAGS
-              </Text>
-              <Row gap={1} wrap>
-                <For each={item().tags}>
-                  {(tag) => (
-                    <Text
-                      variant="micro"
-                      tone="dim"
-                      class="border border-line px-1 py-0.5"
-                    >
-                      {tag}
-                    </Text>
-                  )}
-                </For>
+            <Divider />
+
+            {/* Flags */}
+            <Stack gap={2}>
+              <Row align="center" justify="between" gap={2}>
+                <Text variant="label" tone="dim">
+                  FAVORITE
+                </Text>
+                <Toggle
+                  checked={item().favorite}
+                  onChange={() => props.onToggleFavorite(item())}
+                />
+              </Row>
+              <Row align="center" justify="between" gap={2}>
+                <Stack gap={1} class="min-w-0">
+                  <Text variant="label" tone="dim">
+                    EXCLUDE FROM KB
+                  </Text>
+                  <Text variant="micro" tone="dim">
+                    Keep this image out of the retrieval corpus.
+                  </Text>
+                </Stack>
+                <Toggle
+                  checked={item().kbExcluded}
+                  onChange={() => props.onToggleKbExcluded(item())}
+                />
               </Row>
             </Stack>
 
             <Divider />
 
+            {/* Album membership */}
             <Stack gap={2}>
-              <Stack gap={1}>
-                <Text variant="label" tone="dim">
-                  AI EDIT
-                </Text>
-                <Text variant="micro" tone="dim">
-                  Operations save a new variant; the original is always
-                  preserved.
-                </Text>
-              </Stack>
-              <Show when={activeAction()}>
-                {(action) => (
-                  <ProgressBar
-                    label={action().toUpperCase().replace("-", " ")}
-                    value={progress()}
-                    tone={progress() < 100 ? "info" : "nominal"}
-                    showValue
-                  />
-                )}
+              <Text variant="label" tone="dim">
+                ALBUMS
+              </Text>
+              <Show
+                when={props.albums.length}
+                fallback={
+                  <Text variant="micro" tone="dim">
+                    No albums yet — create one from the gallery sidebar.
+                  </Text>
+                }
+              >
+                <Stack gap={1}>
+                  <For each={props.albums}>
+                    {(album) => {
+                      const member = (): boolean =>
+                        item().albumIds.includes(album.id);
+                      return (
+                        <Row align="center" justify="between" gap={2}>
+                          <Text
+                            variant="label"
+                            tone={member() ? "bright" : "dim"}
+                            class="truncate min-w-0"
+                          >
+                            {album.name}
+                          </Text>
+                          <Toggle
+                            checked={member()}
+                            onChange={(next) =>
+                              props.onToggleAlbum(item(), album.id, next)
+                            }
+                          />
+                        </Row>
+                      );
+                    }}
+                  </For>
+                </Stack>
               </Show>
-              <div class="grid grid-cols-2 gap-2">
-                <Tooltip label={AI_ACTION_META.upscale.tooltip} side="top">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    leading="layers"
-                    disabled={!!activeAction()}
-                    onClick={() => runAction("upscale")}
-                    class="w-full"
-                  >
-                    UPSCALE
-                  </Button>
-                </Tooltip>
-                <Tooltip label={AI_ACTION_META.inpaint.tooltip} side="top">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    leading="edit"
-                    disabled={!!activeAction()}
-                    onClick={() => runAction("inpaint")}
-                    class="w-full"
-                  >
-                    INPAINT
-                  </Button>
-                </Tooltip>
-                <Tooltip label={AI_ACTION_META.denoise.tooltip} side="top">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    leading="activity"
-                    disabled={!!activeAction()}
-                    onClick={() => runAction("denoise")}
-                    class="w-full"
-                  >
-                    DENOISE
-                  </Button>
-                </Tooltip>
-                <Tooltip
-                  label={AI_ACTION_META["style-transfer"].tooltip}
-                  side="top"
-                >
-                  <Button
-                    variant="default"
-                    size="sm"
-                    leading="compare"
-                    disabled={!!activeAction()}
-                    onClick={() => runAction("style-transfer")}
-                    class="w-full"
-                  >
-                    STYLE XFER
-                  </Button>
-                </Tooltip>
-              </div>
             </Stack>
+
+            <Divider />
+
+            {/* Actions */}
+            <Row gap={2} wrap>
+              <Button
+                variant="default"
+                size="sm"
+                leading="download"
+                onClick={() => props.onDownload(item())}
+              >
+                DOWNLOAD
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                leading="trash"
+                onClick={() => props.onDelete(item())}
+              >
+                DELETE
+              </Button>
+            </Row>
           </Stack>
         )}
       </Show>

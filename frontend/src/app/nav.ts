@@ -77,7 +77,8 @@ export const NAV: NavSection[] = [
         label: "Gallery",
         href: "/gallery",
         icon: "image",
-        description: "Generated and uploaded images, processed into the corpus",
+        connected: true,
+        description: "Images from chat attachments and knowledge-base uploads",
       },
       {
         label: "Memory",

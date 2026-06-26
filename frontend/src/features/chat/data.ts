@@ -462,9 +462,32 @@ export async function regenerateTitle(id: string): Promise<void> {
   refreshSessions();
 }
 
-export async function deleteConversation(id: string): Promise<void> {
-  await api.del(`/conversations/${id}`);
+export async function deleteConversation(
+  id: string,
+  purgeImages = false,
+): Promise<void> {
+  const q = purgeImages ? "?purgeImages=true" : "";
+  await api.del(`/conversations/${id}${q}`);
   refreshSessions();
+}
+
+interface OrphanImageAttachmentsDTO {
+  upload_ids: string[];
+}
+
+/** Image uploads a pending delete would orphan — ones nothing else references.
+ *  Probed before a conversation/message delete so the operator can be offered the
+ *  keep-or-purge choice. Empty ⇒ nothing would be left unused, delete outright.
+ *  Omit `messageId` for a whole-conversation delete. */
+export async function fetchOrphanImageAttachments(
+  conversationId: string,
+  messageId?: string,
+): Promise<string[]> {
+  const q = messageId ? `?messageId=${encodeURIComponent(messageId)}` : "";
+  const res = await api.get<OrphanImageAttachmentsDTO>(
+    `/conversations/${conversationId}/orphan-image-attachments${q}`,
+  );
+  return res.upload_ids;
 }
 
 // Bumped when an approval is submitted that records a conversation grant, so the
@@ -1299,12 +1322,16 @@ export function createChatStream(
 
   /** Delete a turn and everything after it; reseat from the returned active path
    *  (the DELETE returns the post-delete detail, like version-switch/rewind). */
-  async function removeMessage(messageId: string): Promise<void> {
+  async function removeMessage(
+    messageId: string,
+    purgeImages = false,
+  ): Promise<void> {
     if (activeConversationId === null) return;
     if (sending()) await cancel();
     try {
+      const q = purgeImages ? "?purgeImages=true" : "";
       const detail = await api.del<ConversationDetailDTO>(
-        `/conversations/${activeConversationId}/messages/${messageId}`,
+        `/conversations/${activeConversationId}/messages/${messageId}${q}`,
       );
       reseatFromDetail(detail);
       options.onTurnComplete?.();

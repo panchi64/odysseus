@@ -27,7 +27,6 @@ router = APIRouter(prefix="/corpus", tags=["corpus"])
 _SURFACE_ICONS = {
     "surf-documents": "file",
     "surf-uploads": "upload",
-    "surf-gallery": "image",
     "surf-memory": "database",
     "surf-conversations": "chat",
     "surf-research": "research",

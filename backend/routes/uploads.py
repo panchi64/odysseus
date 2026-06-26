@@ -14,10 +14,12 @@ a per-operator rate limit on the upload endpoint, and a single-file size cap. Du
 
 from __future__ import annotations
 
+import io
 import math
 from datetime import datetime
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, Request, Response, UploadFile
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.config import get_settings
 from core.exceptions import NotFoundError, RateLimitedError
@@ -27,6 +29,11 @@ from routes.deps import OPERATOR_ID
 from routes.http import content_disposition
 from services.artifacts import guess_content_type
 from services.uploads import UploadSummaryView, UploadView
+
+# A bounded set of thumbnail edge sizes, so the endpoint can't be driven to render (and
+# cache) an unbounded spread of dimensions. The grid asks for one of these.
+_THUMB_SIZES = (128, 256, 512)
+_DEFAULT_THUMB = 256
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -45,6 +52,8 @@ class UploadSummaryOut(CamelModel):
     note: str | None = None
     # Whether the operator has scoped this file out of the knowledge base.
     kb_excluded: bool
+    # The operator's gallery favorite (image uploads).
+    favorite: bool
     created_at: datetime
     updated_at: datetime
 
@@ -60,17 +69,20 @@ class UploadOut(CamelModel):
     extracted_text: str | None = None
     note: str | None = None
     kb_excluded: bool
+    favorite: bool
     created_at: datetime
     updated_at: datetime
 
 
 class UploadPatch(CamelModel):
-    """A partial update of an upload. Either field may be sent on its own: ``text`` is
-    an operator correction of the extracted text (`UP-2`); ``kbExcluded`` toggles
-    knowledge-base membership (retroactive). Sending neither is a no-op read."""
+    """A partial update of an upload. Any field may be sent on its own: ``text`` is an
+    operator correction of the extracted text (`UP-2`); ``kbExcluded`` toggles
+    knowledge-base membership (retroactive); ``favorite`` toggles the gallery star.
+    Sending none is a no-op read."""
 
     text: str | None = None
     kb_excluded: bool | None = None
+    favorite: bool | None = None
 
 
 def _summary_out(view: UploadSummaryView) -> UploadSummaryOut:
@@ -85,6 +97,7 @@ def _summary_out(view: UploadSummaryView) -> UploadSummaryOut:
         has_text=view.has_text,
         note=view.note,
         kb_excluded=view.kb_excluded,
+        favorite=view.favorite,
         created_at=view.created_at,
         updated_at=view.updated_at,
     )
@@ -102,6 +115,7 @@ def _out(view: UploadView) -> UploadOut:
         extracted_text=view.extracted_text,
         note=view.note,
         kb_excluded=view.kb_excluded,
+        favorite=view.favorite,
         created_at=view.created_at,
         updated_at=view.updated_at,
     )
@@ -158,6 +172,11 @@ async def get_upload(upload_id: str, request: Request) -> UploadOut:
 
 @router.get("/{upload_id}/content")
 async def download_upload(upload_id: str, request: Request) -> Response:
+    """Serve the original bytes as an attachment, unconditionally. The gallery and chat
+    image views read these bytes through the client (``getBlob`` → object URL), where the
+    Content-Disposition is moot — so forcing ``attachment`` costs the product nothing and
+    keeps a direct navigation to this URL from rendering operator-supplied HTML/SVG inline
+    in the authenticated API origin (where embedded scripts would run as the operator)."""
     try:
         blob = await deps.uploads(request).content(OPERATOR_ID, upload_id)
     except NotFoundError:
@@ -174,6 +193,71 @@ async def download_upload(upload_id: str, request: Request) -> Response:
     )
 
 
+@router.get("/{upload_id}/thumbnail")
+async def thumbnail_upload(
+    upload_id: str,
+    request: Request,
+    size: int = _DEFAULT_THUMB,
+    if_none_match: str | None = Header(default=None),
+) -> Response:
+    """A downscaled preview of an image upload for the gallery grid (a full multi-MB
+    original per tile would be wasteful). The ETag is content-addressed (the upload's
+    clear ``sha256`` + the requested size), so a conditional re-request is answered ``304``
+    **without** unsealing the bytes — the per-request decrypt + decode is paid only on a
+    cold load. Falls back to the original bytes for an image Pillow can't open."""
+    if size not in _THUMB_SIZES:
+        size = _DEFAULT_THUMB
+    store = deps.uploads(request)
+    head = await store.head(OPERATOR_ID, upload_id)
+    if head is None:
+        raise HTTPException(status_code=404, detail="upload not found")
+    if not head.mime.startswith("image/"):
+        raise HTTPException(status_code=415, detail="not an image")
+
+    etag = f'"{head.sha256}.t{size}"'
+    cache = "private, max-age=86400"
+    if if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": cache})
+
+    blob = await store.content(OPERATOR_ID, upload_id)
+    try:
+        thumb = _render_thumbnail(blob.content, size)
+        media_type = "image/webp"
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        # An image Pillow can't decode (an exotic format, or one so large it trips the
+        # decompression-bomb guard) still has its original bytes — serve those so the tile
+        # renders rather than breaks; the browser scales it down.
+        thumb, media_type = blob.content, blob.mime
+    return Response(
+        content=thumb,
+        media_type=media_type,
+        headers={
+            "ETag": etag,
+            "Cache-Control": cache,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _render_thumbnail(raw: bytes, size: int) -> bytes:
+    """Decode ``raw``, normalize orientation, and downscale it to fit within ``size``×``size``
+    (aspect preserved), re-encoded as WebP. Honors the source's EXIF orientation (so a phone
+    portrait isn't sideways in the grid) and preserves transparency (a transparent PNG keeps
+    its alpha, not a black box). Pure CPU over already-decrypted bytes — the caller owns the
+    decrypt and the ETag/cache that keep this off the repeat path."""
+    with Image.open(io.BytesIO(raw)) as opened:
+        # Bake the EXIF rotation into the pixels — WebP won't carry the orientation tag.
+        image = ImageOps.exif_transpose(opened)
+        has_alpha = image.mode in ("RGBA", "LA", "PA") or (
+            image.mode == "P" and "transparency" in image.info
+        )
+        image = image.convert("RGBA" if has_alpha else "RGB")
+        image.thumbnail((size, size))
+        out = io.BytesIO()
+        image.save(out, format="WEBP", quality=80, method=4)
+        return out.getvalue()
+
+
 @router.patch("/{upload_id}", response_model=UploadOut)
 async def patch_upload(
     upload_id: str, body: UploadPatch, request: Request
@@ -187,6 +271,8 @@ async def patch_upload(
             view = await store.correct_text(OPERATOR_ID, upload_id, body.text)
         if body.kb_excluded is not None:
             view = await store.set_kb_excluded(OPERATOR_ID, upload_id, body.kb_excluded)
+        if body.favorite is not None:
+            view = await store.set_favorite(OPERATOR_ID, upload_id, body.favorite)
         if view is None:
             view = await store.get(OPERATOR_ID, upload_id)
     except NotFoundError:
@@ -209,3 +295,6 @@ async def delete_upload(upload_id: str, request: Request) -> None:
         await deps.uploads(request).delete(OPERATOR_ID, upload_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="upload not found") from None
+    # The upload may also be a chat attachment; drop the now-dangling reference from any
+    # message that listed it, so the conversation never points at bytes that are gone.
+    await deps.store(request).detach_upload(OPERATOR_ID, upload_id)

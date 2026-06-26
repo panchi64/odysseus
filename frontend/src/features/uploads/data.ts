@@ -10,7 +10,7 @@ import {
 } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import type { ComposerAttachment, ComposerAttachmentsApi } from "~/ui";
-import { api } from "~/lib/api";
+import { api, downloadContent } from "~/lib/api";
 import type { Upload, UploadStatus } from "./model";
 
 /* ── Backend DTOs → seam types ────────────────────────────────────────────── */
@@ -170,13 +170,7 @@ export async function setUploadKbExcluded(
 
 /** Trigger a browser download of the original file bytes. */
 export async function downloadUpload(id: string, name: string): Promise<void> {
-  const blob = await api.getBlob(`/uploads/${id}/content`);
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  await downloadContent(`/uploads/${id}/content`, name);
 }
 
 /* ── Composer attachments controller ──────────────────────────────────────────
