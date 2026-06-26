@@ -4,6 +4,13 @@
 
 import type { AssistantBlock, BlockKind } from "./model";
 
+/** A run of consecutive collapsible work only folds into a WORK LOG accordion
+ *  once it reaches this many groups. Below it, the run stays inline — a lone
+ *  tool call or a think→tool pair reads better on the rail than wrapped in a
+ *  "WORK LOG · 1 STEP" fold. Each inline block is still independently
+ *  collapsible via its own card, so nothing is buried. */
+export const WORK_LOG_MIN_RUN = 3;
+
 /** The answer the operator reads — every `text` block in order. */
 export function answerText(blocks: AssistantBlock[] | undefined): string {
   return (blocks ?? [])
@@ -133,11 +140,13 @@ function isCollapsible(group: BlockGroup): boolean {
 }
 
 /* ── Compaction layout ────────────────────────────────────────────────────────
-   Fold *every* maximal run of consecutive collapsible work into its own WORK LOG
-   accordion, always leaving the non-collapsible blocks (the answer, pending
-   actions, outputs) and the active/streaming tail visible and in order — so the
-   turn's true think → tool → text → … narrative survives but the process recedes
-   into per-segment accordions instead of burying the screen. */
+   Fold every maximal run of consecutive collapsible work that reaches
+   WORK_LOG_MIN_RUN groups into its own WORK LOG accordion, always leaving the
+   non-collapsible blocks (the answer, pending actions, outputs) and the
+   active/streaming tail visible and in order. Shorter runs stay inline as
+   individual rail blocks — so the turn's true think → tool → text → … narrative
+   survives, long stretches of process recede into per-segment accordions, and a
+   lone call or a think→tool pair isn't wrapped in a one-step fold. */
 
 export type LayoutItem =
   | { type: "group"; group: BlockGroup }
@@ -152,7 +161,11 @@ export function planTurnLayout(
   const items: LayoutItem[] = [];
   let run: BlockGroup[] = [];
   const flush = (): void => {
-    if (run.length) items.push({ type: "worklog", groups: run });
+    if (run.length >= WORK_LOG_MIN_RUN) {
+      items.push({ type: "worklog", groups: run });
+    } else {
+      for (const group of run) items.push({ type: "group", group });
+    }
     run = [];
   };
   groups.forEach((group, i) => {
