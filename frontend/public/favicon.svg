@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" shape-rendering="geometricPrecision">
+  <!-- ODYSSEUS — Terminal-HUD favicon: phosphor reticle "O" framed by registration crosshairs. -->
+  <!-- Phosphor mode tokens: bg #0A0C0B, line #2A2F2C, text-dim #5A635E, accent-nominal #5BD47E. -->
+  <rect width="32" height="32" fill="#0A0C0B"/>
+  <rect x="1" y="1" width="30" height="30" fill="none" stroke="#2A2F2C" stroke-width="1"/>
+
+  <!-- Corner registration crosshairs (recessed framing, dim) -->
+  <g stroke="#5A635E" stroke-width="1">
+    <path d="M4.5 2.6V6.4M2.6 4.5H6.4"/>
+    <path d="M27.5 2.6V6.4M25.6 4.5H29.4"/>
+    <path d="M4.5 25.6V29.4M2.6 27.5H6.4"/>
+    <path d="M27.5 25.6V29.4M25.6 27.5H29.4"/>
+  </g>
+
+  <!-- Reticle ring = the letter O -->
+  <circle cx="16" cy="16" r="8" fill="none" stroke="#5BD47E" stroke-width="2.75"/>
+
+  <!-- Cardinal aperture ticks (target reticle) -->
+  <g stroke="#5BD47E" stroke-width="2.25" stroke-linecap="butt">
+    <path d="M16 2.6V5.6"/>
+    <path d="M16 26.4V29.4"/>
+    <path d="M2.6 16H5.6"/>
+    <path d="M26.4 16H29.4"/>
+  </g>
+</svg>
