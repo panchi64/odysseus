@@ -10,6 +10,7 @@
  */
 import { API_BASE } from "~/lib/config";
 import { getToken } from "~/lib/api/token";
+import { setBackendReachable } from "~/lib/stores/connectivity";
 import { isTerminal, type RunEvent } from "./events";
 
 export interface RunStreamOptions {
@@ -74,6 +75,7 @@ export async function streamRun(
       });
       if (res.status === 404) return; // run is gone — nothing to stream
       if (!res.ok || !res.body) throw new Error(`stream HTTP ${res.status}`);
+      setBackendReachable(true); // a live connection — the backend is reachable
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -111,7 +113,10 @@ export async function streamRun(
     } catch (err) {
       if (signal?.aborted) return;
       failures += 1;
-      if (failures > MAX_RECONNECTS) throw err;
+      if (failures > MAX_RECONNECTS) {
+        setBackendReachable(false); // reconnects exhausted — treat the backend as down
+        throw err;
+      }
       await delay(RECONNECT_DELAY_MS, signal);
     }
   }

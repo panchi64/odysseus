@@ -8,7 +8,28 @@
  * swap their mock bodies to.
  */
 import { API_BASE } from "~/lib/config";
+import { setBackendReachable } from "~/lib/stores/connectivity";
 import { clearToken, getToken } from "./token";
+
+/** `fetch` wrapped to echo backend reachability. A received response — even a 4xx/5xx —
+ *  means the server answered, so the backend is reachable; only a transport-level failure
+ *  (`fetch` rejects) flips it false, and a deliberate abort (per-call timeout) is not a
+ *  connectivity signal. The platform-status derivation reads this to tint the favicon. */
+async function trackedFetch(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    const res = await fetch(input, init);
+    setBackendReachable(true);
+    return res;
+  } catch (err) {
+    if (!(err instanceof DOMException && err.name === "AbortError")) {
+      setBackendReachable(false);
+    }
+    throw err;
+  }
+}
 
 export interface ApiError {
   status: number;
@@ -71,7 +92,7 @@ async function request<T>(
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(`${API_BASE}${path}`, init);
+  const res = await trackedFetch(`${API_BASE}${path}`, init);
   if (res.status === 401 || res.status === 423) {
     clearToken();
     onExpire?.();
@@ -94,7 +115,7 @@ export const api = {
    *  Content-Type+boundary itself, so we must NOT set it here. Bearer auth and the
    *  401/423 handling match the JSON path. */
   async postForm<T>(path: string, form: FormData): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await trackedFetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: authHeaders(),
       credentials: "omit",
@@ -110,7 +131,7 @@ export const api = {
   },
   /** Fetch raw bytes (auth-gated content like artifacts) for a blob URL. */
   async getBlob(path: string): Promise<Blob> {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await trackedFetch(`${API_BASE}${path}`, {
       headers: authHeaders(),
       credentials: "omit",
     });

@@ -3,6 +3,7 @@ import { FileRoutes } from "@solidjs/start/router";
 import { Suspense } from "solid-js";
 import { ThemeProvider, Toaster, ConfirmHost } from "~/ui";
 import { usePageTitle } from "~/app/usePageTitle";
+import { useFavicon } from "~/app/useFavicon";
 import "./app.css";
 
 /**
@@ -15,6 +16,7 @@ export default function App() {
     <Router
       root={(props) => {
         usePageTitle();
+        useFavicon();
         return (
           <ThemeProvider>
             <Suspense>{props.children}</Suspense>

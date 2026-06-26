@@ -10,7 +10,7 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
-import { setChatBusy } from "~/lib/stores/chatActivity";
+import { setChatBusy, setRunErrored } from "~/lib/stores/chatActivity";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import { streamRun, type ContextWindow, type RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
@@ -538,6 +538,10 @@ export function createChatStream(
 ) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
   const [sending, setSending] = createSignal(false);
+  // True when this room's last run ended in `run.error`; cleared when the next run
+  // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
+  // so the favicon can flag a failed run — compare panes keep it local.
+  const [errored, setErrored] = createSignal(false);
   // A brand-new thread is auto-named during its first turn; this drives a "working"
   // throbber on the title from that turn's start until the name lands
   // (`conversation.titled`, which the reveal then animates) or the turn ends without
@@ -826,6 +830,7 @@ export function createChatStream(
       case "run.error":
         toast.error(ev.message || "The run failed.");
         patchById(assistantId, (m) => (m.streaming = false));
+        setErrored(true);
         break;
       case "run.metrics":
         // The backend derives the window's fullness; the meter just renders it.
@@ -851,6 +856,7 @@ export function createChatStream(
   ): Promise<void> {
     const myGen = ++driveGen;
     activeRunId = runId;
+    setErrored(false); // a fresh run supersedes any prior failure
     // Re-anchor the fold high-water mark to this run's sequence. Each run owns a
     // fresh event stream whose seq restarts at 1, so a new turn (fromSeq omitted →
     // 0) must drop the *previous* run's mark — otherwise its early events (seq ≤
@@ -1348,6 +1354,7 @@ export function createChatStream(
   return {
     messages,
     sending,
+    errored,
     titlePending,
     reattaching,
     usage,
@@ -1442,6 +1449,9 @@ export function mainChat(): MainChat {
     // so the Chat item shows a live indicator while a turn runs — even from another
     // section. Only the main room drives it (compare panes are ephemeral).
     createEffect(() => setChatBusy(stream.sending()));
+    // Same main-room-only mirror for the last-run-error echo, so the favicon can flag a
+    // failed run from any screen.
+    createEffect(() => setRunErrored(stream.errored()));
     const [warmResolved, setWarmResolved] = createSignal(false);
     return {
       currentId,
