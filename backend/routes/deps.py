@@ -29,6 +29,7 @@ from services.sandbox import SandboxSessionManager
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingService
+from services.settings_store import SettingsStore
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
 
@@ -117,6 +118,10 @@ def cookbook(request: Request) -> CookbookService:
 
 def serving(request: Request) -> ServingService:
     return request.app.state.serving
+
+
+def settings_store(request: Request) -> SettingsStore:
+    return request.app.state.settings_store
 
 
 def credentials(request: Request) -> CredentialStore:

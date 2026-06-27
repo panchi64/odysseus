@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.config import get_settings
+
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
 
 
@@ -57,3 +59,26 @@ async def test_chat_rejects_unknown_conversation(monkeypatch):
             "/chat", json={"prompt": "hello", "conversation_id": "does-not-exist"}
         )
         assert resp.status_code == 404
+
+
+async def test_chat_settings_round_trip():
+    # The attachment inline token cap is an operator setting: GET reports the config
+    # default until set, PUT overrides it (camelCase out), and the override persists.
+    async with client_app() as (client, _app):
+        got = await client.get("/chat/settings")
+        assert got.status_code == 200
+        default = get_settings().attachment_inline_max_tokens
+        assert got.json()["attachmentInlineMaxTokens"] == default
+
+        put = await client.put("/chat/settings", json={"attachmentInlineMaxTokens": 1500})
+        assert put.status_code == 200
+        assert put.json()["attachmentInlineMaxTokens"] == 1500
+
+        again = await client.get("/chat/settings")
+        assert again.json()["attachmentInlineMaxTokens"] == 1500
+
+
+async def test_chat_settings_rejects_a_negative_cap():
+    async with client_app() as (client, _app):
+        resp = await client.put("/chat/settings", json={"attachmentInlineMaxTokens": -1})
+        assert resp.status_code == 422

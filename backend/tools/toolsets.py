@@ -18,6 +18,7 @@ from collections.abc import Mapping
 
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
 
+from .attachments import attachments_toolset
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .conversations import conversations_toolset
@@ -43,6 +44,7 @@ def default_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "code": code_toolset(),
         "preview": preview_toolset(),
         "web": web_toolset(),
+        "attachments": attachments_toolset(),
     }
 
 

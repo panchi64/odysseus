@@ -7,6 +7,7 @@ import {
   useEndpoints,
 } from "~/lib/stores/models";
 import type {
+  ChatSettings,
   EmbeddingHealth,
   EndpointInput,
   ReindexStatus,
@@ -272,4 +273,18 @@ export async function updateSearchProvider(
 export async function deleteSearchProvider(id: string): Promise<void> {
   await api.del(`/search/providers/${id}`);
   setProvidersTick((n) => n + 1);
+}
+
+/* ── Chat settings (attachment inline token cap) ───────────────────────────── */
+
+export function useChatSettings(): Resource<ChatSettings> {
+  const [data] = createResource(() => api.get<ChatSettings>("/chat/settings"));
+  return data;
+}
+
+/** Persist the attachment inline token cap; returns the stored settings. */
+export async function saveChatSettings(
+  attachmentInlineMaxTokens: number,
+): Promise<ChatSettings> {
+  return api.put<ChatSettings>("/chat/settings", { attachmentInlineMaxTokens });
 }

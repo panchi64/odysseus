@@ -1,20 +1,24 @@
-"""Chat attachments — the active-turn hand-off and the persisted reference.
+"""Chat attachments — the active-turn hand-off and the retained reference.
 
-A file the operator attaches to a message reaches the model two ways, split by
-durability:
+A file the operator attaches to a message reaches the model two ways, split by what the
+*live turn* needs versus what *replayed history* should carry:
 
-- **For the turn it's attached** it's handed over *directly* (:func:`resolve_attachments`):
-  the real image for a vision-capable model — so it can actually see it, not just its OCR
-  text — and the extracted text otherwise. The operator just gave it to the agent, so it's
-  almost certainly relevant to this reply.
-- **Everywhere after** it must *not* be re-fed on every run, so the conversation store strips
-  this content back to the compact ``marker`` when it persists the turn (the marker is built
-  here and handed to ``ConversationStore.record``). Later turns see only that the file exists
-  (and its corpus source id) and pull it from the knowledge corpus on demand — it's enrolled
-  there at upload time — and other chats reach it only through the corpus tool. That is what
-  keeps history lean: available to reference, never info-dumped into context.
+- **For the turn it's attached** it's handed over in full (:attr:`ResolvedAttachments.content`):
+  the real image for a vision model (so it can see it, not just its OCR text) and the
+  whole extracted text otherwise. The operator just gave it to the agent, so the attach
+  turn uses everything.
+- **In replayed history** the content is **retained inline up to a token cap**
+  (:attr:`ResolvedAttachments.persisted`): an image always stays (its cost is bounded and
+  there is no way to re-see one on demand), and a non-image file's text stays whole while
+  it is under the cap. A larger document is **cut off at the cap with a pointer appended**
+  telling the model to reach the full file through the ``attachments_provision`` tool
+  (stage the bytes into the sandbox) or ``corpus.retrieve`` (search its text) by id. A
+  compact marker listing every attachment's id closes the persisted block, so the model
+  can provision *any* attachment — even a fully-inline one — when it needs to run code on it.
 
-Shared by the chat engine now; research/agent orchestrators can adopt it unchanged.
+Keeping the durable history capped is what stops a large file from growing context without
+bound while still leaving it one tool call away. Shared by the chat engine now;
+research/agent orchestrators can adopt it unchanged.
 """
 
 from __future__ import annotations
@@ -34,32 +38,46 @@ from services.uploads import UploadStore
 # a raw-bytes pass would — and which a non-vision model can read too.
 _IMAGE_PREFIX = "image/"
 
+# A coarse characters-per-token proxy: there is no exact tokenizer at persist time and the
+# cap is a soft context budget, so this is good enough to bound a retained document's size.
+_CHARS_PER_TOKEN = 4
+
 
 @dataclass(frozen=True)
 class ResolvedAttachments:
-    """The faces of a turn's attachments: ``content`` is appended to the live user prompt;
-    ``marker`` is what replaces it in the persisted/replayed history; ``ids`` are the
-    uploads that actually resolved (foreign/deleted ids are dropped), so only real
-    attachments get stamped as chips."""
+    """The two faces of a turn's attachments. ``content`` is the full set appended to the
+    live user prompt (what the attach turn sees); ``persisted`` is the capped set that
+    replaces it in durable/replayed history (images + under-cap text inline, larger text
+    cut to a pointer, a closing id marker). ``ids`` are the uploads that actually resolved
+    (foreign/deleted ids dropped), so only real attachments get stamped as chips."""
 
-    content: list[Any]  # UserContent items (BinaryContent / wrapped text)
-    marker: str
+    content: list[Any]  # live-turn UserContent (full)
+    persisted: list[Any]  # durable UserContent (capped + pointers + marker)
     ids: list[str]
 
 
 async def resolve_attachments(
-    uploads: UploadStore, owner_id: str, ids: list[str], *, vision: bool
+    uploads: UploadStore,
+    owner_id: str,
+    ids: list[str],
+    *,
+    vision: bool,
+    inline_max_tokens: int,
 ) -> ResolvedAttachments:
-    """Resolve attached upload ids into the content to hand the model for this turn.
+    """Resolve attached upload ids into the live and durable content for this turn.
 
     An image goes in as ``BinaryContent`` when the model can see (``vision``); anything
     else — and images for a text-only model — goes in as its extracted text, wrapped
-    untrusted (file content is data, never instructions). A file still being extracted
-    contributes a short placeholder; the corpus backfills it for later turns. Unknown or
-    foreign ids are skipped."""
+    untrusted (file content is data, never instructions). ``content`` carries the full
+    content for the live turn; ``persisted`` carries it capped to ``inline_max_tokens``
+    for replayed history (a longer document is truncated and a tool pointer appended).
+    A file still being extracted contributes a short placeholder. Unknown or foreign ids
+    are skipped."""
     content: list[Any] = []
+    persisted: list[Any] = []
     refs: list[str] = []
     resolved_ids: list[str] = []
+    max_chars = max(0, inline_max_tokens) * _CHARS_PER_TOKEN
     for upload_id in ids:
         try:
             view = await uploads.get(owner_id, upload_id)
@@ -69,26 +87,64 @@ async def resolve_attachments(
         refs.append(f"{view.filename} (id: {upload_id})")
         if vision and view.mime.startswith(_IMAGE_PREFIX):
             blob = await uploads.content(owner_id, upload_id)
-            content.append(BinaryContent(data=blob.content, media_type=view.mime))
+            binary = BinaryContent(data=blob.content, media_type=view.mime)
+            content.append(binary)
+            persisted.append(binary)  # an image is always retained inline
         elif view.status == UploadStatus.DONE and view.extracted_text:
-            content.append(wrap_untrusted(view.extracted_text, source=view.filename))
+            text = view.extracted_text
+            full = wrap_untrusted(text, source=view.filename)
+            content.append(full)
+            if len(text) <= max_chars:
+                persisted.append(full)  # same wrapped block, not re-wrapped
+            else:
+                truncated = _truncate(text, max_chars)
+                if truncated:
+                    persisted.append(wrap_untrusted(truncated, source=view.filename))
+                persisted.append(_truncation_note(upload_id, view.filename, inline_max_tokens))
         else:
-            content.append(
-                wrap_untrusted(
-                    f"[{view.filename} is still being processed — its text isn't available yet.]",
-                    source=view.filename,
-                )
+            placeholder = wrap_untrusted(
+                f"[{view.filename} is still being processed — its text isn't available yet.]",
+                source=view.filename,
             )
-    return ResolvedAttachments(content=content, marker=_marker(refs), ids=resolved_ids)
+            content.append(placeholder)
+            persisted.append(placeholder)
+    marker = _marker(refs)
+    if marker:
+        persisted.append(marker)
+    return ResolvedAttachments(content=content, persisted=persisted, ids=resolved_ids)
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """The first ``max_chars`` of ``text``, trimmed back to a whitespace boundary when one
+    is reasonably close, so the cut doesn't split a word mid-token."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text[:max_chars]
+    cut = text[:max_chars]
+    boundary = max(cut.rfind(" "), cut.rfind("\n"))
+    if boundary > max_chars * 0.8:
+        cut = cut[:boundary]
+    return cut.rstrip()
+
+
+def _truncation_note(upload_id: str, filename: str, cap_tokens: int) -> str:
+    """The trusted pointer appended after a cut-off file's content — an instruction to the
+    model (kept *outside* the untrusted wrapper) to reach the full file via the tools."""
+    return (
+        f"[The file {filename!r} (id: {upload_id}) was cut off at the {cap_tokens}-token "
+        "inline limit. To read the full file, load it into your computer with the "
+        "attachments_provision tool, or search its text with corpus.retrieve — using the id above.]"
+    )
 
 
 def _marker(refs: list[str]) -> str:
-    """The compact line that stands in for attachment content in persisted history — names
-    the files and their source ids so the agent can pull them from the corpus when relevant."""
+    """The compact line closing the persisted attachment block — names the files and their
+    ids and points at the tools, so the agent can load any of them into the sandbox (or
+    search a document's text) on a later turn even when the content is retained inline."""
     if not refs:
         return ""
     listed = "; ".join(refs)
     return (
-        f"[Attached file(s): {listed}. They're in the knowledge base — "
-        "call the corpus.retrieve tool with a source id to read one when relevant.]"
+        f"[Attached file(s): {listed}. To work with a file's bytes (run code on it), load it "
+        "into your computer's /work with the attachments_provision tool; to search a "
+        "document's text, use corpus.retrieve with its id.]"
     )

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
+    from services.uploads import UploadStore
     from services.webfetch import BrowserFetcher
 
 
@@ -39,6 +40,9 @@ class Capabilities:
     fetcher: BrowserFetcher | None = None
     conversation_search: ConversationSearch | None = None
     corpus: CorpusIndex | None = None
+    # The upload store, so a tool can fetch a chat attachment's bytes by id (the
+    # attachments tool stages them into the sandbox). None ⇒ that tool degrades.
+    uploads: UploadStore | None = None
     # Conversation-scoped tool auto-approval grants. The engine consults this to
     # auto-approve a deferred tool the operator allowed for the conversation; None
     # ⇒ every deferred call falls back to strict per-call approval.
@@ -74,6 +78,9 @@ class RunDeps:
     # The unified knowledge corpus (folders + memory + conversations as sources).
     # None ⇒ the corpus tool says so.
     corpus: CorpusIndex | None = None
+    # The upload store — lets the attachments tool fetch a file's bytes by id and
+    # stage them into the conversation's sandbox. None ⇒ the tool degrades.
+    uploads: UploadStore | None = None
 
     @property
     def sandbox_key(self) -> str:

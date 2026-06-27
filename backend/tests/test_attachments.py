@@ -12,8 +12,16 @@ import hashlib
 import tempfile
 from pathlib import Path
 
-from pydantic_ai import BinaryContent
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai import Agent, BinaryContent, DeferredToolRequests
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import FunctionModel
 from sqlmodel import Session, select
 
@@ -23,14 +31,16 @@ from core.db import in_session, init_db, make_engine
 from core.vault import Vault
 from models.corpus import CorpusChunk
 from models.upload import Upload, UploadStatus
-from runs import RunRegistry, RunStatus
-from services.conversations import ConversationStore, with_attachment_marker
+from runs import Run, RunRegistry, RunStatus, RunStream
+from services.conversations import ConversationStore, install_persisted_attachments
 from services.corpus.chunk_store import CorpusChunkStore
 from services.corpus.index import CorpusIndex
 from services.corpus.uploads import UploadsAdapter
 from services.registry import ModelRegistry
 from services.upload_extraction import BasicExtractor
 from services.uploads import UploadStore
+from tools import RunDeps, build_agent_toolsets
+from tools.attachments import attachments_toolset
 
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
 from .test_memory import FakeEmbedder
@@ -86,24 +96,32 @@ async def _insert_upload(
     return await in_session(engine, work)
 
 
-# --- resolve_attachments: the active-turn hand-off --------------------------
+# --- resolve_attachments: the live + persisted shapes -----------------------
+
+# Token caps chosen relative to the fixtures' short text: _BIG retains it whole, _TINY
+# forces it over the cap (the chars≈tokens*4 proxy makes a 1-token cap a 4-char budget).
+_BIG = 100
+_TINY = 1
 
 
-async def test_vision_model_gets_the_image_as_pixels():
+async def test_vision_model_gets_pixels_and_retains_the_image_inline():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="image/png")
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=True)
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=True, inline_max_tokens=_BIG)
 
+    # The live turn gets pixels, and an image is retained inline in persisted history too.
     assert any(isinstance(part, BinaryContent) for part in resolved.content)
-    assert "dossier" in resolved.marker and uid in resolved.marker
+    assert any(isinstance(part, BinaryContent) for part in resolved.persisted)
+    marker = "".join(p for p in resolved.persisted if isinstance(p, str))
+    assert "dossier" in marker and uid in marker
 
 
 async def test_text_only_model_gets_extracted_text_wrapped_untrusted():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="image/png")
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False)
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
 
     # No pixels for a text-only model — the file's extracted text, wrapped as data.
     assert not any(isinstance(part, BinaryContent) for part in resolved.content)
@@ -112,13 +130,37 @@ async def test_text_only_model_gets_extracted_text_wrapped_untrusted():
     assert "untrusted" in body.lower()  # wrap_untrusted sentinel/instruction present
 
 
+async def test_small_text_is_retained_whole_in_persisted():
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    uid = await _insert_upload(engine, store._vault, mime="text/plain")
+
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
+
+    persisted = "".join(p for p in resolved.persisted if isinstance(p, str))
+    assert "zebra dossier" in persisted  # whole text kept under the cap
+    assert "cut off" not in persisted  # and no truncation pointer
+
+
+async def test_large_text_is_cut_off_with_a_tool_pointer():
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    uid = await _insert_upload(engine, store._vault, mime="text/plain")
+
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_TINY)
+
+    # The live turn still has the full text; persisted is cut off with a pointer to the tools.
+    assert "zebra dossier" in "".join(p for p in resolved.content if isinstance(p, str))
+    persisted = "".join(p for p in resolved.persisted if isinstance(p, str))
+    assert "cut off" in persisted and uid in persisted
+    assert "attachments_provision" in persisted  # names the tool to reach the full file
+
+
 async def test_still_processing_attachment_yields_a_placeholder():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(
         engine, store._vault, mime="application/pdf", text=None, status=UploadStatus.EXTRACTING
     )
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False)
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
 
     body = "".join(p for p in resolved.content if isinstance(p, str))
     assert "still being processed" in body
@@ -126,14 +168,16 @@ async def test_still_processing_attachment_yields_a_placeholder():
 
 async def test_unknown_attachment_id_is_skipped():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
-    resolved = await resolve_attachments(store, OWNER, ["nope"], vision=True)
-    assert resolved.content == [] and resolved.marker == ""
+    resolved = await resolve_attachments(
+        store, OWNER, ["nope"], vision=True, inline_max_tokens=_BIG
+    )
+    assert resolved.content == [] and resolved.persisted == [] and resolved.ids == []
 
 
-# --- with_attachment_marker: the persisted reference ------------------------
+# --- install_persisted_attachments: what the durable blob carries -----------
 
 
-def test_marker_replaces_content_keeping_the_prompt():
+def test_install_keeps_the_prompt_and_retains_an_image():
     request = ModelRequest(
         parts=[
             UserPromptPart(
@@ -141,15 +185,31 @@ def test_marker_replaces_content_keeping_the_prompt():
             )
         ]
     )
-    with_attachment_marker(request, "[Attached file(s): a.png (id: up1).]")
+    install_persisted_attachments(
+        request,
+        [BinaryContent(data=b"x", media_type="image/png"), "[Attached file(s): a.png (id: up1).]"],
+    )
 
     part = request.parts[0]
-    assert isinstance(part.content, str)  # collapsed to text — no binary survives
+    assert isinstance(part.content, list)  # an image survives → kept as a multimodal list
+    assert part.content[0] == "summarize this"
+    assert any(isinstance(item, BinaryContent) for item in part.content)
+    assert any(isinstance(item, str) and "Attached file(s)" in item for item in part.content)
+
+
+def test_install_collapses_to_text_when_no_binary_survives():
+    request = ModelRequest(parts=[UserPromptPart(content=["summarize this", "<file>doc</file>"])])
+    install_persisted_attachments(
+        request, ["<file>doc</file>", "[Attached file(s): d (id: up2).]"]
+    )
+
+    part = request.parts[0]
+    assert isinstance(part.content, str)  # no binary → collapsed back to one string
     assert part.content.startswith("summarize this")
     assert "Attached file(s)" in part.content
 
 
-# --- the engine: inject once, persist a marker ------------------------------
+# --- the engine: full live content, capped persisted content ----------------
 
 
 async def _conv_store():
@@ -160,9 +220,9 @@ async def _conv_store():
     return ConversationStore(engine, vault, FakeEmbedder())
 
 
-async def test_attachment_reaches_model_but_history_keeps_only_the_marker():
-    # The file is handed to the model for this turn (pixels, vision=True), but the
-    # persisted/replayed history carries only the marker — the no-info-dump guarantee.
+async def test_image_attachment_is_retained_inline_in_history():
+    # The file is handed to the model for this turn (pixels, vision=True), and — being an
+    # image — it is *retained inline* in replayed history so a later turn re-sees it.
     up_engine, _v, _c, _a, uploads = await _uploads_store()
     uid = await _insert_upload(up_engine, uploads._vault, mime="image/png")
 
@@ -170,8 +230,8 @@ async def test_attachment_reaches_model_but_history_keeps_only_the_marker():
     await conv.start()
     cid = await conv.create_conversation(OWNER)
 
-    # Snapshot what the model actually received *at call time* — the message object is
-    # mutated in place by the marker-strip afterward, so we can't read it back later.
+    # Snapshot what the model received *at call time* — the message object is mutated in
+    # place when the capped content is installed afterward.
     saw_binary: list[bool] = []
 
     async def capture(messages, info):
@@ -189,20 +249,130 @@ async def test_attachment_reaches_model_but_history_keeps_only_the_marker():
         uploads=uploads,
         attachment_ids=[uid],
         vision=True,
+        inline_max_tokens=100,
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
     assert run.status is RunStatus.done
+    assert saw_binary == [True]  # the model saw the actual image this turn
 
-    # The model saw the actual image this turn …
-    assert saw_binary == [True]
-
-    # … but the persisted history carries only the marker — no binary to replay.
+    # The persisted history keeps the image inline (multimodal list) plus the prompt and
+    # the id marker — no re-fetch needed on a later turn.
     history = await conv.history(cid)
-    text = next(p.content for p in history[0].parts if isinstance(p, UserPromptPart))
-    assert isinstance(text, str)  # collapsed to text, not a multimodal list
+    content = next(p.content for p in history[0].parts if isinstance(p, UserPromptPart))
+    assert isinstance(content, list)
+    assert any(isinstance(item, BinaryContent) for item in content)
+    text = " ".join(item for item in content if isinstance(item, str))
     assert "what is this?" in text and uid in text
     await conv.stop()
+
+
+# --- attachments_provision: stage a file into the sandbox -------------------
+
+
+class _FakeSandboxSession:
+    """Records files staged into its (host-side) workspace, for the provision tool."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    def write_file(self, relpath: str, content: bytes) -> None:
+        self.files[relpath] = content
+
+
+class _FakeSandboxSessions:
+    def __init__(self) -> None:
+        self.session = _FakeSandboxSession()
+        self.acquired: str | None = None
+
+    async def acquire(self, key: str) -> _FakeSandboxSession:
+        self.acquired = key
+        return self.session
+
+
+def _provision_then_answer(uid: str):
+    """A FunctionModel function: call attachments_provision once, then answer."""
+
+    def fn(messages, info):
+        already = any(
+            isinstance(p, ToolReturnPart | RetryPromptPart)
+            for m in messages
+            for p in m.parts
+        )
+        if already:
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="attachments_provision",
+                    args={"attachment_id": uid},
+                    tool_call_id="c1",
+                )
+            ]
+        )
+
+    return fn
+
+
+async def _run_provision(uid: str, *, uploads, sessions):
+    agent = Agent(
+        FunctionModel(_provision_then_answer(uid)),
+        deps_type=RunDeps,
+        toolsets=build_agent_toolsets({"attachments": attachments_toolset()}),
+        output_type=[str, DeferredToolRequests],
+    )
+    run = Run(id="t", kind="chat", owner_id=OWNER, stream=RunStream())
+    deps = RunDeps(
+        run=run,
+        owner_id=OWNER,
+        uploads=uploads,
+        sandbox_sessions=sessions,
+        conversation_id="conv-1",
+    )
+    result = await agent.run("go", deps=deps)
+    returns = [
+        p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)
+    ]
+    retries = [
+        p for m in result.all_messages() for p in m.parts if isinstance(p, RetryPromptPart)
+    ]
+    return returns, retries
+
+
+async def test_provision_stages_attachment_into_the_sandbox():
+    engine, _v, _c, _a, uploads = await _uploads_store()
+    uid = await _insert_upload(engine, uploads._vault, mime="text/csv", content=b"a,b\n1,2\n")
+    sessions = _FakeSandboxSessions()
+
+    returns, _retries = await _run_provision(uid, uploads=uploads, sessions=sessions)
+
+    assert sessions.acquired == "conv-1"  # keyed by the conversation, like code_execute
+    assert sessions.session.files["attachments/dossier"] == b"a,b\n1,2\n"
+    [ret] = returns
+    assert ret.content["ok"] is True
+    assert ret.content["path"] == "/work/attachments/dossier"
+    assert ret.content["size_bytes"] == len(b"a,b\n1,2\n")
+
+
+async def test_provision_unknown_id_retries_and_stages_nothing():
+    engine, _v, _c, _a, uploads = await _uploads_store()
+    sessions = _FakeSandboxSessions()
+
+    _returns, retries = await _run_provision("ghost", uploads=uploads, sessions=sessions)
+
+    assert retries  # a bad id raises ModelRetry → the model is asked to correct it
+    assert sessions.session.files == {}  # nothing staged
+
+
+async def test_provision_degrades_without_a_sandbox():
+    engine, _v, _c, _a, uploads = await _uploads_store()
+    uid = await _insert_upload(engine, uploads._vault, mime="text/plain")
+
+    returns, _retries = await _run_provision(uid, uploads=uploads, sessions=None)
+
+    [ret] = returns
+    assert ret.content["ok"] is False
+    assert "unavailable" in ret.content["error"].lower()
 
 
 # --- the retroactive knowledge-base exclude toggle --------------------------

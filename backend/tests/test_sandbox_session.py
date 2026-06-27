@@ -57,6 +57,37 @@ def test_excluded_drops_envs_and_caches_only():
     assert not _excluded("output/chart.png", _EXCLUDES)
 
 
+# --- write_file: staging a file into the workspace (no runtime needed) --------
+async def test_write_file_round_trips_through_read_file(tmp_path):
+    vault = await _vault(tmp_path)
+    session = await _manager(tmp_path, vault).acquire("conv-x")
+
+    session.write_file("attachments/data.csv", b"a,b\n1,2\n")
+
+    assert session.read_file("attachments/data.csv") == b"a,b\n1,2\n"
+    assert (session.workspace / "attachments" / "data.csv").read_bytes() == b"a,b\n1,2\n"
+
+
+async def test_write_file_rejects_a_path_escape(tmp_path):
+    vault = await _vault(tmp_path)
+    session = await _manager(tmp_path, vault).acquire("conv-x")
+
+    with pytest.raises(SandboxError):
+        session.write_file("../escape.txt", b"nope")
+
+
+async def test_written_file_survives_a_seal_and_restore(tmp_path):
+    # A staged file is inside the sealed workspace, so it persists across a reap.
+    vault = await _vault(tmp_path)
+    session = await _manager(tmp_path, vault).acquire("conv-x")
+    session.write_file("attachments/keep.txt", b"hold onto me")
+
+    await session.shutdown()  # seals the workspace and removes the plaintext
+    assert not session.workspace.exists()
+
+    assert session.read_file("attachments/keep.txt") == b"hold onto me"  # restored from the seal
+
+
 # --- sealing keeps the agent's files, drops the bloat ------------------------
 async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
     vault = await _vault(tmp_path)

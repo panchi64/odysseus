@@ -203,6 +203,16 @@ class Settings(BaseSettings):
     upload_extractor: Literal["auto", "mineru", "basic"] = "auto"
     upload_mineru_timeout_s: float = 300.0
 
+    # Chat attachments. A file attached to a message stays inline in the conversation
+    # so a follow-up "just works" — images always (their cost is bounded and there's no
+    # way to re-see one on demand), and a non-image file's extracted text up to this
+    # token budget. Past it, the text is cut off at the cap and a pointer to the
+    # attachments/corpus tools is appended, so a large document can't grow context
+    # without bound. This is the *default*; the operator overrides it at runtime via
+    # `PUT /chat/settings` (stored owner-scoped in the settings store). 0 ⇒ never retain
+    # non-image text inline (always cut to a pointer); images are unaffected either way.
+    attachment_inline_max_tokens: int = 6000
+
 
 @lru_cache
 def get_settings() -> Settings:

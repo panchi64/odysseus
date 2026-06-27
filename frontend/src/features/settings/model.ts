@@ -90,3 +90,10 @@ export interface SearchProviderInput {
   params: Record<string, unknown>;
   apiKey?: string;
 }
+
+/** Operator-tunable chat preferences. `attachmentInlineMaxTokens` is the token
+ *  budget an attached file's text is retained inline for before it's cut off with a
+ *  tool pointer (images are always retained, regardless). */
+export interface ChatSettings {
+  attachmentInlineMaxTokens: number;
+}

@@ -100,11 +100,11 @@ class ParkedTurn:
     # named once it resumes and completes (titling lives at the shared finalize
     # point, not only in the initial chat turn). None ⇒ don't title on resume.
     title: TitleContext | None = None
-    # Attachment context, carried so a turn that parked for approval still strips its
-    # attached files down to the marker (and stamps their ids) when the resume finally
-    # persists it — keeping the file out of replayed history just like a direct turn.
+    # Attachment context, carried so a turn that parked for approval still installs its
+    # capped attachment content (and stamps the ids) when the resume finally persists it —
+    # keeping replayed history capped just like a direct turn.
     attachment_ids: list[str] = field(default_factory=list)
-    marker: str | None = None
+    persisted: list | None = None
 
 
 @dataclass
@@ -230,6 +230,7 @@ async def _drive_turn(
         fetcher=caps.fetcher,
         conversation_search=caps.conversation_search,
         corpus=caps.corpus,
+        uploads=caps.uploads,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -386,16 +387,16 @@ def _finalize(
     start: int,
     clean_drop: tuple[int, int] | None = None,
     attachment_ids: list[str] | None = None,
-    marker: str | None = None,
+    persisted: list | None = None,
 ) -> None:
     """Close out a turn: persist it, or wire resume context if it parked.
 
     Shared by the chat and resume orchestrators so the park/answer-None guards
     are applied *after* the verifier too (a corrective re-attempt can itself park
     or hit a bound). ``clean_drop`` is a verifier correction's message range to
-    drop from the persisted history. ``attachment_ids``/``marker`` carry a turn's
+    drop from the persisted history. ``attachment_ids``/``persisted`` carry a turn's
     attached files: the ids are stamped on the persisted request (chip rendering),
-    and the marker replaces the file content in history so it's never replayed."""
+    and ``persisted`` is the capped content that replaces the live payload in history."""
     if run.status is RunStatus.awaiting_input:
         # Parked: hand the resume the context to persist the parked turn too.
         if conversation_id is not None and isinstance(run.parked_payload, ParkedTurn):
@@ -404,7 +405,7 @@ def _finalize(
             if clean_drop is not None:  # re-park: carry the drop range forward
                 run.parked_payload.clean_drop = clean_drop
             run.parked_payload.attachment_ids = attachment_ids or []
-            run.parked_payload.marker = marker
+            run.parked_payload.persisted = persisted
         return
     if turn.answer is None:
         return  # blocked or hit a bound — nothing to persist
@@ -413,14 +414,14 @@ def _finalize(
         if clean_drop is not None:
             reject_idx, nudge_idx = clean_drop
             messages = messages[:reject_idx] + messages[nudge_idx + 1 :]
-        # The store strips the attachment content to `marker` and stamps `attachment_ids`
-        # on the turn's user request as it serializes — keeping the file out of replayed
-        # history is the store's concern (what the durable blob contains), not the engine's.
+        # The store installs the capped `persisted` content and stamps `attachment_ids`
+        # on the turn's user request as it serializes — keeping replayed history capped is
+        # the store's concern (what the durable blob contains), not the engine's.
         store.record(
             conversation_id,
             messages[start:],
             attachment_ids=attachment_ids or [],
-            marker=marker,
+            persisted=persisted,
         )
 
 
@@ -557,6 +558,7 @@ def build_chat_orchestrator(
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
     vision: bool = False,
+    inline_max_tokens: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -566,9 +568,12 @@ def build_chat_orchestrator(
 
     ``attachment_ids`` are files the operator attached to *this* message (resolved
     via ``uploads``; ``vision`` selects image-as-pixels vs extracted text). They're
-    handed to the model directly for this turn only, then stripped to a marker on
-    persist — a regenerate (``prompt is None``) re-runs prior history and reaches them
-    through the corpus tool instead, so attachments are injected only on a fresh turn.
+    handed to the model in full for this turn, then retained inline on persist up to
+    ``inline_max_tokens`` (the operator's cap; absent ⇒ the config default) — images
+    always, a document's text until it exceeds the cap, past which it's cut off with a
+    pointer to the attachments/corpus tools. Attachments are injected only on a fresh
+    turn; a regenerate (``prompt is None``) re-runs prior history, which already carries
+    the capped content.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -608,16 +613,24 @@ def build_chat_orchestrator(
         )
         title_task = _start_title(title_ctx if is_first_turn else None, prompt)
 
-        # Hand any attached files to the model for *this* turn only — pixels for a vision
-        # model, extracted text otherwise — appended after the operator's prompt. Stripped
-        # back to `marker` on persist so it's never replayed. Only on a fresh turn: a
-        # regenerate (prompt is None) re-runs history and pulls files via the corpus tool.
-        marker: str | None = None
+        # Hand any attached files to the model in full for *this* turn — pixels for a
+        # vision model, extracted text otherwise — appended after the operator's prompt.
+        # On persist they're replaced by the capped `persisted` set (images + under-cap
+        # text inline, larger text cut to a tool pointer), so replayed history stays
+        # bounded. Only on a fresh turn: a regenerate (prompt is None) re-runs history,
+        # which already carries the capped content. The cap is the operator's setting,
+        # passed in; absent ⇒ the config default.
+        cap = (
+            inline_max_tokens
+            if inline_max_tokens is not None
+            else settings.attachment_inline_max_tokens
+        )
+        persisted: list | None = None
         stamp_ids: list[str] = []
         user_prompt: str | list[Any] | None = prompt
         if attachment_ids and prompt is not None and uploads is not None:
             resolved = await resolve_attachments(
-                uploads, run.owner_id, attachment_ids, vision=vision
+                uploads, run.owner_id, attachment_ids, vision=vision, inline_max_tokens=cap
             )
             # Only build a multimodal prompt when something actually resolved — else leave
             # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
@@ -625,7 +638,7 @@ def build_chat_orchestrator(
             # chips; foreign/deleted ids are dropped.
             if resolved.content:
                 user_prompt = [prompt, *resolved.content]
-            marker = resolved.marker or None
+            persisted = resolved.persisted or None
             stamp_ids = resolved.ids
         try:
             turn = await _drive_turn(
@@ -674,7 +687,7 @@ def build_chat_orchestrator(
                 start=start,
                 clean_drop=turn.clean_drop,
                 attachment_ids=stamp_ids,
-                marker=marker,
+                persisted=persisted,
             )
 
             if run.status is RunStatus.awaiting_input:
@@ -728,7 +741,7 @@ def build_resume_orchestrator(
             start=parked.persist_from,
             clean_drop=parked.clean_drop,
             attachment_ids=parked.attachment_ids,
-            marker=parked.marker,
+            persisted=parked.persisted,
         )
 
         if run.status is RunStatus.awaiting_input:

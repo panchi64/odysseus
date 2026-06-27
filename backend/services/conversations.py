@@ -35,7 +35,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
-from pydantic_ai import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
+from pydantic_ai import (
+    BinaryContent,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+)
 from sqlalchemy import Engine, delete, func, or_
 from sqlalchemy import text as sa_text
 from sqlmodel import Session, select
@@ -267,15 +273,26 @@ def context_footprint(messages: list[ModelMessage]) -> int | None:
     return None
 
 
+def _part_text(content: object) -> str:
+    """Searchable text from a message part's content — a bare string, or the string
+    items of a multimodal list (a user prompt that retains an attachment inline, where
+    content is ``[prompt, BinaryContent | str, …]``), ignoring binary parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(item for item in content if isinstance(item, str))
+    return ""
+
+
 def _project(message: ModelMessage) -> tuple[str, str]:
-    """Derive (kind, text) for listing/search from a ModelMessage."""
+    """Derive (kind, text) for listing/search from a ModelMessage. Flattens a
+    retained-attachment user prompt (list content) so its text still feeds the
+    listing preview and the per-message embedding — a string-only check would drop it."""
     kind = getattr(message, "kind", "")
-    text = " ".join(
-        part.content
-        for part in message.parts
-        if type(part).__name__ in _TEXT_PARTS and isinstance(getattr(part, "content", None), str)
+    pieces = (
+        _part_text(part.content) for part in message.parts if type(part).__name__ in _TEXT_PARTS
     )
-    return kind, text
+    return kind, " ".join(p for p in pieces if p)
 
 
 def _prompt_text(content: object) -> str:
@@ -291,19 +308,27 @@ def _prompt_text(content: object) -> str:
     return ""
 
 
-def with_attachment_marker(message: ModelMessage, marker: str) -> None:
-    """Replace a user request's attachment content (the image/text the engine appended for
-    the live turn) with ``marker`` in place, keeping the operator's typed prompt — so the
-    persisted blob and the in-memory tree carry a reference, never the file itself (the
-    knowledge corpus is the durable path back to the content). Owned by the store because
-    *what gets persisted* is the store's concern; ``record`` applies it as it serializes.
-    A no-op without a marker or on a non-request message."""
-    if not marker or not isinstance(message, ModelRequest):
+def install_persisted_attachments(message: ModelMessage, persisted: list) -> None:
+    """Replace a user request's *live* attachment content with the durable ``persisted``
+    parts (the engine's capped set: images + under-cap text inline, larger text cut to a
+    pointer, a closing id marker), keeping the operator's typed prompt — so replayed
+    history carries the capped content, never the uncapped live payload. Collapses to a
+    single string when nothing binary survives (a text-only turn persists exactly like a
+    plain string), else keeps the multimodal list (a retained image stays inline). Owned
+    by the store because *what gets persisted* is the store's concern; ``record`` applies
+    it as it serializes. A no-op without persisted parts or on a non-request message."""
+    if not persisted or not isinstance(message, ModelRequest):
         return
     for part in message.parts:
         if isinstance(part, UserPromptPart):
-            text = _prompt_text(part.content)
-            part.content = f"{text}\n\n{marker}".strip() if text else marker
+            prompt = _prompt_text(part.content)
+            items: list = ([prompt] if prompt else []) + list(persisted)
+            if any(isinstance(item, BinaryContent) for item in items):
+                part.content = items
+            else:
+                part.content = "\n\n".join(
+                    item for item in items if isinstance(item, str)
+                ).strip()
             return  # one user-prompt part per request carries the attachments
 
 
@@ -596,18 +621,19 @@ class ConversationStore:
         conversation_id: str,
         new_messages: list[ModelMessage],
         attachment_ids: list[str] | None = None,
-        marker: str | None = None,
+        persisted: list | None = None,
     ) -> None:
         """Hot path: extend the tree off the active leaf and queue the durable write.
 
         Only projects and serializes here (no vault) — the drainer encrypts just
         before the write, on the lock-aware side of the queue. New messages branch
         automatically when a prior regenerate/edit moved the active leaf back.
-        ``attachment_ids``/``marker`` belong to the turn's user request (the first one):
-        the ids are stamped on its node + row (chip rendering), and when a ``marker`` is
-        given the request's attachment content is stripped to it before serialize — so
-        the file is never replayed into context on a later turn. Stripping lives here
-        (not in the engine) because *what the durable blob contains* is the store's job."""
+        ``attachment_ids``/``persisted`` belong to the turn's user request (the first one):
+        the ids are stamped on its node + row (chip rendering), and when ``persisted`` is
+        given the request's *live* attachment content is replaced by that capped set before
+        serialize — so replayed history carries only the retained-up-to-cap content, never
+        the uncapped live payload. Installing it lives here (not in the engine) because
+        *what the durable blob contains* is the store's job."""
         if not new_messages:
             return
         tree = self._cache.setdefault(conversation_id, _Tree())
@@ -615,12 +641,12 @@ class ConversationStore:
         rows: list[_Row] = []
         stamped = False
         for node in added:
-            # The attached files belong to this turn's user request (the first one); strip
-            # its content to the marker and stamp the ids before we project/serialize.
+            # The attached files belong to this turn's user request (the first one);
+            # install the capped content and stamp the ids before we project/serialize.
             if not stamped and getattr(node.message, "kind", "") == "request":
                 if attachment_ids:
                     node.attachment_ids = list(attachment_ids)
-                with_attachment_marker(node.message, marker or "")
+                install_persisted_attachments(node.message, persisted or [])
                 stamped = True
             kind, text = _project(node.message)
             blob = _MESSAGE.dump_json(node.message).decode()

@@ -11,9 +11,13 @@ from __future__ import annotations
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from core.config import get_settings
 from core.db import in_session
 from models._fields import utcnow
 from models.app_setting import AppSetting
+
+# The owner-scoped key the chat attachment inline token cap is stored under.
+ATTACHMENT_INLINE_MAX_TOKENS_KEY = "chat.attachment_inline_max_tokens"
 
 
 class SettingsStore:
@@ -48,3 +52,28 @@ class SettingsStore:
                 session.add(row)
 
         await in_session(self._db, work)
+
+
+async def get_attachment_inline_max_tokens(store: SettingsStore, owner_id: str) -> int:
+    """The operator's chat attachment inline token cap — the runtime override if set
+    (and valid), else the config default. A non-numeric or negative stored value is
+    ignored in favour of the default, so a corrupted setting can't disable retention."""
+    raw = await store.get(owner_id, ATTACHMENT_INLINE_MAX_TOKENS_KEY)
+    if raw is not None:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = -1
+        if value >= 0:
+            return value
+    return get_settings().attachment_inline_max_tokens
+
+
+async def set_attachment_inline_max_tokens(
+    store: SettingsStore, owner_id: str, value: int
+) -> int:
+    """Persist the operator's inline token cap. Returns the stored value. Non-negativity
+    is enforced at the route (the `ge=0` body field); a stray negative stored here would
+    simply be ignored by the getter, which falls back to the default."""
+    await store.set(owner_id, ATTACHMENT_INLINE_MAX_TOKENS_KEY, str(value))
+    return value

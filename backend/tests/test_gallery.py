@@ -201,7 +201,7 @@ async def test_chat_attachment_shows_as_chat_bucket():
         img = await _upload_image(client, "chat.png")
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
-        store.record(cid, [_user_turn()], attachment_ids=[img], marker="[file]")
+        store.record(cid, [_user_turn()], attachment_ids=[img], persisted=["[file]"])
 
         item = (await client.get("/gallery/media")).json()[0]
         assert item["albumIds"] == ["sys-chat"]
@@ -214,9 +214,9 @@ async def test_orphan_check_spares_image_referenced_elsewhere():
         only_c1 = await _upload_image(client, "only.png")
 
         c1 = await store.create_conversation(OPERATOR_ID)
-        store.record(c1, [_user_turn()], attachment_ids=[shared, only_c1], marker="[f]")
+        store.record(c1, [_user_turn()], attachment_ids=[shared, only_c1], persisted=["[f]"])
         c2 = await store.create_conversation(OPERATOR_ID)
-        store.record(c2, [_user_turn()], attachment_ids=[shared], marker="[f]")
+        store.record(c2, [_user_turn()], attachment_ids=[shared], persisted=["[f]"])
 
         # Deleting c1 orphans only the image nothing else references.
         orphans = await store.orphaned_attachments_for_delete(OPERATOR_ID, c1, message_id=None)
@@ -236,7 +236,7 @@ async def test_delete_keeps_images_by_default():
         store = app.state.conversations
         img = await _upload_image(client, "keep.png")
         cid = await store.create_conversation(OPERATOR_ID)
-        store.record(cid, [_user_turn()], attachment_ids=[img], marker="[f]")
+        store.record(cid, [_user_turn()], attachment_ids=[img], persisted=["[f]"])
 
         assert (await client.delete(f"/conversations/{cid}")).status_code == 204
         assert (await client.get(f"/uploads/{img}")).status_code == 200
@@ -248,8 +248,8 @@ async def test_message_delete_purges_only_its_own_orphan():
         first = await _upload_image(client, "first.png")
         second = await _upload_image(client, "second.png")
         cid = await store.create_conversation(OPERATOR_ID)
-        store.record(cid, [_user_turn("one")], attachment_ids=[first], marker="[f]")
-        store.record(cid, [_user_turn("two")], attachment_ids=[second], marker="[f]")
+        store.record(cid, [_user_turn("one")], attachment_ids=[first], persisted=["[f]"])
+        store.record(cid, [_user_turn("two")], attachment_ids=[second], persisted=["[f]"])
 
         tree = store._cache[cid]
         second_node = next(nid for nid, n in tree.nodes.items() if n.attachment_ids == [second])
@@ -277,7 +277,7 @@ async def test_purge_spares_curated_image_in_album_or_favorited():
 
         cid = await store.create_conversation(OPERATOR_ID)
         store.record(
-            cid, [_user_turn()], attachment_ids=[albumed, starred, plain], marker="[f]"
+            cid, [_user_turn()], attachment_ids=[albumed, starred, plain], persisted=["[f]"]
         )
 
         # Only the un-curated image is offered for purge…
@@ -298,7 +298,7 @@ async def test_deleting_upload_detaches_it_from_chat_message():
         img = await _upload_image(client, "attached.png")
         keep = await _upload_image(client, "kept.png")
         cid = await store.create_conversation(OPERATOR_ID)
-        store.record(cid, [_user_turn()], attachment_ids=[img, keep], marker="[f]")
+        store.record(cid, [_user_turn()], attachment_ids=[img, keep], persisted=["[f]"])
 
         # Deleting the upload from the gallery drops its dangling id from the message.
         assert (await client.delete(f"/uploads/{img}")).status_code == 204

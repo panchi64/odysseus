@@ -186,6 +186,20 @@ class SandboxSession:
             raise SandboxError(f"no such file in the sandbox: {relpath!r}")
         return target.read_bytes()
 
+    def write_file(self, relpath: str, content: bytes) -> None:
+        """Stage a file *into* this session's workspace, restoring it from the sealed
+        copy first if the session was reaped. Writes the host-side bind-mount dir, so
+        the next code run sees the file without spinning the container up here, and it
+        survives a reap (it's inside the sealed workspace). Guards against escape —
+        the same invariant as :meth:`read_file`, in reverse."""
+        self._ensure_workspace()
+        target = (self.workspace / relpath).resolve()
+        if not target.is_relative_to(self.workspace.resolve()):
+            raise SandboxError(f"path escapes the sandbox workspace: {relpath!r}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        self.touch()
+
     async def start_preview(
         self, command: list[str], port: int, *, token: str, startup_timeout_s: float
     ) -> PreviewHandle:

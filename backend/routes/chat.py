@@ -14,7 +14,7 @@ store repositions the active leaf first; the launch is identical.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
@@ -23,6 +23,10 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
+from services.settings_store import (
+    get_attachment_inline_max_tokens,
+    set_attachment_inline_max_tokens,
+)
 from tools import Capabilities
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -67,6 +71,16 @@ class EditCreate(BaseModel):
 class ChatCreated(BaseModel):
     run_id: str
     conversation_id: str
+
+
+class ChatSettings(BaseModel):
+    """Operator-tunable chat preferences. ``attachment_inline_max_tokens`` is the token
+    budget an attached file's text is retained inline for before it's cut off with a tool
+    pointer (images are always retained, regardless). camelCase out to match the frontend."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    attachment_inline_max_tokens: int = Field(ge=0, alias="attachmentInlineMaxTokens")
 
 
 async def _resolve_models(
@@ -123,6 +137,7 @@ def _submit_turn(
     models: tuple[Model, Model, ModelSettings | None, int | None, bool],
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
+    inline_max_tokens: int | None = None,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models and submit the Run.
 
@@ -148,6 +163,7 @@ def _submit_turn(
             fetcher=deps.fetcher(request),
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
+            uploads=deps.uploads(request),
             grants=deps.approval_grants(request),
         ),
         store=deps.store(request),
@@ -155,6 +171,7 @@ def _submit_turn(
         uploads=deps.uploads(request),
         attachment_ids=attachment_ids,
         vision=vision,
+        inline_max_tokens=inline_max_tokens,
     )
     run = deps.registry(request).submit(
         kind="chat",
@@ -178,6 +195,17 @@ async def _validate_attachments(request: Request, attachment_ids: list[str]) -> 
             raise HTTPException(
                 status_code=404, detail=f"attachment {upload_id!r} not found"
             )
+
+
+async def _attachment_inline_cap(
+    request: Request, attachment_ids: list[str]
+) -> int | None:
+    """The operator's inline-retention token cap, read only for a turn that actually
+    carries attachments (a plain chat turn skips the lookup). ``None`` ⇒ no attachments,
+    so the orchestrator never consults it."""
+    if not attachment_ids:
+        return None
+    return await get_attachment_inline_max_tokens(deps.settings_store(request), OPERATOR_ID)
 
 
 @router.post("", status_code=202, response_model=ChatCreated)
@@ -204,6 +232,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             OPERATOR_ID, ephemeral=body.ephemeral
         )
 
+    cap = await _attachment_inline_cap(request, body.attachment_ids)
     return _submit_turn(
         request,
         prompt=body.prompt,
@@ -211,6 +240,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         models=models,
         attachment_ids=body.attachment_ids,
         ephemeral=body.ephemeral,
+        inline_max_tokens=cap,
     )
 
 
@@ -246,10 +276,29 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
     models = await _resolve_models(request, body.endpoint_id, body.model)
     if not await store.edit_point(body.conversation_id, body.message_id):
         raise HTTPException(status_code=404, detail="message not found")
+    cap = await _attachment_inline_cap(request, body.attachment_ids)
     return _submit_turn(
         request,
         prompt=body.prompt,
         conversation_id=body.conversation_id,
         models=models,
         attachment_ids=body.attachment_ids,
+        inline_max_tokens=cap,
     )
+
+
+@router.get("/settings", response_model=ChatSettings)
+async def get_chat_settings(request: Request) -> ChatSettings:
+    """The operator's chat preferences (the runtime override, else the config default)."""
+    value = await get_attachment_inline_max_tokens(deps.settings_store(request), OPERATOR_ID)
+    return ChatSettings(attachment_inline_max_tokens=value)
+
+
+@router.put("/settings", response_model=ChatSettings)
+async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSettings:
+    """Set the chat attachment inline token cap (a non-negative int; ``ge=0`` is enforced
+    on the body, so a bad value is rejected before it reaches the store)."""
+    stored = await set_attachment_inline_max_tokens(
+        deps.settings_store(request), OPERATOR_ID, body.attachment_inline_max_tokens
+    )
+    return ChatSettings(attachment_inline_max_tokens=stored)

@@ -9,6 +9,7 @@ import {
 import {
   Button,
   EmptyState,
+  Input,
   LoadingText,
   Modal,
   PageHeader,
@@ -28,10 +29,12 @@ import { isApiError } from "~/lib/api";
 import {
   createEndpoint,
   deleteEndpoint,
+  saveChatSettings,
   setEndpointEnabled,
   setRoleBinding,
   testEndpoint,
   updateEndpoint,
+  useChatSettings,
   useEndpoints,
   useRoles,
 } from "../data";
@@ -56,6 +59,35 @@ import {
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
   const roles = useRoles();
+
+  /* ── Chat settings (attachment inline token cap) ────────────────────────────
+     A simple operator preference: how much of an attached file's text rides inline
+     in replayed history before it's cut off and reached via the agent's tools. The
+     editable value seeds from the backend resource and saves back to it. */
+  const chatSettings = useChatSettings();
+  const [cap, setCap] = createSignal("");
+  const [savingCap, setSavingCap] = createSignal(false);
+  createEffect(() => {
+    const s = chatSettings();
+    if (s) setCap(String(s.attachmentInlineMaxTokens));
+  });
+  const saveCap = async () => {
+    const n = Number(cap().trim());
+    if (!Number.isInteger(n) || n < 0) {
+      toast.error("Enter a whole number of tokens (0 or more).");
+      return;
+    }
+    setSavingCap(true);
+    try {
+      const saved = await saveChatSettings(n);
+      setCap(String(saved.attachmentInlineMaxTokens));
+      toast.success("Attachment limit updated");
+    } catch {
+      toast.error("Unable to update the attachment limit.");
+    } finally {
+      setSavingCap(false);
+    }
+  };
 
   /* ── Endpoint form ──────────────────────────────────────────────────────────
      One form, shared with the guided cookbook tab via <EndpointForm/>; this
@@ -335,6 +367,43 @@ export function SettingsScreen(): JSX.Element {
           </Stack>
           <ThemeToggle />
         </Row>
+      </Panel>
+
+      <Panel label="CHAT">
+        <Show when={chatSettings()} fallback={<LoadingText />}>
+          <Stack gap={3}>
+            <Stack gap={1}>
+              <Text variant="label" tone="default">
+                ATTACHMENT INLINE LIMIT
+              </Text>
+              <Text variant="micro" tone="dim">
+                How much of an attached file's text stays inline in the
+                conversation on later turns, in tokens. Beyond it the text is
+                cut off and the agent reaches the full file with its tools.
+                Images are always kept inline; 0 keeps no document text inline.
+              </Text>
+            </Stack>
+            <Row gap={2} align="center">
+              <div class="w-48">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  value={cap()}
+                  onInput={(e) => setCap(e.currentTarget.value)}
+                  placeholder="6000"
+                />
+              </div>
+              <Button
+                variant="primary"
+                disabled={savingCap()}
+                onClick={() => void saveCap()}
+              >
+                {savingCap() ? "SAVING…" : "SAVE"}
+              </Button>
+            </Row>
+          </Stack>
+        </Show>
       </Panel>
 
       <Panel
