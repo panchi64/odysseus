@@ -1,28 +1,42 @@
 import { createResource, Match, Switch, type JSX } from "solid-js";
 import { api, useAuthedBlobUrl } from "~/lib/api";
-import { ErrorState, LoadingText, Text } from "~/ui";
+import { CodeBlock, EmptyState, ErrorState, LoadingText, Text } from "~/ui";
 import type { ViewVersionRef } from "../model";
 import { SandboxedFrame } from "./SandboxedFrame";
 
 /**
- * Renders a static View version's bytes, filling its container. The bytes are
- * auth-gated, so image and HTML resolve through the shared blob-URL hook (an
- * `<img>` / iframe `src` can't carry a bearer); text is read inline. HTML renders
+ * Renders a static View version — a captured artifact — in one of two modes. In
+ * PREVIEW it shows the artifact by kind (image, HTML, text); in CODE it shows the
+ * artifact's source text (every kind but image, which has no source to read). The
+ * bytes are auth-gated, so image and HTML resolve through the shared blob-URL hook
+ * (an `<img>` / iframe `src` can't carry a bearer); text is read inline. HTML renders
  * in an opaque-origin sandboxed iframe — no `allow-same-origin`, so model-generated
  * markup can't act as the operator.
  */
 export function ViewVersionContent(props: {
   version: ViewVersionRef;
+  mode?: "preview" | "code";
 }): JSX.Element {
+  const mode = (): "preview" | "code" => props.mode ?? "preview";
   const contentPath = (): string => `/views/${props.version.versionId}/content`;
-  const isUrlKind = (): boolean =>
-    props.version.kind === "image" || props.version.kind === "html";
 
+  // PREVIEW: image + HTML render through the blob-URL hook (their src can't carry a
+  // bearer); other kinds read inline / have no preview.
+  const isUrlKind = (): boolean =>
+    mode() === "preview" &&
+    (props.version.kind === "image" || props.version.kind === "html");
   const objectUrl = useAuthedBlobUrl(() =>
     isUrlKind() ? contentPath() : undefined,
   );
+
+  // Source text — for the inline text PREVIEW and for CODE mode (any non-image kind).
+  // Keyed on the version id alone (not the mode): the bytes are identical in both
+  // modes, so toggling PREVIEW/CODE reuses the cached read instead of refetching.
+  const wantsText = (): boolean =>
+    (mode() === "preview" && props.version.kind === "text") ||
+    (mode() === "code" && props.version.kind !== "image");
   const [text] = createResource(
-    () => (props.version.kind === "text" ? props.version.versionId : undefined),
+    () => (wantsText() ? props.version.versionId : undefined),
     async (): Promise<string> => (await api.getBlob(contentPath())).text(),
   );
 
@@ -35,8 +49,34 @@ export function ViewVersionContent(props: {
     </Switch>
   );
 
+  const textArm = (render: (value: string) => JSX.Element): JSX.Element => (
+    <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
+      <Match when={text.error}>
+        <ErrorState message="Could not load this version." />
+      </Match>
+      <Match when={text() !== undefined}>{render(text()!)}</Match>
+    </Switch>
+  );
+
   return (
     <Switch>
+      {/* CODE — the artifact's source (image has none). */}
+      <Match when={mode() === "code"}>
+        <Switch
+          fallback={textArm((code) => (
+            <CodeBlock code={code} />
+          ))}
+        >
+          <Match when={props.version.kind === "image"}>
+            <EmptyState
+              message="NO SOURCE"
+              hint="This version is an image — use PREVIEW to view it."
+            />
+          </Match>
+        </Switch>
+      </Match>
+
+      {/* PREVIEW — render by kind. */}
       <Match when={props.version.kind === "image"}>
         {urlArm((url) => (
           <img
@@ -52,16 +92,11 @@ export function ViewVersionContent(props: {
         ))}
       </Match>
       <Match when={props.version.kind === "text"}>
-        <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
-          <Match when={text.error}>
-            <ErrorState message="Could not load this version." />
-          </Match>
-          <Match when={text() !== undefined}>
-            <pre class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-body text-text">
-              {text()}
-            </pre>
-          </Match>
-        </Switch>
+        {textArm((value) => (
+          <pre class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-body text-text">
+            {value}
+          </pre>
+        ))}
       </Match>
       <Match when={props.version.kind === "other"}>
         <div class="flex h-full items-center justify-center p-4">

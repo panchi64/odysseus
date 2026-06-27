@@ -1,41 +1,37 @@
-import {
-  Match,
-  Show,
-  Switch,
-  createMemo,
-  createSignal,
-  type JSX,
-} from "solid-js";
+import { Show, createMemo, createSignal, type JSX } from "solid-js";
 import {
   Button,
   EmptyState,
   Panel,
-  StatusDot,
+  Select,
   Tabs,
   Text,
+  type SelectOption,
   type TabItem,
 } from "~/ui";
-import type { ViewItem } from "../viewport";
-import { ViewLiveContent } from "./ViewLiveContent";
-import { ViewVersionContent } from "./ViewVersionContent";
-import { ViewSnapshotContent } from "./ViewSnapshotContent";
+import { priorSnapshots, type PriorVersion, type ViewItem } from "../viewport";
+import { ViewStage } from "./ViewStage";
 
-type LiveItem = Extract<ViewItem, { kind: "live" }>;
-type VersionItem = Extract<ViewItem, { kind: "version" }>;
-type SnapshotItem = Extract<ViewItem, { kind: "snapshot" }>;
+type Mode = "preview" | "code";
+
+const MODE_TABS: TabItem[] = [
+  { value: "preview", label: "PREVIEW" },
+  { value: "code", label: "CODE" },
+];
 
 /** The chat workspace's viewport — the conversation's **View** rendered beside the
- *  transcript: the current item on stage plus a version timeline to flip back and
- *  compare. The frontend only renders what the run's events describe; it decides
- *  nothing. Empty until the agent shows something. */
+ *  transcript. One consolidated list of **versions** (a dropdown) with a PREVIEW / CODE
+ *  toggle; the newest version is followed by default and shows its HTML preview first.
+ *  The frontend only renders what the run's events describe; it decides nothing.
+ *  Empty until the agent shows something. */
 export function ViewportPanel(props: {
   items: ViewItem[];
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onClose: () => void;
 }): JSX.Element {
-  // The item actually shown: the selection if it's still present, else the newest
-  // (last) — so a stale selection or a fresh thread always lands on something real.
+  // The version actually shown: the selection if still present, else the newest
+  // (last) — so a stale selection or a fresh thread always lands on the latest.
   const selected = createMemo<ViewItem | undefined>(() => {
     const items = props.items;
     if (items.length === 0) return undefined;
@@ -43,36 +39,27 @@ export function ViewportPanel(props: {
       items.find((i) => i.key === props.selectedKey) ?? items[items.length - 1]
     );
   });
-  // Manual reload nonce: bumping it remounts whatever the viewport is showing (a
-  // live frame loaded too early, or a static version), forcing a fresh fetch — the
-  // one-click equivalent of closing and reopening the panel.
+  // PREVIEW first — the HTML render is shown before the code whenever a View opens.
+  const [mode, setMode] = createSignal<Mode>("preview");
+  // Manual reload nonce: bumping it remounts whatever the viewport is showing,
+  // forcing a fresh fetch — the one-click equivalent of closing and reopening.
   const [reloadKey, setReloadKey] = createSignal(0);
-  // Keys the content render: changes when the selection changes *or* on a refresh
-  // bump, so a keyed Show recreates the frame/snapshot on either.
+  // Keys the stage: changes when the selected version changes *or* on a refresh
+  // bump (mode is handled reactively, so toggling PREVIEW/CODE keeps the version).
   const contentKey = createMemo(() => {
     const item = selected();
     return item ? `${item.key}#${reloadKey()}` : "";
   });
-  // The timeline as design-system tabs: versions (V1, V2…) first, then workspace
-  // snapshots (S1, S2…), then the live head with a live-status dot. Each kind is
-  // numbered within itself so the short codes stay stable as the other kind grows.
-  const tabs = createMemo<TabItem[]>(() => {
-    let versionN = 0;
-    let snapshotN = 0;
-    return props.items.map((item) => ({
-      value: item.key,
-      label:
-        item.kind === "live" ? (
-          <span class="flex items-center gap-1">
-            <StatusDot status="live" pulse />
-            LIVE
-          </span>
-        ) : item.kind === "snapshot" ? (
-          `S${++snapshotN}`
-        ) : (
-          `V${++versionN}`
-        ),
-    }));
+
+  // Versions for the dropdown, newest first.
+  const versionOptions = createMemo<SelectOption[]>(() =>
+    [...props.items].reverse().map((i) => ({ value: i.key, label: i.label })),
+  );
+
+  // Prior snapshots the selected version's CODE can diff against.
+  const priorVersions = createMemo<PriorVersion[]>(() => {
+    const sel = selected();
+    return sel ? priorSnapshots(props.items, sel.key) : [];
   });
 
   return (
@@ -80,13 +67,6 @@ export function ViewportPanel(props: {
       label="VIEW"
       meta={
         <span class="flex min-w-0 items-center gap-2">
-          <Show when={selected()}>
-            {(item) => (
-              <Text variant="micro" tone="dim" class="max-w-xs truncate">
-                {item().label}
-              </Text>
-            )}
-          </Show>
           <Show when={selected()}>
             <Button
               variant="ghost"
@@ -120,35 +100,45 @@ export function ViewportPanel(props: {
         }
       >
         <div class="flex h-full min-h-0 flex-col">
-          {/* Version timeline — flip back through versions to compare; the live
-              head (when running) is the head of the line. */}
-          <Show when={props.items.length > 1}>
+          {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
+              dropdown collapses to its label. */}
+          <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+            <Show
+              when={props.items.length > 1}
+              fallback={
+                <Text
+                  variant="micro"
+                  tone="dim"
+                  class="min-w-0 flex-1 truncate"
+                >
+                  {selected()?.label}
+                </Text>
+              }
+            >
+              <Select
+                aria-label="Select version"
+                class="min-w-0 flex-1"
+                options={versionOptions()}
+                value={selected()?.key}
+                onChange={props.onSelect}
+              />
+            </Show>
             <Tabs
-              items={tabs()}
-              value={selected()?.key ?? ""}
-              onChange={props.onSelect}
-              class="overflow-x-auto"
+              items={MODE_TABS}
+              value={mode()}
+              onChange={(v) => setMode(v as Mode)}
+              class="shrink-0"
             />
-          </Show>
+          </div>
           <div class="min-h-0 flex-1">
-            {/* Keyed on selection + refresh nonce: a new key recreates the frame,
-                so switching items and the manual refresh both force a fresh load. */}
+            {/* Keyed on the version + refresh nonce: picking another version (or the
+                manual refresh) remounts the stage; toggling PREVIEW/CODE does not. */}
             <Show keyed when={contentKey()}>
-              <Switch>
-                <Match when={selected()?.kind === "live"}>
-                  <ViewLiveContent live={(selected() as LiveItem).live} />
-                </Match>
-                <Match when={selected()?.kind === "version"}>
-                  <ViewVersionContent
-                    version={(selected() as VersionItem).version}
-                  />
-                </Match>
-                <Match when={selected()?.kind === "snapshot"}>
-                  <ViewSnapshotContent
-                    snapshot={(selected() as SnapshotItem).snapshot}
-                  />
-                </Match>
-              </Switch>
+              <ViewStage
+                entry={selected()!}
+                mode={mode()}
+                priorVersions={priorVersions()}
+              />
             </Show>
           </div>
         </div>

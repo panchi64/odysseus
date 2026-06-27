@@ -511,12 +511,16 @@ export function snapshotFilePath(snapshotId: string, path: string): string {
   return `/views/snapshots/${snapshotId}/file?path=${encodeURIComponent(path)}`;
 }
 
-/** The per-file unified diffs for a snapshot (empty `diff` for binary files). */
+/** The per-file unified diffs for a snapshot against a base (empty `diff` for binary
+ *  files). With no `baseId`, the backend diffs against the immediately-previous
+ *  snapshot; pass an explicit snapshot id to compare against any prior version. */
 export async function fetchSnapshotDiffs(
   snapshotId: string,
+  baseId?: string,
 ): Promise<SnapshotDiff[]> {
+  const query = baseId ? `?base=${encodeURIComponent(baseId)}` : "";
   const rows = await api.get<SnapshotDiffDTO[]>(
-    `/views/snapshots/${snapshotId}/diff`,
+    `/views/snapshots/${snapshotId}/diff${query}`,
   );
   return rows.map((r) => ({ path: r.path, status: r.status, diff: r.diff }));
 }
