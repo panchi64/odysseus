@@ -11,15 +11,11 @@ import { SandboxedFrame } from "./SandboxedFrame";
  * and can't act as the operator against the API. `live.url` already carries the
  * entry path, so the page renders rather than a directory listing.
  */
-export function ViewLiveContent(props: {
-  live: ViewLiveRef;
-  reloadKey?: number;
-}): JSX.Element {
+export function ViewLiveContent(props: { live: ViewLiveRef }): JSX.Element {
   return (
     <SandboxedFrame
       src={apiUrl(props.live.url)}
       title={props.live.title ?? "Live view"}
-      reloadKey={props.reloadKey}
     />
   );
 }

@@ -41,9 +41,16 @@ export function ViewportPanel(props: {
       items.find((i) => i.key === props.selectedKey) ?? items[items.length - 1]
     );
   });
-  // Manual reload nonce for the live head: an iframe loads its src once, so a
-  // refresh (or recovery from a too-early first load) bumps this to remount it.
+  // Manual reload nonce: bumping it remounts whatever the viewport is showing (a
+  // live frame loaded too early, or a static version), forcing a fresh fetch — the
+  // one-click equivalent of closing and reopening the panel.
   const [reloadKey, setReloadKey] = createSignal(0);
+  // Keys the content render: changes when the selection changes *or* on a refresh
+  // bump, so a keyed Show recreates the frame/snapshot on either.
+  const contentKey = createMemo(() => {
+    const item = selected();
+    return item ? `${item.key}#${reloadKey()}` : "";
+  });
   // The timeline as design-system tabs: versions sort first (so a version's index
   // is its 1-based number), the live head last with a live-status dot.
   const tabs = createMemo<TabItem[]>(() =>
@@ -73,12 +80,12 @@ export function ViewportPanel(props: {
               </Text>
             )}
           </Show>
-          <Show when={selected()?.kind === "live"}>
+          <Show when={selected()}>
             <Button
               variant="ghost"
               size="sm"
               leading="refresh"
-              aria-label="Reload live view"
+              aria-label="Reload view"
               onClick={() => setReloadKey((k) => k + 1)}
             />
           </Show>
@@ -117,22 +124,19 @@ export function ViewportPanel(props: {
             />
           </Show>
           <div class="min-h-0 flex-1">
-            <Show when={selected()}>
-              {(item) => (
-                <Switch>
-                  <Match when={item().kind === "live"}>
-                    <ViewLiveContent
-                      live={(item() as LiveItem).live}
-                      reloadKey={reloadKey()}
-                    />
-                  </Match>
-                  <Match when={item().kind === "version"}>
-                    <ViewVersionContent
-                      version={(item() as VersionItem).version}
-                    />
-                  </Match>
-                </Switch>
-              )}
+            {/* Keyed on selection + refresh nonce: a new key recreates the frame,
+                so switching items and the manual refresh both force a fresh load. */}
+            <Show keyed when={contentKey()}>
+              <Switch>
+                <Match when={selected()?.kind === "live"}>
+                  <ViewLiveContent live={(selected() as LiveItem).live} />
+                </Match>
+                <Match when={selected()?.kind === "version"}>
+                  <ViewVersionContent
+                    version={(selected() as VersionItem).version}
+                  />
+                </Match>
+              </Switch>
             </Show>
           </div>
         </div>
