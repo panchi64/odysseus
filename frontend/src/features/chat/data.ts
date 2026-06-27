@@ -26,8 +26,11 @@ import type {
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
+  SnapshotDiff,
+  SnapshotFile,
   ToolBlock,
   ToolInvocation,
+  ViewSnapshotRef,
   ViewVersionRef,
 } from "./model";
 
@@ -188,6 +191,14 @@ interface ViewVersionDTO {
   kind: ViewVersionRef["kind"];
 }
 
+interface ViewSnapshotDTO {
+  snapshot_id: string;
+  title: string | null;
+  created_at: string;
+  files_changed: number;
+  summary: string;
+}
+
 interface MessageDTO {
   id: string;
   role: "user" | "assistant";
@@ -222,6 +233,9 @@ interface ConversationDetailDTO extends ConversationSummaryDTO {
   /** The in-flight run driving this thread, if a turn is still streaming
    *  server-side; absent/null otherwise. Lets a cold read reattach to it. */
   active_run?: ActiveRunDTO | null;
+  /** Workspace snapshots captured across the thread (newest last). Conversation-
+   *  scoped — not folded onto a message — so the viewport seeds them separately. */
+  snapshots?: ViewSnapshotDTO[];
 }
 
 function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
@@ -333,6 +347,18 @@ function toViewVersionRef(dto: ViewVersionDTO): ViewVersionRef {
   };
 }
 
+/** Map a workspace-snapshot DTO/event to the seam type. Shared by the cold read
+ *  (conversation detail) and the warm stream (`view.snapshot`). */
+function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
+  return {
+    snapshotId: dto.snapshot_id,
+    title: dto.title ?? undefined,
+    createdAt: dto.created_at,
+    filesChanged: dto.files_changed,
+    summary: dto.summary,
+  };
+}
+
 function toTool(dto: ToolCallDTO): ToolInvocation {
   return {
     id: dto.id,
@@ -433,6 +459,7 @@ async function fetchSession(id: string): Promise<ChatSession> {
     messages: dto.messages.map(toMessage),
     context: dto.context,
     activeRun: toActiveRun(dto.active_run),
+    snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
   };
 }
 
@@ -441,6 +468,57 @@ async function fetchSession(id: string): Promise<ChatSession> {
 export function useChatSession(id: () => string | null): Resource<ChatSession> {
   const [data] = createResource(id, fetchSession);
   return data;
+}
+
+/* ── Workspace snapshot accessors (git-style history) ─────────────────────────
+   The viewport reads a selected snapshot's file tree, a file's bytes, and the
+   per-file diffs through these. Auth-gated like the other `/views` endpoints. */
+
+interface SnapshotFileDTO {
+  path: string;
+  status: SnapshotFile["status"];
+}
+
+interface SnapshotDiffDTO {
+  path: string;
+  status: SnapshotDiff["status"];
+  diff: string;
+}
+
+/** The files in a snapshot's tree, each with its change status vs. the prior snapshot. */
+export async function fetchSnapshotFiles(
+  snapshotId: string,
+): Promise<SnapshotFile[]> {
+  const rows = await api.get<SnapshotFileDTO[]>(
+    `/views/snapshots/${snapshotId}/files`,
+  );
+  return rows.map((r) => ({ path: r.path, status: r.status }));
+}
+
+/** A snapshot file's text content. Auth-gated, so the bytes come through the
+ *  bearer-aware blob fetch, then decoded as text. */
+export async function fetchSnapshotFileText(
+  snapshotId: string,
+  path: string,
+): Promise<string> {
+  const blob = await api.getBlob(snapshotFilePath(snapshotId, path));
+  return blob.text();
+}
+
+/** The path to a snapshot file's raw bytes — fed to the blob fetch / blob-URL hook
+ *  (an `<iframe>` can't carry the bearer, so never used as a bare src). */
+export function snapshotFilePath(snapshotId: string, path: string): string {
+  return `/views/snapshots/${snapshotId}/file?path=${encodeURIComponent(path)}`;
+}
+
+/** The per-file unified diffs for a snapshot (empty `diff` for binary files). */
+export async function fetchSnapshotDiffs(
+  snapshotId: string,
+): Promise<SnapshotDiff[]> {
+  const rows = await api.get<SnapshotDiffDTO[]>(
+    `/views/snapshots/${snapshotId}/diff`,
+  );
+  return rows.map((r) => ({ path: r.path, status: r.status, diff: r.diff }));
 }
 
 export async function renameConversation(
@@ -558,6 +636,9 @@ export interface ChatStreamOptions {
    *  server-side. Seeds a reattach on a cold read (e.g. a page reload mid-stream)
    *  so the live answer continues instead of the thread rendering reply-less. */
   activeRun?: () => ActiveRun | null | undefined;
+  /** The loaded conversation's workspace snapshots (git-style history), seeded
+   *  alongside its messages so the viewport shows them before the next turn. */
+  initialSnapshots?: () => ViewSnapshotRef[] | undefined;
 }
 
 export function createChatStream(
@@ -566,6 +647,10 @@ export function createChatStream(
   options: ChatStreamOptions = {},
 ) {
   const [messages, setMessages] = createStore<ChatMessage[]>([]);
+  // Conversation-level workspace snapshots (git-style history). Unlike versions/
+  // live (which fold onto message blocks), snapshots are conversation-scoped, so
+  // they live here beside the messages rather than in the transcript.
+  const [snapshots, setSnapshots] = createSignal<ViewSnapshotRef[]>([]);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
   // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
@@ -647,6 +732,9 @@ export function createChatStream(
     // Seed the meter from the loaded thread's reconstructed state (null for a new
     // conversation, or one whose usage/window couldn't be determined).
     setUsage(k === null ? null : (options.initialContext?.() ?? null));
+    // Seed the git-style snapshot history from the loaded thread (empty for a new
+    // conversation); the live `view.snapshot` event appends to it from here.
+    setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
   });
 
   function patchById(id: string, fn: (m: ChatMessage) => void): void {
@@ -860,6 +948,17 @@ export function createChatStream(
           }),
         );
         break;
+      case "view.snapshot": {
+        // Conversation-scoped, not a message block: append to the snapshot history
+        // (dedup by id, since a reattach replay can re-deliver it).
+        const ref = toViewSnapshotRef(ev);
+        setSnapshots((prev) =>
+          prev.some((s) => s.snapshotId === ref.snapshotId)
+            ? prev
+            : [...prev, ref],
+        );
+        break;
+      }
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
         // rather than folding onto the assistant message. The throbber clears in the
@@ -1206,6 +1305,8 @@ export function createChatStream(
     // The active path moved (version switch / rewind / delete), so the window
     // state moves with it.
     setUsage(detail.context);
+    // Re-seed the conversation-level snapshot history from the same detail.
+    setSnapshots((detail.snapshots ?? []).map(toViewSnapshotRef));
   }
 
   function toastError(err: unknown, fallback: string): void {
@@ -1398,6 +1499,8 @@ export function createChatStream(
 
   return {
     messages,
+    /** The conversation's workspace snapshots (git-style history), newest last. */
+    snapshots,
     sending,
     errored,
     titlePending,
@@ -1466,6 +1569,9 @@ export function mainChat(): MainChat {
         // Same lockstep: the in-flight run of the loaded thread, for a cold-read
         // reattach (a page reload mid-stream).
         activeRun: () => (session.loading ? undefined : session()?.activeRun),
+        // Same lockstep: the loaded thread's git-style snapshot history.
+        initialSnapshots: () =>
+          session.loading ? undefined : session()?.snapshots,
       },
     );
     // Reattach when the tab returns to the foreground or the network comes back.

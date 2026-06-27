@@ -100,6 +100,8 @@ export {
   type ComposerAttachmentsApi,
 } from "./components/Composer";
 export { Markdown, type MarkdownProps } from "./components/Markdown";
+export { CodeBlock, type CodeBlockProps } from "./components/CodeBlock";
+export { DiffView, type DiffViewProps } from "./components/DiffView";
 export { Caret, type CaretProps } from "./components/Caret";
 export { Frames, type FramesProps } from "./components/Frames";
 export {

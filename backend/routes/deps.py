@@ -32,6 +32,7 @@ from services.serving import ServingService
 from services.settings_store import SettingsStore
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
+from services.workspace_history import WorkspaceHistoryStore
 
 # Single operator: every record is attributed to this owner until a second human
 # exists (the ownership seam). One constant so routes don't each redefine it.
@@ -104,6 +105,10 @@ def searxng(request: Request) -> ManagedSearxng:
 
 def artifacts(request: Request) -> ArtifactStore:
     return request.app.state.artifacts
+
+
+def workspace_history(request: Request) -> WorkspaceHistoryStore:
+    return request.app.state.workspace_history
 
 
 def sandbox_sessions(request: Request) -> SandboxSessionManager | None:

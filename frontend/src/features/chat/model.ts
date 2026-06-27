@@ -89,6 +89,33 @@ export interface ViewLiveRef {
   title?: string;
 }
 
+/** A workspace snapshot — a git-style, point-in-time capture of the agent's
+ *  sandbox tree after a file-changing turn (`view.snapshot`). Conversation-scoped
+ *  (not a message block): browse its files and diffs via `/views/snapshots/{id}/…`.
+ *  `summary` is a compact change tally, e.g. `"+2 ~1 -0"`. */
+export interface ViewSnapshotRef {
+  snapshotId: string;
+  title?: string;
+  createdAt: string;
+  filesChanged: number;
+  summary: string;
+}
+
+/** One file in a workspace snapshot's tree, with its change status vs. the prior
+ *  snapshot. */
+export interface SnapshotFile {
+  path: string;
+  status: "added" | "modified" | "unchanged";
+}
+
+/** A file's unified diff within a snapshot. `diff` is empty for binary files or
+ *  files that didn't change. */
+export interface SnapshotDiff {
+  path: string;
+  status: "added" | "modified" | "removed";
+  diff: string;
+}
+
 /** One renderable unit of an assistant turn. A turn is an *ordered* list of
  *  these — the agent's true emission sequence (think → tool → text → think →
  *  tool → …), not regrouped into fixed lanes. Thinking and text arrive as deltas
@@ -198,6 +225,9 @@ export interface ChatSession {
   context: ContextUsage | null;
   /** Set only while a turn is still streaming server-side; null otherwise. */
   activeRun: ActiveRun | null;
+  /** Workspace snapshots captured across the thread (newest last), seeding the
+   *  viewport's git-style history on load. */
+  snapshots: ViewSnapshotRef[];
 }
 
 export interface ChatSummary {

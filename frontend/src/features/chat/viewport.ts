@@ -6,11 +6,18 @@
  *  newest item. */
 
 import type { IconName } from "~/ui";
-import type { ChatMessage, ViewLiveRef, ViewVersionRef } from "./model";
+import type {
+  ChatMessage,
+  ViewLiveRef,
+  ViewSnapshotRef,
+  ViewVersionRef,
+} from "./model";
 
-/** One thing on the View canvas: a static snapshot version, or the live head. */
+/** One thing on the View canvas: a static snapshot version, a workspace snapshot
+ *  (git-style file tree), or the live head. */
 export type ViewItem =
   | { key: string; kind: "version"; label: string; version: ViewVersionRef }
+  | { key: string; kind: "snapshot"; label: string; snapshot: ViewSnapshotRef }
   | { key: string; kind: "live"; label: string; live: ViewLiveRef };
 
 /** The selection key for the (single) live head. */
@@ -18,15 +25,23 @@ export const LIVE_KEY = "live";
 /** The selection key for a static version — stable across warm + cold renders
  *  (both carry the same backend version id). */
 export const versionKey = (versionId: string): string => `version-${versionId}`;
+/** The selection key for a workspace snapshot — stable across warm + cold renders. */
+export const snapshotKey = (snapshotId: string): string =>
+  `snapshot-${snapshotId}`;
 
 /** A coarse icon for a version chip, by render kind. */
 export function versionIcon(kind: ViewVersionRef["kind"]): IconName {
   return kind === "image" ? "image" : kind === "html" ? "eye" : "file";
 }
 
-/** Collect a thread's View items in transcript order: every static version, then
- *  the latest live head as the head (newest) item. */
-export function collectViewItems(messages: ChatMessage[]): ViewItem[] {
+/** Collect a thread's View items in order: every static version, then every
+ *  workspace snapshot, then the latest live head as the head (newest) item.
+ *  Versions + snapshots are history; the live head is the head. Snapshots are
+ *  conversation-scoped, so they arrive separately from the message blocks. */
+export function collectViewItems(
+  messages: ChatMessage[],
+  snapshots: ViewSnapshotRef[] = [],
+): ViewItem[] {
   const versions: ViewItem[] = [];
   let live: ViewItem | null = null;
   for (const m of messages) {
@@ -48,7 +63,14 @@ export function collectViewItems(messages: ChatMessage[]): ViewItem[] {
       }
     }
   }
-  return live ? [...versions, live] : versions;
+  const snaps: ViewItem[] = snapshots.map((s, i) => ({
+    key: snapshotKey(s.snapshotId),
+    kind: "snapshot",
+    label: s.title || `S${i + 1}`,
+    snapshot: s,
+  }));
+  const history = [...versions, ...snaps];
+  return live ? [...history, live] : history;
 }
 
 /* ── First-time-only auto-open ────────────────────────────────────────────────

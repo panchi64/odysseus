@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from services.search import SearchService
     from services.uploads import UploadStore
     from services.webfetch import BrowserFetcher
+    from services.workspace_history import WorkspaceHistoryStore
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,9 @@ class Capabilities:
     # auto-approve a deferred tool the operator allowed for the conversation; None
     # ⇒ every deferred call falls back to strict per-call approval.
     grants: ApprovalGrantStore | None = None
+    # The View's git-style history. The engine snapshots the sandbox workspace here
+    # after a file-changing turn; None ⇒ no history is captured (graceful).
+    workspace_history: WorkspaceHistoryStore | None = None
 
 
 @dataclass

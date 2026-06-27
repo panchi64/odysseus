@@ -21,6 +21,7 @@ from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from routes.http import content_disposition
+from services.artifacts import guess_content_type
 
 router = APIRouter(prefix="/views", tags=["views"])
 
@@ -52,6 +53,77 @@ class ViewVersionOut(BaseModel):
 async def list_versions(conversation_id: str, request: Request) -> list[ViewVersionOut]:
     views = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
     return [ViewVersionOut.model_validate(v) for v in views]
+
+
+# --- git-style history: per-turn workspace snapshots ------------------------
+# Declared before the dynamic ``/{version_id}`` routes so ``/snapshots`` isn't
+# captured as a version id.
+class SnapshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)  # built from a SnapshotView
+
+    id: str
+    conversation_id: str
+    title: str | None
+    created_at: datetime
+    files_changed: int
+    summary: str
+
+
+class SnapshotFileOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    path: str
+    status: str  # "added" | "modified" | "unchanged"
+
+
+class SnapshotDiffOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    path: str
+    status: str  # "added" | "modified" | "removed"
+    diff: str  # unified diff; empty for a binary file
+
+
+@router.get("/snapshots", response_model=list[SnapshotOut])
+async def list_snapshots(conversation_id: str, request: Request) -> list[SnapshotOut]:
+    snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
+    return [SnapshotOut.model_validate(s) for s in snapshots]
+
+
+@router.get("/snapshots/{snapshot_id}/files", response_model=list[SnapshotFileOut])
+async def list_snapshot_files(snapshot_id: str, request: Request) -> list[SnapshotFileOut]:
+    try:
+        files = await deps.workspace_history(request).files(OPERATOR_ID, snapshot_id)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="snapshot not found") from None
+    return [SnapshotFileOut.model_validate(f) for f in files]
+
+
+@router.get("/snapshots/{snapshot_id}/file")
+async def get_snapshot_file(snapshot_id: str, path: str, request: Request) -> Response:
+    try:
+        content = await deps.workspace_history(request).file_bytes(OPERATOR_ID, snapshot_id, path)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="snapshot file not found") from None
+    name = path.rsplit("/", 1)[-1]
+    headers = {
+        **_VIEW_HEADERS,
+        "Content-Disposition": content_disposition(name, inline=True, fallback="file"),
+    }
+    return Response(content=content, media_type=guess_content_type(name), headers=headers)
+
+
+@router.get("/snapshots/{snapshot_id}/diff", response_model=list[SnapshotDiffOut])
+async def get_snapshot_diff(
+    snapshot_id: str, request: Request, base: str | None = None
+) -> list[SnapshotDiffOut]:
+    """Unified diffs of files changed between ``base`` (default: the previous
+    snapshot) and this one."""
+    try:
+        diffs = await deps.workspace_history(request).diff(OPERATOR_ID, snapshot_id, base)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="snapshot not found") from None
+    return [SnapshotDiffOut.model_validate(d) for d in diffs]
 
 
 @router.get("/{version_id}", response_model=ViewVersionOut)

@@ -18,9 +18,11 @@ import {
 import type { ViewItem } from "../viewport";
 import { ViewLiveContent } from "./ViewLiveContent";
 import { ViewVersionContent } from "./ViewVersionContent";
+import { ViewSnapshotContent } from "./ViewSnapshotContent";
 
 type LiveItem = Extract<ViewItem, { kind: "live" }>;
 type VersionItem = Extract<ViewItem, { kind: "version" }>;
+type SnapshotItem = Extract<ViewItem, { kind: "snapshot" }>;
 
 /** The chat workspace's viewport — the conversation's **View** rendered beside the
  *  transcript: the current item on stage plus a version timeline to flip back and
@@ -51,10 +53,13 @@ export function ViewportPanel(props: {
     const item = selected();
     return item ? `${item.key}#${reloadKey()}` : "";
   });
-  // The timeline as design-system tabs: versions sort first (so a version's index
-  // is its 1-based number), the live head last with a live-status dot.
-  const tabs = createMemo<TabItem[]>(() =>
-    props.items.map((item, i) => ({
+  // The timeline as design-system tabs: versions (V1, V2…) first, then workspace
+  // snapshots (S1, S2…), then the live head with a live-status dot. Each kind is
+  // numbered within itself so the short codes stay stable as the other kind grows.
+  const tabs = createMemo<TabItem[]>(() => {
+    let versionN = 0;
+    let snapshotN = 0;
+    return props.items.map((item) => ({
       value: item.key,
       label:
         item.kind === "live" ? (
@@ -62,11 +67,13 @@ export function ViewportPanel(props: {
             <StatusDot status="live" pulse />
             LIVE
           </span>
+        ) : item.kind === "snapshot" ? (
+          `S${++snapshotN}`
         ) : (
-          `V${i + 1}`
+          `V${++versionN}`
         ),
-    })),
-  );
+    }));
+  });
 
   return (
     <Panel
@@ -134,6 +141,11 @@ export function ViewportPanel(props: {
                 <Match when={selected()?.kind === "version"}>
                   <ViewVersionContent
                     version={(selected() as VersionItem).version}
+                  />
+                </Match>
+                <Match when={selected()?.kind === "snapshot"}>
+                  <ViewSnapshotContent
+                    snapshot={(selected() as SnapshotItem).snapshot}
                   />
                 </Match>
               </Switch>

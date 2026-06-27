@@ -182,6 +182,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
             grants=grants,
+            workspace_history=deps.workspace_history(request),
         ),
         store=deps.store(request),
     )

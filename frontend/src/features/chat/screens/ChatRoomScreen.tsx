@@ -252,7 +252,9 @@ export function ChatRoomScreen(): JSX.Element {
   // The conversation's View, derived from this thread's transcript blocks
   // (presentation-only, so it's automatically thread-scoped). The viewport renders
   // these; the transcript shows compact chips that open them here.
-  const viewItems = createMemo(() => collectViewItems(stream.messages));
+  const viewItems = createMemo(() =>
+    collectViewItems(stream.messages, stream.snapshots()),
+  );
   // Which item the viewport shows: an explicit pick, or null = follow the newest.
   const [selectedViewKey, setSelectedViewKey] = createSignal<string | null>(
     null,

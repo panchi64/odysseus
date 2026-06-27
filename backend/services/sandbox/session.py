@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -272,6 +273,42 @@ class SandboxSession:
                 await self._kill()
                 self._running = False
 
+    def collect_text_files(
+        self, *, max_file_bytes: int = 262_144, max_files: int = 2000
+    ) -> dict[str, bytes]:
+        """The workspace's text files (relpath → bytes) for a history snapshot — the
+        same files the seal keeps, minus binaries and oversized ones. Prunes the
+        excluded bloat (caches, virtualenvs, ``node_modules``, ``.git``), skips files
+        over ``max_file_bytes`` and anything that isn't valid UTF-8. Empty when the
+        workspace is cold (never run). Synchronous file IO — call off the event loop."""
+        root = self.workspace
+        if not root.exists():
+            return {}
+        files: dict[str, bytes] = {}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if not _excluded(d, self._excludes))
+            for name in sorted(filenames):
+                if len(files) >= max_files:
+                    return files
+                full = Path(dirpath) / name
+                if full.is_symlink():
+                    continue
+                rel = full.relative_to(root).as_posix()
+                if _excluded(rel, self._excludes):
+                    continue
+                try:
+                    if full.stat().st_size > max_file_bytes:
+                        continue
+                    data = full.read_bytes()
+                except OSError:
+                    continue
+                try:
+                    data.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue  # binary — skipped (history is code + text diffs)
+                files[rel] = data
+        return files
+
     def _ensure_workspace(self) -> None:
         if not self.workspace.exists():
             if self.sealed.exists():
@@ -359,6 +396,11 @@ class SandboxSessionManager:
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
         self._warm: asyncio.Task | None = None
+
+    def existing(self, key: str) -> SandboxSession | None:
+        """The live session for a conversation if one exists, **without creating** it,
+        so a turn that never touched the sandbox triggers no workspace/history work."""
+        return self._sessions.get(_safe_key(key))
 
     async def acquire(self, key: str) -> SandboxSession:
         """The session for a conversation, created (object only) on first use."""

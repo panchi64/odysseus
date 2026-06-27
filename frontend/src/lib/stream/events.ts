@@ -143,6 +143,19 @@ export interface ViewLiveStopped extends Base {
   type: "view.live.stopped";
   conversation_id: string;
 }
+// A workspace snapshot — a point-in-time git-style capture of the agent's sandbox
+// tree after a file-changing turn. Unlike versions/live, snapshots are
+// conversation-scoped (not folded onto a message block); browse files + diffs via
+// `/views/snapshots/{id}/…`.
+export interface ViewSnapshot extends Base {
+  type: "view.snapshot";
+  conversation_id: string;
+  snapshot_id: string;
+  title: string | null;
+  created_at: string;
+  files_changed: number;
+  summary: string;
+}
 
 // --- Conversation ----------------------------------------------------------
 export interface ConversationTitled extends Base {
@@ -191,6 +204,7 @@ export type RunEvent =
   | ViewVersion
   | ViewLive
   | ViewLiveStopped
+  | ViewSnapshot
   | ConversationTitled
   | CitationAdded
   | ApprovalRequired

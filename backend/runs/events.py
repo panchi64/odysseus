@@ -216,6 +216,22 @@ class ViewLiveStopped(_Body):
     conversation_id: str
 
 
+class ViewSnapshot(_Body):
+    """The chassis captured a snapshot of the agent's sandbox after a file-changing
+    turn — a point-in-time tree of the work the operator can browse (code) and diff
+    against the previous snapshot. Bytes live in the encrypted workspace-history
+    store; the frontend lists and fetches via ``/views/snapshots/{snapshot_id}/…``.
+    Additive to v1; no bump."""
+
+    type: Literal["view.snapshot"] = "view.snapshot"
+    conversation_id: str
+    snapshot_id: str
+    title: str | None = None
+    created_at: datetime
+    files_changed: int
+    summary: str  # compact change tally, e.g. "+2 ~1 −0"
+
+
 # --- Conversation ------------------------------------------------------------
 class ConversationTitled(_Body):
     """The chassis named a freshly-created conversation from its first exchange,
@@ -276,6 +292,7 @@ EventBody = Annotated[
     | ViewVersion
     | ViewLive
     | ViewLiveStopped
+    | ViewSnapshot
     | ConversationTitled
     | ApprovalRequired
     | LimitNotice,

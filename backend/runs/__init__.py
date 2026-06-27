@@ -42,6 +42,7 @@ from .events import (
     ToolStarted,
     ViewLive,
     ViewLiveStopped,
+    ViewSnapshot,
     ViewVersion,
 )
 from .registry import RunRegistry, RunTimeout
@@ -83,6 +84,7 @@ __all__ = [
     "ViewVersion",
     "ViewLive",
     "ViewLiveStopped",
+    "ViewSnapshot",
     "ConversationTitled",
     "ApprovalRequired",
     "LimitNotice",

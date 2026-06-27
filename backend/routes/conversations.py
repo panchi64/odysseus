@@ -61,6 +61,18 @@ class ViewVersionRefOut(BaseModel):
     kind: str
 
 
+class ViewSnapshotRefOut(BaseModel):
+    """A workspace-history snapshot for the conversation's View, mirroring the live
+    ``view.snapshot`` event so a cold read rebuilds the timeline like a warm one.
+    Conversation-scoped (it captures the whole workspace), not tied to one message."""
+
+    snapshot_id: str
+    title: str | None
+    created_at: datetime
+    files_changed: int
+    summary: str
+
+
 class MessageOut(BaseModel):
     id: str
     role: str
@@ -92,6 +104,10 @@ class ActiveRun(BaseModel):
 
 class ConversationDetail(ConversationSummary):
     messages: list[MessageOut]
+    # The View's git-style history — workspace snapshots captured per file-changing
+    # turn, newest last. Conversation-scoped; the frontend merges them into the View
+    # timeline alongside the per-message versions.
+    snapshots: list[ViewSnapshotRefOut] = []
     # The context-window state reconstructed from the last turn's stored usage, so
     # an existing thread shows its fullness on load — not just after the next turn.
     # Null when usage or a window is unavailable.
@@ -215,9 +231,20 @@ async def _detail(
         if run is not None
         else None
     )
+    snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],
+        snapshots=[
+            ViewSnapshotRefOut(
+                snapshot_id=s.id,
+                title=s.title,
+                created_at=s.created_at,
+                files_changed=s.files_changed,
+                summary=s.summary,
+            )
+            for s in snapshots
+        ],
         context=context,
         active_run=active_run,
     )
@@ -382,6 +409,9 @@ async def delete_conversation(
     )
     await store.delete_conversation(conversation_id)
     await _purge_uploads(request, orphans)
+    # Drop the conversation's View history (snapshots + any blob no other snapshot
+    # needs), so the work doesn't linger encrypted on disk after the thread is gone.
+    await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
     # Delete the conversation's sandbox too (its workspace + sealed archive),
     # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
     # delete above is the authoritative action, so a purge failure must not fail it.

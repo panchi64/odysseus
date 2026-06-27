@@ -75,6 +75,7 @@ from services.upload_extraction import BasicExtractor, FallbackExtractor, Upload
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
+from services.workspace_history import WorkspaceHistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,10 @@ async def lifespan(app: FastAPI):
     # rest of the operator's data. (The View's live head rides the sandbox + the
     # /previews proxy; this store is the snapshot/version history.)
     app.state.artifacts = ArtifactStore(engine, vault)
+    # The View's git-style history — after a file-changing turn the sandbox
+    # workspace is captured as a content-addressed, encrypted snapshot; the frontend
+    # browses each version's code and diffs it against the previous one.
+    app.state.workspace_history = WorkspaceHistoryStore(engine, vault)
     # Managed web search — the backend runs its own SearXNG (same container runtime
     # as the sandbox) so search works with zero operator setup. Bring-up is
     # best-effort in the background; until it's ready (or if no runtime exists) the

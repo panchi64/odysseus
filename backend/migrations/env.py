@@ -36,6 +36,7 @@ import models.search  # noqa: F401
 import models.service_credential  # noqa: F401
 import models.serving  # noqa: F401
 import models.upload  # noqa: F401
+import models.workspace_history  # noqa: F401
 from core.exceptions import SchemaMigrationError
 
 config = context.config
