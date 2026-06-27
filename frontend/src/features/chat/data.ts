@@ -395,22 +395,30 @@ function toMessage(dto: MessageDTO): ChatMessage {
 /* ── Read accessors (the seam) ────────────────────────────────────────────── */
 
 let refetchSessions: (() => void) | undefined;
+let sessionsAccessor: Accessor<ChatSummary[] | undefined> | undefined;
 
 async function fetchSessions(): Promise<ChatSummary[]> {
   const rows = await api.get<ConversationSummaryDTO[]>("/conversations");
   return rows.map(toSummary);
 }
 
+/** The app-wide conversation list — one shared resource read by both the chat
+ *  room and the nav rail's RECENTS. A singleton (under its own never-disposed
+ *  root, like `mainChat`) so the two surfaces can't double-fetch or drift, and so
+ *  `refreshSessions()` after a turn updates the single list both render. */
 export function useChatSessions(): Accessor<ChatSummary[] | undefined> {
-  const [data, { refetch }] = createResource(fetchSessions);
-  refetchSessions = refetch;
-  // Read `.latest`, not the resource itself. `refreshSessions()` runs after every
-  // turn and refetches in place; reading the resource under the app's
-  // fallback-less root <Suspense> would re-suspend it for the duration of each
-  // refetch, blanking the whole page for a frame. `.latest` keeps the prior list
-  // on screen while the refetch is in flight, so a finishing stream no longer
-  // flickers the page.
-  return () => data.latest;
+  if (sessionsAccessor) return sessionsAccessor;
+  return (sessionsAccessor = createRoot(() => {
+    const [data, { refetch }] = createResource(fetchSessions);
+    refetchSessions = refetch;
+    // Read `.latest`, not the resource itself. `refreshSessions()` runs after every
+    // turn and refetches in place; reading the resource under the app's
+    // fallback-less root <Suspense> would re-suspend it for the duration of each
+    // refetch, blanking the whole page for a frame. `.latest` keeps the prior list
+    // on screen while the refetch is in flight, so a finishing stream no longer
+    // flickers the page.
+    return () => data.latest;
+  }));
 }
 
 /** Re-read the conversation list (after a turn, rename, or delete). */

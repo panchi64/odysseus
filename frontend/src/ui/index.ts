@@ -169,6 +169,10 @@ export {
 } from "./components/ForbiddenView";
 export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
 export { Divider, type DividerProps } from "./components/Divider";
+export {
+  ResizeHandle,
+  type ResizeHandleProps,
+} from "./components/ResizeHandle";
 export { Marquee, type MarqueeProps } from "./components/Marquee";
 export { PageHeader, type PageHeaderProps } from "./components/PageHeader";
 export { NotConnectedOverlay } from "./components/NotConnectedOverlay";

@@ -11,6 +11,7 @@ import { readLS, writeLS } from "~/lib/storage";
 import { Button, cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import { chatBusy } from "~/lib/stores/chatActivity";
+import { RecentsRail } from "~/features/chat/components/RecentsRail";
 import {
   NAV,
   searchNav,
@@ -263,24 +264,33 @@ export function Sidebar(): JSX.Element {
               <Show when={!isCollapsed(section)}>
                 <For each={section.items}>
                   {(item) => (
-                    <Tooltip
-                      float
-                      delay={1000}
-                      side="right"
-                      label={item.description}
-                      class="block w-full"
-                    >
-                      <div ref={(el) => rowRefs.set(item.href, el)}>
-                        <ListRow
-                          label={item.label}
-                          leading={item.icon}
-                          href={item.href}
-                          selected={isActive(item.href)}
-                          flush
-                          right={navMeta(item)}
-                        />
-                      </div>
-                    </Tooltip>
+                    <>
+                      <Tooltip
+                        float
+                        delay={1000}
+                        side="right"
+                        label={item.description}
+                        class="block w-full"
+                      >
+                        <div ref={(el) => rowRefs.set(item.href, el)}>
+                          <ListRow
+                            label={item.label}
+                            leading={item.icon}
+                            href={item.href}
+                            selected={isActive(item.href)}
+                            flush
+                            right={navMeta(item)}
+                          />
+                        </div>
+                      </Tooltip>
+                      {/* The chat thread list lives here, directly under the Chat
+                          row, while the operator is in the chat workspace — so the
+                          chat page itself is free for the conversation + viewport
+                          pane. RecentsRail owns all the chat-seam wiring. */}
+                      <Show when={item.href === "/chat" && isActive("/chat")}>
+                        <RecentsRail />
+                      </Show>
+                    </>
                   )}
                 </For>
               </Show>

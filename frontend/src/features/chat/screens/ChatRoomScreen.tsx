@@ -12,18 +12,17 @@ import {
 import {
   Button,
   Composer,
-  Drawer,
   EmptyState,
   Frames,
-  Icon,
   InfoHint,
   Input,
   Menu,
   Modal,
-  Panel,
+  ResizeHandle,
   Stack,
   StatusFlag,
   Text,
+  Tooltip,
   TypewriterText,
   confirm,
   confirmChoice,
@@ -39,17 +38,19 @@ import {
   entrySessionId,
   fetchOrphanImageAttachments,
   mainChat,
+  refreshSessions,
   renameConversation,
   regenerateTitle,
   titleReveals,
   useChatSessions,
 } from "../data";
 import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
+import { readLS, writeLS } from "~/lib/storage";
 import { createComposerAttachments } from "~/features/uploads/data";
+import { ViewportPanel } from "../components/ViewportPanel";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { MessageItem } from "../components/MessageItem";
-import { SessionList } from "../components/SessionList";
 
 /** Chat room: a searchable thread rail and a live streaming conversation. On
  *  entry it resumes the last conversation only while it's warm (recency-gated),
@@ -187,26 +188,6 @@ export function ChatRoomScreen(): JSX.Element {
 
   const startNew = () => setCurrentId(null);
 
-  // Right-aligned "new conversation" control, shown beside the SESSIONS title in
-  // both the desktop rail and the mobile drawer. In the desktop panel it bleeds
-  // out to fill the header cell (negative margins cancel the header padding); the
-  // drawer shares its header with a close button, so it stays inset there.
-  const newSessionButton = (flush = false) => (
-    <Button
-      variant="ghost"
-      size="sm"
-      leading="plus"
-      onClick={startNew}
-      class={
-        flush
-          ? "-my-2 -mr-4 !h-auto self-stretch border-l border-line bg-raised"
-          : "border-l border-line bg-raised"
-      }
-    >
-      NEW
-    </Button>
-  );
-
   // Stop the live run for real: cancel on the backend, abort the local stream.
   // `cancel()` surfaces its own backend error; this only adds the success note.
   const stopRun = async () => {
@@ -222,15 +203,45 @@ export function ChatRoomScreen(): JSX.Element {
       startNew();
     }
   };
-  onMount(() => document.addEventListener("keydown", onKey));
+  onMount(() => {
+    document.addEventListener("keydown", onKey);
+    // The sessions list is an app-wide singleton resource (no longer refetched
+    // per mount), so pull once on entry to catch any out-of-band changes — a
+    // second tab, a scheduled agent — since it was last loaded.
+    refreshSessions();
+  });
   onCleanup(() => document.removeEventListener("keydown", onKey));
 
-  // Mobile session drawer
-  const [sessionsOpen, setSessionsOpen] = createSignal(false);
-  const select = (id: string) => {
-    setCurrentId(id);
-    setSessionsOpen(false);
+  // Viewport: a collapsible, resizable pane beside the conversation — the seam
+  // where documents, live previews, and artifacts will mount. Desktop-only and
+  // collapsed by default; both the open state and the dragged width persist.
+  // Empty for now (the layout + mount point is the deliverable; the agent's
+  // preview/artifact events route here in a later step).
+  const VIEWPORT_KEY = "ody.chat.viewport";
+  const VIEWPORT_W_KEY = "ody.chat.viewport.w";
+  const VIEWPORT_W_DEFAULT = 384;
+  const VIEWPORT_W_MIN = 320;
+  const VIEWPORT_W_MAX = 760;
+  const clampViewportW = (w: number) =>
+    Math.min(VIEWPORT_W_MAX, Math.max(VIEWPORT_W_MIN, w));
+  const [viewportOpen, setViewportOpen] = createSignal(
+    readLS(VIEWPORT_KEY) === "1",
+  );
+  const [viewportWidth, setViewportWidth] = createSignal(
+    clampViewportW(Number(readLS(VIEWPORT_W_KEY)) || VIEWPORT_W_DEFAULT),
+  );
+  const toggleViewport = () => {
+    const next = !viewportOpen();
+    setViewportOpen(next);
+    writeLS(VIEWPORT_KEY, next ? "1" : "0");
   };
+  // The handle is left of the (right-hand) viewport, so dragging it left widens
+  // the pane — the caller negates the pointer delta. Persist only when the drag
+  // settles, not on every move.
+  const adjustViewportWidth = (delta: number) =>
+    setViewportWidth((w) => clampViewportW(w + delta));
+  const persistViewportWidth = () =>
+    writeLS(VIEWPORT_W_KEY, String(viewportWidth()));
 
   // Per-conversation draft key, so an unsent message is restored on return.
   const composerKey = () => `chat:${currentId() ?? "new"}`;
@@ -348,46 +359,12 @@ export function ChatRoomScreen(): JSX.Element {
   };
 
   return (
-    <div class="flex h-full min-h-0 gap-4">
-      {/* Session list — desktop sidebar */}
-      <aside class="hidden w-56 shrink-0 lg:block">
-        <Panel label="SESSIONS" meta={newSessionButton(true)} flush>
-          <SessionList
-            sessions={sessions}
-            currentId={currentId()}
-            onSelect={select}
-          />
-        </Panel>
-      </aside>
-
-      {/* Session list — mobile drawer */}
-      <Drawer
-        open={sessionsOpen()}
-        onClose={() => setSessionsOpen(false)}
-        title="SESSIONS"
-        meta={newSessionButton()}
-        side="left"
-      >
-        <SessionList
-          sessions={sessions}
-          currentId={currentId()}
-          onSelect={select}
-        />
-      </Drawer>
-
-      {/* Conversation */}
+    <div class="flex h-full min-h-0">
+      {/* Conversation — the thread list now lives in the app rail's RECENTS, so
+          the body is free for the conversation plus the viewport pane. */}
       <section class="flex min-h-full min-w-0 flex-1 flex-col">
         <header class="flex items-center justify-between gap-3 border-b border-line pb-3">
           <div class="flex min-w-0 items-center gap-2">
-            {/* Mobile: sessions trigger */}
-            <button
-              type="button"
-              class="shrink-0 text-dim transition-colors hover:text-bright lg:hidden"
-              aria-label="Open sessions"
-              onClick={() => setSessionsOpen(true)}
-            >
-              <Icon name="menu" size={16} />
-            </button>
             <div class="flex min-w-0 flex-col gap-0.5">
               <span class="flex min-w-0 items-center gap-1.5">
                 <Show
@@ -438,6 +415,16 @@ export function ChatRoomScreen(): JSX.Element {
             <Show when={stream.usage()}>
               {(usage) => <ContextMeter usage={usage()} />}
             </Show>
+            <Tooltip label="VIEWPORT" side="bottom">
+              <Button
+                variant="ghost"
+                size="sm"
+                leading="eye"
+                aria-label="Toggle viewport panel"
+                onClick={toggleViewport}
+                class="hidden lg:inline-flex"
+              />
+            </Tooltip>
             <Menu
               trigger={
                 <Button variant="ghost" aria-label="Session actions">
@@ -550,6 +537,24 @@ export function ChatRoomScreen(): JSX.Element {
           />
         </div>
       </section>
+
+      {/* Viewport — documents / live previews / artifacts sit here beside the
+          conversation, on a draggable divider so the operator can size it to the
+          content. Desktop-only; toggled from the header; empty for now. */}
+      <Show when={viewportOpen()}>
+        <ResizeHandle
+          aria-label="Resize viewport panel"
+          onResize={(dx) => adjustViewportWidth(-dx)}
+          onResizeEnd={persistViewportWidth}
+          class="hidden lg:block"
+        />
+        <aside
+          class="hidden shrink-0 lg:block"
+          style={{ width: `${viewportWidth()}px` }}
+        >
+          <ViewportPanel onClose={toggleViewport} />
+        </aside>
+      </Show>
 
       <Modal
         open={renameOpen()}
