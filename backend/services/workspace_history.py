@@ -82,7 +82,7 @@ class WorkspaceHistoryStore:
                 .where(WorkspaceSnapshot.conversation_id == conversation_id)
                 .order_by(WorkspaceSnapshot.created_at.desc())  # type: ignore[attr-defined]
             ).first()
-            prev_manifest: dict[str, str] = json.loads(prev.manifest_json) if prev else {}
+            prev_manifest: dict[str, str] = self._manifest(prev) if prev else {}
             if manifest == prev_manifest:
                 return None  # no change → no new version
 
@@ -113,7 +113,7 @@ class WorkspaceHistoryStore:
                 conversation_id=conversation_id,
                 run_id=run_id,
                 title=title,
-                manifest_json=json.dumps(manifest),
+                manifest_enc=self._vault.encrypt_bytes(json.dumps(manifest).encode("utf-8")),
                 stats_json=json.dumps(stats),
             )
             session.add(snapshot)
@@ -139,9 +139,9 @@ class WorkspaceHistoryStore:
 
         def work(session: Session) -> list[FileEntry]:
             snapshot = self._require(session, owner_id, snapshot_id)
-            manifest = json.loads(snapshot.manifest_json)
+            manifest = self._manifest(snapshot)
             prev = self._previous(session, snapshot)
-            prev_manifest = json.loads(prev.manifest_json) if prev else {}
+            prev_manifest = self._manifest(prev) if prev else {}
             entries: list[FileEntry] = []
             for path in sorted(manifest):
                 old = prev_manifest.get(path)
@@ -159,7 +159,7 @@ class WorkspaceHistoryStore:
     async def file_bytes(self, owner_id: str, snapshot_id: str, path: str) -> bytes:
         def work(session: Session) -> bytes:
             snapshot = self._require(session, owner_id, snapshot_id)
-            manifest = json.loads(snapshot.manifest_json)
+            manifest = self._manifest(snapshot)
             sha = manifest.get(path)
             if sha is None:
                 raise NotFoundError(f"path {path!r} not in snapshot {snapshot_id!r}")
@@ -175,13 +175,13 @@ class WorkspaceHistoryStore:
 
         def work(session: Session) -> list[FileDiff]:
             snapshot = self._require(session, owner_id, snapshot_id)
-            manifest = json.loads(snapshot.manifest_json)
+            manifest = self._manifest(snapshot)
             base = (
                 self._require(session, owner_id, base_id)
                 if base_id is not None
                 else self._previous(session, snapshot)
             )
-            base_manifest = json.loads(base.manifest_json) if base else {}
+            base_manifest = self._manifest(base) if base else {}
             diffs: list[FileDiff] = []
             for path in sorted(set(manifest) | set(base_manifest)):
                 old_sha, new_sha = base_manifest.get(path), manifest.get(path)
@@ -224,17 +224,15 @@ class WorkspaceHistoryStore:
                 return
             freed: set[str] = set()
             for snapshot in snapshots:
-                freed |= set(json.loads(snapshot.manifest_json).values())
+                freed |= set(self._manifest(snapshot).values())
                 session.delete(snapshot)
             session.flush()
             still_used: set[str] = set()
             remaining = session.exec(
-                select(WorkspaceSnapshot.manifest_json).where(
-                    WorkspaceSnapshot.owner_id == owner_id
-                )
+                select(WorkspaceSnapshot).where(WorkspaceSnapshot.owner_id == owner_id)
             ).all()
-            for manifest_json in remaining:
-                still_used |= set(json.loads(manifest_json).values())
+            for snapshot in remaining:
+                still_used |= set(self._manifest(snapshot).values())
             orphans = freed - still_used
             if orphans:
                 session.exec(
@@ -246,6 +244,10 @@ class WorkspaceHistoryStore:
         await in_session(self._engine, work)
 
     # -- internals ------------------------------------------------------------
+    def _manifest(self, snapshot: WorkspaceSnapshot) -> dict[str, str]:
+        """The decrypted ``{relpath: sha256}`` tree for a snapshot."""
+        return json.loads(self._vault.decrypt_bytes(snapshot.manifest_enc).decode("utf-8"))
+
     @staticmethod
     def _require(session: Session, owner_id: str, snapshot_id: str) -> WorkspaceSnapshot:
         row = session.get(WorkspaceSnapshot, snapshot_id)

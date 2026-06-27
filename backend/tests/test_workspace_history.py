@@ -13,7 +13,7 @@ from core.config import Settings
 from core.db import init_db, make_engine
 from core.exceptions import NotFoundError
 from core.vault import Vault
-from models.workspace_history import WorkspaceBlob
+from models.workspace_history import WorkspaceBlob, WorkspaceSnapshot
 from runs import Run, RunStream, ViewSnapshot
 from services.sandbox import ContainerSandbox, SandboxSessionManager
 from services.workspace_history import WorkspaceHistoryStore
@@ -73,6 +73,16 @@ async def test_unchanged_file_shares_one_blob(tmp_path):
     # a.py's content is stored once; b.py's two versions are two blobs → 3 total.
     assert len(rows) == 3
     assert all(b"same" not in r.blob_enc and b"two" not in r.blob_enc for r in rows)  # encrypted
+
+
+async def test_manifest_is_encrypted_at_rest(tmp_path):
+    store = await _store(tmp_path)
+    await store.capture("operator", "c", run_id="r1", files={"secret_dir/private.py": b"x"})
+    with Session(store._engine) as session:
+        row = session.exec(select(WorkspaceSnapshot)).one()
+    # The file tree (paths/names) is sealed, not stored in the clear.
+    assert b"secret_dir" not in row.manifest_enc
+    assert b"private.py" not in row.manifest_enc
 
 
 # --- diff + file browsing ----------------------------------------------------

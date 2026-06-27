@@ -40,11 +40,14 @@ def _install_sensitive_tool(monkeypatch):
 
 
 async def _await_parked(app, run_id):
-    for _ in range(100):
+    # Poll with a real (small) sleep, not a bare yield: under full-suite load the
+    # background run needs wall-clock to reach awaiting_input, and 100 sleep(0)
+    # yields can starve before it does (a flaky "never parked").
+    for _ in range(200):
         run = app.state.runs.get(run_id)
         if run is not None and run.status == "awaiting_input":
             return run
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     raise AssertionError("run never parked")
 
 

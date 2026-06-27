@@ -42,7 +42,7 @@ def upgrade() -> None:
     sa.Column('conversation_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('run_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('title', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-    sa.Column('manifest_json', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('manifest_enc', sa.LargeBinary(), nullable=False),
     sa.Column('stats_json', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.PrimaryKeyConstraint('id')

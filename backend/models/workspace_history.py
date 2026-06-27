@@ -45,9 +45,11 @@ class WorkspaceSnapshot(SQLModel, table=True):
     conversation_id: str = Field(index=True)
     run_id: str | None = None
     title: str | None = None
-    # JSON {relpath: sha256}: the tree at this point. Structural metadata kept in
-    # the clear (like Artifact.filename); the bytes it points at are encrypted.
-    manifest_json: str
-    # JSON {"added": n, "modified": n, "removed": n} vs. the previous snapshot.
+    # AEAD ciphertext of the JSON {relpath: sha256} tree at this point. Encrypted at
+    # rest because the file paths/names reveal the operator's private workspace
+    # structure; the bytes they point at are encrypted in WorkspaceBlob.
+    manifest_enc: bytes
+    # JSON {"added": n, "modified": n, "removed": n} vs. the previous snapshot —
+    # bare counts, no content, so kept in the clear for cheap timeline listing.
     stats_json: str
     created_at: datetime = Field(default_factory=utcnow, index=True)
