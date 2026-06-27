@@ -219,6 +219,46 @@ async def test_reaper_spares_fresh_and_busy_sessions(tmp_path):
         session._lock.release()
 
 
+# --- purge: deleting a conversation removes its sandbox outright -------------
+async def test_purge_drops_the_session_and_deletes_its_workspace(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    (session.workspace / "f.txt").write_text("data")
+
+    await manager.purge("conv-a")
+
+    assert not manager._sessions  # evicted from the registry
+    assert not session.workspace.exists()  # plaintext deleted, not sealed
+    assert not session.sealed.exists()  # nothing preserved
+
+
+async def test_purge_deletes_a_cold_sealed_archive_with_no_live_session(tmp_path):
+    # A sealed-but-unloaded conversation: an archive on disk and no session object.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = _safe_key("conv-cold")
+    sealed = tmp_path / "sandbox" / "sealed" / f"{safe}.tar.enc.gz"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_bytes(b"sealed-bytes")
+    work = tmp_path / "sandbox" / "work" / safe
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "leftover.txt").write_text("x")
+
+    await manager.purge("conv-cold")  # nothing in the registry to stop
+
+    assert not sealed.exists()
+    assert not work.exists()
+
+
+async def test_purge_is_safe_when_there_is_nothing_to_remove(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    await manager.purge("never-existed")  # must not raise
+    assert not manager._sessions
+
+
 # --- live container (only when a real runtime is present) --------------------
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_live_session_persists_files_across_calls(tmp_path):

@@ -1,4 +1,11 @@
-import { Match, Show, Switch, createMemo, type JSX } from "solid-js";
+import {
+  Match,
+  Show,
+  Switch,
+  createMemo,
+  createSignal,
+  type JSX,
+} from "solid-js";
 import {
   Button,
   EmptyState,
@@ -34,6 +41,9 @@ export function ViewportPanel(props: {
       items.find((i) => i.key === props.selectedKey) ?? items[items.length - 1]
     );
   });
+  // Manual reload nonce for the live head: an iframe loads its src once, so a
+  // refresh (or recovery from a too-early first load) bumps this to remount it.
+  const [reloadKey, setReloadKey] = createSignal(0);
   // The timeline as design-system tabs: versions sort first (so a version's index
   // is its 1-based number), the live head last with a live-status dot.
   const tabs = createMemo<TabItem[]>(() =>
@@ -63,10 +73,19 @@ export function ViewportPanel(props: {
               </Text>
             )}
           </Show>
+          <Show when={selected()?.kind === "live"}>
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="refresh"
+              aria-label="Reload live view"
+              onClick={() => setReloadKey((k) => k + 1)}
+            />
+          </Show>
           <Button
             variant="ghost"
             size="sm"
-            leading="chevron-right"
+            leading="panel-right"
             aria-label="Collapse viewport"
             onClick={() => props.onClose()}
           />
@@ -102,7 +121,10 @@ export function ViewportPanel(props: {
               {(item) => (
                 <Switch>
                   <Match when={item().kind === "live"}>
-                    <ViewLiveContent live={(item() as LiveItem).live} />
+                    <ViewLiveContent
+                      live={(item() as LiveItem).live}
+                      reloadKey={reloadKey()}
+                    />
                   </Match>
                   <Match when={item().kind === "version"}>
                     <ViewVersionContent

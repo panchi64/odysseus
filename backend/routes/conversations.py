@@ -382,6 +382,15 @@ async def delete_conversation(
     )
     await store.delete_conversation(conversation_id)
     await _purge_uploads(request, orphans)
+    # Delete the conversation's sandbox too (its workspace + sealed archive),
+    # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
+    # delete above is the authoritative action, so a purge failure must not fail it.
+    sandbox = deps.sandbox_sessions(request)
+    if sandbox is not None:
+        try:
+            await sandbox.purge(conversation_id)
+        except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+            logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
 
 
 @router.delete("/{conversation_id}/messages/{message_id}", response_model=ConversationDetail)

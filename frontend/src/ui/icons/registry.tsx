@@ -55,6 +55,7 @@ export type IconName =
   | "clock"
   | "layers"
   | "grid"
+  | "panel-right"
   | "archive"
   | "library"
   | "pen"
@@ -249,6 +250,12 @@ export const icons: Record<IconName, () => JSX.Element> = {
       <rect x="9" y="2" width="5" height="5" />
       <rect x="2" y="9" width="5" height="5" />
       <rect x="9" y="9" width="5" height="5" />
+    </>
+  ),
+  "panel-right": () => (
+    <>
+      <rect x="2" y="3" width="12" height="10" />
+      <path d="M10 3v10" />
     </>
   ),
   archive: () => (

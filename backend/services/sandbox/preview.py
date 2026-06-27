@@ -11,12 +11,14 @@ exec lifecycle and this holds the launch / host-port / readiness details.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
 from .base import SandboxError
 from .container import (
     ContainerSandbox,
+    await_http_serving,
     await_listening,
     detached_run_argv,
     force_remove_container,
@@ -86,7 +88,16 @@ async def launch_preview(
 
     try:
         host_port = await published_host_port(runtime, container, port)
+        # The port is bound, but a dev server may not serve the entry page for
+        # another beat — wait until it actually answers HTTP so the iframe's first
+        # fetch (which fires the instant `view.live` is emitted) lands on a real
+        # response instead of a transient error it would never retry. Both probes
+        # share one budget so a slow bind can't double the worst-case wait.
+        deadline = asyncio.get_running_loop().time() + startup_timeout_s
         await await_listening(host_port, startup_timeout_s)
+        await await_http_serving(
+            host_port, max(deadline - asyncio.get_running_loop().time(), 0.0)
+        )
     except SandboxError as exc:
         tail = await _log_tail(runtime, container)
         await stop_preview_container(runtime, container)

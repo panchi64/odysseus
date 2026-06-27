@@ -260,6 +260,18 @@ class SandboxSession:
         self.sealed.write_bytes(_seal_workspace(self.workspace, self._excludes, self._vault))
         shutil.rmtree(self.workspace, ignore_errors=True)
 
+    async def discard(self) -> None:
+        """Stop and kill this session's containers **without sealing** — the
+        un-sealing counterpart to :meth:`shutdown`, run when a conversation is being
+        deleted. Kills the preview + exec containers (releasing the workspace mount)
+        so the manager can then delete the files; it touches no disk itself, so disk
+        cleanup has a single home (:meth:`SandboxSessionManager._purge_disk`)."""
+        async with self._lock:
+            await self._stop_preview_locked()
+            if self._running:
+                await self._kill()
+                self._running = False
+
     def _ensure_workspace(self) -> None:
         if not self.workspace.exists():
             if self.sealed.exists():
@@ -409,6 +421,28 @@ class SandboxSessionManager:
 
     def _drop_preview_tokens(self, safe: str) -> None:
         self._previews = {t: k for t, k in self._previews.items() if k != safe}
+
+    async def purge(self, key: str) -> None:
+        """Delete a conversation's sandbox outright — stop any live session and
+        remove its workspace **and** sealed archive from disk. Called when the
+        conversation is deleted, so nothing is kept. Idempotent and safe for a cold
+        conversation (no live session, only a sealed archive on disk), and works
+        while the vault is locked (it only destroys)."""
+        safe = _safe_key(key)
+        async with self._lock:
+            session = self._sessions.pop(safe, None)
+            self._drop_preview_tokens(safe)
+            # Hold the lock across teardown + delete (as the reaper does for shutdown)
+            # so a concurrent acquire() can't recreate the session onto files we're
+            # about to remove. Kill the containers first to free the workspace mount,
+            # then delete in one place.
+            if session is not None:
+                await session.discard()
+            await asyncio.to_thread(self._purge_disk, safe)
+
+    def _purge_disk(self, safe: str) -> None:
+        shutil.rmtree(self._work_root / safe, ignore_errors=True)
+        (self._sealed_root / f"{safe}.tar.enc.gz").unlink(missing_ok=True)
 
     async def start(self) -> None:
         """Launch the idle reaper and warm the shared container image in the

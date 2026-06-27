@@ -28,6 +28,8 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+import httpx
+
 from core import net
 
 from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
@@ -122,6 +124,39 @@ async def await_listening(
         await net.await_listening(host_port, timeout_s, poll_interval_s=poll_interval_s)
     except TimeoutError as exc:
         raise SandboxError(str(exc)) from None
+
+
+async def await_http_serving(
+    host_port: int, timeout_s: float, *, poll_interval_s: float = 0.25
+) -> None:
+    """Poll a loopback host port over HTTP until the server answers with a non-5xx
+    status — a stronger readiness signal than :func:`await_listening` (a *bound* TCP
+    port). A dev server binds its port well before it serves the entry page, and the
+    iframe (whose first fetch fires the instant ``view.live`` is emitted) never retries
+    a too-early load, so we wait until the server is actually answering.
+
+    Best-effort: on timeout it **returns rather than raising** — the port is listening,
+    so a possibly-early open beats failing the agent's tool call (the operator's refresh
+    button is the backstop). A connection error or a 5xx reply (a server still warming up)
+    counts as not-yet-ready; a 2xx/3xx/4xx response means it is serving — the probe hits
+    ``/`` while the iframe loads the entry path, so a 404 at the root still means "up".
+    Each request and the polling sleep are bounded by the remaining budget, so the call
+    never overshoots ``timeout_s`` even when a probe hangs."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    url = f"http://127.0.0.1:{host_port}/"
+    async with httpx.AsyncClient() as client:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                resp = await client.get(url, timeout=min(remaining, 2.0))
+                if resp.status_code < 500:
+                    return
+            except httpx.HTTPError:
+                pass  # not answering yet — keep polling within the budget
+            await asyncio.sleep(min(poll_interval_s, max(deadline - loop.time(), 0.0)))
 
 
 # Workspace-relative dirs the env defaults point at, created host-side before a
