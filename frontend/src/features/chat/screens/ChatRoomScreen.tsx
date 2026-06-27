@@ -48,7 +48,7 @@ import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { readLS, writeLS } from "~/lib/storage";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
-import { claimAutoOpen, collectViewItems } from "../viewport";
+import { collectViewItems } from "../viewport";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { MessageItem } from "../components/MessageItem";
@@ -269,16 +269,6 @@ export function ChatRoomScreen(): JSX.Element {
     setSelectedViewKey(key);
     openViewport();
   };
-  // First-time-only auto-open: when a thread first produces a View item, open the
-  // viewport once; `claimAutoOpen` is one-shot per conversation, so a later manual
-  // close is respected and subsequent items update it silently.
-  createEffect(() => {
-    const id = currentId();
-    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
-      openViewport();
-    }
-  });
-
   // Per-conversation draft key, so an unsent message is restored on return.
   const composerKey = () => `chat:${currentId() ?? "new"}`;
 
