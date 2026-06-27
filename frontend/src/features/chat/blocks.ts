@@ -71,11 +71,11 @@ export function assembleTranscript(
           `APPROVAL REQUIRED: ${b.approval.name} — ${b.approval.summary}`,
         );
         break;
-      case "artifact":
-        parts.push(`[artifact: ${b.artifact.title}]`);
+      case "view_version":
+        parts.push(`[view version: ${b.version.title}]`);
         break;
-      case "preview":
-        parts.push(`[preview: ${b.preview.url}]`);
+      case "view_live":
+        parts.push(`[live view: ${b.live.url}]`);
         break;
     }
   }
@@ -131,8 +131,8 @@ function hasLiveHost(group: BlockGroup): boolean {
 }
 
 /** Collapsible = pure process noise: reasoning, finished tool calls, and host
- *  terminals that are neither pending nor running. Answer text, approvals,
- *  artifacts and live previews are always shown. */
+ *  terminals that are neither pending nor running. Answer text, approvals, and the
+ *  View chips (versions / live head) are always shown. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking" || group.kind === "tool") return true;
   if (group.kind === "host_command") return !hasLiveHost(group);

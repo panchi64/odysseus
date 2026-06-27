@@ -42,6 +42,12 @@ class PreviewHandle:
         """The token-gated route the operator's iframe points at."""
         return f"/previews/{self.token}/"
 
+    def url_for(self, entry: str | None = None) -> str:
+        """The proxy URL for a server ``entry`` path under this preview (e.g.
+        ``"index.html"``), or the root when omitted. Owns the path-join so the
+        ``/previews/{token}/`` scheme has one home, not a caller doing string math."""
+        return self.path + (entry or "").lstrip("/")
+
 
 async def launch_preview(
     *,

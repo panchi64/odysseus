@@ -72,17 +72,19 @@ export interface HostCommand {
   error?: string;
 }
 
-/** A file the agent published for preview (`artifact.published`). */
-export interface ArtifactRef {
-  artifactId: string;
+/** A static snapshot version of the conversation's View (`view.version`). The
+ *  comparable history the operator can flip back through. Bytes at
+ *  `/views/{versionId}/content`. */
+export interface ViewVersionRef {
+  versionId: string;
   title: string;
   filename: string;
   contentType: string;
   kind: "html" | "image" | "text" | "other";
 }
 
-/** A live server the agent started (`preview.ready`). */
-export interface PreviewRef {
+/** The live, interactive head of the View — a running server (`view.live`). */
+export interface ViewLiveRef {
   url: string;
   title?: string;
 }
@@ -99,8 +101,8 @@ export type AssistantBlock =
   | ToolBlock
   | HostCommandBlock
   | ApprovalBlock
-  | ArtifactBlock
-  | PreviewBlock;
+  | ViewVersionBlock
+  | ViewLiveBlock;
 
 export type BlockKind = AssistantBlock["kind"];
 
@@ -134,17 +136,19 @@ export interface ApprovalBlock {
   id: string;
   approval: Approval;
 }
-/** A file the agent published during the turn. */
-export interface ArtifactBlock {
-  kind: "artifact";
+/** A snapshot version the agent added to the View during the turn. Rendered in the
+ *  transcript as a compact chip that opens it in the viewport. */
+export interface ViewVersionBlock {
+  kind: "view_version";
   id: string;
-  artifact: ArtifactRef;
+  version: ViewVersionRef;
 }
-/** A live preview the agent surfaced during the turn. */
-export interface PreviewBlock {
-  kind: "preview";
+/** The View's live head, started during the turn. Rendered as a compact LIVE chip
+ *  that opens the viewport. */
+export interface ViewLiveBlock {
+  kind: "view_live";
   id: string;
-  preview: PreviewRef;
+  live: ViewLiveRef;
 }
 
 export interface ChatMessage {

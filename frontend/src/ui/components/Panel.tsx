@@ -13,6 +13,10 @@ export interface PanelProps extends JSX.HTMLAttributes<HTMLElement> {
   state?: PanelState;
   /** Remove the default body padding (for edge-to-edge content like tables). */
   flush?: boolean;
+  /** Make the panel a full-height flex column whose body fills the remaining space
+   *  — for content that must fill its height (an iframe, a scroll region). Pair
+   *  with a height on `class` (e.g. `h-full`). */
+  fill?: boolean;
 }
 
 const stateBorder: Record<PanelState, string> = {
@@ -28,6 +32,7 @@ export function Panel(props: PanelProps): JSX.Element {
     "meta",
     "state",
     "flush",
+    "fill",
     "class",
     "children",
   ]);
@@ -36,6 +41,7 @@ export function Panel(props: PanelProps): JSX.Element {
       class={cx(
         "bg-surface border",
         stateBorder[local.state ?? "default"],
+        local.fill && "flex flex-col",
         local.class,
       )}
       {...rest}
@@ -48,7 +54,9 @@ export function Panel(props: PanelProps): JSX.Element {
           <Show when={local.meta}>{local.meta}</Show>
         </header>
       </Show>
-      <div class={cx(!local.flush && "p-4")}>{local.children}</div>
+      <div class={cx(!local.flush && "p-4", local.fill && "min-h-0 flex-1")}>
+        {local.children}
+      </div>
     </section>
   );
 }

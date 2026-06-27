@@ -166,45 +166,53 @@ class DocumentCommitted(_Body):
     version: int
 
 
-# --- Artifacts (previewable output the agent published) ----------------------
-class ArtifactPublished(_Body):
-    """The agent surfaced a file for preview; fetch its bytes from the artifact
-    route. ``kind`` is a coarse rendering hint. Additive to v1; no bump."""
+# --- View (the conversation's one versioned output surface) ------------------
+# Artifacts and live previews were two products leaking one mechanism split; they
+# are unified as the View — a single canvas with a live head plus a history of
+# snapshot versions to compare. ``view.version`` is the durable, comparable
+# snapshot; ``view.live`` / ``view.live.stopped`` are the interactive head.
+class ViewVersion(_Body):
+    """The agent added a snapshot version to the conversation's View — a file it
+    produced, captured (encrypted) so the operator can render it and compare it
+    against earlier versions. Fetch its bytes from ``/views/{version_id}/content``.
+    ``kind`` is a coarse rendering hint. Additive to v1; no bump."""
 
-    type: Literal["artifact.published"] = "artifact.published"
-    artifact_id: str
+    type: Literal["view.version"] = "view.version"
     conversation_id: str
+    version_id: str
     title: str
     filename: str
     content_type: str
     kind: str  # "html" | "image" | "text" | "other"
 
 
-class PreviewReady(_Body):
-    """The agent started a live server. ``url`` is a token-gated proxy path on this
-    same API origin (``/previews/{token}/``) that streams the server's HTTP and
-    WebSocket traffic out of the sandbox.
+class ViewLive(_Body):
+    """The agent started (or replaced) the View's live head — a running server.
+    ``url`` is a token-gated proxy path on this same API origin
+    (``/previews/{token}/…``) that streams the server's HTTP and WebSocket traffic
+    out of the sandbox.
 
     Frontend contract: mount it as ``<iframe src={url}>`` with
     ``sandbox="allow-scripts allow-forms allow-popups"`` — deliberately **without**
     ``allow-same-origin``, so the framed (model-generated) app runs in an opaque
     origin and cannot act as the operator against the API. The token in the path is
     the credential, so no auth header is needed and relative subresources/WebSockets
-    resolve automatically. Additive to v1; no bump."""
+    resolve automatically. ``url`` already carries the entry path when one was given,
+    so it renders the page rather than a directory listing. Additive to v1; no bump."""
 
-    type: Literal["preview.ready"] = "preview.ready"
+    type: Literal["view.live"] = "view.live"
     conversation_id: str
-    url: str  # "/previews/{token}/"
+    url: str  # "/previews/{token}/<entry>"
     title: str | None = None
     command: str  # the server command, for display
     port: int  # the in-container port it listens on
 
 
-class PreviewStopped(_Body):
-    """A live preview was torn down (explicitly via stop_preview, or reaped with its
-    idle session); the frontend should drop the iframe for this conversation."""
+class ViewLiveStopped(_Body):
+    """The View's live head was torn down (explicitly via close_view, or reaped with
+    its idle session); the frontend drops the live iframe for this conversation."""
 
-    type: Literal["preview.stopped"] = "preview.stopped"
+    type: Literal["view.live.stopped"] = "view.live.stopped"
     conversation_id: str
 
 
@@ -265,9 +273,9 @@ EventBody = Annotated[
     | DocumentDelta
     | DocumentCommitted
     | CitationAdded
-    | ArtifactPublished
-    | PreviewReady
-    | PreviewStopped
+    | ViewVersion
+    | ViewLive
+    | ViewLiveStopped
     | ConversationTitled
     | ApprovalRequired
     | LimitNotice,

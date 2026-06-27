@@ -24,7 +24,6 @@ from core.ratelimit import RateLimiter
 from core.vault import Vault
 from routes import (
     api_tokens,
-    artifacts,
     auth,
     chat,
     conversations,
@@ -41,6 +40,7 @@ from routes import (
     search,
     serving,
     uploads,
+    views,
 )
 from routes.deps import OPERATOR_ID
 from runs import RunRegistry
@@ -282,8 +282,10 @@ async def lifespan(app: FastAPI):
     app.state.embedding_backfill = asyncio.create_task(
         _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault)
     )
-    # Published previews — the agent captures a sandbox file here, the frontend
-    # fetches and renders it. Encrypted at rest like the rest of the operator's data.
+    # The View's static versions — the agent captures a sandbox file here, the
+    # frontend fetches and renders it on the View canvas. Encrypted at rest like the
+    # rest of the operator's data. (The View's live head rides the sandbox + the
+    # /previews proxy; this store is the snapshot/version history.)
     app.state.artifacts = ArtifactStore(engine, vault)
     # Managed web search — the backend runs its own SearXNG (same container runtime
     # as the sandbox) so search works with zero operator setup. Bring-up is
@@ -430,7 +432,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(gallery.router)
     app.include_router(corpus.router)
-    app.include_router(artifacts.router)
+    app.include_router(views.router)
     app.include_router(previews.router)
     app.include_router(search.router)
     app.include_router(api_tokens.router)

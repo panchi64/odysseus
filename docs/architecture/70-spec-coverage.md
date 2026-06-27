@@ -104,7 +104,7 @@
 
 > **Supporting infra, not a named spec feature:** a **conversation read/manage surface** (`services/conversations` write-behind store, `services/conversation_view` projection, `/conversations/*`) backs the chat features — list summaries, read render-ready history projected from full-fidelity `ModelMessage` blobs, rename, delete. Conversation content is encrypted at rest (`XC-SEC-3`). A "supporting utility" per spec §inventory-tail.
 >
-> **Supporting infra, on top of the sandbox:** **artifacts + previews** (`services/artifacts`, `tools/preview`, `/artifacts/*`, `/previews/{token}/*`). `publish_artifact` captures a sandbox file into an encrypted store and serves it back inert (sandboxing CSP + `nosniff`); `start_preview`/`stop_preview` run a live server in the sandbox, reverse-proxied over a token-gated subtree (HTTP + WebSocket) into an opaque-origin iframe. Not a named spec feature; it is the agent's render surface for sandboxed output and a building block toward `DOC-*`/`RUN-1`-class display. Distinct from `RUN-1` (which is an in-browser, host-free snippet runner — still ⬜).
+> **Supporting infra, on top of the sandbox:** the **View** — one versioned output surface per conversation (`services/artifacts` as the version store, `tools/view`, `/views/*`, `/previews/{token}/*`). The agent reaches it through one tool: `view_show(file=…)` captures a sandbox file as a static **version** into an encrypted store served back inert (sandboxing CSP + `nosniff`); `view_show(serve=…, port=…, path=…)` runs the live **head** in the sandbox, reverse-proxied over a token-gated subtree (HTTP + WebSocket) into an opaque-origin iframe with the entry `path` baked into the url; `view_close` tears it down. The frontend renders one viewport — the head on stage plus a version timeline to compare (D29). Not a named spec feature; it is the agent's render surface for sandboxed output and a building block toward `DOC-*`/`RUN-1`-class display. Distinct from `RUN-1` (which is an in-browser, host-free snippet runner — still ⬜).
 
 ## Feature inventory — B. Knowledge & content
 
@@ -183,7 +183,7 @@ The orchestrator (`research/`) is a stub; the build approach is decided (**D19**
 
 ## What this says about "next"
 
-The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with artifacts + previews on top, and **web search is now in** (`SEARCH-*`/`XC-DEG-2` ✅), which also stood up the first untrusted-content marking (`XC-SEC-5` 🟡). The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
+The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with the unified View (versions + live head) on top, and **web search is now in** (`SEARCH-*`/`XC-DEG-2` ✅), which also stood up the first untrusted-content marking (`XC-SEC-5` 🟡). The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
 
 1. **Deep research** (`DR-*` / D19) — now unblocked (its `search` dependency landed); it's "write the pipeline orchestrator + wire the existing search/fetch tools," reusing the Run substrate, bounds, cancellation, and progress streaming it already inherits. Chat attachments enrolled at upload time are already corpus-reachable from a research run; the orchestrator references them via `corpus.retrieve` and the shared `agent/attachments` helper when built.
 2. **The scheduler** (`TASK-*` + D13) — turns `AE-3.5`/D24 pre-authorization from design into running unattended automation, reusing the approval mechanism already built.

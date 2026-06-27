@@ -118,26 +118,29 @@ export interface DocumentCommitted extends Base {
   version: number;
 }
 
-// --- Artifacts & live previews ---------------------------------------------
-export interface ArtifactPublished extends Base {
-  type: "artifact.published";
-  artifact_id: string;
+// --- View (the conversation's one versioned output surface) ----------------
+// A snapshot version added to the View; fetch its bytes from /views/{id}/content.
+export interface ViewVersion extends Base {
+  type: "view.version";
   conversation_id: string;
+  version_id: string;
   title: string;
   filename: string;
   content_type: string;
   kind: "html" | "image" | "text" | "other";
 }
-export interface PreviewReady extends Base {
-  type: "preview.ready";
+// The View's live head — a running server reverse-proxied at `url`. `url` already
+// carries the entry path when one was given, so it renders the page, not a listing.
+export interface ViewLive extends Base {
+  type: "view.live";
   conversation_id: string;
   url: string;
   title: string | null;
   command: string;
   port: number;
 }
-export interface PreviewStopped extends Base {
-  type: "preview.stopped";
+export interface ViewLiveStopped extends Base {
+  type: "view.live.stopped";
   conversation_id: string;
 }
 
@@ -185,9 +188,9 @@ export type RunEvent =
   | DocumentCreated
   | DocumentDelta
   | DocumentCommitted
-  | ArtifactPublished
-  | PreviewReady
-  | PreviewStopped
+  | ViewVersion
+  | ViewLive
+  | ViewLiveStopped
   | ConversationTitled
   | CitationAdded
   | ApprovalRequired

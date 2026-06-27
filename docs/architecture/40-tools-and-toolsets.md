@@ -98,7 +98,7 @@ Two deliberate omissions, each a settled decision rather than an oversight:
 | `memory` | `remember`, `recall` | `services/memory` (hybrid recall, `MEM-*`) | ✅ built |
 | `conversations` | `search`, `read` | `services/conversation_search` (cross-chat hybrid recall, `CHAT-7`) | ✅ built |
 | `code` | `execute_code`, `run_host_command` | `services/sandbox` (`XC-SEC-7`) | ✅ built |
-| `preview` | `publish_artifact`, `start_preview`, `stop_preview` | `services/artifacts` + `services/sandbox` | ✅ built |
+| `view` | `view_show` (file → version, or serve → live head), `view_close` | `services/artifacts` (version store) + `services/sandbox` (live head) | ✅ built |
 | `web` | `search`, `fetch` | `services/search` + `services/searxng` (`SEARCH-*`) | ✅ built |
 | `mail`, `documents`, … | — | land with their `services/` capability | ⬜ pending |
 | MCP servers, integrations | — | external (`MCP-*`, `INTEG-*`) | ⬜ pending (gating designed — §4.4) |

@@ -13,14 +13,14 @@ import { Caret, Icon, Markdown, Text, cx } from "~/ui";
 import type {
   ApprovalBlock,
   ApprovalDecision,
-  ArtifactBlock,
   AssistantBlock,
   BlockKind,
   HostCommandBlock,
-  PreviewBlock,
   TextBlock,
   ThinkingBlock,
   ToolBlock,
+  ViewLiveBlock,
+  ViewVersionBlock,
 } from "../model";
 import {
   groupBlocks,
@@ -29,12 +29,12 @@ import {
   type BlockGroup,
   type LayoutItem,
 } from "../blocks";
+import { LIVE_KEY, versionIcon, versionKey } from "../viewport";
 import { ApprovalCard } from "./ApprovalCard";
-import { ArtifactViewer } from "./ArtifactViewer";
 import { HostCommandCard } from "./HostCommandCard";
-import { PreviewPane } from "./PreviewPane";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
+import { ViewChip } from "./ViewChip";
 
 type Resolve = (decisions: ApprovalDecision[]) => void | Promise<void>;
 const noop: Resolve = () => {};
@@ -42,6 +42,8 @@ const noop: Resolve = () => {};
 interface RowHandlers {
   onResolveApproval?: Resolve;
   onResolveHostCommands?: Resolve;
+  /** Open a View item (a version or the live head) in the side viewport, by key. */
+  onOpenInView?: (key: string) => void;
 }
 
 /** How a row spaces itself from the one above:
@@ -138,17 +140,34 @@ function BlockRow(
           />
         </div>
       </Match>
-      <Match when={g().kind === "artifact"}>
-        <div class={fullWidthTop(props.top)}>
-          <ArtifactViewer
-            artifact={(g().blocks[0] as ArtifactBlock).artifact}
-          />
-        </div>
+      <Match when={g().kind === "view_version"}>
+        {(() => {
+          const v = (g().blocks[0] as ViewVersionBlock).version;
+          return (
+            <div class={fullWidthTop(props.top)}>
+              <ViewChip
+                icon={versionIcon(v.kind)}
+                label={v.title || v.filename}
+                onOpen={() => props.onOpenInView?.(versionKey(v.versionId))}
+              />
+            </div>
+          );
+        })()}
       </Match>
-      <Match when={g().kind === "preview"}>
-        <div class={fullWidthTop(props.top)}>
-          <PreviewPane preview={(g().blocks[0] as PreviewBlock).preview} />
-        </div>
+      <Match when={g().kind === "view_live"}>
+        {(() => {
+          const live = (g().blocks[0] as ViewLiveBlock).live;
+          return (
+            <div class={fullWidthTop(props.top)}>
+              <ViewChip
+                icon="play"
+                label={live.title || "Live view"}
+                live
+                onOpen={() => props.onOpenInView?.(LIVE_KEY)}
+              />
+            </div>
+          );
+        })()}
       </Match>
       <Match when={g().kind === "thinking"}>
         <Rail active={props.active} top={props.top}>
@@ -322,6 +341,7 @@ export function TurnBlocks(
               forceOpen={props.forceOpen}
               onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
+              onOpenInView={props.onOpenInView}
             />
           )
         }

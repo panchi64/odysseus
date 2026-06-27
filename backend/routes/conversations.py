@@ -50,11 +50,11 @@ class ToolCallOut(BaseModel):
     error: str | None = None
 
 
-class ArtifactRefOut(BaseModel):
-    """A published artifact re-attached to the message that produced it, mirroring
-    the live ``artifact.published`` event so a cold read renders like a warm one."""
+class ViewVersionRefOut(BaseModel):
+    """A static View version re-attached to the message that produced it, mirroring
+    the live ``view.version`` event so a cold read renders like a warm one."""
 
-    artifact_id: str
+    version_id: str
     title: str
     filename: str
     content_type: str
@@ -67,7 +67,7 @@ class MessageOut(BaseModel):
     content: str
     reasoning: str | None = None
     tools: list[ToolCallOut] = []
-    artifacts: list[ArtifactRefOut] = []
+    versions: list[ViewVersionRefOut] = []
     created_at: datetime | None = None
     model: str | None = None  # the model that produced this assistant turn
     # Version navigation: position among this turn's siblings and how many exist.
@@ -136,26 +136,27 @@ def _summary(view: ConversationSummaryView) -> ConversationSummary:
     )
 
 
-def _message_artifacts(
+def _message_versions(
     view: MessageView, by_id: dict[str, ArtifactView]
-) -> list[ArtifactRefOut]:
-    """The artifacts this turn published, recovered from its ``publish_artifact``
-    tool results (each carries the artifact id). A failed publish has no id and is
-    skipped, so the cold read attaches exactly what warmly streamed."""
-    refs: list[ArtifactRefOut] = []
+) -> list[ViewVersionRefOut]:
+    """The static View versions this turn produced, recovered from its ``view`` tool
+    results (each static one carries the version id). A live-head call or a failed
+    capture has no id and is skipped, so the cold read attaches exactly the durable
+    versions that warmly streamed."""
+    refs: list[ViewVersionRefOut] = []
     for tool in view.tools:
-        if not tool.name.endswith("publish_artifact") or not isinstance(tool.result, str):
+        if not tool.name.endswith("view_show") or not isinstance(tool.result, str):
             continue
-        artifact_id = artifact_id_from_result(tool.result)
-        artifact = by_id.get(artifact_id) if artifact_id else None
-        if artifact is not None:
+        version_id = artifact_id_from_result(tool.result)
+        version = by_id.get(version_id) if version_id else None
+        if version is not None:
             refs.append(
-                ArtifactRefOut(
-                    artifact_id=artifact.id,
-                    title=artifact.title,
-                    filename=artifact.filename,
-                    content_type=artifact.content_type,
-                    kind=artifact.kind,
+                ViewVersionRefOut(
+                    version_id=version.id,
+                    title=version.title,
+                    filename=version.filename,
+                    content_type=version.content_type,
+                    kind=version.kind,
                 )
             )
     return refs
@@ -173,7 +174,7 @@ def _message(view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
             )
             for t in view.tools
         ],
-        artifacts=_message_artifacts(view, by_id),
+        versions=_message_versions(view, by_id),
         created_at=view.timestamp,
         model=view.model,
         version_index=view.version_index,
@@ -186,10 +187,10 @@ def _message(view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
 async def _detail(
     request: Request, conversation_id: str, summary: ConversationSummaryView
 ) -> ConversationDetail:
-    """Assemble a conversation's full render-ready detail (active path + published
-    artifacts + reconstructed context-window state). Shared by the read endpoint
-    and the navigation endpoints that return the post-move thread (version switch,
-    rewind)."""
+    """Assemble a conversation's full render-ready detail (active path + the View's
+    static versions + reconstructed context-window state). Shared by the read
+    endpoint and the navigation endpoints that return the post-move thread (version
+    switch, rewind)."""
     store = deps.store(request)
     messages = await store.messages_view(conversation_id)
     # Seed the context meter from the last turn's footprint; only pay to resolve the
@@ -201,13 +202,13 @@ async def _detail(
     if used is not None:
         window = await deps.models(request).main_context_window(OPERATOR_ID)
         context = ContextWindow.from_used(used, window)
-    # Only pay for the artifacts lookup when a turn actually published something —
-    # the vast majority of conversations never call publish_artifact.
-    published = any(t.name.endswith("publish_artifact") for m in messages for t in m.tools)
+    # Only pay for the versions lookup when a turn actually showed something — the
+    # vast majority of conversations never call the view tool.
+    showed = any(t.name.endswith("view_show") for m in messages for t in m.tools)
     by_id: dict[str, ArtifactView] = {}
-    if published:
-        artifacts = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
-        by_id = {a.id: a for a in artifacts}
+    if showed:
+        versions = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
+        by_id = {v.id: v for v in versions}
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (
         ActiveRun(id=run.id, status=run.status.value, last_seq=run.stream.last_seq)

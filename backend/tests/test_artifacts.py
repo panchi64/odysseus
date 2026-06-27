@@ -86,7 +86,7 @@ async def test_content_route_serves_inert_with_sandbox_headers():
         view = await app.state.artifacts.publish(
             "operator", "conv-1", filename="r.html", content=b"<b>x</b>", title="R"
         )
-        resp = await client.get(f"/artifacts/{view.id}/content")
+        resp = await client.get(f"/views/{view.id}/content")
         assert resp.status_code == 200
         assert resp.content == b"<b>x</b>"
         assert resp.headers["content-type"].startswith("text/html")
@@ -99,10 +99,10 @@ async def test_list_and_get_routes():
         view = await app.state.artifacts.publish(
             "operator", "conv-1", filename="r.html", content=b"<b>x</b>", title="R"
         )
-        listing = await client.get("/artifacts", params={"conversation_id": "conv-1"})
+        listing = await client.get("/views", params={"conversation_id": "conv-1"})
         assert listing.status_code == 200
         assert [a["filename"] for a in listing.json()] == ["r.html"]
 
-        one = await client.get(f"/artifacts/{view.id}")
+        one = await client.get(f"/views/{view.id}")
         assert one.json()["title"] == "R"
-        assert (await client.get("/artifacts/nope")).status_code == 404
+        assert (await client.get("/views/nope")).status_code == 404

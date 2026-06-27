@@ -3,7 +3,9 @@ import { cx } from "../cx";
 
 export interface TabItem {
   value: string;
-  label: string;
+  /** Usually a plain string; accepts JSX for a tab that carries a glyph/dot
+   *  alongside its label (e.g. a live-status indicator). */
+  label: string | JSX.Element;
 }
 
 export interface TabsProps {

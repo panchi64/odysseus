@@ -32,6 +32,8 @@ export interface MessageItemProps {
   onSwitchVersion?: (id: string, index: number) => void;
   /** Pin/unpin this turn (backend-owned flag). */
   onTogglePin?: () => void;
+  /** Open a View item (a version or the live head) in the side viewport, by key. */
+  onOpenInView?: (key: string) => void;
 }
 
 /** A single chat turn. User turns fill the row with a distinct `surface`
@@ -52,6 +54,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           onRewind={props.onRewind}
           onSwitchVersion={props.onSwitchVersion}
           onTogglePin={props.onTogglePin}
+          onOpenInView={props.onOpenInView}
         />
       }
     >
@@ -217,6 +220,7 @@ function AssistantTurn(props: {
   onRewind?: MessageItemProps["onRewind"];
   onSwitchVersion?: MessageItemProps["onSwitchVersion"];
   onTogglePin?: MessageItemProps["onTogglePin"];
+  onOpenInView?: MessageItemProps["onOpenInView"];
 }): JSX.Element {
   const m = () => props.message;
   // Tri-state: undefined = each layer keeps its own default; true/false = force
@@ -278,6 +282,7 @@ function AssistantTurn(props: {
           onResolveHostCommands={(decisions) =>
             props.onResolveHostCommands?.(m().id, decisions)
           }
+          onOpenInView={props.onOpenInView}
         />
       </Stack>
     </div>

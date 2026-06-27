@@ -25,10 +25,10 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
           : "WORKING";
     case "approval":
       return "AWAITING APPROVAL";
-    case "artifact":
-      return "PUBLISHING";
-    case "preview":
-      return "STARTING PREVIEW";
+    case "view_version":
+      return "UPDATING VIEW";
+    case "view_live":
+      return "STARTING LIVE VIEW";
   }
 }
 

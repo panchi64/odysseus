@@ -48,6 +48,7 @@ import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { readLS, writeLS } from "~/lib/storage";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
+import { claimAutoOpen, collectViewItems } from "../viewport";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { MessageItem } from "../components/MessageItem";
@@ -113,7 +114,7 @@ export function ChatRoomScreen(): JSX.Element {
             (b.command.stderr?.length ?? 0);
           break;
         default:
-          n += 1; // approval / artifact / preview: a new block is enough
+          n += 1; // approval / view chips: a new block is enough
       }
     }
     return n;
@@ -242,6 +243,39 @@ export function ChatRoomScreen(): JSX.Element {
     setViewportWidth((w) => clampViewportW(w + delta));
   const persistViewportWidth = () =>
     writeLS(VIEWPORT_W_KEY, String(viewportWidth()));
+  const openViewport = () => {
+    if (viewportOpen()) return;
+    setViewportOpen(true);
+    writeLS(VIEWPORT_KEY, "1");
+  };
+
+  // The conversation's View, derived from this thread's transcript blocks
+  // (presentation-only, so it's automatically thread-scoped). The viewport renders
+  // these; the transcript shows compact chips that open them here.
+  const viewItems = createMemo(() => collectViewItems(stream.messages));
+  // Which item the viewport shows: an explicit pick, or null = follow the newest.
+  const [selectedViewKey, setSelectedViewKey] = createSignal<string | null>(
+    null,
+  );
+  // Reset the pick on thread switch so each thread follows its own newest item.
+  createEffect(() => {
+    currentId();
+    untrack(() => setSelectedViewKey(null));
+  });
+  // Open a View item in the viewport — from a transcript chip or a timeline tab.
+  const openViewTo = (key: string) => {
+    setSelectedViewKey(key);
+    openViewport();
+  };
+  // First-time-only auto-open: when a thread first produces a View item, open the
+  // viewport once; `claimAutoOpen` is one-shot per conversation, so a later manual
+  // close is respected and subsequent items update it silently.
+  createEffect(() => {
+    const id = currentId();
+    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
+      openViewport();
+    }
+  });
 
   // Per-conversation draft key, so an unsent message is restored on return.
   const composerKey = () => `chat:${currentId() ?? "new"}`;
@@ -423,7 +457,11 @@ export function ChatRoomScreen(): JSX.Element {
                 aria-label="Toggle viewport panel"
                 onClick={toggleViewport}
                 class="hidden lg:inline-flex"
-              />
+              >
+                <Show when={!viewportOpen() && viewItems().length > 0}>
+                  {viewItems().length}
+                </Show>
+              </Button>
             </Tooltip>
             <Menu
               trigger={
@@ -491,6 +529,7 @@ export function ChatRoomScreen(): JSX.Element {
                       void stream.switchVersion(id, i)
                     }
                     onTogglePin={() => void stream.toggleMessagePin(message.id)}
+                    onOpenInView={openViewTo}
                     onRewind={() => {
                       void stream.rewind(message.id);
                     }}
@@ -552,7 +591,12 @@ export function ChatRoomScreen(): JSX.Element {
           class="hidden shrink-0 lg:block"
           style={{ width: `${viewportWidth()}px` }}
         >
-          <ViewportPanel onClose={toggleViewport} />
+          <ViewportPanel
+            items={viewItems()}
+            selectedKey={selectedViewKey()}
+            onSelect={setSelectedViewKey}
+            onClose={toggleViewport}
+          />
         </aside>
       </Show>
 

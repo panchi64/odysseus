@@ -18,7 +18,6 @@ import type {
   ActiveRun,
   ApprovalDecision,
   ApprovalGrant,
-  ArtifactRef,
   AssistantBlock,
   ChatMessage,
   ChatSession,
@@ -27,9 +26,9 @@ import type {
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
-  PreviewBlock,
   ToolBlock,
   ToolInvocation,
+  ViewVersionRef,
 } from "./model";
 
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
@@ -181,12 +180,12 @@ interface ToolCallDTO {
   error?: string | null;
 }
 
-interface ArtifactDTO {
-  artifact_id: string;
+interface ViewVersionDTO {
+  version_id: string;
   title: string;
   filename: string;
   content_type: string;
-  kind: ArtifactRef["kind"];
+  kind: ViewVersionRef["kind"];
 }
 
 interface MessageDTO {
@@ -195,7 +194,7 @@ interface MessageDTO {
   content: string;
   reasoning?: string | null;
   tools: ToolCallDTO[];
-  artifacts?: ArtifactDTO[];
+  versions?: ViewVersionDTO[];
   created_at?: string | null;
   /** The model that produced this assistant turn. */
   model?: string | null;
@@ -322,12 +321,11 @@ function toHostCommand(dto: ToolCallDTO): HostCommand {
   };
 }
 
-/** Map a published-artifact DTO/event to the seam type. Shared by the cold read
- *  (history detail) and the warm stream (`artifact.published`) so both render
- *  identically. */
-function toArtifactRef(dto: ArtifactDTO): ArtifactRef {
+/** Map a View-version DTO/event to the seam type. Shared by the cold read (history
+ *  detail) and the warm stream (`view.version`) so both render identically. */
+function toViewVersionRef(dto: ViewVersionDTO): ViewVersionRef {
   return {
-    artifactId: dto.artifact_id,
+    versionId: dto.version_id,
     title: dto.title,
     filename: dto.filename,
     contentType: dto.content_type,
@@ -379,11 +377,11 @@ function toMessage(dto: MessageDTO): ChatMessage {
     else
       blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
   }
-  for (const a of dto.artifacts ?? [])
+  for (const v of dto.versions ?? [])
     blocks.push({
-      kind: "artifact",
-      id: `${dto.id}-${a.artifact_id}`,
-      artifact: toArtifactRef(a),
+      kind: "view_version",
+      id: `${dto.id}-${v.version_id}`,
+      version: toViewVersionRef(v),
     });
   if (dto.content)
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
@@ -820,35 +818,47 @@ export function createChatStream(
           });
         });
         break;
-      case "artifact.published":
+      case "view.version":
         patchById(assistantId, (m) => {
           (m.blocks ?? (m.blocks = [])).push({
-            kind: "artifact",
-            id: `artifact-${ev.artifact_id}`,
-            artifact: toArtifactRef(ev),
+            kind: "view_version",
+            id: `view-version-${ev.version_id}`,
+            version: toViewVersionRef(ev),
           });
         });
         break;
-      case "preview.ready":
-        // At most one live preview per turn — a later ready replaces the prior.
-        patchById(assistantId, (m) => {
-          const preview = { url: ev.url, title: ev.title ?? undefined };
-          const existing = m.blocks?.find(
-            (b): b is PreviewBlock => b.kind === "preview",
-          );
-          if (existing) existing.preview = preview;
-          else
-            (m.blocks ?? (m.blocks = [])).push({
-              kind: "preview",
-              id: nextId("preview"),
-              preview,
-            });
-        });
+      case "view.live": {
+        // One live head per *conversation*, not per turn: clear any prior live
+        // block (it may sit on an earlier turn) before marking this turn's, so a
+        // replaced or stopped server never lingers as a stale LIVE head once the
+        // viewport aggregates view items across the whole transcript.
+        const live = { url: ev.url, title: ev.title ?? undefined };
+        setMessages(
+          produce((list) => {
+            for (const m of list)
+              if (m.blocks)
+                m.blocks = m.blocks.filter((b) => b.kind !== "view_live");
+            const m = list.find((x) => x.id === assistantId);
+            if (m)
+              (m.blocks ?? (m.blocks = [])).push({
+                kind: "view_live",
+                id: nextId("view-live"),
+                live,
+              });
+          }),
+        );
         break;
-      case "preview.stopped":
-        patchById(assistantId, (m) => {
-          if (m.blocks) m.blocks = m.blocks.filter((b) => b.kind !== "preview");
-        });
+      }
+      case "view.live.stopped":
+        // The live head is conversation-scoped and close usually arrives a turn or
+        // more after it started — drop it wherever it lives, not just on this run.
+        setMessages(
+          produce((list) => {
+            for (const m of list)
+              if (m.blocks)
+                m.blocks = m.blocks.filter((b) => b.kind !== "view_live");
+          }),
+        );
         break;
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal

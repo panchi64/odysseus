@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
-from routes.conversations import _message_artifacts
+from routes.conversations import _message_versions
 from services.artifacts import ArtifactView, format_publish_result
 from services.conversation_view import MessageView, ToolView
 
@@ -236,31 +236,31 @@ def _artifact_view(artifact_id: str) -> ArtifactView:
     )
 
 
-def test_cold_read_reattaches_published_artifact():
-    # A successful publish_artifact call on a turn re-attaches its artifact when
-    # the conversation is read cold (warm/cold parity).
+def test_cold_read_reattaches_view_version():
+    # A successful static-view call on a turn re-attaches its version when the
+    # conversation is read cold (warm/cold parity).
     art = _artifact_view("a1b2c3")
     tool = ToolView(
         id="t1",
-        name="preview_publish_artifact",
+        name="view_show",
         args={},
         status="ok",
         result=format_publish_result(art),
     )
     message = MessageView(role="assistant", tools=[tool])
-    refs = _message_artifacts(message, {art.id: art})
-    assert [r.artifact_id for r in refs] == ["a1b2c3"]
+    refs = _message_versions(message, {art.id: art})
+    assert [r.version_id for r in refs] == ["a1b2c3"]
     assert refs[0].kind == "image"
 
 
-def test_cold_read_skips_failed_publish():
-    # A degraded/failed publish carries no id, so nothing is attached.
+def test_cold_read_skips_view_without_version_id():
+    # A live-head call or a degraded capture carries no id, so nothing is attached.
     tool = ToolView(
         id="t1",
-        name="preview_publish_artifact",
+        name="view_show",
         args={},
         status="ok",
         result="Could not read 'x.html': no such file",
     )
     message = MessageView(role="assistant", tools=[tool])
-    assert _message_artifacts(message, {}) == []
+    assert _message_versions(message, {}) == []
