@@ -66,10 +66,15 @@ export function ViewSnapshotContent(props: {
   snapshot: ViewSnapshotRef;
 }): JSX.Element {
   const id = (): string => props.snapshot.snapshotId;
-  const [files] = createResource(id, fetchSnapshotFiles);
-  const [diffs] = createResource(id, fetchSnapshotDiffs);
   const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
   const [mode, setMode] = createSignal<Mode>("code");
+  const [files] = createResource(id, fetchSnapshotFiles);
+  // Diffs are only needed in DIFF mode — fetch lazily so CODE-first browsing
+  // (the common case) doesn't pay for them.
+  const [diffs] = createResource(
+    () => (mode() === "diff" ? id() : undefined),
+    fetchSnapshotDiffs,
+  );
 
   // Default-select the first file once the list resolves and nothing is picked.
   createEffect(() => {

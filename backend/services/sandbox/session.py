@@ -302,6 +302,9 @@ class SandboxSession:
                     data = full.read_bytes()
                 except OSError:
                     continue
+                if b"\x00" in data:
+                    continue  # NUL byte ⇒ binary (a NUL is valid UTF-8, so the
+                    # decode check below wouldn't catch it) — history is text only
                 try:
                     data.decode("utf-8")
                 except UnicodeDecodeError:

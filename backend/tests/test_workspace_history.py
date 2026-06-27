@@ -135,10 +135,11 @@ async def test_collect_text_files_skips_excluded_and_binary(tmp_path):
     session.write_file("notes.txt", b"text")
     session.write_file("node_modules/dep/index.js", b"junk")  # excluded dir
     session.write_file("logo.png", b"\x89PNG\r\n\x1a\n")  # binary (invalid utf-8)
+    session.write_file("data.bin", b"valid\x00utf8\x00but-binary")  # NUL: valid utf-8
 
     files = session.collect_text_files()
 
-    assert set(files) == {"src/app.py", "notes.txt"}
+    assert set(files) == {"src/app.py", "notes.txt"}  # both binaries skipped
     assert files["notes.txt"] == b"text"
 
 

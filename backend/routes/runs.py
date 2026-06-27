@@ -181,6 +181,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             fetcher=deps.fetcher(request),
             conversation_search=deps.conversation_search(request),
             corpus=deps.corpus(request),
+            uploads=deps.uploads(request),
             grants=grants,
             workspace_history=deps.workspace_history(request),
         ),
