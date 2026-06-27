@@ -145,3 +145,19 @@ export function priorSnapshots(items: ViewItem[], key: string): PriorVersion[] {
   }
   return out;
 }
+
+/* ── First-time-only auto-open ────────────────────────────────────────────────
+   The viewport opens itself the first time a thread produces a View item, then
+   never again for that thread — so a later manual close is respected. Session-
+   scoped (a plain Set, not authoritative state) and module-level so it survives
+   the screen remounting on navigation. */
+const autoOpened = new Set<string>();
+
+/** True at most once per conversation: the moment it first has View items, so the
+ *  caller can open the viewport. Subsequent calls (more items, a manual close)
+ *  return false. */
+export function claimAutoOpen(conversationId: string): boolean {
+  if (autoOpened.has(conversationId)) return false;
+  autoOpened.add(conversationId);
+  return true;
+}

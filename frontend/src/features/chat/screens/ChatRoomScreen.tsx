@@ -48,7 +48,7 @@ import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { readLS, writeLS } from "~/lib/storage";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
-import { collectViewItems } from "../viewport";
+import { claimAutoOpen, collectViewItems } from "../viewport";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { MessageItem } from "../components/MessageItem";
@@ -255,6 +255,11 @@ export function ChatRoomScreen(): JSX.Element {
   const viewItems = createMemo(() =>
     collectViewItems(stream.messages, stream.snapshots()),
   );
+  // The viewport only makes sense with something to show. Gate the effective open
+  // state on having items so the persisted open flag — global, written when the
+  // agent auto-opens one conversation — can't carry over and show an empty panel
+  // on a fresh chat or any thread with no View yet.
+  const viewportShown = () => viewportOpen() && viewItems().length > 0;
   // Which item the viewport shows: an explicit pick, or null = follow the newest.
   const [selectedViewKey, setSelectedViewKey] = createSignal<string | null>(
     null,
@@ -269,6 +274,16 @@ export function ChatRoomScreen(): JSX.Element {
     setSelectedViewKey(key);
     openViewport();
   };
+  // First-time-only auto-open: when a thread first produces a View item, open the
+  // viewport once; `claimAutoOpen` is one-shot per conversation, so a later manual
+  // close is respected and subsequent items update it silently.
+  createEffect(() => {
+    const id = currentId();
+    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
+      openViewport();
+    }
+  });
+
   // Per-conversation draft key, so an unsent message is restored on return.
   const composerKey = () => `chat:${currentId() ?? "new"}`;
 
@@ -448,9 +463,10 @@ export function ChatRoomScreen(): JSX.Element {
                 leading="eye"
                 aria-label="Toggle viewport panel"
                 onClick={toggleViewport}
+                disabled={viewItems().length === 0}
                 class="hidden lg:inline-flex"
               >
-                <Show when={!viewportOpen() && viewItems().length > 0}>
+                <Show when={!viewportShown() && viewItems().length > 0}>
                   {viewItems().length}
                 </Show>
               </Button>
@@ -572,7 +588,7 @@ export function ChatRoomScreen(): JSX.Element {
       {/* Viewport — documents / live previews / artifacts sit here beside the
           conversation, on a draggable divider so the operator can size it to the
           content. Desktop-only; toggled from the header; empty for now. */}
-      <Show when={viewportOpen()}>
+      <Show when={viewportShown()}>
         <ResizeHandle
           aria-label="Resize viewport panel"
           onResize={(dx) => adjustViewportWidth(-dx)}
