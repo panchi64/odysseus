@@ -85,6 +85,10 @@ class RunDeps:
     # The upload store — lets the attachments tool fetch a file's bytes by id and
     # stage them into the conversation's sandbox. None ⇒ the tool degrades.
     uploads: UploadStore | None = None
+    # The View's git-style version history. A `view_show` captures the sandbox
+    # workspace here as a new version, stamped with how it previews. None ⇒ the view
+    # tool degrades (no versioned history).
+    workspace_history: WorkspaceHistoryStore | None = None
 
     @property
     def sandbox_key(self) -> str:

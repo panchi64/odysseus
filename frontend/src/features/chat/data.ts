@@ -31,7 +31,7 @@ import type {
   ToolBlock,
   ToolInvocation,
   ViewSnapshotRef,
-  ViewVersionRef,
+  ViewVersionBlock,
 } from "./model";
 
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
@@ -183,12 +183,12 @@ interface ToolCallDTO {
   error?: string | null;
 }
 
-interface ViewVersionDTO {
-  version_id: string;
-  title: string;
-  filename: string;
-  content_type: string;
-  kind: ViewVersionRef["kind"];
+/** An inline View chip re-attached to the message that minted it — references the
+ *  conversation-scoped version by id (the panel reads its bytes/files). */
+interface MessageVersionRefDTO {
+  snapshot_id: string;
+  title: string | null;
+  preview_kind: "html" | "image" | "text" | "other" | null;
 }
 
 interface ViewSnapshotDTO {
@@ -197,6 +197,8 @@ interface ViewSnapshotDTO {
   created_at: string;
   files_changed: number;
   summary: string;
+  preview_kind: "html" | "image" | "text" | "other" | null;
+  preview_artifact_id: string | null;
 }
 
 interface MessageDTO {
@@ -205,7 +207,7 @@ interface MessageDTO {
   content: string;
   reasoning?: string | null;
   tools: ToolCallDTO[];
-  versions?: ViewVersionDTO[];
+  versions?: MessageVersionRefDTO[];
   created_at?: string | null;
   /** The model that produced this assistant turn. */
   model?: string | null;
@@ -335,19 +337,7 @@ function toHostCommand(dto: ToolCallDTO): HostCommand {
   };
 }
 
-/** Map a View-version DTO/event to the seam type. Shared by the cold read (history
- *  detail) and the warm stream (`view.version`) so both render identically. */
-function toViewVersionRef(dto: ViewVersionDTO): ViewVersionRef {
-  return {
-    versionId: dto.version_id,
-    title: dto.title,
-    filename: dto.filename,
-    contentType: dto.content_type,
-    kind: dto.kind,
-  };
-}
-
-/** Map a workspace-snapshot DTO/event to the seam type. Shared by the cold read
+/** Map a View version DTO/event to the seam type. Shared by the cold read
  *  (conversation detail) and the warm stream (`view.snapshot`). */
 function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
   return {
@@ -356,6 +346,29 @@ function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
     createdAt: dto.created_at,
     filesChanged: dto.files_changed,
     summary: dto.summary,
+    preview:
+      dto.preview_artifact_id && dto.preview_kind
+        ? { kind: dto.preview_kind, artifactId: dto.preview_artifact_id }
+        : null,
+  };
+}
+
+/** The inline transcript chip for a version the agent `show`ed — references the
+ *  conversation-scoped version by id. Shared by the cold read and the warm stream. */
+function toVersionChipBlock(
+  messageId: string,
+  ref: {
+    snapshotId: string;
+    title?: string;
+    previewKind?: ViewVersionBlock["previewKind"];
+  },
+): ViewVersionBlock {
+  return {
+    kind: "view_version",
+    id: `${messageId}-${ref.snapshotId}`,
+    snapshotId: ref.snapshotId,
+    title: ref.title,
+    previewKind: ref.previewKind,
   };
 }
 
@@ -383,8 +396,8 @@ function toMessage(dto: MessageDTO): ChatMessage {
   };
   if (dto.role !== "assistant") return base;
   // Cold history is still flat (no recorded emission order), so reconstruct the
-  // turn's blocks in the legacy lane order — reasoning, the tool/host calls,
-  // artifacts, then the answer. (Once the backend persists ordered blocks, map
+  // turn's blocks in the legacy lane order — reasoning, the tool/host calls, the
+  // version chips, then the answer. (Once the backend persists ordered blocks, map
   // them straight through here; the live stream already carries true order.)
   const blocks: AssistantBlock[] = [];
   if (dto.reasoning)
@@ -404,11 +417,13 @@ function toMessage(dto: MessageDTO): ChatMessage {
       blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
   }
   for (const v of dto.versions ?? [])
-    blocks.push({
-      kind: "view_version",
-      id: `${dto.id}-${v.version_id}`,
-      version: toViewVersionRef(v),
-    });
+    blocks.push(
+      toVersionChipBlock(dto.id, {
+        snapshotId: v.snapshot_id,
+        title: v.title ?? undefined,
+        previewKind: v.preview_kind,
+      }),
+    );
   if (dto.content)
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
   // The answer lives in the text block(s); keep `content` empty for assistant
@@ -910,15 +925,6 @@ export function createChatStream(
           });
         });
         break;
-      case "view.version":
-        patchById(assistantId, (m) => {
-          (m.blocks ?? (m.blocks = [])).push({
-            kind: "view_version",
-            id: `view-version-${ev.version_id}`,
-            version: toViewVersionRef(ev),
-          });
-        });
-        break;
       case "view.live": {
         // One live head per *conversation*, not per turn: clear any prior live
         // block (it may sit on an earlier turn) before marking this turn's, so a
@@ -953,14 +959,28 @@ export function createChatStream(
         );
         break;
       case "view.snapshot": {
-        // Conversation-scoped, not a message block: append to the snapshot history
-        // (dedup by id, since a reattach replay can re-deliver it).
+        // A version minted by `show`: append to the conversation-scoped version list
+        // (the panel), deduped since a reattach replay can re-deliver the event.
         const ref = toViewSnapshotRef(ev);
         setSnapshots((prev) =>
           prev.some((s) => s.snapshotId === ref.snapshotId)
             ? prev
             : [...prev, ref],
         );
+        // Fold an inline transcript chip only for a *static* preview (a `show(file=…)`).
+        // A live/auto version (served head) is already marked by its `view_live` chip,
+        // so a second chip for the same action would just be visual duplication.
+        if (ref.preview) {
+          const chip = toVersionChipBlock(assistantId, {
+            snapshotId: ref.snapshotId,
+            title: ref.title,
+            previewKind: ref.preview.kind,
+          });
+          patchById(assistantId, (m) => {
+            const blocks = m.blocks ?? (m.blocks = []);
+            if (!blocks.some((b) => b.id === chip.id)) blocks.push(chip);
+          });
+        }
         break;
       }
       case "conversation.titled":

@@ -43,7 +43,6 @@ from .events import (
     ViewLive,
     ViewLiveStopped,
     ViewSnapshot,
-    ViewVersion,
 )
 from .registry import RunRegistry, RunTimeout
 from .run import Orchestrator, Run, RunStatus
@@ -81,7 +80,6 @@ __all__ = [
     "DocumentDelta",
     "DocumentCommitted",
     "CitationAdded",
-    "ViewVersion",
     "ViewLive",
     "ViewLiveStopped",
     "ViewSnapshot",

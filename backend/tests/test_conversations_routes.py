@@ -11,8 +11,8 @@ import asyncio
 from datetime import UTC, datetime
 
 from routes.conversations import _message_versions
-from services.artifacts import ArtifactView, format_publish_result
 from services.conversation_view import MessageView, ToolView
+from services.workspace_history import SnapshotView, format_show_result
 
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
 
@@ -259,38 +259,40 @@ async def test_delete_conversation_survives_a_failing_sandbox_purge(monkeypatch)
         assert (await client.get(f"/conversations/{conversation_id}")).status_code == 404
 
 
-def _artifact_view(artifact_id: str) -> ArtifactView:
-    return ArtifactView(
-        id=artifact_id,
+def _snapshot_view(snapshot_id: str) -> SnapshotView:
+    return SnapshotView(
+        id=snapshot_id,
         conversation_id="conv-1",
         title="Chart",
-        filename="chart.png",
-        content_type="image/png",
-        kind="image",
-        size=3,
         created_at=datetime.now(UTC),
+        files_changed=1,
+        summary="+1 ~0 -0",
+        stats={"added": 1, "modified": 0, "removed": 0},
+        preview_artifact_id="a1",
+        preview_kind="image",
     )
 
 
 def test_cold_read_reattaches_view_version():
-    # A successful static-view call on a turn re-attaches its version when the
-    # conversation is read cold (warm/cold parity).
-    art = _artifact_view("a1b2c3")
+    # A `show` on a turn re-attaches its version (an inline chip) when the conversation
+    # is read cold: the tool result embeds the snapshot id, which keys the by-id map.
+    snap = _snapshot_view("a1b2c3")
     tool = ToolView(
         id="t1",
         name="view_show",
         args={},
         status="ok",
-        result=format_publish_result(art),
+        result=format_show_result(snap, "image"),
     )
     message = MessageView(role="assistant", tools=[tool])
-    refs = _message_versions(message, {art.id: art})
-    assert [r.version_id for r in refs] == ["a1b2c3"]
-    assert refs[0].kind == "image"
+    refs = _message_versions(message, {snap.id: snap})
+    assert [r.snapshot_id for r in refs] == ["a1b2c3"]
+    assert refs[0].preview_kind == "image"
+    assert refs[0].title == "Chart"
 
 
 def test_cold_read_skips_view_without_version_id():
-    # A live-head call or a degraded capture carries no id, so nothing is attached.
+    # A degraded capture (no id embedded) attaches nothing, even though the tool ran.
     tool = ToolView(
         id="t1",
         name="view_show",

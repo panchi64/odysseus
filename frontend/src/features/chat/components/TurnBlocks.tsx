@@ -29,7 +29,7 @@ import {
   type BlockGroup,
   type LayoutItem,
 } from "../blocks";
-import { LIVE_KEY, versionIcon, versionKey } from "../viewport";
+import { LIVE_KEY, snapshotKey, versionIcon } from "../viewport";
 import { ApprovalCard } from "./ApprovalCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -142,13 +142,13 @@ function BlockRow(
       </Match>
       <Match when={g().kind === "view_version"}>
         {(() => {
-          const v = (g().blocks[0] as ViewVersionBlock).version;
+          const b = g().blocks[0] as ViewVersionBlock;
           return (
             <div class={fullWidthTop(props.top)}>
               <ViewChip
-                icon={versionIcon(v.kind)}
-                label={v.title || v.filename}
-                onOpen={() => props.onOpenInView?.(versionKey(v.versionId))}
+                icon={versionIcon(b.previewKind)}
+                label={b.title || "Version"}
+                onOpen={() => props.onOpenInView?.(snapshotKey(b.snapshotId))}
               />
             </div>
           );

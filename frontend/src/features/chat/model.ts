@@ -72,15 +72,12 @@ export interface HostCommand {
   error?: string;
 }
 
-/** A static snapshot version of the conversation's View (`view.version`). The
- *  comparable history the operator can flip back through. Bytes at
- *  `/views/{versionId}/content`. */
-export interface ViewVersionRef {
-  versionId: string;
-  title: string;
-  filename: string;
-  contentType: string;
+/** How a View version previews on stage: a captured static file rendered by kind,
+ *  with its bytes at `/views/{artifactId}/content`. Absent ⇒ a live/auto preview
+ *  (a running head, or the frontend auto-picks an entry HTML page from the tree). */
+export interface ViewPreviewRef {
   kind: "html" | "image" | "text" | "other";
+  artifactId: string;
 }
 
 /** The live, interactive head of the View — a running server (`view.live`). */
@@ -89,16 +86,19 @@ export interface ViewLiveRef {
   title?: string;
 }
 
-/** A workspace snapshot — a git-style, point-in-time capture of the agent's
- *  sandbox tree after a file-changing turn (`view.snapshot`). Conversation-scoped
- *  (not a message block): browse its files and diffs via `/views/snapshots/{id}/…`.
- *  `summary` is a compact change tally, e.g. `"+2 ~1 -0"`. */
+/** A **version** of the conversation's View (`view.snapshot`) — minted by a `show`.
+ *  A git-style, point-in-time capture of the agent's sandbox tree (its code, browsed
+ *  and diffed via `/views/snapshots/{id}/…`) plus how it previews. Conversation-scoped
+ *  (the panel reads it); the inline chip references it by id. `summary` is a compact
+ *  change tally, e.g. `"+2 ~1 -0"`. */
 export interface ViewSnapshotRef {
   snapshotId: string;
   title?: string;
   createdAt: string;
   filesChanged: number;
   summary: string;
+  /** The static preview the version was shown with, or null for a live/auto preview. */
+  preview: ViewPreviewRef | null;
 }
 
 /** One file in a workspace snapshot's tree, with its change status vs. the prior
@@ -163,12 +163,17 @@ export interface ApprovalBlock {
   id: string;
   approval: Approval;
 }
-/** A snapshot version the agent added to the View during the turn. Rendered in the
- *  transcript as a compact chip that opens it in the viewport. */
+/** An inline chip marking a version the agent `show`ed during the turn — rendered in
+ *  the transcript as a compact chip that opens that version in the viewport. The
+ *  version itself is conversation-scoped (a `ViewSnapshotRef` in the snapshots list);
+ *  the chip only references it by id and labels it. */
 export interface ViewVersionBlock {
   kind: "view_version";
   id: string;
-  version: ViewVersionRef;
+  snapshotId: string;
+  title?: string;
+  /** The preview kind, for the chip icon (null/absent ⇒ a live/auto preview). */
+  previewKind?: "html" | "image" | "text" | "other" | null;
 }
 /** The View's live head, started during the turn. Rendered as a compact LIVE chip
  *  that opens the viewport. */

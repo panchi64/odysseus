@@ -1,13 +1,13 @@
-"""View surface — list and serve the static versions of a conversation's View.
+"""View surface — list a conversation's versions and serve their preview bytes.
 
-Thin pass-throughs to the version store (the artifact store under the hood). A
-View is one canvas per conversation: a live head (reverse-proxied at
-``/previews/{token}/``) plus a history of snapshot **versions**, which this router
-serves. Metadata is separate from bytes: ``/{id}`` is metadata, ``/{id}/content``
-is the file the UI points an iframe or ``<img>`` at. Content is served **inert** —
-a sandboxing CSP plus ``nosniff`` — so model-generated HTML can't script the
-operator's session even if rendered directly; the frontend still hosts it in a
-sandboxed iframe.
+Thin pass-throughs to the workspace-history store (the versions + their files/diffs)
+and the artifact store (a version's static preview bytes). A View is one canvas per
+conversation: a history of **versions** plus an optional live head (reverse-proxied
+at ``/previews/{token}/``). ``/snapshots/{id}/…`` browses a version's code/diffs;
+``/{artifact_id}/content`` is the preview file the UI points an iframe or ``<img>``
+at. Content is served **inert** — a sandboxing CSP plus ``nosniff`` — so
+model-generated HTML can't script the operator's session even if rendered directly;
+the frontend still hosts it in a sandboxed iframe.
 """
 
 from __future__ import annotations
@@ -36,28 +36,9 @@ _VIEW_HEADERS = {
 }
 
 
-class ViewVersionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)  # built straight from an ArtifactView
-
-    id: str
-    conversation_id: str
-    title: str
-    filename: str
-    content_type: str
-    kind: str
-    size: int
-    created_at: datetime
-
-
-@router.get("", response_model=list[ViewVersionOut])
-async def list_versions(conversation_id: str, request: Request) -> list[ViewVersionOut]:
-    views = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
-    return [ViewVersionOut.model_validate(v) for v in views]
-
-
 # --- git-style history: per-turn workspace snapshots ------------------------
-# Declared before the dynamic ``/{version_id}`` routes so ``/snapshots`` isn't
-# captured as a version id.
+# Declared before the dynamic ``/{artifact_id}`` route so ``/snapshots`` isn't
+# captured as an artifact id.
 class SnapshotOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)  # built from a SnapshotView
 
@@ -67,6 +48,10 @@ class SnapshotOut(BaseModel):
     created_at: datetime
     files_changed: int
     summary: str
+    # How this version previews: the captured-bytes artifact + its render kind for a
+    # `show(file=…)`, both null for a live/auto preview.
+    preview_artifact_id: str | None
+    preview_kind: str | None
 
 
 class SnapshotFileOut(BaseModel):
@@ -126,21 +111,14 @@ async def get_snapshot_diff(
     return [SnapshotDiffOut.model_validate(d) for d in diffs]
 
 
-@router.get("/{version_id}", response_model=ViewVersionOut)
-async def get_version(version_id: str, request: Request) -> ViewVersionOut:
+@router.get("/{artifact_id}/content")
+async def get_preview_content(artifact_id: str, request: Request) -> Response:
+    """Serve a version's static preview bytes — the captured file a ``show(file=…)``
+    stamped on the version (``preview_artifact_id``)."""
     try:
-        view = await deps.artifacts(request).get(OPERATOR_ID, version_id)
+        blob = await deps.artifacts(request).content(OPERATOR_ID, artifact_id)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="view version not found") from None
-    return ViewVersionOut.model_validate(view)
-
-
-@router.get("/{version_id}/content")
-async def get_version_content(version_id: str, request: Request) -> Response:
-    try:
-        blob = await deps.artifacts(request).content(OPERATOR_ID, version_id)
-    except NotFoundError:
-        raise HTTPException(status_code=404, detail="view version not found") from None
+        raise HTTPException(status_code=404, detail="view preview not found") from None
     headers = {
         **_VIEW_HEADERS,
         "Content-Disposition": content_disposition(

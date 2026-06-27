@@ -12,25 +12,24 @@ import type {
   ChatMessage,
   SnapshotFile,
   ViewLiveRef,
+  ViewPreviewRef,
   ViewSnapshotRef,
-  ViewVersionRef,
 } from "./model";
 
-/** One version on the View canvas. It carries exactly one content source —
- *  a workspace `snapshot`, a static `version` artifact, or (when no snapshot exists
- *  yet) a standalone `live` head — plus an optional `live` overlay on the newest
- *  snapshot entry. The panel renders PREVIEW vs CODE from whichever source is set. */
+/** One version on the View canvas: a workspace `snapshot` (its code, plus how it
+ *  previews — a static file by kind, or an auto-picked entry HTML page), optionally
+ *  overlaid by the `live` head when a server is running. When there are no snapshots
+ *  yet, a standalone `live` head is the lone entry. The panel renders PREVIEW vs CODE
+ *  from whichever source is set. */
 export interface ViewItem {
   key: string;
   /** Dropdown label, e.g. `V2 · Landing page` or `V3 · Landing page · live`. */
   label: string;
   /** The newest entry — the one the viewport follows when nothing is pinned. */
   isLatest: boolean;
-  /** A workspace snapshot (git-style file tree): preview = rendered entry HTML;
+  /** A workspace snapshot: preview = its stamped static file or auto entry HTML;
    *  code = file tree + diffs. */
   snapshot?: ViewSnapshotRef;
-  /** A static captured artifact: preview = render by kind; code = its source text. */
-  version?: ViewVersionRef;
   /** The live running server. Overlays the latest snapshot (preview = the live
    *  iframe), or stands alone as its own entry when there are no snapshots. */
   live?: ViewLiveRef;
@@ -38,15 +37,15 @@ export interface ViewItem {
 
 /** The selection key for the (single) live head — used when it stands alone. */
 export const LIVE_KEY = "live";
-/** The selection key for a static version — stable across warm + cold renders
- *  (both carry the same backend version id). */
-export const versionKey = (versionId: string): string => `version-${versionId}`;
-/** The selection key for a workspace snapshot — stable across warm + cold renders. */
+/** The selection key for a workspace snapshot version — stable across warm + cold
+ *  renders (both carry the same backend snapshot id). */
 export const snapshotKey = (snapshotId: string): string =>
   `snapshot-${snapshotId}`;
 
-/** A coarse icon for a version chip, by render kind. */
-export function versionIcon(kind: ViewVersionRef["kind"]): IconName {
+/** A coarse icon for a version chip, by its preview kind (null ⇒ a live/auto preview). */
+export function versionIcon(
+  kind: ViewPreviewRef["kind"] | null | undefined,
+): IconName {
   return kind === "image" ? "image" : kind === "html" ? "eye" : "file";
 }
 
@@ -67,48 +66,32 @@ export function pickEntryHtml(files: SnapshotFile[]): string | undefined {
 /** The dropdown label for an entry: its position, an optional title, and a trailing
  *  `live`/`latest` tag on the newest. */
 function entryLabel(item: ViewItem, n: number, isLatest: boolean): string {
-  const title = (item.snapshot?.title ?? item.version?.title ?? "").trim();
+  const title = (item.snapshot?.title ?? "").trim();
   const parts = [`V${n}`];
   if (title) parts.push(title);
   if (isLatest) parts.push(item.live ? "live" : "latest");
   return parts.join(" · ");
 }
 
-/** Collect a thread's View as one ordered list of versions: every static artifact,
- *  then every workspace snapshot (chronological), with the live head overlaid on the
- *  newest snapshot (or appended standalone when there are no snapshots). The last
- *  entry is the latest. Snapshots are conversation-scoped, so they arrive separately
- *  from the message blocks. */
+/** Collect a thread's View as one ordered list of versions — every workspace
+ *  snapshot (chronological), with the live head overlaid on the newest (or appended
+ *  standalone when there are no snapshots). The last entry is the latest. Versions are
+ *  conversation-scoped (the snapshots list); the message blocks only carry the live
+ *  head and the inline chips that open a version here. */
 export function collectViewItems(
   messages: ChatMessage[],
   snapshots: ViewSnapshotRef[] = [],
 ): ViewItem[] {
-  const versions: ViewVersionRef[] = [];
   let live: ViewLiveRef | null = null;
-  for (const m of messages) {
-    for (const b of m.blocks ?? []) {
-      if (b.kind === "view_version") versions.push(b.version);
-      else if (b.kind === "view_live") live = b.live;
-    }
-  }
+  for (const m of messages)
+    for (const b of m.blocks ?? []) if (b.kind === "view_live") live = b.live;
 
-  const items: ViewItem[] = [];
-  for (const v of versions) {
-    items.push({
-      key: versionKey(v.versionId),
-      label: "",
-      isLatest: false,
-      version: v,
-    });
-  }
-  for (const s of snapshots) {
-    items.push({
-      key: snapshotKey(s.snapshotId),
-      label: "",
-      isLatest: false,
-      snapshot: s,
-    });
-  }
+  const items: ViewItem[] = snapshots.map((s) => ({
+    key: snapshotKey(s.snapshotId),
+    label: "",
+    isLatest: false,
+    snapshot: s,
+  }));
 
   // live = the latest snapshot: overlay the running server on the newest snapshot
   // entry, so its preview is the live iframe while its code stays that snapshot's
@@ -135,7 +118,8 @@ export interface PriorVersion {
 
 /** The snapshots that precede the entry with `key` in the version list, oldest →
  *  newest — the candidates its CODE view can diff against (the last is the immediate
- *  previous). Static artifacts can't be diffed, so only snapshot entries qualify. */
+ *  previous). Only snapshot entries have a tree to diff, so a standalone live head
+ *  (no captured version) yields none. */
 export function priorSnapshots(items: ViewItem[], key: string): PriorVersion[] {
   const out: PriorVersion[] = [];
   for (const item of items) {

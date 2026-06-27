@@ -47,7 +47,6 @@ from runs import (
     Run,
     RunMetrics,
     RunStatus,
-    ViewSnapshot,
 )
 from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
@@ -232,6 +231,7 @@ async def _drive_turn(
         conversation_search=caps.conversation_search,
         corpus=caps.corpus,
         uploads=caps.uploads,
+        workspace_history=caps.workspace_history,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -424,44 +424,6 @@ def _finalize(
             attachment_ids=attachment_ids or [],
             persisted=persisted,
         )
-
-
-async def _capture_workspace_snapshot(
-    run: Run, caps: Capabilities, conversation_id: str | None
-) -> None:
-    """Snapshot the conversation's sandbox workspace as a View history version, if it
-    changed this turn. Best-effort: only fires when the conversation has a live
-    sandbox session, and any failure is logged and swallowed so it never disturbs the
-    turn. The store skips a snapshot whose file tree matches the previous one, so a
-    turn that changed nothing records no version (and emits no event)."""
-    history = caps.workspace_history
-    sessions = caps.sandbox_sessions
-    if history is None or sessions is None or conversation_id is None:
-        return
-    session = sessions.existing(conversation_id)
-    if session is None:
-        return  # the turn never touched the sandbox — nothing to snapshot
-    try:
-        files = await asyncio.to_thread(session.collect_text_files)
-        if not files:
-            return
-        snapshot = await history.capture(
-            run.owner_id, conversation_id, run_id=run.id, files=files
-        )
-        if snapshot is None:
-            return  # unchanged since the last snapshot
-        run.emit(
-            ViewSnapshot(
-                conversation_id=conversation_id,
-                snapshot_id=snapshot.id,
-                title=snapshot.title,
-                created_at=snapshot.created_at,
-                files_changed=snapshot.files_changed,
-                summary=snapshot.summary,
-            )
-        )
-    except Exception:  # noqa: BLE001 — history is best-effort, never break a turn
-        logger.warning("workspace snapshot capture failed", exc_info=True)
 
 
 async def _maybe_title(
@@ -743,9 +705,6 @@ def build_chat_orchestrator(
                 await _emit_title(
                     run, title_task, store=store, conversation_id=conversation_id
                 )
-                # Capture the turn's work as a View history snapshot (no-op when the
-                # sandbox went untouched or nothing changed).
-                await _capture_workspace_snapshot(run, capabilities, conversation_id)
         finally:
             # Safety net: if the turn raised or was cancelled before the title was
             # consumed above, don't let the detached title-model call outlive the run.
@@ -801,6 +760,5 @@ def build_resume_orchestrator(
                 conversation_id=parked.conversation_id,
                 is_first_turn=parked.persist_from == 0,
             )
-            await _capture_workspace_snapshot(run, capabilities, parked.conversation_id)
 
     return orchestrate

@@ -119,16 +119,6 @@ export interface DocumentCommitted extends Base {
 }
 
 // --- View (the conversation's one versioned output surface) ----------------
-// A snapshot version added to the View; fetch its bytes from /views/{id}/content.
-export interface ViewVersion extends Base {
-  type: "view.version";
-  conversation_id: string;
-  version_id: string;
-  title: string;
-  filename: string;
-  content_type: string;
-  kind: "html" | "image" | "text" | "other";
-}
 // The View's live head — a running server reverse-proxied at `url`. `url` already
 // carries the entry path when one was given, so it renders the page, not a listing.
 export interface ViewLive extends Base {
@@ -143,10 +133,11 @@ export interface ViewLiveStopped extends Base {
   type: "view.live.stopped";
   conversation_id: string;
 }
-// A workspace snapshot — a point-in-time git-style capture of the agent's sandbox
-// tree after a file-changing turn. Unlike versions/live, snapshots are
-// conversation-scoped (not folded onto a message block); browse files + diffs via
-// `/views/snapshots/{id}/…`.
+// A new **version** of the View — minted by a `show`. Captures the agent's sandbox
+// tree (the version's code, browsed/diffed via `/views/snapshots/{id}/…`) and how it
+// previews: `preview_artifact_id` + `preview_kind` point at the captured-bytes
+// preview of a `show(file=…)` (bytes at `/views/{preview_artifact_id}/content`), or
+// both null for a live/auto preview. Conversation-scoped (not a message block).
 export interface ViewSnapshot extends Base {
   type: "view.snapshot";
   conversation_id: string;
@@ -155,6 +146,8 @@ export interface ViewSnapshot extends Base {
   created_at: string;
   files_changed: number;
   summary: string;
+  preview_kind: "html" | "image" | "text" | "other" | null;
+  preview_artifact_id: string | null;
 }
 
 // --- Conversation ----------------------------------------------------------
@@ -201,7 +194,6 @@ export type RunEvent =
   | DocumentCreated
   | DocumentDelta
   | DocumentCommitted
-  | ViewVersion
   | ViewLive
   | ViewLiveStopped
   | ViewSnapshot

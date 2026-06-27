@@ -1,10 +1,11 @@
-"""Artifact store — capture, list, and serve published previews.
+"""Artifact store — capture and serve a View version's preview bytes.
 
-The capability behind static-artifact previews. Publishing captures a file's
-bytes (encrypted at rest under the vault) with the metadata the UI needs to route
-to a preview. Serving returns the decrypted bytes with their content type. The
-same store backs the agent's ``publish_artifact`` tool and the REST surface, so
-the agent and direct operator access share one implementation.
+The bytes behind a static View **preview**. When the agent ``show``s a file, its
+bytes are captured here (encrypted at rest under the vault) and the version that
+``services/workspace_history`` records points at the artifact as its preview;
+serving returns the decrypted bytes with their content type for the UI to render
+(``<img>`` / sandboxed iframe / inline). A pure blob+metadata store — the version,
+its history, and its diffs live in the workspace-history store, not here.
 
 Content-type inference is shared (``guess_content_type``) so the tool and routes
 agree; ``kind`` is a coarse rendering hint the UI keys on.
@@ -13,12 +14,11 @@ agree; ``kind`` is a coarse rendering hint the UI keys on.
 from __future__ import annotations
 
 import mimetypes
-import re
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import Engine
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from core.db import in_session
 from core.exceptions import NotFoundError
@@ -101,24 +101,6 @@ class ArtifactStore:
 
         return await in_session(self._engine, work)
 
-    async def list(self, owner_id: str, conversation_id: str) -> list[ArtifactView]:
-        def work(session: Session) -> list[ArtifactView]:
-            rows = session.exec(
-                select(Artifact)
-                .where(Artifact.owner_id == owner_id)
-                .where(Artifact.conversation_id == conversation_id)
-                .order_by(Artifact.created_at)
-            ).all()
-            return [_to_view(row) for row in rows]
-
-        return await in_session(self._engine, work)
-
-    async def get(self, owner_id: str, artifact_id: str) -> ArtifactView:
-        def work(session: Session) -> ArtifactView:
-            return _to_view(self._require(session, owner_id, artifact_id))
-
-        return await in_session(self._engine, work)
-
     async def content(self, owner_id: str, artifact_id: str) -> ArtifactBlob:
         def work(session: Session) -> ArtifactBlob:
             row = self._require(session, owner_id, artifact_id)
@@ -149,22 +131,3 @@ def _to_view(row: Artifact) -> ArtifactView:
         size=row.size,
         created_at=row.created_at,
     )
-
-
-# The `view` tool returns this line to the model when it captures a static version;
-# it also carries the version id back through the saved history so a *cold*
-# conversation read can re-attach the version to the message that produced it (no
-# structural join key exists — the format is the contract, owned here so producer
-# and parser agree). The trailing `(id <hex>).` is load-bearing for the parser.
-_PUBLISHED_ID = re.compile(r"\(id ([0-9a-f]+)\)\.\s*$")
-
-
-def format_publish_result(view: ArtifactView) -> str:
-    """The `view` tool's return line for a captured static version."""
-    return f"Showed '{view.title}' in the view as a new {view.kind} version (id {view.id})."
-
-
-def artifact_id_from_result(result: str) -> str | None:
-    """The version id embedded in a static-version `view` result, or None."""
-    match = _PUBLISHED_ID.search(result)
-    return match.group(1) if match else None

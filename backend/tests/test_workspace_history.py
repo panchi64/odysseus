@@ -8,16 +8,13 @@ import hashlib
 import pytest
 from sqlmodel import Session, select
 
-from agent.engine import _capture_workspace_snapshot
 from core.config import Settings
 from core.db import init_db, make_engine
 from core.exceptions import NotFoundError
 from core.vault import Vault
 from models.workspace_history import WorkspaceBlob, WorkspaceSnapshot
-from runs import Run, RunStream, ViewSnapshot
 from services.sandbox import ContainerSandbox, SandboxSessionManager
 from services.workspace_history import WorkspaceHistoryStore
-from tools import Capabilities
 
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
 
@@ -43,25 +40,66 @@ def _manager(tmp_path, vault) -> SandboxSessionManager:
     )
 
 
-# --- the store: capture, dedup, skip-unchanged -------------------------------
+# --- the store: capture, dedup, every-show-is-a-version ----------------------
 async def test_capture_records_a_snapshot(tmp_path):
     store = await _store(tmp_path)
     snap = await store.capture(
         "operator", "conv-1", run_id="r1", files={"a.py": b"print(1)\n", "b.txt": b"hi"}
     )
-    assert snap is not None
     assert snap.stats == {"added": 2, "modified": 0, "removed": 0}
     assert snap.files_changed == 2
     assert snap.summary == "+2 ~0 -0"
+    # No preview descriptor unless one is stamped (a `show(serve=…)`/auto capture).
+    assert snap.preview_artifact_id is None and snap.preview_kind is None
     assert [s.id for s in await store.list("operator", "conv-1")] == [snap.id]
 
 
-async def test_capture_returns_none_when_nothing_changed(tmp_path):
+async def test_exact_reshow_collapses_onto_the_existing_version(tmp_path):
     store = await _store(tmp_path)
-    first = await store.capture("operator", "c", run_id="r1", files={"a.py": b"x"})
-    again = await store.capture("operator", "c", run_id="r2", files={"a.py": b"x"})
-    assert first is not None and again is None  # unchanged tree → no new version
-    assert len(await store.list("operator", "c")) == 1
+    first = await store.capture(
+        "operator", "c", run_id="r1", files={"a.py": b"x"}, preview_kind="image",
+        preview_artifact_id="a1",
+    )
+    # Identical tree AND identical preview → no duplicate; the existing version returns.
+    again = await store.capture(
+        "operator", "c", run_id="r2", files={"a.py": b"x"}, preview_kind="image",
+        preview_artifact_id="a1",
+    )
+    assert again.id == first.id
+    assert [s.id for s in await store.list("operator", "c")] == [first.id]
+
+
+async def test_same_tree_new_preview_records_a_new_version(tmp_path):
+    store = await _store(tmp_path)
+    first = await store.capture(
+        "operator", "c", run_id="r1", files={"a.py": b"x"}, preview_kind="image",
+        preview_artifact_id="a1",
+    )
+    # Same tree but a fresh preview (a different `show(file=…)`) is a real new version.
+    second = await store.capture(
+        "operator", "c", run_id="r2", files={"a.py": b"x"}, preview_kind="html",
+        preview_artifact_id="a2",
+    )
+    assert second.id != first.id
+    assert second.stats == {"added": 0, "modified": 0, "removed": 0}
+    assert [s.id for s in await store.list("operator", "c")] == [first.id, second.id]
+
+
+async def test_capture_stamps_and_reads_back_the_preview_descriptor(tmp_path):
+    store = await _store(tmp_path)
+    snap = await store.capture(
+        "operator",
+        "c",
+        run_id="r1",
+        files={"index.html": b"<p>x</p>"},
+        title="My Page",
+        preview_artifact_id="a1",
+        preview_kind="image",
+    )
+    assert snap.title == "My Page"
+    assert snap.preview_artifact_id == "a1" and snap.preview_kind == "image"
+    [listed] = await store.list("operator", "c")
+    assert listed.preview_artifact_id == "a1" and listed.preview_kind == "image"
 
 
 async def test_unchanged_file_shares_one_blob(tmp_path):
@@ -153,44 +191,6 @@ async def test_collect_text_files_skips_excluded_and_binary(tmp_path):
     assert files["notes.txt"] == b"text"
 
 
-# --- the engine capture hook -------------------------------------------------
-async def test_capture_hook_emits_only_when_files_changed(tmp_path, monkeypatch):
-    vault = Vault(tmp_path / "k.json")
-    await vault.setup("pw")
-    engine = make_engine("sqlite:///:memory:")
-    init_db(engine)
-    store = WorkspaceHistoryStore(engine, vault)
-    manager = _manager(tmp_path, vault)
-    session = await manager.acquire("conv-a")
-    session.write_file("a.py", b"print(1)\n")
-    caps = Capabilities(sandbox_sessions=manager, workspace_history=store)
-    run = Run(id="run-1", kind="chat", owner_id="operator", stream=RunStream())
-    emitted: list = []
-    monkeypatch.setattr(run, "emit", emitted.append)
-
-    await _capture_workspace_snapshot(run, caps, "conv-a")
-    snaps = [b for b in emitted if isinstance(b, ViewSnapshot)]
-    assert len(snaps) == 1 and snaps[0].files_changed == 1
-
-    # Re-running with no file change records nothing and emits nothing more.
-    await _capture_workspace_snapshot(run, caps, "conv-a")
-    assert len([b for b in emitted if isinstance(b, ViewSnapshot)]) == 1
-
-
-async def test_capture_hook_is_a_noop_without_a_session(tmp_path, monkeypatch):
-    store = await _store(tmp_path)
-    vault = Vault(tmp_path / "k2.json")
-    await vault.setup("pw")
-    caps = Capabilities(sandbox_sessions=_manager(tmp_path, vault), workspace_history=store)
-    run = Run(id="run-1", kind="chat", owner_id="operator", stream=RunStream())
-    emitted: list = []
-    monkeypatch.setattr(run, "emit", emitted.append)
-
-    await _capture_workspace_snapshot(run, caps, "never-ran")  # no session acquired
-    assert emitted == []
-    assert await store.list("operator", "never-ran") == []
-
-
 # --- REST surface ------------------------------------------------------------
 async def test_snapshot_routes_list_files_content_and_diff():
     async with client_app() as (client, app):
@@ -236,7 +236,10 @@ async def test_conversation_detail_includes_snapshots_and_delete_clears_them(mon
 
         detail = (await client.get(f"/conversations/{conv}")).json()
         assert len(detail["snapshots"]) == 1
-        assert detail["snapshots"][0]["files_changed"] == 1
+        snap = detail["snapshots"][0]
+        assert snap["files_changed"] == 1
+        # An auto/no-preview capture carries a null preview descriptor.
+        assert snap["preview_kind"] is None and snap["preview_artifact_id"] is None
 
         assert (await client.delete(f"/conversations/{conv}")).status_code == 204
         assert await app.state.workspace_history.list("operator", conv) == []

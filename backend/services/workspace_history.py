@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -38,6 +39,10 @@ class SnapshotView:
     files_changed: int
     summary: str  # compact change tally, e.g. "+2 ~1 -0"
     stats: dict[str, int]  # added / modified / removed vs. the previous snapshot
+    # How this version previews: the captured-bytes artifact + its render kind for a
+    # `show(file=…)`, both None for a live/auto preview (frontend picks an entry HTML).
+    preview_artifact_id: str | None
+    preview_kind: str | None
 
 
 @dataclass(frozen=True)
@@ -70,11 +75,17 @@ class WorkspaceHistoryStore:
         run_id: str | None,
         files: dict[str, bytes],
         title: str | None = None,
-    ) -> SnapshotView | None:
-        """Capture the current file set as a snapshot, or ``None`` if nothing changed
-        since the last one (so a turn that touched no files records no version)."""
+        preview_artifact_id: str | None = None,
+        preview_kind: str | None = None,
+    ) -> SnapshotView:
+        """Capture the current file set as a new View version, stamped with how it
+        previews. A ``show`` mints a version, so each is a deliberate, comparable result
+        (the stats may be all zero when the same tree is shown again with a fresh
+        preview). An *exact* re-show — identical tree **and** identical preview as the
+        latest version — collapses onto that version rather than recording a duplicate,
+        so retries and re-served live heads don't accrete empty versions."""
 
-        def work(session: Session) -> SnapshotView | None:
+        def work(session: Session) -> SnapshotView:
             manifest = {path: _sha256(data) for path, data in sorted(files.items())}
             prev = session.exec(
                 select(WorkspaceSnapshot)
@@ -83,8 +94,13 @@ class WorkspaceHistoryStore:
                 .order_by(WorkspaceSnapshot.created_at.desc())  # type: ignore[attr-defined]
             ).first()
             prev_manifest: dict[str, str] = self._manifest(prev) if prev else {}
-            if manifest == prev_manifest:
-                return None  # no change → no new version
+            if (
+                prev is not None
+                and manifest == prev_manifest
+                and prev.preview_artifact_id == preview_artifact_id
+                and prev.preview_kind == preview_kind
+            ):
+                return _to_view(prev)  # exact re-show → the existing version, no duplicate
 
             needed = set(manifest.values())
             have = set(
@@ -115,6 +131,8 @@ class WorkspaceHistoryStore:
                 title=title,
                 manifest_enc=self._vault.encrypt_bytes(json.dumps(manifest).encode("utf-8")),
                 stats_json=json.dumps(stats),
+                preview_artifact_id=preview_artifact_id,
+                preview_kind=preview_kind,
             )
             session.add(snapshot)
             session.flush()
@@ -307,4 +325,27 @@ def _to_view(row: WorkspaceSnapshot) -> SnapshotView:
         files_changed=added + modified + removed,
         summary=f"+{added} ~{modified} -{removed}",
         stats=stats,
+        preview_artifact_id=row.preview_artifact_id,
+        preview_kind=row.preview_kind,
     )
+
+
+# The `view` tool returns this line to the model when a `show` mints a version; it
+# also carries the version id back through saved history so a *cold* conversation
+# read can re-attach the inline chip to the message that produced it (no structural
+# join key exists between a tool call and the snapshot it created — the format is the
+# contract, owned here so producer and parser agree). The trailing `(id <hex>).` is
+# load-bearing for the parser.
+_SHOWN_ID = re.compile(r"\(id ([0-9a-f]+)\)\.\s*$")
+
+
+def format_show_result(view: SnapshotView, kind: str) -> str:
+    """The `view` tool's return line for a version minted by ``show``."""
+    label = view.title or "the result"
+    return f"Showed {label!r} in the view as a new {kind} version (id {view.id})."
+
+
+def snapshot_id_from_result(result: str) -> str | None:
+    """The version id embedded in a `show` tool result, or None."""
+    match = _SHOWN_ID.search(result)
+    return match.group(1) if match else None

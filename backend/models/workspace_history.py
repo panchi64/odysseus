@@ -52,4 +52,11 @@ class WorkspaceSnapshot(SQLModel, table=True):
     # JSON {"added": n, "modified": n, "removed": n} vs. the previous snapshot —
     # bare counts, no content, so kept in the clear for cheap timeline listing.
     stats_json: str
+    # How this version is previewed on the View stage. A `show(file=…)` stamps the
+    # captured-bytes artifact that backs the preview + its coarse render kind
+    # ("image" | "html" | "text" | "other"); a `show(serve=…)`/no explicit file
+    # leaves both null, and the frontend auto-picks an entry HTML page from the tree.
+    # Policy, not content — kept in the clear like `stats_json`.
+    preview_artifact_id: str | None = None
+    preview_kind: str | None = None
     created_at: datetime = Field(default_factory=utcnow, index=True)

@@ -167,25 +167,10 @@ class DocumentCommitted(_Body):
 
 
 # --- View (the conversation's one versioned output surface) ------------------
-# Artifacts and live previews were two products leaking one mechanism split; they
-# are unified as the View — a single canvas with a live head plus a history of
-# snapshot versions to compare. ``view.version`` is the durable, comparable
-# snapshot; ``view.live`` / ``view.live.stopped`` are the interactive head.
-class ViewVersion(_Body):
-    """The agent added a snapshot version to the conversation's View — a file it
-    produced, captured (encrypted) so the operator can render it and compare it
-    against earlier versions. Fetch its bytes from ``/views/{version_id}/content``.
-    ``kind`` is a coarse rendering hint. Additive to v1; no bump."""
-
-    type: Literal["view.version"] = "view.version"
-    conversation_id: str
-    version_id: str
-    title: str
-    filename: str
-    content_type: str
-    kind: str  # "html" | "image" | "text" | "other"
-
-
+# The View is one canvas with a history of **versions** to compare plus an optional
+# live **head**. A version is one ``view.snapshot`` (the captured workspace tree +
+# how it previews); ``view.live`` / ``view.live.stopped`` are the interactive head
+# overlaid on the latest version.
 class ViewLive(_Body):
     """The agent started (or replaced) the View's live head — a running server.
     ``url`` is a token-gated proxy path on this same API origin
@@ -217,10 +202,12 @@ class ViewLiveStopped(_Body):
 
 
 class ViewSnapshot(_Body):
-    """The chassis captured a snapshot of the agent's sandbox after a file-changing
-    turn — a point-in-time tree of the work the operator can browse (code) and diff
-    against the previous snapshot. Bytes live in the encrypted workspace-history
-    store; the frontend lists and fetches via ``/views/snapshots/{snapshot_id}/…``.
+    """A new **version** of the conversation's View — minted by a ``show``. It captures
+    the agent's sandbox tree (the version's code, browsable + diffable via
+    ``/views/snapshots/{snapshot_id}/…``) and how it previews: ``preview_artifact_id``
+    + ``preview_kind`` point at the captured-bytes preview of a ``show(file=…)`` (fetch
+    them from ``/views/{preview_artifact_id}/content``), or both are null for a
+    live/auto preview (a running head, or the frontend auto-picks an entry HTML page).
     Additive to v1; no bump."""
 
     type: Literal["view.snapshot"] = "view.snapshot"
@@ -230,6 +217,8 @@ class ViewSnapshot(_Body):
     created_at: datetime
     files_changed: int
     summary: str  # compact change tally, e.g. "+2 ~1 −0"
+    preview_kind: str | None = None  # "html" | "image" | "text" | "other" | None
+    preview_artifact_id: str | None = None
 
 
 # --- Conversation ------------------------------------------------------------
@@ -289,7 +278,6 @@ EventBody = Annotated[
     | DocumentDelta
     | DocumentCommitted
     | CitationAdded
-    | ViewVersion
     | ViewLive
     | ViewLiveStopped
     | ViewSnapshot

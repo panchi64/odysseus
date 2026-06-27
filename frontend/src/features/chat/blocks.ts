@@ -72,7 +72,7 @@ export function assembleTranscript(
         );
         break;
       case "view_version":
-        parts.push(`[view version: ${b.version.title}]`);
+        parts.push(`[view version: ${b.title ?? "version"}]`);
         break;
       case "view_live":
         parts.push(`[live view: ${b.live.url}]`);

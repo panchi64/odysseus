@@ -22,9 +22,9 @@ from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow
-from services.artifacts import ArtifactView, artifact_id_from_result
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView, context_footprint
+from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -51,26 +51,29 @@ class ToolCallOut(BaseModel):
 
 
 class ViewVersionRefOut(BaseModel):
-    """A static View version re-attached to the message that produced it, mirroring
-    the live ``view.version`` event so a cold read renders like a warm one."""
+    """An inline View **chip** re-attached to the message that minted it: a ``show``
+    produced a version mid-turn, recoverable from the message's ``view`` tool result
+    (which embeds the version id). The chip just labels + opens the version — its bytes
+    and files come from the conversation-scoped snapshot the panel reads."""
 
-    version_id: str
-    title: str
-    filename: str
-    content_type: str
-    kind: str
+    snapshot_id: str
+    title: str | None
+    preview_kind: str | None  # "html" | "image" | "text" | "other" | None — the chip icon
 
 
 class ViewSnapshotRefOut(BaseModel):
-    """A workspace-history snapshot for the conversation's View, mirroring the live
-    ``view.snapshot`` event so a cold read rebuilds the timeline like a warm one.
-    Conversation-scoped (it captures the whole workspace), not tied to one message."""
+    """A View **version** (workspace snapshot) for the conversation's View, mirroring
+    the live ``view.snapshot`` event so a cold read rebuilds the timeline like a warm
+    one. Conversation-scoped (it captures the whole workspace), not tied to one
+    message; carries how it previews."""
 
     snapshot_id: str
     title: str | None
     created_at: datetime
     files_changed: int
     summary: str
+    preview_kind: str | None
+    preview_artifact_id: str | None
 
 
 class MessageOut(BaseModel):
@@ -153,32 +156,30 @@ def _summary(view: ConversationSummaryView) -> ConversationSummary:
 
 
 def _message_versions(
-    view: MessageView, by_id: dict[str, ArtifactView]
+    view: MessageView, by_id: dict[str, SnapshotView]
 ) -> list[ViewVersionRefOut]:
-    """The static View versions this turn produced, recovered from its ``view`` tool
-    results (each static one carries the version id). A live-head call or a failed
-    capture has no id and is skipped, so the cold read attaches exactly the durable
-    versions that warmly streamed."""
+    """The View versions this turn minted, recovered from its ``view`` tool results
+    (each ``show(file=…)`` embeds the version id). Only a static-preview version folds an
+    inline chip — a live/auto version is already marked by its LIVE chip, matching the
+    warm stream — so the cold read attaches exactly the chips that warmly streamed."""
     refs: list[ViewVersionRefOut] = []
     for tool in view.tools:
         if not tool.name.endswith("view_show") or not isinstance(tool.result, str):
             continue
-        version_id = artifact_id_from_result(tool.result)
-        version = by_id.get(version_id) if version_id else None
-        if version is not None:
+        snapshot_id = snapshot_id_from_result(tool.result)
+        snapshot = by_id.get(snapshot_id) if snapshot_id else None
+        if snapshot is not None and snapshot.preview_kind is not None:
             refs.append(
                 ViewVersionRefOut(
-                    version_id=version.id,
-                    title=version.title,
-                    filename=version.filename,
-                    content_type=version.content_type,
-                    kind=version.kind,
+                    snapshot_id=snapshot.id,
+                    title=snapshot.title,
+                    preview_kind=snapshot.preview_kind,
                 )
             )
     return refs
 
 
-def _message(view: MessageView, by_id: dict[str, ArtifactView]) -> MessageOut:
+def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
     return MessageOut(
         id=view.id,
         role=view.role,
@@ -218,20 +219,16 @@ async def _detail(
     if used is not None:
         window = await deps.models(request).main_context_window(OPERATOR_ID)
         context = ContextWindow.from_used(used, window)
-    # Only pay for the versions lookup when a turn actually showed something — the
-    # vast majority of conversations never call the view tool.
-    showed = any(t.name.endswith("view_show") for m in messages for t in m.tools)
-    by_id: dict[str, ArtifactView] = {}
-    if showed:
-        versions = await deps.artifacts(request).list(OPERATOR_ID, conversation_id)
-        by_id = {v.id: v for v in versions}
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (
         ActiveRun(id=run.id, status=run.status.value, last_seq=run.stream.last_seq)
         if run is not None
         else None
     )
+    # The conversation's versions, fetched once: the timeline (snapshots[]) and the
+    # by-id map the cold-read uses to re-attach each turn's inline chips.
     snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
+    by_id = {s.id: s for s in snapshots}
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],
@@ -242,6 +239,8 @@ async def _detail(
                 created_at=s.created_at,
                 files_changed=s.files_changed,
                 summary=s.summary,
+                preview_kind=s.preview_kind,
+                preview_artifact_id=s.preview_artifact_id,
             )
             for s in snapshots
         ],
