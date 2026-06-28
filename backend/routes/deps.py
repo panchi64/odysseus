@@ -23,6 +23,7 @@ from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.gallery import GalleryService
 from services.memory import MemoryStore
+from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -101,6 +102,10 @@ def browser(request: Request) -> ManagedBrowser:
 
 def searxng(request: Request) -> ManagedSearxng:
     return request.app.state.searxng
+
+
+def offline(request: Request) -> OfflineModeService:
+    return request.app.state.offline
 
 
 def artifacts(request: Request) -> ArtifactStore:

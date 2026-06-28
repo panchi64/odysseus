@@ -165,6 +165,26 @@ class Settings(BaseSettings):
     searxng_startup_timeout_s: float = 30.0
     searxng_base_url: str | None = None
 
+    # Offline mode — when internet connectivity is lost the managed web containers
+    # (SearXNG + the fetch browser/proxy) are torn down to save resources and the
+    # web tools are hidden from the agent; both return automatically when
+    # connectivity is back. The operator can also force offline manually. Boot is
+    # probe-first / fail-closed: one check decides whether the heavy browser starts
+    # at all. The monitor TCP-connects to these public anchors (direct IPs, no DNS,
+    # no payload) on its interval; `fail_threshold` consecutive failures declare
+    # offline, `recover_threshold` consecutive successes declare online (hysteresis
+    # so the containers don't flap on a flaky link).
+    # When False the monitor does no network probing and simply assumes online, so
+    # auto-detection is off and only the manual switch can force offline (a host on a
+    # known-always-online link, or tests that must not touch the network).
+    offline_check_enabled: bool = True
+    offline_auto_default: bool = True
+    offline_check_interval_s: float = 30.0
+    offline_check_timeout_s: float = 3.0
+    offline_fail_threshold: int = 3
+    offline_recover_threshold: int = 2
+    offline_anchors: list[str] = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]
+
 
     # Auto-titling: name a fresh thread from its first exchange (a best-effort
     # reasoning-off utility call). On by default; the operator can rename either way.

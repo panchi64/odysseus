@@ -66,12 +66,16 @@ async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "te
             data_dir=Path(tmp),
             auth_enabled=auth_enabled,
             unlock_passphrase=passphrase,
-            # No container side effects in tests, regardless of the host: the
-            # managed SearXNG would pull/launch a container at boot, and sandbox
-            # detection would otherwise flip with host Docker. Tests that need
-            # either inject it directly (e.g. app.state.sandbox = a fake).
+            # No container side effects in tests, regardless of the host: the managed
+            # SearXNG / web-fetch browser would pull/launch a container at boot, and
+            # sandbox detection would otherwise flip with host Docker. Tests that need
+            # any of these inject it directly (e.g. app.state.sandbox = a fake).
             searxng_enabled=False,
+            web_fetch_enabled=False,
             sandbox_enabled=False,
+            # Assume online without touching the network, so the offline-mode monitor's
+            # boot probe doesn't make a real connection (and the web rows stay nominal).
+            offline_check_enabled=False,
         )
         app = create_app(settings)
         async with app.router.lifespan_context(app):

@@ -34,6 +34,7 @@ from routes import (
     health,
     memory,
     models,
+    offline,
     overview,
     previews,
     runs,
@@ -64,6 +65,7 @@ from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
 from services.gallery import GalleryService
 from services.memory import MemoryStore
+from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
@@ -305,7 +307,9 @@ async def lifespan(app: FastAPI):
         runtime_pref=settings.sandbox_runtime,
     )
     app.state.searxng = searxng
-    await searxng.start()
+    # The container is not started here: the offline-mode service (built below, once
+    # the browser exists too) owns bringing both web containers up — probe-first, so a
+    # host that boots offline never launches them.
     # Web search — query the managed SearXNG (or an operator-configured provider). Its own
     # outbound client does NOT follow redirects: an unguarded redirect off the JSON API
     # would be an SSRF hole, so the search path simply refuses to follow one.
@@ -338,7 +342,7 @@ async def lifespan(app: FastAPI):
         runtime_pref=settings.sandbox_runtime,
     )
     app.state.browser = browser
-    await browser.start()
+    # Like SearXNG above, the browser is started by the offline-mode service, not here.
     app.state.fetcher = BrowserFetcher(
         browser=browser,
         timeout_s=settings.web_fetch_timeout_s,
@@ -350,6 +354,29 @@ async def lifespan(app: FastAPI):
         challenge_waits=settings.web_fetch_challenge_waits,
         challenge_wait_ms=settings.web_fetch_challenge_wait_ms,
     )
+    # Offline mode — owns both web containers' lifecycle. Probe-first at boot: it runs
+    # one connectivity check and only brings SearXNG + the browser up if the host is
+    # online (a host that boots offline never spins up the heavy browser), then watches
+    # the link and suspends/resumes them as connectivity comes and goes. The operator
+    # can also force offline manually; both switches persist via the settings store.
+    async def _assume_online() -> bool:
+        return True
+
+    app.state.offline = OfflineModeService(
+        searxng=searxng,
+        browser=browser,
+        settings_store=app.state.settings_store,
+        owner_id=OPERATOR_ID,
+        anchors=settings.offline_anchors,
+        interval_s=settings.offline_check_interval_s,
+        timeout_s=settings.offline_check_timeout_s,
+        fail_threshold=settings.offline_fail_threshold,
+        recover_threshold=settings.offline_recover_threshold,
+        auto_default=settings.offline_auto_default,
+        # Probing off ⇒ assume online (no network); only the manual switch acts.
+        probe=None if settings.offline_check_enabled else _assume_online,
+    )
+    await app.state.offline.start()
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
     # Present ⇒ wrap it in a per-conversation session manager that keeps a
@@ -393,6 +420,7 @@ async def lifespan(app: FastAPI):
         await preview_client.aclose()
         await discovery_client.aclose()
         await web_client.aclose()
+        await app.state.offline.stop()  # stop the monitor before tearing the containers down
         await browser.stop()
         await searxng.stop()
         if sandbox_manager is not None:
@@ -441,6 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(previews.router)
     app.include_router(search.router)
     app.include_router(api_tokens.router)
+    app.include_router(offline.router)
     return app
 
 

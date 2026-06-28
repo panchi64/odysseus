@@ -173,6 +173,9 @@ def _submit_turn(
         attachment_ids=attachment_ids,
         vision=vision,
         inline_max_tokens=inline_max_tokens,
+        # While offline mode is active the web containers are down, so hide the web
+        # tools from the agent rather than let it discover they're unavailable.
+        disabled_tools=deps.offline(request).web_tools_disabled(),
     )
     run = deps.registry(request).submit(
         kind="chat",

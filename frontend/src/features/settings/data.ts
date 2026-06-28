@@ -10,6 +10,7 @@ import type {
   ChatSettings,
   EmbeddingHealth,
   EndpointInput,
+  OfflineState,
   ReindexStatus,
   RoleBindings,
   SearchProvider,
@@ -287,4 +288,63 @@ export async function saveChatSettings(
   attachmentInlineMaxTokens: number,
 ): Promise<ChatSettings> {
   return api.put<ChatSettings>("/chat/settings", { attachmentInlineMaxTokens });
+}
+
+/* ── Offline mode ──────────────────────────────────────────────────────────────
+   The backend can flip offline mode on its own when connectivity drops, so this is
+   a LIVE-POLLED read (a plain signal, not a `createResource` — same reasoning as the
+   reindex readout: a refetching resource would re-trigger the screen's Suspense
+   fallback on every poll). The screen polls `refreshOfflineState` on a timer so an
+   auto-toggle shows up without a reload. */
+
+interface OfflineStateDTO {
+  manual_offline: boolean;
+  auto_detect: boolean;
+  online: boolean;
+  effective_offline: boolean;
+}
+
+/** The single snake_case→camel mapper for the offline state. */
+function toOfflineState(dto: OfflineStateDTO): OfflineState {
+  return {
+    manualOffline: dto.manual_offline,
+    autoDetect: dto.auto_detect,
+    online: dto.online,
+    effectiveOffline: dto.effective_offline,
+  };
+}
+
+const [offlineState, setOfflineState] = createSignal<OfflineState | null>(null);
+
+export function useOfflineState(): () => OfflineState | null {
+  return offlineState;
+}
+
+/** Poll the offline state once (drives the live readout + toggles in place). */
+export async function refreshOfflineState(): Promise<void> {
+  try {
+    setOfflineState(toOfflineState(await api.get<OfflineStateDTO>("/offline")));
+  } catch {
+    // Keep the last known state on a transient poll failure.
+  }
+}
+
+/** Apply a switch change and reflect the fresh state the PUT returns (so the readout
+ *  updates without a round-trip). */
+async function putOffline(
+  body: { manual_offline: boolean } | { auto_detect: boolean },
+): Promise<void> {
+  setOfflineState(
+    toOfflineState(await api.put<OfflineStateDTO>("/offline", body)),
+  );
+}
+
+/** Force offline mode on/off. */
+export async function setOfflineManual(value: boolean): Promise<void> {
+  await putOffline({ manual_offline: value });
+}
+
+/** Turn the auto-detect master switch on/off (does not itself force offline). */
+export async function setOfflineAutoDetect(value: boolean): Promise<void> {
+  await putOffline({ auto_detect: value });
 }

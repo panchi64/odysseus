@@ -186,6 +186,9 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             workspace_history=deps.workspace_history(request),
         ),
         store=deps.store(request),
+        # A resumed turn respects the current offline state too — if connectivity
+        # dropped while it was parked, the web tools stay hidden on resume.
+        disabled_tools=deps.offline(request).web_tools_disabled(),
     )
     # Record grants *before* resuming: resume only schedules the turn (it doesn't await
     # it), and the resumed turn's inline grant check must see them, or a tool re-called

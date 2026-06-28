@@ -213,6 +213,7 @@ async def _drive_turn(
     announced: set[str],
     caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -222,6 +223,7 @@ async def _drive_turn(
     deps = RunDeps(
         run=run,
         owner_id=run.owner_id,
+        disabled_tools=disabled_tools,
         memory=caps.memory,
         sandbox_sessions=caps.sandbox_sessions,
         conversation_id=conversation_id,
@@ -337,6 +339,7 @@ async def _verify_and_correct(
     judge: Judge,
     caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -367,6 +370,7 @@ async def _verify_and_correct(
         announced=announced,
         caps=caps,
         conversation_id=conversation_id,
+        disabled_tools=disabled_tools,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -560,6 +564,7 @@ def build_chat_orchestrator(
     attachment_ids: list[str] | None = None,
     vision: bool = False,
     inline_max_tokens: int | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -650,6 +655,7 @@ def build_chat_orchestrator(
                 announced=announced,
                 caps=capabilities,
                 conversation_id=conversation_id,
+                disabled_tools=disabled_tools,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -678,6 +684,7 @@ def build_chat_orchestrator(
                         judging,
                         caps=capabilities,
                         conversation_id=conversation_id,
+                        disabled_tools=disabled_tools,
                     )
 
             _finalize(
@@ -720,6 +727,7 @@ def build_resume_orchestrator(
     *,
     capabilities: Capabilities = _NO_CAPS,
     store: ConversationStore | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:
     """Resume a parked turn with the operator's approve/deny decisions."""
 
@@ -733,6 +741,7 @@ def build_resume_orchestrator(
             announced=parked.announced,
             caps=capabilities,
             conversation_id=parked.conversation_id,
+            disabled_tools=disabled_tools,
         )
         _finalize(
             run,

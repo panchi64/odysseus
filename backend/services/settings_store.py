@@ -19,6 +19,12 @@ from models.app_setting import AppSetting
 # The owner-scoped key the chat attachment inline token cap is stored under.
 ATTACHMENT_INLINE_MAX_TOKENS_KEY = "chat.attachment_inline_max_tokens"
 
+# Offline mode (services/offline.py) persists the operator's two switches here as
+# "true"/"false" strings: the manual force-offline toggle and the auto-detect master
+# switch. Policy, not a secret — stored in the clear like every other app preference.
+OFFLINE_MANUAL_KEY = "offline.manual"
+OFFLINE_AUTO_KEY = "offline.auto"
+
 
 class SettingsStore:
     def __init__(self, db_engine: Engine) -> None:

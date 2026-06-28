@@ -3,6 +3,8 @@ import {
   createMemo,
   createSignal,
   For,
+  onCleanup,
+  onMount,
   Show,
   type JSX,
 } from "solid-js";
@@ -29,16 +31,20 @@ import { isApiError } from "~/lib/api";
 import {
   createEndpoint,
   deleteEndpoint,
+  refreshOfflineState,
   saveChatSettings,
   setEndpointEnabled,
+  setOfflineAutoDetect,
+  setOfflineManual,
   setRoleBinding,
   testEndpoint,
   updateEndpoint,
   useChatSettings,
   useEndpoints,
+  useOfflineState,
   useRoles,
 } from "../data";
-import { BINDABLE_ROLES } from "../model";
+import { BINDABLE_ROLES, type OfflineState } from "../model";
 import { EmbeddingRoleControls } from "../components/EmbeddingRoleControls";
 import {
   EndpointForm,
@@ -86,6 +92,31 @@ export function SettingsScreen(): JSX.Element {
       toast.error("Unable to update the attachment limit.");
     } finally {
       setSavingCap(false);
+    }
+  };
+
+  /* ── Offline mode ───────────────────────────────────────────────────────────
+     The backend owns the offline decision (and can flip it on its own when
+     connectivity drops), so this is a live read — poll it while the screen is open
+     so an auto-toggle shows up here. The two switches relay straight to the backend,
+     which returns the fresh state. */
+  const offline = useOfflineState();
+  onMount(() => {
+    void refreshOfflineState();
+    const id = setInterval(() => void refreshOfflineState(), 10_000);
+    onCleanup(() => clearInterval(id));
+  });
+  const offlineLabel = (s: OfflineState): string =>
+    !s.effectiveOffline
+      ? "ONLINE"
+      : s.manualOffline
+        ? "OFFLINE · MANUAL"
+        : "OFFLINE · NO CONNECTIVITY";
+  const toggleOffline = async (action: () => Promise<void>, label: string) => {
+    try {
+      await action();
+    } catch {
+      toast.error(`Couldn't update ${label}.`);
     }
   };
 
@@ -350,7 +381,7 @@ export function SettingsScreen(): JSX.Element {
     <Stack gap={6}>
       <PageHeader
         title="SETTINGS"
-        subtitle="Appearance, model, and web-search configuration."
+        subtitle="Appearance, model, web-search, and offline configuration."
         assetId="ODY-CFG-03.0"
       />
 
@@ -403,6 +434,77 @@ export function SettingsScreen(): JSX.Element {
               </Button>
             </Row>
           </Stack>
+        </Show>
+      </Panel>
+
+      <Panel label="OFFLINE MODE">
+        <Show when={offline()} fallback={<LoadingText />}>
+          {(state) => (
+            <Stack gap={3}>
+              <Row align="center" justify="between">
+                <Stack gap={1}>
+                  <Text variant="label" tone="default">
+                    STATUS
+                  </Text>
+                  <Text variant="micro" tone="dim">
+                    When connectivity is lost the web search + fetch containers
+                    are suspended to save resources and the agent's web tools
+                    are hidden. They return automatically when you're back
+                    online.
+                  </Text>
+                </Stack>
+                <StatusFlag
+                  status={state().effectiveOffline ? "warn" : "nominal"}
+                >
+                  {offlineLabel(state())}
+                </StatusFlag>
+              </Row>
+              <Row
+                align="center"
+                justify="between"
+                class="border-t border-line pt-3"
+              >
+                <Stack gap={1}>
+                  <Text variant="label" tone="default">
+                    OFFLINE NOW
+                  </Text>
+                  <Text variant="micro" tone="dim">
+                    Force offline immediately — tears down the web containers
+                    regardless of connectivity.
+                  </Text>
+                </Stack>
+                <Toggle
+                  checked={state().manualOffline}
+                  onChange={() =>
+                    void toggleOffline(
+                      () => setOfflineManual(!state().manualOffline),
+                      "offline mode",
+                    )
+                  }
+                />
+              </Row>
+              <Row align="center" justify="between">
+                <Stack gap={1}>
+                  <Text variant="label" tone="default">
+                    AUTO-DETECT
+                  </Text>
+                  <Text variant="micro" tone="dim">
+                    Go offline on its own when the internet connection drops,
+                    and come back when it returns.
+                  </Text>
+                </Stack>
+                <Toggle
+                  checked={state().autoDetect}
+                  onChange={() =>
+                    void toggleOffline(
+                      () => setOfflineAutoDetect(!state().autoDetect),
+                      "auto-detect",
+                    )
+                  }
+                />
+              </Row>
+            </Stack>
+          )}
         </Show>
       </Panel>
 

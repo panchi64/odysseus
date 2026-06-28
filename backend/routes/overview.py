@@ -63,6 +63,10 @@ async def get_overview(request: Request) -> Overview:
     provider_enabled = any(p.enabled for p in search_providers)
     managed_search_ready = deps.searxng(request).base_url is not None
     web_search_configured = provider_enabled or managed_search_ready
+    # Offline mode suspends both web capabilities (the containers are torn down to save
+    # resources); when active it's the reason the rows are down, so it overrides the
+    # generic "no runtime" detail below.
+    offline_active = deps.offline(request).state().effective_offline
 
     conversation_count = await deps.store(request).count_conversations(OPERATOR_ID)
     memory_count = await deps.memory(request).count(OPERATOR_ID)
@@ -138,7 +142,9 @@ async def get_overview(request: Request) -> Overview:
     # Web search — the backend's managed SearXNG (or an operator-configured provider that
     # overrides it) ⇒ search available; neither ⇒ disabled (degraded, not down — e.g. no
     # container runtime, or the instance still booting).
-    if provider_enabled:
+    if offline_active:
+        search_detail = "offline mode — paused"
+    elif provider_enabled:
         search_detail = "SearXNG configured"
     elif managed_search_ready:
         search_detail = "SearXNG (managed)"
@@ -148,7 +154,7 @@ async def get_overview(request: Request) -> Overview:
         Capability(
             key="web_search",
             label="WEB SEARCH",
-            status="nominal" if web_search_configured else "warn",
+            status="warn" if offline_active or not web_search_configured else "nominal",
             detail=search_detail,
         )
     )
@@ -156,12 +162,18 @@ async def get_overview(request: Request) -> Overview:
     # renders pages. It can be down independently (no runtime, image pull failed, still
     # bringing up), so it gets its own row rather than being folded into web search.
     fetch_available = deps.browser(request).available
+    if offline_active:
+        fetch_detail = "offline mode — paused"
+    elif fetch_available:
+        fetch_detail = "containerized browser"
+    else:
+        fetch_detail = "no runtime — unavailable"
     capabilities.append(
         Capability(
             key="web_fetch",
             label="WEB FETCH",
-            status="nominal" if fetch_available else "warn",
-            detail="containerized browser" if fetch_available else "no runtime — unavailable",
+            status="nominal" if fetch_available and not offline_active else "warn",
+            detail=fetch_detail,
         )
     )
 

@@ -97,3 +97,18 @@ export interface SearchProviderInput {
 export interface ChatSettings {
   attachmentInlineMaxTokens: number;
 }
+
+/* ── Offline mode ──────────────────────────────────────────────────────────── */
+
+/** The backend's read on offline mode (connectivity-aware web-container suspension).
+ *  The backend owns every decision here — the frontend only renders this and relays
+ *  the two switches back. `manualOffline` forces offline; `autoDetect` lets the
+ *  connectivity monitor toggle it; `online` is the raw connectivity verdict; and
+ *  `effectiveOffline` (= manual OR (auto AND NOT online)) is what's actually in
+ *  effect — the web containers are down and the agent's web tools are hidden. */
+export interface OfflineState {
+  manualOffline: boolean;
+  autoDetect: boolean;
+  online: boolean;
+  effectiveOffline: boolean;
+}

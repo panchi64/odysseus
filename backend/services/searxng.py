@@ -118,15 +118,21 @@ class ManagedSearxng:
     async def stop(self) -> None:
         """Cancel an in-flight bring-up and tear down the container we launched.
         ``_bring_up`` logs its own failures, so the task only ever raises on the
-        cancellation below."""
+        cancellation below. Resets back to the pre-``start`` state — ``_task`` and
+        ``_base_url`` cleared — so a later ``start()`` brings it up afresh (the
+        offline-mode monitor toggles this instance up and down)."""
         if self._task is not None:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+            self._task = None
         if self._runtime is not None:
             await force_remove_container(self._runtime, _CONTAINER)
+        # Drop the URL: the container is gone, so search must read this as
+        # "managed search unavailable" and degrade until a fresh start succeeds.
+        self._base_url = None
 
     async def _bring_up(self) -> None:
         runtime = discover_runtime(self._runtime_pref)
