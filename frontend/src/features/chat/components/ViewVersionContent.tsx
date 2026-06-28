@@ -16,6 +16,8 @@ import { SandboxedFrame } from "./SandboxedFrame";
 export function ViewVersionContent(props: {
   preview: ViewPreviewRef;
   title: string;
+  /** Manual reload nonce — bumping it reloads the framed HTML preview in place. */
+  reloadKey: number;
 }): JSX.Element {
   const contentPath = (): string =>
     `/views/${props.preview.artifactId}/content`;
@@ -56,7 +58,11 @@ export function ViewVersionContent(props: {
       </Match>
       <Match when={props.preview.kind === "html"}>
         {urlArm((url) => (
-          <SandboxedFrame src={url} title={props.title} />
+          <SandboxedFrame
+            src={url}
+            title={props.title}
+            reloadKey={props.reloadKey}
+          />
         ))}
       </Match>
       <Match when={props.preview.kind === "text"}>

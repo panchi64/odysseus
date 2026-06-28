@@ -17,6 +17,8 @@ import { SandboxedFrame } from "./SandboxedFrame";
 export function ViewSnapshotPreview(props: {
   snapshot: ViewSnapshotRef;
   files: Resource<SnapshotFile[]>;
+  /** Manual reload nonce — bumping it reloads the framed entry page in place. */
+  reloadKey: number;
 }): JSX.Element {
   const entry = createMemo(() => {
     const list = props.files();
@@ -42,7 +44,13 @@ export function ViewSnapshotPreview(props: {
         <ErrorState message="Could not render this version." />
       </Match>
       <Match when={renderUrl()}>
-        {(url) => <SandboxedFrame src={url()} title={entry()!} />}
+        {(url) => (
+          <SandboxedFrame
+            src={url()}
+            title={entry()!}
+            reloadKey={props.reloadKey}
+          />
+        )}
       </Match>
     </Switch>
   );

@@ -1,4 +1,4 @@
-import { type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import { cx } from "~/ui";
 
 /**
@@ -9,20 +9,24 @@ import { cx } from "~/ui";
  * lives so that security contract can't silently drift between render paths.
  *
  * A `src` change reloads the frame natively (a new live URL, a switched version). A
- * manual reload of the *same* src is driven by remounting this component from the
- * viewport (it keys the content on a refresh nonce), so this stays a thin frame.
+ * manual reload of the *same* src is driven by `reloadKey`: bumping it remounts only
+ * the inner iframe (keyed on `src` + `reloadKey`), so a refresh reloads the page in
+ * place without disturbing the surrounding stage. This stays a thin frame.
  */
 export function SandboxedFrame(props: {
   src: string;
   title: string;
   class?: string;
+  reloadKey?: number;
 }): JSX.Element {
   return (
-    <iframe
-      src={props.src}
-      title={props.title}
-      class={cx("h-full w-full border-0 bg-bright", props.class)}
-      sandbox="allow-scripts allow-forms allow-popups"
-    />
+    <Show keyed when={`${props.src}#${props.reloadKey ?? 0}`}>
+      <iframe
+        src={props.src}
+        title={props.title}
+        class={cx("h-full w-full border-0 bg-bright", props.class)}
+        sandbox="allow-scripts allow-forms allow-popups"
+      />
+    </Show>
   );
 }

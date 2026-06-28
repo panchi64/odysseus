@@ -29,6 +29,8 @@ import { ViewSnapshotCode } from "./ViewSnapshotCode";
 export function ViewStage(props: {
   entry: ViewItem;
   mode: "preview" | "code";
+  /** Manual reload nonce — bumping it reloads the live/preview iframe in place. */
+  reloadKey: number;
   /** Prior snapshots the selected entry's CODE can diff against (oldest → newest). */
   priorVersions: PriorVersion[];
 }): JSX.Element {
@@ -36,6 +38,12 @@ export function ViewStage(props: {
   const [files] = createResource(snapshotId, fetchSnapshotFiles);
   const [selectedPath, setSelectedPath] = createSignal<string | null>(null);
 
+  // The stage is reused across versions (it no longer remounts), so reset the file
+  // pick when the version changes — the new tree starts at its own first file.
+  createEffect(() => {
+    snapshotId();
+    untrack(() => setSelectedPath(null));
+  });
   // Default-select the first file once the list resolves and nothing is picked.
   createEffect(() => {
     const list = files();
@@ -48,16 +56,21 @@ export function ViewStage(props: {
       {/* PREVIEW — live head first (live = the latest version's preview), else the
           version's stamped static file, else its auto-picked entry HTML page. */}
       <Match when={props.mode === "preview" && props.entry.live}>
-        <ViewLiveContent live={props.entry.live!} />
+        <ViewLiveContent live={props.entry.live!} reloadKey={props.reloadKey} />
       </Match>
       <Match when={props.mode === "preview" && props.entry.snapshot?.preview}>
         <ViewVersionContent
           preview={props.entry.snapshot!.preview!}
           title={props.entry.snapshot!.title ?? "Version"}
+          reloadKey={props.reloadKey}
         />
       </Match>
       <Match when={props.mode === "preview" && props.entry.snapshot}>
-        <ViewSnapshotPreview snapshot={props.entry.snapshot!} files={files} />
+        <ViewSnapshotPreview
+          snapshot={props.entry.snapshot!}
+          files={files}
+          reloadKey={props.reloadKey}
+        />
       </Match>
 
       {/* CODE — the version's workspace tree (live = its latest version), else NO

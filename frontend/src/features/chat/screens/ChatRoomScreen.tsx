@@ -269,9 +269,18 @@ export function ChatRoomScreen(): JSX.Element {
     currentId();
     untrack(() => setSelectedViewKey(null));
   });
+  // The newest version's key (the one collectViewItems flags as latest). Selecting it
+  // means "follow the latest" rather than pinning, so freshly-minted versions keep
+  // advancing the view instead of leaving it stranded on a now-stale pick.
+  const latestViewKey = (): string | null =>
+    viewItems().find((i) => i.isLatest)?.key ?? null;
+  // Pin a version — except picking the current latest clears the pin (null), so the
+  // viewport resumes following new versions as the agent mints them.
+  const selectView = (key: string) =>
+    setSelectedViewKey(key === latestViewKey() ? null : key);
   // Open a View item in the viewport — from a transcript chip or a timeline tab.
   const openViewTo = (key: string) => {
-    setSelectedViewKey(key);
+    selectView(key);
     openViewport();
   };
   // First-time-only auto-open: when a thread first produces a View item, open the
@@ -602,7 +611,7 @@ export function ChatRoomScreen(): JSX.Element {
           <ViewportPanel
             items={viewItems()}
             selectedKey={selectedViewKey()}
-            onSelect={setSelectedViewKey}
+            onSelect={selectView}
             onClose={toggleViewport}
           />
         </aside>

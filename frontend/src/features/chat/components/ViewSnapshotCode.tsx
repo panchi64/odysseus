@@ -1,4 +1,5 @@
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
@@ -6,6 +7,7 @@ import {
   Match,
   Show,
   Switch,
+  untrack,
   type JSX,
   type Resource,
 } from "solid-js";
@@ -65,6 +67,15 @@ export function ViewSnapshotCode(props: {
   // Explicit compare pick; null = follow the default (previous snapshot).
   const [base, setBase] = createSignal<string | null>(null);
   const baseId = createMemo(() => base() ?? previousId());
+
+  // The stage is reused across versions (it no longer remounts), so clear an explicit
+  // compare pick when the version changes — a stale base id would otherwise point at a
+  // version absent from the new one's options and diff against the wrong (or a future)
+  // snapshot. Falling back to null re-defaults to the new version's previous.
+  createEffect(() => {
+    id();
+    untrack(() => setBase(null));
+  });
 
   // Full source — only when comparing against nothing.
   const [text] = createResource(

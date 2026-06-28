@@ -41,15 +41,10 @@ export function ViewportPanel(props: {
   });
   // PREVIEW first — the HTML render is shown before the code whenever a View opens.
   const [mode, setMode] = createSignal<Mode>("preview");
-  // Manual reload nonce: bumping it remounts whatever the viewport is showing,
-  // forcing a fresh fetch — the one-click equivalent of closing and reopening.
+  // Manual reload nonce: bumping it reloads only the live/preview iframe in place
+  // (the one-click equivalent of closing and reopening), without tearing down the
+  // surrounding stage — so a refresh no longer refetches the file tree or flashes.
   const [reloadKey, setReloadKey] = createSignal(0);
-  // Keys the stage: changes when the selected version changes *or* on a refresh
-  // bump (mode is handled reactively, so toggling PREVIEW/CODE keeps the version).
-  const contentKey = createMemo(() => {
-    const item = selected();
-    return item ? `${item.key}#${reloadKey()}` : "";
-  });
 
   // Versions for the dropdown, newest first.
   const versionOptions = createMemo<SelectOption[]>(() =>
@@ -67,7 +62,10 @@ export function ViewportPanel(props: {
       label="VIEW"
       meta={
         <span class="flex min-w-0 items-center gap-2">
-          <Show when={selected()}>
+          {/* Refresh reloads the previewed iframe in place; it only does anything in
+              PREVIEW (CODE is an immutable snapshot tree), so it's hidden there rather
+              than left as a dead control. */}
+          <Show when={selected() && mode() === "preview"}>
             <Button
               variant="ghost"
               size="sm"
@@ -131,14 +129,18 @@ export function ViewportPanel(props: {
             />
           </div>
           <div class="min-h-0 flex-1">
-            {/* Keyed on the version + refresh nonce: picking another version (or the
-                manual refresh) remounts the stage; toggling PREVIEW/CODE does not. */}
-            <Show keyed when={contentKey()}>
-              <ViewStage
-                entry={selected()!}
-                mode={mode()}
-                priorVersions={priorVersions()}
-              />
+            {/* The stage stays mounted and reacts to the selected version in place
+                (the live head's iframe survives a relabel when a newer version is
+                minted on the same server); only the refresh nonce reloads the iframe. */}
+            <Show when={selected()}>
+              {(entry) => (
+                <ViewStage
+                  entry={entry()}
+                  mode={mode()}
+                  reloadKey={reloadKey()}
+                  priorVersions={priorVersions()}
+                />
+              )}
             </Show>
           </div>
         </div>
