@@ -24,6 +24,7 @@ from routes.deps import OPERATOR_ID
 from runs import ContextWindow
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView, context_footprint
+from services.settings_store import get_compaction, resolve_compaction_enabled
 from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
@@ -502,3 +503,46 @@ async def revoke_grant(conversation_id: str, tool_name: str, request: Request) -
     """Revoke a conversation auto-approval — the next call to that tool asks again."""
     await _require_owned(request, conversation_id)
     await deps.approval_grants(request).revoke(OPERATOR_ID, conversation_id, tool_name)
+
+
+class CompactionOverrideUpdate(BaseModel):
+    """Set a conversation's compaction override: ``null`` inherits the operator's global
+    setting; ``true``/``false`` forces compaction on/off for this thread."""
+
+    override: bool | None = None
+
+
+class CompactionOverrideOut(BaseModel):
+    """The thread's compaction state: the stored ``override`` (``null`` = inherit) plus the
+    ``effective`` on/off after resolving it against the operator's global setting — so the UI
+    renders the real state without re-deriving it."""
+
+    override: bool | None
+    effective: bool
+
+
+async def _compaction_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
+    override = await deps.store(request).get_compaction_override(conversation_id)
+    global_cfg = await get_compaction(deps.settings_store(request), OPERATOR_ID)
+    return CompactionOverrideOut(
+        override=override,
+        effective=resolve_compaction_enabled(override, global_cfg.enabled),
+    )
+
+
+@router.get("/{conversation_id}/compaction", response_model=CompactionOverrideOut)
+async def get_compaction_override(conversation_id: str, request: Request) -> CompactionOverrideOut:
+    """This conversation's compaction state (its override + the effective on/off)."""
+    await _require_owned(request, conversation_id)
+    return await _compaction_state(request, conversation_id)
+
+
+@router.put("/{conversation_id}/compaction", response_model=CompactionOverrideOut)
+async def set_compaction_override(
+    conversation_id: str, body: CompactionOverrideUpdate, request: Request
+) -> CompactionOverrideOut:
+    """Force compaction on/off for this conversation, or clear it (``null``) to inherit the
+    operator's global setting."""
+    await _require_owned(request, conversation_id)
+    await deps.store(request).set_compaction_override(conversation_id, body.override)
+    return await _compaction_state(request, conversation_id)

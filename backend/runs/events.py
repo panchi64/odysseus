@@ -257,7 +257,9 @@ class ApprovalRequired(_Body):
 
 class LimitNotice(_Body):
     type: Literal["limit.notice"] = "limit.notice"
-    limit: str  # "steps" | "tool_calls" | "tokens" | "time"
+    # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context"
+    # ("context" = the model's context window was exceeded; the run stops, it isn't degraded).
+    limit: str
     message: str
 
 

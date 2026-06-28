@@ -66,7 +66,7 @@ Rejected for now (kept for the record): embedding similarity · LLM classifier/r
 
 ---
 
-### D6 — Context reduction near the limit (`AE-5.4`, `CHAT-4`) 🟢 DECIDED (impl deferred)
+### D6 — Context reduction near the limit (`AE-5.4`, `CHAT-4`) 🟢 DECIDED · 🟡 PARTIALLY BUILT
 **Question.** How do we stay within the model's context window?
 
 - **Pydantic AI history processor** that trims oldest turns when token budget is tight — cheapest, lossy.
@@ -74,6 +74,13 @@ Rejected for now (kept for the record): embedding similarity · LLM classifier/r
 - **Hybrid:** keep a pinned head (system + active task + open document, which `AE-5.4` says MUST survive) + summarize the middle + keep recent verbatim.
 
 **Recommendation (defer):** implement as a history processor so the mechanism is swappable; start with **hybrid** (pin the active task + open doc, summarize the middle with the utility model). Revisit when we measure real conversations.
+
+**Built (first slice — tool-result compaction, `agent/compaction.py`), with three refinements the build settled:**
+- **The seam is a `ProcessHistory` capability, and it is *not* persistence-transparent** — a history processor's output *becomes* `result.all_messages()`, which the engine persists. So "compact freely, persist the original" does **not** work. The build instead leans on the fact that the engine only persists `messages[start:]` (the current turn): the processor compacts **only prior-turn** tool results and never the current turn. Crucially the prior/current boundary is the **persistence index** (`start`), threaded in explicitly as `CompactionContext.protect_from` — *not* inferred from the last `UserPromptPart`. The verifier's corrective re-attempt injects a second user prompt mid-turn, so a last-prompt heuristic would push the original attempt's tool outputs onto the "prior" side and persist them as unrecoverable digests; anchoring to `start` keeps the protected set and the persisted set identical. The operator therefore keeps every tool output in full (persisted + streamed); only the model's replayed view of *prior* turns is condensed, re-derived from the full DB history each turn. (See `tests/test_compaction.py`.)
+- **Trigger is a fixed rolling window, not token pressure.** Keep the K most-recent **prior-turn** tool results full (current-turn results are protected wholesale and never consume the window); digest older oversized ones (over a size floor), one rolling off at a time. A pressure/"near the limit" trigger recompacts a bulk of history *between two adjacent steps*, which can yank an output the model is mid-reasoning over; a fixed window rolls smoothly and deterministically. The replacement is a **notice only** — the omitted size plus the `builtin_expand_tool_result` call that recovers the full output verbatim, no excerpt. String and JSON-shaped results are both eligible (binary/multimodal stays verbatim); the expand tool's own output re-condenses once it ages past the window, so repeated expansion can't grow history without bound.
+- **No overflow guard — compaction is efficiency, never a safety net.** It never shrinks the window or drops content to force-fit. If context still overflows, the run **stops with a `limit="context"` notice naming the model's window** (operator starts a new chat / trims) rather than degrade into bad answers. Provider context-length errors are mapped into that same clean stop.
+
+**Still deferred:** whole-turn **summarization** of older history via the utility model (the "summarize the middle" half of the hybrid). The tool-result window is the high-leverage slice; turn summarization lands when measured conversations call for it.
 
 ---
 

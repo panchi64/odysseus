@@ -56,7 +56,8 @@ async def test_metrics_accumulate_across_verifier_correction(monkeypatch):
     await run.wait()
 
     assert run.status is RunStatus.done
-    metrics = next(b for b in _bodies(run) if b.type == "run.metrics")
+    # The live gauge emits a metrics frame per step; the *final* frame is the accumulated one.
+    metrics = [b for b in _bodies(run) if b.type == "run.metrics"][-1]
     assert metrics.steps >= 2  # original turn + the corrective re-attempt
 
 

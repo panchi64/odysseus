@@ -16,12 +16,14 @@ the library doesn't know about them; we emit them here and in the engine.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic_ai import (
     Agent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ModelMessage,
     PartDeltaEvent,
     PartStartEvent,
     RetryPromptPart,
@@ -112,13 +114,16 @@ async def stream_agent_run(
     *,
     announced: set[str] | None = None,
     loop_breaker: LoopBreaker | None = None,
+    on_step: Callable[[list[ModelMessage]], None] | None = None,
 ) -> None:
     """Iterate the AgentRun's graph nodes, emitting our events as they happen.
 
     ``announced`` (a set of tool_call_ids already surfaced as ``tool.started``)
     is threaded across a turn-chain so an approval-deferred call is announced
     once even though its call event re-fires on resume. ``loop_breaker``, if
-    given, raises :class:`LoopDetected` to abort a no-progress turn.
+    given, raises :class:`LoopDetected` to abort a no-progress turn. ``on_step``,
+    if given, is called with the accumulated history after each model response —
+    the engine uses it to emit a live context/usage frame as the turn progresses.
     """
     step = 0
     async for node in agent_run:
@@ -129,6 +134,8 @@ async def stream_agent_run(
                 async for event in stream:
                     _on_model_event(event, run)
             run.emit(StepCompleted(index=step))
+            if on_step is not None:
+                on_step(agent_run.ctx.state.message_history)
         elif Agent.is_call_tools_node(node):
             async with node.stream(agent_run.ctx) as stream:
                 async for event in stream:

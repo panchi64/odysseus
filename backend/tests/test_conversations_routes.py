@@ -302,3 +302,30 @@ def test_cold_read_skips_view_without_version_id():
     )
     message = MessageView(role="assistant", tools=[tool])
     assert _message_versions(message, {}) == []
+
+
+async def test_compaction_override_round_trip(monkeypatch):
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        cid = await _start_conversation(client)
+
+        # Defaults to null — the thread inherits the operator's global setting.
+        got = await client.get(f"/conversations/{cid}/compaction")
+        assert got.status_code == 200 and got.json()["override"] is None
+
+        # Force compaction off for this thread; it persists.
+        put = await client.put(f"/conversations/{cid}/compaction", json={"override": False})
+        assert put.status_code == 200 and put.json()["override"] is False
+        back = await client.get(f"/conversations/{cid}/compaction")
+        assert back.json()["override"] is False
+
+        # Clear it back to inherit.
+        await client.put(f"/conversations/{cid}/compaction", json={"override": None})
+        assert (await client.get(f"/conversations/{cid}/compaction")).json()["override"] is None
+
+
+async def test_compaction_override_unknown_conversation_404(monkeypatch):
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        resp = await client.get("/conversations/does-not-exist/compaction")
+        assert resp.status_code == 404

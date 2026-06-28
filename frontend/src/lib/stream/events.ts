@@ -174,7 +174,16 @@ export interface ApprovalRequired extends Base {
 }
 export interface LimitNotice extends Base {
   type: "limit.notice";
-  limit: "steps" | "tool_calls" | "tokens" | "time";
+  /** "context" = the model's context window was exceeded; the run stops (it isn't
+   *  silently degraded). The bound stops mirror backend/runs/events.py. */
+  limit:
+    | "steps"
+    | "tool_calls"
+    | "tokens"
+    | "time"
+    | "loop"
+    | "verify"
+    | "context";
   message: string;
 }
 

@@ -265,3 +265,11 @@ export interface ApprovalGrant {
   /** The namespaced tool name that auto-approves, e.g. "corpus_retrieve". */
   toolName: string;
 }
+
+/** A conversation's tool-result compaction state. `override` is the stored per-chat choice
+ *  (`null` = inherit the operator's global setting); `effective` is the resolved on/off the
+ *  UI renders. The backend owns the resolution — the frontend only reflects it. */
+export interface CompactionState {
+  override: boolean | null;
+  effective: boolean;
+}

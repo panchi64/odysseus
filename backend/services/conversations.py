@@ -599,6 +599,29 @@ class ConversationStore:
 
         return await in_session(self._engine, work)
 
+    async def get_compaction_override(self, conversation_id: str) -> bool | None:
+        """This conversation's tool-result compaction override — ``None`` inherits the
+        operator default, ``True``/``False`` force it on/off for this thread."""
+
+        def work(session: Session) -> bool | None:
+            conversation = session.get(Conversation, conversation_id)
+            return conversation.compaction_override if conversation is not None else None
+
+        return await in_session(self._engine, work)
+
+    async def set_compaction_override(
+        self, conversation_id: str, override: bool | None
+    ) -> None:
+        """Set (or clear, with ``None``) this conversation's compaction override. A quiet
+        preference, so it deliberately does not bump ``updated_at`` (it isn't activity)."""
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.compaction_override = override
+
+        await in_session(self._engine, work)
+
     async def delete_conversation(self, conversation_id: str) -> None:
         """Drop a conversation and its messages from the durable record, and evict
         the in-memory tree."""

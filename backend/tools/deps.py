@@ -10,7 +10,7 @@ the owner, and the per-run enabled-tool policy through it — never via globals.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from runs import Run
 
@@ -54,6 +54,28 @@ class Capabilities:
 
 
 @dataclass
+class CompactionContext:
+    """Per-run tool-result compaction state, reached by both the history processor (which
+    fills it) and the ``expand_tool_result`` tool (which reads it). Lives here in ``tools/``
+    because it is part of the deps contract; the processor that drives it lives in ``agent/``.
+
+    ``enabled``/``keep_recent``/``min_tokens`` are the resolved effective config for the turn
+    (operator default, or a per-conversation override). ``protect_from`` is the turn's
+    persistence index — messages at or after it are the current turn (never compacted, since
+    they are exactly what the engine persists); only earlier messages are eligible. The engine
+    sets it once the conversation history length is known; 0 ⇒ nothing is prior (a safe no-op).
+    ``full_by_id`` maps a compacted tool call's id → its original, full content, so the
+    rehydration tool can return it verbatim — populated by the processor, which always sees the
+    full DB history before condensing it."""
+
+    enabled: bool = False
+    keep_recent: int = 6
+    min_tokens: int = 0
+    protect_from: int = 0
+    full_by_id: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class RunDeps:
     run: Run
     owner_id: str
@@ -89,6 +111,9 @@ class RunDeps:
     # workspace here as a new version, stamped with how it previews. None ⇒ the view
     # tool degrades (no versioned history).
     workspace_history: WorkspaceHistoryStore | None = None
+    # Tool-result compaction state for this turn — the history processor fills its handle
+    # map; the `expand_tool_result` tool reads it. None ⇒ compaction is off for the run.
+    compaction: CompactionContext | None = None
 
     @property
     def sandbox_key(self) -> str:

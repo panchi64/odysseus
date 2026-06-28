@@ -31,7 +31,7 @@ from pydantic_ai import (
     UsageLimitExceeded,
     UsageLimits,
 )
-from pydantic_ai.capabilities import ReinjectSystemPrompt
+from pydantic_ai.capabilities import ProcessHistory, ReinjectSystemPrompt
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
@@ -51,9 +51,10 @@ from runs import (
 from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.uploads import UploadStore
-from tools import Capabilities, RunDeps, build_agent_toolsets
+from tools import Capabilities, CompactionContext, RunDeps, build_agent_toolsets
 
 from .attachments import resolve_attachments
+from .compaction import build_compaction_context, compact_tool_returns
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .title import generate_title, last_user_text, title_from_history
 from .translate import stream_agent_run
@@ -105,6 +106,9 @@ class ParkedTurn:
     # keeping replayed history capped just like a direct turn.
     attachment_ids: list[str] = field(default_factory=list)
     persisted: list | None = None
+    # The turn's resolved compaction context (config + handle map), carried so the resume
+    # condenses prior turns the same way — and can still expand a result digested before the park.
+    compaction: CompactionContext | None = None
 
 
 @dataclass
@@ -134,7 +138,14 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
         instructions=INSTRUCTIONS,
         toolsets=build_agent_toolsets(categories),
         output_type=[str, DeferredToolRequests],
-        capabilities=[ReinjectSystemPrompt(replace_existing=True)],
+        # ReinjectSystemPrompt keeps our system prompt authoritative; ProcessHistory digests
+        # oversized prior-turn tool results for the model's view (a no-op unless the turn's
+        # RunDeps carries an enabled CompactionContext). Both transform only what the model
+        # sees, never what we persist.
+        capabilities=[
+            ReinjectSystemPrompt(replace_existing=True),
+            ProcessHistory(compact_tool_returns),
+        ],
     )
 
 
@@ -148,6 +159,24 @@ def _sum_tokens(prior: int | None, delta: int | None) -> int | None:
     if prior is None and delta is None:
         return None
     return (prior or 0) + (delta or 0)
+
+
+def _turn_metrics(
+    base: RunMetrics | None, usage: RunUsage, run: Run, messages: list[ModelMessage]
+) -> RunMetrics:
+    """The run's metrics from the pre-turn ``base`` plus this turn's accumulating ``usage``.
+
+    ``context_used`` is the *footprint* — the last response's prompt+generation, not the run's
+    summed tokens — so a multi-step turn doesn't overstate fullness. Built in one place so the
+    live per-step frames (the context gauge) and the stashed terminal metrics never diverge."""
+    return RunMetrics(
+        steps=(base.steps if base else 0) + usage.requests,
+        tool_calls=(base.tool_calls if base else 0) + usage.tool_calls,
+        input_tokens=_sum_tokens(base.input_tokens if base else None, usage.input_tokens),
+        output_tokens=_sum_tokens(base.output_tokens if base else None, usage.output_tokens),
+        context_window=run.context_window,
+        context_used=context_footprint(messages),
+    )
 
 
 def _park_for_approval(
@@ -203,6 +232,42 @@ def _model_load_hint(exc: ModelHTTPError) -> str | None:
     )
 
 
+# How the common providers/engines phrase "the prompt is bigger than the context window":
+# OpenAI ("maximum context length … context_length_exceeded"), Anthropic ("prompt is too
+# long"), and local servers (llama.cpp/LM Studio/vLLM — "exceeds context", "context size",
+# "n_ctx"). Matched case-insensitively as substrings of the error text, so each marker must be
+# specific enough that an *unrelated* error can't carry it: deliberately omitted are generic
+# phrasings ("context window", "too many tokens", "reduce the length") that also appear in
+# rate-limit/validation errors — misclassifying those would block the run with a misleading
+# context-window stop and swallow the real, actionable error.
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "context_length_exceeded",
+    "maximum context",
+    "prompt is too long",
+    "exceeds context",
+    "exceed context",
+    "context size",
+    "n_ctx",
+)
+
+
+def _is_context_overflow(exc: ModelHTTPError) -> bool:
+    """Whether ``exc`` is the model refusing a prompt that overran its context window."""
+    return any(marker in str(exc).lower() for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+def _context_limit_message(run: Run) -> str:
+    """The operator-facing stop message — names the model's context window (the number the
+    operator needs) when known, and what to do next."""
+    window = run.context_window
+    ceiling = f" of {window:,} tokens" if window else ""
+    return (
+        f"This conversation reached the model's context window{ceiling} and can't continue. "
+        "Start a new chat, or edit/rewind to remove earlier messages, to keep going."
+    )
+
+
 async def _drive_turn(
     run: Run,
     agent: Agent,
@@ -214,6 +279,7 @@ async def _drive_turn(
     caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
+    compaction: CompactionContext | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -234,6 +300,11 @@ async def _drive_turn(
         corpus=caps.corpus,
         uploads=caps.uploads,
         workspace_history=caps.workspace_history,
+        # The turn's resolved compaction context (config + persistence boundary + handle map),
+        # built once by the orchestrator and shared across the turn's segments (the grant-resume
+        # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior
+        # result. None ⇒ compaction is off for this turn.
+        compaction=compaction,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -245,6 +316,12 @@ async def _drive_turn(
     # Metrics from any earlier segment of this run (a verifier correction, an approval
     # resume); captured once so the per-hop accumulation below never double-counts.
     base = run.metrics
+
+    def report_progress(history: list[ModelMessage]) -> None:
+        # A live context/usage frame as each model response lands, so the operator's context
+        # gauge fills in real time during a long tool-heavy turn (not only at the end).
+        run.emit(_turn_metrics(base, usage, run, history))
+
     while True:
         try:
             async with agent.iter(
@@ -256,7 +333,11 @@ async def _drive_turn(
                 usage=usage,
             ) as agent_run:
                 await stream_agent_run(
-                    agent_run, run, announced=announced, loop_breaker=loop_breaker
+                    agent_run,
+                    run,
+                    announced=announced,
+                    loop_breaker=loop_breaker,
+                    on_step=report_progress,
                 )
                 result = agent_run.result
         except UsageLimitExceeded as exc:
@@ -270,6 +351,13 @@ async def _drive_turn(
             run.block("stopped: repeated an action without making progress")
             return _TurnResult(answer=None)
         except ModelHTTPError as exc:
+            # Context-window overflow: a definitive ceiling, not something to paper over by
+            # silently dropping content — stop and tell the operator the model's limit so they
+            # can start a new chat or trim. (Compaction reduces pressure; it never absorbs this.)
+            if _is_context_overflow(exc):
+                run.emit(LimitNotice(limit="context", message=_context_limit_message(run)))
+                run.block("context window exceeded")
+                return _TurnResult(answer=None)
             # Rewrite a model-couldn't-load error into something the operator can act
             # on; let every other HTTP error propagate with its own detail.
             hint = _model_load_hint(exc)
@@ -281,20 +369,7 @@ async def _drive_turn(
         messages = result.all_messages()
         # ``usage`` accumulates across hops, so add it onto the pre-turn ``base`` once —
         # ``base`` already holds earlier segments' totals.
-        run.set_metrics(
-            RunMetrics(
-                steps=(base.steps if base else 0) + usage.requests,
-                tool_calls=(base.tool_calls if base else 0) + usage.tool_calls,
-                input_tokens=_sum_tokens(base.input_tokens if base else None, usage.input_tokens),
-                output_tokens=_sum_tokens(
-                    base.output_tokens if base else None, usage.output_tokens
-                ),
-                context_window=run.context_window,
-                # The footprint is the last response's total, not the run's summed token
-                # counts above — so a multi-step turn doesn't overstate fullness.
-                context_used=context_footprint(messages),
-            )
-        )
+        run.set_metrics(_turn_metrics(base, usage, run, messages))
         if not (isinstance(output, DeferredToolRequests) and output.approvals):
             answer = output if isinstance(output, str) else None
             return _TurnResult(answer=answer, messages=messages)
@@ -340,6 +415,7 @@ async def _verify_and_correct(
     caps: Capabilities = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
+    compaction: CompactionContext | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -371,6 +447,7 @@ async def _verify_and_correct(
         caps=caps,
         conversation_id=conversation_id,
         disabled_tools=disabled_tools,
+        compaction=compaction,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -393,6 +470,7 @@ def _finalize(
     clean_drop: tuple[int, int] | None = None,
     attachment_ids: list[str] | None = None,
     persisted: list | None = None,
+    compaction: CompactionContext | None = None,
 ) -> None:
     """Close out a turn: persist it, or wire resume context if it parked.
 
@@ -411,6 +489,7 @@ def _finalize(
                 run.parked_payload.clean_drop = clean_drop
             run.parked_payload.attachment_ids = attachment_ids or []
             run.parked_payload.persisted = persisted
+            run.parked_payload.compaction = compaction
         return
     if turn.answer is None:
         return  # blocked or hit a bound — nothing to persist
@@ -564,6 +643,7 @@ def build_chat_orchestrator(
     attachment_ids: list[str] | None = None,
     vision: bool = False,
     inline_max_tokens: int | None = None,
+    compaction: CompactionContext | None = None,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
@@ -607,6 +687,16 @@ def build_chat_orchestrator(
         )
         start = len(history) if history else 0
         is_first_turn = start == 0
+
+        # Resolve the turn's compaction context once and anchor its boundary to the persistence
+        # index: everything from `start` on is this (to-be-persisted) turn and stays full, so a
+        # verifier re-attempt's injected nudge can't push the original tool returns onto the
+        # "prior" side. The same object rides every segment (drive → verify → finalize → resume),
+        # keeping one handle map so a result digested before an approval park can still be expanded.
+        active_compaction = (
+            compaction if compaction is not None else build_compaction_context(settings)
+        )
+        active_compaction.protect_from = start
 
         # Auto-title context for this run — None disables it (feature off, or no
         # utility model). Built up-front so the title can be generated *concurrently*
@@ -656,6 +746,7 @@ def build_chat_orchestrator(
                 caps=capabilities,
                 conversation_id=conversation_id,
                 disabled_tools=disabled_tools,
+                compaction=active_compaction,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -685,6 +776,7 @@ def build_chat_orchestrator(
                         caps=capabilities,
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
+                        compaction=active_compaction,
                     )
 
             _finalize(
@@ -696,6 +788,7 @@ def build_chat_orchestrator(
                 clean_drop=turn.clean_drop,
                 attachment_ids=stamp_ids,
                 persisted=persisted,
+                compaction=active_compaction,
             )
 
             if run.status is RunStatus.awaiting_input:
@@ -742,6 +835,7 @@ def build_resume_orchestrator(
             caps=capabilities,
             conversation_id=parked.conversation_id,
             disabled_tools=disabled_tools,
+            compaction=parked.compaction,
         )
         _finalize(
             run,
@@ -752,6 +846,7 @@ def build_resume_orchestrator(
             clean_drop=parked.clean_drop,
             attachment_ids=parked.attachment_ids,
             persisted=parked.persisted,
+            compaction=parked.compaction,
         )
 
         if run.status is RunStatus.awaiting_input:

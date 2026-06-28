@@ -19,15 +19,20 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from agent import build_chat_orchestrator
+from agent.compaction import build_compaction_context
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from services.settings_store import (
+    CompactionSettings,
     get_attachment_inline_max_tokens,
+    get_compaction,
+    resolve_compaction_enabled,
     set_attachment_inline_max_tokens,
+    set_compaction,
 )
-from tools import Capabilities
+from tools import Capabilities, CompactionContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -76,11 +81,24 @@ class ChatCreated(BaseModel):
 class ChatSettings(BaseModel):
     """Operator-tunable chat preferences. ``attachment_inline_max_tokens`` is the token
     budget an attached file's text is retained inline for before it's cut off with a tool
-    pointer (images are always retained, regardless). camelCase out to match the frontend."""
+    pointer (images are always retained, regardless). The ``compaction*`` fields tune
+    tool-result compaction (digest oversized prior-turn tool outputs for the model). They're
+    optional on a PUT — an omitted one is left unchanged — and always populated on a GET.
+    camelCase out to match the frontend."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    # `extra="forbid"` so a mistyped/unknown field is a 422, not a silent no-op: with every
+    # field optional (omitted ⇒ unchanged), a typo'd key would otherwise be dropped and the PUT
+    # would return 200 having changed nothing.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    attachment_inline_max_tokens: int = Field(ge=0, alias="attachmentInlineMaxTokens")
+    # All fields are optional on a PUT (an omitted one is left unchanged) and always
+    # populated on a GET; ``ge=0`` still rejects a negative value when one is provided.
+    attachment_inline_max_tokens: int | None = Field(
+        default=None, ge=0, alias="attachmentInlineMaxTokens"
+    )
+    compaction_enabled: bool | None = Field(default=None, alias="compactionEnabled")
+    compaction_keep_recent: int | None = Field(default=None, ge=0, alias="compactionKeepRecent")
+    compaction_min_tokens: int | None = Field(default=None, ge=0, alias="compactionMinTokens")
 
 
 async def _resolve_models(
@@ -138,6 +156,7 @@ def _submit_turn(
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
     inline_max_tokens: int | None = None,
+    compaction: CompactionContext | None = None,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models and submit the Run.
 
@@ -173,6 +192,7 @@ def _submit_turn(
         attachment_ids=attachment_ids,
         vision=vision,
         inline_max_tokens=inline_max_tokens,
+        compaction=compaction,
         # While offline mode is active the web containers are down, so hide the web
         # tools from the agent rather than let it discover they're unavailable.
         disabled_tools=deps.offline(request).web_tools_disabled(),
@@ -212,6 +232,26 @@ async def _attachment_inline_cap(
     return await get_attachment_inline_max_tokens(deps.settings_store(request), OPERATOR_ID)
 
 
+async def _resolve_compaction(
+    request: Request, conversation_id: str | None
+) -> CompactionContext:
+    """The effective tool-result compaction context for a turn, with a fresh per-turn handle
+    map. Precedence: the conversation's on/off override (if set) beats the operator's global
+    default, which beats the config default. Resolved for every turn (a plain turn condenses
+    prior tool-heavy turns too)."""
+    cs = await get_compaction(deps.settings_store(request), OPERATOR_ID)
+    enabled = cs.enabled
+    if conversation_id is not None:
+        override = await deps.store(request).get_compaction_override(conversation_id)
+        enabled = resolve_compaction_enabled(override, cs.enabled)
+    return build_compaction_context(
+        get_settings(),
+        enabled=enabled,
+        keep_recent=cs.keep_recent,
+        min_tokens=cs.min_tokens,
+    )
+
+
 @router.post("", status_code=202, response_model=ChatCreated)
 async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     # A turn needs *something* to act on: text, or at least one attached file ("here,
@@ -245,6 +285,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         attachment_ids=body.attachment_ids,
         ephemeral=body.ephemeral,
         inline_max_tokens=cap,
+        compaction=await _resolve_compaction(request, conversation_id),
     )
 
 
@@ -262,7 +303,11 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
     if not await store.regenerate_point(body.conversation_id, body.message_id):
         raise HTTPException(status_code=404, detail="message not found")
     return _submit_turn(
-        request, prompt=None, conversation_id=body.conversation_id, models=models
+        request,
+        prompt=None,
+        conversation_id=body.conversation_id,
+        models=models,
+        compaction=await _resolve_compaction(request, body.conversation_id),
     )
 
 
@@ -288,21 +333,58 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
         models=models,
         attachment_ids=body.attachment_ids,
         inline_max_tokens=cap,
+        compaction=await _resolve_compaction(request, body.conversation_id),
+    )
+
+
+def _settings_response(cap: int, comp: CompactionSettings) -> ChatSettings:
+    return ChatSettings(
+        attachment_inline_max_tokens=cap,
+        compaction_enabled=comp.enabled,
+        compaction_keep_recent=comp.keep_recent,
+        compaction_min_tokens=comp.min_tokens,
     )
 
 
 @router.get("/settings", response_model=ChatSettings)
 async def get_chat_settings(request: Request) -> ChatSettings:
-    """The operator's chat preferences (the runtime override, else the config default)."""
-    value = await get_attachment_inline_max_tokens(deps.settings_store(request), OPERATOR_ID)
-    return ChatSettings(attachment_inline_max_tokens=value)
+    """The operator's chat preferences (the runtime overrides, else the config defaults)."""
+    store = deps.settings_store(request)
+    cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
+    comp = await get_compaction(store, OPERATOR_ID)
+    return _settings_response(cap, comp)
 
 
 @router.put("/settings", response_model=ChatSettings)
 async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSettings:
-    """Set the chat attachment inline token cap (a non-negative int; ``ge=0`` is enforced
-    on the body, so a bad value is rejected before it reaches the store)."""
-    stored = await set_attachment_inline_max_tokens(
-        deps.settings_store(request), OPERATOR_ID, body.attachment_inline_max_tokens
+    """Persist the operator's chat preferences. ``ge=0`` on the body rejects a bad value
+    before it reaches the store. Omitted ``compaction*`` fields are left unchanged (merged
+    over the current values), so a client tuning only one preference can't reset the rest."""
+    store = deps.settings_store(request)
+    if body.attachment_inline_max_tokens is not None:
+        cap = await set_attachment_inline_max_tokens(
+            store, OPERATOR_ID, body.attachment_inline_max_tokens
+        )
+    else:
+        cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
+    current = await get_compaction(store, OPERATOR_ID)
+    has_compaction = any(
+        v is not None
+        for v in (body.compaction_enabled, body.compaction_keep_recent, body.compaction_min_tokens)
     )
-    return ChatSettings(attachment_inline_max_tokens=stored)
+    if not has_compaction:
+        return _settings_response(cap, current)
+    comp = await set_compaction(
+        store,
+        OPERATOR_ID,
+        CompactionSettings(
+            enabled=current.enabled if body.compaction_enabled is None else body.compaction_enabled,
+            keep_recent=current.keep_recent
+            if body.compaction_keep_recent is None
+            else body.compaction_keep_recent,
+            min_tokens=current.min_tokens
+            if body.compaction_min_tokens is None
+            else body.compaction_min_tokens,
+        ),
+    )
+    return _settings_response(cap, comp)

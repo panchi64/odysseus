@@ -93,9 +93,15 @@ export interface SearchProviderInput {
 
 /** Operator-tunable chat preferences. `attachmentInlineMaxTokens` is the token
  *  budget an attached file's text is retained inline for before it's cut off with a
- *  tool pointer (images are always retained, regardless). */
+ *  tool pointer (images are always retained, regardless). The `compaction*` fields tune
+ *  tool-result compaction — digesting oversized prior-turn tool outputs for the model
+ *  (the operator always keeps the full output): whether it's on, how many of the newest
+ *  results stay full, and the token floor below which a result is left untouched. */
 export interface ChatSettings {
   attachmentInlineMaxTokens: number;
+  compactionEnabled: boolean;
+  compactionKeepRecent: number;
+  compactionMinTokens: number;
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────── */

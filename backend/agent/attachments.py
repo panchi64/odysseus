@@ -29,6 +29,7 @@ from typing import Any
 from pydantic_ai import BinaryContent
 
 from core.exceptions import NotFoundError
+from core.text import tokens_to_chars, truncate_on_boundary
 from core.untrusted import wrap_untrusted
 from models.upload import UploadStatus
 from services.uploads import UploadStore
@@ -37,10 +38,6 @@ from services.uploads import UploadStore
 # their extracted text, which the upload pipeline already produces at higher fidelity than
 # a raw-bytes pass would — and which a non-vision model can read too.
 _IMAGE_PREFIX = "image/"
-
-# A coarse characters-per-token proxy: there is no exact tokenizer at persist time and the
-# cap is a soft context budget, so this is good enough to bound a retained document's size.
-_CHARS_PER_TOKEN = 4
 
 
 @dataclass(frozen=True)
@@ -77,7 +74,7 @@ async def resolve_attachments(
     persisted: list[Any] = []
     refs: list[str] = []
     resolved_ids: list[str] = []
-    max_chars = max(0, inline_max_tokens) * _CHARS_PER_TOKEN
+    max_chars = tokens_to_chars(inline_max_tokens)
     for upload_id in ids:
         try:
             view = await uploads.get(owner_id, upload_id)
@@ -97,7 +94,7 @@ async def resolve_attachments(
             if len(text) <= max_chars:
                 persisted.append(full)  # same wrapped block, not re-wrapped
             else:
-                truncated = _truncate(text, max_chars)
+                truncated = truncate_on_boundary(text, max_chars)
                 if truncated:
                     persisted.append(wrap_untrusted(truncated, source=view.filename))
                 persisted.append(_truncation_note(upload_id, view.filename, inline_max_tokens))
@@ -112,18 +109,6 @@ async def resolve_attachments(
     if marker:
         persisted.append(marker)
     return ResolvedAttachments(content=content, persisted=persisted, ids=resolved_ids)
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    """The first ``max_chars`` of ``text``, trimmed back to a whitespace boundary when one
-    is reasonably close, so the cut doesn't split a word mid-token."""
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text[:max_chars]
-    cut = text[:max_chars]
-    boundary = max(cut.rfind(" "), cut.rfind("\n"))
-    if boundary > max_chars * 0.8:
-        cut = cut[:boundary]
-    return cut.rstrip()
 
 
 def _truncation_note(upload_id: str, filename: str, cap_tokens: int) -> str:

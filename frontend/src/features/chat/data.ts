@@ -22,6 +22,7 @@ import type {
   ChatMessage,
   ChatSession,
   ChatSummary,
+  CompactionState,
   ContextUsage,
   HostCommand,
   HostCommandBlock,
@@ -625,6 +626,27 @@ export async function revokeGrant(
   );
 }
 
+/** This conversation's compaction state (its override + the resolved effective on/off). */
+export async function fetchCompactionOverride(
+  conversationId: string,
+): Promise<CompactionState> {
+  return api.get<CompactionState>(
+    `/conversations/${conversationId}/compaction`,
+  );
+}
+
+/** Force compaction on/off for this conversation (or `null` to inherit the global setting);
+ *  returns the new state. */
+export async function setCompactionOverride(
+  conversationId: string,
+  override: boolean | null,
+): Promise<CompactionState> {
+  return api.put<CompactionState>(
+    `/conversations/${conversationId}/compaction`,
+    { override },
+  );
+}
+
 /* ── Streaming controller ─────────────────────────────────────────────────────
    Drives the live message list off a run's SSE stream. The public shape
    (messages, sending, send, resolveApproval) is the seam the screen renders. */
@@ -1002,7 +1024,14 @@ export function createChatStream(
         // model, or reported no usage) clears a stale reading rather than keeping it.
         setUsage(ev.context);
         break;
-      // run.started / run.ended / step.* / limit.notice: no store change
+      case "limit.notice":
+        // A bound on the turn. "verify" is a transient "re-attempting…" progress note,
+        // not a stop — leave it silent. The rest stopped the run, so surface why: the
+        // "context" message carries the model's window size, so the operator knows the
+        // conversation hit the ceiling and can start a new chat rather than wonder.
+        if (ev.limit !== "verify") toast.error(ev.message);
+        break;
+      // run.started / run.ended / step.*: no store change
     }
   }
 

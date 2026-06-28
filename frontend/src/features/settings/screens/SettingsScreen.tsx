@@ -73,25 +73,73 @@ export function SettingsScreen(): JSX.Element {
   const chatSettings = useChatSettings();
   const [cap, setCap] = createSignal("");
   const [savingCap, setSavingCap] = createSignal(false);
+  // Tool-result compaction: digest oversized prior-turn tool outputs for the model (the
+  // operator always keeps the full output). Enabled + the rolling window + the size floor.
+  const [compactEnabled, setCompactEnabled] = createSignal(true);
+  const [keepRecent, setKeepRecent] = createSignal("");
+  const [minTokens, setMinTokens] = createSignal("");
+  const [savingCompaction, setSavingCompaction] = createSignal(false);
   createEffect(() => {
     const s = chatSettings();
-    if (s) setCap(String(s.attachmentInlineMaxTokens));
+    if (!s) return;
+    setCap(String(s.attachmentInlineMaxTokens));
+    setCompactEnabled(s.compactionEnabled);
+    setKeepRecent(String(s.compactionKeepRecent));
+    setMinTokens(String(s.compactionMinTokens));
   });
   const saveCap = async () => {
-    const n = Number(cap().trim());
-    if (!Number.isInteger(n) || n < 0) {
+    const raw = cap().trim();
+    const n = Number(raw);
+    // `Number("")` is 0 (and passes `>= 0`), so a blanked field would silently save 0 —
+    // reject an empty box explicitly instead.
+    if (raw === "" || !Number.isInteger(n) || n < 0) {
       toast.error("Enter a whole number of tokens (0 or more).");
       return;
     }
     setSavingCap(true);
     try {
-      const saved = await saveChatSettings(n);
+      const saved = await saveChatSettings({ attachmentInlineMaxTokens: n });
       setCap(String(saved.attachmentInlineMaxTokens));
       toast.success("Attachment limit updated");
     } catch {
       toast.error("Unable to update the attachment limit.");
     } finally {
       setSavingCap(false);
+    }
+  };
+  const saveCompaction = async () => {
+    const keepRaw = keepRecent().trim();
+    const minRaw = minTokens().trim();
+    const keep = Number(keepRaw);
+    const min = Number(minRaw);
+    // `Number("")` is 0 (and passes `>= 0`), so a blanked field would silently save 0 —
+    // reject an empty box explicitly instead.
+    if (
+      keepRaw === "" ||
+      minRaw === "" ||
+      !Number.isInteger(keep) ||
+      keep < 0 ||
+      !Number.isInteger(min) ||
+      min < 0
+    ) {
+      toast.error("Enter whole numbers (0 or more).");
+      return;
+    }
+    setSavingCompaction(true);
+    try {
+      const saved = await saveChatSettings({
+        compactionEnabled: compactEnabled(),
+        compactionKeepRecent: keep,
+        compactionMinTokens: min,
+      });
+      setCompactEnabled(saved.compactionEnabled);
+      setKeepRecent(String(saved.compactionKeepRecent));
+      setMinTokens(String(saved.compactionMinTokens));
+      toast.success("Compaction settings updated");
+    } catch {
+      toast.error("Unable to update compaction settings.");
+    } finally {
+      setSavingCompaction(false);
     }
   };
 
@@ -431,6 +479,67 @@ export function SettingsScreen(): JSX.Element {
                 onClick={() => void saveCap()}
               >
                 {savingCap() ? "SAVING…" : "SAVE"}
+              </Button>
+            </Row>
+
+            <div class="border-line border-t" />
+
+            <Stack gap={1}>
+              <Text variant="label" tone="default">
+                TOOL-RESULT COMPACTION
+              </Text>
+              <Text variant="micro" tone="dim">
+                In tool-heavy chats, the model re-reads a short digest of large
+                tool outputs from earlier turns instead of the whole thing — it
+                can pull the full output back on demand. You always see the full
+                output; only the model's view of older turns is condensed. The
+                current turn is never touched.
+              </Text>
+            </Stack>
+            <Toggle
+              checked={compactEnabled()}
+              onChange={setCompactEnabled}
+              label="Compact older tool outputs for the model"
+            />
+            <Row gap={4} align="end">
+              <Stack gap={1}>
+                <Text variant="micro" tone="dim">
+                  KEEP NEWEST (results)
+                </Text>
+                <div class="w-32">
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    value={keepRecent()}
+                    onInput={(e) => setKeepRecent(e.currentTarget.value)}
+                    placeholder="6"
+                    disabled={!compactEnabled()}
+                  />
+                </div>
+              </Stack>
+              <Stack gap={1}>
+                <Text variant="micro" tone="dim">
+                  MIN SIZE (tokens)
+                </Text>
+                <div class="w-32">
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    value={minTokens()}
+                    onInput={(e) => setMinTokens(e.currentTarget.value)}
+                    placeholder="1000"
+                    disabled={!compactEnabled()}
+                  />
+                </div>
+              </Stack>
+              <Button
+                variant="primary"
+                disabled={savingCompaction()}
+                onClick={() => void saveCompaction()}
+              >
+                {savingCompaction() ? "SAVING…" : "SAVE"}
               </Button>
             </Row>
           </Stack>

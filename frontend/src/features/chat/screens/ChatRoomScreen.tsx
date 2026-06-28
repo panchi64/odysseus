@@ -51,6 +51,7 @@ import { ViewportPanel } from "../components/ViewportPanel";
 import { claimAutoOpen, collectViewItems } from "../viewport";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
+import { ConversationCompactionToggle } from "../components/ConversationCompactionToggle";
 import { MessageItem } from "../components/MessageItem";
 
 /** Chat room: a searchable thread rail and a live streaming conversation. On
@@ -464,6 +465,9 @@ export function ChatRoomScreen(): JSX.Element {
             </StatusFlag>
             <Show when={stream.usage()}>
               {(usage) => <ContextMeter usage={usage()} />}
+            </Show>
+            <Show when={currentId()}>
+              <ConversationCompactionToggle conversationId={currentId} />
             </Show>
             <Tooltip label="VIEWPORT" side="bottom">
               <Button

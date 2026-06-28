@@ -233,6 +233,19 @@ class Settings(BaseSettings):
     # non-image text inline (always cut to a pointer); images are unaffected either way.
     attachment_inline_max_tokens: int = 6000
 
+    # Tool-result compaction. In a tool-heavy chat, large tool outputs from *earlier* turns
+    # pile up and crowd the model's context. When enabled, the model re-reads a deterministic
+    # digest of an old, oversized tool result instead of the whole thing — and can call
+    # `expand_tool_result` to pull the full output back on demand. The operator always sees the
+    # full output (it's persisted and streamed untouched); only the model's replayed view of
+    # *prior* turns is condensed — the current turn is never compacted. `compaction_keep_recent`
+    # is the rolling window (the K most-recent tool results always stay full);
+    # `compaction_min_tokens` is the size floor (a result must exceed it to be worth digesting).
+    # These are the *defaults*; the operator overrides them at runtime via `PUT /chat/settings`.
+    compaction_enabled: bool = True
+    compaction_keep_recent: int = 6
+    compaction_min_tokens: int = 1000
+
 
 @lru_cache
 def get_settings() -> Settings:

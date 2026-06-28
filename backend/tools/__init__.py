@@ -11,11 +11,12 @@ See docs/architecture/README.md (Pillar III, §2.2).
 from __future__ import annotations
 
 from .builtin import builtin_toolset
-from .deps import Capabilities, RunDeps
+from .deps import Capabilities, CompactionContext, RunDeps
 from .toolsets import build_agent_toolsets, default_categories
 
 __all__ = [
     "Capabilities",
+    "CompactionContext",
     "RunDeps",
     "builtin_toolset",
     "build_agent_toolsets",

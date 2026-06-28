@@ -82,3 +82,54 @@ async def test_chat_settings_rejects_a_negative_cap():
     async with client_app() as (client, _app):
         resp = await client.put("/chat/settings", json={"attachmentInlineMaxTokens": -1})
         assert resp.status_code == 422
+
+
+async def test_chat_settings_rejects_an_unknown_field():
+    # With every field optional (omitted ⇒ unchanged), a mistyped key must 422 rather than
+    # silently no-op with a 200 — otherwise a client believes a write landed that never did.
+    async with client_app() as (client, _app):
+        resp = await client.put(
+            "/chat/settings", json={"attachmentInlineMaxToken": 1500}  # typo: missing 's'
+        )
+        assert resp.status_code == 422
+
+
+async def test_compaction_settings_round_trip():
+    # The compaction preferences are operator settings: GET reports the config defaults,
+    # PUT overrides them (camelCase), and the override persists.
+    async with client_app() as (client, _app):
+        cfg = get_settings()
+        got = (await client.get("/chat/settings")).json()
+        assert got["compactionEnabled"] == cfg.compaction_enabled
+        assert got["compactionKeepRecent"] == cfg.compaction_keep_recent
+
+        put = await client.put(
+            "/chat/settings",
+            json={
+                "attachmentInlineMaxTokens": got["attachmentInlineMaxTokens"],
+                "compactionEnabled": False,
+                "compactionKeepRecent": 3,
+                "compactionMinTokens": 2000,
+            },
+        )
+        assert put.status_code == 200
+        body = put.json()
+        assert body["compactionEnabled"] is False
+        assert body["compactionKeepRecent"] == 3
+        assert body["compactionMinTokens"] == 2000
+
+        again = (await client.get("/chat/settings")).json()
+        assert again["compactionEnabled"] is False and again["compactionKeepRecent"] == 3
+
+
+async def test_compaction_settings_partial_update_leaves_others_unchanged():
+    # Tuning only the attachment cap must not reset compaction overrides set earlier.
+    async with client_app() as (client, _app):
+        await client.put(
+            "/chat/settings",
+            json={"attachmentInlineMaxTokens": 100, "compactionKeepRecent": 9},
+        )
+        await client.put("/chat/settings", json={"attachmentInlineMaxTokens": 200})
+        again = (await client.get("/chat/settings")).json()
+        assert again["compactionKeepRecent"] == 9  # preserved across the attachment-only PUT
+        assert again["attachmentInlineMaxTokens"] == 200

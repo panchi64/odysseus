@@ -283,11 +283,12 @@ export function useChatSettings(): Resource<ChatSettings> {
   return data;
 }
 
-/** Persist the attachment inline token cap; returns the stored settings. */
+/** Persist a subset of the chat preferences (an omitted field is left unchanged on the
+ *  backend); returns the full stored settings. */
 export async function saveChatSettings(
-  attachmentInlineMaxTokens: number,
+  patch: Partial<ChatSettings>,
 ): Promise<ChatSettings> {
-  return api.put<ChatSettings>("/chat/settings", { attachmentInlineMaxTokens });
+  return api.put<ChatSettings>("/chat/settings", patch);
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────────

@@ -4,12 +4,23 @@ on-load conversation detail."""
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import pytest
-from pydantic_ai import ModelRequest, ModelResponse
+from pydantic_ai import (
+    FunctionToolset,
+    ModelRequest,
+    ModelResponse,
+)
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import TextPart, UserPromptPart
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.usage import RequestUsage
 
-from runs import ContextWindow
+from agent import build_chat_orchestrator
+from agent.engine import _context_limit_message, _is_context_overflow
+from runs import ContextWindow, Run, RunRegistry, RunStatus, RunStream
 from runs.events import RunMetrics
 from services.conversations import context_footprint
 
@@ -111,3 +122,100 @@ def test_run_metrics_context_null_without_footprint():
         mode="json"
     )
     assert payload["context"] is None
+
+
+# --- the context-window stop: overflow halts cleanly, naming the limit -------
+
+
+_DEFAULT_CTX_MSG = "This model's maximum context length is 8192 tokens."
+
+
+def _ctx_error(message: str = _DEFAULT_CTX_MSG) -> ModelHTTPError:
+    return ModelHTTPError(status_code=400, model_name="m", body={"message": message})
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "This model's maximum context length is 8192 tokens.",
+        "prompt is too long: 205000 tokens > 200000 maximum",
+        "Error code: 400 - context_length_exceeded",
+        "the request exceeds the context window (n_ctx=4096)",
+    ],
+)
+def test_is_context_overflow_detects_provider_phrasings(message: str):
+    assert _is_context_overflow(_ctx_error(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "internal server error",
+        # Generic phrasings deliberately NOT treated as overflow — they also appear in
+        # rate-limit/validation errors, and misclassifying one would block the run with a
+        # misleading context-window stop while swallowing the real error.
+        "rate limit reached: too many tokens per minute",
+        "validation error: please reduce the length of field 'name'",
+        "the model's context window is 200000 tokens",  # mentions it, not an overflow
+    ],
+)
+def test_is_context_overflow_ignores_unrelated_errors(message: str):
+    assert not _is_context_overflow(_ctx_error(message))
+
+
+def test_context_limit_message_names_the_window():
+    run = Run(id="t", kind="chat", owner_id="op", stream=RunStream())
+    run.context_window = 128_000
+    assert "128,000" in _context_limit_message(run)
+
+
+class _ContextOverflowModel(WrapperModel):
+    """A model whose request overruns the context window, the way a provider rejects an
+    over-long prompt — so a run drives straight into the overflow."""
+
+    def __init__(self) -> None:
+        super().__init__(TestModel())
+
+    async def request(self, *args, **kwargs):  # type: ignore[override]
+        raise _ctx_error()
+
+    @asynccontextmanager
+    async def request_stream(self, *args, **kwargs):  # type: ignore[override]
+        raise _ctx_error()
+        yield  # unreachable — keeps this a generator
+
+
+async def test_context_overflow_stops_the_run_naming_the_limit():
+    reg = RunRegistry()
+    orch = build_chat_orchestrator("hi", model=_ContextOverflowModel(), context_window=8192)
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    # Stopped (blocked), not errored, not silently degraded.
+    assert run.status is RunStatus.blocked
+    notice = next(e.body for e in run.stream.replay() if e.body.type == "limit.notice")
+    assert notice.limit == "context"
+    assert "8,192" in notice.message  # the operator sees the actual ceiling
+
+
+# --- the live gauge: context/usage frames stream as the turn progresses ------
+
+
+async def test_run_metrics_emitted_live_per_step_not_just_at_the_end():
+    util = FunctionToolset()
+
+    @util.tool_plain
+    def ping() -> str:  # namespaced to `util_ping`; TestModel calls it, forcing a 2nd step
+        return "pong"
+
+    reg = RunRegistry()
+    # TestModel calls the available tool, then answers ⇒ two model requests (two steps).
+    orch = build_chat_orchestrator("hi", model=TestModel(), categories={"util": util})
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    metrics = [e.body for e in run.stream.replay() if e.body.type == "run.metrics"]
+    # Two model requests (the tool call + the answer) ⇒ live frames during the run, beyond
+    # the single terminal frame the registry emits — so the gauge fills as the turn runs.
+    assert len(metrics) >= 2
