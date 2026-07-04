@@ -16,17 +16,31 @@ export interface IconProps {
 /**
  * Renders a registry icon as a 1.5px stroke SVG in currentColor. Color comes
  * from the surrounding text color (a token), never a hardcoded value.
+ *
+ * Glyphs live on either the native 16px grid (bespoke) or Iconoir's 24px grid.
+ * The `stroke` prop is expressed in 16px-grid units and scaled to the glyph's
+ * grid, so every icon renders at the same visual stroke weight regardless of
+ * which grid it was authored on.
  */
 export function Icon(props: IconProps): JSX.Element {
   const size = () => props.size ?? 16;
+  const entry = () => icons[props.name];
+  const grid = () => {
+    const e = entry();
+    return typeof e === "function" ? 16 : e.viewBox;
+  };
+  const glyph = () => {
+    const e = entry();
+    return typeof e === "function" ? e : e.glyph;
+  };
   return (
     <svg
       width={size()}
       height={size()}
-      viewBox="0 0 16 16"
+      viewBox={`0 0 ${grid()} ${grid()}`}
       fill="none"
       stroke="currentColor"
-      stroke-width={props.stroke ?? 1.5}
+      stroke-width={((props.stroke ?? 1.5) * grid()) / 16}
       stroke-linecap="round"
       stroke-linejoin="round"
       class={cx("inline-block shrink-0", props.class)}
@@ -34,7 +48,7 @@ export function Icon(props: IconProps): JSX.Element {
       aria-label={props["aria-label"]}
       aria-hidden={props["aria-label"] ? undefined : "true"}
     >
-      <Dynamic component={icons[props.name]} />
+      <Dynamic component={glyph()} />
     </svg>
   );
 }
