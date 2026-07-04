@@ -7,7 +7,10 @@ import { workCounts } from "../blocks";
  *  that's the one currently receiving deltas/updates. */
 function activeLabel(blocks: AssistantBlock[] | undefined): string {
   const last = blocks?.[blocks.length - 1];
-  if (!last) return "WORKING";
+  // No blocks yet = the run was created but nothing has streamed back: the backend
+  // is still preparing (context assembly, model spin-up). Say so rather than
+  // "WORKING", which implies the agent is already mid-task.
+  if (!last) return "STARTING";
   switch (last.kind) {
     case "thinking":
       return "THINKING";

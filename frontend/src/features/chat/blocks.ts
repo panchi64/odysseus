@@ -130,11 +130,16 @@ function hasLiveHost(group: BlockGroup): boolean {
   );
 }
 
-/** Collapsible = pure process noise: reasoning, finished tool calls, and host
- *  terminals that are neither pending nor running. Answer text, approvals, and the
- *  View chips (versions / live head) are always shown. */
+/** Collapsible = process the operator doesn't have to read or act on inline:
+ *  reasoning, finished tool calls, host terminals that are neither pending nor
+ *  running, and the View chips (a version / the live head — the viewport surfaces
+ *  those anyway). Only two kinds break a work log run: answer `text` (the model
+ *  writing *to the operator* — the one thing that should segment the log) and
+ *  approvals / live host commands (the operator has to act before the run goes on).
+ *  Everything else folds into one continuously growing log. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking" || group.kind === "tool") return true;
+  if (group.kind === "view_version" || group.kind === "view_live") return true;
   if (group.kind === "host_command") return !hasLiveHost(group);
   return false;
 }

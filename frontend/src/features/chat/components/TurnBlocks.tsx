@@ -257,7 +257,8 @@ function WorkLogAccordion(
         </Show>
       </button>
       <Show when={props.open}>
-        {/* Every folded group is a rail block, so they connect into one line. */}
+        {/* Folded groups are mostly rail blocks (they connect into one line); a
+            View chip in the run renders full-width between them. */}
         <div class="mt-2">
           <For each={props.groups}>
             {(group, i) => (

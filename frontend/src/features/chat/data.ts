@@ -772,6 +772,12 @@ export function createChatStream(
   // teardown so an aborted stalled reader can't clear the state — or refetch the
   // wrong thread — out from under the drive that replaced it.
   let driveGen = 0;
+  // Set when the operator cancels the in-flight run, so the just-ended drive's
+  // `adoptServerMeta` skips its reseat: a cancelled turn persists nothing, so the
+  // backend history is *shorter* than the optimistic store, and reseating to it
+  // would discard the whole in-flight turn (and, on a brand-new conversation with
+  // no prior turns, blank the chat entirely). Reset at the start of each drive.
+  let cancelled = false;
   // The conversation this stream is currently bound to (tracked separately from
   // the screen's `key`, which only updates once a new thread is persisted).
   let activeConversationId: string | null = key();
@@ -1174,6 +1180,7 @@ export function createChatStream(
     onConnected?: () => void,
   ): Promise<void> {
     const myGen = ++driveGen;
+    cancelled = false; // a fresh run clears any prior cancel signal
     activeRunId = runId;
     setErrored(false); // a fresh run supersedes any prior failure
     // Re-anchor the fold high-water mark to this run's sequence. Each run owns a
@@ -1323,7 +1330,12 @@ export function createChatStream(
       return;
     const server = detail.messages;
     if (server.length !== messages.length) {
-      reseatFromDetail(detail);
+      // A shorter backend history normally means a turn produced no persisted
+      // answer, so reseat to drop the optimistic turn. But a *cancelled* turn also
+      // persists nothing — there reseating would discard the in-flight turn the
+      // operator chose to keep (and blank a brand-new chat), so leave the store as
+      // is; the next completed turn reconciles it.
+      if (!cancelled) reseatFromDetail(detail);
       return;
     }
     setMessages(
@@ -1401,6 +1413,9 @@ export function createChatStream(
    *  the streaming state. Safe to call with no active run. */
   async function cancel(): Promise<void> {
     const runId = activeRunId;
+    // Mark the cancel before the abort unwinds the drive, so its `adoptServerMeta`
+    // in `finally` keeps the in-flight turn instead of reseating it away.
+    cancelled = true;
     if (runId) {
       try {
         await api.post(`/runs/${runId}/cancel`, {});
