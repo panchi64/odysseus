@@ -185,6 +185,7 @@ def _submit_turn(
             uploads=deps.uploads(request),
             grants=deps.approval_grants(request),
             workspace_history=deps.workspace_history(request),
+            documents=deps.documents(request),
         ),
         store=deps.store(request),
         conversation_id=conversation_id,

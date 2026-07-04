@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from services.artifacts import ArtifactStore
     from services.conversation_search import ConversationSearch
     from services.corpus import CorpusIndex
+    from services.documents import DocumentStore
     from services.memory import MemoryStore
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
@@ -51,6 +52,9 @@ class Capabilities:
     # The View's git-style history. The engine snapshots the sandbox workspace here
     # after a file-changing turn; None ⇒ no history is captured (graceful).
     workspace_history: WorkspaceHistoryStore | None = None
+    # The document library — lets the document tool create/edit versioned documents that
+    # surface live in the chat View. None ⇒ the document tool degrades.
+    documents: DocumentStore | None = None
 
 
 @dataclass
@@ -111,6 +115,9 @@ class RunDeps:
     # workspace here as a new version, stamped with how it previews. None ⇒ the view
     # tool degrades (no versioned history).
     workspace_history: WorkspaceHistoryStore | None = None
+    # The document library — the document tool creates/edits versioned documents that
+    # stream into the chat View. None ⇒ the document tool degrades.
+    documents: DocumentStore | None = None
     # Tool-result compaction state for this turn — the history processor fills its handle
     # map; the `expand_tool_result` tool reads it. None ⇒ compaction is off for the run.
     compaction: CompactionContext | None = None

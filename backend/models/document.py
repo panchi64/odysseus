@@ -45,6 +45,12 @@ class Document(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
+    # The conversation that created this document, when it was born in a chat (null for a
+    # document created straight from the library UI). Provenance, not content, so it stays
+    # in the clear and indexed: it drives whether the agent may edit the document without
+    # asking (a doc it created in *this* thread is ungated; a library/other-thread doc gates
+    # the first edit) and seeds the chat View with the thread's documents.
+    conversation_id: str | None = Field(default=None, index=True)
     # AEAD ciphertext of the title + body (the document's content, the source of truth
     # — the body is also what the corpus indexes).
     title_enc: str

@@ -27,6 +27,19 @@ class DegradedCapabilityError(OdysseusError):
     """An optional capability is unavailable; the caller should degrade gracefully."""
 
 
+class DocumentSpanError(OdysseusError):
+    """A targeted document edit's ``old_text`` did not match exactly one span — either
+    absent (``occurrences == 0``) or ambiguous (``occurrences > 1``). Carries the count so
+    the caller (the document tool) can phrase a precise retry for the model."""
+
+    def __init__(self, occurrences: int) -> None:
+        self.occurrences = occurrences
+        super().__init__(
+            "old_text was not found" if occurrences == 0
+            else f"old_text matched {occurrences} spans"
+        )
+
+
 class ModelLoadError(OdysseusError):
     """An inference server refused a request because it couldn't bring the model
     up (e.g. an on-demand cold-load that failed, or a concurrent-load race). The

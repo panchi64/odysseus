@@ -1,0 +1,222 @@
+"""The document tools: create/edit stream document.* events, targeted edits match a
+unique span, and the provenance gate — a doc the agent created in *this* conversation
+edits freely, while editing a foreign/library doc pauses for approval."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+
+from agent import stream_agent_run
+from agent.engine import _build_agent, _document_context_blocks
+from core.db import init_db, make_engine
+from core.vault import Vault
+from runs import Run, RunStream
+from services.documents import DocumentStore
+from tools import RunDeps, build_agent_toolsets
+from tools.documents import document_toolset
+
+OWNER = "operator"
+CONV = "conv-1"
+
+
+class _RecordingAdapter:
+    """A duck-typed corpus adapter that records index/remove calls (no real corpus)."""
+
+    def index_document(self, owner_id: str, document_id: str, body: str) -> None: ...
+    def remove_document(self, owner_id: str, document_id: str) -> None: ...
+
+
+async def _store() -> DocumentStore:
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")
+    await vault.setup("pw")
+    return DocumentStore(engine, vault, _RecordingAdapter())
+
+
+def _call_then_answer(tool_name: str, args: dict):
+    """A model that calls one tool once, then answers with text once the call has settled
+    (a return *or* a retry prompt), so a rejected edit doesn't loop forever."""
+
+    def _settled(messages) -> bool:
+        return any(
+            type(part).__name__ in ("ToolReturnPart", "RetryPromptPart")
+            for message in messages
+            for part in message.parts
+        )
+
+    async def stream_fn(messages, info):
+        if _settled(messages):
+            yield "done"
+        else:
+            yield {0: DeltaToolCall(name=tool_name, json_args=json.dumps(args))}
+
+    return stream_fn
+
+
+async def _drive(store: DocumentStore, conversation_id: str | None, tool_name: str, args: dict):
+    agent = Agent(
+        FunctionModel(stream_function=_call_then_answer(tool_name, args)),
+        deps_type=RunDeps,
+        toolsets=build_agent_toolsets({"document": document_toolset()}),
+        output_type=[str, DeferredToolRequests],
+    )
+    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
+    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=conversation_id, documents=store)
+    async with agent.iter("go", deps=deps) as agent_run:
+        await stream_agent_run(agent_run, run)
+        return run, agent_run.result.output
+
+
+def _types(run: Run) -> list[str]:
+    return [e.body.type for e in run.stream.replay()]
+
+
+# --- create -----------------------------------------------------------------
+
+
+async def test_create_streams_events_and_records_an_ai_version():
+    store = await _store()
+    run, out = await _drive(store, CONV, "document_create", {"title": "Report", "content": "# Hi"})
+
+    types = _types(run)
+    assert "document.created" in types
+    assert "document.delta" in types
+    assert "document.committed" in types
+    assert not isinstance(out, DeferredToolRequests)  # create never gates
+
+    # One AI-origin version was persisted in this conversation.
+    docs = await store.list_by_conversation(OWNER, CONV)
+    assert len(docs) == 1
+    versions = await store.list_versions(OWNER, docs[0].id)
+    assert versions[0].version == 1 and versions[0].origin == "ai"
+
+
+# --- edit a document born in this conversation (ungated) --------------------
+
+
+async def test_edit_of_a_session_document_applies_without_approval():
+    store = await _store()
+    doc = await store.create(OWNER, "Report", "hello world", conversation_id=CONV, origin="ai")
+
+    run, out = await _drive(
+        store,
+        CONV,
+        "document_edit",
+        {"document_id": doc.id, "old_text": "world", "new_text": "there"},
+    )
+
+    assert not isinstance(out, DeferredToolRequests)  # its own conversation ⇒ no gate
+    assert "document.committed" in _types(run)
+    assert (await store.get(OWNER, doc.id)).body == "hello there"
+
+
+# --- edit a foreign / library document (gated) ------------------------------
+
+
+async def test_edit_of_a_foreign_document_pauses_for_approval():
+    store = await _store()
+    # A library document (no conversation) — the agent did not create it here.
+    doc = await store.create(OWNER, "Library", "hello world")
+
+    run, out = await _drive(
+        store,
+        CONV,
+        "document_edit",
+        {"document_id": doc.id, "old_text": "world", "new_text": "there"},
+    )
+
+    assert isinstance(out, DeferredToolRequests)
+    assert any(c.tool_name == "document_edit" for c in out.approvals)
+    assert "tool.completed" not in _types(run)  # deferred before running
+    assert "document.committed" not in _types(run)
+    assert (await store.get(OWNER, doc.id)).body == "hello world"  # unchanged
+
+
+# --- targeted edit must identify a unique span ------------------------------
+
+
+async def test_edit_rejects_a_span_that_is_not_unique():
+    store = await _store()
+    doc = await store.create(OWNER, "Report", "la la la", conversation_id=CONV, origin="ai")
+
+    run, _out = await _drive(
+        store, CONV, "document_edit", {"document_id": doc.id, "old_text": "la", "new_text": "LA"}
+    )
+
+    # The ambiguous span was rejected (ModelRetry) — nothing committed, body untouched.
+    assert "document.committed" not in _types(run)
+    assert (await store.get(OWNER, doc.id)).body == "la la la"
+
+
+async def test_edit_rejects_a_span_that_is_absent():
+    store = await _store()
+    doc = await store.create(OWNER, "Report", "hello", conversation_id=CONV, origin="ai")
+
+    run, _out = await _drive(
+        store, CONV, "document_edit", {"document_id": doc.id, "old_text": "zzz", "new_text": "!"}
+    )
+    assert "document.committed" not in _types(run)
+    assert (await store.get(OWNER, doc.id)).body == "hello"
+
+
+# --- next-turn context injection --------------------------------------------
+
+
+async def test_operator_edited_document_is_injected_next_turn():
+    store = await _store()
+    doc = await store.create(OWNER, "Draft", "v1 body", conversation_id=CONV, origin="ai")
+    # The operator edits it (a user-origin version) — so it should be fed back to the model.
+    await store.edit(OWNER, doc.id, body="operator's text", origin="user")
+
+    blocks = await _document_context_blocks(store, OWNER, CONV)
+    assert len(blocks) == 1
+    assert "Draft" in blocks[0] and "operator's text" in blocks[0]
+
+
+async def test_agent_authored_document_is_not_reinjected():
+    store = await _store()
+    # Latest version is the agent's own work (no operator edit) ⇒ the model already knows it.
+    await store.create(OWNER, "Draft", "the agent wrote this", conversation_id=CONV, origin="ai")
+
+    blocks = await _document_context_blocks(store, OWNER, CONV)
+    assert blocks == []
+
+
+async def test_document_state_reaches_the_model_as_a_dynamic_instruction():
+    # End-to-end: the operator's current doc is delivered to the model as an *instruction*
+    # (re-resolved each run, never persisted), not appended to the user prompt — so it can't
+    # compound in history. Assert the current body lands in the request's instructions.
+    store = await _store()
+    doc = await store.create(OWNER, "Draft", "v1", conversation_id=CONV, origin="ai")
+    await store.edit(OWNER, doc.id, body="operator's latest text", origin="user")
+
+    seen: dict[str, str | None] = {}
+
+    async def capture(messages, info: AgentInfo):
+        seen["instructions"] = messages[-1].instructions
+        yield "ok"
+
+    agent = _build_agent(FunctionModel(stream_function=capture))
+    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
+    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, documents=store)
+    async with agent.iter("hello", deps=deps) as agent_run:
+        await stream_agent_run(agent_run, run)
+
+    assert "operator's latest text" in (seen["instructions"] or "")
+
+
+async def test_injection_ignores_other_conversations_and_archived_docs():
+    store = await _store()
+    other = await store.create(OWNER, "Elsewhere", "x", conversation_id="conv-other", origin="user")
+    archived = await store.create(OWNER, "Gone", "y", conversation_id=CONV, origin="user")
+    await store.archive(OWNER, archived.id)
+    assert other  # created in another thread — must not leak into CONV's context
+
+    blocks = await _document_context_blocks(store, OWNER, CONV)
+    assert blocks == []

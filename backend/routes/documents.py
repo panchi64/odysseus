@@ -56,6 +56,10 @@ class DocumentOut(CamelModel):
     archived: bool
     created_at: datetime
     updated_at: datetime
+    # The document's current (highest) version number after this write. Set on the edit
+    # response so the client can label the version it just minted without guessing; null on
+    # reads that don't resolve it.
+    version: int | None = None
 
 
 class DocumentVersionOut(CamelModel):
@@ -67,7 +71,7 @@ class DocumentVersionOut(CamelModel):
     created_at: datetime
 
 
-def _out(view: DocumentView) -> DocumentOut:
+def _out(view: DocumentView, *, version: int | None = None) -> DocumentOut:
     return DocumentOut(
         id=view.id,
         title=view.title,
@@ -77,6 +81,7 @@ def _out(view: DocumentView) -> DocumentOut:
         archived=view.archived,
         created_at=view.created_at,
         updated_at=view.updated_at,
+        version=version,
     )
 
 
@@ -146,7 +151,10 @@ async def update_document(
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="document not found") from None
-    return _out(view)
+    # Report the version this edit minted so the client labels it from backend truth rather
+    # than guessing (a cheap clear-column read).
+    version = await deps.documents(request).latest_version_number(OPERATOR_ID, document_id)
+    return _out(view, version=version)
 
 
 @router.post("/{document_id}/archive", response_model=DocumentOut)

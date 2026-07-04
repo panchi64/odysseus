@@ -9,7 +9,13 @@ import {
   type SelectOption,
   type TabItem,
 } from "~/ui";
-import { priorSnapshots, type PriorVersion, type ViewItem } from "../viewport";
+import type { ViewDocumentRef } from "../model";
+import {
+  priorDocumentVersions,
+  priorSnapshots,
+  type PriorVersion,
+  type ViewItem,
+} from "../viewport";
 import { ViewStage } from "./ViewStage";
 
 type Mode = "preview" | "code";
@@ -29,6 +35,8 @@ export function ViewportPanel(props: {
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onClose: () => void;
+  /** Relays an inline document edit to the backend (SAVE mints a new version). */
+  onSaveDocument: (documentId: string, body: string) => Promise<void>;
 }): JSX.Element {
   // The version actually shown: the selection if still present, else the newest
   // (last) — so a stale selection or a fresh thread always lands on the latest.
@@ -55,6 +63,11 @@ export function ViewportPanel(props: {
   const priorVersions = createMemo<PriorVersion[]>(() => {
     const sel = selected();
     return sel ? priorSnapshots(props.items, sel.key) : [];
+  });
+  // Prior document versions the selected document's CODE can diff against.
+  const priorDocuments = createMemo<ViewDocumentRef[]>(() => {
+    const sel = selected();
+    return sel ? priorDocumentVersions(props.items, sel.key) : [];
   });
 
   return (
@@ -139,6 +152,8 @@ export function ViewportPanel(props: {
                   mode={mode()}
                   reloadKey={reloadKey()}
                   priorVersions={priorVersions()}
+                  priorDocuments={priorDocuments()}
+                  onSaveDocument={props.onSaveDocument}
                 />
               )}
             </Show>

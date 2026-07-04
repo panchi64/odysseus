@@ -32,7 +32,7 @@ from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
 from core.db import in_session
-from core.exceptions import NotFoundError
+from core.exceptions import DocumentSpanError, NotFoundError
 from core.vault import Vault
 from models.document import Document, DocumentVersion, DocumentVersionOrigin
 from services.corpus.documents import DocumentsAdapter
@@ -50,6 +50,9 @@ class DocumentView:
     archived: bool
     created_at: datetime
     updated_at: datetime
+    # The conversation that created this document (null for a library-born doc). Clear
+    # provenance the chat layer reads to gate edits and seed the View.
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,10 +90,23 @@ class DocumentStore:
 
     # --- write path -------------------------------------------------------
 
-    async def create(self, owner_id: str, title: str, body: str) -> DocumentView:
+    async def create(
+        self,
+        owner_id: str,
+        title: str,
+        body: str,
+        *,
+        conversation_id: str | None = None,
+        origin: str = DocumentVersionOrigin.USER,
+    ) -> DocumentView:
+        """Create a document and record its first version. ``origin`` stamps that version's
+        author (`DOC-2`): the library UI creates USER-authored documents (the default), while
+        the agent's ``document_create`` passes ``ai`` so the first version reads as the agent's
+        work — which is what lets the chat layer tell a later operator edit apart from it."""
         doc_type, language = detect_type_language(body)
         document = Document(
             owner_id=owner_id,
+            conversation_id=conversation_id,
             title_enc=self._vault.encrypt_str(title),
             body_enc=self._vault.encrypt_str(body),
             doc_type=doc_type,
@@ -100,7 +116,7 @@ class DocumentStore:
         def work(session: Session) -> DocumentView:
             session.add(document)
             session.flush()
-            self._snapshot(session, document, DocumentVersionOrigin.USER)
+            self._snapshot(session, document, origin)
             return self._to_view(document, title, body)
 
         view = await in_session(self._engine, work)
@@ -143,6 +159,45 @@ class DocumentStore:
         if body is not None:
             self._adapter.index_document(owner_id, document_id, body)
         return view
+
+    async def replace_span(
+        self,
+        owner_id: str,
+        document_id: str,
+        old_text: str,
+        new_text: str,
+        *,
+        origin: str = DocumentVersionOrigin.AI,
+    ) -> tuple[DocumentView, int]:
+        """Apply a targeted edit — replace the single occurrence of ``old_text`` with
+        ``new_text`` — and snapshot the result as a new version. Raises
+        :class:`DocumentSpanError` (carrying the count) when ``old_text`` doesn't match
+        exactly one span, so the caller can ask for a more precise span. Returns the updated
+        view **and the new version number**, so a caller (the document tool, the edit route)
+        need not re-query the history to report it. The uniqueness check runs against the
+        decrypted body inside the write transaction — the whole check-and-replace is atomic."""
+        await self._require(owner_id, document_id)
+
+        def work(session: Session) -> tuple[DocumentView, str, int]:
+            document = session.get(Document, document_id)
+            assert document is not None
+            body = self._vault.decrypt_str(document.body_enc)
+            occurrences = body.count(old_text)
+            if occurrences != 1:
+                raise DocumentSpanError(occurrences)
+            new_body = body.replace(old_text, new_text, 1)
+            document.body_enc = self._vault.encrypt_str(new_body)
+            document.doc_type, document.language = detect_type_language(new_body)
+            document.updated_at = datetime.now(UTC)
+            session.add(document)
+            session.flush()
+            version = self._snapshot(session, document, origin).version
+            title = self._vault.decrypt_str(document.title_enc)
+            return self._to_view(document, title, new_body), new_body, version
+
+        view, new_body, version = await in_session(self._engine, work)
+        self._adapter.index_document(owner_id, document_id, new_body)
+        return view, version
 
     async def archive(self, owner_id: str, document_id: str) -> DocumentView:
         """Soft-archive (restorable). Drops the document's corpus chunks so an archived
@@ -226,6 +281,27 @@ class DocumentStore:
 
         return await in_session(self._engine, work)
 
+    async def list_by_conversation(
+        self, owner_id: str, conversation_id: str
+    ) -> list[DocumentView]:
+        """The active documents a chat thread created, oldest first — decrypted. Feeds
+        the chat View (which documents to show) and the context injection (their current
+        state), so both read the same source."""
+
+        def work(session: Session) -> list[DocumentView]:
+            rows = session.exec(
+                select(Document)
+                .where(
+                    Document.owner_id == owner_id,
+                    Document.conversation_id == conversation_id,
+                    Document.archived == False,  # noqa: E712
+                )
+                .order_by(Document.created_at)  # type: ignore[attr-defined]
+            ).all()
+            return [self._view_from_row(row) for row in rows]
+
+        return await in_session(self._engine, work)
+
     async def get(self, owner_id: str, document_id: str) -> DocumentView:
         document = await self._require(owner_id, document_id)
         return self._view_from_row(document)
@@ -253,6 +329,58 @@ class DocumentStore:
                 )
                 for row in rows
             ]
+
+        return await in_session(self._engine, work)
+
+    async def latest_version_number(self, owner_id: str, document_id: str) -> int:
+        """The document's current (highest) version number — a cheap clear-column read (no
+        decryption), so a caller can report the version it just minted without pulling the
+        whole history back. 0 when the document has no versions."""
+        await self._require(owner_id, document_id)
+        return await in_session(
+            self._engine, lambda s: _max_version(s, document_id)
+        )
+
+    async def list_user_edited(
+        self, owner_id: str, conversation_id: str
+    ) -> list[DocumentView]:
+        """The thread's active documents whose *latest* version the operator authored — i.e.
+        they edited it since the agent last wrote it. Two clear-column queries in one session
+        (the docs, then their latest-version origin), decrypting a body only for the
+        user-edited survivors — so a thread with no operator edits pays no decryption. Feeds
+        the agent's current-document context (`DOC-*`)."""
+
+        def work(session: Session) -> list[DocumentView]:
+            docs = session.exec(
+                select(Document).where(
+                    Document.owner_id == owner_id,
+                    Document.conversation_id == conversation_id,
+                    Document.archived == False,  # noqa: E712
+                )
+            ).all()
+            if not docs:
+                return []
+            ids = [d.id for d in docs]
+            newest = (
+                select(
+                    DocumentVersion.document_id,
+                    func.max(DocumentVersion.version).label("v"),
+                )
+                .where(DocumentVersion.document_id.in_(ids))  # type: ignore[attr-defined]
+                .group_by(DocumentVersion.document_id)
+                .subquery()
+            )
+            latest = session.exec(
+                select(DocumentVersion.document_id, DocumentVersion.origin).join(
+                    newest,
+                    (DocumentVersion.document_id == newest.c.document_id)
+                    & (DocumentVersion.version == newest.c.v),
+                )
+            ).all()
+            user_ids = {
+                did for did, origin in latest if origin == DocumentVersionOrigin.USER
+            }
+            return [self._view_from_row(d) for d in docs if d.id in user_ids]
 
         return await in_session(self._engine, work)
 
@@ -291,14 +419,7 @@ class DocumentStore:
     ) -> DocumentVersion:
         """Append a full sealed snapshot of ``document`` as its next version. Reuses the
         already-sealed title/body ciphertext on the row — no re-encryption."""
-        next_version = (
-            session.exec(
-                select(func.max(DocumentVersion.version)).where(
-                    DocumentVersion.document_id == document.id
-                )
-            ).one()
-            or 0
-        ) + 1
+        next_version = _max_version(session, document.id) + 1
         snapshot = DocumentVersion(
             owner_id=document.owner_id,
             document_id=document.id,
@@ -352,10 +473,24 @@ class DocumentStore:
             archived=document.archived,
             created_at=document.created_at,
             updated_at=document.updated_at,
+            conversation_id=document.conversation_id,
         )
 
 
 # --- list-summary derivation (off the DB hot path) ------------------------
+
+
+def _max_version(session: Session, document_id: str) -> int:
+    """The document's highest version number (0 if none) — the one clear-column max-version
+    read shared by ``_snapshot`` (to mint the next version) and ``latest_version_number``."""
+    return (
+        session.exec(
+            select(func.max(DocumentVersion.version)).where(
+                DocumentVersion.document_id == document_id
+            )
+        ).one()
+        or 0
+    )
 
 
 def summarize_body(body: str) -> tuple[str, int]:

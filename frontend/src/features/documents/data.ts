@@ -28,6 +28,8 @@ interface DocumentOut {
   archived: boolean;
   createdAt: string;
   updatedAt: string;
+  /** The version this write minted — set on the edit (PATCH) response, absent on reads. */
+  version?: number;
 }
 
 interface DocumentVersionOut {
@@ -157,10 +159,11 @@ export async function createDocument(
 export async function saveDocument(
   id: string,
   patch: { title?: string; body?: string },
-): Promise<void> {
-  await api.patch(`/documents/${id}`, patch);
+): Promise<DocumentOut> {
+  const dto = await api.patch<DocumentOut>(`/documents/${id}`, patch);
   refreshDocuments();
   refreshDocumentDetail();
+  return dto;
 }
 
 export async function archiveDocument(id: string): Promise<void> {

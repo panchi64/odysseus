@@ -31,9 +31,11 @@ import type {
   SnapshotFile,
   ToolBlock,
   ToolInvocation,
+  ViewDocumentRef,
   ViewSnapshotRef,
   ViewVersionBlock,
 } from "./model";
+import { saveDocument } from "~/features/documents/data";
 
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
  *  approval + execution render as a single persistent terminal, never a generic
@@ -202,6 +204,20 @@ interface ViewSnapshotDTO {
   preview_artifact_id: string | null;
 }
 
+interface ConversationDocumentVersionDTO {
+  version: number;
+  origin: string;
+  created_at: string;
+  body: string;
+}
+
+interface ConversationDocumentDTO {
+  document_id: string;
+  title: string;
+  /** Oldest-first, mirroring the snapshots list. */
+  versions: ConversationDocumentVersionDTO[];
+}
+
 interface MessageDTO {
   id: string;
   role: "user" | "assistant";
@@ -239,6 +255,9 @@ interface ConversationDetailDTO extends ConversationSummaryDTO {
   /** Workspace snapshots captured across the thread (newest last). Conversation-
    *  scoped — not folded onto a message — so the viewport seeds them separately. */
   snapshots?: ViewSnapshotDTO[];
+  /** Documents the agent authored across the thread, each with its version history
+   *  (oldest first). Conversation-scoped, seeded into the viewport like snapshots. */
+  documents?: ConversationDocumentDTO[];
 }
 
 function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
@@ -352,6 +371,25 @@ function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
         ? { kind: dto.preview_kind, artifactId: dto.preview_artifact_id }
         : null,
   };
+}
+
+/** Flatten a document DTO into one `ViewDocumentRef` per version — the shape the
+ *  viewport folds into its versioned list beside the snapshots. */
+function toViewDocumentRefs(dto: ConversationDocumentDTO): ViewDocumentRef[] {
+  return dto.versions.map((v) => ({
+    documentId: dto.document_id,
+    version: v.version,
+    title: dto.title,
+    origin: v.origin as ViewDocumentRef["origin"],
+    body: v.body,
+    createdAt: v.created_at,
+  }));
+}
+
+/** The document versions across a conversation detail, flattened + ordered
+ *  (oldest first, mirroring how the DTO nests them). */
+function toViewDocumentRefList(dto: ConversationDetailDTO): ViewDocumentRef[] {
+  return (dto.documents ?? []).flatMap(toViewDocumentRefs);
 }
 
 /** The inline transcript chip for a version the agent `show`ed — references the
@@ -476,6 +514,7 @@ async function fetchSession(id: string): Promise<ChatSession> {
     context: dto.context,
     activeRun: toActiveRun(dto.active_run),
     snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
+    documents: toViewDocumentRefList(dto),
   };
 }
 
@@ -680,6 +719,9 @@ export interface ChatStreamOptions {
   /** The loaded conversation's workspace snapshots (git-style history), seeded
    *  alongside its messages so the viewport shows them before the next turn. */
   initialSnapshots?: () => ViewSnapshotRef[] | undefined;
+  /** The loaded conversation's documents (version history), seeded alongside its
+   *  messages so the viewport shows them before the next turn. */
+  initialDocuments?: () => ViewDocumentRef[] | undefined;
 }
 
 export function createChatStream(
@@ -692,6 +734,10 @@ export function createChatStream(
   // live (which fold onto message blocks), snapshots are conversation-scoped, so
   // they live here beside the messages rather than in the transcript.
   const [snapshots, setSnapshots] = createSignal<ViewSnapshotRef[]>([]);
+  // Conversation-level documents the agent authored, flattened to one entry per
+  // version. Like snapshots, they're conversation-scoped (not folded onto a message
+  // block), so they live here beside the messages and seed the same viewport list.
+  const [documents, setDocuments] = createSignal<ViewDocumentRef[]>([]);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
   // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
@@ -776,6 +822,9 @@ export function createChatStream(
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
+    // Same for the conversation-level document history; the live `document.*` events
+    // upsert into it from here.
+    setDocuments(k === null ? [] : (options.initialDocuments?.() ?? []));
   });
 
   function patchById(id: string, fn: (m: ChatMessage) => void): void {
@@ -1003,6 +1052,83 @@ export function createChatStream(
             if (!blocks.some((b) => b.id === chip.id)) blocks.push(chip);
           });
         }
+        break;
+      }
+      case "document.created": {
+        // Seed a pending (version 0) entry for the new document; its body streams in
+        // via `document.delta` and it's promoted to a committed version on commit.
+        // Replace any existing pending for this id (only one at a time).
+        const ref: ViewDocumentRef = {
+          documentId: ev.document_id,
+          version: 0,
+          title: ev.title ?? undefined,
+          origin: "ai",
+          body: "",
+          createdAt: new Date().toISOString(),
+        };
+        setDocuments((prev) => [
+          ...prev.filter(
+            (d) => !(d.documentId === ev.document_id && d.version === 0),
+          ),
+          ref,
+        ]);
+        break;
+      }
+      case "document.delta": {
+        // The delta carries the FULL new body each time — replace, don't append.
+        // Upsert the pending entry, carrying its title forward from the newest known
+        // entry for this id (an edit streams deltas with no prior `document.created`).
+        setDocuments((prev) => {
+          // Carry the title + first-seen time forward from the existing pending (or the
+          // doc's newest known entry — an edit streams deltas with no prior `created`), so
+          // a streaming body doesn't reset its identity across deltas.
+          const prior =
+            prev.find(
+              (d) => d.documentId === ev.document_id && d.version === 0,
+            ) ??
+            [...prev].reverse().find((d) => d.documentId === ev.document_id);
+          return [
+            ...prev.filter(
+              (d) => !(d.documentId === ev.document_id && d.version === 0),
+            ),
+            {
+              documentId: ev.document_id,
+              version: 0,
+              title: prior?.title,
+              origin: "ai",
+              body: ev.text,
+              createdAt: prior?.createdAt ?? new Date().toISOString(),
+            },
+          ];
+        });
+        break;
+      }
+      case "document.committed": {
+        // Promote the pending entry to a real committed version. If none exists (e.g.
+        // a reattach replayed past the deltas), append one from the last known body.
+        setDocuments((prev) => {
+          const pending = prev.find(
+            (d) => d.documentId === ev.document_id && d.version === 0,
+          );
+          if (pending)
+            return prev.map((d) =>
+              d === pending ? { ...d, version: ev.version } : d,
+            );
+          const last = [...prev]
+            .reverse()
+            .find((d) => d.documentId === ev.document_id);
+          return [
+            ...prev,
+            {
+              documentId: ev.document_id,
+              version: ev.version,
+              title: last?.title,
+              origin: "ai",
+              body: last?.body ?? "",
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        });
         break;
       }
       case "conversation.titled":
@@ -1360,6 +1486,8 @@ export function createChatStream(
     setUsage(detail.context);
     // Re-seed the conversation-level snapshot history from the same detail.
     setSnapshots((detail.snapshots ?? []).map(toViewSnapshotRef));
+    // Same for the document history.
+    setDocuments(toViewDocumentRefList(detail));
   }
 
   function toastError(err: unknown, fallback: string): void {
@@ -1548,12 +1676,49 @@ export function createChatStream(
     void reattachRun(ar.id, { fromSeq: 0 });
   });
 
+  /** Save an inline edit to a document: PATCH the backend (which stamps origin=user
+   *  and mints a new version), then append that new user-origin version so the
+   *  viewport's dropdown updates in place. The **version number comes from the backend
+   *  response** — the frontend never invents an authoritative value — falling back only
+   *  if an older backend omits it. Throws on failure so the caller can surface it. */
+  async function saveDocumentEdit(
+    documentId: string,
+    body: string,
+  ): Promise<void> {
+    const saved = await saveDocument(documentId, { body });
+    setDocuments((prev) => {
+      const title = [...prev]
+        .reverse()
+        .find((d) => d.documentId === documentId)?.title;
+      const version =
+        saved.version ??
+        prev.reduce(
+          (m, d) => (d.documentId === documentId ? Math.max(m, d.version) : m),
+          0,
+        ) + 1;
+      return [
+        ...prev,
+        {
+          documentId,
+          version,
+          title,
+          origin: "user",
+          body,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    });
+  }
+
   onCleanup(() => controller?.abort());
 
   return {
     messages,
     /** The conversation's workspace snapshots (git-style history), newest last. */
     snapshots,
+    /** The conversation's documents, flattened to one entry per committed version. */
+    documents,
+    saveDocumentEdit,
     sending,
     errored,
     titlePending,
@@ -1625,6 +1790,9 @@ export function mainChat(): MainChat {
         // Same lockstep: the loaded thread's git-style snapshot history.
         initialSnapshots: () =>
           session.loading ? undefined : session()?.snapshots,
+        // Same lockstep: the loaded thread's document version history.
+        initialDocuments: () =>
+          session.loading ? undefined : session()?.documents,
       },
     );
     // Reattach when the tab returns to the foreground or the network comes back.

@@ -26,6 +26,7 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
+    RunContext,
     RunUsage,
     ToolApproved,
     UsageLimitExceeded,
@@ -50,6 +51,7 @@ from runs import (
 )
 from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
+from services.documents import DocumentStore
 from services.uploads import UploadStore
 from tools import Capabilities, CompactionContext, RunDeps, build_agent_toolsets
 
@@ -131,7 +133,7 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
     # stripping any spoofed system part and reasserting ours on every request.
     # output_type accepts DeferredToolRequests so approval-required tools can defer
     # instead of executing; normal turns still return text.
-    return Agent(
+    agent = Agent(
         model,
         deps_type=RunDeps,
         system_prompt=SYSTEM_PROMPT,
@@ -147,6 +149,24 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
             ProcessHistory(compact_tool_returns),
         ],
     )
+
+    @agent.instructions
+    async def _document_state(ctx: RunContext[RunDeps]) -> str:
+        """Give the agent the current text of any document the operator edited since its last
+        write — as a **dynamic instruction**, so it's re-resolved fresh each turn (always the
+        latest state) and, unlike an appended prompt, never accumulates in history: Pydantic
+        AI sends only the current run's instructions, so there's exactly one copy in context,
+        no compounding. Empty (no-op) when there's no such document or no store/conversation."""
+        store = ctx.deps.documents
+        conversation_id = ctx.deps.conversation_id
+        if store is None or conversation_id is None:
+            return ""
+        blocks = await _document_context_blocks(
+            store, ctx.deps.owner_id, conversation_id
+        )
+        return "\n\n".join(blocks)
+
+    return agent
 
 
 def _summarize(name: str, args: dict[str, Any]) -> str:
@@ -300,6 +320,7 @@ async def _drive_turn(
         corpus=caps.corpus,
         uploads=caps.uploads,
         workspace_history=caps.workspace_history,
+        documents=caps.documents,
         # The turn's resolved compaction context (config + persistence boundary + handle map),
         # built once by the orchestrator and shared across the turn's segments (the grant-resume
         # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior
@@ -623,6 +644,23 @@ async def _discard_title(task: asyncio.Task[str | None] | None) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _document_context_blocks(
+    store: DocumentStore, owner_id: str, conversation_id: str
+) -> list[str]:
+    """Current text of the conversation's documents whose *latest* version the operator
+    authored — i.e. they edited it since the agent's last write. Each becomes a labeled
+    context block the agent is given (as a fresh instruction each turn) so it works from what
+    the operator actually has now, not the copy it last produced (`DOC-*`). A document whose
+    latest version is the agent's own (``ai``) is skipped — the model already knows that text.
+    This is the operator's own content, so it is *not* wrapped as untrusted."""
+    docs = await store.list_user_edited(owner_id, conversation_id)
+    return [
+        f'[Current state of the document "{doc.title}" — the operator may have edited it '
+        f"since your last change]\n\n{doc.body}"
+        for doc in docs
+    ]
 
 
 def build_chat_orchestrator(

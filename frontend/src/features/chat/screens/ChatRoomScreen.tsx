@@ -254,7 +254,7 @@ export function ChatRoomScreen(): JSX.Element {
   // (presentation-only, so it's automatically thread-scoped). The viewport renders
   // these; the transcript shows compact chips that open them here.
   const viewItems = createMemo(() =>
-    collectViewItems(stream.messages, stream.snapshots()),
+    collectViewItems(stream.messages, stream.snapshots(), stream.documents()),
   );
   // The viewport only makes sense with something to show. Gate the effective open
   // state on having items so the persisted open flag — global, written when the
@@ -617,6 +617,7 @@ export function ChatRoomScreen(): JSX.Element {
             selectedKey={selectedViewKey()}
             onSelect={selectView}
             onClose={toggleViewport}
+            onSaveDocument={stream.saveDocumentEdit}
           />
         </aside>
       </Show>

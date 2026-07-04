@@ -77,6 +77,27 @@ class ViewSnapshotRefOut(BaseModel):
     preview_artifact_id: str | None
 
 
+class DocumentVersionRefOut(BaseModel):
+    """One committed version of a thread's document, oldest first, for the View's version
+    dropdown + diff. Carries the body so a cold read renders any version and diffs without a
+    follow-up fetch (documents are the operator's own writing — small at single-operator scale)."""
+
+    version: int
+    origin: str  # user | ai | extraction
+    created_at: datetime
+    body: str
+
+
+class DocumentRefOut(BaseModel):
+    """A document the agent created in this conversation, mirroring the live
+    ``document.*`` events so a cold read rebuilds the View's document versions like a warm
+    one. Conversation-scoped (seeded from the documents the thread created)."""
+
+    document_id: str
+    title: str
+    versions: list[DocumentVersionRefOut] = []
+
+
 class MessageOut(BaseModel):
     id: str
     role: str
@@ -112,6 +133,9 @@ class ConversationDetail(ConversationSummary):
     # turn, newest last. Conversation-scoped; the frontend merges them into the View
     # timeline alongside the per-message versions.
     snapshots: list[ViewSnapshotRefOut] = []
+    # The documents the agent created in this thread, with their version history — the
+    # frontend folds them into the View timeline alongside the workspace snapshots.
+    documents: list[DocumentRefOut] = []
     # The context-window state reconstructed from the last turn's stored usage, so
     # an existing thread shows its fullness on load — not just after the next turn.
     # Null when usage or a window is unavailable.
@@ -230,6 +254,28 @@ async def _detail(
     # by-id map the cold-read uses to re-attach each turn's inline chips.
     snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
     by_id = {s.id: s for s in snapshots}
+    # The documents this thread created, each with its version history (oldest first), so a
+    # cold read rebuilds the View's document versions like the live document.* stream did.
+    documents_store = deps.documents(request)
+    doc_views = await documents_store.list_by_conversation(OPERATOR_ID, conversation_id)
+    documents: list[DocumentRefOut] = []
+    for doc in doc_views:
+        versions = await documents_store.list_versions(OPERATOR_ID, doc.id)
+        documents.append(
+            DocumentRefOut(
+                document_id=doc.id,
+                title=doc.title,
+                versions=[
+                    DocumentVersionRefOut(
+                        version=v.version,
+                        origin=v.origin,
+                        created_at=v.created_at,
+                        body=v.body,
+                    )
+                    for v in reversed(versions)  # list_versions is newest-first; want oldest-first
+                ],
+            )
+        )
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],
@@ -245,6 +291,7 @@ async def _detail(
             )
             for s in snapshots
         ],
+        documents=documents,
         context=context,
         active_run=active_run,
     )

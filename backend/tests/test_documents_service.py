@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import Session, select
 
 from core.db import init_db, make_engine
-from core.exceptions import NotFoundError
+from core.exceptions import DocumentSpanError, NotFoundError
 from core.vault import Vault
 from models.document import Document
 from services.corpus.chunk_store import CorpusChunkStore
@@ -178,6 +178,58 @@ async def test_list_returns_summaries_without_body():
     assert rows[0].snippet == "first line here"
     assert rows[0].word_count == 6
     assert not hasattr(rows[0], "body")  # full body never leaves the store for a list
+
+
+# --- conversation scoping (chat View seam) ---------------------------------
+
+
+async def test_list_by_conversation_filters_by_thread_and_archived():
+    _engine, _vault, _chunks, adapter, store = await _store()
+    a = await store.create(OWNER, "A", "x", conversation_id="c1")
+    await store.create(OWNER, "B", "y", conversation_id="c2")  # other thread
+    await store.create(OWNER, "C", "z")  # library doc (no conversation)
+    gone = await store.create(OWNER, "D", "w", conversation_id="c1")
+    await store.archive(OWNER, gone.id)
+    await adapter.stop()
+
+    rows = await store.list_by_conversation(OWNER, "c1")
+    assert [r.id for r in rows] == [a.id]  # only the active c1 doc
+    assert rows[0].conversation_id == "c1"
+
+
+async def test_list_user_edited_returns_only_docs_the_operator_last_touched():
+    _engine, _vault, _chunks, adapter, store = await _store()
+    # Agent-authored doc, no operator edit — the model already knows it, so it's excluded.
+    ai = await store.create(OWNER, "AI", "agent text", conversation_id="c1", origin="ai")
+    # Agent authored, then the operator edited it — included (its latest version is theirs).
+    edited = await store.create(OWNER, "Edited", "v1", conversation_id="c1", origin="ai")
+    await store.edit(OWNER, edited.id, body="operator text", origin="user")
+    # Other thread — excluded even though operator-authored.
+    await store.create(OWNER, "Other", "x", conversation_id="c2", origin="user")
+    await adapter.stop()
+
+    rows = await store.list_user_edited(OWNER, "c1")
+    assert [r.id for r in rows] == [edited.id]
+    assert rows[0].body == "operator text"
+    assert ai  # present in the thread but not surfaced (latest version is the agent's)
+
+
+async def test_replace_span_edits_uniquely_and_returns_the_new_version():
+    _engine, _vault, _chunks, adapter, store = await _store()
+    doc = await store.create(OWNER, "A", "hello world", origin="ai")
+    view, version = await store.replace_span(OWNER, doc.id, "world", "there", origin="ai")
+    assert view.body == "hello there" and version == 2
+    assert await store.latest_version_number(OWNER, doc.id) == 2
+
+    with pytest.raises(DocumentSpanError) as absent:
+        await store.replace_span(OWNER, doc.id, "zzz", "!", origin="ai")
+    assert absent.value.occurrences == 0
+
+    await store.edit(OWNER, doc.id, body="la la la", origin="ai")
+    with pytest.raises(DocumentSpanError) as ambiguous:
+        await store.replace_span(OWNER, doc.id, "la", "LA", origin="ai")
+    assert ambiguous.value.occurrences == 3
+    await adapter.stop()
 
 
 def test_detect_type_language_classifies_structure():

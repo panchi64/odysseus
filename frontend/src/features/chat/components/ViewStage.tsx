@@ -10,12 +10,14 @@ import {
 } from "solid-js";
 import { EmptyState } from "~/ui";
 import { fetchSnapshotFiles } from "../data";
-import type { ViewSnapshotRef } from "../model";
+import type { ViewDocumentRef, ViewSnapshotRef } from "../model";
 import type { ViewItem, PriorVersion } from "../viewport";
 import { ViewLiveContent } from "./ViewLiveContent";
 import { ViewVersionContent } from "./ViewVersionContent";
 import { ViewSnapshotPreview } from "./ViewSnapshotPreview";
 import { ViewSnapshotCode } from "./ViewSnapshotCode";
+import { ViewDocumentContent } from "./ViewDocumentContent";
+import { ViewDocumentCode } from "./ViewDocumentCode";
 
 /**
  * Renders the selected version on stage in the chosen mode. The live head is a persistent
@@ -34,9 +36,45 @@ export function ViewStage(props: {
   reloadKey: number;
   /** Prior snapshots the selected entry's CODE can diff against (oldest → newest). */
   priorVersions: PriorVersion[];
+  /** Prior committed versions of the selected document, for its CODE diff (oldest →
+   *  newest). Empty unless the entry is a document. */
+  priorDocuments: ViewDocumentRef[];
+  /** Relays an inline document edit to the backend (SAVE mints a new version). */
+  onSaveDocument: (documentId: string, body: string) => Promise<void>;
 }): JSX.Element {
   return (
     <Switch>
+      {/* A document version — its markdown body as PREVIEW, raw source + diff as CODE.
+          Only the latest committed version is editable inline. */}
+      <Match when={props.entry.document}>
+        <Switch>
+          <Match when={props.mode === "preview"}>
+            {/* Remount per document version: an in-flight inline edit belongs to the
+                version it started on, so when a newer version arrives (e.g. the agent
+                commits while the operator is editing) the editor resets rather than
+                letting SAVE write a stale draft onto the wrong base. */}
+            <Show
+              keyed
+              when={`${props.entry.document!.documentId}-${props.entry.document!.version}`}
+            >
+              <ViewDocumentContent
+                document={props.entry.document!}
+                editable={
+                  props.entry.isLatest && props.entry.document!.version >= 1
+                }
+                onSave={props.onSaveDocument}
+              />
+            </Show>
+          </Match>
+          <Match when={props.mode === "code"}>
+            <ViewDocumentCode
+              document={props.entry.document!}
+              priorVersions={props.priorDocuments}
+            />
+          </Match>
+        </Switch>
+      </Match>
+
       {/* PREVIEW — live head first (live = the latest version's preview). Persistent
           across version relabels so the running server's iframe isn't torn down. */}
       <Match when={props.mode === "preview" && props.entry.live}>

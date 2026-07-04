@@ -101,6 +101,21 @@ export interface ViewSnapshotRef {
   preview: ViewPreviewRef | null;
 }
 
+/** One **committed version** of a document the agent authored during the thread —
+ *  folded into the same versioned View as workspace snapshots. `version` 0 marks an
+ *  in-progress/live body (a `document.delta` still streaming before its commit); a
+ *  version ≥ 1 is a real, committed version. `origin` records who minted it. */
+export interface ViewDocumentRef {
+  documentId: string;
+  version: number;
+  title?: string;
+  origin: "user" | "ai" | "extraction";
+  body: string;
+  /** When this version was minted (ISO), so the View can order document versions and
+   *  workspace snapshots into one timeline instead of concatenating them. */
+  createdAt: string;
+}
+
 /** One file in a workspace snapshot's tree, with its change status vs. the prior
  *  snapshot. */
 export interface SnapshotFile {
@@ -233,6 +248,9 @@ export interface ChatSession {
   /** Workspace snapshots captured across the thread (newest last), seeding the
    *  viewport's git-style history on load. */
   snapshots: ViewSnapshotRef[];
+  /** Documents the agent authored across the thread, flattened to one entry per
+   *  committed version (oldest first), seeding the viewport alongside the snapshots. */
+  documents: ViewDocumentRef[];
 }
 
 export interface ChatSummary {
