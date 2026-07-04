@@ -19,6 +19,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from pydantic_ai import (
@@ -39,7 +40,7 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
 from core.exceptions import ModelLoadError
-from prompts.agent import INSTRUCTIONS, SYSTEM_PROMPT, VERIFIER_NUDGE
+from prompts.agent import CURRENT_DATE, INSTRUCTIONS, SYSTEM_PROMPT, VERIFIER_NUDGE
 from runs import (
     ApprovalRequired,
     ConversationTitled,
@@ -165,6 +166,17 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
             store, ctx.deps.owner_id, conversation_id
         )
         return "\n\n".join(blocks)
+
+    @agent.instructions
+    def _current_date() -> str:
+        """Give the agent today's date as a dynamic instruction — re-resolved fresh each
+        turn (always current, no stale pinned copy) and kept out of history. Uses the
+        host's local timezone, the operator's own clock on their own hardware."""
+        now = datetime.now().astimezone()
+        # Avoid strftime "%-d"/"%#d" platform splits — build the day number directly so
+        # this stays portable across POSIX hosts.
+        stamp = f"{now:%A, %B} {now.day}, {now.year}"
+        return CURRENT_DATE.format(date=stamp)
 
     return agent
 

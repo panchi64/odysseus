@@ -90,6 +90,12 @@ not do what was asked — never paper over it or invent a result. A truthful "th
 didn't work, here's why" is worth more to the operator than a confident fabrication."""
 
 
+# Surfaced as a dynamic instruction (re-resolved fresh each turn, kept out of history),
+# so the agent always knows the current date — grounds time-sensitive reasoning and
+# frames web searches for the latest information. ``{date}`` is the only field.
+CURRENT_DATE = "The current date is {date}."
+
+
 # The verifier's corrective nudge. When the deliverable judge rules a turn fell
 # short, the engine re-asks with this — a single bounded re-attempt — interpolating
 # the judge's specific reason. ``{reason}`` is the only field.
