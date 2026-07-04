@@ -4,7 +4,7 @@ import { cx } from "../cx";
 import { Icon, type IconProps } from "../primitives/Icon";
 
 export type ButtonVariant = "primary" | "default" | "ghost" | "danger";
-export type ButtonSize = "sm" | "md";
+export type ButtonSize = "sm" | "md" | "lg";
 
 export interface ButtonProps extends Omit<
   JSX.ButtonHTMLAttributes<HTMLButtonElement>,
@@ -30,6 +30,14 @@ const variantClass: Record<ButtonVariant, string> = {
 const sizeClass: Record<ButtonSize, string> = {
   sm: "h-6 px-2 gap-1",
   md: "h-8 px-3 gap-2",
+  lg: "h-10 px-4 gap-2",
+};
+
+// Icons scale with the button so a larger control reads as larger, not padded.
+const iconSize: Record<ButtonSize, number> = {
+  sm: 12,
+  md: 12,
+  lg: 16,
 };
 
 /** Foundational control. Cosmetic differences are the `variant`/`size` props —
@@ -62,11 +70,11 @@ export function Button(props: ButtonProps): JSX.Element {
       {...rest}
     >
       <Show when={local.leading}>
-        <Icon name={local.leading!} size={12} />
+        <Icon name={local.leading!} size={iconSize[local.size ?? "md"]} />
       </Show>
       {local.children}
       <Show when={local.trailing}>
-        <Icon name={local.trailing!} size={12} />
+        <Icon name={local.trailing!} size={iconSize[local.size ?? "md"]} />
       </Show>
     </Dynamic>
   );

@@ -135,7 +135,7 @@ export const icons: Record<IconName, () => JSX.Element> = {
     </>
   ),
   download: () => <path d="M8 2v8M5 7l3 3 3-3M3 13h10" />,
-  upload: () => <path d="M8 11V3M5 6l3-3 3 3M3 13h10" />,
+  upload: () => <path d="M6 3H4v10h2M10 3h2v10h-2M8 11V6M6 8l2-2 2 2" />,
   send: () => <path d="M14 2L2 7l5 2 2 5z" />,
   play: () => <path d="M5 3l8 5-8 5z" />,
   pause: () => <path d="M5 3v10M11 3v10" />,

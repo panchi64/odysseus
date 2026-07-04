@@ -9,6 +9,9 @@ export interface FileDropApi {
     onDragLeave: (e: DragEvent) => void;
     onDrop: (e: DragEvent) => void;
   };
+  /** Spread onto a focusable element (e.g. the textarea) to accept pasted
+   *  images/files. A file-less paste (plain text) passes through untouched. */
+  pasteHandlers: { onPaste: (e: ClipboardEvent) => void };
   /** Bind to a hidden `<input type="file">`'s ref so `openPicker` can click it. */
   bindInput: (el: HTMLInputElement) => void;
   /** Spread onto that hidden input to forward picked files to `onFiles`. */
@@ -18,9 +21,9 @@ export interface FileDropApi {
 }
 
 /**
- * The single drag/drop/pick implementation shared by the uploads DropZone and
- * the Composer's attach affordance. Owns the drag-highlight state and funnels
- * both dropped and picked files through one `onFiles` callback — the consumer
+ * The single drag/drop/pick/paste implementation shared by the uploads DropZone
+ * and the Composer's attach affordance. Owns the drag-highlight state and funnels
+ * dropped, picked, and pasted files through one `onFiles` callback — the consumer
  * decides what to do with them (upload, validate, etc.). No styling: it's a
  * behavior hook, so each surface renders its own chrome.
  */
@@ -44,6 +47,14 @@ export function useFileDrop(onFiles: (files: File[]) => void): FileDropApi {
         e.preventDefault();
         setIsDragging(false);
         emit(Array.from(e.dataTransfer?.files ?? []));
+      },
+    },
+    pasteHandlers: {
+      onPaste: (e: ClipboardEvent) => {
+        const files = Array.from(e.clipboardData?.files ?? []);
+        if (!files.length) return; // plain-text paste: leave it to the field
+        e.preventDefault();
+        emit(files);
       },
     },
     bindInput: (el: HTMLInputElement) => {

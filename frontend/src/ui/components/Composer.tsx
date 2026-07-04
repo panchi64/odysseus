@@ -203,6 +203,7 @@ export function Composer(props: ComposerProps): JSX.Element {
       value={text()}
       onInput={(e) => setText(e.currentTarget.value)}
       onKeyDown={onKeyDown}
+      onPaste={props.attachments ? drop.pasteHandlers.onPaste : undefined}
       rows={lg() ? 3 : 1}
       placeholder={props.placeholder ?? "Message the agent…"}
       disabled={props.disabled}
@@ -217,7 +218,7 @@ export function Composer(props: ComposerProps): JSX.Element {
     <Show when={props.attachments}>
       <Button
         variant="ghost"
-        size={lg() ? "md" : "sm"}
+        size={lg() ? "lg" : "md"}
         leading="upload"
         aria-label="Attach files"
         disabled={props.disabled}
