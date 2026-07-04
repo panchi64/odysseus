@@ -45,52 +45,56 @@ export function ViewStage(props: {
   return (
     <Switch>
       {/* A document version — its markdown body as PREVIEW, raw source + diff as CODE.
-          Only the latest committed version is editable inline. */}
+          Only the latest committed version is editable inline. The narrowed accessor
+          (`doc()`) is only alive while this branch is selected, so a version switch
+          that swaps `entry` to a non-document can't leave a stale deref of an
+          `undefined` field behind (which would throw and blank the whole app). */}
       <Match when={props.entry.document}>
-        <Switch>
-          <Match when={props.mode === "preview"}>
-            {/* Remount per document version: an in-flight inline edit belongs to the
-                version it started on, so when a newer version arrives (e.g. the agent
-                commits while the operator is editing) the editor resets rather than
-                letting SAVE write a stale draft onto the wrong base. */}
-            <Show
-              keyed
-              when={`${props.entry.document!.documentId}-${props.entry.document!.version}`}
-            >
-              <ViewDocumentContent
-                document={props.entry.document!}
-                editable={
-                  props.entry.isLatest && props.entry.document!.version >= 1
-                }
-                onSave={props.onSaveDocument}
+        {(doc) => (
+          <Switch>
+            <Match when={props.mode === "preview"}>
+              {/* Remount per document version: an in-flight inline edit belongs to the
+                  version it started on, so when a newer version arrives (e.g. the agent
+                  commits while the operator is editing) the editor resets rather than
+                  letting SAVE write a stale draft onto the wrong base. */}
+              <Show keyed when={`${doc().documentId}-${doc().version}`}>
+                <ViewDocumentContent
+                  document={doc()}
+                  editable={props.entry.isLatest && doc().version >= 1}
+                  onSave={props.onSaveDocument}
+                />
+              </Show>
+            </Match>
+            <Match when={props.mode === "code"}>
+              <ViewDocumentCode
+                document={doc()}
+                priorVersions={props.priorDocuments}
               />
-            </Show>
-          </Match>
-          <Match when={props.mode === "code"}>
-            <ViewDocumentCode
-              document={props.entry.document!}
-              priorVersions={props.priorDocuments}
-            />
-          </Match>
-        </Switch>
+            </Match>
+          </Switch>
+        )}
       </Match>
 
       {/* PREVIEW — live head first (live = the latest version's preview). Persistent
           across version relabels so the running server's iframe isn't torn down. */}
       <Match when={props.mode === "preview" && props.entry.live}>
-        <ViewLiveContent live={props.entry.live!} reloadKey={props.reloadKey} />
+        {(live) => (
+          <ViewLiveContent live={live()} reloadKey={props.reloadKey} />
+        )}
       </Match>
 
       {/* PREVIEW (non-live) + CODE for a captured version — remounted per snapshot id. */}
       <Match when={props.entry.snapshot}>
-        <Show keyed when={props.entry.snapshot!.snapshotId}>
-          <SnapshotStage
-            snapshot={props.entry.snapshot!}
-            mode={props.mode}
-            reloadKey={props.reloadKey}
-            priorVersions={props.priorVersions}
-          />
-        </Show>
+        {(snapshot) => (
+          <Show keyed when={snapshot().snapshotId}>
+            <SnapshotStage
+              snapshot={snapshot()}
+              mode={props.mode}
+              reloadKey={props.reloadKey}
+              priorVersions={props.priorVersions}
+            />
+          </Show>
+        )}
       </Match>
 
       {/* CODE for a standalone live head with no captured version yet. */}
