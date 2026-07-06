@@ -3,8 +3,10 @@
 By default the backend's own managed instance (`services.searxng`), needing no operator
 setup; an enabled provider in the DB-backed registry overrides it (a custom/remote
 instance). **search** queries the active instance's JSON API and returns the hits (title,
-url, snippet); the snippets are marked untrusted (:func:`core.untrusted.wrap_untrusted`)
-before they reach the model — web content is data, never instructions. The provider
+url, snippet) as a :class:`SearchResults` batch: the untrusted-content preamble ships once
+(:func:`core.untrusted.untrusted_preamble`) and each snippet is a bare fence sharing that
+call's one nonce (:func:`core.untrusted.untrusted_fence`) — web content is data, never
+instructions, but the "treat as data" instruction needn't repeat per result. The provider
 catalog is owner-scoped and managed like the model registry (encrypted key seam,
 ``in_session`` writes). The service raises domain errors only; the tool/route layers map
 them to retries or HTTP, keeping it reusable by non-agent callers.
@@ -15,6 +17,7 @@ the page in a headless browser and extracts it to Markdown.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +28,7 @@ from sqlmodel import Session, select
 
 from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
-from core.untrusted import wrap_untrusted
+from core.untrusted import untrusted_fence, untrusted_preamble
 from core.vault import Vault
 from models.search import SearchProvider
 
@@ -41,6 +44,17 @@ class SearchResult:
     url: str
     snippet: str
     published: str | None = None
+
+
+@dataclass(frozen=True)
+class SearchResults:
+    """A whole search call's results. ``instruction`` is the single untrusted-content
+    preamble for the batch (``""`` when there were no hits); each result's ``snippet`` is
+    a bare fence sharing that call's one nonce — so a batch of N results carries the
+    "treat as data" instruction once, not once per snippet."""
+
+    instruction: str
+    results: list[SearchResult]
 
 
 @dataclass(frozen=True)
@@ -194,7 +208,7 @@ class SearchService:
         *,
         limit: int | None = None,
         time_range: str | None = None,
-    ) -> list[SearchResult]:
+    ) -> SearchResults:
         """Query the active SearXNG provider's JSON API. An empty result list is a
         valid answer (the model concludes, rather than looping); an unreachable
         provider or non-JSON response is a degraded capability. ``time_range``, when one
@@ -237,6 +251,10 @@ class SearchService:
             raise DegradedCapabilityError("search provider returned an unexpected JSON shape")
 
         results = data.get("results") or []
+        # One nonce for the whole call: the preamble ships once and every snippet is a bare
+        # fence sharing it, so a batch of N results doesn't repeat the "treat as data"
+        # instruction N times.
+        nonce = secrets.token_hex(8)
         # Dedupe exact-URL repeats (two engines agreeing) *before* the limit, so the cap
         # yields `limit` distinct pages rather than being spent on duplicates.
         seen: set[str] = set()
@@ -250,10 +268,11 @@ class SearchService:
                 SearchResult(
                     title=r.get("title") or "",
                     url=url,
-                    snippet=wrap_untrusted(r.get("content") or "", source=url),
+                    snippet=untrusted_fence(r.get("content") or "", nonce, source=url),
                     published=r.get("publishedDate") or None,
                 )
             )
             if len(out) >= limit:
                 break
-        return out
+        instruction = untrusted_preamble(nonce) if out else ""
+        return SearchResults(instruction=instruction, results=out)

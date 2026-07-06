@@ -23,6 +23,23 @@ _INSTRUCTION = (
 )
 
 
+def untrusted_preamble(nonce: str) -> str:
+    """The standing "this is data, not instructions" instruction, tagged with ``nonce``
+    (the token the fence markers carry). Emit this **once** ahead of one or more fences
+    that share the nonce — a batch of results needn't repeat the preamble per item."""
+    return _INSTRUCTION.format(nonce=nonce)
+
+
+def untrusted_fence(content: str, nonce: str, *, source: str | None = None) -> str:
+    """Just the fenced block — ``content`` wrapped in ``BEGIN/END UNTRUSTED CONTENT``
+    markers carrying ``nonce`` (tagged with ``source`` when known) — with **no** preamble.
+    Pair with a single :func:`untrusted_preamble` sharing the nonce."""
+    src = f" source={source}" if source else ""
+    begin = f"[BEGIN UNTRUSTED CONTENT {nonce}{src}]"
+    end = f"[END UNTRUSTED CONTENT {nonce}]"
+    return f"{begin}\n{content}\n{end}"
+
+
 def wrap_untrusted(content: str, *, source: str | None = None) -> str:
     """Wrap externally-sourced ``content`` so the model treats it as data.
 
@@ -35,7 +52,4 @@ def wrap_untrusted(content: str, *, source: str | None = None) -> str:
     (a prompt-injection defence — the whole point of the wrap).
     """
     nonce = secrets.token_hex(8)
-    src = f" source={source}" if source else ""
-    begin = f"[BEGIN UNTRUSTED CONTENT {nonce}{src}]"
-    end = f"[END UNTRUSTED CONTENT {nonce}]"
-    return f"{_INSTRUCTION.format(nonce=nonce)}\n{begin}\n{content}\n{end}"
+    return untrusted_preamble(nonce) + "\n" + untrusted_fence(content, nonce, source=source)

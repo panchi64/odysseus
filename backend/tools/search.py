@@ -21,7 +21,7 @@ from typing import Literal
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
-from services.search import SearchResult
+from services.search import SearchResults
 from services.webfetch import FetchedPage
 
 from .deps import RunDeps
@@ -36,12 +36,12 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         query: str,
         limit: int = 5,
         time_range: Literal["day", "week", "month", "year"] | None = None,
-    ) -> list[SearchResult] | str:
+    ) -> SearchResults | str:
         """Search the web for a query and return ranked results (title, URL, snippet).
 
         Use `time_range` to restrict results to recent pages when the question is
         time-sensitive; `published` on a result is its publication date when the engine
-        knew it. An empty list means the search ran but found nothing — conclude from
+        knew it. No results means the search ran but found nothing — conclude from
         that rather than retrying the same query."""
         svc = ctx.deps.search
         if svc is None:

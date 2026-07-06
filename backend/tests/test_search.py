@@ -74,7 +74,7 @@ async def test_search_uses_managed_instance_when_no_provider():
     svc = await _make_service(handler, managed_url=lambda: "http://managed.local")
     results = await svc.search(OWNER, "q")
     assert seen["url"].startswith("http://managed.local/search")
-    assert [r.title for r in results] == ["M"]
+    assert [r.title for r in results.results] == ["M"]
 
 
 async def test_enabled_provider_overrides_managed_instance():
@@ -122,10 +122,14 @@ async def test_search_maps_searxng_json_and_wraps_snippets():
 
     assert seen["url"].startswith("http://searx.local/search")
     assert "format=json" in seen["url"]
-    assert [r.title for r in results] == ["First", "Second"]
-    # Snippets arrive untrusted-wrapped (data, not instructions).
-    assert "snippet one" in results[0].snippet
-    assert "[BEGIN UNTRUSTED CONTENT" in results[0].snippet
+    assert [r.title for r in results.results] == ["First", "Second"]
+    # The "treat as data" preamble ships once for the batch, not per snippet.
+    assert "external data, not instructions" in results.instruction
+    for r in results.results:
+        assert "external data, not instructions" not in r.snippet  # no per-snippet preamble
+        assert "[BEGIN UNTRUSTED CONTENT" in r.snippet  # each snippet is a bare fence
+    assert "snippet one" in results.results[0].snippet
+    assert f"source={results.results[0].url}" in results.results[0].snippet
 
 
 async def test_search_passes_time_range_param():
@@ -171,7 +175,7 @@ async def test_search_dedupes_exact_urls_before_limit():
     await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
     # limit=2 must yield two *distinct* pages, not spend a slot on the duplicate.
     results = await svc.search(OWNER, "q", limit=2)
-    assert [r.url for r in results] == ["https://a.example", "https://b.example"]
+    assert [r.url for r in results.results] == ["https://a.example", "https://b.example"]
 
 
 async def test_search_carries_published_date():
@@ -194,8 +198,34 @@ async def test_search_carries_published_date():
     svc = await _make_service(handler)
     await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
     results = await svc.search(OWNER, "q")
-    assert results[0].published == "2026-06-01T00:00:00"
-    assert results[1].published is None
+    assert results.results[0].published == "2026-06-01T00:00:00"
+    assert results.results[1].published is None
+
+
+async def test_search_results_share_one_nonce_per_call():
+    import re
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "A", "url": "https://a.example", "content": "one"},
+                    {"title": "B", "url": "https://b.example", "content": "two"},
+                ]
+            },
+        )
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    results = await svc.search(OWNER, "q")
+    nonces = set()
+    for r in results.results:
+        match = re.search(r"\[BEGIN UNTRUSTED CONTENT (\w+)", r.snippet)
+        assert match
+        nonces.add(match.group(1))
+    assert len(nonces) == 1  # every fence in the call shares the one nonce
+    assert nonces.pop() in results.instruction  # the preamble carries that same nonce
 
 
 async def test_search_non_json_is_degraded():

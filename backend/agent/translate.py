@@ -45,7 +45,7 @@ from runs import (
     ToolFailed,
     ToolStarted,
 )
-from services.search import SearchResult
+from services.search import SearchResult, SearchResults
 from services.webfetch import FetchedPage
 
 from .meta import LoopBreaker
@@ -55,10 +55,10 @@ def citations_from_tool_result(name: str, content: Any) -> list[CitationAdded]:
     """Sources a completed ``web_search``/``web_fetch`` call surfaced, in result order,
     1-based ``source_index``, deduped by URL. Anything else (a degraded-capability
     string, an unrecognized tool) yields none — this is additive, never load-bearing."""
-    if name == "web_search" and isinstance(content, list):
+    if name == "web_search" and isinstance(content, SearchResults):
         seen: set[str] = set()
         deduped = []
-        for item in content:
+        for item in content.results:
             if not isinstance(item, SearchResult) or item.url in seen:
                 continue
             seen.add(item.url)
