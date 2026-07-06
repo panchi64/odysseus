@@ -66,6 +66,10 @@ class MessageView:
     # Upload ids the operator attached to this (user) turn — the frontend renders them
     # as file chips. Empty for assistant turns and turns sent without attachments.
     attachment_ids: list[str] = field(default_factory=list)
+    # Set when the run behind this assistant turn ended `outcome: "blocked"` (a
+    # usage/loop/context/time bound) — the human-readable reason. Filled in by the
+    # store from the branch node, like `pinned`; None for every other turn.
+    blocked_reason: str | None = None
 
 
 def _user_text(content: Any) -> str:

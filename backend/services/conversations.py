@@ -63,7 +63,7 @@ _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 # A persistence-ready message row, still plaintext: (id, parent_id, seq, kind,
 # text, blob). The drainer encrypts text + blob just before the write (lock-aware
 # side of the queue), so a vault lock mid-turn parks the write rather than losing it.
-_Row = tuple[str, str | None, int, str, str, str, list[str]]
+_Row = tuple[str, str | None, int, str, str, str, list[str], str | None]
 
 
 @dataclass
@@ -106,6 +106,9 @@ class _Node:
     # message so the conversation detail can render attachment chips without re-reading the
     # row; the message blob itself carries only the marker, never the file content.
     attachment_ids: list[str] = field(default_factory=list)
+    # Set on an assistant turn's first response node when the run that produced it
+    # ended blocked — the human-readable reason. None otherwise.
+    blocked_reason: str | None = None
 
 
 class _Tree:
@@ -433,7 +436,7 @@ class ConversationStore:
             def work(
                 session: Session,
             ) -> tuple[
-                list[tuple[str, str | None, int, bool, str, list[str]]], str | None
+                list[tuple[str, str | None, int, bool, str, list[str], str | None]], str | None
             ]:
                 rows = session.exec(
                     select(Message)
@@ -443,13 +446,21 @@ class ConversationStore:
                 conversation = session.get(Conversation, conversation_id)
                 active = conversation.active_leaf_id if conversation is not None else None
                 return [
-                    (r.id, r.parent_id, r.seq, r.pinned, r.blob, r.attachment_ids)
+                    (r.id, r.parent_id, r.seq, r.pinned, r.blob, r.attachment_ids, r.blocked_reason)
                     for r in rows
                 ], active
 
             rows, active = await in_session(self._engine, work)
             tree = _Tree()
-            for row_id, parent_id, seq, pinned, blob, attachment_ids in rows:  # pre-sorted by seq
+            for (
+                row_id,
+                parent_id,
+                seq,
+                pinned,
+                blob,
+                attachment_ids,
+                blocked_reason,
+            ) in rows:  # pre-sorted by seq
                 message = _MESSAGE.validate_json(self._vault.decrypt_str(blob))
                 tree.add(
                     _Node(
@@ -459,6 +470,7 @@ class ConversationStore:
                         message=message,
                         pinned=pinned,
                         attachment_ids=attachment_ids,
+                        blocked_reason=blocked_reason,
                     )
                 )
             tree.active_leaf_id = active if active in tree.nodes else tree.fallback_leaf()
@@ -565,6 +577,7 @@ class ConversationStore:
             if node is not None:
                 view.pinned = node.pinned
                 view.attachment_ids = node.attachment_ids
+                view.blocked_reason = node.blocked_reason
             siblings = tree.siblings(view.id)
             if siblings:
                 view.version_count = len(siblings)
@@ -645,6 +658,7 @@ class ConversationStore:
         new_messages: list[ModelMessage],
         attachment_ids: list[str] | None = None,
         persisted: list | None = None,
+        blocked_reason: str | None = None,
     ) -> None:
         """Hot path: extend the tree off the active leaf and queue the durable write.
 
@@ -656,13 +670,17 @@ class ConversationStore:
         given the request's *live* attachment content is replaced by that capped set before
         serialize — so replayed history carries only the retained-up-to-cap content, never
         the uncapped live payload. Installing it lives here (not in the engine) because
-        *what the durable blob contains* is the store's job."""
+        *what the durable blob contains* is the store's job. ``blocked_reason``, when the
+        turn ended blocked (a usage/loop/context/time bound), stamps the turn's branch
+        node — the first response, matching how ``project_tree`` keys an assistant view —
+        so a reload carries the same persistent stop marker the live stream showed."""
         if not new_messages:
             return
         tree = self._cache.setdefault(conversation_id, _Tree())
         added = tree.append_chain(new_messages)
         rows: list[_Row] = []
         stamped = False
+        blocked_stamped = False
         for node in added:
             # The attached files belong to this turn's user request (the first one);
             # install the capped content and stamp the ids before we project/serialize.
@@ -671,10 +689,22 @@ class ConversationStore:
                     node.attachment_ids = list(attachment_ids)
                 install_persisted_attachments(node.message, persisted or [])
                 stamped = True
+            if not blocked_stamped and blocked_reason and isinstance(node.message, ModelResponse):
+                node.blocked_reason = blocked_reason
+                blocked_stamped = True
             kind, text = _project(node.message)
             blob = _MESSAGE.dump_json(node.message).decode()
             rows.append(
-                (node.id, node.parent_id, node.seq, kind, text, blob, node.attachment_ids)
+                (
+                    node.id,
+                    node.parent_id,
+                    node.seq,
+                    kind,
+                    text,
+                    blob,
+                    node.attachment_ids,
+                    node.blocked_reason,
+                )
             )
         self._worker.submit(
             _PersistJob(
@@ -939,7 +969,8 @@ class ConversationStore:
             conversation = session.get(Conversation, job.conversation_id)
             if conversation is None:
                 return
-            for row_id, parent_id, seq, kind, text, blob, attachment_ids in job.rows:
+            for row in job.rows:
+                row_id, parent_id, seq, kind, text, blob, attachment_ids, blocked_reason = row
                 model, dim, vector_enc = vectors.get(row_id, (None, None, None))
                 session.add(
                     Message(
@@ -951,6 +982,7 @@ class ConversationStore:
                         text=self._vault.encrypt_str(text),
                         blob=self._vault.encrypt_str(blob),
                         attachment_ids=attachment_ids,
+                        blocked_reason=blocked_reason,
                         embedding_enc=vector_enc,
                         embedding_model=model,
                         embedding_dim=dim,

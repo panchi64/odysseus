@@ -319,6 +319,14 @@ function AssistantTurn(props: {
         <Show when={m().citations?.length}>
           <SourcesRow citations={m().citations!} />
         </Show>
+        <Show when={m().blocked}>
+          <div class="flex items-center gap-1.5 text-warn">
+            <Icon name="warning" size={12} />
+            <Text variant="micro" tone="warn">
+              Stopped: {m().blockedDetail ?? "a run limit was reached"}
+            </Text>
+          </div>
+        </Show>
       </Stack>
     </div>
   );

@@ -237,6 +237,9 @@ interface MessageDTO {
   pinned?: boolean;
   /** User turns: ids of the uploads attached to this message. */
   attachment_ids?: string[];
+  /** Set when the run behind this assistant turn ended blocked (a usage/loop/
+   *  context/time bound) — the human-readable reason. */
+  blocked_reason?: string | null;
 }
 
 interface ActiveRunDTO {
@@ -512,6 +515,8 @@ function toMessage(dto: MessageDTO): ChatMessage {
     content: "",
     blocks,
     citations: citations.length ? citations : undefined,
+    blocked: dto.blocked_reason != null,
+    blockedDetail: dto.blocked_reason ?? undefined,
     model: dto.model ?? undefined,
   };
 }
@@ -1220,7 +1225,17 @@ export function createChatStream(
         // conversation hit the ceiling and can start a new chat rather than wonder.
         if (ev.limit !== "verify") toast.error(ev.message);
         break;
-      // run.started / run.ended / step.*: no store change
+      case "run.ended":
+        // A blocked outcome is a real stopping point, not a normal finish —
+        // leave a persistent marker on the turn (the limit.notice toast alone
+        // vanishes, and a reload would otherwise show a turn that just stops).
+        if (ev.outcome === "blocked")
+          patchById(assistantId, (m) => {
+            m.blocked = true;
+            m.blockedDetail = ev.detail ?? undefined;
+          });
+        break;
+      // run.started / step.*: no store change
     }
   }
 

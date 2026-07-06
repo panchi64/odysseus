@@ -137,6 +137,50 @@ async def test_content_is_encrypted_at_rest(tmp_path):
         assert "SECRET-TOKEN-XYZ" not in row.text
 
 
+async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
+    # A tool-calls bound tripped after the model already committed to a call: the
+    # turn stops blocked, but what ran (the tool-call response) is real conversation
+    # content — persist it, tagged with why it stopped, so a reload shows the same
+    # marker the live stream rendered rather than a turn that silently never happened.
+    toolset = FunctionToolset()
+
+    @toolset.tool
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_noop"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    views = await store.messages_view(conv)
+    assert views[0].role == "user"
+    assert views[-1].role == "assistant"
+    assert views[-1].blocked_reason == "usage limit reached"
+
+    # Reload parity: a cold store rehydrates the same marker from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert cold_views[-1].blocked_reason == "usage limit reached"
+    await cold.stop()
+
+
 async def test_foreign_keys_are_enforced():
     # The Message → Conversation FK is only real if SQLite's pragma is on; an
     # orphan insert must fail loudly rather than silently land.

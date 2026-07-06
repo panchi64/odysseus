@@ -220,6 +220,12 @@ export interface ChatMessage {
    *  surfaced, in citation order. Absent on user turns and turns with no web
    *  tool use. */
   citations?: Citation[];
+  /** True when the run backing this turn ended with `outcome: "blocked"` (a
+   *  usage/loop/context/time bound, not a normal finish) — rendered as a
+   *  persistent inline notice rather than only the transient `limit.notice`
+   *  toast. `blockedDetail` is the human-readable reason. */
+  blocked?: boolean;
+  blockedDetail?: string;
   /** The run this assistant turn streams from — needed to approve/cancel it. */
   runId?: string;
   /** True while tokens are still streaming in. */

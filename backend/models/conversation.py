@@ -82,6 +82,11 @@ class Message(SQLModel, table=True):
     # demand); these ids are the durable link the UI renders as chips and a regenerate
     # re-resolves to re-supply the file for the active turn. Opaque ids, so in the clear.
     attachment_ids: list[str] = Field(sa_column=Column(JSON, nullable=False, default=list))
+    # Set on an assistant turn's branch node when the run backing it ended
+    # `outcome: "blocked"` (a usage/loop/context/time bound, not a normal finish) —
+    # the human-readable reason (`Run.detail`), so a reload shows the same
+    # persistent stop marker the live stream rendered. Null for every other turn.
+    blocked_reason: str | None = None
     # Semantic-search vector over `text`, encrypted at rest like the projection it
     # embeds. Null when the message has no searchable text (tool/reasoning-only
     # turns) or the embedder was unavailable when it was persisted — such a message

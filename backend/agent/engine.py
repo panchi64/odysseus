@@ -123,6 +123,10 @@ class _TurnResult:
     messages: list[ModelMessage] = field(default_factory=list)
     # A verifier correction's [reject_idx, nudge_idx] range to drop on persist.
     clean_drop: tuple[int, int] | None = None
+    # Set when the turn stopped at a bound (`run.status is blocked`) — the
+    # human-readable reason, carried through to `_finalize` so it can persist a
+    # marker on the turn's branch node (see `ConversationStore.record`).
+    blocked_reason: str | None = None
 
 
 def _build_agent(model: Model, *, categories: Any = None) -> Agent:
@@ -364,8 +368,17 @@ async def _drive_turn(
 
     def report_progress(history: list[ModelMessage]) -> None:
         # A live context/usage frame as each model response lands, so the operator's context
-        # gauge fills in real time during a long tool-heavy turn (not only at the end).
+        # gauge fills in real time during a live turn.
         run.emit(_turn_metrics(base, usage, run, history))
+
+    # Rebound each loop iteration by `agent.iter()`'s `as agent_run`; stays None only
+    # if a bound trips before the context manager assigns it (its `__aenter__` does
+    # no request, so this hasn't been observed, but the except blocks below guard
+    # it anyway rather than risk an unbound-variable crash on a stop path).
+    agent_run: Any = None
+
+    def _partial_history() -> list[ModelMessage]:
+        return list(agent_run.ctx.state.message_history) if agent_run is not None else []
 
     while True:
         try:
@@ -388,21 +401,36 @@ async def _drive_turn(
         except UsageLimitExceeded as exc:
             # Hit a usage bound — stop and report state, don't error.
             run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=str(exc)))
-            run.block("usage limit reached")
-            return _TurnResult(answer=None)
+            detail = "usage limit reached"
+            run.block(detail)
+            return _TurnResult(
+                answer=None,
+                messages=_partial_history(),
+                blocked_reason=detail,
+            )
         except LoopDetected as exc:
             # No-progress guard tripped — stop and report state, don't error.
             run.emit(LimitNotice(limit="loop", message=str(exc)))
-            run.block("stopped: repeated an action without making progress")
-            return _TurnResult(answer=None)
+            detail = "stopped: repeated an action without making progress"
+            run.block(detail)
+            return _TurnResult(
+                answer=None,
+                messages=_partial_history(),
+                blocked_reason=detail,
+            )
         except ModelHTTPError as exc:
             # Context-window overflow: a definitive ceiling, not something to paper over by
             # silently dropping content — stop and tell the operator the model's limit so they
             # can start a new chat or trim. (Compaction reduces pressure; it never absorbs this.)
             if _is_context_overflow(exc):
                 run.emit(LimitNotice(limit="context", message=_context_limit_message(run)))
-                run.block("context window exceeded")
-                return _TurnResult(answer=None)
+                detail = "context window exceeded"
+                run.block(detail)
+                return _TurnResult(
+                    answer=None,
+                    messages=_partial_history(),
+                    blocked_reason=detail,
+                )
             # Rewrite a model-couldn't-load error into something the operator can act
             # on; let every other HTTP error propagate with its own detail.
             hint = _model_load_hint(exc)
@@ -536,8 +564,8 @@ def _finalize(
             run.parked_payload.persisted = persisted
             run.parked_payload.compaction = compaction
         return
-    if turn.answer is None:
-        return  # blocked or hit a bound — nothing to persist
+    if turn.answer is None and not turn.blocked_reason:
+        return  # hit a bound with nothing captured, or a cancel — nothing to persist
     if store is not None and conversation_id is not None:
         messages = turn.messages
         if clean_drop is not None:
@@ -546,11 +574,15 @@ def _finalize(
         # The store installs the capped `persisted` content and stamps `attachment_ids`
         # on the turn's user request as it serializes — keeping replayed history capped is
         # the store's concern (what the durable blob contains), not the engine's.
+        # `blocked_reason` stamps the turn's branch node so a reload shows the same
+        # persistent stop marker the live stream rendered (`record` is a no-op for an
+        # empty slice, e.g. a bound hit before any new message accumulated).
         store.record(
             conversation_id,
             messages[start:],
             attachment_ids=attachment_ids or [],
             persisted=persisted,
+            blocked_reason=turn.blocked_reason,
         )
 
 

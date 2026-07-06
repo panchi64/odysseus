@@ -114,6 +114,10 @@ class MessageOut(BaseModel):
     pinned: bool = False  # the operator's durable bookmark on this turn
     # Upload ids the operator attached to this (user) turn — rendered as file chips.
     attachment_ids: list[str] = []
+    # Set when the run behind this assistant turn ended `outcome: "blocked"` (a
+    # usage/loop/context/time bound) — the human-readable reason, rendered as a
+    # persistent stop marker. None for every other turn.
+    blocked_reason: str | None = None
 
 
 class ActiveRun(BaseModel):
@@ -223,6 +227,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         version_count=view.version_count,
         pinned=view.pinned,
         attachment_ids=view.attachment_ids,
+        blocked_reason=view.blocked_reason,
     )
 
 
