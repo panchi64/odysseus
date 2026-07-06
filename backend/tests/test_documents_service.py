@@ -76,11 +76,12 @@ async def test_create_records_first_user_version():
 async def test_edit_appends_version_and_bumps_updated_at():
     _engine, _vault, _chunks, adapter, store = await _store()
     doc = await store.create(OWNER, "Notes", "first")
-    edited = await store.edit(OWNER, doc.id, body="second")
+    edited, version = await store.edit(OWNER, doc.id, body="second")
     await adapter.stop()
 
     versions = await store.list_versions(OWNER, doc.id)
     assert [v.version for v in versions] == [2, 1]  # newest first
+    assert version == 2
     assert edited.updated_at >= doc.updated_at
     assert edited.body == "second"
 

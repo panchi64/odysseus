@@ -235,14 +235,31 @@ class RunRegistry:
                     return
                 now = loop.time()
                 if deadline is not None and now >= deadline:
+                    self._flush_timeout(run, "wall_clock")
                     raise RunTimeout("wall_clock")
                 if inactivity is not None and now >= run.last_activity_mono + inactivity:
+                    self._flush_timeout(run, "inactivity")
                     raise RunTimeout("inactivity")
         finally:
             if not main.done():
                 main.cancel()
                 with suppress(asyncio.CancelledError):
                     await main
+
+    @staticmethod
+    def _flush_timeout(run: Run, kind: str) -> None:
+        """Give the orchestrator one last chance to persist its partial state before
+        the bound trips and ``_supervise``'s ``finally`` force-cancels its task —
+        without this, a wall-clock/inactivity stop reports a 'blocked' outcome that
+        looks persistent but silently drops the turn (and the operator's own prompt)
+        on the next reload, because cancellation interrupts the task before its own
+        normal finalize path runs. Called while the task is still suspended (not
+        running), so reading its state here is race-free under single-threaded
+        asyncio. Best-effort: a hook that raises must not stop the bound from firing."""
+        if run.on_timeout is None:
+            return
+        with suppress(Exception):
+            run.on_timeout(kind)
 
     def _evict_old(self) -> None:
         """Bound memory: drop the oldest terminal runs past the retention cap."""

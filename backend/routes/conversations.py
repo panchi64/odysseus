@@ -9,6 +9,7 @@ as a render-ready projection — the durable record stays full-fidelity
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -263,24 +264,25 @@ async def _detail(
     # cold read rebuilds the View's document versions like the live document.* stream did.
     documents_store = deps.documents(request)
     doc_views = await documents_store.list_by_conversation(OPERATOR_ID, conversation_id)
-    documents: list[DocumentRefOut] = []
-    for doc in doc_views:
-        versions = await documents_store.list_versions(OPERATOR_ID, doc.id)
-        documents.append(
-            DocumentRefOut(
-                document_id=doc.id,
-                title=doc.title,
-                versions=[
-                    DocumentVersionRefOut(
-                        version=v.version,
-                        origin=v.origin,
-                        created_at=v.created_at,
-                        body=v.body,
-                    )
-                    for v in reversed(versions)  # list_versions is newest-first; want oldest-first
-                ],
-            )
+    doc_versions = await asyncio.gather(
+        *(documents_store.list_versions(OPERATOR_ID, doc.id) for doc in doc_views)
+    )
+    documents: list[DocumentRefOut] = [
+        DocumentRefOut(
+            document_id=doc.id,
+            title=doc.title,
+            versions=[
+                DocumentVersionRefOut(
+                    version=v.version,
+                    origin=v.origin,
+                    created_at=v.created_at,
+                    body=v.body,
+                )
+                for v in reversed(versions)  # list_versions is newest-first; want oldest-first
+            ],
         )
+        for doc, versions in zip(doc_views, doc_versions, strict=True)
+    ]
     return ConversationDetail(
         **_summary(summary).model_dump(),
         messages=[_message(m, by_id) for m in messages],

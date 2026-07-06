@@ -131,15 +131,17 @@ class DocumentStore:
         title: str | None = None,
         body: str | None = None,
         origin: str = DocumentVersionOrigin.USER,
-    ) -> DocumentView:
+    ) -> tuple[DocumentView, int]:
         """Apply a partial edit, snapshot the result as a new version, and re-index when
         the body changed. Every call records a version (`DOC-2`) — even a title-only
         change, since the history tracks the whole document, not just its text — but a
         title-only edit skips re-indexing: the corpus only holds the body, so re-chunking
-        and re-embedding it would be wasted work."""
+        and re-embedding it would be wasted work. Returns the updated view **and the new
+        version number** (mirroring ``replace_span``), so a caller need not re-query the
+        history to report it."""
         await self._require(owner_id, document_id)
 
-        def work(session: Session) -> DocumentView:
+        def work(session: Session) -> tuple[DocumentView, int]:
             document = session.get(Document, document_id)
             assert document is not None
             if title is not None:
@@ -150,15 +152,15 @@ class DocumentStore:
             document.updated_at = datetime.now(UTC)
             session.add(document)
             session.flush()
-            self._snapshot(session, document, origin)
+            version = self._snapshot(session, document, origin).version
             new_title = title if title is not None else self._vault.decrypt_str(document.title_enc)
             new_body = body if body is not None else self._vault.decrypt_str(document.body_enc)
-            return self._to_view(document, new_title, new_body)
+            return self._to_view(document, new_title, new_body), version
 
-        view = await in_session(self._engine, work)
+        view, version = await in_session(self._engine, work)
         if body is not None:
             self._adapter.index_document(owner_id, document_id, body)
-        return view
+        return view, version
 
     async def replace_span(
         self,

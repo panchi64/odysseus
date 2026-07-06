@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -328,6 +329,7 @@ async def _drive_turn(
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
+    partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -379,6 +381,12 @@ async def _drive_turn(
 
     def _partial_history() -> list[ModelMessage]:
         return list(agent_run.ctx.state.message_history) if agent_run is not None else []
+
+    if partial_history_ref is not None:
+        # Let the caller reach this turn's current partial state at any point — even
+        # before the first step lands — so an external timeout mid-turn can still flush
+        # whatever's there (see `build_chat_orchestrator`'s `on_timeout` hook).
+        partial_history_ref[:] = [_partial_history]
 
     while True:
         try:
@@ -489,6 +497,7 @@ async def _verify_and_correct(
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
+    partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -521,6 +530,7 @@ async def _verify_and_correct(
         conversation_id=conversation_id,
         disabled_tools=disabled_tools,
         compaction=compaction,
+        partial_history_ref=partial_history_ref,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -830,6 +840,30 @@ def build_chat_orchestrator(
                 user_prompt = [prompt, *resolved.content]
             persisted = resolved.persisted or None
             stamp_ids = resolved.ids
+
+        # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
+        # turn has produced before the registry force-cancels this task (which would
+        # otherwise interrupt us before we reach `_finalize` below and silently drop
+        # the turn on the next reload — see `RunRegistry._flush_timeout`).
+        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
+
+        def _on_timeout(kind: str) -> None:
+            if not partial_history_ref:
+                return
+            detail = f"{kind} timeout exceeded"
+            run.block(detail)
+            _finalize(
+                run,
+                _TurnResult(answer=None, messages=partial_history_ref[0](), blocked_reason=detail),
+                store=store,
+                conversation_id=conversation_id,
+                start=start,
+                attachment_ids=stamp_ids,
+                persisted=persisted,
+                compaction=active_compaction,
+            )
+
+        run.on_timeout = _on_timeout
         try:
             turn = await _drive_turn(
                 run,
@@ -841,6 +875,7 @@ def build_chat_orchestrator(
                 conversation_id=conversation_id,
                 disabled_tools=disabled_tools,
                 compaction=active_compaction,
+                partial_history_ref=partial_history_ref,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -871,6 +906,7 @@ def build_chat_orchestrator(
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
                         compaction=active_compaction,
+                        partial_history_ref=partial_history_ref,
                     )
 
             _finalize(
@@ -920,6 +956,30 @@ def build_resume_orchestrator(
 
     async def orchestrate(run: Run) -> None:
         results = DeferredToolResults(approvals=decisions)
+
+        # Same reasoning as the chat orchestrator's `_on_timeout`: a resumed turn is
+        # bound by fresh wall-clock/inactivity timeouts too (see `RunRegistry.resume`),
+        # so it needs the same flush-before-force-cancel hook.
+        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
+
+        def _on_timeout(kind: str) -> None:
+            if not partial_history_ref:
+                return
+            detail = f"{kind} timeout exceeded"
+            run.block(detail)
+            _finalize(
+                run,
+                _TurnResult(answer=None, messages=partial_history_ref[0](), blocked_reason=detail),
+                store=store,
+                conversation_id=parked.conversation_id,
+                start=parked.persist_from,
+                clean_drop=parked.clean_drop,
+                attachment_ids=parked.attachment_ids,
+                persisted=parked.persisted,
+                compaction=parked.compaction,
+            )
+
+        run.on_timeout = _on_timeout
         turn = await _drive_turn(
             run,
             parked.agent,
@@ -930,6 +990,7 @@ def build_resume_orchestrator(
             conversation_id=parked.conversation_id,
             disabled_tools=disabled_tools,
             compaction=parked.compaction,
+            partial_history_ref=partial_history_ref,
         )
         _finalize(
             run,

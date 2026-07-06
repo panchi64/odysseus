@@ -71,6 +71,12 @@ class Run:
     # Opaque continuation payload for a parked run (set by the orchestrator
     # layer when awaiting approval). The substrate never interprets it.
     parked_payload: object | None = None
+    # Opaque hook the orchestrator may set to flush whatever partial state it holds
+    # before the registry force-cancels this run's task for a wall-clock/inactivity
+    # bound — called synchronously with the bound's kind, from inside the still-running
+    # task's own event-loop turn (safe to read the task's local state). The substrate
+    # never interprets it beyond calling it; a raising hook is swallowed by the caller.
+    on_timeout: Callable[[str], None] | None = None
 
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog."""

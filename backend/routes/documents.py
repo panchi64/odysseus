@@ -142,7 +142,7 @@ async def update_document(
     if body.title is not None and not body.title.strip():
         raise HTTPException(status_code=422, detail="title must not be empty")
     try:
-        view = await deps.documents(request).edit(
+        view, version = await deps.documents(request).edit(
             OPERATOR_ID,
             document_id,
             title=body.title,
@@ -152,8 +152,7 @@ async def update_document(
     except NotFoundError:
         raise HTTPException(status_code=404, detail="document not found") from None
     # Report the version this edit minted so the client labels it from backend truth rather
-    # than guessing (a cheap clear-column read).
-    version = await deps.documents(request).latest_version_number(OPERATOR_ID, document_id)
+    # than guessing — returned directly by the store, atomic with the write itself.
     return _out(view, version=version)
 
 

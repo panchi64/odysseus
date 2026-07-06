@@ -23,7 +23,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
-from core.exceptions import DocumentSpanError
+from core.exceptions import DocumentSpanError, NotFoundError
 from runs import DocumentCommitted, DocumentCreated, DocumentDelta
 from services.documents import DocumentVersionOrigin
 
@@ -83,7 +83,13 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         store = ctx.deps.documents
         if store is None:
             return "Documents are unavailable right now."
-        doc = await store.get(ctx.deps.owner_id, document_id)
+        try:
+            doc = await store.get(ctx.deps.owner_id, document_id)
+        except NotFoundError as exc:
+            raise ModelRetry(
+                f"No document with id {document_id!r} — it may have been deleted. "
+                "Check the id or create a new document instead."
+            ) from exc
 
         # Provenance gate: a document born in *this* conversation is the agent's own surface
         # (ungated); anything else — a library doc (no conversation) or one from another
