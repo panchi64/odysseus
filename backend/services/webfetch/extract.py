@@ -46,13 +46,26 @@ EXTRACTORS: list[Extractor] = [_trafilatura]
 
 
 def extract(
-    html: str, *, url: str, rendered_text: str, min_chars: int
+    html: str,
+    *,
+    url: str,
+    rendered_text: str,
+    min_chars: int,
+    innertext_ratio: float = 0.25,
+    innertext_floor: int = 2000,
 ) -> tuple[str | None, str | None]:
     """Return ``(title, content)`` for a rendered page. ``content`` is Markdown (or the
     rendered innerText fallback), or ``None`` when nothing readable was found — the
-    caller raises ``WebFetchError`` in that case."""
+    caller raises ``WebFetchError`` in that case.
+
+    An extractor output that clears ``min_chars`` normally wins outright. But when the page
+    carries a lot of visible text (``>= innertext_floor``) and the extractor captured only a
+    small fraction of it (``< innertext_ratio`` of the rendered innerText), that output is
+    **demoted to a candidate** so innerText can compete by length — the main-content
+    heuristic under-selected (a homepage or JS-heavy page whose real body it missed)."""
     tree = trafilatura.load_html(html)
     title = _title(tree)
+    rendered = (rendered_text or "").strip()
     candidates: list[str] = []
     if tree is not None:
         for extractor in EXTRACTORS:
@@ -62,12 +75,15 @@ def extract(
                 out = None
             stripped = out.strip() if out else ""
             if stripped:
-                if len(stripped) >= min_chars:
+                thin_fraction = (
+                    len(rendered) >= innertext_floor
+                    and len(stripped) < innertext_ratio * len(rendered)
+                )
+                if len(stripped) >= min_chars and not thin_fraction:
                     return title, stripped
                 candidates.append(stripped)
-    text = (rendered_text or "").strip()
-    if text:
-        candidates.append(text)
+    if rendered:
+        candidates.append(rendered)
     return title, (max(candidates, key=len) if candidates else None)
 
 

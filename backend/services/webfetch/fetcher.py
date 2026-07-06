@@ -105,6 +105,9 @@ class BrowserFetcher:
         pdf_max_bytes: int = 25_000_000,
         pdf_max_pages: int = 50,
         http_client: httpx.AsyncClient | None = None,
+        settle_checks: int = 3,
+        settle_wait_ms: int = 750,
+        settle_min_chars: int = 1000,
     ) -> None:
         self._browser = browser
         self._timeout_ms = int(timeout_s * 1000)
@@ -119,6 +122,9 @@ class BrowserFetcher:
         self._pdf_max_bytes = pdf_max_bytes
         self._pdf_max_pages = pdf_max_pages
         self._http_client = http_client
+        self._settle_checks = settle_checks
+        self._settle_wait_ms = settle_wait_ms
+        self._settle_min_chars = settle_min_chars
 
     async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
         """Render ``url`` and return its main content as Markdown, capped to the output
@@ -230,6 +236,26 @@ class BrowserFetcher:
                 await page.wait_for_timeout(self._challenge_wait_ms)
             except PlaywrightError:
                 break  # page/context went away mid-wait — return what we have
+            try:
+                final_url, html, text = await self._snapshot(url, page)
+            except WebFetchError:
+                break  # a re-snapshot that won't settle ⇒ keep the prior best-effort capture
+        # Adaptive settle: a JS-heavy page (SPA) can report its shell first and fill in the
+        # real content a beat later. Re-snapshot while the page is still thin or is visibly
+        # still growing (>20% since the last look), up to settle_checks times. A page whose
+        # first snapshot is already rich and stable pays zero extra waits.
+        prev = -1
+        for _ in range(self._settle_checks):
+            cur = len((text or "").strip())
+            still_thin = cur < self._settle_min_chars
+            still_growing = prev >= 0 and cur > prev * 1.2
+            if not (still_thin or still_growing):
+                break
+            try:
+                await page.wait_for_timeout(self._settle_wait_ms)
+            except PlaywrightError:
+                break  # page/context went away mid-wait — return what we have
+            prev = cur
             try:
                 final_url, html, text = await self._snapshot(url, page)
             except WebFetchError:

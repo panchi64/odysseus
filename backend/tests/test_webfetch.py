@@ -60,6 +60,31 @@ def test_extract_falls_back_to_innertext_when_thin():
     assert fallback in body
 
 
+def test_extract_prefers_innertext_when_extractor_output_is_thin_fraction():
+    # A small extractable block sits inside a page whose visible text is far richer — the
+    # main-content heuristic under-selected, so innerText (by length) should win.
+    prose = "A short paragraph about dandelions. " * 20  # ~720 chars
+    html = f"<html><body><article><h1>T</h1><p>{prose}</p></article></body></html>"
+    rendered = "UNIQUEINNERTEXTMARKER " + ("visible rendered spec-table content. " * 800)  # ~30k
+    _title, body = extract(html, url="https://x.example", rendered_text=rendered, min_chars=200)
+    assert body is not None
+    assert "UNIQUEINNERTEXTMARKER" in body  # innerText fallback carried the result
+
+
+def test_extract_keeps_extractor_when_ratio_healthy():
+    # A normal article: the extractor captures most of the visible text, so its Markdown
+    # (table preserved as pipes) wins even though innerText clears the floor.
+    prose = "The dandelion is entirely edible and grows widely. " * 200  # ~10k chars
+    html = (
+        f"<html><body><article><h1>Foraging Guide</h1><p>{prose}</p>"
+        "<table><tr><td>root</td><td>edible</td></tr></table></article></body></html>"
+    )
+    rendered = prose + " home about contact"  # long innerText, no table pipes
+    _title, body = extract(html, url="https://x.example", rendered_text=rendered, min_chars=200)
+    assert body is not None
+    assert "|" in body  # the Markdown table survived → the extractor output won, not innerText
+
+
 def test_extract_empty_returns_none():
     _title, body = extract(
         "<html><body></body></html>", url="https://x.example", rendered_text="", min_chars=50
@@ -342,6 +367,49 @@ async def test_fetch_offset_past_end_raises(monkeypatch):
     fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
     with pytest.raises(WebFetchError):
         await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=10**9)
+
+
+# --- adaptive settle loop (no browser) -------------------------------------
+
+
+class _SettlePage:
+    """A page whose successive innerText snapshots follow ``texts`` (last value repeats).
+    ``waits`` counts settle-loop waits — render_wait_ms is 0 in these tests, so a wait can
+    only come from the settle loop."""
+
+    url = "http://93.184.216.34/"
+
+    def __init__(self, texts: list[str]):
+        self._texts = texts
+        self._i = 0
+        self.waits = 0
+
+    async def wait_for_timeout(self, ms: int):
+        self.waits += 1
+
+    async def content(self):
+        return "<html><body></body></html>"
+
+    async def evaluate(self, js: str):
+        text = self._texts[min(self._i, len(self._texts) - 1)]
+        self._i += 1
+        return text
+
+
+async def test_capture_resnapshots_thin_page_until_content_appears():
+    fetcher = BrowserFetcher(browser=_AvailableBrowser(), render_wait_ms=0)  # type: ignore[arg-type]
+    page = _SettlePage(["thin shell", "RICHBODY " * 6000])  # first snapshot thin, then ~54k
+    _final_url, _html, text = await fetcher._capture("http://93.184.216.34/", page)
+    assert "RICHBODY" in text  # settled onto the filled-in content
+    assert page.waits > 0  # the settle loop actually waited
+
+
+async def test_capture_fast_path_skips_settle_waits():
+    fetcher = BrowserFetcher(browser=_AvailableBrowser(), render_wait_ms=0)  # type: ignore[arg-type]
+    page = _SettlePage(["RICHBODY " * 6000])  # already rich and stable on the first snapshot
+    _final_url, _html, text = await fetcher._capture("http://93.184.216.34/", page)
+    assert "RICHBODY" in text
+    assert page.waits == 0  # a rich, stable first snapshot pays no extra settle waits
 
 
 # --- PDF fetch path (no browser) -------------------------------------------

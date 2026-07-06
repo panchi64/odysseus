@@ -162,6 +162,13 @@ class Settings(BaseSettings):
     # `pdf_max_pages` bounds extraction cost (no vision OCR — a scanned PDF degrades).
     web_fetch_pdf_max_bytes: int = 25_000_000
     web_fetch_pdf_max_pages: int = 50
+    # Adaptive settle: a JS-heavy page (SPA) can report its shell first and fill the real
+    # content a beat later. After the first snapshot, re-snapshot up to `settle_checks` times
+    # (waiting `settle_wait_ms` each) while the page is still thin (< `settle_min_chars`) or
+    # visibly still growing. A page that is already rich and stable pays zero extra waits.
+    web_fetch_settle_checks: int = 3
+    web_fetch_settle_wait_ms: int = 750
+    web_fetch_settle_min_chars: int = 1000
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox

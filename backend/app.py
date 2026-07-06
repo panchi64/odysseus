@@ -357,6 +357,9 @@ async def lifespan(app: FastAPI):
         pdf_max_bytes=settings.web_fetch_pdf_max_bytes,
         pdf_max_pages=settings.web_fetch_pdf_max_pages,
         http_client=web_client,
+        settle_checks=settings.web_fetch_settle_checks,
+        settle_wait_ms=settings.web_fetch_settle_wait_ms,
+        settle_min_chars=settings.web_fetch_settle_min_chars,
     )
     # Offline mode — owns both web containers' lifecycle. Probe-first at boot: it runs
     # one connectivity check and only brings SearXNG + the browser up if the host is
