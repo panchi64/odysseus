@@ -84,21 +84,19 @@ class ChatSettings(BaseModel):
     pointer (images are always retained, regardless). The ``compaction*`` fields tune
     tool-result compaction (digest oversized prior-turn tool outputs for the model). They're
     optional on a PUT — an omitted one is left unchanged — and always populated on a GET.
-    camelCase out to match the frontend."""
+    snake_case out, matching the rest of the ``/chat`` surface."""
 
     # `extra="forbid"` so a mistyped/unknown field is a 422, not a silent no-op: with every
     # field optional (omitted ⇒ unchanged), a typo'd key would otherwise be dropped and the PUT
     # would return 200 having changed nothing.
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
     # All fields are optional on a PUT (an omitted one is left unchanged) and always
     # populated on a GET; ``ge=0`` still rejects a negative value when one is provided.
-    attachment_inline_max_tokens: int | None = Field(
-        default=None, ge=0, alias="attachmentInlineMaxTokens"
-    )
-    compaction_enabled: bool | None = Field(default=None, alias="compactionEnabled")
-    compaction_keep_recent: int | None = Field(default=None, ge=0, alias="compactionKeepRecent")
-    compaction_min_tokens: int | None = Field(default=None, ge=0, alias="compactionMinTokens")
+    attachment_inline_max_tokens: int | None = Field(default=None, ge=0)
+    compaction_enabled: bool | None = None
+    compaction_keep_recent: int | None = Field(default=None, ge=0)
+    compaction_min_tokens: int | None = Field(default=None, ge=0)
 
 
 async def _resolve_models(

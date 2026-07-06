@@ -82,10 +82,10 @@ export function SettingsScreen(): JSX.Element {
   createEffect(() => {
     const s = chatSettings();
     if (!s) return;
-    setCap(String(s.attachmentInlineMaxTokens));
-    setCompactEnabled(s.compactionEnabled);
-    setKeepRecent(String(s.compactionKeepRecent));
-    setMinTokens(String(s.compactionMinTokens));
+    setCap(String(s.attachment_inline_max_tokens));
+    setCompactEnabled(s.compaction_enabled);
+    setKeepRecent(String(s.compaction_keep_recent));
+    setMinTokens(String(s.compaction_min_tokens));
   });
   const saveCap = async () => {
     const raw = cap().trim();
@@ -98,8 +98,8 @@ export function SettingsScreen(): JSX.Element {
     }
     setSavingCap(true);
     try {
-      const saved = await saveChatSettings({ attachmentInlineMaxTokens: n });
-      setCap(String(saved.attachmentInlineMaxTokens));
+      const saved = await saveChatSettings({ attachment_inline_max_tokens: n });
+      setCap(String(saved.attachment_inline_max_tokens));
       toast.success("Attachment limit updated");
     } catch {
       toast.error("Unable to update the attachment limit.");
@@ -128,13 +128,13 @@ export function SettingsScreen(): JSX.Element {
     setSavingCompaction(true);
     try {
       const saved = await saveChatSettings({
-        compactionEnabled: compactEnabled(),
-        compactionKeepRecent: keep,
-        compactionMinTokens: min,
+        compaction_enabled: compactEnabled(),
+        compaction_keep_recent: keep,
+        compaction_min_tokens: min,
       });
-      setCompactEnabled(saved.compactionEnabled);
-      setKeepRecent(String(saved.compactionKeepRecent));
-      setMinTokens(String(saved.compactionMinTokens));
+      setCompactEnabled(saved.compaction_enabled);
+      setKeepRecent(String(saved.compaction_keep_recent));
+      setMinTokens(String(saved.compaction_min_tokens));
       toast.success("Compaction settings updated");
     } catch {
       toast.error("Unable to update compaction settings.");

@@ -63,24 +63,24 @@ async def test_chat_rejects_unknown_conversation(monkeypatch):
 
 async def test_chat_settings_round_trip():
     # The attachment inline token cap is an operator setting: GET reports the config
-    # default until set, PUT overrides it (camelCase out), and the override persists.
+    # default until set, PUT overrides it, and the override persists.
     async with client_app() as (client, _app):
         got = await client.get("/chat/settings")
         assert got.status_code == 200
         default = get_settings().attachment_inline_max_tokens
-        assert got.json()["attachmentInlineMaxTokens"] == default
+        assert got.json()["attachment_inline_max_tokens"] == default
 
-        put = await client.put("/chat/settings", json={"attachmentInlineMaxTokens": 1500})
+        put = await client.put("/chat/settings", json={"attachment_inline_max_tokens": 1500})
         assert put.status_code == 200
-        assert put.json()["attachmentInlineMaxTokens"] == 1500
+        assert put.json()["attachment_inline_max_tokens"] == 1500
 
         again = await client.get("/chat/settings")
-        assert again.json()["attachmentInlineMaxTokens"] == 1500
+        assert again.json()["attachment_inline_max_tokens"] == 1500
 
 
 async def test_chat_settings_rejects_a_negative_cap():
     async with client_app() as (client, _app):
-        resp = await client.put("/chat/settings", json={"attachmentInlineMaxTokens": -1})
+        resp = await client.put("/chat/settings", json={"attachment_inline_max_tokens": -1})
         assert resp.status_code == 422
 
 
@@ -89,37 +89,37 @@ async def test_chat_settings_rejects_an_unknown_field():
     # silently no-op with a 200 — otherwise a client believes a write landed that never did.
     async with client_app() as (client, _app):
         resp = await client.put(
-            "/chat/settings", json={"attachmentInlineMaxToken": 1500}  # typo: missing 's'
+            "/chat/settings", json={"attachment_inline_max_token": 1500}  # typo: missing 's'
         )
         assert resp.status_code == 422
 
 
 async def test_compaction_settings_round_trip():
     # The compaction preferences are operator settings: GET reports the config defaults,
-    # PUT overrides them (camelCase), and the override persists.
+    # PUT overrides them, and the override persists.
     async with client_app() as (client, _app):
         cfg = get_settings()
         got = (await client.get("/chat/settings")).json()
-        assert got["compactionEnabled"] == cfg.compaction_enabled
-        assert got["compactionKeepRecent"] == cfg.compaction_keep_recent
+        assert got["compaction_enabled"] == cfg.compaction_enabled
+        assert got["compaction_keep_recent"] == cfg.compaction_keep_recent
 
         put = await client.put(
             "/chat/settings",
             json={
-                "attachmentInlineMaxTokens": got["attachmentInlineMaxTokens"],
-                "compactionEnabled": False,
-                "compactionKeepRecent": 3,
-                "compactionMinTokens": 2000,
+                "attachment_inline_max_tokens": got["attachment_inline_max_tokens"],
+                "compaction_enabled": False,
+                "compaction_keep_recent": 3,
+                "compaction_min_tokens": 2000,
             },
         )
         assert put.status_code == 200
         body = put.json()
-        assert body["compactionEnabled"] is False
-        assert body["compactionKeepRecent"] == 3
-        assert body["compactionMinTokens"] == 2000
+        assert body["compaction_enabled"] is False
+        assert body["compaction_keep_recent"] == 3
+        assert body["compaction_min_tokens"] == 2000
 
         again = (await client.get("/chat/settings")).json()
-        assert again["compactionEnabled"] is False and again["compactionKeepRecent"] == 3
+        assert again["compaction_enabled"] is False and again["compaction_keep_recent"] == 3
 
 
 async def test_compaction_settings_partial_update_leaves_others_unchanged():
@@ -127,9 +127,9 @@ async def test_compaction_settings_partial_update_leaves_others_unchanged():
     async with client_app() as (client, _app):
         await client.put(
             "/chat/settings",
-            json={"attachmentInlineMaxTokens": 100, "compactionKeepRecent": 9},
+            json={"attachment_inline_max_tokens": 100, "compaction_keep_recent": 9},
         )
-        await client.put("/chat/settings", json={"attachmentInlineMaxTokens": 200})
+        await client.put("/chat/settings", json={"attachment_inline_max_tokens": 200})
         again = (await client.get("/chat/settings")).json()
-        assert again["compactionKeepRecent"] == 9  # preserved across the attachment-only PUT
-        assert again["attachmentInlineMaxTokens"] == 200
+        assert again["compaction_keep_recent"] == 9  # preserved across the attachment-only PUT
+        assert again["attachment_inline_max_tokens"] == 200
