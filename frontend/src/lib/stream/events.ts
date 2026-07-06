@@ -40,6 +40,12 @@ export interface RunMetrics extends Base {
   tool_calls: number;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** The model's context window, when known — the ceiling `context` measures
+   *  against. Mirror completeness; the gauge renders the derived `context` field. */
+  context_window: number | null;
+  /** The context footprint after this turn (last response's prompt + generation).
+   *  Mirror completeness; the gauge renders the derived `context` field. */
+  context_used: number | null;
   /** The context-window fullness after this turn, or null when unmeasurable. */
   context: ContextWindow | null;
 }

@@ -9,6 +9,13 @@ import type { ContextWindow } from "~/lib/stream";
  *  UI renders it, it does not compute it. */
 export type ContextUsage = ContextWindow;
 
+/** A run's token counts (`run.metrics.input_tokens`/`output_tokens`), shown
+ *  beside the context gauge. Null fields mean the run reported no usage. */
+export interface TokenUsage {
+  input: number | null;
+  output: number | null;
+}
+
 export type Role = "user" | "assistant";
 
 export type ToolStatus = "running" | "ok" | "error";

@@ -30,6 +30,7 @@ import type {
   HostCommandPhase,
   SnapshotDiff,
   SnapshotFile,
+  TokenUsage,
   ToolBlock,
   ToolInvocation,
   ViewDocumentRef,
@@ -803,6 +804,9 @@ export function createChatStream(
   // a run reports it against a known window (loaded history carries none), which
   // is when the context meter first appears.
   const [usage, setUsage] = createSignal<ContextUsage | null>(null);
+  // The latest run's token counts (`run.metrics.input_tokens`/`output_tokens`),
+  // shown beside the context gauge. Null until a run reports usage.
+  const [tokenUsage, setTokenUsage] = createSignal<TokenUsage | null>(null);
   // True while a reattach (replay from a known run) is folding in — drives the
   // "RESYNCING…" affordance, distinct from a fresh turn's `sending`.
   const [reattaching, setReattaching] = createSignal(false);
@@ -876,6 +880,7 @@ export function createChatStream(
     // Seed the meter from the loaded thread's reconstructed state (null for a new
     // conversation, or one whose usage/window couldn't be determined).
     setUsage(k === null ? null : (options.initialContext?.() ?? null));
+    setTokenUsage(null); // token counts are live-run-only, not reconstructed on load
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
@@ -1206,6 +1211,7 @@ export function createChatStream(
         // Authoritative either way: a null context (this turn ran on a windowless
         // model, or reported no usage) clears a stale reading rather than keeping it.
         setUsage(ev.context);
+        setTokenUsage({ input: ev.input_tokens, output: ev.output_tokens });
         break;
       case "citation.added":
         patchById(assistantId, (m) => {
@@ -1811,6 +1817,7 @@ export function createChatStream(
     titlePending,
     reattaching,
     usage,
+    tokenUsage,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => activeRunId,
     /** Highest event seq folded so far — the resume point for a reattach. */

@@ -464,7 +464,12 @@ export function ChatRoomScreen(): JSX.Element {
                   : "IDLE"}
             </StatusFlag>
             <Show when={stream.usage()}>
-              {(usage) => <ContextMeter usage={usage()} />}
+              {(usage) => (
+                <ContextMeter
+                  usage={usage()}
+                  tokenUsage={stream.tokenUsage()}
+                />
+              )}
             </Show>
             <Show when={currentId()}>
               <ConversationCompactionToggle conversationId={currentId} />
