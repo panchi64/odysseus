@@ -13,7 +13,7 @@ import asyncio
 from contextlib import suppress
 from uuid import uuid4
 
-from .events import RunEnded, RunError, RunMetrics, RunStarted, now_utc
+from .events import LimitNotice, RunEnded, RunError, RunMetrics, RunStarted, now_utc
 from .run import Orchestrator, Run, RunStatus
 from .stream import RunStream
 
@@ -179,9 +179,14 @@ class RunRegistry:
                 run.emit(run.metrics or RunMetrics())
                 run.emit(RunEnded(outcome=run.status.value, detail=run.detail))
         except RunTimeout as timeout:
-            run.status = RunStatus.error
-            run.error = str(timeout)
-            run.emit(RunError(message=str(timeout), kind=f"{timeout.kind}_timeout"))
+            # Terminate the same way a usage-limit stop does (LimitNotice + a
+            # blocked RunEnded), not RunError — a timeout is an expected bound, not
+            # a failure, and the frontend already renders limit.notice as a toast
+            # and a blocked outcome as a persistent inline marker.
+            run.emit(LimitNotice(limit="time", message=str(timeout)))
+            run.block(str(timeout))
+            run.emit(run.metrics or RunMetrics())
+            run.emit(RunEnded(outcome=run.status.value, detail=run.detail))
         except asyncio.CancelledError:
             # The Run's own top-level handler turns cancellation into a recorded
             # terminal state rather than propagating it — intentional.

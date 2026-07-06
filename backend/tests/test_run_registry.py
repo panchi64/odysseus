@@ -88,10 +88,12 @@ async def test_wall_clock_timeout():
     run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
     await run.wait()
 
-    assert run.status is RunStatus.error
-    err = run.stream.replay()[-1].body
-    assert err.type == "run.error"
-    assert err.kind == "wall_clock_timeout"
+    assert run.status is RunStatus.blocked
+    events = run.stream.replay()
+    notice = next(e.body for e in events if e.body.type == "limit.notice")
+    assert notice.limit == "time"
+    assert events[-1].body.type == "run.ended"
+    assert events[-1].body.outcome == "blocked"
 
 
 async def test_inactivity_timeout():
@@ -104,8 +106,12 @@ async def test_inactivity_timeout():
     run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
     await run.wait()
 
-    assert run.status is RunStatus.error
-    assert run.stream.replay()[-1].body.kind == "inactivity_timeout"
+    assert run.status is RunStatus.blocked
+    events = run.stream.replay()
+    notice = next(e.body for e in events if e.body.type == "limit.notice")
+    assert notice.limit == "time"
+    assert events[-1].body.type == "run.ended"
+    assert events[-1].body.outcome == "blocked"
 
 
 async def test_concurrency_limit_queues_bursts():

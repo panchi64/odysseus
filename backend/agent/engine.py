@@ -300,6 +300,18 @@ def _context_limit_message(run: Run) -> str:
     )
 
 
+def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
+    """Which bound in ``UsageLimits`` tripped — ``UsageLimitExceeded`` carries no
+    structured field, only a message, so classify it by the marker each check raises
+    (see ``pydantic_ai.usage.UsageLimits``)."""
+    message = str(exc)
+    if "tool_calls_limit" in message:
+        return "tool_calls"
+    if "tokens_limit" in message:
+        return "tokens"
+    return "steps"
+
+
 async def _drive_turn(
     run: Run,
     agent: Agent,
@@ -375,7 +387,7 @@ async def _drive_turn(
                 result = agent_run.result
         except UsageLimitExceeded as exc:
             # Hit a usage bound — stop and report state, don't error.
-            run.emit(LimitNotice(limit="steps", message=str(exc)))
+            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=str(exc)))
             run.block("usage limit reached")
             return _TurnResult(answer=None)
         except LoopDetected as exc:
