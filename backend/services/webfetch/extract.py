@@ -58,11 +58,15 @@ def extract(
     rendered innerText fallback), or ``None`` when nothing readable was found — the
     caller raises ``WebFetchError`` in that case.
 
-    An extractor output that clears ``min_chars`` normally wins outright. But when the page
-    carries a lot of visible text (``>= innertext_floor``) and the extractor captured only a
-    small fraction of it (``< innertext_ratio`` of the rendered innerText), that output is
-    **demoted to a candidate** so innerText can compete by length — the main-content
-    heuristic under-selected (a homepage or JS-heavy page whose real body it missed)."""
+    An extractor output that clears ``min_chars`` normally wins outright. But when the
+    extraction is itself **thin** (``< innertext_floor``) while the page carries a lot of
+    visible text (``>= innertext_floor``) and the extraction is only a small fraction
+    (``< innertext_ratio``) of that rendered innerText, that output is **demoted to a
+    candidate** so innerText can compete by length — the main-content heuristic
+    under-selected (a homepage or JS-heavy page whose real body it missed). The
+    ``< innertext_floor`` clause matters: a substantial clean article (well over the floor)
+    sitting on a comment/nav-heavy page is a small *fraction* of the innerText yet is
+    exactly the content we want, so it must not be demoted in favour of raw noise."""
     tree = trafilatura.load_html(html)
     title = _title(tree)
     rendered = (rendered_text or "").strip()
@@ -76,7 +80,8 @@ def extract(
             stripped = out.strip() if out else ""
             if stripped:
                 thin_fraction = (
-                    len(rendered) >= innertext_floor
+                    len(stripped) < innertext_floor
+                    and len(rendered) >= innertext_floor
                     and len(stripped) < innertext_ratio * len(rendered)
                 )
                 if len(stripped) >= min_chars and not thin_fraction:

@@ -168,7 +168,6 @@ export interface CitationAdded extends Base {
   type: "citation.added";
   url: string;
   title: string | null;
-  source_index: number | null;
 }
 export interface ApprovalRequired extends Base {
   type: "approval.required";

@@ -220,7 +220,6 @@ async def test_replace_span_edits_uniquely_and_returns_the_new_version():
     doc = await store.create(OWNER, "A", "hello world", origin="ai")
     view, version = await store.replace_span(OWNER, doc.id, "world", "there", origin="ai")
     assert view.body == "hello there" and version == 2
-    assert await store.latest_version_number(OWNER, doc.id) == 2
 
     with pytest.raises(DocumentSpanError) as absent:
         await store.replace_span(OWNER, doc.id, "zzz", "!", origin="ai")

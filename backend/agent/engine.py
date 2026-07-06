@@ -19,7 +19,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -28,9 +28,11 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
+    ModelResponse,
     RunContext,
     RunUsage,
     ToolApproved,
+    ToolCallPart,
     UsageLimitExceeded,
     UsageLimits,
 )
@@ -315,6 +317,27 @@ def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
     if "tokens_limit" in message:
         return "tokens"
     return "steps"
+
+
+def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Strip a trailing tool call that never received its result.
+
+    A turn stopped at a bound (usage limit, loop guard, timeout) can leave history ending
+    on a ``ModelResponse`` whose ``ToolCallPart`` has no matching ``ToolReturnPart`` — the
+    call was requested but the bound tripped before it ran. Persisting that and replaying it
+    on the next turn is a provider error (an assistant tool call with no following tool
+    result → HTTP 400), which would break every later turn in the thread. Since this is the
+    final message, any tool call in it is necessarily unanswered: drop those parts, and the
+    whole message if nothing else remains."""
+    if not messages or not isinstance(messages[-1], ModelResponse):
+        return messages
+    last = messages[-1]
+    kept = [p for p in last.parts if not isinstance(p, ToolCallPart)]
+    if len(kept) == len(last.parts):
+        return messages
+    if kept:
+        return [*messages[:-1], replace(last, parts=kept)]
+    return messages[:-1]
 
 
 async def _drive_turn(
@@ -789,6 +812,14 @@ def build_chat_orchestrator(
             if store is not None and conversation_id is not None
             else None
         )
+        # A prior turn stopped at a bound persists its transcript verbatim — which can end on
+        # an assistant tool call that never got its result. That full record is right for the
+        # operator's view, but replaying a dangling tool call to the model is a provider error
+        # (an assistant tool_call with no following tool result → HTTP 400), so strip it from
+        # the *model's* input here. The persisted transcript is untouched; only this turn's
+        # model history is sanitized, and `start` tracks the trimmed length.
+        if history:
+            history = _drop_dangling_tool_calls(history)
         start = len(history) if history else 0
         is_first_turn = start == 0
 
@@ -920,6 +951,10 @@ def build_chat_orchestrator(
                 persisted=persisted,
                 compaction=active_compaction,
             )
+            # Disarm the flush hook now the turn is recorded: a wall-clock/inactivity bound
+            # elapsing during the post-answer title window (below) must not re-run `_finalize`
+            # and double-record the turn (or stamp a spurious stop on a completed answer).
+            run.on_timeout = None
 
             if run.status is RunStatus.awaiting_input:
                 # Parked for approval before producing an answer: abandon the
@@ -1003,6 +1038,9 @@ def build_resume_orchestrator(
             persisted=parked.persisted,
             compaction=parked.compaction,
         )
+        # Disarm the flush hook now the turn is recorded — a bound elapsing during the
+        # title window below must not re-finalize (see the chat orchestrator).
+        run.on_timeout = None
 
         if run.status is RunStatus.awaiting_input:
             # Re-parked on a further approval: carry the title context forward to

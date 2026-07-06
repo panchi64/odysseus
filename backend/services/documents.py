@@ -334,15 +334,6 @@ class DocumentStore:
 
         return await in_session(self._engine, work)
 
-    async def latest_version_number(self, owner_id: str, document_id: str) -> int:
-        """The document's current (highest) version number — a cheap clear-column read (no
-        decryption), so a caller can report the version it just minted without pulling the
-        whole history back. 0 when the document has no versions."""
-        await self._require(owner_id, document_id)
-        return await in_session(
-            self._engine, lambda s: _max_version(s, document_id)
-        )
-
     async def list_user_edited(
         self, owner_id: str, conversation_id: str
     ) -> list[DocumentView]:
@@ -483,8 +474,8 @@ class DocumentStore:
 
 
 def _max_version(session: Session, document_id: str) -> int:
-    """The document's highest version number (0 if none) — the one clear-column max-version
-    read shared by ``_snapshot`` (to mint the next version) and ``latest_version_number``."""
+    """The document's highest version number (0 if none) — the clear-column max-version read
+    ``_snapshot`` uses to mint the next version."""
     return (
         session.exec(
             select(func.max(DocumentVersion.version)).where(

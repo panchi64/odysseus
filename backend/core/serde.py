@@ -31,10 +31,15 @@ def _structure(value: Any) -> Any:
 
 
 def jsonable(value: Any) -> Any:
-    """Coerce a tool result into something the JSON envelope can carry."""
-    structured = _structure(value)
+    """Coerce a tool result into something the JSON envelope can carry.
+
+    Never raises: the whole coercion — the ``_structure`` pre-pass included — sits under
+    the guard, so a value that can't be structured or serialized (a reference cycle blowing
+    the recursion limit, a non-deepcopyable dataclass field) degrades to ``str(value)``
+    rather than crashing tool-result serialization for the turn."""
     try:
+        structured = _structure(value)
         json.dumps(structured)
         return structured
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 — total fallback: any coercion failure degrades to str
         return str(value)

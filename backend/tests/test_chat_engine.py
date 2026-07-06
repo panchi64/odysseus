@@ -79,6 +79,33 @@ async def test_usage_limit_blocks_the_turn(monkeypatch):
     assert _bodies(run)[-1].outcome == "blocked"
 
 
+def test_drop_dangling_tool_calls_trims_unanswered_trailing_call():
+    # A blocked-turn transcript can end on an assistant tool call that never got its result;
+    # replaying that to a provider is an HTTP 400, so the model's loaded history must be
+    # sanitized. A history ending in text (a real answer) is left alone.
+    from pydantic_ai import ModelRequest, ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.messages import UserPromptPart
+
+    from agent.engine import _drop_dangling_tool_calls
+
+    user = ModelRequest(parts=[UserPromptPart(content="do it")])
+
+    # Trailing unanswered tool call → the whole response is dropped.
+    dangling = [user, ModelResponse(parts=[ToolCallPart(tool_name="x", args={}, tool_call_id="1")])]
+    assert _drop_dangling_tool_calls(dangling) == [user]
+
+    # Text + a dangling call → keep the text, drop only the call part.
+    mixed = [user, ModelResponse(parts=[TextPart(content="partial"), ToolCallPart(
+        tool_name="x", args={}, tool_call_id="1")])]
+    trimmed = _drop_dangling_tool_calls(mixed)
+    assert len(trimmed) == 2
+    assert [type(p).__name__ for p in trimmed[-1].parts] == ["TextPart"]
+
+    # A clean answer is untouched.
+    clean = [user, ModelResponse(parts=[TextPart(content="done")])]
+    assert _drop_dangling_tool_calls(clean) == clean
+
+
 def test_usage_limit_kind_distinguishes_the_tripped_bound():
     from pydantic_ai import UsageLimitExceeded
 

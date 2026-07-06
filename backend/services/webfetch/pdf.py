@@ -66,26 +66,42 @@ async def _download(
     url: str, client: httpx.AsyncClient, *, timeout_s: float, max_bytes: int
 ) -> tuple[bytes, httpx.Headers]:
     """Fetch ``url``'s bytes, following redirects manually so SSRF is re-checked on each
-    hop and the response is never streamed to a private address."""
+    hop and the response is never streamed to a private address.
+
+    The body is **streamed** and the running total checked against ``max_bytes`` as it
+    arrives, so a response with no (or a lying) ``Content-Length`` can't materialize an
+    unbounded body in memory before the cap is applied — the read stops the moment the
+    limit is crossed."""
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
         await assert_public_url(current)
         try:
-            resp = await client.get(current, timeout=timeout_s, follow_redirects=False)
+            async with client.stream(
+                "GET", current, timeout=timeout_s, follow_redirects=False
+            ) as resp:
+                if resp.is_redirect:
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise WebFetchError(f"{current!r} returned a redirect with no location")
+                    current = str(httpx.URL(current).join(location))
+                    continue
+                if resp.status_code >= 400:
+                    raise WebFetchError(f"{url!r} returned HTTP {resp.status_code}")
+                declared = resp.headers.get("content-length")
+                if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+                    raise WebFetchError(
+                        f"the file at {url!r} exceeds the {max_bytes}-byte fetch limit"
+                    )
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise WebFetchError(
+                            f"the file at {url!r} exceeds the {max_bytes}-byte fetch limit"
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks), resp.headers
         except httpx.HTTPError as exc:
             raise WebFetchError(f"could not fetch {url!r}: {exc}") from exc
-        if resp.is_redirect:
-            location = resp.headers.get("location")
-            if not location:
-                raise WebFetchError(f"{current!r} returned a redirect with no location")
-            current = str(httpx.URL(current).join(location))
-            continue
-        if resp.status_code >= 400:
-            raise WebFetchError(f"{url!r} returned HTTP {resp.status_code}")
-        declared = resp.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
-            raise WebFetchError(f"the file at {url!r} exceeds the {max_bytes}-byte fetch limit")
-        if len(resp.content) > max_bytes:
-            raise WebFetchError(f"the file at {url!r} exceeds the {max_bytes}-byte fetch limit")
-        return resp.content, resp.headers
     raise WebFetchError(f"too many redirects fetching {url!r}")

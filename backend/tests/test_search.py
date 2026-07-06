@@ -327,9 +327,9 @@ async def test_agent_search_emits_a_citation_per_result():
 
     assert run.status is RunStatus.done
     citations = [e.body for e in run.stream.replay() if e.body.type == "citation.added"]
-    assert [(c.source_index, c.url, c.title) for c in citations] == [
-        (1, "https://a.example", "Hit One"),
-        (2, "https://b.example", "Hit Two"),
+    assert [(c.url, c.title) for c in citations] == [
+        ("https://a.example", "Hit One"),
+        ("https://b.example", "Hit Two"),
     ]
 
 

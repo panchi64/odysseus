@@ -206,11 +206,11 @@ export interface ViewLiveBlock {
 }
 
 /** A web source the turn's `web_search`/`web_fetch` calls surfaced
- *  (`citation.added`), rendered as a compact Sources row beneath the answer. */
+ *  (`citation.added`), rendered as a compact Sources row beneath the answer. Its display
+ *  number is its position in that deduped row, so no per-source index is carried. */
 export interface Citation {
   url: string;
   title?: string;
-  sourceIndex?: number;
 }
 
 export interface ChatMessage {

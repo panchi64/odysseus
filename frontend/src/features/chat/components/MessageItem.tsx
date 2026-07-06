@@ -234,8 +234,7 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
           <Chip
             onClick={() => window.open(c.url, "_blank", "noopener,noreferrer")}
           >
-            [{c.sourceIndex ?? i() + 1}] {c.title ?? citationHost(c.url)} (
-            {citationHost(c.url)})
+            [{i() + 1}] {c.title ?? citationHost(c.url)} ({citationHost(c.url)})
           </Chip>
         )}
       </For>

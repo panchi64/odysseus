@@ -278,8 +278,44 @@ export async function deleteSearchProvider(id: string): Promise<void> {
 
 /* ── Chat settings (attachment inline token cap) ───────────────────────────── */
 
+interface ChatSettingsDTO {
+  attachment_inline_max_tokens: number;
+  compaction_enabled: boolean;
+  compaction_keep_recent: number;
+  compaction_min_tokens: number;
+}
+
+/** The single snake_case→camel mapper for the stored chat preferences. */
+function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
+  return {
+    attachmentInlineMaxTokens: dto.attachment_inline_max_tokens,
+    compactionEnabled: dto.compaction_enabled,
+    compactionKeepRecent: dto.compaction_keep_recent,
+    compactionMinTokens: dto.compaction_min_tokens,
+  };
+}
+
+/** Map a camelCase patch to the backend's snake_case body (an omitted field is left
+ *  unchanged on the backend, so only present keys are written). */
+function toChatSettingsBody(
+  patch: Partial<ChatSettings>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (patch.attachmentInlineMaxTokens !== undefined)
+    body.attachment_inline_max_tokens = patch.attachmentInlineMaxTokens;
+  if (patch.compactionEnabled !== undefined)
+    body.compaction_enabled = patch.compactionEnabled;
+  if (patch.compactionKeepRecent !== undefined)
+    body.compaction_keep_recent = patch.compactionKeepRecent;
+  if (patch.compactionMinTokens !== undefined)
+    body.compaction_min_tokens = patch.compactionMinTokens;
+  return body;
+}
+
 export function useChatSettings(): Resource<ChatSettings> {
-  const [data] = createResource(() => api.get<ChatSettings>("/chat/settings"));
+  const [data] = createResource(async () =>
+    toChatSettings(await api.get<ChatSettingsDTO>("/chat/settings")),
+  );
   return data;
 }
 
@@ -288,7 +324,9 @@ export function useChatSettings(): Resource<ChatSettings> {
 export async function saveChatSettings(
   patch: Partial<ChatSettings>,
 ): Promise<ChatSettings> {
-  return api.put<ChatSettings>("/chat/settings", patch);
+  return toChatSettings(
+    await api.put<ChatSettingsDTO>("/chat/settings", toChatSettingsBody(patch)),
+  );
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────────

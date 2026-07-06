@@ -238,7 +238,6 @@ class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
     url: str
     title: str | None = None
-    source_index: int | None = None
 
 
 class ApprovalRequired(_Body):

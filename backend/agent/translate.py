@@ -52,23 +52,20 @@ from .meta import LoopBreaker
 
 
 def citations_from_tool_result(name: str, content: Any) -> list[CitationAdded]:
-    """Sources a completed ``web_search``/``web_fetch`` call surfaced, in result order,
-    1-based ``source_index``, deduped by URL. Anything else (a degraded-capability
-    string, an unrecognized tool) yields none — this is additive, never load-bearing."""
+    """Sources a completed ``web_search``/``web_fetch`` call surfaced, in result order.
+    Anything else (a degraded-capability string, an unrecognized tool) yields none — this
+    is additive, never load-bearing. Cross-call dedup and the Sources-row numbering are the
+    consumer's concern (the run's citation fold dedups by URL; the row numbers by position),
+    so this neither dedups nor assigns an index — ``web_search`` results are already
+    URL-unique from the service, and ``web_fetch`` is a single page."""
     if name == "web_search" and isinstance(content, SearchResults):
-        seen: set[str] = set()
-        deduped = []
-        for item in content.results:
-            if not isinstance(item, SearchResult) or item.url in seen:
-                continue
-            seen.add(item.url)
-            deduped.append(item)
         return [
-            CitationAdded(url=item.url, title=item.title, source_index=index)
-            for index, item in enumerate(deduped, start=1)
+            CitationAdded(url=item.url, title=item.title)
+            for item in content.results
+            if isinstance(item, SearchResult)
         ]
     if name == "web_fetch" and isinstance(content, FetchedPage):
-        return [CitationAdded(url=content.url, title=content.title, source_index=1)]
+        return [CitationAdded(url=content.url, title=content.title)]
     return []
 
 

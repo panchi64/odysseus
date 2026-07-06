@@ -85,6 +85,22 @@ def test_extract_keeps_extractor_when_ratio_healthy():
     assert "|" in body  # the Markdown table survived → the extractor output won, not innerText
 
 
+def test_extract_keeps_substantial_article_on_comment_heavy_page():
+    # A clean, substantial article (well over the innerText floor) whose page also carries a
+    # large comment/nav section: the article is only a small *fraction* of the rendered
+    # innerText, but it is exactly the content we want — it must win outright, not be demoted
+    # so raw innerText (nav/comment noise, table flattened) can beat it by length.
+    prose = "The dandelion is entirely edible and grows widely across the region. " * 80  # ~5.4k
+    html = (
+        f"<html><body><article><h1>Foraging Guide</h1><p>{prose}</p>"
+        "<table><tr><td>root</td><td>edible</td></tr></table></article></body></html>"
+    )
+    rendered = prose + (" NOISE comment nav advert boilerplate. " * 2000)  # ~80k of noise
+    _title, body = extract(html, url="https://x.example", rendered_text=rendered, min_chars=200)
+    assert body is not None
+    assert "|" in body  # the substantial Markdown extraction won, not the raw innerText
+
+
 def test_extract_empty_returns_none():
     _title, body = extract(
         "<html><body></body></html>", url="https://x.example", rendered_text="", min_chars=50
@@ -804,4 +820,3 @@ async def test_web_fetch_tool_reaches_the_fetcher():
     assert len(citations) == 1
     assert citations[0].url == seen["url"]
     assert citations[0].title == "t"
-    assert citations[0].source_index == 1
