@@ -1,4 +1,4 @@
-import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
+import { createMemo, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
   confirm,
@@ -8,117 +8,131 @@ import {
   ListRow,
   LoadingText,
   Panel,
-  ProgressBar,
-  Resource,
   Row,
   Stack,
   StatusFlag,
   Text,
-  Tooltip,
   toast,
 } from "~/ui";
-import { bytes, num, timestamp } from "~/lib/format";
+import { timestamp } from "~/lib/format";
+import { useEndpoints } from "~/lib/stores/models";
+import { useManagedModels } from "../serving";
+import { useManagedModelActions } from "../serving-actions";
 import {
-  cancelReindex,
-  reindexSignal,
-  startReindex,
-  useEmbeddingModels,
-  useIndexStats,
+  setEmbeddingRole,
+  triggerReindex,
+  useEmbeddingRole,
+  useReindexStatus,
 } from "../embedding/data";
-import type { EmbeddingModel } from "../embedding/model";
+import type { ReindexState } from "../embedding/model";
+import type { ManagedModel } from "../model";
 
-/** Vector-embedding configuration and index stats — the EMBEDDING tab of the
- *  Model Cookbook. Owns no page chrome; the Cookbook screen provides the header. */
+const STATE_STATUS: Record<
+  ReindexState,
+  "nominal" | "warn" | "info" | "alert"
+> = {
+  idle: "nominal",
+  running: "info",
+  done: "nominal",
+  degraded: "warn",
+  error: "alert",
+};
+
+/** Vector-embedding configuration and reindex status — the EMBEDDING tab of the
+ *  Model Cookbook. Owns no page chrome; the Cookbook screen provides the header.
+ *  The servable catalog is the same managed-models list `EmbeddingServePanel`
+ *  renders (there's no curated remote catalog on the backend); this panel adds
+ *  which one is bound to the `embedding` role and the reindex job's state. */
 export function EmbeddingPanel(): JSX.Element {
-  const models = useEmbeddingModels();
-  const stats = useIndexStats();
-  const [activeId, setActiveId] = createSignal("all-minilm-l6-v2");
+  const role = useEmbeddingRole();
+  const reindex = useReindexStatus();
+  const endpoints = useEndpoints();
+  const managed = useManagedModels();
+  const actions = useManagedModelActions(managed);
 
-  const activeModel = () => (models() ?? []).find((m) => m.id === activeId());
-  const reindex = reindexSignal;
+  const embeddingModels = createMemo(() =>
+    managed.models().filter((m) => m.workload === "embedding"),
+  );
+  const activeEndpointId = () => role()?.endpointId ?? null;
+  const activeManaged = createMemo(() =>
+    embeddingModels().find((m) => m.endpointId === activeEndpointId()),
+  );
+  const activeEndpointName = () =>
+    (endpoints() ?? []).find((e) => e.id === activeEndpointId())?.name;
 
-  async function requestSwap(m: EmbeddingModel) {
-    if (m.id === activeId()) return;
-    if (m.provider === "remote" && !m.apiKeySet) {
-      toast.error(
-        `${m.name} needs an API key — configure it in Integrations first.`,
-      );
-      return;
-    }
-    const currentName = activeModel()?.name ?? activeId();
-    const docCount = stats()?.indexedDocs ?? 0;
-
+  async function requestSwap(m: ManagedModel) {
+    if (m.endpointId === activeEndpointId()) return;
     const ok = await confirm({
-      title: `Swap to ${m.name}?`,
-      detail: `Swap from ${currentName} to ${m.name}? This requires re-indexing all ${num(docCount, 0)} documents. Retrieval will be degraded until the re-index completes.`,
+      title: `Swap to ${m.hfRepo}?`,
+      detail: `Bind the embedding role to ${m.hfRepo}? Existing memories and chat history re-index into its vector space in the background — recall degrades to keyword-only until it finishes.`,
       confirmLabel: "CONFIRM SWAP",
       cancelLabel: "CANCEL",
       tone: "alert",
     });
-
-    if (!ok) return;
-
-    setActiveId(m.id);
-    startReindex(docCount);
-    toast.info(`Re-indexing started — ${num(docCount, 0)} documents queued`);
+    if (!ok || !m.endpointId) return;
+    try {
+      await setEmbeddingRole(m.endpointId, null);
+      toast.success(`Embedding role bound to ${m.hfRepo}`);
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ??
+          "Unable to switch the embedding model.",
+      );
+    } finally {
+      role.refetch();
+      reindex.refetch();
+    }
   }
 
-  function handleCancelReindex() {
-    cancelReindex();
-    toast.warn("Re-index cancelled — retrieval quality may be degraded");
+  async function handleReindexNow() {
+    try {
+      await triggerReindex();
+      toast.info("Reindex started");
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ?? "Unable to start the reindex.",
+      );
+    } finally {
+      reindex.refetch();
+    }
   }
-
-  const reindexProgress = () => {
-    const s = reindex();
-    if (!s) return 0;
-    return Math.round((s.docsProcessed / s.totalDocs) * 100);
-  };
 
   return (
     <Stack gap={6}>
       <Row gap={3} align="start" justify="between">
         <Text variant="micro" tone="dim" class="flex-1">
           Embeddings turn documents into vectors so the agent can search by
-          meaning. Switching the active model re-indexes the whole library —
-          until that finishes, retrieval quality is reduced.
+          meaning. Binding a different model re-indexes the whole library in the
+          background — until that finishes, recall falls back to keyword
+          matching.
         </Text>
-        <Show
-          when={reindex()}
-          fallback={
-            <Show when={stats()?.requiresReindex}>
-              <StatusFlag status="warn" dot>
-                REINDEX REQUIRED
-              </StatusFlag>
-            </Show>
-          }
-        >
-          <StatusFlag status="info" dot>
-            REINDEX IN PROGRESS
-          </StatusFlag>
+        <Show when={reindex()}>
+          {(r) => (
+            <StatusFlag
+              status={STATE_STATUS[r().state]}
+              dot={r().state === "running"}
+            >
+              {`REINDEX ${r().state.toUpperCase()}`}
+            </StatusFlag>
+          )}
         </Show>
       </Row>
 
       <Suspense fallback={<LoadingText label="LOADING STATS" />}>
-        <Show when={stats()}>
-          {(s) => (
+        <Show when={reindex()}>
+          {(r) => (
             <InstrumentBand
               items={[
-                { label: "ACTIVE MODEL", value: activeModel()?.name ?? "—" },
-                { label: "DIMS", value: String(s().dims) },
                 {
-                  label: "INDEXED DOCS",
-                  value: reindex()
-                    ? `${num(reindex()!.docsProcessed, 0)} / ${num(reindex()!.totalDocs, 0)}`
-                    : String(s().indexedDocs),
+                  label: "ACTIVE MODEL",
+                  value: activeManaged()?.hfRepo ?? activeEndpointName() ?? "—",
                 },
+                { label: "STATE", value: r().state.toUpperCase() },
+                { label: "MEMORIES INDEXED", value: String(r().memories) },
+                { label: "MESSAGES INDEXED", value: String(r().messages) },
                 {
-                  label: "THROUGHPUT",
-                  value: `${num(s().throughputDocsSec, 0)} DOC/S`,
-                },
-                { label: "LAST INDEXED", value: timestamp(s().lastIndexedAt) },
-                {
-                  label: "PROVIDER",
-                  value: activeModel()?.provider.toUpperCase() ?? "—",
+                  label: "LAST REINDEX",
+                  value: r().completedAt ? timestamp(r().completedAt!) : "—",
                 },
               ]}
             />
@@ -126,56 +140,40 @@ export function EmbeddingPanel(): JSX.Element {
         </Show>
       </Suspense>
 
-      <Show when={reindex()}>
-        {(r) => (
-          <Panel label="REINDEX IN PROGRESS">
-            <Stack gap={3}>
-              <ProgressBar
-                value={reindexProgress()}
-                label={`INDEXING DOCUMENTS — ${num(r().docsProcessed, 0)} / ${num(r().totalDocs, 0)} (${reindexProgress()}%)`}
-                tone="info"
-                showValue
-              />
-              <Show when={r().estimatedSecsRemaining > 0}>
-                <Text variant="micro" tone="dim">
-                  EST. TIME REMAINING: {r().estimatedSecsRemaining}S
-                </Text>
-              </Show>
-              <Row gap={2}>
-                <Button variant="ghost" onClick={handleCancelReindex}>
-                  CANCEL REINDEX
-                </Button>
-              </Row>
-            </Stack>
-          </Panel>
-        )}
-      </Show>
-
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Panel label="ACTIVE MODEL" class="lg:col-span-1">
           <Suspense fallback={<LoadingText />}>
-            <Show when={activeModel()}>
-              {(m) => (
-                <Stack gap={3}>
-                  <Field label="NAME" value={m().name} />
-                  <Field label="DIMS" value={String(m().dims)} />
-                  <Field label="PROVIDER" value={m().provider.toUpperCase()} />
-                  <Show when={m().sizeBytes}>
-                    <Field label="SIZE" value={bytes(m().sizeBytes!)} />
-                  </Show>
-                  <Show when={m().description}>
-                    <Text variant="micro" tone="dim">
-                      {m().description}
-                    </Text>
-                  </Show>
-                </Stack>
-              )}
+            <Show
+              when={activeEndpointId()}
+              fallback={
+                <Text variant="micro" tone="dim">
+                  No embedding model bound yet — recall runs keyword-only.
+                </Text>
+              }
+            >
+              <Stack gap={3}>
+                <Field
+                  label="MODEL"
+                  value={activeManaged()?.hfRepo ?? role()?.model ?? "default"}
+                />
+                <Field label="ENDPOINT" value={activeEndpointName() ?? "—"} />
+                <Show when={activeManaged()}>
+                  {(m) => (
+                    <>
+                      <Field label="ENGINE" value={m().engine} />
+                      <Show when={m().quant}>
+                        <Field label="QUANT" value={m().quant!} />
+                      </Show>
+                    </>
+                  )}
+                </Show>
+              </Stack>
             </Show>
           </Suspense>
         </Panel>
 
         <Panel
-          label="AVAILABLE MODELS"
+          label="SERVED EMBEDDING MODELS"
           meta={
             <Text variant="micro" tone="dim">
               SELECT TO ACTIVATE
@@ -184,84 +182,107 @@ export function EmbeddingPanel(): JSX.Element {
           flush
           class="lg:col-span-2"
         >
-          <Resource
-            data={models}
-            loadingLabel="LOADING MODELS"
-            onRetry={models.refetch}
-            errorMessage="FAILED TO LOAD MODELS"
-            isEmpty={(v) => v.length === 0}
-            emptyMessage="NO MODELS"
-            empty={
+          <Show
+            when={!managed.loading()}
+            fallback={
               <div class="p-3">
-                <EmptyState icon="database" message="NO MODELS" />
-              </div>
-            }
-            loading={
-              <div class="p-3">
-                <LoadingText />
+                <LoadingText label="LOADING MODELS" />
               </div>
             }
           >
-            {(list) => (
-              <For each={list()}>
-                {(m) => (
-                  <ListRow
-                    label={m.name}
-                    leading="database"
-                    selected={m.id === activeId()}
-                    right={
-                      <Row gap={2} align="center">
-                        <Text variant="micro" tone="dim">
-                          {m.dims}D
-                        </Text>
-                        <Show when={m.sizeBytes}>
+            <Show
+              when={embeddingModels().length > 0}
+              fallback={
+                <div class="p-3">
+                  <EmptyState
+                    icon="database"
+                    message="NO EMBEDDING MODELS SERVED"
+                  />
+                </div>
+              }
+            >
+              <Stack gap={0}>
+                <For each={embeddingModels()}>
+                  {(m) => (
+                    <ListRow
+                      label={m.hfRepo}
+                      leading="database"
+                      selected={m.endpointId === activeEndpointId()}
+                      right={
+                        <Row gap={2} align="center">
                           <Text variant="micro" tone="dim">
-                            {bytes(m.sizeBytes!)}
+                            {m.engine}
                           </Text>
-                        </Show>
-                        <StatusFlag
-                          status={m.provider === "local" ? "nominal" : "info"}
-                        >
-                          {m.provider.toUpperCase()}
-                        </StatusFlag>
-                        <Show when={m.provider === "remote"}>
-                          <Tooltip
-                            label={
-                              m.apiKeySet
-                                ? "Remote API key is configured."
-                                : "Add an API key in Integrations before activating this remote model."
+                          <StatusFlag
+                            status={m.state === "running" ? "nominal" : "warn"}
+                          >
+                            {m.state.toUpperCase()}
+                          </StatusFlag>
+                          <Show
+                            when={
+                              m.state === "running" &&
+                              m.endpointId !== activeEndpointId()
                             }
                           >
-                            <StatusFlag
-                              status={m.apiKeySet ? "nominal" : "warn"}
+                            <Button
+                              size="sm"
+                              variant="default"
+                              onClick={() => requestSwap(m)}
                             >
-                              {m.apiKeySet ? "KEY SET" : "NEEDS KEY"}
-                            </StatusFlag>
-                          </Tooltip>
-                        </Show>
-                        <Show
-                          when={m.id !== activeId()}
-                          fallback={
+                              SET ACTIVE
+                            </Button>
+                          </Show>
+                          <Show when={m.endpointId === activeEndpointId()}>
                             <StatusFlag status="nominal">ACTIVE</StatusFlag>
-                          }
-                        >
-                          <Button
-                            size="sm"
-                            variant="default"
-                            onClick={() => requestSwap(m)}
+                          </Show>
+                          <Show
+                            when={m.state === "running"}
+                            fallback={
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  actions.serve({
+                                    engine: m.engine,
+                                    repo: m.hfRepo,
+                                    role: "embedding",
+                                    workload: "embedding",
+                                    quant: m.quant ?? undefined,
+                                  })
+                                }
+                              >
+                                SERVE
+                              </Button>
+                            }
                           >
-                            SET ACTIVE
-                          </Button>
-                        </Show>
-                      </Row>
-                    }
-                  />
-                )}
-              </For>
-            )}
-          </Resource>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => actions.stop(m)}
+                            >
+                              STOP
+                            </Button>
+                          </Show>
+                        </Row>
+                      }
+                    />
+                  )}
+                </For>
+              </Stack>
+            </Show>
+          </Show>
         </Panel>
       </div>
+
+      <Row gap={2}>
+        <Button
+          variant="ghost"
+          onClick={handleReindexNow}
+          disabled={reindex()?.state === "running"}
+        >
+          REINDEX NOW
+        </Button>
+      </Row>
     </Stack>
   );
 }

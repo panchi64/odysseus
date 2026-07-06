@@ -1,30 +1,23 @@
-/** Embedding Models feature data contracts. */
+/** Embedding role + reindex data contracts — the EMBEDDING tab's model-swap and
+ *  index-stats surface. The catalog of servable models is `ManagedModel`
+ *  (`../model`), the same list `EmbeddingServePanel` renders; this feature only
+ *  adds which one is bound to the `embedding` role and the reindex job's state. */
 
-export type EmbeddingProvider = "local" | "remote";
-
-export interface EmbeddingModel {
-  id: string;
-  name: string;
-  dims: number;
-  provider: EmbeddingProvider;
-  active: boolean;
-  sizeBytes?: number;
-  description?: string;
-  /** Remote models only: whether an API key has been configured. */
-  apiKeySet?: boolean;
+/** The `embedding` role's current binding (`GET /models/roles`). Null fields mean
+ *  no embedding model has ever been bound — recall runs keyword-only. */
+export interface EmbeddingRole {
+  endpointId: string | null;
+  model: string | null;
 }
 
-export interface ReindexProgress {
-  docsProcessed: number;
-  estimatedSecsRemaining: number;
-}
+export type ReindexState = "idle" | "running" | "done" | "degraded" | "error";
 
-export interface IndexStats {
-  indexedDocs: number;
-  dims: number;
-  throughputDocsSec: number;
-  lastIndexedAt: string;
-  requiresReindex: boolean;
-  isReindexing: boolean;
-  reindexProgress?: ReindexProgress;
+/** The re-embed job's status (`GET`/`POST /models/embedding/reindex`) — a single
+ *  background job over memories + the chat index, not per-document progress. */
+export interface ReindexStatus {
+  state: ReindexState;
+  memories: number;
+  messages: number;
+  detail?: string;
+  completedAt?: string;
 }

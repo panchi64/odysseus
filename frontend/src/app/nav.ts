@@ -137,8 +137,8 @@ export const NAV: NavSection[] = [
         label: "Cookbook",
         href: "/models/cookbook",
         icon: "cpu",
-        // Connected: the COMPARE tab is wired to the real chat engine. The other
-        // tabs are still mock and carry their own inline NOT CONNECTED marker.
+        // Connected: every tab (GET STARTED, LOCAL MODELS, EMBEDDING, COMPARE)
+        // talks to the real backend.
         connected: true,
         description:
           "Serve and manage local models, embeddings, and side-by-side comparison",

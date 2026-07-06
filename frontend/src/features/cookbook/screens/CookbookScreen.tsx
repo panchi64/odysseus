@@ -2,7 +2,6 @@ import { createSignal, Show, Suspense, type JSX } from "solid-js";
 import {
   InstrumentBand,
   LoadingText,
-  NotConnectedOverlay,
   PageHeader,
   Stack,
   StatusFlag,
@@ -90,17 +89,13 @@ export function CookbookScreen(): JSX.Element {
         <GetStartedPanel />
       </Show>
 
-      {/* EMBEDDING is partly wired: the serve-locally affordance is connected
-          (download + serve a GGUF embedding model, bound to the embedding role);
-          the model-swap + index-stats UI below is still mock, so it keeps the
-          inline NOT CONNECTED overlay. */}
+      {/* EMBEDDING is fully wired: serve-locally (download + serve a GGUF
+          embedding model, bound to the embedding role) and the model-swap +
+          reindex-status panel below both talk to the real backend. */}
       <Show when={tab() === "embedding"}>
         <Stack gap={6}>
           <EmbeddingServePanel />
-          <div class="relative">
-            <EmbeddingPanel />
-            <NotConnectedOverlay />
-          </div>
+          <EmbeddingPanel />
         </Stack>
       </Show>
 
