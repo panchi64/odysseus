@@ -220,6 +220,7 @@ export function Composer(props: ComposerProps): JSX.Element {
         variant="ghost"
         size={lg() ? "lg" : "md"}
         leading="upload"
+        iconSize={lg() ? 28 : 22}
         aria-label="Attach files"
         disabled={props.disabled}
         onClick={drop.openPicker}

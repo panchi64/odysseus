@@ -14,6 +14,9 @@ export interface ButtonProps extends Omit<
   size?: ButtonSize;
   leading?: IconProps["name"];
   trailing?: IconProps["name"];
+  /** Overrides the size-derived icon px — for icon-only buttons that should
+   *  fill the control height rather than sit at the default text-scale size. */
+  iconSize?: number;
   /** Renders as an anchor when set (router intercepts for SPA nav). */
   href?: string;
   type?: "button" | "submit" | "reset";
@@ -48,6 +51,7 @@ export function Button(props: ButtonProps): JSX.Element {
     "size",
     "leading",
     "trailing",
+    "iconSize",
     "href",
     "type",
     "block",
@@ -70,11 +74,19 @@ export function Button(props: ButtonProps): JSX.Element {
       {...rest}
     >
       <Show when={local.leading}>
-        <Icon name={local.leading!} size={iconSize[local.size ?? "md"]} />
+        <Icon
+          name={local.leading!}
+          size={local.iconSize ?? iconSize[local.size ?? "md"]}
+          stroke={local.iconSize ? 24 / local.iconSize : undefined}
+        />
       </Show>
       {local.children}
       <Show when={local.trailing}>
-        <Icon name={local.trailing!} size={iconSize[local.size ?? "md"]} />
+        <Icon
+          name={local.trailing!}
+          size={local.iconSize ?? iconSize[local.size ?? "md"]}
+          stroke={local.iconSize ? 24 / local.iconSize : undefined}
+        />
       </Show>
     </Dynamic>
   );
