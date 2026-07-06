@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     web_fetch_min_interval_s: float = 1.0
     web_fetch_challenge_waits: int = 2
     web_fetch_challenge_wait_ms: int = 5000
+    # A fetched page's body is capped to this token budget before it reaches the model, so a
+    # long article can't blow a local model's context in one tool result. The rest is reachable
+    # by calling fetch again with the `offset` the truncation notice reports (paging).
+    web_fetch_output_max_tokens: int = 4000
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox

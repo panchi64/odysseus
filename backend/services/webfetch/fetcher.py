@@ -24,6 +24,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from core.exceptions import WebFetchError
 from core.ssrf import assert_public_url
+from core.text import tokens_to_chars, truncate_on_boundary
 from core.untrusted import wrap_untrusted
 
 from .browser import ManagedBrowser
@@ -93,6 +94,7 @@ class BrowserFetcher:
         min_interval_s: float = 0.0,
         challenge_waits: int = 0,
         challenge_wait_ms: int = 5000,
+        output_max_tokens: int = 4000,
     ) -> None:
         self._browser = browser
         self._timeout_ms = int(timeout_s * 1000)
@@ -103,10 +105,13 @@ class BrowserFetcher:
         self._throttle = DomainThrottle(min_interval_s=min_interval_s)
         self._challenge_waits = challenge_waits
         self._challenge_wait_ms = challenge_wait_ms
+        self._output_max_tokens = output_max_tokens
 
-    async def fetch(self, owner_id: str, url: str) -> FetchedPage:
-        """Render ``url`` and return its main content as Markdown. Raises ``SSRFError``
-        (refused) or ``WebFetchError`` (unreadable/unreachable/browser unavailable)."""
+    async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
+        """Render ``url`` and return its main content as Markdown, capped to the output
+        token budget (a longer page pages via ``offset``). Raises ``SSRFError`` (refused)
+        or ``WebFetchError`` (unreadable/unreachable/browser unavailable, or an ``offset``
+        past the end of the content)."""
         # Pre-flight: a refused target never opens a browser context (keeps today's
         # synchronous SSRFError on the entry URL).
         await assert_public_url(url)
@@ -120,9 +125,28 @@ class BrowserFetcher:
         )
         if not body:
             raise WebFetchError(f"no readable content at {final_url!r}")
-        return FetchedPage(
-            url=final_url, title=title, content=wrap_untrusted(body, source=final_url)
-        )
+        return self._package(body, title, final_url, offset)
+
+    def _package(self, body: str, title: str | None, final_url: str, offset: int) -> FetchedPage:
+        """Cap ``body`` to the output token budget from ``offset``, wrap it untrusted, and —
+        when more remains — append a trusted notice telling the model how to page on. An
+        ``offset`` past the end raises ``WebFetchError`` so the tool layer feeds the model a
+        retry to correct it."""
+        total = len(body)
+        if offset > 0 and offset >= total:
+            raise WebFetchError(
+                f"offset {offset} is past the end of the content ({total} characters)"
+            )
+        capped = truncate_on_boundary(body[offset:], tokens_to_chars(self._output_max_tokens))
+        end = offset + len(capped)
+        content = wrap_untrusted(capped, source=final_url)
+        if end < total:
+            content += (
+                f"\n[Fetched content truncated: showing characters {offset}-{end} of {total}. "
+                "To continue reading, call this tool again with the same url and "
+                f"offset={end}.]"
+            )
+        return FetchedPage(url=final_url, title=title, content=content)
 
     async def _render(self, url: str) -> tuple[str, str, str]:
         """Load the page in an isolated context and capture the rendered HTML, the rendered

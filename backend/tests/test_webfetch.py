@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from core.exceptions import SSRFError, WebFetchError
+from core.text import tokens_to_chars, truncate_on_boundary
 from services.webfetch import BrowserFetcher, FetchedPage, ManagedBrowser, proxy_script
 from services.webfetch.cookies import DomainCookieJar
 from services.webfetch.extract import extract
@@ -275,6 +276,73 @@ async def test_fetch_maps_browser_dropout_to_webfetch_error():
         await fetcher.fetch(OWNER, "http://93.184.216.34/")
 
 
+# --- output cap + offset paging (no browser) -------------------------------
+
+
+class _AvailableBrowser:
+    """Reports available; never opens a context — the render is patched out so these
+    tests exercise the cap/offset packaging on a synthetic oversized body."""
+
+    available = True
+
+
+_BIG_BODY = ("word " * 20_000).strip()  # ~100k chars of predictable text
+
+
+def _fetcher_with_body(monkeypatch, body: str, *, output_max_tokens: int = 4000) -> BrowserFetcher:
+    fetcher = BrowserFetcher(browser=_AvailableBrowser(), output_max_tokens=output_max_tokens)  # type: ignore[arg-type]
+
+    async def _fake_render(url: str):
+        # html="" so the extractor falls back to the rendered innerText verbatim, giving
+        # a body of exactly the length we control.
+        return "", body, url
+
+    monkeypatch.setattr(fetcher, "_render", _fake_render)
+    return fetcher
+
+
+async def test_fetch_caps_output_and_appends_truncation_note(monkeypatch):
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/")
+
+    cap = tokens_to_chars(4000)
+    expected_capped = truncate_on_boundary(_BIG_BODY, cap)
+    end = len(expected_capped)
+    assert len(expected_capped) <= cap
+    assert expected_capped in page.content
+    # The notice is trusted (outside the fence) — it must come *after* the END marker.
+    assert "[END UNTRUSTED CONTENT" in page.content
+    assert page.content.index("[Fetched content truncated") > page.content.index(
+        "[END UNTRUSTED CONTENT"
+    )
+    assert f"characters 0-{end} of {len(_BIG_BODY)}" in page.content
+    assert f"offset={end}" in page.content
+
+
+async def test_fetch_offset_returns_next_window(monkeypatch):
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
+    cap = tokens_to_chars(4000)
+    first = truncate_on_boundary(_BIG_BODY, cap)
+    end = len(first)
+
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=end)
+    expected_next = truncate_on_boundary(_BIG_BODY[end:], cap)
+    assert expected_next in page.content
+    assert first not in page.content  # no overlap back into the previous window
+
+    # The final window (remaining < cap) carries no truncation notice.
+    tail_offset = len(_BIG_BODY) - 40
+    last = await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=tail_offset)
+    assert _BIG_BODY[tail_offset:] in last.content
+    assert "Fetched content truncated" not in last.content
+
+
+async def test_fetch_offset_past_end_raises(monkeypatch):
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
+    with pytest.raises(WebFetchError):
+        await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=10**9)
+
+
 # --- containerized browser: a real render (skipped without a runtime/image) ------
 
 
@@ -385,7 +453,7 @@ async def test_web_fetch_tool_reaches_the_fetcher():
     seen: dict[str, str] = {}
 
     class _StubFetcher:
-        async def fetch(self, owner_id: str, url: str) -> FetchedPage:
+        async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
             seen["url"] = url
             return FetchedPage(url=url, title="t", content="body")
 
