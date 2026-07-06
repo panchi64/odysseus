@@ -263,7 +263,6 @@ export interface ActiveRun {
 export interface ChatSession {
   id: string;
   title: string;
-  model: string;
   messages: ChatMessage[];
   /** Context-window state reconstructed from the thread's last turn, or null
    *  when unavailable. Seeds the header meter on load. */

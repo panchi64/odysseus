@@ -20,8 +20,12 @@ export interface RunStreamOptions {
   fromSeq?: number;
 }
 
-const MAX_RECONNECTS = 6;
-const RECONNECT_DELAY_MS = 500;
+// Exponential backoff: 500ms doubling to a 10s cap, giving up once the
+// cumulative wait passes ~2 minutes — tolerates a backend restart mid-run
+// instead of exhausting after a fixed, brief 3s window.
+const RECONNECT_BASE_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 10_000;
+const RECONNECT_MAX_TOTAL_DELAY_MS = 120_000;
 // A live run flushes at least a keepalive comment every ~15s (see the backend SSE
 // transport), so a read that stalls past this is a dead connection — typically a
 // throttled background tab or a silently-dropped proxy. We cancel and reconnect
@@ -60,6 +64,7 @@ export async function streamRun(
 ): Promise<void> {
   let lastSeq: number | null = fromSeq ?? null;
   let failures = 0;
+  let totalDelayMs = 0;
 
   while (!signal?.aborted) {
     try {
@@ -112,12 +117,17 @@ export async function streamRun(
       // from lastSeq to replay anything missed.
     } catch (err) {
       if (signal?.aborted) return;
+      const backoff = Math.min(
+        RECONNECT_BASE_DELAY_MS * 2 ** failures,
+        RECONNECT_MAX_DELAY_MS,
+      );
       failures += 1;
-      if (failures > MAX_RECONNECTS) {
+      totalDelayMs += backoff;
+      if (totalDelayMs > RECONNECT_MAX_TOTAL_DELAY_MS) {
         setBackendReachable(false); // reconnects exhausted — treat the backend as down
         throw err;
       }
-      await delay(RECONNECT_DELAY_MS, signal);
+      await delay(backoff, signal);
     }
   }
 }

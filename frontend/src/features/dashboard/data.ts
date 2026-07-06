@@ -117,7 +117,9 @@ export function useOverview(): UseOverviewResult {
 }
 
 async function fetchActiveRuns(): Promise<ActiveRun[]> {
-  const rows = await api.get<RunDTO[]>("/runs");
+  // The backend already defaults to active-only; pass it explicitly so this
+  // call reads as scoped rather than relying on an implicit server default.
+  const rows = await api.get<RunDTO[]>("/runs?active=true");
   return rows.map(toActiveRun);
 }
 

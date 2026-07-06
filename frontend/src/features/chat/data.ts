@@ -561,7 +561,6 @@ async function fetchSession(id: string): Promise<ChatSession> {
   return {
     id: dto.id,
     title: deriveTitle(dto),
-    model: "",
     messages: dto.messages.map(toMessage),
     context: dto.context,
     activeRun: toActiveRun(dto.active_run),
