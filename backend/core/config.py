@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     # stacks), shadowing an IPv4-only bind when localhost resolves to ::1.
     port: int = 8000
 
-    # Origin-agnostic: the frontend origins allowed to call the API.
-    cors_origins: list[str] = ["http://localhost:5173"]
+    # Origin-agnostic: the frontend origins allowed to call the API. Both localhost
+    # and 127.0.0.1 are listed since browsers treat them as distinct origins.
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     auth_enabled: bool = True
 
