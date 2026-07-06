@@ -1,11 +1,12 @@
 import { Show, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
   Button,
   Icon,
   Menu,
   Text,
-  Tooltip,
   copyToClipboard,
+  toast,
   type MenuItem,
 } from "~/ui";
 import type { ChatMessage } from "../model";
@@ -15,6 +16,20 @@ import {
   hasReasoning,
   reasoningText,
 } from "../blocks";
+import { createDocument } from "~/features/documents/data";
+
+/** The turn's plain-text content, whichever role — a user turn's content lives
+ *  in `content`, an assistant turn's in its text blocks. */
+function messageText(m: ChatMessage): string {
+  return m.role === "assistant" ? answerText(m.blocks) : m.content;
+}
+
+/** A readable document title from a turn's opening line, capped so it stays a
+ *  title rather than a wrapped paragraph. */
+function titleFromText(text: string): string {
+  const firstLine = text.trim().split("\n", 1)[0]?.trim() ?? "";
+  return firstLine.slice(0, 60) || "Untitled";
+}
 
 /** Hover/focus-revealed action row for a chat turn. Lives inside a `group`
  *  wrapper in the parent turn and surfaces on hover or keyboard focus
@@ -36,6 +51,22 @@ export function MessageActions(props: {
 }): JSX.Element {
   const m = () => props.message;
   const isAssistant = () => m().role === "assistant";
+  const navigate = useNavigate();
+
+  async function saveToDocument() {
+    const text = messageText(m());
+    if (!text.trim()) return;
+    try {
+      const id = await createDocument(titleFromText(text), text);
+      toast.success("Saved to document", {
+        action: { label: "OPEN", onClick: () => navigate(`/documents/${id}`) },
+      });
+    } catch (err) {
+      toast.error(
+        (err as { detail?: string })?.detail ?? "Unable to save the document.",
+      );
+    }
+  }
 
   return (
     <div class="flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
@@ -132,7 +163,7 @@ export function MessageActions(props: {
         />
       </Show>
 
-      {/* Both roles: pin, save-to-document (Phase 2), delete. */}
+      {/* Both roles: pin, save-to-document, delete. */}
       <Button
         variant="ghost"
         size="sm"
@@ -142,11 +173,15 @@ export function MessageActions(props: {
       >
         {m().pinned ? "PINNED" : "PIN"}
       </Button>
-      <Tooltip label="Available in Phase 2">
-        <Button variant="ghost" size="sm" leading="note" disabled>
-          SAVE TO DOCUMENT
-        </Button>
-      </Tooltip>
+      <Button
+        variant="ghost"
+        size="sm"
+        leading="note"
+        aria-label="Save to document"
+        onClick={() => void saveToDocument()}
+      >
+        SAVE TO DOCUMENT
+      </Button>
       <Show when={props.onDelete}>
         <Button
           variant="danger"
