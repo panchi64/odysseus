@@ -320,7 +320,7 @@ async def lifespan(app: FastAPI):
         vault,
         http_client=web_client,
         managed_url=lambda: searxng.base_url,
-        timeout_s=settings.web_fetch_timeout_s,
+        timeout_s=settings.web_search_timeout_s,
         result_limit=settings.web_search_result_limit,
     )
     # Web fetch — a containerized headless Chromium (same runtime as the sandbox/SearXNG)

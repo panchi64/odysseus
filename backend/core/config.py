@@ -111,8 +111,10 @@ class Settings(BaseSettings):
     # conversation for this long before lapsing back to strict per-call approval.
     approval_grant_ttl_s: float = 86400.0
 
-    # Web search. `web_search_result_limit` caps results from the SearXNG provider.
+    # Web search. `web_search_result_limit` caps results from the SearXNG provider;
+    # `web_search_timeout_s` bounds one query (its own budget, not the fetch timeout).
     web_search_result_limit: int = 10
+    web_search_timeout_s: float = 15.0
 
     # Web fetch. The open web is treated as always-dynamic: every page is rendered in a
     # headless Chromium that runs in its own loopback-bound container (isolating untrusted

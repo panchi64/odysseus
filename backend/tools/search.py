@@ -16,6 +16,8 @@ can't fix it.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
@@ -30,17 +32,22 @@ def web_toolset() -> FunctionToolset[RunDeps]:
 
     @toolset.tool
     async def search(
-        ctx: RunContext[RunDeps], query: str, limit: int = 5
+        ctx: RunContext[RunDeps],
+        query: str,
+        limit: int = 5,
+        time_range: Literal["day", "week", "month", "year"] | None = None,
     ) -> list[SearchResult] | str:
         """Search the web for a query and return ranked results (title, URL, snippet).
 
-        An empty list means the search ran but found nothing — conclude from that
-        rather than retrying the same query."""
+        Use `time_range` to restrict results to recent pages when the question is
+        time-sensitive; `published` on a result is its publication date when the engine
+        knew it. An empty list means the search ran but found nothing — conclude from
+        that rather than retrying the same query."""
         svc = ctx.deps.search
         if svc is None:
             return "Web search is unavailable."
         try:
-            return await svc.search(ctx.deps.owner_id, query, limit=limit)
+            return await svc.search(ctx.deps.owner_id, query, limit=limit, time_range=time_range)
         except DegradedCapabilityError as exc:
             return f"Web search is unavailable: {exc}"
 

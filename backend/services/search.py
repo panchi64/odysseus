@@ -33,11 +33,14 @@ from models.search import SearchProvider
 @dataclass(frozen=True)
 class SearchResult:
     """One web search hit. ``snippet`` is untrusted-wrapped (the provider relays
-    text from arbitrary pages); ``title``/``url`` are short structural metadata."""
+    text from arbitrary pages); ``title``/``url`` are short structural metadata.
+    ``published`` is the raw publication date the engine reported (``publishedDate``),
+    when it knew one — a bare string, useful for judging freshness."""
 
     title: str
     url: str
     snippet: str
+    published: str | None = None
 
 
 @dataclass(frozen=True)
@@ -185,16 +188,25 @@ class SearchService:
     # --- search -----------------------------------------------------------
 
     async def search(
-        self, owner_id: str, query: str, *, limit: int | None = None
+        self,
+        owner_id: str,
+        query: str,
+        *,
+        limit: int | None = None,
+        time_range: str | None = None,
     ) -> list[SearchResult]:
         """Query the active SearXNG provider's JSON API. An empty result list is a
         valid answer (the model concludes, rather than looping); an unreachable
-        provider or non-JSON response is a degraded capability."""
+        provider or non-JSON response is a degraded capability. ``time_range``, when one
+        of ``day``/``week``/``month``/``year``, restricts results to recent pages (any
+        other value is ignored)."""
         target = await self._resolve_target(owner_id)
         limit = self._result_limit if limit is None else limit
         params: dict = {"q": query, "format": "json", **target.params}
         if target.engines:
             params["engines"] = ",".join(target.engines)
+        if time_range in ("day", "week", "month", "year"):
+            params["time_range"] = time_range
         headers: dict = {}
         if target.api_key:
             headers["Authorization"] = f"Bearer {target.api_key}"
@@ -225,11 +237,23 @@ class SearchService:
             raise DegradedCapabilityError("search provider returned an unexpected JSON shape")
 
         results = data.get("results") or []
-        return [
-            SearchResult(
-                title=r.get("title") or "",
-                url=r.get("url") or "",
-                snippet=wrap_untrusted(r.get("content") or "", source=r.get("url")),
+        # Dedupe exact-URL repeats (two engines agreeing) *before* the limit, so the cap
+        # yields `limit` distinct pages rather than being spent on duplicates.
+        seen: set[str] = set()
+        out: list[SearchResult] = []
+        for r in results:
+            url = r.get("url") or ""
+            if url and url in seen:
+                continue
+            seen.add(url)
+            out.append(
+                SearchResult(
+                    title=r.get("title") or "",
+                    url=url,
+                    snippet=wrap_untrusted(r.get("content") or "", source=url),
+                    published=r.get("publishedDate") or None,
+                )
             )
-            for r in results[:limit]
-        ]
+            if len(out) >= limit:
+                break
+        return out

@@ -128,6 +128,76 @@ async def test_search_maps_searxng_json_and_wraps_snippets():
     assert "[BEGIN UNTRUSTED CONTENT" in results[0].snippet
 
 
+async def test_search_passes_time_range_param():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"results": []})
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    await svc.search(OWNER, "q", time_range="week")
+    assert "time_range=week" in seen["url"]
+
+
+async def test_search_ignores_invalid_time_range():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"results": []})
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    await svc.search(OWNER, "q", time_range="decade")
+    assert "time_range" not in seen["url"]
+
+
+async def test_search_dedupes_exact_urls_before_limit():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "A", "url": "https://a.example", "content": "c"},
+                    {"title": "A dup", "url": "https://a.example", "content": "c"},
+                    {"title": "B", "url": "https://b.example", "content": "c"},
+                ]
+            },
+        )
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    # limit=2 must yield two *distinct* pages, not spend a slot on the duplicate.
+    results = await svc.search(OWNER, "q", limit=2)
+    assert [r.url for r in results] == ["https://a.example", "https://b.example"]
+
+
+async def test_search_carries_published_date():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Dated",
+                        "url": "https://a.example",
+                        "content": "c",
+                        "publishedDate": "2026-06-01T00:00:00",
+                    },
+                    {"title": "Undated", "url": "https://b.example", "content": "c"},
+                ]
+            },
+        )
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    results = await svc.search(OWNER, "q")
+    assert results[0].published == "2026-06-01T00:00:00"
+    assert results[1].published is None
+
+
 async def test_search_non_json_is_degraded():
     svc = await _make_service(lambda req: httpx.Response(200, text="<html>not json</html>"))
     await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
