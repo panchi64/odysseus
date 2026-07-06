@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+import httpx
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -29,7 +30,13 @@ from core.untrusted import wrap_untrusted
 
 from .browser import ManagedBrowser
 from .extract import extract
+from .pdf import fetch_pdf_text
 from .throttle import DomainThrottle
+
+
+class _DownloadStarted(Exception):
+    """The browser began a file download instead of rendering a page (a `.pdf` URL and the
+    like). Routed to the direct-download PDF path rather than surfaced as a render failure."""
 
 _INNERTEXT_JS = "() => (document.body ? document.body.innerText : '')"
 
@@ -95,6 +102,9 @@ class BrowserFetcher:
         challenge_waits: int = 0,
         challenge_wait_ms: int = 5000,
         output_max_tokens: int = 4000,
+        pdf_max_bytes: int = 25_000_000,
+        pdf_max_pages: int = 50,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._browser = browser
         self._timeout_ms = int(timeout_s * 1000)
@@ -106,6 +116,9 @@ class BrowserFetcher:
         self._challenge_waits = challenge_waits
         self._challenge_wait_ms = challenge_wait_ms
         self._output_max_tokens = output_max_tokens
+        self._pdf_max_bytes = pdf_max_bytes
+        self._pdf_max_pages = pdf_max_pages
+        self._http_client = http_client
 
     async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
         """Render ``url`` and return its main content as Markdown, capped to the output
@@ -119,7 +132,19 @@ class BrowserFetcher:
             raise WebFetchError("web fetch is unavailable (headless browser not running)")
         # Per-host politeness: serialize same-site fetches with a minimum gap between them.
         async with self._throttle.slot(url):
-            html, text, final_url = await self._render(url)
+            try:
+                html, text, final_url = await self._render(url)
+            except _DownloadStarted:
+                # Not a page — Chromium began a download. Pull the bytes and read the PDF
+                # text directly; the same output cap + offset paging applies.
+                body = await fetch_pdf_text(
+                    url,
+                    timeout_s=self._timeout_ms / 1000,
+                    max_bytes=self._pdf_max_bytes,
+                    max_pages=self._pdf_max_pages,
+                    client=self._http_client,
+                )
+                return self._package(body, None, url, offset)
         title, body = await asyncio.to_thread(
             extract, html, url=final_url, rendered_text=text, min_chars=self._min_chars
         )
@@ -168,6 +193,10 @@ class BrowserFetcher:
                 except PlaywrightTimeoutError:
                     pass  # use whatever rendered within the budget
                 except PlaywrightError as exc:
+                    # A `.pdf` (and other downloadable) URL makes Chromium start a download
+                    # rather than render — route it to the direct-download PDF path.
+                    if "download is starting" in str(exc).lower():
+                        raise _DownloadStarted from exc
                     raise WebFetchError(f"could not load {url!r}: {_reason(exc)}") from exc
                 if response is not None and response.status >= 400:
                     raise WebFetchError(f"{page.url!r} returned HTTP {response.status}")

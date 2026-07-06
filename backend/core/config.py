@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     # long article can't blow a local model's context in one tool result. The rest is reachable
     # by calling fetch again with the `offset` the truncation notice reports (paging).
     web_fetch_output_max_tokens: int = 4000
+    # A `.pdf` URL can't render in the browser (it starts a download); the fetcher instead
+    # downloads the bytes and extracts their text layer. `pdf_max_bytes` caps the download;
+    # `pdf_max_pages` bounds extraction cost (no vision OCR — a scanned PDF degrades).
+    web_fetch_pdf_max_bytes: int = 25_000_000
+    web_fetch_pdf_max_pages: int = 50
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox

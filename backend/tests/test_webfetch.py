@@ -14,6 +14,7 @@ import asyncio
 import urllib.parse
 from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 
 from core.exceptions import SSRFError, WebFetchError
@@ -341,6 +342,172 @@ async def test_fetch_offset_past_end_raises(monkeypatch):
     fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
     with pytest.raises(WebFetchError):
         await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=10**9)
+
+
+# --- PDF fetch path (no browser) -------------------------------------------
+
+
+def _minimal_pdf(text: str = "Hello PDF World") -> bytes:
+    """A hand-written one-page PDF with an extractable text layer (pdfium rebuilds the
+    xref, so the trailer alone is enough)."""
+    stream = f"BT /F1 24 Tf 72 700 Td ({text}) Tj ET".encode()
+    return (
+        b"%PDF-1.4\n"
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        b"4 0 obj\n<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+        + stream + b"\nendstream\nendobj\n"
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+        b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+    )
+
+
+class _PdfDownloadBrowser:
+    """available; its page's goto raises the 'Download is starting' PlaywrightError that a
+    `.pdf` URL provokes — the fetcher must route to the direct-download PDF path."""
+
+    available = True
+
+    @asynccontextmanager
+    async def context(self, url=None):
+        yield self
+
+    async def new_page(self):
+        return self
+
+    async def apply_stealth(self, page):
+        return None
+
+    async def goto(self, url, **kwargs):
+        from playwright.async_api import Error as PlaywrightError
+
+        raise PlaywrightError("Page.goto: net::ERR_ABORTED; Download is starting")
+
+
+async def test_download_error_routes_to_pdf_path(monkeypatch):
+    async def _fake_pdf(url, **kwargs):
+        return "Attention Is All You Need — full paper text"
+
+    monkeypatch.setattr("services.webfetch.fetcher.fetch_pdf_text", _fake_pdf)
+    fetcher = BrowserFetcher(browser=_PdfDownloadBrowser())  # type: ignore[arg-type]
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/paper.pdf")
+    assert "Attention Is All You Need" in page.content
+    assert "BEGIN UNTRUSTED CONTENT" in page.content
+
+
+async def test_fetch_pdf_text_follows_redirect_recheck(monkeypatch):
+    from services.webfetch import pdf as pdf_mod
+
+    checked: list[str] = []
+
+    async def _record(url: str) -> None:
+        checked.append(url)
+
+    monkeypatch.setattr(pdf_mod, "assert_public_url", _record)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/redir":
+            return httpx.Response(302, headers={"location": "https://cdn.example/final.pdf"})
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, content=_minimal_pdf()
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
+    try:
+        text = await pdf_mod.fetch_pdf_text(
+            "https://start.example/redir",
+            timeout_s=5,
+            max_bytes=10_000_000,
+            max_pages=10,
+            client=client,
+        )
+    finally:
+        await client.aclose()
+    assert "Hello PDF World" in text
+    assert len(checked) >= 2  # re-checked SSRF before the redirect target too
+
+
+async def test_fetch_pdf_text_refuses_non_pdf_download(monkeypatch):
+    from services.webfetch import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "assert_public_url", _allow_all)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, content=b"<html>nope</html>"
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(WebFetchError):
+            await pdf_mod.fetch_pdf_text(
+                "https://x.example/f",
+                timeout_s=5,
+                max_bytes=10_000_000,
+                max_pages=10,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+
+
+async def test_fetch_pdf_text_scanned_pdf_raises(monkeypatch):
+    from services.webfetch import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "assert_public_url", _allow_all)
+    # A valid PDF header but no text layer at all (no content stream) → scanned.
+    scanned = (
+        b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
+        b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, content=scanned
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(WebFetchError, match="no extractable text layer"):
+            await pdf_mod.fetch_pdf_text(
+                "https://x.example/scan.pdf",
+                timeout_s=5,
+                max_bytes=10_000_000,
+                max_pages=10,
+                client=client,
+            )
+    finally:
+        await client.aclose()
+
+
+async def test_fetch_pdf_text_size_cap(monkeypatch):
+    from services.webfetch import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "assert_public_url", _allow_all)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/pdf", "content-length": "99999999"},
+            content=b"%PDF-",
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(WebFetchError, match="exceeds"):
+            await pdf_mod.fetch_pdf_text(
+                "https://x.example/big.pdf",
+                timeout_s=5,
+                max_bytes=1000,
+                max_pages=10,
+                client=client,
+            )
+    finally:
+        await client.aclose()
 
 
 # --- containerized browser: a real render (skipped without a runtime/image) ------
