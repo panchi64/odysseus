@@ -198,6 +198,14 @@ export interface ViewLiveBlock {
   live: ViewLiveRef;
 }
 
+/** A web source the turn's `web_search`/`web_fetch` calls surfaced
+ *  (`citation.added`), rendered as a compact Sources row beneath the answer. */
+export interface Citation {
+  url: string;
+  title?: string;
+  sourceIndex?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: Role;
@@ -208,6 +216,10 @@ export interface ChatMessage {
   /** Assistant turns: the ordered block sequence (the single source of truth for
    *  what the turn rendered). Absent on user turns. */
   blocks?: AssistantBlock[];
+  /** Assistant turns: web sources the turn's `web_search`/`web_fetch` calls
+   *  surfaced, in citation order. Absent on user turns and turns with no web
+   *  tool use. */
+  citations?: Citation[];
   /** The run this assistant turn streams from — needed to approve/cancel it. */
   runId?: string;
   /** True while tokens are still streaming in. */

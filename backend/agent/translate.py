@@ -36,6 +36,7 @@ from pydantic_ai import (
 from core.serde import jsonable
 from runs import (
     AnswerDelta,
+    CitationAdded,
     Run,
     StepCompleted,
     StepStarted,
@@ -44,8 +45,31 @@ from runs import (
     ToolFailed,
     ToolStarted,
 )
+from services.search import SearchResult
+from services.webfetch import FetchedPage
 
 from .meta import LoopBreaker
+
+
+def citations_from_tool_result(name: str, content: Any) -> list[CitationAdded]:
+    """Sources a completed ``web_search``/``web_fetch`` call surfaced, in result order,
+    1-based ``source_index``, deduped by URL. Anything else (a degraded-capability
+    string, an unrecognized tool) yields none — this is additive, never load-bearing."""
+    if name == "web_search" and isinstance(content, list):
+        seen: set[str] = set()
+        deduped = []
+        for item in content:
+            if not isinstance(item, SearchResult) or item.url in seen:
+                continue
+            seen.add(item.url)
+            deduped.append(item)
+        return [
+            CitationAdded(url=item.url, title=item.title, source_index=index)
+            for index, item in enumerate(deduped, start=1)
+        ]
+    if name == "web_fetch" and isinstance(content, FetchedPage):
+        return [CitationAdded(url=content.url, title=content.title, source_index=1)]
+    return []
 
 
 def _on_model_event(event: object, run: Run) -> None:
@@ -106,6 +130,8 @@ def _on_tool_event(
                     result=jsonable(part.content),
                 )
             )
+            for citation in citations_from_tool_result(part.tool_name, part.content):
+                run.emit(citation)
 
 
 async def stream_agent_run(

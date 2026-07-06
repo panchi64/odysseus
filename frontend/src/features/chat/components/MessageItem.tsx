@@ -1,7 +1,7 @@
-import { Show, createSignal, type JSX } from "solid-js";
-import { Button, Icon, Stack, Text, Textarea, Tooltip } from "~/ui";
+import { For, Show, createSignal, type JSX } from "solid-js";
+import { Button, Chip, Icon, Stack, Text, Textarea, Tooltip } from "~/ui";
 import { relativeTime } from "~/lib/format";
-import type { ApprovalDecision, ChatMessage } from "../model";
+import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
@@ -211,6 +211,38 @@ function UserTurn(props: {
   );
 }
 
+/** The host portion of a URL, for the compact `[n] title (host)` citation label —
+ *  falls back to the raw URL if it doesn't parse. */
+function citationHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/** The web sources a turn's `web_search`/`web_fetch` calls surfaced, as a compact
+ *  row of chips beneath the answer — each opens its source in a new tab. */
+function SourcesRow(props: { citations: Citation[] }): JSX.Element {
+  return (
+    <div class="flex flex-wrap items-center gap-2">
+      <Text variant="label" tone="dim">
+        SOURCES
+      </Text>
+      <For each={props.citations}>
+        {(c, i) => (
+          <Chip
+            onClick={() => window.open(c.url, "_blank", "noopener,noreferrer")}
+          >
+            [{c.sourceIndex ?? i() + 1}] {c.title ?? citationHost(c.url)} (
+            {citationHost(c.url)})
+          </Chip>
+        )}
+      </For>
+    </div>
+  );
+}
+
 function AssistantTurn(props: {
   message: ChatMessage;
   onResolveApproval?: MessageItemProps["onResolveApproval"];
@@ -284,6 +316,9 @@ function AssistantTurn(props: {
           }
           onOpenInView={props.onOpenInView}
         />
+        <Show when={m().citations?.length}>
+          <SourcesRow citations={m().citations!} />
+        </Show>
       </Stack>
     </div>
   );

@@ -193,6 +193,46 @@ async def test_agent_search_tool_reaches_the_service():
     assert seen.get("hit"), "the search tool should have queried the provider"
 
 
+async def test_agent_search_emits_a_citation_per_result():
+    from pydantic_ai.models.test import TestModel
+
+    from agent import build_chat_orchestrator
+    from runs import RunRegistry, RunStatus
+    from tools import Capabilities
+    from tools.search import web_toolset
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "Hit One", "url": "https://a.example", "content": "c"},
+                    {"title": "Hit Two", "url": "https://b.example", "content": "c"},
+                    # A repeated URL (e.g. two engines agreeing) must not double-cite.
+                    {"title": "Hit One again", "url": "https://a.example", "content": "c"},
+                ]
+            },
+        )
+
+    svc = await _make_service(handler)
+    await svc.create_provider(OWNER, name="searx", base_url="http://searx.local")
+    orch = build_chat_orchestrator(
+        "look it up",
+        model=TestModel(call_tools=["web_search"]),
+        categories={"web": web_toolset()},
+        capabilities=Capabilities(search=svc),
+    )
+    run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    citations = [e.body for e in run.stream.replay() if e.body.type == "citation.added"]
+    assert [(c.source_index, c.url, c.title) for c in citations] == [
+        (1, "https://a.example", "Hit One"),
+        (2, "https://b.example", "Hit Two"),
+    ]
+
+
 async def test_web_tools_degrade_when_capability_absent():
     from pydantic_ai.models.test import TestModel
 

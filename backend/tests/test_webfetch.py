@@ -400,3 +400,8 @@ async def test_web_fetch_tool_reaches_the_fetcher():
 
     assert run.status is RunStatus.done
     assert "url" in seen, "the fetch tool should have reached the fetcher capability"
+    citations = [e.body for e in run.stream.replay() if e.body.type == "citation.added"]
+    assert len(citations) == 1
+    assert citations[0].url == seen["url"]
+    assert citations[0].title == "t"
+    assert citations[0].source_index == 1

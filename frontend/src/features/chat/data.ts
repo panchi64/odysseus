@@ -22,6 +22,7 @@ import type {
   ChatMessage,
   ChatSession,
   ChatSummary,
+  Citation,
   CompactionState,
   ContextUsage,
   HostCommand,
@@ -411,6 +412,41 @@ function toVersionChipBlock(
   };
 }
 
+/** Derive the citations a completed `web_search`/`web_fetch` tool call surfaced,
+ *  in result order with a 1-based `sourceIndex`, deduped by URL — the cold-reload
+ *  counterpart to the live `citation.added` fold, so a reloaded transcript shows
+ *  the same Sources row as the one that streamed in. Anything else (a degraded-
+ *  capability string, a still-running call, an unrecognized shape) yields none. */
+function citationsFromToolResult(name: string, result: unknown): Citation[] {
+  if (name === "web_search" && Array.isArray(result)) {
+    const seen = new Set<string>();
+    const deduped: { url: string; title?: string }[] = [];
+    for (const item of result) {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        typeof (item as { url?: unknown }).url !== "string"
+      )
+        continue;
+      const { url, title } = item as { url: string; title?: string };
+      if (seen.has(url)) continue;
+      seen.add(url);
+      deduped.push({ url, title });
+    }
+    return deduped.map((item, i) => ({ ...item, sourceIndex: i + 1 }));
+  }
+  if (
+    name === "web_fetch" &&
+    result &&
+    typeof result === "object" &&
+    typeof (result as { url?: unknown }).url === "string"
+  ) {
+    const { url, title } = result as { url: string; title?: string };
+    return [{ url, title, sourceIndex: 1 }];
+  }
+  return [];
+}
+
 function toTool(dto: ToolCallDTO): ToolInvocation {
   return {
     id: dto.id,
@@ -439,6 +475,7 @@ function toMessage(dto: MessageDTO): ChatMessage {
   // version chips, then the answer. (Once the backend persists ordered blocks, map
   // them straight through here; the live stream already carries true order.)
   const blocks: AssistantBlock[] = [];
+  const citations: Citation[] = [];
   if (dto.reasoning)
     blocks.push({
       kind: "thinking",
@@ -454,6 +491,9 @@ function toMessage(dto: MessageDTO): ChatMessage {
       });
     else
       blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });
+    for (const c of citationsFromToolResult(t.name, t.result))
+      if (!citations.some((existing) => existing.url === c.url))
+        citations.push(c);
   }
   for (const v of dto.versions ?? [])
     blocks.push(
@@ -467,7 +507,13 @@ function toMessage(dto: MessageDTO): ChatMessage {
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
   // The answer lives in the text block(s); keep `content` empty for assistant
   // turns so it isn't a second, divergent copy of the same text.
-  return { ...base, content: "", blocks, model: dto.model ?? undefined };
+  return {
+    ...base,
+    content: "",
+    blocks,
+    citations: citations.length ? citations : undefined,
+    model: dto.model ?? undefined,
+  };
 }
 
 /* ── Read accessors (the seam) ────────────────────────────────────────────── */
@@ -1155,6 +1201,17 @@ export function createChatStream(
         // Authoritative either way: a null context (this turn ran on a windowless
         // model, or reported no usage) clears a stale reading rather than keeping it.
         setUsage(ev.context);
+        break;
+      case "citation.added":
+        patchById(assistantId, (m) => {
+          const citations = m.citations ?? (m.citations = []);
+          if (!citations.some((c) => c.url === ev.url))
+            citations.push({
+              url: ev.url,
+              title: ev.title ?? undefined,
+              sourceIndex: ev.source_index ?? undefined,
+            });
+        });
         break;
       case "limit.notice":
         // A bound on the turn. "verify" is a transient "re-attempting…" progress note,
