@@ -52,11 +52,15 @@ def web_toolset() -> FunctionToolset[RunDeps]:
             return f"Web search is unavailable: {exc}"
 
     @toolset.tool(retries=2)
-    async def fetch(ctx: RunContext[RunDeps], url: str, offset: int = 0) -> FetchedPage | str:
+    async def fetch(
+        ctx: RunContext[RunDeps], url: str, offset: int = 0, goal: str | None = None
+    ) -> FetchedPage | str:
         """Fetch a single web page and return its main content as Markdown.
 
-        Use after `search` to read a result in full. Fetching returns up to a fixed
-        token budget of the page; when the result ends with a truncation notice, call
+        Use after `search` to read a result in full. State the information you are looking
+        for in `goal` — on large pages the result is then distilled to what's relevant to
+        it; omit `goal` (or pass `offset`) to read the raw text. Fetching returns up to a
+        fixed token budget of the page; when the result ends with a truncation notice, call
         `fetch` again with the same `url` and the `offset` the notice gives to continue
         reading (dynamic pages may shift slightly between calls). If a URL can't be
         fetched you will be told why — pick a different source."""
@@ -64,7 +68,7 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         if svc is None:
             return "Web fetch is unavailable."
         try:
-            return await svc.fetch(ctx.deps.owner_id, url, offset=offset)
+            return await svc.fetch(ctx.deps.owner_id, url, offset=offset, goal=goal)
         except SSRFError as exc:
             # A refused target is a hard boundary, not a "try again" — tell the model
             # plainly so it moves on instead of probing variants of a blocked address.

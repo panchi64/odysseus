@@ -22,6 +22,7 @@ from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.ratelimit import RateLimiter
 from core.vault import Vault
+from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
     api_tokens,
     auth,
@@ -76,7 +77,7 @@ from services.settings_store import SettingsStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
-from services.webfetch import BrowserFetcher, ManagedBrowser
+from services.webfetch import BrowserFetcher, ManagedBrowser, WebDistiller
 from services.workspace_history import WorkspaceHistoryStore
 
 logger = logging.getLogger(__name__)
@@ -342,6 +343,23 @@ async def lifespan(app: FastAPI):
         runtime_pref=settings.sandbox_runtime,
     )
     app.state.browser = browser
+    # Goal-aware distillation of oversized pages: a closure resolves the utility model
+    # (the background-work rule — utility, degrade to main, reasoning off) fresh per call,
+    # so it respects registry changes and keeps the engine layer out of services/webfetch.
+    distiller: WebDistiller | None = None
+    if settings.web_fetch_distill_enabled:
+
+        async def _resolve_distill_model():
+            resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
+            return resolved.model, resolved.reasoning_off
+
+        distiller = WebDistiller(
+            resolve_model=_resolve_distill_model,
+            instructions=DISTILL_INSTRUCTIONS,
+            window_tokens=settings.web_fetch_distill_window_tokens,
+            max_windows=settings.web_fetch_distill_max_windows,
+            timeout_s=settings.web_fetch_distill_timeout_s,
+        )
     # Like SearXNG above, the browser is started by the offline-mode service, not here.
     app.state.fetcher = BrowserFetcher(
         browser=browser,
@@ -360,6 +378,7 @@ async def lifespan(app: FastAPI):
         settle_checks=settings.web_fetch_settle_checks,
         settle_wait_ms=settings.web_fetch_settle_wait_ms,
         settle_min_chars=settings.web_fetch_settle_min_chars,
+        distiller=distiller,
     )
     # Offline mode — owns both web containers' lifecycle. Probe-first at boot: it runs
     # one connectivity check and only brings SearXNG + the browser up if the host is

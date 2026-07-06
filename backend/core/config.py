@@ -171,6 +171,15 @@ class Settings(BaseSettings):
     web_fetch_settle_checks: int = 3
     web_fetch_settle_wait_ms: int = 750
     web_fetch_settle_min_chars: int = 1000
+    # Goal-aware distillation: when the fetch tool is given a `goal` and the page body is over
+    # the output cap, the utility model distills it down to the goal-relevant content (verbatim
+    # figures/tables preserved) instead of truncating. `window_tokens` is the per-call excerpt
+    # size; `max_windows` caps coverage (8×12k ≈ 96k tokens of page); `timeout_s` bounds the
+    # whole distillation (on timeout/failure it falls back to truncation + offset paging).
+    web_fetch_distill_enabled: bool = True
+    web_fetch_distill_window_tokens: int = 12000
+    web_fetch_distill_max_windows: int = 8
+    web_fetch_distill_timeout_s: float = 90.0
 
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox

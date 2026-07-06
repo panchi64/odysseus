@@ -11,6 +11,7 @@ JavaScript runs) and the rendered DOM is extracted to Markdown. Public surface:
 from __future__ import annotations
 
 from .browser import ManagedBrowser
+from .distill import WebDistiller
 from .fetcher import BrowserFetcher, FetchedPage
 
-__all__ = ["BrowserFetcher", "FetchedPage", "ManagedBrowser"]
+__all__ = ["BrowserFetcher", "FetchedPage", "ManagedBrowser", "WebDistiller"]

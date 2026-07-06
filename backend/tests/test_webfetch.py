@@ -315,8 +315,14 @@ class _AvailableBrowser:
 _BIG_BODY = ("word " * 20_000).strip()  # ~100k chars of predictable text
 
 
-def _fetcher_with_body(monkeypatch, body: str, *, output_max_tokens: int = 4000) -> BrowserFetcher:
-    fetcher = BrowserFetcher(browser=_AvailableBrowser(), output_max_tokens=output_max_tokens)  # type: ignore[arg-type]
+def _fetcher_with_body(
+    monkeypatch, body: str, *, output_max_tokens: int = 4000, distiller=None
+) -> BrowserFetcher:
+    fetcher = BrowserFetcher(
+        browser=_AvailableBrowser(),  # type: ignore[arg-type]
+        output_max_tokens=output_max_tokens,
+        distiller=distiller,
+    )
 
     async def _fake_render(url: str):
         # html="" so the extractor falls back to the rendered innerText verbatim, giving
@@ -367,6 +373,95 @@ async def test_fetch_offset_past_end_raises(monkeypatch):
     fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY)
     with pytest.raises(WebFetchError):
         await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=10**9)
+
+
+# --- goal-aware distillation (no browser) ----------------------------------
+
+
+class _FakeDistiller:
+    """A stand-in distiller returning a fixed result and counting its calls."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    async def distill(self, body: str, *, goal: str, url: str):
+        self.calls += 1
+        return self.result
+
+
+async def test_fetch_distills_when_goal_given_and_body_over_cap(monkeypatch):
+    distiller = _FakeDistiller("DISTILLED — RAV4 trim price: $38,795")
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY, distiller=distiller)
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/", goal="RAV4 prices")
+    assert distiller.calls == 1
+    assert "DISTILLED — RAV4 trim price: $38,795" in page.content
+    assert "BEGIN UNTRUSTED CONTENT" in page.content  # still untrusted-fenced
+    assert "distillation focused on: RAV4 prices" in page.content
+    assert "Fetched content truncated" not in page.content  # distilled, not truncated
+
+
+async def test_fetch_goal_ignored_when_body_under_cap(monkeypatch):
+    distiller = _FakeDistiller("unused")
+    fetcher = _fetcher_with_body(monkeypatch, "a small page body", distiller=distiller)
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/", goal="anything")
+    assert distiller.calls == 0  # under the cap → no distillation
+    assert "a small page body" in page.content
+
+
+async def test_fetch_offset_wins_over_goal(monkeypatch):
+    distiller = _FakeDistiller("unused")
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY, distiller=distiller)
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/", offset=100, goal="x")
+    assert distiller.calls == 0  # an explicit offset means raw paging — distiller skipped
+    assert "Fetched content truncated" in page.content
+
+
+async def test_fetch_falls_back_to_truncation_when_distiller_fails(monkeypatch):
+    distiller = _FakeDistiller(None)  # distillation failed/empty
+    fetcher = _fetcher_with_body(monkeypatch, _BIG_BODY, distiller=distiller)
+    page = await fetcher.fetch(OWNER, "http://93.184.216.34/", goal="x")
+    assert distiller.calls == 1
+    assert "Fetched content truncated" in page.content  # fell back to the truncation path
+
+
+async def test_distiller_windows_and_drops_irrelevant():
+    from pydantic_ai import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from services.webfetch.distill import WebDistiller
+
+    def _respond(messages, info):
+        text = " ".join(
+            part.content
+            for m in messages
+            for part in m.parts
+            if isinstance(getattr(part, "content", None), str)
+        )
+        if "B" * 12 in text:
+            out = "NO RELEVANT CONTENT"  # middle window is irrelevant
+        elif "A" * 12 in text:
+            out = "KEPT-A"
+        else:
+            out = "KEPT-C"
+        return ModelResponse(parts=[TextPart(content=out)])
+
+    async def _resolve():
+        return FunctionModel(_respond), None
+
+    body = "A" * 12 + "B" * 12 + "C" * 12  # 3 windows at window_tokens=3 (12 chars each)
+    distiller = WebDistiller(
+        resolve_model=_resolve, instructions="x", window_tokens=3, max_windows=8, timeout_s=30
+    )
+    out = await distiller.distill(body, goal="g", url="http://x/")
+    assert out == "KEPT-A\n\nKEPT-C"  # the middle NO RELEVANT CONTENT window is dropped
+
+    # A coverage note appears when max_windows caps below the window count.
+    capped = WebDistiller(
+        resolve_model=_resolve, instructions="x", window_tokens=3, max_windows=2, timeout_s=30
+    )
+    out2 = await capped.distill(body, goal="g", url="http://x/")
+    assert "covered the first 24 of 36 characters" in out2
 
 
 # --- adaptive settle loop (no browser) -------------------------------------
@@ -688,7 +783,9 @@ async def test_web_fetch_tool_reaches_the_fetcher():
     seen: dict[str, str] = {}
 
     class _StubFetcher:
-        async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
+        async def fetch(
+            self, owner_id: str, url: str, *, offset: int = 0, goal: str | None = None
+        ) -> FetchedPage:
             seen["url"] = url
             return FetchedPage(url=url, title="t", content="body")
 

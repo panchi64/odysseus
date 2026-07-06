@@ -29,6 +29,7 @@ from core.text import tokens_to_chars, truncate_on_boundary
 from core.untrusted import wrap_untrusted
 
 from .browser import ManagedBrowser
+from .distill import WebDistiller
 from .extract import extract
 from .pdf import fetch_pdf_text
 from .throttle import DomainThrottle
@@ -108,6 +109,7 @@ class BrowserFetcher:
         settle_checks: int = 3,
         settle_wait_ms: int = 750,
         settle_min_chars: int = 1000,
+        distiller: WebDistiller | None = None,
     ) -> None:
         self._browser = browser
         self._timeout_ms = int(timeout_s * 1000)
@@ -125,12 +127,16 @@ class BrowserFetcher:
         self._settle_checks = settle_checks
         self._settle_wait_ms = settle_wait_ms
         self._settle_min_chars = settle_min_chars
+        self._distiller = distiller
 
-    async def fetch(self, owner_id: str, url: str, *, offset: int = 0) -> FetchedPage:
+    async def fetch(
+        self, owner_id: str, url: str, *, offset: int = 0, goal: str | None = None
+    ) -> FetchedPage:
         """Render ``url`` and return its main content as Markdown, capped to the output
-        token budget (a longer page pages via ``offset``). Raises ``SSRFError`` (refused)
-        or ``WebFetchError`` (unreadable/unreachable/browser unavailable, or an ``offset``
-        past the end of the content)."""
+        token budget (a longer page pages via ``offset``). With a ``goal`` (and no explicit
+        ``offset``), an over-cap page is distilled to the goal-relevant content instead of
+        truncated. Raises ``SSRFError`` (refused) or ``WebFetchError``
+        (unreadable/unreachable/browser unavailable, or an ``offset`` past the end)."""
         # Pre-flight: a refused target never opens a browser context (keeps today's
         # synchronous SSRFError on the entry URL).
         await assert_public_url(url)
@@ -150,25 +156,43 @@ class BrowserFetcher:
                     max_pages=self._pdf_max_pages,
                     client=self._http_client,
                 )
-                return self._package(body, None, url, offset)
+                return await self._package(body, None, url, offset, goal=goal)
         title, body = await asyncio.to_thread(
             extract, html, url=final_url, rendered_text=text, min_chars=self._min_chars
         )
         if not body:
             raise WebFetchError(f"no readable content at {final_url!r}")
-        return self._package(body, title, final_url, offset)
+        return await self._package(body, title, final_url, offset, goal=goal)
 
-    def _package(self, body: str, title: str | None, final_url: str, offset: int) -> FetchedPage:
+    async def _package(
+        self, body: str, title: str | None, final_url: str, offset: int, *, goal: str | None = None
+    ) -> FetchedPage:
         """Cap ``body`` to the output token budget from ``offset``, wrap it untrusted, and —
         when more remains — append a trusted notice telling the model how to page on. An
         ``offset`` past the end raises ``WebFetchError`` so the tool layer feeds the model a
-        retry to correct it."""
+        retry to correct it.
+
+        When ``goal`` is stated (and there's no explicit ``offset`` — an offset means the
+        model wants raw paging) and the body is over the cap, the distiller reduces it to the
+        goal-relevant content instead; a failed/absent distillation falls back to truncation."""
         total = len(body)
         if offset > 0 and offset >= total:
             raise WebFetchError(
                 f"offset {offset} is past the end of the content ({total} characters)"
             )
-        capped = truncate_on_boundary(body[offset:], tokens_to_chars(self._output_max_tokens))
+        cap_chars = tokens_to_chars(self._output_max_tokens)
+        if goal and offset == 0 and total > cap_chars and self._distiller is not None:
+            digest = await self._distiller.distill(body, goal=goal, url=final_url)
+            if digest is not None:
+                digest = truncate_on_boundary(digest, cap_chars)
+                content = wrap_untrusted(digest, source=final_url)
+                content += (
+                    f"\n[The page's full text is {total} characters; this result is a "
+                    f"distillation focused on: {goal}. To read the raw text instead, call "
+                    "this tool again without a goal and page through it with offset.]"
+                )
+                return FetchedPage(url=final_url, title=title, content=content)
+        capped = truncate_on_boundary(body[offset:], cap_chars)
         end = offset + len(capped)
         content = wrap_untrusted(capped, source=final_url)
         if end < total:
