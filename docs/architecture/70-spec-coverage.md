@@ -14,7 +14,7 @@
 | 🔭 | **Deferred by decision** — design is settled (a D-number), build is deliberately held until its feature/seam is in scope. The seam is reserved; this is *not* an oversight. |
 | ⬜ | **Pending** — capability/feature not yet started. |
 
-**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, the code-execution sandbox (built — per-conversation live session, host-isolated, fail-closed), and the first surfaces on top of it — encrypted **artifacts** + live **previews** (token-gated reverse proxy) and a **conversation** read/manage layer. The long tail — most feature surfaces (mail, calendar, documents, research, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
+**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, the code-execution sandbox (built — per-conversation live session, host-isolated, fail-closed), and the first surfaces on top of it — encrypted **artifacts** + live **previews** (token-gated reverse proxy), a **conversation** read/manage layer, and the **attention/notification surface** (D30 — its own SSE stream + durable REST backfill, app-wide approval/failure/completion notices). The long tail — most feature surfaces (mail, calendar, documents, research, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
 
 ---
 
@@ -68,7 +68,7 @@
 | AE-2.1 typed params + arg validation | ✅ | Pydantic AI tool schemas | |
 | AE-2.2 tool always returns actionable result; failure ≠ abort | ✅ | tools return error payloads, not raises | memory/code tools model this. |
 | AE-3.1 sensitive set requires explicit approval | ✅ | D20 deferred-tool pause; `tools/code.py` host tool | Mechanism built; expands as sensitive tools land. Strict per-call default, with the `AE-3.7` conversation-grant exception (D28). |
-| AE-3.2 approval channel per run; pause unattended | 🟡 | inline approval + `/runs/{id}/approve` | Interactive path ✅; unattended push/email channel ⬜. |
+| AE-3.2 approval channel per run; pause unattended | 🟡 | inline approval + `/runs/{id}/approve`; D30 in-app notifications (`models/notification.py`, `services/notifications.py`, `routes/notifications.py`) | Interactive path ✅; in-app unattended channel ✅ — an `approval_needed` notification always fires when a run parks, persists durably, and surfaces app-wide (REST + its own SSE stream) so the operator learns of it away from the conversation. Push/email channels still ⬜. |
 | AE-3.3 operator can disable individual tools | ✅ | `tools/toolsets` `_enabled_gate` | |
 | AE-3.4 host-exec approval carries plain-language explanation | ✅ | `tools/code.py` `run_host_command(explanation=…)` | Explanation surfaced on `approval.required` (D23). |
 | AE-3.5 scheduled-task pre-authorization (scoped standing grant) | 🔭 | — | Designed (D24); lands with `TASK-*`. |
