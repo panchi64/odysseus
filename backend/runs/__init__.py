@@ -44,7 +44,7 @@ from .events import (
     ViewLiveStopped,
     ViewSnapshot,
 )
-from .registry import RunRegistry, RunTimeout
+from .registry import ConversationBusyError, RunRegistry, RunTimeout
 from .run import Orchestrator, Run, RunStatus
 from .stream import RunStream
 from .transport import parse_last_event_id, sse_response
@@ -56,6 +56,7 @@ __all__ = [
     "EventBody",
     "RunRegistry",
     "RunTimeout",
+    "ConversationBusyError",
     "Run",
     "RunStatus",
     "Orchestrator",

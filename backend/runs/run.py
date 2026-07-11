@@ -73,10 +73,21 @@ class Run:
     parked_payload: object | None = None
     # Opaque hook the orchestrator may set to flush whatever partial state it holds
     # before the registry force-cancels this run's task for a wall-clock/inactivity
-    # bound — called synchronously with the bound's kind, from inside the still-running
-    # task's own event-loop turn (safe to read the task's local state). The substrate
-    # never interprets it beyond calling it; a raising hook is swallowed by the caller.
+    # bound — called synchronously with the bound's operator-legible message, from
+    # inside the still-running task's own event-loop turn (safe to read the task's
+    # local state). The substrate never interprets it beyond calling it; a raising
+    # hook is swallowed by the caller.
     on_timeout: Callable[[str], None] | None = None
+    # The cancel counterpart of ``on_timeout`` — set by the orchestrator to persist
+    # whatever partial turn it holds before the registry cancels this run's task for
+    # an operator-requested cancel. Called synchronously from the *registry's own*
+    # coroutine (not this run's task), before ``task.cancel()``: under single-threaded
+    # asyncio, this run's task is necessarily suspended while a different coroutine is
+    # running, so reading its state here is race-free. Unlike ``on_timeout`` it must
+    # never set ``run.status``/outcome — the registry's own cancellation handling sets
+    # the terminal ``cancelled`` status once the cancellation actually lands, so this
+    # hook is finalize-only. A raising hook is swallowed by the caller.
+    on_cancel: Callable[[], None] | None = None
 
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog."""

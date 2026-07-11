@@ -20,12 +20,68 @@ from .stream import RunStream
 _UNSET = object()
 
 
-class RunTimeout(Exception):
-    """A Run exceeded a bound. ``kind`` is ``wall_clock`` or ``inactivity``."""
+class ConversationBusyError(Exception):
+    """Raised by ``claim`` or ``submit`` to refuse an operation because a live run — or
+    another in-flight claim — already holds ``conversation_id``. The atomic backstop
+    behind the route-level 409 guards in ``routes/chat.py``/``routes/conversations.py``
+    (``deps.claim_conversation``).
 
-    def __init__(self, kind: str) -> None:
-        super().__init__(f"{kind} timeout exceeded")
+    ``submit``'s own check-and-register runs with no ``await`` in between, so it's
+    atomic against a second bare run-creation attempt on its own — but a route whose
+    *own* mutation or submit is preceded by a real ``await`` (a model resolve, an
+    orphan-attachment lookup) needs more than that: two near-simultaneous requests can
+    both observe "no live run" before either does its own mutating work. ``claim``
+    closes that gap — it must be taken before the route's first such ``await`` and
+    held (released in a ``finally``) through the route's own submit/mutation.
+    """
+
+    def __init__(self, conversation_id: str) -> None:
+        super().__init__(f"a run is already in progress for conversation {conversation_id!r}")
+        self.conversation_id = conversation_id
+
+
+class RunTimeout(Exception):
+    """A Run exceeded a bound. ``kind`` is ``wall_clock`` or ``inactivity``.
+
+    The message is built here from the bound's actual configured duration rather
+    than left as the raw enum name — it reaches the operator verbatim, both as the
+    toast (``LimitNotice.message``) and the persistent ``blocked`` marker
+    (``blockedDetail``), so it must read as a plain sentence, never internal jargon.
+    """
+
+    def __init__(self, kind: str, bound_s: float | None = None) -> None:
+        super().__init__(_timeout_message(kind, bound_s))
         self.kind = kind
+
+
+def _adj_duration(bound_s: float) -> str:
+    """A hyphenated adjective phrase for a duration, e.g. ``30-minute``/``45-second``."""
+    minutes = bound_s / 60
+    if minutes >= 1:
+        return f"{round(minutes)}-minute"
+    return f"{max(1, round(bound_s))}-second"
+
+
+def _count_duration(bound_s: float) -> str:
+    """A counted-noun phrase for a duration, e.g. ``2 minutes``/``1 second``."""
+    minutes = bound_s / 60
+    if minutes >= 1:
+        n = round(minutes)
+        return f"{n} {'minute' if n == 1 else 'minutes'}"
+    n = max(1, round(bound_s))
+    return f"{n} {'second' if n == 1 else 'seconds'}"
+
+
+def _timeout_message(kind: str, bound_s: float | None) -> str:
+    if kind == "wall_clock":
+        if not bound_s:
+            return "this run hit its overall time limit"
+        return f"this run hit the {_adj_duration(bound_s)} overall limit"
+    if kind == "inactivity":
+        if not bound_s:
+            return "no activity for too long"
+        return f"no activity for {_count_duration(bound_s)}"
+    return f"{kind} timeout exceeded"  # defensive fallback for an unrecognized kind
 
 
 class RunRegistry:
@@ -42,6 +98,11 @@ class RunRegistry:
         self._wall_clock = wall_clock_timeout_s
         self._inactivity = inactivity_timeout_s
         self._max_retained = max_retained
+        # (owner_id, conversation_id) pairs a route currently holds via `claim` —
+        # in-flight requests that haven't (yet, or ever will) register a Run but must
+        # still block a second request from mutating/submitting on the same
+        # conversation. See `claim`/`release`.
+        self._claims: set[tuple[str, str]] = set()
 
     # --- lookup ---------------------------------------------------------------
     def get(self, run_id: str) -> Run | None:
@@ -72,6 +133,33 @@ class RunRegistry:
             return None
         return max(candidates, key=lambda r: r.created_at)
 
+    # --- claim (pre-submit / pre-mutation mutual exclusion) --------------------
+    def claim(self, conversation_id: str, owner_id: str) -> None:
+        """Atomically check-and-claim ``conversation_id`` for a request that is about
+        to reposition the active leaf (regenerate/edit/rewind/switch-version/a purging
+        delete) or submit a run, with further ``await``s of its own still ahead of it.
+
+        Synchronous — no ``await`` between the check and the claim — so under
+        single-threaded asyncio two near-simultaneous callers can't both observe "no
+        live run, no existing claim" and both proceed: only the first to reach this
+        call wins. Raises :class:`ConversationBusyError` when a live (non-terminal) run
+        already drives this conversation, or another in-flight request already holds
+        the claim.
+
+        The caller **must** release the claim via `release`, in a ``finally`` covering
+        every exit path (a failed model resolve, a 404 message id, a successful
+        submit) — an unreleased claim wrongly strands the conversation "busy" forever.
+        """
+        key = (owner_id, conversation_id)
+        if key in self._claims or self.active_run_for(conversation_id, owner_id) is not None:
+            raise ConversationBusyError(conversation_id)
+        self._claims.add(key)
+
+    def release(self, conversation_id: str, owner_id: str) -> None:
+        """Release a claim taken by `claim`. Idempotent — safe even if `claim` raised
+        (or was never called) for this pair."""
+        self._claims.discard((owner_id, conversation_id))
+
     # --- launch ---------------------------------------------------------------
     def submit(
         self,
@@ -84,6 +172,14 @@ class RunRegistry:
         wall_clock_timeout_s: float | None | object = _UNSET,
         inactivity_timeout_s: float | None | object = _UNSET,
     ) -> Run:
+        # Atomic check-and-claim: reads ``self._runs`` and registers the new run with no
+        # ``await`` in between, so this closes the race a caller's own pre-submit guard
+        # can't — two requests that both saw no active run can still both reach here, and
+        # only the one that actually runs first wins the slot.
+        if conversation_id is not None and (
+            self.active_run_for(conversation_id, owner_id) is not None
+        ):
+            raise ConversationBusyError(conversation_id)
         run = Run(
             id=run_id or uuid4().hex,
             kind=kind,
@@ -102,19 +198,39 @@ class RunRegistry:
         return run
 
     async def cancel(self, run_id: str) -> bool:
-        """Request cancellation; takes effect at the next await/step boundary."""
+        """Request cancellation.
+
+        Two mechanisms exist, both armed here: ``run.cancel_requested`` is a
+        cooperative flag the orchestrator's own loop checks at its next step
+        boundary (see ``agent/engine.py``'s ``chat-05`` wiring); ``task.cancel()``
+        below is the immediate hard backstop that fires regardless.
+
+        Idempotent against a repeated cancel on the same run before the first
+        cancellation actually lands: a running (not yet terminal, not parked) run
+        stays ``running`` until its ``CancelledError`` is delivered on a later
+        event-loop tick, so a second call in that window must not re-flush or
+        re-persist — ``run.cancel_requested`` already being set is the signal
+        that a cancel is already in flight for this run.
+        """
         run = self._runs.get(run_id)
         if run is None or run.is_terminal:
             return False
-        run.cancel_requested = True
         if run.status is RunStatus.awaiting_input:
             # Parked: the task already ended, so there is nothing to interrupt —
             # finalize directly and close the stream.
+            run.cancel_requested = True
             run.status = RunStatus.cancelled
             run.emit(RunEnded(outcome="cancelled"))
             run.ended_at = now_utc()
             run.stream.close()
             return True
+        if run.cancel_requested:
+            # Already flushed and hard-cancelled by an earlier call; the task
+            # simply hasn't unwound to a terminal status yet. Report success
+            # without repeating the (non-idempotent) flush/persist side effect.
+            return True
+        run.cancel_requested = True
+        self._flush_cancel(run)
         if run.task is not None:
             run.task.cancel()
         return True
@@ -235,11 +351,13 @@ class RunRegistry:
                     return
                 now = loop.time()
                 if deadline is not None and now >= deadline:
-                    self._flush_timeout(run, "wall_clock")
-                    raise RunTimeout("wall_clock")
+                    timeout_exc = RunTimeout("wall_clock", wall_clock)
+                    self._flush_timeout(run, str(timeout_exc))
+                    raise timeout_exc
                 if inactivity is not None and now >= run.last_activity_mono + inactivity:
-                    self._flush_timeout(run, "inactivity")
-                    raise RunTimeout("inactivity")
+                    timeout_exc = RunTimeout("inactivity", inactivity)
+                    self._flush_timeout(run, str(timeout_exc))
+                    raise timeout_exc
         finally:
             if not main.done():
                 main.cancel()
@@ -247,7 +365,7 @@ class RunRegistry:
                     await main
 
     @staticmethod
-    def _flush_timeout(run: Run, kind: str) -> None:
+    def _flush_timeout(run: Run, message: str) -> None:
         """Give the orchestrator one last chance to persist its partial state before
         the bound trips and ``_supervise``'s ``finally`` force-cancels its task —
         without this, a wall-clock/inactivity stop reports a 'blocked' outcome that
@@ -255,11 +373,32 @@ class RunRegistry:
         on the next reload, because cancellation interrupts the task before its own
         normal finalize path runs. Called while the task is still suspended (not
         running), so reading its state here is race-free under single-threaded
-        asyncio. Best-effort: a hook that raises must not stop the bound from firing."""
+        asyncio. Best-effort: a hook that raises must not stop the bound from firing.
+        ``message`` is the same operator-legible sentence (``str(RunTimeout)``, built
+        from the bound's configured duration) used for the toast/persisted marker, so
+        there is exactly one place that turns a bound's ``kind`` into words."""
         if run.on_timeout is None:
             return
         with suppress(Exception):
-            run.on_timeout(kind)
+            run.on_timeout(message)
+
+    @staticmethod
+    def _flush_cancel(run: Run) -> None:
+        """Give the orchestrator the same pre-cancel flush opportunity ``_flush_timeout``
+        gives the wall-clock/inactivity bounds — before ``task.cancel()`` force-unwinds it,
+        so a manual Stop doesn't drop the turn (and the operator's own prompt) on the next
+        reload the way an un-flushed timeout would (see ``_flush_timeout``). Called from
+        this coroutine — not the run's own task — while that task is provably suspended:
+        under single-threaded asyncio nothing else runs while this does, so reading the
+        task's state here is race-free. Deliberately does not touch ``run.status``/outcome:
+        ``_execute``'s own ``except asyncio.CancelledError`` handler sets the terminal
+        ``cancelled`` status once the cancellation actually lands, so this hook must only
+        persist, never finalize the run's terminal state. Best-effort: a hook that raises
+        must not stop the cancel from proceeding."""
+        if run.on_cancel is None:
+            return
+        with suppress(Exception):
+            run.on_cancel()
 
     def _evict_old(self) -> None:
         """Bound memory: drop the oldest terminal runs past the retention cap."""

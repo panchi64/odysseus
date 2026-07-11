@@ -24,6 +24,7 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
+from runs import ConversationBusyError
 from services.settings_store import (
     CompactionSettings,
     get_attachment_inline_max_tokens,
@@ -196,12 +197,21 @@ def _submit_turn(
         # tools from the agent rather than let it discover they're unavailable.
         disabled_tools=deps.offline(request).web_tools_disabled(),
     )
-    run = deps.registry(request).submit(
-        kind="chat",
-        owner_id=OPERATOR_ID,
-        orchestrator=orchestrator,
-        conversation_id=conversation_id,
-    )
+    try:
+        run = deps.registry(request).submit(
+            kind="chat",
+            owner_id=OPERATOR_ID,
+            orchestrator=orchestrator,
+            conversation_id=conversation_id,
+        )
+    except ConversationBusyError as exc:
+        # The registry's own atomic check-and-claim caught a race the caller's
+        # earlier `require_conversation_free` guard couldn't (two requests that
+        # both saw no active run before either submitted).
+        raise HTTPException(
+            status_code=409,
+            detail="A response is already in progress in this conversation",
+        ) from exc
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
@@ -275,17 +285,26 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             OPERATOR_ID, ephemeral=body.ephemeral
         )
 
-    cap = await _attachment_inline_cap(request, body.attachment_ids)
-    return _submit_turn(
-        request,
-        prompt=body.prompt,
-        conversation_id=conversation_id,
-        models=models,
-        attachment_ids=body.attachment_ids,
-        ephemeral=body.ephemeral,
-        inline_max_tokens=cap,
-        compaction=await _resolve_compaction(request, conversation_id),
-    )
+    # Claim now, before the remaining awaits (attachment cap, compaction resolve) and
+    # the eventual `submit` below — a plain "is there a live run" check alone leaves a
+    # gap a concurrent regenerate/edit/delete could occupy without ever registering a
+    # run for `active_run_for` to see. A brand-new conversation's id is unknown to
+    # anyone else yet, so this always succeeds for it.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        cap = await _attachment_inline_cap(request, body.attachment_ids)
+        return _submit_turn(
+            request,
+            prompt=body.prompt,
+            conversation_id=conversation_id,
+            models=models,
+            attachment_ids=body.attachment_ids,
+            ephemeral=body.ephemeral,
+            inline_max_tokens=cap,
+            compaction=await _resolve_compaction(request, conversation_id),
+        )
+    finally:
+        deps.release_conversation(request, conversation_id)
 
 
 @router.post("/regenerate", status_code=202, response_model=ChatCreated)
@@ -296,18 +315,26 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
     store = deps.store(request)
     if not await store.exists(body.conversation_id, OPERATOR_ID):
         raise HTTPException(status_code=404, detail="conversation not found")
-    # Resolve before repositioning the active leaf: a failed resolve must not
-    # leave the thread branched back with no new answer to replace the old one.
-    models = await _resolve_models(request, body.endpoint_id, body.model)
-    if not await store.regenerate_point(body.conversation_id, body.message_id):
-        raise HTTPException(status_code=404, detail="message not found")
-    return _submit_turn(
-        request,
-        prompt=None,
-        conversation_id=body.conversation_id,
-        models=models,
-        compaction=await _resolve_compaction(request, body.conversation_id),
-    )
+    # Claim before the model resolve and the leaf-moving `regenerate_point` call —
+    # both are real `await`s a second near-simultaneous regenerate/edit could
+    # otherwise slip through during: neither request has registered a run yet at
+    # that point, so a plain "is there a live run" check can't see the other one
+    # coming. Released once this request's own submit/mutation is settled, win or
+    # lose (a failed resolve, a 404 message id, or a successful submit).
+    deps.claim_conversation(request, body.conversation_id)
+    try:
+        models = await _resolve_models(request, body.endpoint_id, body.model)
+        if not await store.regenerate_point(body.conversation_id, body.message_id):
+            raise HTTPException(status_code=404, detail="message not found")
+        return _submit_turn(
+            request,
+            prompt=None,
+            conversation_id=body.conversation_id,
+            models=models,
+            compaction=await _resolve_compaction(request, body.conversation_id),
+        )
+    finally:
+        deps.release_conversation(request, body.conversation_id)
 
 
 @router.post("/edit", status_code=202, response_model=ChatCreated)
@@ -321,19 +348,25 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
     store = deps.store(request)
     if not await store.exists(body.conversation_id, OPERATOR_ID):
         raise HTTPException(status_code=404, detail="conversation not found")
-    models = await _resolve_models(request, body.endpoint_id, body.model)
-    if not await store.edit_point(body.conversation_id, body.message_id):
-        raise HTTPException(status_code=404, detail="message not found")
-    cap = await _attachment_inline_cap(request, body.attachment_ids)
-    return _submit_turn(
-        request,
-        prompt=body.prompt,
-        conversation_id=body.conversation_id,
-        models=models,
-        attachment_ids=body.attachment_ids,
-        inline_max_tokens=cap,
-        compaction=await _resolve_compaction(request, body.conversation_id),
-    )
+    # Same claim as regenerate — before the model resolve and before the
+    # leaf-moving `edit_point` call.
+    deps.claim_conversation(request, body.conversation_id)
+    try:
+        models = await _resolve_models(request, body.endpoint_id, body.model)
+        if not await store.edit_point(body.conversation_id, body.message_id):
+            raise HTTPException(status_code=404, detail="message not found")
+        cap = await _attachment_inline_cap(request, body.attachment_ids)
+        return _submit_turn(
+            request,
+            prompt=body.prompt,
+            conversation_id=body.conversation_id,
+            models=models,
+            attachment_ids=body.attachment_ids,
+            inline_max_tokens=cap,
+            compaction=await _resolve_compaction(request, body.conversation_id),
+        )
+    finally:
+        deps.release_conversation(request, body.conversation_id)
 
 
 def _settings_response(cap: int, comp: CompactionSettings) -> ChatSettings:

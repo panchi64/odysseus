@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from runs import RunRegistry, RunStatus
+import pytest
+
+from runs import ConversationBusyError, RunRegistry, RunStatus
 from runs.events import AnswerDelta
 
 
@@ -183,29 +185,119 @@ async def test_active_run_for_finds_in_flight_run():
     assert reg.active_run_for("c1", "operator") is None
 
 
-async def test_active_run_for_prefers_the_most_recent():
+async def test_submit_rejects_a_second_run_for_the_same_conversation():
+    # The atomic backstop behind the route-level 409 guard (chat-03/resume-02): submit
+    # itself refuses a second run for a conversation that already has a live one, with
+    # no `await` between the check and registering the new run — the race a route's own
+    # earlier check (before its own awaits) can't fully close.
     reg = RunRegistry()
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def first(run):
-        await asyncio.Event().wait()  # stays non-terminal
-
-    async def second(run):
+    async def orch(run):
         started.set()
         await release.wait()
 
-    older = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=first, conversation_id="c1"
-    )
-    await asyncio.sleep(0)  # let it start so its created_at is strictly earlier
-    newer = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=second, conversation_id="c1"
+    run = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
     )
     await started.wait()
 
-    assert older.created_at < newer.created_at
-    assert reg.active_run_for("c1", "operator") is newer
+    with pytest.raises(ConversationBusyError):
+        reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
+
+    # A different conversation or a different owner on the same id is unaffected.
+    other_conv = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c2"
+    )
+    other_owner = reg.submit(
+        kind="chat", owner_id="someone-else", orchestrator=orch, conversation_id="c1"
+    )
 
     release.set()
-    await newer.wait()
-    await reg.cancel(older.id)
+    await asyncio.gather(run.wait(), other_conv.wait(), other_owner.wait())
+
+    # Once the live run reaches terminal, the conversation is free again.
+    run2 = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
+    )
+    await run2.wait()
+    assert run2.status is RunStatus.done
+
+
+async def test_active_run_for_prefers_the_most_recent():
+    # active_run_for's own tie-break (most-recent non-terminal wins) is exercised
+    # directly against the registry's run table. `submit` itself now refuses to create a
+    # second live run for the same conversation (see
+    # `test_submit_rejects_a_second_run_for_the_same_conversation`), so two live
+    # candidates for one conversation can only coexist via direct construction here —
+    # this is testing `active_run_for`'s selection policy in isolation, not `submit`'s.
+    from datetime import timedelta
+
+    from runs.run import Run
+    from runs.stream import RunStream
+
+    reg = RunRegistry()
+    older = Run(
+        id="older", kind="chat", owner_id="operator", conversation_id="c1", stream=RunStream()
+    )
+    newer = Run(
+        id="newer", kind="chat", owner_id="operator", conversation_id="c1", stream=RunStream()
+    )
+    newer.created_at = older.created_at + timedelta(seconds=1)
+    reg._runs[older.id] = older
+    reg._runs[newer.id] = newer
+
+    assert reg.active_run_for("c1", "operator") is newer
+
+    newer.status = RunStatus.done  # terminal → excluded regardless of recency
+    assert reg.active_run_for("c1", "operator") is older
+
+
+async def test_claim_rejects_a_second_claim_on_the_same_conversation():
+    # `claim` is the pre-submit/pre-mutation mutual exclusion regenerate/edit/delete
+    # take before their own further `await`s (model resolve, orphan lookup) — a bare
+    # `active_run_for` check can't see a claim that hasn't registered a run yet.
+    reg = RunRegistry()
+    reg.claim("c1", "operator")
+
+    with pytest.raises(ConversationBusyError):
+        reg.claim("c1", "operator")
+
+    # A different conversation or a different owner on the same id is unaffected.
+    reg.claim("c2", "operator")
+    reg.claim("c1", "someone-else")
+
+    reg.release("c1", "operator")
+    reg.release("c2", "operator")
+    reg.release("c1", "someone-else")
+
+    # Freed after release — a fresh claim succeeds.
+    reg.claim("c1", "operator")
+    reg.release("c1", "operator")
+
+
+async def test_claim_rejects_when_a_run_is_already_live():
+    reg = RunRegistry()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def orch(run):
+        started.set()
+        await release.wait()
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
+    await started.wait()
+
+    with pytest.raises(ConversationBusyError):
+        reg.claim("c1", "operator")
+
+    release.set()
+    await run.wait()
+
+    # Once the run reaches terminal, a claim succeeds again.
+    reg.claim("c1", "operator")
+    reg.release("c1", "operator")
+
+
+def test_release_is_idempotent_without_a_prior_claim():
+    reg = RunRegistry()
+    reg.release("never-claimed", "operator")  # must not raise

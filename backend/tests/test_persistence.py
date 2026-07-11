@@ -214,15 +214,194 @@ async def test_wall_clock_timeout_persists_the_partial_turn(tmp_path):
     assert run.status is RunStatus.blocked
     views = await store.messages_view(conv)
     assert views[0].role == "user"
-    assert views[-1].blocked_reason == "wall_clock timeout exceeded"
+    assert views[-1].blocked_reason == "this run hit the 1-second overall limit"
 
     # Reload parity: a cold store rehydrates the same marker from the DB.
     await store.stop()
     cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
     await cold.start()
     cold_views = await cold.messages_view(conv)
-    assert cold_views[-1].blocked_reason == "wall_clock timeout exceeded"
+    assert cold_views[-1].blocked_reason == "this run hit the 1-second overall limit"
     await cold.stop()
+
+
+async def test_cancel_persists_the_partial_turn(tmp_path):
+    # A manual Stop (`RunRegistry.cancel`) force-cancels the orchestrator's task just
+    # like a wall-clock timeout does — the engine's `on_cancel` hook (the cancel
+    # counterpart of `on_timeout`) is what persists the partial turn instead, so a
+    # reload doesn't silently drop it (and the run's own terminal status/outcome, set
+    # by the registry's own cancellation handling, stay `cancelled` — the hook must not
+    # clobber them).
+    import asyncio
+
+    toolset = FunctionToolset()
+    started = asyncio.Event()
+    hang = asyncio.Event()
+
+    @toolset.tool
+    async def slow(x: int) -> int:
+        started.set()
+        await hang.wait()  # never set — cancelled before it would return
+        return x
+
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_slow"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await started.wait()  # let it commit to the tool call and start hanging inside it
+    assert await reg.cancel(run.id) is True
+    await run.wait()
+
+    assert run.status is RunStatus.cancelled
+    assert run.stream.replay()[-1].body.outcome == "cancelled"
+    views = await store.messages_view(conv)
+    assert views[0].role == "user"
+    assert views[-1].blocked_reason == "cancelled by the operator"
+
+    # Reload parity: a cold store rehydrates the same marker from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert cold_views[-1].blocked_reason == "cancelled by the operator"
+    await cold.stop()
+
+
+async def test_double_cancel_does_not_duplicate_the_persisted_turn(tmp_path):
+    # A repeated cancel() on the same run before the first cancellation actually
+    # lands (no other await in between — mirrors a double-click Stop, or a client
+    # retry against POST /runs/{id}/cancel, which has no server-side dedup) must be
+    # a no-op the second time: `run.status` stays `running` until the task's
+    # CancelledError is delivered on a later event-loop tick, so a naive re-entry
+    # would re-flush and double-record the same partial turn.
+    import asyncio
+
+    toolset = FunctionToolset()
+    started = asyncio.Event()
+    hang = asyncio.Event()
+
+    @toolset.tool
+    async def slow(x: int) -> int:
+        started.set()
+        await hang.wait()  # never set — cancelled before it would return
+        return x
+
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_slow"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await started.wait()  # let it commit to the tool call and start hanging inside it
+
+    # Two cancels back-to-back, no other await between them — the task is still
+    # `running` (its CancelledError hasn't landed yet) for the second call.
+    assert await reg.cancel(run.id) is True
+    assert run.status is RunStatus.running
+    assert await reg.cancel(run.id) is True
+
+    await run.wait()
+
+    assert run.status is RunStatus.cancelled
+    views = await store.messages_view(conv)
+    # Exactly one user prompt + one partial assistant turn — not duplicated.
+    assert [v.role for v in views] == ["user", "assistant"]
+    assert views[-1].blocked_reason == "cancelled by the operator"
+
+    await store.stop()
+
+
+async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path):
+    # Anything that escapes `_drive_turn` besides its specific bound catches (here: a
+    # tool raising a plain exception) must not silently drop the operator's own prompt
+    # (and whatever the turn had already produced) from persistence — the orchestrator's
+    # broad `except Exception` flushes it, carrying a legible marker, before the
+    # registry's own generic handler records the run as `error`.
+    toolset = FunctionToolset()
+
+    @toolset.tool
+    def boom(x: int) -> int:
+        raise RuntimeError("tool exploded")
+
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_boom"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.error
+    err = run.stream.replay()[-1].body
+    assert err.type == "run.error"
+
+    views = await store.messages_view(conv)
+    assert views[0].role == "user"
+    assert views[-1].blocked_reason == "an unexpected error stopped this turn"
+
+    # Reload parity: a cold store rehydrates the same marker from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert cold_views[-1].blocked_reason == "an unexpected error stopped this turn"
+    await cold.stop()
+
+
+async def test_cooperative_cancel_flag_stops_the_turn(tmp_path):
+    # `cancel_requested`, flipped directly here with no `RunRegistry.cancel()` and no
+    # `task.cancel()` anywhere in the picture, must still stop a running turn at its
+    # next step boundary (`_drive_turn`'s `report_progress`) — proving the flag is now a
+    # real, independently-effective cooperative-cancel signal rather than dead state.
+    toolset = FunctionToolset()
+    run_ref: list = [None]
+
+    @toolset.tool
+    def flag(x: int) -> int:
+        run_ref[0].cancel_requested = True
+        return x
+
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_flag"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    run_ref[0] = run
+    await run.wait()
+
+    assert run.status is RunStatus.cancelled
+    await store.stop()
 
 
 async def test_foreign_keys_are_enforced():

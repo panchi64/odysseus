@@ -490,13 +490,24 @@ async def delete_message(
     resulting thread so the client reseats in one round-trip (like version switch / rewind)."""
     store = deps.store(request)
     summary = await _require_owned(request, conversation_id)
-    orphans = (
-        await _image_orphans(request, conversation_id, message_id=message_id)
-        if purge_images
-        else []
-    )
-    if not await store.delete_message(conversation_id, message_id):
-        raise HTTPException(status_code=404, detail="message not found")
+    # Claim before the orphan-attachment lookup (real DB awaits, only when
+    # purge_images) and the leaf-moving `delete_message` call — a concurrent /chat
+    # submission could otherwise land and register its run mid-lookup (nothing has
+    # mutated, and no run exists yet, until this call actually deletes), then this
+    # delete would proceed to mutate the tree while that new run is live. Released as
+    # soon as the tree mutation itself is done — the purge/detail below read but don't
+    # move the leaf, so they don't need to stay inside the claim.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        orphans = (
+            await _image_orphans(request, conversation_id, message_id=message_id)
+            if purge_images
+            else []
+        )
+        if not await store.delete_message(conversation_id, message_id):
+            raise HTTPException(status_code=404, detail="message not found")
+    finally:
+        deps.release_conversation(request, conversation_id)
     await _purge_uploads(request, orphans)
     return await _detail(request, conversation_id, summary)
 
@@ -509,8 +520,14 @@ async def switch_version(
     return the resulting thread."""
     store = deps.store(request)
     summary = await _require_owned(request, conversation_id)
-    if not await store.switch_version(conversation_id, message_id, body.index):
-        raise HTTPException(status_code=404, detail="version not found")
+    # Moves the active leaf — must not race an in-flight turn built from the leaf
+    # this would move away from (or another in-flight claim on this conversation).
+    deps.claim_conversation(request, conversation_id)
+    try:
+        if not await store.switch_version(conversation_id, message_id, body.index):
+            raise HTTPException(status_code=404, detail="version not found")
+    finally:
+        deps.release_conversation(request, conversation_id)
     return await _detail(request, conversation_id, summary)
 
 
@@ -521,8 +538,14 @@ async def pin_message(
     """Pin or unpin a turn — a durable bookmark surfaced in the projection."""
     store = deps.store(request)
     await _require_owned(request, conversation_id)
-    if not await store.set_pin(conversation_id, message_id, body.pinned):
-        raise HTTPException(status_code=404, detail="message not found")
+    # A tree mutation like the others here — rejected while a run is live on this
+    # conversation, same as switch_version/rewind/delete_message.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        if not await store.set_pin(conversation_id, message_id, body.pinned):
+            raise HTTPException(status_code=404, detail="message not found")
+    finally:
+        deps.release_conversation(request, conversation_id)
 
 
 @router.post("/{conversation_id}/messages/{message_id}/rewind", response_model=ConversationDetail)
@@ -531,8 +554,13 @@ async def rewind(conversation_id: str, message_id: str, request: Request) -> Con
     message branches from it (the later turns stay reachable as a sibling version)."""
     store = deps.store(request)
     summary = await _require_owned(request, conversation_id)
-    if not await store.rewind(conversation_id, message_id):
-        raise HTTPException(status_code=404, detail="message not found")
+    # Moves the active leaf — see switch_version's guard note above.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        if not await store.rewind(conversation_id, message_id):
+            raise HTTPException(status_code=404, detail="message not found")
+    finally:
+        deps.release_conversation(request, conversation_id)
     return await _detail(request, conversation_id, summary)
 
 

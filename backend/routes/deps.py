@@ -7,12 +7,12 @@ FastAPI ``Depends`` later).
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from core.auth import AuthManager
 from core.ratelimit import RateLimiter
 from core.vault import Vault
-from runs import RunRegistry
+from runs import ConversationBusyError, RunRegistry
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
@@ -42,6 +42,32 @@ OPERATOR_ID = "operator"
 
 def registry(request: Request) -> RunRegistry:
     return request.app.state.runs
+
+
+_CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
+
+
+def claim_conversation(request: Request, conversation_id: str) -> None:
+    """Claim ``conversation_id`` for a request that will reposition the active leaf
+    (regenerate/edit/rewind/switch-version/a purging delete) or submit a new run, with
+    further ``await``s of its own still ahead of it — call this **before** the first of
+    those ``await``s, so a second near-simultaneous request can never slip past a check
+    the first request has already passed but not yet acted on.
+
+    Raises HTTP 409 when a live run already drives this conversation, or another
+    in-flight request already holds the claim. The caller **must** pair this with
+    `release_conversation` in a ``finally`` covering every exit path (a failed model
+    resolve, a 404 message id, a successful submit) — see ``RunRegistry.claim``.
+    """
+    try:
+        registry(request).claim(conversation_id, OPERATOR_ID)
+    except ConversationBusyError as exc:
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from exc
+
+
+def release_conversation(request: Request, conversation_id: str) -> None:
+    """Release a claim taken by `claim_conversation`. Idempotent."""
+    registry(request).release(conversation_id, OPERATOR_ID)
 
 
 def store(request: Request) -> ConversationStore:

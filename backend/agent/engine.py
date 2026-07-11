@@ -70,6 +70,13 @@ logger = logging.getLogger(__name__)
 # A shared empty bundle for the no-capabilities default (frozen ⇒ safe to share).
 _NO_CAPS = Capabilities()
 
+# Persistent stop markers for the cancel/unhandled-error flush paths (mirrors the
+# bound-hit details above them — a plain sentence, not internal jargon — stamped via
+# `_finalize`'s `blocked_reason` so a reload shows the same explanation the live
+# stream did, without touching `run.status`, which the registry itself decides).
+_CANCELLED_DETAIL = "cancelled by the operator"
+_ERRORED_DETAIL = "an unexpected error stopped this turn"
+
 
 @dataclass(frozen=True)
 class TitleContext:
@@ -393,7 +400,14 @@ async def _drive_turn(
 
     def report_progress(history: list[ModelMessage]) -> None:
         # A live context/usage frame as each model response lands, so the operator's context
-        # gauge fills in real time during a live turn.
+        # gauge fills in real time during a live turn. Also the loop's cooperative-cancel
+        # check: `RunRegistry.cancel()` sets `cancel_requested` and then hard-cancels the
+        # task immediately, so in practice the native cancellation almost always lands first —
+        # this is a redundant, independent stop path for the rare case something upstream
+        # swallows that CancelledError (e.g. a tool/dependency catching too broadly), so a
+        # requested cancel can never be silently absorbed.
+        if run.cancel_requested:
+            raise asyncio.CancelledError()
         run.emit(_turn_metrics(base, usage, run, history))
 
     # Rebound each loop iteration by `agent.iter()`'s `as agent_run`; stays None only
@@ -412,6 +426,12 @@ async def _drive_turn(
         partial_history_ref[:] = [_partial_history]
 
     while True:
+        # Same cooperative-cancel check as `report_progress`, at the turn-segment
+        # boundary between an auto-approved tool's continuation and the next model
+        # round-trip (see that function's comment for why this is a redundant,
+        # not primary, stop path).
+        if run.cancel_requested:
+            raise asyncio.CancelledError()
         try:
             async with agent.iter(
                 prompt,
@@ -878,10 +898,12 @@ def build_chat_orchestrator(
         # the turn on the next reload — see `RunRegistry._flush_timeout`).
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
 
-        def _on_timeout(kind: str) -> None:
+        def _on_timeout(detail: str) -> None:
+            # `detail` is already the operator-legible message the registry built
+            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
+            # verbatim so the persisted marker matches the toast the live stream showed.
             if not partial_history_ref:
                 return
-            detail = f"{kind} timeout exceeded"
             run.block(detail)
             _finalize(
                 run,
@@ -894,7 +916,35 @@ def build_chat_orchestrator(
                 compaction=active_compaction,
             )
 
+        def _on_cancel() -> None:
+            # The cancel counterpart of `_on_timeout` above: same pre-cancel flush,
+            # but must not call `run.block(...)` — the registry's own
+            # `except asyncio.CancelledError` handler sets the terminal `cancelled`
+            # status once the cancellation lands, and that must not be clobbered.
+            if not partial_history_ref:
+                return
+            _finalize(
+                run,
+                _TurnResult(
+                    answer=None,
+                    messages=partial_history_ref[0](),
+                    blocked_reason=_CANCELLED_DETAIL,
+                ),
+                store=store,
+                conversation_id=conversation_id,
+                start=start,
+                attachment_ids=stamp_ids,
+                persisted=persisted,
+                compaction=active_compaction,
+            )
+
         run.on_timeout = _on_timeout
+        run.on_cancel = _on_cancel
+        # Guards the `except Exception` flush below from double-persisting: once the
+        # normal `_finalize` call has run, the only remaining calls are the best-effort
+        # titling helpers, which already swallow their own exceptions internally — but
+        # this stays the authoritative check rather than relying on that.
+        finalized = False
         try:
             turn = await _drive_turn(
                 run,
@@ -951,10 +1001,13 @@ def build_chat_orchestrator(
                 persisted=persisted,
                 compaction=active_compaction,
             )
-            # Disarm the flush hook now the turn is recorded: a wall-clock/inactivity bound
-            # elapsing during the post-answer title window (below) must not re-run `_finalize`
-            # and double-record the turn (or stamp a spurious stop on a completed answer).
+            # Disarm the flush hooks now the turn is recorded: a wall-clock/inactivity bound
+            # or a cancel landing during the post-answer title window (below) must not
+            # re-run `_finalize` and double-record the turn (or stamp a spurious stop on a
+            # completed answer).
             run.on_timeout = None
+            run.on_cancel = None
+            finalized = True
 
             if run.status is RunStatus.awaiting_input:
                 # Parked for approval before producing an answer: abandon the
@@ -970,6 +1023,35 @@ def build_chat_orchestrator(
                 await _emit_title(
                     run, title_task, store=store, conversation_id=conversation_id
                 )
+        except Exception:
+            # Anything else that escapes `_drive_turn` (a provider error its specific
+            # catches don't cover, a tool/dependency raising, …) must still not silently
+            # drop the operator's own prompt: persist whatever the turn had produced,
+            # carrying a legible marker, before this propagates to the registry's own
+            # generic handler, which records the run as `error`. Mirrors the
+            # timeout/cancel flush above but never touches `run.status` — the registry
+            # is the one that decides the terminal outcome for an unhandled exception.
+            if not finalized and partial_history_ref:
+                _finalize(
+                    run,
+                    _TurnResult(
+                        answer=None,
+                        messages=partial_history_ref[0](),
+                        blocked_reason=_ERRORED_DETAIL,
+                    ),
+                    store=store,
+                    conversation_id=conversation_id,
+                    start=start,
+                    attachment_ids=stamp_ids,
+                    persisted=persisted,
+                    compaction=active_compaction,
+                )
+                finalized = True
+            # Disarm now that this path has (or the normal path already did) recorded
+            # the turn — the task is unwinding, so no further hook call is legitimate.
+            run.on_timeout = None
+            run.on_cancel = None
+            raise
         finally:
             # Safety net: if the turn raised or was cancelled before the title was
             # consumed above, don't let the detached title-model call outlive the run.
@@ -997,10 +1079,12 @@ def build_resume_orchestrator(
         # so it needs the same flush-before-force-cancel hook.
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
 
-        def _on_timeout(kind: str) -> None:
+        def _on_timeout(detail: str) -> None:
+            # `detail` is already the operator-legible message the registry built
+            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
+            # verbatim so the persisted marker matches the toast the live stream showed.
             if not partial_history_ref:
                 return
-            detail = f"{kind} timeout exceeded"
             run.block(detail)
             _finalize(
                 run,
@@ -1014,48 +1098,103 @@ def build_resume_orchestrator(
                 compaction=parked.compaction,
             )
 
-        run.on_timeout = _on_timeout
-        turn = await _drive_turn(
-            run,
-            parked.agent,
-            message_history=parked.message_history,
-            deferred_results=results,
-            announced=parked.announced,
-            caps=capabilities,
-            conversation_id=parked.conversation_id,
-            disabled_tools=disabled_tools,
-            compaction=parked.compaction,
-            partial_history_ref=partial_history_ref,
-        )
-        _finalize(
-            run,
-            turn,
-            store=store,
-            conversation_id=parked.conversation_id,
-            start=parked.persist_from,
-            clean_drop=parked.clean_drop,
-            attachment_ids=parked.attachment_ids,
-            persisted=parked.persisted,
-            compaction=parked.compaction,
-        )
-        # Disarm the flush hook now the turn is recorded — a bound elapsing during the
-        # title window below must not re-finalize (see the chat orchestrator).
-        run.on_timeout = None
-
-        if run.status is RunStatus.awaiting_input:
-            # Re-parked on a further approval: carry the title context forward to
-            # the new parked payload so the eventual completion still names it.
-            if isinstance(run.parked_payload, ParkedTurn):
-                run.parked_payload.title = parked.title
-        else:
-            # A first turn that parked then resumed to completion is still the
-            # opening exchange — name it (persist_from == 0 means no prior turns).
-            await _maybe_title(
+        def _on_cancel() -> None:
+            # The cancel counterpart of `_on_timeout` above — see the chat
+            # orchestrator's `_on_cancel` for why this must not call `run.block(...)`.
+            if not partial_history_ref:
+                return
+            _finalize(
                 run,
-                title=parked.title,
+                _TurnResult(
+                    answer=None,
+                    messages=partial_history_ref[0](),
+                    blocked_reason=_CANCELLED_DETAIL,
+                ),
                 store=store,
                 conversation_id=parked.conversation_id,
-                is_first_turn=parked.persist_from == 0,
+                start=parked.persist_from,
+                clean_drop=parked.clean_drop,
+                attachment_ids=parked.attachment_ids,
+                persisted=parked.persisted,
+                compaction=parked.compaction,
             )
+
+        run.on_timeout = _on_timeout
+        run.on_cancel = _on_cancel
+        # See the chat orchestrator's identical guard: makes the `except Exception`
+        # flush below a no-op once the normal `_finalize` call has already run.
+        finalized = False
+        try:
+            turn = await _drive_turn(
+                run,
+                parked.agent,
+                message_history=parked.message_history,
+                deferred_results=results,
+                announced=parked.announced,
+                caps=capabilities,
+                conversation_id=parked.conversation_id,
+                disabled_tools=disabled_tools,
+                compaction=parked.compaction,
+                partial_history_ref=partial_history_ref,
+            )
+            _finalize(
+                run,
+                turn,
+                store=store,
+                conversation_id=parked.conversation_id,
+                start=parked.persist_from,
+                clean_drop=parked.clean_drop,
+                attachment_ids=parked.attachment_ids,
+                persisted=parked.persisted,
+                compaction=parked.compaction,
+            )
+            # Disarm the flush hooks now the turn is recorded — a bound or cancel
+            # landing during the title window below must not re-finalize (see the
+            # chat orchestrator).
+            run.on_timeout = None
+            run.on_cancel = None
+            finalized = True
+
+            if run.status is RunStatus.awaiting_input:
+                # Re-parked on a further approval: carry the title context forward to
+                # the new parked payload so the eventual completion still names it.
+                if isinstance(run.parked_payload, ParkedTurn):
+                    run.parked_payload.title = parked.title
+            else:
+                # A first turn that parked then resumed to completion is still the
+                # opening exchange — name it (persist_from == 0 means no prior turns).
+                await _maybe_title(
+                    run,
+                    title=parked.title,
+                    store=store,
+                    conversation_id=parked.conversation_id,
+                    is_first_turn=parked.persist_from == 0,
+                )
+        except Exception:
+            # Same reasoning as the chat orchestrator's identical clause: an
+            # unhandled exception must not silently drop this turn (which, on a
+            # resume, includes everything since the original park) from persistence.
+            if not finalized and partial_history_ref:
+                _finalize(
+                    run,
+                    _TurnResult(
+                        answer=None,
+                        messages=partial_history_ref[0](),
+                        blocked_reason=_ERRORED_DETAIL,
+                    ),
+                    store=store,
+                    conversation_id=parked.conversation_id,
+                    start=parked.persist_from,
+                    clean_drop=parked.clean_drop,
+                    attachment_ids=parked.attachment_ids,
+                    persisted=parked.persisted,
+                    compaction=parked.compaction,
+                )
+                finalized = True
+            # Disarm now that this path has (or the normal path already did) recorded
+            # the turn — the task is unwinding, so no further hook call is legitimate.
+            run.on_timeout = None
+            run.on_cancel = None
+            raise
 
     return orchestrate
