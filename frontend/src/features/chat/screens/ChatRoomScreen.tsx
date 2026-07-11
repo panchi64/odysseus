@@ -216,9 +216,11 @@ export function ChatRoomScreen(): JSX.Element {
 
   // Viewport: a collapsible, resizable pane beside the conversation — the seam
   // where documents, live previews, and artifacts will mount. Desktop-only and
-  // collapsed by default; both the open state and the dragged width persist.
-  // Empty for now (the layout + mount point is the deliverable; the agent's
-  // preview/artifact events route here in a later step).
+  // collapsed by default; the dragged width is a genuine cross-thread preference
+  // (global), but the open/closed state is **per conversation** — a manual close
+  // on one thread must not be undone by a different thread's auto-open (each
+  // conversation gets its own entry in the persisted map, keyed like the
+  // composer's per-thread draft storage).
   const VIEWPORT_KEY = "ody.chat.viewport";
   const VIEWPORT_W_KEY = "ody.chat.viewport.w";
   const VIEWPORT_W_DEFAULT = 384;
@@ -226,17 +228,31 @@ export function ChatRoomScreen(): JSX.Element {
   const VIEWPORT_W_MAX = 760;
   const clampViewportW = (w: number) =>
     Math.min(VIEWPORT_W_MAX, Math.max(VIEWPORT_W_MIN, w));
-  const [viewportOpen, setViewportOpen] = createSignal(
-    readLS(VIEWPORT_KEY) === "1",
-  );
+  const readViewportOpenMap = (): Record<string, boolean> => {
+    try {
+      const raw = readLS(VIEWPORT_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  };
+  // The stable per-conversation key: a new, unsaved thread shares one bucket
+  // (mirroring `composerKey`'s `"new"` fallback below) since it has no id yet.
+  const viewportStateKey = () => currentId() ?? "new";
+  const [viewportOpenMap, setViewportOpenMap] = createSignal<
+    Record<string, boolean>
+  >(readViewportOpenMap());
+  const viewportOpen = () => viewportOpenMap()[viewportStateKey()] ?? false;
+  const persistViewportOpen = (open: boolean) => {
+    const key = viewportStateKey();
+    const next = { ...viewportOpenMap(), [key]: open };
+    setViewportOpenMap(next);
+    writeLS(VIEWPORT_KEY, JSON.stringify(next));
+  };
   const [viewportWidth, setViewportWidth] = createSignal(
     clampViewportW(Number(readLS(VIEWPORT_W_KEY)) || VIEWPORT_W_DEFAULT),
   );
-  const toggleViewport = () => {
-    const next = !viewportOpen();
-    setViewportOpen(next);
-    writeLS(VIEWPORT_KEY, next ? "1" : "0");
-  };
+  const toggleViewport = () => persistViewportOpen(!viewportOpen());
   // The handle is left of the (right-hand) viewport, so dragging it left widens
   // the pane — the caller negates the pointer delta. Persist only when the drag
   // settles, not on every move.
@@ -246,8 +262,7 @@ export function ChatRoomScreen(): JSX.Element {
     writeLS(VIEWPORT_W_KEY, String(viewportWidth()));
   const openViewport = () => {
     if (viewportOpen()) return;
-    setViewportOpen(true);
-    writeLS(VIEWPORT_KEY, "1");
+    persistViewportOpen(true);
   };
 
   // The conversation's View, derived from this thread's transcript blocks
@@ -257,9 +272,8 @@ export function ChatRoomScreen(): JSX.Element {
     collectViewItems(stream.messages, stream.snapshots(), stream.documents()),
   );
   // The viewport only makes sense with something to show. Gate the effective open
-  // state on having items so the persisted open flag — global, written when the
-  // agent auto-opens one conversation — can't carry over and show an empty panel
-  // on a fresh chat or any thread with no View yet.
+  // state on having items so a persisted-open thread that's since lost its items
+  // (or a fresh chat that never had any) never shows an empty panel.
   const viewportShown = () => viewportOpen() && viewItems().length > 0;
   // Which item the viewport shows: an explicit pick, or null = follow the newest.
   const [selectedViewKey, setSelectedViewKey] = createSignal<string | null>(
@@ -453,15 +467,19 @@ export function ChatRoomScreen(): JSX.Element {
           </div>
           <div class="flex shrink-0 items-center gap-2">
             <StatusFlag
-              status={stream.sending() ? "info" : "idle"}
-              dot={stream.sending()}
-              pulse={stream.sending()}
+              status={
+                stream.detached() ? "alert" : stream.sending() ? "info" : "idle"
+              }
+              dot={stream.sending() || stream.detached()}
+              pulse={stream.sending() && !stream.detached()}
             >
-              {stream.reattaching()
-                ? "RESYNCING"
-                : stream.sending()
-                  ? "STREAMING"
-                  : "IDLE"}
+              {stream.detached()
+                ? "DISCONNECTED"
+                : stream.reattaching()
+                  ? "RESYNCING"
+                  : stream.sending()
+                    ? "STREAMING"
+                    : "IDLE"}
             </StatusFlag>
             <Show when={stream.usage()}>
               {(usage) => (
@@ -556,6 +574,12 @@ export function ChatRoomScreen(): JSX.Element {
                     }
                     onTogglePin={() => void stream.toggleMessagePin(message.id)}
                     onOpenInView={openViewTo}
+                    onReattach={() => {
+                      if (message.runId)
+                        void stream.reattachRun(message.runId, {
+                          fromSeq: stream.lastSeq(),
+                        });
+                    }}
                     onRewind={() => {
                       void stream.rewind(message.id);
                     }}

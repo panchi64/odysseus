@@ -19,6 +19,7 @@ import type {
   TextBlock,
   ThinkingBlock,
   ToolBlock,
+  ViewDocumentBlock,
   ViewLiveBlock,
   ViewVersionBlock,
 } from "../model";
@@ -29,7 +30,7 @@ import {
   type BlockGroup,
   type LayoutItem,
 } from "../blocks";
-import { LIVE_KEY, snapshotKey, versionIcon } from "../viewport";
+import { LIVE_KEY, documentKey, snapshotKey, versionIcon } from "../viewport";
 import { ApprovalCard } from "./ApprovalCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -164,6 +165,22 @@ function BlockRow(
                 label={live.title || "Live view"}
                 live
                 onOpen={() => props.onOpenInView?.(LIVE_KEY)}
+              />
+            </div>
+          );
+        })()}
+      </Match>
+      <Match when={g().kind === "view_document"}>
+        {(() => {
+          const b = g().blocks[0] as ViewDocumentBlock;
+          return (
+            <div class={fullWidthTop(props.top)}>
+              <ViewChip
+                icon="file"
+                label={b.title || "Document"}
+                onOpen={() =>
+                  props.onOpenInView?.(documentKey(b.documentId, b.version))
+                }
               />
             </div>
           );

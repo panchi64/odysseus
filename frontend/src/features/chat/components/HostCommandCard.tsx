@@ -13,6 +13,7 @@ const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
   ok: { status: "nominal", label: "OK" },
   error: { status: "alert", label: "FAILED" },
   denied: { status: "alert", label: "DENIED" },
+  stale: { status: "idle", label: "DECIDED ELSEWHERE" },
 };
 
 /**
@@ -212,6 +213,16 @@ function Terminal(props: {
         <Show when={c().phase === "denied"}>
           <Text variant="micro" tone="alert">
             DENIED — not executed.
+          </Text>
+        </Show>
+
+        {/* This decision 409'd — already resolved elsewhere (a second tab, a
+            retried request) by the time it landed. Non-interactive; the
+            transcript reconciles with the actual outcome via a refetch. */}
+        <Show when={c().phase === "stale"}>
+          <Text variant="micro" tone="dim">
+            DECIDED ELSEWHERE — this was resolved from another session; the
+            transcript will catch up shortly.
           </Text>
         </Show>
 

@@ -29,6 +29,7 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
     case "approval":
       return "AWAITING APPROVAL";
     case "view_version":
+    case "view_document":
       return "UPDATING VIEW";
     case "view_live":
       return "STARTING LIVE VIEW";
@@ -42,6 +43,11 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
 export function TurnProgressRail(props: {
   blocks: AssistantBlock[] | undefined;
   streaming?: boolean;
+  /** True until the run's first event arrives — waiting behind the backend's
+   *  concurrency limit, not yet actually executing. Rendered as an explicit
+   *  "QUEUED" state instead of the throbber, which would otherwise look
+   *  identical to a model that's just slow to produce its first token. */
+  queued?: boolean;
 }): JSX.Element {
   const counts = createMemo(() => workCounts(props.blocks));
   const hasWork = () => counts().thinks > 0 || counts().tools > 0;
@@ -59,10 +65,19 @@ export function TurnProgressRail(props: {
       }
     >
       <Row gap={2} align="center" aria-live="polite">
-        <Frames class="text-info" />
-        <Text variant="label" tone="info">
-          {activeLabel(props.blocks)}
-        </Text>
+        <Show
+          when={!props.queued}
+          fallback={
+            <Text variant="label" tone="dim">
+              QUEUED
+            </Text>
+          }
+        >
+          <Frames class="text-info" />
+          <Text variant="label" tone="info">
+            {activeLabel(props.blocks)}
+          </Text>
+        </Show>
       </Row>
     </Show>
   );

@@ -48,6 +48,11 @@ export interface Approval {
   summary: string;
   /** Longer plain-language explanation, when the tool provides one. */
   explanation?: string;
+  /** True once submitting a decision for this approval 409'd — the run had
+   *  already resumed elsewhere (a second tab, a retried request) by the time
+   *  this decision landed. Non-interactive: a refetch reconciles the transcript
+   *  with whatever the winning decision actually did. */
+  stale?: boolean;
 }
 
 /** Lifecycle of a host-machine command (`run_host_command`) — the one
@@ -57,7 +62,8 @@ export type HostCommandPhase =
   | "running" // approved; executing on the host
   | "ok" // finished, exit 0
   | "error" // finished non-zero, or the launch failed
-  | "denied"; // the operator refused it
+  | "denied" // the operator refused it
+  | "stale"; // a decision 409'd — already resolved elsewhere (see `Approval.stale`)
 
 /** A host shell command rendered as a single persistent terminal: the exact
  *  command, the approval gate, and — once it runs — its captured output. Folded
@@ -151,7 +157,8 @@ export type AssistantBlock =
   | HostCommandBlock
   | ApprovalBlock
   | ViewVersionBlock
-  | ViewLiveBlock;
+  | ViewLiveBlock
+  | ViewDocumentBlock;
 
 export type BlockKind = AssistantBlock["kind"];
 
@@ -204,6 +211,17 @@ export interface ViewLiveBlock {
   id: string;
   live: ViewLiveRef;
 }
+/** An inline chip marking a document version the agent committed during the turn
+ *  (`document.committed`) — rendered like `ViewVersionBlock`, mirroring the
+ *  discoverability workspace snapshots already have. References the
+ *  conversation-scoped document version by id + version; the chip only labels it. */
+export interface ViewDocumentBlock {
+  kind: "view_document";
+  id: string;
+  documentId: string;
+  version: number;
+  title?: string;
+}
 
 /** A web source the turn's `web_search`/`web_fetch` calls surfaced
  *  (`citation.added`), rendered as a compact Sources row beneath the answer. Its display
@@ -237,6 +255,19 @@ export interface ChatMessage {
   runId?: string;
   /** True while tokens are still streaming in. */
   streaming?: boolean;
+  /** True from the moment this turn is submitted until its run's first event
+   *  arrives — the backend only emits `run.started` once it clears the
+   *  concurrency semaphore, so a turn can sit queued behind other runs for a
+   *  while with nothing to show yet. Rendered as an explicit "queued" state
+   *  instead of the streaming shimmer, so a wait behind the slot limit doesn't
+   *  read as a stalled model. */
+  queued?: boolean;
+  /** True when the SSE transport exhausted its reconnect budget without a
+   *  terminal event — the run may still be alive server-side, but this client
+   *  lost its live connection to it. Distinct from `streaming`/settled: the
+   *  turn is neither actively updating nor over, so it needs its own re-attach
+   *  affordance rather than silently looking finished or frozen. */
+  detached?: boolean;
   createdAt: string;
   /** Model/endpoint that produced an assistant message. */
   model?: string;

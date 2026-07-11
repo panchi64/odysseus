@@ -4,4 +4,8 @@ export {
   type ContextWindow,
   type RunEvent,
 } from "./events";
-export { streamRun, type RunStreamOptions } from "./runStream";
+export {
+  streamRun,
+  StreamDetachedError,
+  type RunStreamOptions,
+} from "./runStream";

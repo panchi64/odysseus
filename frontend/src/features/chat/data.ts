@@ -8,11 +8,16 @@ import {
   type Resource,
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
-import { api } from "~/lib/api";
+import { api, isApiError } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
 import { setChatBusy, setRunErrored } from "~/lib/stores/chatActivity";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
-import { streamRun, type ContextWindow, type RunEvent } from "~/lib/stream";
+import {
+  StreamDetachedError,
+  streamRun,
+  type ContextWindow,
+  type RunEvent,
+} from "~/lib/stream";
 import { toast } from "~/ui";
 import type {
   ActiveRun,
@@ -33,6 +38,7 @@ import type {
   TokenUsage,
   ToolBlock,
   ToolInvocation,
+  ViewDocumentBlock,
   ViewDocumentRef,
   ViewSnapshotRef,
   ViewVersionBlock,
@@ -416,6 +422,65 @@ function toVersionChipBlock(
   };
 }
 
+/** The inline transcript chip for a document version the agent committed
+ *  (`document.committed`) — references the conversation-scoped version by id +
+ *  version, mirroring `toVersionChipBlock`. Shared by the cold read and the warm
+ *  stream, so a document gets the same in-transcript discoverability a snapshot
+ *  already has. */
+function toDocumentChipBlock(
+  messageId: string,
+  ref: { documentId: string; version: number; title?: string },
+): ViewDocumentBlock {
+  return {
+    kind: "view_document",
+    id: `${messageId}-doc-${ref.documentId}-v${ref.version}`,
+    documentId: ref.documentId,
+    version: ref.version,
+    title: ref.title,
+  };
+}
+
+/** The document version(s) committed within this turn, recovered from its
+ *  `document_create`/`document_edit` tool calls — the cold-read counterpart to
+ *  `toVersionChipBlock`'s live fold, mirroring how `_message_versions` on the
+ *  backend recovers a snapshot chip from its `view_show` tool result. A
+ *  `document_create` call always commits version 1 (the tool's own return embeds
+ *  the new document's id: `"...(id: {id}). ..."`); a `document_edit` call carries
+ *  its target id directly in `args.document_id` and states the resulting version
+ *  in its result text (`"...(now version {n})."`). Denied/errored calls (no
+ *  matching text) are silently skipped. */
+function documentChipsFromTools(
+  dto: MessageDTO,
+  documents: ViewDocumentRef[],
+): ViewDocumentBlock[] {
+  const chips: ViewDocumentBlock[] = [];
+  for (const t of dto.tools) {
+    if (t.status === "error" || typeof t.result !== "string") continue;
+    let documentId: string | undefined;
+    let version: number | undefined;
+    if (t.name === "document_create") {
+      documentId = /\(id:\s*([^)]+)\)/.exec(t.result)?.[1];
+      version = 1;
+    } else if (t.name === "document_edit") {
+      documentId =
+        typeof t.args.document_id === "string" ? t.args.document_id : undefined;
+      const m = /version\s+(\d+)/i.exec(t.result);
+      version = m ? Number(m[1]) : undefined;
+    } else {
+      continue;
+    }
+    if (!documentId || !version || Number.isNaN(version)) continue;
+    chips.push(
+      toDocumentChipBlock(dto.id, {
+        documentId,
+        version,
+        title: documents.find((d) => d.documentId === documentId)?.title,
+      }),
+    );
+  }
+  return chips;
+}
+
 /** Derive the citations a completed `web_search`/`web_fetch` tool call surfaced, in
  *  result order — the cold-reload counterpart to the live `citation.added` fold, so a
  *  reloaded transcript shows the same Sources row that streamed in. Cross-call dedup and
@@ -465,7 +530,10 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
   };
 }
 
-function toMessage(dto: MessageDTO): ChatMessage {
+function toMessage(
+  dto: MessageDTO,
+  documents: ViewDocumentRef[] = [],
+): ChatMessage {
   const base: ChatMessage = {
     id: dto.id,
     role: dto.role,
@@ -510,6 +578,7 @@ function toMessage(dto: MessageDTO): ChatMessage {
         previewKind: v.preview_kind,
       }),
     );
+  blocks.push(...documentChipsFromTools(dto, documents));
   if (dto.content)
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
   // The answer lives in the text block(s); keep `content` empty for assistant
@@ -561,14 +630,15 @@ export function refreshSessions(): void {
 
 async function fetchSession(id: string): Promise<ChatSession> {
   const dto = await api.get<ConversationDetailDTO>(`/conversations/${id}`);
+  const documents = toViewDocumentRefList(dto);
   return {
     id: dto.id,
     title: deriveTitle(dto),
-    messages: dto.messages.map(toMessage),
+    messages: dto.messages.map((m) => toMessage(m, documents)),
     context: dto.context,
     activeRun: toActiveRun(dto.active_run),
     snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
-    documents: toViewDocumentRefList(dto),
+    documents,
   };
 }
 
@@ -797,6 +867,13 @@ export function createChatStream(
   // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
   // so the favicon can flag a failed run — compare panes keep it local.
   const [errored, setErrored] = createSignal(false);
+  // True when the live run's SSE transport exhausted its reconnect budget —
+  // the run may still be alive server-side, but this client lost its
+  // connection to it. Cleared when the next run/reattach starts (`driveRun`).
+  // Mirrors `errored`'s pattern, but distinct: a detached turn isn't "over",
+  // so the composer and the resume()/reattach paths must keep treating it as
+  // in-flight rather than settled.
+  const [detached, setDetached] = createSignal(false);
   // A brand-new thread is auto-named during its first turn; this drives a "working"
   // throbber on the title from that turn's start until the name lands
   // (`conversation.titled`, which the reveal then animates) or the turn ends without
@@ -867,10 +944,16 @@ export function createChatStream(
     driveGen++; // supersede any in-flight drive so its finally skips teardown
     setSending(false);
     setReattaching(false);
+    setDetached(false);
     // A new thread starts a fresh event sequence; drop the prior run's fold/resume
     // bookkeeping so its seqs don't suppress the next run's events.
     maxFoldedSeq = 0;
     activeRunId = null;
+    // Forget which run we've already reattached-to: leaving this thread (still
+    // detached/mid-stream) and returning later must let the cold-reattach effect
+    // fire again for the same run id, rather than permanently ignoring a run it
+    // saw once, in some earlier visit, before this stream instance existed.
+    reattachedRunId = null;
     activeConversationId = k;
     // A null key is a new, unsaved conversation: it has no persisted history, so
     // the only `source` here is the seam resource's *retained* value from the
@@ -1170,17 +1253,23 @@ export function createChatStream(
       case "document.committed": {
         // Promote the pending entry to a real committed version. If none exists (e.g.
         // a reattach replayed past the deltas), append one from the last known body.
+        // Captured (not just derived from `prev`) so the chip folded below carries
+        // the same title, whichever branch actually ran.
+        let title: string | undefined;
         setDocuments((prev) => {
           const pending = prev.find(
             (d) => d.documentId === ev.document_id && d.version === 0,
           );
-          if (pending)
+          if (pending) {
+            title = pending.title;
             return prev.map((d) =>
               d === pending ? { ...d, version: ev.version } : d,
             );
+          }
           const last = [...prev]
             .reverse()
             .find((d) => d.documentId === ev.document_id);
+          title = last?.title;
           return [
             ...prev,
             {
@@ -1192,6 +1281,18 @@ export function createChatStream(
               createdAt: new Date().toISOString(),
             },
           ];
+        });
+        // Fold an inline transcript chip, mirroring `view.snapshot` — otherwise a
+        // document create/edit leaves zero in-conversation signal once the viewport
+        // is closed (only the header's item-count badge).
+        const chip = toDocumentChipBlock(assistantId, {
+          documentId: ev.document_id,
+          version: ev.version,
+          title,
+        });
+        patchById(assistantId, (m) => {
+          const blocks = m.blocks ?? (m.blocks = []);
+          if (!blocks.some((b) => b.id === chip.id)) blocks.push(chip);
         });
         break;
       }
@@ -1259,6 +1360,7 @@ export function createChatStream(
     cancelled = false; // a fresh run clears any prior cancel signal
     activeRunId = runId;
     setErrored(false); // a fresh run supersedes any prior failure
+    setDetached(false); // a fresh run/reattach supersedes any prior detach
     // Re-anchor the fold high-water mark to this run's sequence. Each run owns a
     // fresh event stream whose seq restarts at 1, so a new turn (fromSeq omitted →
     // 0) must drop the *previous* run's mark — otherwise its early events (seq ≤
@@ -1266,8 +1368,12 @@ export function createChatStream(
     // blank until the counter catches up (or never, if this turn is shorter). A
     // reattach passes `fromSeq` = the last seq it folded, replaying only the gap.
     maxFoldedSeq = fromSeq ?? 0;
-    patchById(assistantId, (m) => (m.runId = runId));
+    patchById(assistantId, (m) => {
+      m.runId = runId;
+      m.detached = false; // a fresh drive/reattach supersedes any prior detach
+    });
     let connected = false;
+    let detachedNow = false;
     try {
       controller = new AbortController();
       await streamRun(runId, {
@@ -1276,25 +1382,56 @@ export function createChatStream(
         onEvent: (ev) => {
           // First event = the transport is live again; let a reattach drop its
           // "RESYNCING…" badge here, so it shows only across the reconnect latency.
+          // It's also the queued→streaming transition: the backend only starts
+          // emitting once the run actually clears the concurrency semaphore, so
+          // the first frame (of any kind) is what tells us it's no longer queued.
           if (!connected) {
             connected = true;
+            patchById(assistantId, (m) => (m.queued = false));
             onConnected?.();
           }
           foldEvent(assistantId, ev);
         },
       });
     } catch (err) {
-      if (myGen === driveGen)
+      if (myGen !== driveGen) {
+        // superseded — nothing to surface
+      } else if (err instanceof StreamDetachedError) {
+        // The transport gave up reconnecting, but the run may still be alive
+        // server-side: don't treat the turn as ended. Leave it in a distinct
+        // "detached" state (not streaming, not settled) with a re-attach
+        // affordance, and keep `activeRunId`/`sending` as-is so the composer
+        // stays guarded and the visibility/online resume listeners still see
+        // an in-flight run to reattach to.
+        detachedNow = true;
+        setDetached(true);
+        patchById(assistantId, (m) => {
+          m.streaming = false;
+          m.queued = false;
+          m.detached = true;
+        });
+        toast.error(
+          "Connection lost. The response may still be running — reconnect to continue.",
+        );
+      } else {
         toast.error(
           (err as { detail?: string })?.detail ??
             "Unable to reach the assistant.",
         );
+      }
     } finally {
-      // Skip teardown when superseded by a reattach/thread-switch — that drive
-      // owns the state now, and clearing it here would race it.
-      if (myGen === driveGen) {
+      // Skip teardown when superseded by a reattach/thread-switch (that drive
+      // owns the state now, and clearing it here would race it) or when this
+      // drive ended detached — the run isn't actually over, so `activeRunId`/
+      // `sending` must keep reporting it as in-flight until it's re-attached,
+      // cancelled, or superseded.
+      if (myGen === driveGen && !detachedNow) {
         activeRunId = null;
-        patchById(assistantId, (m) => (m.streaming = false));
+        patchById(assistantId, (m) => {
+          m.streaming = false;
+          m.detached = false; // the turn is genuinely over — clear any stale banner
+          m.queued = false; // defensive: covers a resolve with no frames ever folded
+        });
         setSending(false);
         setTitlePending(false); // turn ended — clear even if no title landed
         if (wasNew && activeConversationId) {
@@ -1344,7 +1481,10 @@ export function createChatStream(
       };
       setMessages(produce((m) => m.push(assistantMsg)));
     } else {
-      patchById(assistantId, (m) => (m.streaming = true));
+      patchById(assistantId, (m) => {
+        m.streaming = true;
+        m.detached = false; // re-attaching supersedes the "connection lost" banner
+      });
     }
     // `driveRun` re-anchors `maxFoldedSeq` to the `fromSeq` passed below, so the
     // resume replays only the gap after the last folded event.
@@ -1361,8 +1501,13 @@ export function createChatStream(
     }
     // A freshly-seeded turn that folded nothing means the run was gone (evicted, or
     // lost to a server restart): fall back to the persisted thread so a finished
-    // answer still shows rather than a blank assistant turn.
+    // answer still shows rather than a blank assistant turn. Skip this when the
+    // attempt itself ended detached (reconnect budget exhausted, not a 404/empty
+    // buffer) — the run may still be alive, so reseating from the (possibly
+    // reply-less) persisted detail here would discard the re-attach affordance
+    // for no reason; leave the seed detached and let the operator/resume retry.
     if (
+      !detached() &&
       seeded &&
       maxFoldedSeq === opts.fromSeq &&
       activeConversationId !== null
@@ -1426,6 +1571,45 @@ export function createChatStream(
     );
   }
 
+  /** After a 409 (the backend already has a run active on this conversation —
+   *  a parallel submit, a stale UI, or a second tab/device) look up the
+   *  conversation's current active run and reattach to it, so the turn that's
+   *  actually in flight becomes visible instead of silently going nowhere.
+   *  Best-effort: a failed lookup just leaves the composer free to retry. */
+  async function reattachToLiveRun(conversationId: string): Promise<void> {
+    try {
+      const detail = await api.get<ConversationDetailDTO>(
+        `/conversations/${conversationId}`,
+      );
+      const ar = toActiveRun(detail.active_run);
+      if (ar) await reattachRun(ar.id, { fromSeq: 0 });
+    } catch {
+      // Best effort — the operator can retry manually.
+    }
+  }
+
+  /** After a submitted approval/host-command decision 409s (the run had already
+   *  resumed elsewhere — a second tab, a retried request — by the time this one
+   *  landed), the pending card's decision is moot. Refetch so the transcript
+   *  reconciles with whatever the winning decision actually did, re-attaching to
+   *  the run if it's still in flight. Unlike `reattachToLiveRun`, this always
+   *  reseats — the winning decision may have already finished the run entirely,
+   *  not just still be running. Best-effort: a failed refetch leaves the caller's
+   *  stale marker as the only signal, but never re-throws into an unhandled turn. */
+  async function reconcileStaleDecision(): Promise<void> {
+    if (activeConversationId === null) return;
+    try {
+      const detail = await api.get<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}`,
+      );
+      reseatFromDetail(detail);
+      const ar = toActiveRun(detail.active_run);
+      if (ar) await reattachRun(ar.id, { fromSeq: 0 });
+    } catch {
+      // Best effort — the stale marker set by the caller still holds.
+    }
+  }
+
   async function send(
     text: string,
     attachmentIds: string[] = [],
@@ -1454,6 +1638,7 @@ export function createChatStream(
       content: "",
       blocks: [],
       streaming: true,
+      queued: true,
       createdAt: new Date().toISOString(),
     };
     setMessages(produce((m) => m.push(userMsg, assistantMsg)));
@@ -1471,6 +1656,21 @@ export function createChatStream(
         ephemeral: wasNew && options.ephemeral ? true : undefined,
       });
     } catch (err) {
+      if (isApiError(err) && err.status === 409) {
+        // A run is already active on this conversation — drop the optimistic
+        // turn we just queued (it was never accepted) and surface the one
+        // that's actually in flight instead of silently discarding this send.
+        setMessages(
+          reconcile(
+            messages.filter((m) => m.id !== userMsg.id && m.id !== assistantId),
+          ),
+        );
+        toast.error("A response is still in progress in this conversation.");
+        setSending(false);
+        setTitlePending(false);
+        if (activeConversationId) void reattachToLiveRun(activeConversationId);
+        return;
+      }
       toast.error(
         (err as { detail?: string })?.detail ??
           "Unable to reach the assistant.",
@@ -1507,11 +1707,19 @@ export function createChatStream(
     controller = null;
     setMessages(
       produce((m) => {
-        const streaming = m.find((x) => x.streaming);
-        if (streaming) streaming.streaming = false;
+        // A cancelled turn may currently be `streaming` (normal in-flight) or
+        // `detached` (transport gave up, but we still guarded it as in-flight)
+        // — either is the one this cancel is aimed at.
+        const target = m.find((x) => x.streaming || x.detached);
+        if (target) {
+          target.streaming = false;
+          target.queued = false;
+          target.detached = false;
+        }
       }),
     );
     setSending(false);
+    setDetached(false);
   }
 
   /** POST a batch of approval decisions for a message's run, then apply an
@@ -1534,6 +1742,25 @@ export function createChatStream(
         setGrantsRevision((n) => n + 1);
       }
     } catch (err) {
+      if (isApiError(err) && err.status === 409) {
+        // The decision was already made elsewhere (a second tab, a retried
+        // request that landed after the run resumed) — resubmitting would just
+        // 409 forever. Mark the pending cards stale (non-interactive, with a
+        // note) instead of leaving them re-clickable, then refetch so the
+        // transcript catches up to whatever actually happened.
+        patchById(messageId, (m) => {
+          for (const b of m.blocks ?? []) {
+            if (b.kind === "approval") b.approval.stale = true;
+            else if (b.kind === "host_command" && b.command.phase === "pending")
+              b.command.phase = "stale";
+          }
+        });
+        toast.error("This decision was already made elsewhere.");
+        void reconcileStaleDecision();
+        return;
+      }
+      // A transient failure (network blip, 5xx): the decision may not have
+      // landed at all, so keep the card interactive and let the operator retry.
       toast.error(
         (err as { detail?: string })?.detail ??
           "Unable to submit the decision.",
@@ -1571,14 +1798,15 @@ export function createChatStream(
      All guard on a persisted conversation and surface failures via toast. */
 
   function reseatFromDetail(detail: ConversationDetailDTO): void {
-    setMessages(reconcile(detail.messages.map(toMessage)));
+    const documents = toViewDocumentRefList(detail);
+    setMessages(reconcile(detail.messages.map((m) => toMessage(m, documents))));
     // The active path moved (version switch / rewind / delete), so the window
     // state moves with it.
     setUsage(detail.context);
     // Re-seed the conversation-level snapshot history from the same detail.
     setSnapshots((detail.snapshots ?? []).map(toViewSnapshotRef));
     // Same for the document history.
-    setDocuments(toViewDocumentRefList(detail));
+    setDocuments(documents);
   }
 
   function toastError(err: unknown, fallback: string): void {
@@ -1610,11 +1838,18 @@ export function createChatStream(
         content: "",
         blocks: [],
         streaming: true,
+        queued: true,
         createdAt: new Date().toISOString(),
       };
       setMessages(reconcile([...messages.slice(0, i), reset]));
       await driveRun(created.run_id, messageId);
     } catch (err) {
+      if (isApiError(err) && err.status === 409) {
+        toast.error("A response is still in progress in this conversation.");
+        setSending(false);
+        if (activeConversationId) void reattachToLiveRun(activeConversationId);
+        return;
+      }
       toastError(err, "Unable to regenerate the answer.");
       setSending(false);
     }
@@ -1660,6 +1895,7 @@ export function createChatStream(
         content: "",
         blocks: [],
         streaming: true,
+        queued: true,
         createdAt: new Date().toISOString(),
       };
       setMessages(
@@ -1667,6 +1903,12 @@ export function createChatStream(
       );
       await driveRun(created.run_id, assistantId);
     } catch (err) {
+      if (isApiError(err) && err.status === 409) {
+        toast.error("A response is still in progress in this conversation.");
+        setSending(false);
+        if (activeConversationId) void reattachToLiveRun(activeConversationId);
+        return;
+      }
       toastError(err, "Unable to submit the edit.");
       setSending(false);
     }
@@ -1812,6 +2054,10 @@ export function createChatStream(
     saveDocumentEdit,
     sending,
     errored,
+    /** True while the live run's transport is detached (reconnect budget
+     *  exhausted) — the run may still be alive server-side, awaiting a
+     *  manual/automatic re-attach rather than being over. */
+    detached,
     titlePending,
     reattaching,
     usage,

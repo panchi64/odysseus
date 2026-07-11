@@ -34,6 +34,9 @@ export interface MessageItemProps {
   onTogglePin?: () => void;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
+  /** Re-attach to this turn's run after its transport detached (reconnect
+   *  budget exhausted) — the run may still be alive server-side. */
+  onReattach?: () => void;
 }
 
 /** A single chat turn. User turns fill the row with a distinct `surface`
@@ -55,6 +58,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           onSwitchVersion={props.onSwitchVersion}
           onTogglePin={props.onTogglePin}
           onOpenInView={props.onOpenInView}
+          onReattach={props.onReattach}
         />
       }
     >
@@ -252,6 +256,7 @@ function AssistantTurn(props: {
   onSwitchVersion?: MessageItemProps["onSwitchVersion"];
   onTogglePin?: MessageItemProps["onTogglePin"];
   onOpenInView?: MessageItemProps["onOpenInView"];
+  onReattach?: MessageItemProps["onReattach"];
 }): JSX.Element {
   const m = () => props.message;
   // Tri-state: undefined = each layer keeps its own default; true/false = force
@@ -301,7 +306,11 @@ function AssistantTurn(props: {
 
       <Stack gap={3}>
         {/* What's happening now (streaming) / what it took (settled). */}
-        <TurnProgressRail blocks={m().blocks} streaming={m().streaming} />
+        <TurnProgressRail
+          blocks={m().blocks}
+          streaming={m().streaming}
+          queued={m().queued}
+        />
         {/* The turn's ordered, interleaved blocks — the source of truth. */}
         <TurnBlocks
           blocks={m().blocks}
@@ -324,6 +333,21 @@ function AssistantTurn(props: {
             <Text variant="micro" tone="warn">
               Stopped: {m().blockedDetail ?? "a run limit was reached"}
             </Text>
+          </div>
+        </Show>
+        <Show when={m().detached}>
+          <div class="flex items-center gap-2 text-alert">
+            <Icon name="warning" size={12} />
+            <Text variant="micro" tone="alert">
+              Connection lost — the response may still be running.
+            </Text>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => props.onReattach?.()}
+            >
+              RECONNECT
+            </Button>
           </div>
         </Show>
       </Stack>

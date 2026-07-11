@@ -10,6 +10,7 @@
  */
 import { API_BASE } from "~/lib/config";
 import { getToken } from "~/lib/api/token";
+import { handleAuthFailure } from "~/lib/api/client";
 import { setBackendReachable } from "~/lib/stores/connectivity";
 import { isTerminal, type RunEvent } from "./events";
 
@@ -18,6 +19,17 @@ export interface RunStreamOptions {
   signal?: AbortSignal;
   /** Resume from after this seq (e.g. when re-opening a known run). */
   fromSeq?: number;
+}
+
+/** Thrown when the reconnect budget is exhausted without a terminal event — the
+ *  transport gave up, but the backend run may still be alive. Distinct from a
+ *  generic transport error so the caller can offer a re-attach affordance instead
+ *  of silently treating the turn as ended. */
+export class StreamDetachedError extends Error {
+  constructor() {
+    super("stream reconnect budget exhausted");
+    this.name = "StreamDetachedError";
+  }
 }
 
 // Exponential backoff: 500ms doubling to a 10s cap, giving up once the
@@ -78,6 +90,14 @@ export async function streamRun(
         credentials: "omit",
         signal,
       });
+      if (res.status === 401 || res.status === 423) {
+        // Session expiry / vault re-lock, not a transport hiccup — retrying
+        // would just burn the reconnect budget on a request that can never
+        // succeed. Route through the same expiry path the REST client uses
+        // (clears the token, flips the session store to locked) and stop.
+        handleAuthFailure();
+        return;
+      }
       if (res.status === 404) return; // run is gone — nothing to stream
       if (!res.ok || !res.body) throw new Error(`stream HTTP ${res.status}`);
       setBackendReachable(true); // a live connection — the backend is reachable
@@ -115,7 +135,7 @@ export async function streamRun(
       }
       // Body ended without a terminal event → the connection dropped; reconnect
       // from lastSeq to replay anything missed.
-    } catch (err) {
+    } catch {
       if (signal?.aborted) return;
       const backoff = Math.min(
         RECONNECT_BASE_DELAY_MS * 2 ** failures,
@@ -125,7 +145,7 @@ export async function streamRun(
       totalDelayMs += backoff;
       if (totalDelayMs > RECONNECT_MAX_TOTAL_DELAY_MS) {
         setBackendReachable(false); // reconnects exhausted — treat the backend as down
-        throw err;
+        throw new StreamDetachedError();
       }
       await delay(backoff, signal);
     }

@@ -38,6 +38,12 @@ export interface ViewItem {
    *  (plus a compare-vs-prior diff). An in-progress (version 0) ref carried here is
    *  the live-updating body streamed before its commit. */
   document?: ViewDocumentRef;
+  /** True only when `document` is set AND no newer *committed* version of that same
+   *  document exists elsewhere in the list — independent of `isLatest` (the single
+   *  overall-newest entry across every document + snapshot). Gates the inline EDIT
+   *  affordance: a document that isn't the conversation's single newest View item is
+   *  still editable as long as it's the newest version of *itself*. */
+  documentIsLatest?: boolean;
 }
 
 /** The selection key for the (single) live head — used when it stands alone. */
@@ -160,6 +166,22 @@ export function collectViewItems(
 
   if (items.length === 0) return items;
   items[items.length - 1].isLatest = true;
+
+  // Per-document latest: the last item (by position — the merge above already
+  // sorted everything chronologically) carrying a given documentId is that
+  // document's own newest version, regardless of whether other documents or
+  // snapshots were minted after it. Computed independently of the single global
+  // `isLatest`, which only ever marks the one overall-newest entry.
+  const lastIndexForDocument = new Map<string, number>();
+  items.forEach((item, i) => {
+    if (item.document) lastIndexForDocument.set(item.document.documentId, i);
+  });
+  items.forEach((item, i) => {
+    if (item.document)
+      item.documentIsLatest =
+        lastIndexForDocument.get(item.document.documentId) === i;
+  });
+
   items.forEach((item, i) => {
     item.label = entryLabel(item, i + 1, item.isLatest);
   });

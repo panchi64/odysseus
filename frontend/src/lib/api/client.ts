@@ -52,6 +52,16 @@ export function setExpireHandler(fn: () => void): void {
   onExpire = fn;
 }
 
+/** A `401`/`423` from anywhere — a REST call here, or the run SSE stream in
+ *  `~/lib/stream/runStream` (which can't go through `request()`) — clears the
+ *  stale token and fires the registered expiry handler so the session store
+ *  routes back to login. The one place that reacts to a rejected token; reuse
+ *  this rather than re-clearing the token and invoking the handler inline. */
+export function handleAuthFailure(): void {
+  clearToken();
+  onExpire?.();
+}
+
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
   const token = getToken();
@@ -59,11 +69,34 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
+/** FastAPI's own `RequestValidationError` handler (triggered by any request a
+ *  Pydantic model rejects before the route body runs) sends `detail` as an array
+ *  of `{loc, msg, type}` objects rather than the string our hand-raised
+ *  `HTTPException`s use. Normalize both shapes to a single readable string so no
+ *  consumer has to special-case the array form. */
+function normalizeDetail(body: unknown, fallback: string): string {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const messages = detail
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const { loc, msg } = entry as { loc?: unknown; msg?: unknown };
+        if (typeof msg !== "string") return null;
+        const field = Array.isArray(loc) ? loc[loc.length - 1] : undefined;
+        return field !== undefined && field !== null ? `${field}: ${msg}` : msg;
+      })
+      .filter((m): m is string => m !== null);
+    if (messages.length > 0) return messages.join("; ");
+  }
+  return fallback;
+}
+
 async function toApiError(res: Response): Promise<ApiError> {
   let detail = res.statusText;
   try {
     const body = await res.json();
-    if (body && typeof body.detail === "string") detail = body.detail;
+    detail = normalizeDetail(body, detail);
   } catch {
     /* non-JSON error body — keep the status text */
   }
@@ -93,10 +126,7 @@ async function request<T>(
     init.body = JSON.stringify(body);
   }
   const res = await trackedFetch(`${API_BASE}${path}`, init);
-  if (res.status === 401 || res.status === 423) {
-    clearToken();
-    onExpire?.();
-  }
+  if (res.status === 401 || res.status === 423) handleAuthFailure();
   if (!res.ok) throw await toApiError(res);
   // Empty-body successes (204 No Content, 202 Accepted for async work) carry no JSON;
   // read text first and parse only when there's something to parse.
@@ -121,10 +151,7 @@ export const api = {
       credentials: "omit",
       body: form,
     });
-    if (res.status === 401 || res.status === 423) {
-      clearToken();
-      onExpire?.();
-    }
+    if (res.status === 401 || res.status === 423) handleAuthFailure();
     if (!res.ok) throw await toApiError(res);
     const text = await res.text();
     return (text ? JSON.parse(text) : undefined) as T;
@@ -135,10 +162,7 @@ export const api = {
       headers: authHeaders(),
       credentials: "omit",
     });
-    if (res.status === 401 || res.status === 423) {
-      clearToken();
-      onExpire?.();
-    }
+    if (res.status === 401 || res.status === 423) handleAuthFailure();
     if (!res.ok) throw await toApiError(res);
     return res.blob();
   },

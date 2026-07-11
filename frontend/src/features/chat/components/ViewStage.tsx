@@ -45,10 +45,13 @@ export function ViewStage(props: {
   return (
     <Switch>
       {/* A document version — its markdown body as PREVIEW, raw source + diff as CODE.
-          Only the latest committed version is editable inline. The narrowed accessor
-          (`doc()`) is only alive while this branch is selected, so a version switch
-          that swaps `entry` to a non-document can't leave a stale deref of an
-          `undefined` field behind (which would throw and blank the whole app). */}
+          Only the latest *committed version of this document* is editable inline —
+          gated on `documentIsLatest` (per-document), not the View's single global
+          `isLatest` (which a document loses the moment any other document/snapshot
+          mints a newer entry). The narrowed accessor (`doc()`) is only alive while
+          this branch is selected, so a version switch that swaps `entry` to a
+          non-document can't leave a stale deref of an `undefined` field behind
+          (which would throw and blank the whole app). */}
       <Match when={props.entry.document}>
         {(doc) => (
           <Switch>
@@ -60,7 +63,9 @@ export function ViewStage(props: {
               <Show keyed when={`${doc().documentId}-${doc().version}`}>
                 <ViewDocumentContent
                   document={doc()}
-                  editable={props.entry.isLatest && doc().version >= 1}
+                  editable={
+                    Boolean(props.entry.documentIsLatest) && doc().version >= 1
+                  }
                   onSave={props.onSaveDocument}
                 />
               </Show>

@@ -24,6 +24,11 @@ export function ApprovalCard(props: {
   const [decisions, setDecisions] = createSignal<Record<string, boolean>>({});
   const grant = createGrantToggle();
   const [submitting, setSubmitting] = createSignal(false);
+  // Set together (the whole batch resumes on one decision, so a 409 stales all of
+  // them at once) once a submitted decision for this card 409'd — the run already
+  // resumed elsewhere. Non-interactive from then on; a refetch reconciles the
+  // transcript with whatever actually happened.
+  const stale = () => props.approvals.some((a) => a.stale);
 
   const decide = (toolCallId: string, approved: boolean) =>
     setDecisions((d) => ({ ...d, [toolCallId]: approved }));
@@ -77,41 +82,53 @@ export function ApprovalCard(props: {
                     {formatArgs(approval.args)}
                   </Text>
                 </Show>
-                <Row gap={2}>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    leading="check"
-                    onClick={() => decide(approval.toolCallId, true)}
-                  >
-                    APPROVE
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    leading="close"
-                    onClick={() => decide(approval.toolCallId, false)}
-                  >
-                    DENY
-                  </Button>
-                </Row>
-                <ConversationGrantToggle
-                  checked={grant.isAllowed(approval.name)}
-                  onChange={(v) => grant.set(approval.name, v)}
-                />
+                <Show
+                  when={!approval.stale}
+                  fallback={
+                    <Text variant="micro" tone="dim">
+                      DECIDED ELSEWHERE — this was resolved from another
+                      session; the transcript will catch up shortly.
+                    </Text>
+                  }
+                >
+                  <Row gap={2}>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      leading="check"
+                      onClick={() => decide(approval.toolCallId, true)}
+                    >
+                      APPROVE
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      leading="close"
+                      onClick={() => decide(approval.toolCallId, false)}
+                    >
+                      DENY
+                    </Button>
+                  </Row>
+                  <ConversationGrantToggle
+                    checked={grant.isAllowed(approval.name)}
+                    onChange={(v) => grant.set(approval.name, v)}
+                  />
+                </Show>
               </Stack>
             );
           }}
         </For>
-        <Row justify="end">
-          <Button
-            variant="primary"
-            disabled={!allDecided() || submitting()}
-            onClick={submit}
-          >
-            {submitting() ? "SUBMITTING…" : "SUBMIT DECISION"}
-          </Button>
-        </Row>
+        <Show when={!stale()}>
+          <Row justify="end">
+            <Button
+              variant="primary"
+              disabled={!allDecided() || submitting()}
+              onClick={submit}
+            >
+              {submitting() ? "SUBMITTING…" : "SUBMIT DECISION"}
+            </Button>
+          </Row>
+        </Show>
       </Stack>
     </Panel>
   );
