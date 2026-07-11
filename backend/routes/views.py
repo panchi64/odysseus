@@ -111,6 +111,25 @@ async def get_snapshot_diff(
     return [SnapshotDiffOut.model_validate(d) for d in diffs]
 
 
+class LiveStatusOut(BaseModel):
+    """Whether a `view.live` head is still reachable. `token` is the one embedded in
+    the head's proxied URL (`/previews/{token}/…`) — the frontend already has it, so
+    no conversation id is needed to ask. ``"running"`` = still up; ``"stopped"`` = torn
+    down without an explicit `view_close` (the sandbox idle-reaped it, or the
+    conversation was purged) — the operator gets a legible reason instead of a bare
+    404; ``"unknown"`` = neither (an explicit close, or the process restarted)."""
+
+    status: str  # "running" | "stopped" | "unknown"
+
+
+@router.get("/live/status", response_model=LiveStatusOut)
+async def get_live_status(token: str, request: Request) -> LiveStatusOut:
+    sessions = deps.sandbox_sessions(request)
+    if sessions is None:
+        return LiveStatusOut(status="unknown")
+    return LiveStatusOut(status=sessions.preview_status(token))
+
+
 @router.get("/{artifact_id}/content")
 async def get_preview_content(artifact_id: str, request: Request) -> Response:
     """Serve a version's static preview bytes — the captured file a ``show(file=…)``

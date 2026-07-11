@@ -3,12 +3,15 @@ reaper, and (with a runtime) file continuity across calls and across a reap."""
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from core.config import Settings
 from core.vault import Vault
 from services.sandbox import (
     ContainerSandbox,
+    PreviewHandle,
     SandboxError,
     SandboxSessionManager,
     SandboxSpec,
@@ -257,6 +260,85 @@ async def test_purge_is_safe_when_there_is_nothing_to_remove(tmp_path):
     manager = _manager(tmp_path, vault)
     await manager.purge("never-existed")  # must not raise
     assert not manager._sessions
+
+
+# --- live-preview status: reap/purge leave a legible "stopped" signal --------
+def _fake_preview(token: str) -> PreviewHandle:
+    return PreviewHandle(
+        token=token, container="c", host_port=1, container_port=2, command=("srv",)
+    )
+
+
+async def test_preview_status_is_unknown_for_a_token_never_seen(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    assert manager.preview_status("no-such-token") == "unknown"
+
+
+async def test_preview_status_is_running_while_the_preview_is_live(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-a")
+    session._preview = _fake_preview("tok-1")
+    manager._previews["tok-1"] = session.key
+
+    assert manager.preview_status("tok-1") == "running"
+
+
+async def test_idle_reap_marks_the_running_previews_token_stopped(tmp_path):
+    # The failure this guards: an idle-reaped preview used to vanish with no signal
+    # at all — `preview_status` now lets a client learn the head died, not just that
+    # its URL 404s.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    session._preview = _fake_preview("tok-1")
+    manager._previews["tok-1"] = session.key
+    assert manager.preview_status("tok-1") == "running"
+
+    await manager._sweep()
+
+    assert not manager._sessions  # the session itself was reaped, as before
+    assert manager.preview_status("tok-1") == "stopped"  # but the token now says why
+
+
+async def test_purge_marks_the_running_previews_token_stopped(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    session._preview = _fake_preview("tok-1")
+    manager._previews["tok-1"] = session.key
+
+    await manager.purge("conv-a")
+
+    assert manager.preview_status("tok-1") == "stopped"
+
+
+async def test_stopped_tokens_are_pruned_after_their_ttl(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+    session._preview = _fake_preview("tok-1")
+    manager._previews["tok-1"] = session.key
+
+    await manager._sweep()
+    assert manager.preview_status("tok-1") == "stopped"
+
+    # Fast-forward past the tombstone's TTL, then force a prune via another mark
+    # (mirrors real usage — the map is pruned lazily on the next stop/reap/purge).
+    frozen_future = time.monotonic() + manager._STOPPED_TOKEN_TTL_S + 1
+    monkeypatch.setattr("time.monotonic", lambda: frozen_future)
+    other = await manager.acquire("conv-b")
+    other.workspace.mkdir(parents=True, exist_ok=True)
+    other._preview = _fake_preview("tok-2")
+    manager._previews["tok-2"] = other.key
+    await manager.purge("conv-b")
+
+    assert manager.preview_status("tok-1") == "unknown"  # aged out
+    assert manager.preview_status("tok-2") == "stopped"  # freshly tombstoned
 
 
 # --- live container (only when a real runtime is present) --------------------

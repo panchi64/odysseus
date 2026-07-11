@@ -374,6 +374,13 @@ class SandboxSessionManager:
     Built only when a container runtime is present (fail-closed detection lives in
     ``detect``), so its existence means code execution is available."""
 
+    # How long a reaped/purged preview's token stays a recognized "stopped" tombstone
+    # (`preview_status`) before it's pruned as stale — long enough for an operator who
+    # left the tab open across the idle window to still get a legible answer when they
+    # come back to it, short enough that an abandoned conversation's tokens don't
+    # accumulate forever in memory.
+    _STOPPED_TOKEN_TTL_S = 3600.0
+
     def __init__(
         self,
         backend: ContainerSandbox,
@@ -396,6 +403,12 @@ class SandboxSessionManager:
         self._sessions: dict[str, SandboxSession] = {}
         # token → safe session key, so the proxy route resolves a preview in O(1).
         self._previews: dict[str, str] = {}
+        # token → monotonic time it was torn down *without* an explicit `view_close`
+        # (idle-reaped or purged) — lets `preview_status` tell the frontend "this
+        # server was killed out from under you" instead of a bare, indistinguishable
+        # 404. Explicit closes don't need a tombstone: the model's `view_close` already
+        # emits `view.live.stopped` on the live run stream.
+        self._stopped_tokens: dict[str, float] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
         self._warm: asyncio.Task | None = None
@@ -455,6 +468,30 @@ class SandboxSessionManager:
         session.touch()
         return session.preview
 
+    def preview_status(self, token: str) -> str:
+        """Whether a `view.live` token still names a running preview, was torn down
+        without an explicit stop (idle-reaped or the conversation was purged), or is
+        unrecognized. Read-only — unlike `resolve_preview`, a status check must not
+        itself keep an otherwise-idle preview warm. Lets the frontend tell "the
+        sandbox went idle and killed it" apart from a merely-still-loading iframe."""
+        safe = self._previews.get(token)
+        if safe is not None:
+            session = self._sessions.get(safe)
+            if session is not None and session.preview is not None:
+                if session.preview.token == token:
+                    return "running"
+        return "stopped" if token in self._stopped_tokens else "unknown"
+
+    def _mark_preview_stopped(self, session: SandboxSession) -> None:
+        """Tombstone a session's preview token as stopped-without-a-signal (idle
+        reap or purge) and prune stale tombstones. Call *before* the session's
+        preview is torn down."""
+        now = time.monotonic()
+        cutoff = now - self._STOPPED_TOKEN_TTL_S
+        self._stopped_tokens = {t: ts for t, ts in self._stopped_tokens.items() if ts > cutoff}
+        if session.preview is not None:
+            self._stopped_tokens[session.preview.token] = now
+
     async def stop_preview(self, key: str) -> None:
         """Tear down the conversation's preview, leaving the exec session intact."""
         safe = _safe_key(key)
@@ -482,6 +519,7 @@ class SandboxSessionManager:
             # about to remove. Kill the containers first to free the workspace mount,
             # then delete in one place.
             if session is not None:
+                self._mark_preview_stopped(session)
                 await session.discard()
             await asyncio.to_thread(self._purge_disk, safe)
 
@@ -568,6 +606,7 @@ class SandboxSessionManager:
             # the seal is off-thread, so the loop itself is not blocked.
             for key in stale:
                 session = self._sessions.pop(key)
+                self._mark_preview_stopped(session)
                 self._drop_preview_tokens(key)
                 try:
                     await session.shutdown()
