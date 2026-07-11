@@ -1,8 +1,10 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import {
   Combobox,
   Composer,
+  cx,
   EmptyState,
   PageHeader,
   Panel,
@@ -13,7 +15,7 @@ import {
   type Status,
 } from "~/ui";
 import { overviewBand, useActiveRuns, useOverview } from "../data";
-import type { CapabilityHealth } from "../model";
+import type { ActiveRun, CapabilityHealth } from "../model";
 import { RecentThreadCard } from "../components/RecentThreadCard";
 import { SystemStrip } from "../components/SystemStrip";
 // The overview is a launchpad INTO chat, so it reads the chat feature's data
@@ -46,6 +48,14 @@ function computeOverallStatus(caps: CapabilityHealth[]): Status {
 }
 
 const RECENT_LIMIT = 6;
+
+/** Status → chip tone for an in-flight run. A parked run awaiting the operator's
+ *  decision gets the warn accent — the others read as plain ambient activity. */
+const RUN_STATUS_TONE: Record<ActiveRun["status"], Status> = {
+  running: "info",
+  queued: "idle",
+  awaiting_input: "warn",
+};
 
 /** Home overview as a launchpad: a centered composer to start work, recent
  *  threads to resume it, in-flight runs, and a subtle system strip. Every panel
@@ -198,25 +208,41 @@ export function DashboardScreen(): JSX.Element {
             >
               {(list) => (
                 <For each={list()}>
-                  {(run) => (
-                    <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2 last:border-0">
-                      <span class="flex min-w-0 items-center gap-2">
-                        <Text variant="label" tone="dim">
-                          {run.kind}
-                        </Text>
-                        <Text variant="micro" tone="dim" class="truncate">
-                          {run.label}
-                        </Text>
-                      </span>
-                      <Text
-                        variant="micro"
-                        tone={run.status === "awaiting_input" ? "warn" : "dim"}
-                        class="shrink-0"
+                  {(run) => {
+                    // A run with no linked conversation (e.g. a bare research run)
+                    // renders as a plain row — nothing to navigate to.
+                    const clickable = () => !!run.conversationId;
+                    return (
+                      <Dynamic
+                        component={clickable() ? "button" : "div"}
+                        type={clickable() ? "button" : undefined}
+                        onClick={
+                          clickable()
+                            ? () => openThread(run.conversationId!)
+                            : undefined
+                        }
+                        class={cx(
+                          "flex w-full items-center justify-between gap-2 border-b border-line px-3 py-2 text-left last:border-0",
+                          clickable() && "transition-colors hover:bg-raised",
+                        )}
                       >
-                        {run.detail}
-                      </Text>
-                    </div>
-                  )}
+                        <span class="flex min-w-0 items-center gap-2">
+                          <Text variant="label" tone="dim">
+                            {run.kind}
+                          </Text>
+                          <Text variant="micro" tone="dim" class="truncate">
+                            {run.label}
+                          </Text>
+                        </span>
+                        <StatusFlag
+                          status={RUN_STATUS_TONE[run.status]}
+                          class="shrink-0"
+                        >
+                          {run.detail}
+                        </StatusFlag>
+                      </Dynamic>
+                    );
+                  }}
                 </For>
               )}
             </Resource>

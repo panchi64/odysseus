@@ -45,4 +45,8 @@ export interface ActiveRun {
   status: "running" | "queued" | "awaiting_input";
   /** Compact status readout, e.g. RUNNING / QUEUED / NEEDS APPROVAL. */
   detail: string;
+  /** The conversation this run belongs to, when it's chat-linked — the row is
+   *  clickable straight through to it. Absent for a run with no conversation
+   *  (e.g. a research run not yet tied to a thread). */
+  conversationId?: string;
 }

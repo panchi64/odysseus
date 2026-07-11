@@ -1,5 +1,6 @@
 import {
   createEffect,
+  createMemo,
   createResource,
   createRoot,
   createSignal,
@@ -10,7 +11,12 @@ import {
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api, isApiError } from "~/lib/api";
 import { readLS, writeLS } from "~/lib/storage";
-import { setChatBusy, setRunErrored } from "~/lib/stores/chatActivity";
+import {
+  setAwaitingApproval,
+  setChatBusy,
+  setRunErrored,
+} from "~/lib/stores/chatActivity";
+import { markConversationRead } from "~/lib/stores/notifications";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
 import {
   StreamDetachedError,
@@ -874,6 +880,24 @@ export function createChatStream(
   // so the composer and the resume()/reattach paths must keep treating it as
   // in-flight rather than settled.
   const [detached, setDetached] = createSignal(false);
+  // True while the room has a live, undecided approval — folded by `approval.required`
+  // (both the generic approval card and the host-command terminal's pending phase) and
+  // gated on `sending()` so it clears the moment the run stops being in flight, whether
+  // by resolution (the approval/host-command block is filtered/re-phased out of
+  // `messages` on submit — see `resolveApproval`/`resolveHostCommands`), a cancel, or the
+  // run ending. A derived memo rather than its own set/clear pair: the blocks are already
+  // the single source of truth for "is something still pending", so this only reads them.
+  const awaitingApproval = createMemo(
+    () =>
+      sending() &&
+      messages.some((m) =>
+        m.blocks?.some(
+          (b) =>
+            (b.kind === "approval" && !b.approval.stale) ||
+            (b.kind === "host_command" && b.command.phase === "pending"),
+        ),
+      ),
+  );
   // A brand-new thread is auto-named during its first turn; this drives a "working"
   // throbber on the title from that turn's start until the name lands
   // (`conversation.titled`, which the reveal then animates) or the turn ends without
@@ -2058,6 +2082,10 @@ export function createChatStream(
      *  exhausted) — the run may still be alive server-side, awaiting a
      *  manual/automatic re-attach rather than being over. */
     detached,
+    /** True while a sensitive tool call has parked this run awaiting the
+     *  operator's decision — the main room mirrors it to the global
+     *  `awaitingApproval` echo (nav rail warn tone, favicon attention tint). */
+    awaitingApproval,
     titlePending,
     reattaching,
     usage,
@@ -2162,6 +2190,17 @@ export function mainChat(): MainChat {
     // Same main-room-only mirror for the last-run-error echo, so the favicon can flag a
     // failed run from any screen.
     createEffect(() => setRunErrored(stream.errored()));
+    // Same mirror for the awaiting-approval echo, so the nav rail and favicon can flag
+    // a parked run needing a decision from any screen, not just while on /chat.
+    createEffect(() => setAwaitingApproval(stream.awaitingApproval()));
+    // Read-on-view: the one place a thread selection lands, regardless of whether it
+    // came from the RECENTS rail, the chat screen's warm-resume, or a notification's
+    // deep-link — so opening a conversation always clears its unread notifications
+    // without every caller having to remember to do it.
+    createEffect(() => {
+      const id = currentId();
+      if (id) markConversationRead(id);
+    });
     const [warmResolved, setWarmResolved] = createSignal(false);
     return {
       currentId,

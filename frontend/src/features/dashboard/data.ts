@@ -1,6 +1,13 @@
-import { createResource, type Resource } from "solid-js";
+import {
+  createEffect,
+  createResource,
+  on,
+  onCleanup,
+  type Resource,
+} from "solid-js";
 import { api } from "~/lib/api";
 import { num } from "~/lib/format";
+import { useNotifications } from "~/lib/stores/notifications";
 import type {
   ActiveRun,
   CapabilityHealth,
@@ -32,6 +39,8 @@ interface RunDTO {
   id: string;
   kind: string;
   status: string;
+  conversationId?: string | null;
+  conversationTitle?: string | null;
 }
 
 /* ── Mappers (snake_case DTO → seam type) ──────────────────────────────────── */
@@ -70,10 +79,13 @@ function toActiveRun(dto: RunDTO): ActiveRun {
   return {
     id: dto.id,
     kind: dto.kind.toUpperCase(),
-    // A run carries no human title; its kind is the most meaningful label.
-    label: `${dto.kind} run`,
+    // A run carries no human title of its own; its linked conversation's title
+    // (when present) is far more useful than the bare kind, which is kept as the
+    // fallback for a run with no conversation (or one the backend hasn't titled yet).
+    label: dto.conversationTitle ?? `${dto.kind} run`,
     status,
     detail: RUN_STATUS_LABEL[dto.status] ?? dto.status.toUpperCase(),
+    conversationId: dto.conversationId ?? undefined,
   };
 }
 
@@ -128,7 +140,40 @@ export interface UseActiveRunsResult {
   refetch: () => void;
 }
 
+/** How often to re-poll the IN FLIGHT panel while it's mounted. Active runs are
+ *  short-lived by nature (queued → running → terminal, or parked awaiting a
+ *  decision), so a modest interval keeps the panel honest without a second SSE
+ *  subscription — the run substrate's own stream is per-run, not a list feed. */
+const POLL_INTERVAL_MS = 15_000;
+
+/** The dashboard's active-runs list, kept fresh three ways: a poll while mounted,
+ *  a refetch when the tab regains focus (a run may have started/finished/parked
+ *  while the operator was elsewhere), and a refetch nudged by the notification
+ *  store — an `approval_needed`/`run_completed`/`run_failed` notification is
+ *  exactly the signal that some active run just changed, so this subscribes to
+ *  that store rather than opening a second stream. */
 export function useActiveRuns(): UseActiveRunsResult {
   const [data, { refetch }] = createResource(fetchActiveRuns);
+
+  const onFocus = () => refetch();
+  window.addEventListener("focus", onFocus);
+  onCleanup(() => window.removeEventListener("focus", onFocus));
+
+  const interval = window.setInterval(() => refetch(), POLL_INTERVAL_MS);
+  onCleanup(() => window.clearInterval(interval));
+
+  // `items` is a fresh array on every created/updated notification (the store's
+  // upsert always replaces it — see `~/lib/stores/notifications`), so tracking its
+  // reference is enough to catch both kinds without inspecting event types.
+  // `defer: true` skips the run this effect's own subscription triggers on mount.
+  const notifications = useNotifications();
+  createEffect(
+    on(
+      () => notifications.items,
+      () => refetch(),
+      { defer: true },
+    ),
+  );
+
   return { data, refetch };
 }

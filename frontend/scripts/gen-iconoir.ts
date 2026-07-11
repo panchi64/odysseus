@@ -68,6 +68,7 @@ const MAP: Record<string, string> = {
   moon: "half-moon",
   system: "computer",
   library: "book",
+  bell: "bell",
 };
 
 const STRIP = /\s(?:fill|stroke|stroke-width|stroke-linecap|stroke-linejoin)="[^"]*"/g;

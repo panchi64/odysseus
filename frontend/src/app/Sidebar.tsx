@@ -10,7 +10,7 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { readLS, writeLS } from "~/lib/storage";
 import { Button, cx, Icon, Input, ListRow, Text, Tooltip } from "~/ui";
 import { useSession } from "~/lib/stores/session";
-import { chatBusy } from "~/lib/stores/chatActivity";
+import { awaitingApproval, chatBusy } from "~/lib/stores/chatActivity";
 import { RecentsRail } from "~/features/chat/components/RecentsRail";
 import {
   NAV,
@@ -42,9 +42,15 @@ function IndicatorSquare(props: { status: NavIndicator }): JSX.Element {
 
 /** The item's ambient indicator, with the live chat-streaming state overlaid on
  *  the Chat row — so a turn that's running while the operator is off in another
- *  section stays visible on the rail. Reactive: reads `chatBusy()`. */
+ *  section stays visible on the rail. A parked run awaiting the operator's approval
+ *  decision is a stronger, distinct signal than plain activity, so it wins with its
+ *  own warn tone rather than folding into the ambient "busy" info dot. Reactive:
+ *  reads `awaitingApproval()`/`chatBusy()`. */
 function itemIndicator(item: NavItem): NavIndicator | undefined {
-  if (item.href === "/chat" && chatBusy()) return "info";
+  if (item.href === "/chat") {
+    if (awaitingApproval()) return "warn";
+    if (chatBusy()) return "info";
+  }
   return item.indicator;
 }
 

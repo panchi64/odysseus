@@ -1,4 +1,4 @@
-import { Show, type JSX } from "solid-js";
+import { createEffect, onCleanup, Show, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
   Button,
@@ -17,6 +17,12 @@ import {
   refreshEndpoints,
   selectModelByValue,
 } from "~/lib/stores/models";
+import { useSession } from "~/lib/stores/session";
+import {
+  startNotifications,
+  stopNotifications,
+} from "~/lib/stores/notifications";
+import { NotificationBell } from "./NotificationBell";
 import { Sidebar } from "./Sidebar";
 import { isConnectedRoute } from "./nav";
 
@@ -25,6 +31,16 @@ import { isConnectedRoute } from "./nav";
 export function AppShell(props: { children: JSX.Element }): JSX.Element {
   const location = useLocation();
   const connected = () => isConnectedRoute(location.pathname);
+  const session = useSession();
+
+  // The notification feed is app-lifetime, not per-route: subscribe once the
+  // workspace is authenticated (the same signal the auth guard gates on) and
+  // tear down on logout/lock so no state survives to the next session.
+  createEffect(() => {
+    if (session.isAuthenticated) startNotifications();
+    else stopNotifications();
+  });
+  onCleanup(stopNotifications);
   return (
     <div class="flex h-screen overflow-hidden bg-bg text-text">
       <aside class="w-52 shrink-0 overflow-y-auto border-r border-line">
@@ -67,6 +83,7 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
                 />
               </Tooltip>
             </div>
+            <NotificationBell />
             <ThemeToggle />
           </div>
         </header>

@@ -1,5 +1,7 @@
 import { createEffect } from "solid-js";
 import { useTheme } from "~/ui";
+import { awaitingApproval } from "~/lib/stores/chatActivity";
+import { useNotifications } from "~/lib/stores/notifications";
 import {
   platformStatus,
   type PlatformStatus,
@@ -11,6 +13,12 @@ const ACCENT_VAR: Record<PlatformStatus, string> = {
   busy: "--accent-info", // blue — a turn is streaming
   error: "--accent-alert", // red — backend down or a run errored
 };
+
+// Amber — something durable needs the operator's attention (a parked approval or an
+// unread notification) even though the platform itself isn't down. A stronger, more
+// specific signal than plain "busy", but it never outranks an actual error: a dead
+// backend or a failed run is still the more urgent thing to know about from the tab bar.
+const ATTENTION_ACCENT_VAR = "--accent-warn";
 
 /** The Terminal-HUD reticle, parameterized by the four colors it draws with. Geometry
  *  is kept verbatim in lockstep with `public/favicon.svg` (the static pre-JS / .ico
@@ -63,8 +71,13 @@ function iconLink(): HTMLLinkElement {
  */
 export function useFavicon(): void {
   const theme = useTheme();
+  const notifications = useNotifications();
   createEffect(() => {
     const status = platformStatus();
+    const attention =
+      status !== "error" &&
+      (awaitingApproval() || notifications.unreadCount > 0);
+    const accentVar = attention ? ATTENTION_ACCENT_VAR : ACCENT_VAR[status];
     // Track the active palette so the effect re-runs on a theme toggle / OS change.
     void theme.resolved;
     // Defer the token read to a microtask. A theme change that triggers this effect
@@ -79,7 +92,7 @@ export function useFavicon(): void {
         bg: tok("--bg"),
         line: tok("--line"),
         dim: tok("--text-dim"),
-        accent: tok(ACCENT_VAR[status]),
+        accent: tok(accentVar),
       });
       iconLink().href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
     });
