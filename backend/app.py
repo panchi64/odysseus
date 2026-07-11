@@ -35,6 +35,7 @@ from routes import (
     health,
     memory,
     models,
+    notifications,
     offline,
     overview,
     previews,
@@ -45,7 +46,7 @@ from routes import (
     views,
 )
 from routes.deps import OPERATOR_ID
-from runs import RunRegistry
+from runs import Run, RunRegistry, RunStatus
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
@@ -66,6 +67,7 @@ from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
 from services.gallery import GalleryService
 from services.memory import MemoryStore
+from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -149,10 +151,72 @@ async def lifespan(app: FastAPI):
     """
     settings: Settings = app.state.settings
     app.state.auth_manager = AuthManager()
+
+    # Tracks each terminal-transition notify task while it's in flight — lets shutdown
+    # drain them cleanly (rather than tearing down the DB engine/vault out from under
+    # one) and lets a test await "every pending notify has settled" deterministically.
+    app.state.run_terminal_tasks: set[asyncio.Task[None]] = set()
+
+    def _on_run_terminal(run: Run) -> None:
+        """The registry's injected terminal-transition hook — composes the attention
+        surface's emit policy over the run substrate without `runs/` importing
+        `services/` (it only knows it holds an optional callback). The subscriber
+        count is captured *here*, synchronously, before the registry closes the
+        stream (see `RunStream.subscriber_count`'s docstring for why reading it later,
+        from the scheduled task below, would race the stream's own subscriber
+        cleanup). `app.state.notifications`/`app.state.conversations` are read lazily
+        inside the scheduled task, not here — a run can't reach terminal before both
+        exist, so the forward reference is safe despite the registry being built
+        before either singleton below."""
+        watched = run.stream.subscriber_count > 0
+        task = asyncio.create_task(_notify_run_terminal(run, watched=watched))
+        app.state.run_terminal_tasks.add(task)
+        task.add_done_callback(app.state.run_terminal_tasks.discard)
+
+    async def _notify_run_terminal(run: Run, *, watched: bool) -> None:
+        notifications = app.state.notifications
+        try:
+            # Always resolve first: a cancel-while-parked never reaches the approve
+            # route, and even a normal completion may still carry a dangling
+            # approval_needed if the operator never decided it — this is the backstop.
+            await notifications.resolve_for_run(OPERATOR_ID, run.id)
+        except Exception:
+            logger.exception("notifications: failed to resolve run %s at terminal", run.id)
+        # Only conversation-linked runs notify (a stateless/detached run has no thread
+        # to deep-link to); cancelled and blocked outcomes stay silent — the operator
+        # asked for the cancel, and a bound/limit stop isn't a noteworthy failure.
+        if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
+            return
+        try:
+            summary = await app.state.conversations.get_summary(run.conversation_id, OPERATOR_ID)
+            title = summary.title if summary is not None and summary.title else "this conversation"
+            if run.status is RunStatus.error:
+                await notifications.notify(
+                    OPERATOR_ID,
+                    "run_failed",
+                    f'"{title}" hit an error',
+                    body=run.error,
+                    conversation_id=run.conversation_id,
+                    run_id=run.id,
+                )
+            elif run.status is RunStatus.done and not watched:
+                # Only notify a plain completion when nobody was watching — a
+                # subscriber attached to the run's own stream already saw it finish.
+                await notifications.notify(
+                    OPERATOR_ID,
+                    "run_completed",
+                    f'"{title}" finished',
+                    conversation_id=run.conversation_id,
+                    run_id=run.id,
+                )
+        except Exception:
+            logger.exception("notifications: failed to notify run %s at terminal", run.id)
+
     app.state.runs = RunRegistry(
         max_concurrency=settings.run_max_concurrency,
         wall_clock_timeout_s=settings.run_wall_clock_timeout_s,
         inactivity_timeout_s=settings.run_inactivity_timeout_s,
+        on_terminal=_on_run_terminal,
     )
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +259,12 @@ async def lifespan(app: FastAPI):
     # Outbound service credentials — the operator's API keys for third-party services,
     # sealed with the vault.
     app.state.credentials = CredentialStore(engine, vault)
+    # The attention surface — a durable notification record + its own live stream,
+    # separate from the frozen per-run event stream. Just the substrate here (record +
+    # stream); the emit policy (which run outcomes are noteworthy) wires in where those
+    # events happen (approval parking, run terminal transitions, approve/deny routes).
+    app.state.notifications = NotificationService(engine, vault)
+    await app.state.notifications.start()
     # The Cookbook — host hardware detection. The probe is warmed in the background so a
     # slow `system_profiler` never blocks boot; the first request falls back to
     # lazy-detect if the warm-up hasn't finished.
@@ -441,6 +511,14 @@ async def lifespan(app: FastAPI):
         backfill = app.state.embedding_backfill
         if not backfill.done():
             backfill.cancel()
+        # Drain any in-flight run-terminal notify tasks before tearing down the DB
+        # engine/vault they read — a run finishing right at shutdown must not leave a
+        # task reading a closed engine, and must not warn as "destroyed while pending".
+        pending_notifies = list(app.state.run_terminal_tasks)
+        for task in pending_notifies:
+            task.cancel()
+        if pending_notifies:
+            await asyncio.gather(*pending_notifies, return_exceptions=True)
         app.state.embedding_reindexer.shutdown()
         await app.state.serving.shutdown()
         await preview_client.aclose()
@@ -456,6 +534,7 @@ async def lifespan(app: FastAPI):
         await uploads_adapter.stop()
         await app.state.uploads.stop()
         await app.state.conversations.stop()
+        await app.state.notifications.stop()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -496,6 +575,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search.router)
     app.include_router(api_tokens.router)
     app.include_router(offline.router)
+    app.include_router(notifications.router)
     return app
 
 

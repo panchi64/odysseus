@@ -1,0 +1,267 @@
+"""NotificationService: seq stamping, ring-buffer replay/bounds, live fan-out, read/
+resolve transitions, and the lock-aware drainer."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+from pathlib import Path
+
+from sqlmodel import select
+
+from core.db import in_session, init_db, make_engine
+from core.vault import Vault
+from models.notification import Notification
+from services.notifications import NotificationService
+
+OWNER = "operator"
+
+
+async def _service(tmp_path: Path, **kwargs) -> NotificationService:
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+    service = NotificationService(engine, vault, **kwargs)
+    await service.start()
+    return service
+
+
+def _titles(events) -> list[str]:
+    return [e.notification.title for e in events]
+
+
+async def _collect(service: NotificationService, *, after_seq: int, n: int):
+    """Pull exactly ``n`` events off `subscribe`, then close it cleanly — `subscribe`
+    never ends on its own (this surface is process-lifetime, not tied to a run)."""
+    gen = service.subscribe(after_seq)
+    out = []
+    try:
+        for _ in range(n):
+            out.append(await gen.__anext__())
+    finally:
+        await gen.aclose()
+    return out
+
+
+# --- seq + backlog replay -----------------------------------------------------
+
+
+async def test_notify_assigns_monotonic_seq(tmp_path):
+    service = await _service(tmp_path)
+    a = await service.notify(OWNER, "system", "a")
+    b = await service.notify(OWNER, "system", "b")
+    events = await _collect(service, after_seq=0, n=2)
+    assert [e.notification.id for e in events] == [a.id, b.id]
+    assert [e.seq for e in events] == [1, 2]
+    assert service.last_seq == 2
+    await service.stop()
+
+
+async def test_subscribe_resumes_only_after_last_seen_seq(tmp_path):
+    service = await _service(tmp_path)
+    for t in ("a", "b", "c"):
+        await service.notify(OWNER, "system", t)
+    events = await _collect(service, after_seq=1, n=2)
+    assert _titles(events) == ["b", "c"]
+    assert [e.seq for e in events] == [2, 3]
+    await service.stop()
+
+
+async def test_live_subscriber_receives_new_notifications(tmp_path):
+    service = await _service(tmp_path)
+    received: list = []
+
+    async def consume():
+        async for event in service.subscribe():
+            received.append(event)
+            return  # just the first live event
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)  # let it register
+    await service.notify(OWNER, "system", "hello")
+    await task
+    assert _titles(received) == ["hello"]
+    await service.stop()
+
+
+async def test_fanout_to_multiple_subscribers(tmp_path):
+    service = await _service(tmp_path)
+    out_a: list = []
+    out_b: list = []
+
+    async def consume(sink):
+        async for event in service.subscribe():
+            sink.append(event)
+            return
+
+    tasks = [asyncio.create_task(consume(out_a)), asyncio.create_task(consume(out_b))]
+    await asyncio.sleep(0)
+    await service.notify(OWNER, "system", "x")
+    await asyncio.gather(*tasks)
+    assert _titles(out_a) == ["x"]
+    assert _titles(out_b) == ["x"]
+    await service.stop()
+
+
+# --- ring-buffer bounds --------------------------------------------------------
+
+
+async def test_ring_buffer_evicts_oldest_beyond_cap(tmp_path):
+    service = await _service(tmp_path, ring_buffer_max=3)
+    for i in range(5):
+        await service.notify(OWNER, "system", f"n{i}")
+    events = await _collect(service, after_seq=0, n=3)
+    # Only the 3 most recent survive the ring; the seq numbering still reflects the
+    # true (evicted) history, so a very-stale Last-Event-ID just can't be replayed.
+    assert _titles(events) == ["n2", "n3", "n4"]
+    assert [e.seq for e in events] == [3, 4, 5]
+    await service.stop()
+
+
+async def test_slow_subscriber_is_dropped_not_grown_unbounded(tmp_path):
+    from services.notifications import _SUBSCRIBER_QUEUE_MAX
+
+    service = await _service(tmp_path)
+
+    async def stalled():  # registers, then never reads
+        async for _ in service.subscribe():
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(stalled())
+    await asyncio.sleep(0)
+    assert len(service._subscribers) == 1
+
+    for i in range(_SUBSCRIBER_QUEUE_MAX + 50):  # flood past the cap (no yields)
+        await service.notify(OWNER, "system", str(i))
+
+    assert len(service._subscribers) == 0  # evicted, not ballooning
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    await service.stop()
+
+
+# --- read / resolve transitions -------------------------------------------------
+
+
+async def test_mark_read_flags_and_reports_count(tmp_path):
+    service = await _service(tmp_path)
+    a = await service.notify(OWNER, "system", "a")
+    b = await service.notify(OWNER, "system", "b")
+
+    assert await service.mark_read(OWNER, [a.id]) == 1
+    items, unread = await service.list_notifications(OWNER)
+    by_id = {v.id: v for v in items}
+    assert by_id[a.id].read_at is not None
+    assert by_id[b.id].read_at is None
+    assert unread == 1
+
+    # Idempotent: re-marking an already-read id (or an unknown one) changes nothing.
+    assert await service.mark_read(OWNER, [a.id, "no-such-id"]) == 0
+    await service.stop()
+
+
+async def test_mark_read_emits_notification_updated_live(tmp_path):
+    service = await _service(tmp_path)
+    view = await service.notify(OWNER, "system", "a")
+    received: list = []
+
+    async def consume():
+        async for event in service.subscribe(after_seq=service.last_seq):
+            received.append(event)
+            return
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)
+    await service.mark_read(OWNER, [view.id])
+    await task
+
+    assert received[0].kind == "updated"
+    assert received[0].notification.id == view.id
+    assert received[0].notification.read_at is not None
+    await service.stop()
+
+
+async def test_mark_all_read_flags_every_unread(tmp_path):
+    service = await _service(tmp_path)
+    await service.notify(OWNER, "system", "a")
+    await service.notify(OWNER, "system", "b")
+
+    assert await service.mark_all_read(OWNER) == 2
+    _, unread = await service.list_notifications(OWNER)
+    assert unread == 0
+    assert await service.mark_all_read(OWNER) == 0  # idempotent
+    await service.stop()
+
+
+async def test_resolve_for_run_marks_only_that_runs_pending_notification(tmp_path):
+    service = await _service(tmp_path)
+    approval = await service.notify(
+        OWNER, "approval_needed", "needs approval", run_id="run-1"
+    )
+    other = await service.notify(OWNER, "run_failed", "unrelated", run_id="run-2")
+
+    resolved = await service.resolve_for_run(OWNER, "run-1")
+    assert [r.id for r in resolved] == [approval.id]
+
+    items, _ = await service.list_notifications(OWNER)
+    by_id = {v.id: v for v in items}
+    assert by_id[approval.id].resolved_at is not None
+    assert by_id[other.id].resolved_at is None
+
+    assert await service.resolve_for_run(OWNER, "run-1") == []  # idempotent
+    await service.stop()
+
+
+# --- durability: the lock-aware drainer ----------------------------------------
+
+
+async def test_drainer_parks_while_locked_and_drains_after_unlock(tmp_path):
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+    service = NotificationService(engine, vault)
+    await service.start()
+
+    vault.lock()
+    view = await service.notify(OWNER, "system", "locked write")
+
+    # Cached + streamed immediately regardless of lock state — only the durable
+    # write is gated. Read straight from the DB: nothing has landed yet.
+    def rows():
+        return in_session(engine, lambda session: session.exec(select(Notification)).all())
+
+    assert await rows() == []
+
+    await vault.unlock("pw")
+    await service._worker.join()  # let the parked write drain now that it can encrypt
+    await service.stop()
+
+    persisted = await rows()
+    assert len(persisted) == 1
+    assert persisted[0].id == view.id
+    assert "locked write" not in persisted[0].title_enc  # sealed at rest
+
+
+async def test_cold_restart_rehydrates_prior_notifications(tmp_path):
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+
+    service = NotificationService(engine, vault)
+    await service.start()
+    view = await service.notify(OWNER, "system", "before restart", "with a body")
+    await service._worker.join()
+    await service.stop()
+
+    cold = NotificationService(engine, vault)
+    await cold.start()
+    await cold._rehydrate_task  # deterministic in tests: vault is already unlocked
+    items, _ = await cold.list_notifications(OWNER)
+    assert [i.id for i in items] == [view.id]
+    assert items[0].title == "before restart"
+    assert items[0].body == "with a body"
+    await cold.stop()

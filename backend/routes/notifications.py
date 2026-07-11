@@ -1,0 +1,165 @@
+"""The attention/notification surface — a durable record of what needs the operator's
+notice, separate from the frozen per-run event stream (`runs/events.py`), which dies
+with its run. REST for backfill/read-state; its own SSE stream (the same framing as the
+run transport — `id:` seq, flat JSON `data:`, ~15s keepalive comments, `Last-Event-ID`
+resume) for live updates. Out-shapes are camelCase, like the app's other newer surfaces
+(documents/gallery/corpus).
+
+*Whether* to notify — the emit policy of which run outcomes are noteworthy — is decided
+by the callers that wire into `NotificationService.notify` (the engine's approval
+parking, the run registry's terminal transitions, the approve/deny routes); this router
+only exposes what the service already recorded.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import suppress
+from datetime import datetime
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from routes import deps
+from routes.camel import CamelModel
+from routes.deps import OPERATOR_ID
+from runs import parse_last_event_id
+from services.notifications import NotificationEvent, NotificationService, NotificationView
+
+router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",  # disable proxy buffering so frames flush live
+}
+# Mirrors runs/transport.py's constants — same framing, separate surface.
+_KEEPALIVE_INTERVAL_S = 15.0
+_RELAY_QUEUE_MAX = 256
+
+
+class NotificationOut(CamelModel):
+    id: str
+    kind: str
+    title: str
+    body: str | None = None
+    conversation_id: str | None = None
+    run_id: str | None = None
+    created_at: datetime
+    read_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class NotificationListOut(CamelModel):
+    items: list[NotificationOut]
+    unread_count: int
+
+
+class NotificationStreamEnvelope(CamelModel):
+    """The SSE `data:` payload: `{type, seq, ts, notification}`."""
+
+    type: Literal["notification.created", "notification.updated"]
+    seq: int
+    ts: datetime
+    notification: NotificationOut
+
+
+class MarkReadIn(BaseModel):
+    ids: list[str]
+
+
+class MarkReadOut(CamelModel):
+    updated: int
+
+
+def _out(view: NotificationView) -> NotificationOut:
+    return NotificationOut(
+        id=view.id,
+        kind=view.kind,
+        title=view.title,
+        body=view.body,
+        conversation_id=view.conversation_id,
+        run_id=view.run_id,
+        created_at=view.created_at,
+        read_at=view.read_at,
+        resolved_at=view.resolved_at,
+    )
+
+
+def _envelope(event: NotificationEvent) -> NotificationStreamEnvelope:
+    return NotificationStreamEnvelope(
+        type=f"notification.{event.kind}",  # "created" | "updated" -> the wire type
+        seq=event.seq,
+        ts=event.ts,
+        notification=_out(event.notification),
+    )
+
+
+@router.get("", response_model=NotificationListOut)
+async def list_notifications(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    before: Annotated[datetime | None, Query()] = None,
+    unread_only: bool = Query(default=False),
+) -> NotificationListOut:
+    items, unread_count = await deps.notifications(request).list_notifications(
+        OPERATOR_ID, limit=limit, before=before, unread_only=unread_only
+    )
+    return NotificationListOut(items=[_out(v) for v in items], unread_count=unread_count)
+
+
+@router.post("/read", response_model=MarkReadOut)
+async def mark_read(body: MarkReadIn, request: Request) -> MarkReadOut:
+    updated = await deps.notifications(request).mark_read(OPERATOR_ID, body.ids)
+    return MarkReadOut(updated=updated)
+
+
+@router.post("/read_all", response_model=MarkReadOut)
+async def mark_all_read(request: Request) -> MarkReadOut:
+    updated = await deps.notifications(request).mark_all_read(OPERATOR_ID)
+    return MarkReadOut(updated=updated)
+
+
+def _stream_response(service: NotificationService, after_seq: int) -> StreamingResponse:
+    async def frames() -> AsyncIterator[str]:
+        # Pump through a local queue so the keepalive timeout sits on the queue, not on
+        # the subscribe generator itself (mirrors runs/transport.py's sse_response).
+        queue: asyncio.Queue[NotificationEvent | None] = asyncio.Queue(maxsize=_RELAY_QUEUE_MAX)
+
+        async def pump() -> None:
+            try:
+                async for event in service.subscribe(after_seq):
+                    await queue.put(event)
+            finally:
+                with suppress(asyncio.QueueFull):
+                    queue.put_nowait(None)
+
+        task = asyncio.create_task(pump())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), _KEEPALIVE_INTERVAL_S)
+                except TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                if item is None:
+                    break
+                payload = _envelope(item).model_dump_json(by_alias=True)
+                yield f"id: {item.seq}\ndata: {payload}\n\n"
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    return StreamingResponse(frames(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.get("/stream")
+async def stream_notifications(request: Request, last_event_id: int | None = Query(default=None)):
+    """SSE stream of `notification.created`/`notification.updated`. Reconnect with
+    `Last-Event-ID` to replay from the in-memory ring buffer (process-lifetime)."""
+    after = parse_last_event_id(request.headers.get("last-event-id"), last_event_id)
+    return _stream_response(deps.notifications(request), after)

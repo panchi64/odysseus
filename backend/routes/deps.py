@@ -23,6 +23,7 @@ from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.gallery import GalleryService
 from services.memory import MemoryStore
+from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
@@ -88,6 +89,10 @@ def models(request: Request) -> ModelRegistry:
 
 def memory(request: Request) -> MemoryStore:
     return request.app.state.memory
+
+
+def notifications(request: Request) -> NotificationService:
+    return request.app.state.notifications
 
 
 def approval_grants(request: Request) -> ApprovalGrantStore:
