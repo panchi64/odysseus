@@ -11,19 +11,26 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import ToolApproved, ToolDenied
 
 from agent import ParkedTurn, build_resume_orchestrator
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import covered_by_grant
+from services.conversations import ConversationStore
 from tools import Capabilities
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
 class RunView(BaseModel):
+    # Existing fields stay snake_case (this surface predates the camelCase
+    # convention); the two new dashboard fields below are camelCase to match the
+    # newer surfaces (documents/gallery/corpus/notifications) — `populate_by_name`
+    # lets this model still build from the plain attribute names below.
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     kind: str
     status: str
@@ -34,9 +41,18 @@ class RunView(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     last_seq: int
+    # The conversation this run drives, and its (possibly not-yet-titled) name — lets
+    # the dashboard label + link an in-flight run without a second lookup. `status`
+    # above already carries queued/running/awaiting_input for the active listing.
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    conversation_title: str | None = Field(default=None, alias="conversationTitle")
 
 
-def _view(run: Run) -> RunView:
+async def _view(run: Run, store: ConversationStore) -> RunView:
+    title: str | None = None
+    if run.conversation_id is not None:
+        summary = await store.get_summary(run.conversation_id, run.owner_id)
+        title = summary.title if summary is not None else None
     return RunView(
         id=run.id,
         kind=run.kind,
@@ -48,6 +64,8 @@ def _view(run: Run) -> RunView:
         started_at=run.started_at,
         ended_at=run.ended_at,
         last_seq=run.stream.last_seq,
+        conversation_id=run.conversation_id,
+        conversation_title=title,
     )
 
 
@@ -66,12 +84,13 @@ async def list_runs(request: Request, active: bool = Query(default=True)) -> lis
     if active:
         runs = [r for r in runs if not r.is_terminal]
     runs.sort(key=lambda r: r.created_at, reverse=True)
-    return [_view(r) for r in runs]
+    store = deps.store(request)
+    return [await _view(r, store) for r in runs]
 
 
 @router.get("/{run_id}", response_model=RunView)
 async def get_run(run_id: str, request: Request) -> RunView:
-    return _view(_require_run(request, run_id))
+    return await _view(_require_run(request, run_id), deps.store(request))
 
 
 @router.get("/{run_id}/events")
@@ -170,6 +189,12 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
                 message=decision.message or "The operator denied this action."
             )
 
+    # The approval is decided now, one way or another (approved, denied, or already
+    # grant-covered) — resolve the park's notification here rather than waiting for the
+    # run to reach terminal. Idempotent: a run with no pending approval_needed (or one
+    # already resolved) is simply a no-op.
+    await deps.notifications(request).resolve_for_run(deps.OPERATOR_ID, run_id)
+
     orchestrator = build_resume_orchestrator(
         parked,
         decisions,
@@ -184,6 +209,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             uploads=deps.uploads(request),
             grants=grants,
             workspace_history=deps.workspace_history(request),
+            notifications=deps.notifications(request),
         ),
         store=deps.store(request),
         # A resumed turn respects the current offline state too — if connectivity

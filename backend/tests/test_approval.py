@@ -6,8 +6,11 @@ from pydantic_ai import FunctionToolset, ToolApproved, ToolDenied
 from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
+from core.db import init_db, make_engine
+from core.vault import Vault
 from runs import RunRegistry, RunStatus
-from tools import RunDeps
+from services.notifications import NotificationService
+from tools import Capabilities, RunDeps
 
 
 def _danger_categories():
@@ -96,3 +99,80 @@ async def test_cancel_parked_run():
     assert run.status is RunStatus.cancelled
     assert run.stream.closed
     assert _types(run)[-1] == "run.ended"
+
+
+# --- approval_needed notification wiring --------------------------------------------
+
+
+async def _notification_service(tmp_path) -> NotificationService:
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+    service = NotificationService(engine, vault)
+    await service.start()
+    return service
+
+
+async def test_park_notifies_approval_needed(tmp_path):
+    service = await _notification_service(tmp_path)
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "delete the thing",
+        model=TestModel(custom_output_text="done"),
+        categories=_danger_categories(),
+        capabilities=Capabilities(notifications=service),
+        conversation_id="c1",
+    )
+    run = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
+    )
+    await run.wait()
+
+    assert run.status is RunStatus.awaiting_input
+    items, unread = await service.list_notifications("operator")
+    assert unread == 1
+    assert items[0].kind == "approval_needed"
+    assert items[0].run_id == run.id
+    assert items[0].conversation_id == "c1"
+    assert "delete_thing" in items[0].title
+    await service.stop()
+
+
+async def test_grant_short_circuit_resolves_a_dangling_notification(tmp_path):
+    # Everything this turn defers is already grant-covered from the start, so the
+    # engine never parks — it continues the same turn inline. That branch is a
+    # defensive `resolve_for_run` call too: this proves it actually fires by seeding a
+    # notification for this exact run id up front and checking it's resolved after.
+    from tests._helpers import granting_store
+
+    # Learn the real (namespaced) tool name a park reports, rather than guessing it.
+    probe_run = await _park_a_run(RunRegistry())
+    tool_name = probe_run.parked_payload.requests.approvals[0].tool_name
+
+    service = await _notification_service(tmp_path)
+    grants = await granting_store("operator", "c1", tool_name)
+    run_id = "preset-run-1"
+    await service.notify("operator", "approval_needed", "stale", run_id=run_id)
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "delete the thing",
+        model=TestModel(custom_output_text="done"),
+        categories=_danger_categories(),
+        capabilities=Capabilities(grants=grants, notifications=service),
+        conversation_id="c1",
+    )
+    run = reg.submit(
+        kind="chat",
+        owner_id="operator",
+        orchestrator=orch,
+        conversation_id="c1",
+        run_id=run_id,
+    )
+    await run.wait()
+
+    assert run.status is RunStatus.done  # grant-covered inline — never parked
+    items, _ = await service.list_notifications("operator")
+    assert items[0].resolved_at is not None
+    await service.stop()

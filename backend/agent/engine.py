@@ -56,6 +56,7 @@ from runs import (
 from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.documents import DocumentStore
+from services.notifications import NotificationService
 from services.uploads import UploadStore
 from tools import Capabilities, CompactionContext, RunDeps, build_agent_toolsets
 
@@ -225,7 +226,24 @@ def _turn_metrics(
     )
 
 
-def _park_for_approval(
+async def _approval_conversation_title(
+    store: ConversationStore | None, owner_id: str, conversation_id: str | None
+) -> str:
+    """A short, human name for the conversation a park's notification names — the
+    conversation's own title when one exists (auto-titling may not have run yet on a
+    fresh thread), else a plain fallback. Never raises: a lookup failure degrades to
+    the fallback rather than losing the notification over a cosmetic detail."""
+    if store is not None and conversation_id is not None:
+        try:
+            summary = await store.get_summary(conversation_id, owner_id)
+        except Exception:  # noqa: BLE001 — a title lookup must not block the notify
+            summary = None
+        if summary is not None and summary.title:
+            return summary.title
+    return "this conversation"
+
+
+async def _park_for_approval(
     run: Run,
     agent: Agent,
     messages: list[ModelMessage],
@@ -233,13 +251,18 @@ def _park_for_approval(
     announced: set[str],
     *,
     pre_approved: dict[str, ToolApproved] | None = None,
+    notifications: NotificationService | None = None,
+    store: ConversationStore | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     # Only the calls still awaiting the operator are announced; any pre-approved by an
     # active grant ride silently on the parked payload and merge into the resume.
     pre_approved = pre_approved or {}
+    pending_names: set[str] = set()
     for call in requests.approvals:
         if call.tool_call_id in pre_approved:
             continue
+        pending_names.add(call.tool_name)
         args = call.args_as_dict()
         # A tool may hand the operator a plain-language explanation via an
         # `explanation` argument (the host-execution path requires one); surface
@@ -254,6 +277,28 @@ def _park_for_approval(
                 explanation=explanation if isinstance(explanation, str) else None,
             )
         )
+    # Fire the ALWAYS-notify policy *before* `run.park(...)` makes the parked status
+    # externally visible — not after. This is the one await this function does before
+    # parking, and it must land first: `RunRegistry.cancel`'s parked branch assumes
+    # "awaiting_input ⇒ the task has already fully exited" and skips the hard-cancel
+    # path on that assumption. If the notify (and the conversation-title lookup it may
+    # need) instead ran *after* parking, a concurrent cancel/approve landing in that
+    # window would see the parked status while this coroutine is still suspended on a
+    # real await — violating that assumption and racing the run's own finalize.
+    if notifications is not None and pending_names:
+        title = await _approval_conversation_title(store, run.owner_id, conversation_id)
+        try:
+            await notifications.notify(
+                run.owner_id,
+                "approval_needed",
+                f'"{title}" needs approval for {", ".join(sorted(pending_names))}',
+                conversation_id=conversation_id,
+                run_id=run.id,
+            )
+        except Exception:  # noqa: BLE001 — a notify failure must not break the park
+            logger.warning(
+                "approval_needed notification failed for run %s", run.id, exc_info=True
+            )
     run.park(ParkedTurn(agent, messages, requests, announced, pre_approved=pre_approved))
 
 
@@ -360,6 +405,7 @@ async def _drive_turn(
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
+    store: ConversationStore | None = None,
 ) -> _TurnResult:
     settings = get_settings()
     limits = UsageLimits(
@@ -511,11 +557,27 @@ async def _drive_turn(
         }
         manual = [c for c in output.approvals if c.tool_call_id not in pre_approved]
         if manual:
-            _park_for_approval(run, agent, messages, output, announced, pre_approved=pre_approved)
+            await _park_for_approval(
+                run,
+                agent,
+                messages,
+                output,
+                announced,
+                pre_approved=pre_approved,
+                notifications=caps.notifications,
+                store=store,
+                conversation_id=conversation_id,
+            )
             return _TurnResult(answer=None, messages=messages)
         # Every deferred call is grant-covered — continue the SAME turn inline (no
         # operator round-trip), reusing the shared budget/guard/usage above. The auto-run
-        # tool still streams its tool.started/completed, so it stays visible.
+        # tool still streams its tool.started/completed, so it stays visible. Defensively
+        # resolve any approval_needed notification still pending for this run — normally
+        # a no-op (this branch only runs when nothing this hop parked), but idempotent
+        # against whatever multi-hop history led here, so nothing is ever left dangling.
+        if caps.notifications is not None:
+            with suppress(Exception):
+                await caps.notifications.resolve_for_run(run.owner_id, run.id)
         prompt = None
         message_history = messages
         deferred_results = DeferredToolResults(approvals=pre_approved)
@@ -541,6 +603,7 @@ async def _verify_and_correct(
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
+    store: ConversationStore | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -574,6 +637,7 @@ async def _verify_and_correct(
         disabled_tools=disabled_tools,
         compaction=compaction,
         partial_history_ref=partial_history_ref,
+        store=store,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -957,6 +1021,7 @@ def build_chat_orchestrator(
                 disabled_tools=disabled_tools,
                 compaction=active_compaction,
                 partial_history_ref=partial_history_ref,
+                store=store,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -988,6 +1053,7 @@ def build_chat_orchestrator(
                         disabled_tools=disabled_tools,
                         compaction=active_compaction,
                         partial_history_ref=partial_history_ref,
+                        store=store,
                     )
 
             _finalize(
@@ -1136,6 +1202,7 @@ def build_resume_orchestrator(
                 disabled_tools=disabled_tools,
                 compaction=parked.compaction,
                 partial_history_ref=partial_history_ref,
+                store=store,
             )
             _finalize(
                 run,

@@ -161,3 +161,76 @@ async def test_approve_rejects_decision_mismatch(monkeypatch):
             json={"decisions": [{"tool_call_id": "wrong-id", "approved": True}]},
         )
         assert resp.status_code == 400
+
+
+# --- approval_needed notification: park creates it, every decision resolves it -----
+
+
+async def _run_notifications(app, run_id):
+    items, _ = await app.state.notifications.list_notifications("operator", limit=100)
+    return [n for n in items if n.run_id == run_id]
+
+
+async def _drain_terminal_notify_tasks(app):
+    """Await every in-flight run-terminal notify task. `_on_run_terminal` (app.py)
+    adds its task to `run_terminal_tasks` synchronously before the registry's own
+    cancel/`run.wait()` call can return, so it's already registered by the time a
+    caller reaches here — one `gather` is enough to settle it."""
+    pending = list(app.state.run_terminal_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_park_creates_approval_needed_and_approve_resolves_it(monkeypatch):
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+
+        notifs = await _run_notifications(app, run_id)
+        assert len(notifs) == 1
+        assert notifs[0].kind == "approval_needed"
+        assert notifs[0].resolved_at is None
+
+        call_id = run.parked_payload.requests.approvals[0].tool_call_id
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={"decisions": [{"tool_call_id": call_id, "approved": True}]},
+        )
+        assert resp.status_code == 202
+
+        notifs = await _run_notifications(app, run_id)
+        assert notifs[0].resolved_at is not None
+
+
+async def test_deny_resolves_the_approval_needed_notification(monkeypatch):
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+        call_id = run.parked_payload.requests.approvals[0].tool_call_id
+
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={"decisions": [{"tool_call_id": call_id, "approved": False}]},
+        )
+        assert resp.status_code == 202
+
+        notifs = await _run_notifications(app, run_id)
+        assert notifs[0].resolved_at is not None
+
+
+async def test_cancel_while_parked_resolves_the_approval_needed_notification(monkeypatch):
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        await _await_parked(app, run_id)
+
+        assert await app.state.runs.cancel(run_id) is True
+        await _drain_terminal_notify_tasks(app)
+
+        notifs = await _run_notifications(app, run_id)
+        assert len(notifs) == 1
+        assert notifs[0].resolved_at is not None
+        # Cancelling never itself creates a run_completed/run_failed notification.
+        assert all(n.kind == "approval_needed" for n in notifs)

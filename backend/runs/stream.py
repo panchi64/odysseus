@@ -50,6 +50,16 @@ class RunStream:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def subscriber_count(self) -> int:
+        """How many live subscribers are attached right now — the run-terminal emit
+        policy's "was anyone watching" check (see ``RunRegistry``'s injected
+        ``on_terminal`` hook). Read this *before* ``close()``: closing signals every
+        subscriber's queue but doesn't discard them itself — each subscriber's own
+        generator removes itself once it wakes to the sentinel, so a count taken after
+        ``close()`` can race that cleanup."""
+        return len(self._subscribers)
+
     def emit(self, body: BaseModel) -> Event:
         """Stamp, buffer, and fan out an event. Synchronous and atomic."""
         if self._closed:

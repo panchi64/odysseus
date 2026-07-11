@@ -301,3 +301,140 @@ async def test_claim_rejects_when_a_run_is_already_live():
 def test_release_is_idempotent_without_a_prior_claim():
     reg = RunRegistry()
     reg.release("never-claimed", "operator")  # must not raise
+
+
+# --- on_terminal: the injected terminal-transition hook -----------------------------
+
+
+async def test_on_terminal_fires_once_on_normal_completion():
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="hi"))
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert calls == [run]
+
+
+async def test_on_terminal_fires_once_on_error():
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+
+    async def orch(run):
+        raise ValueError("boom")
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert calls == [run]
+
+
+async def test_on_terminal_fires_once_on_blocked():
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+
+    async def orch(run):
+        run.block("need more info")
+
+    run = reg.submit(kind="agent", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert calls == [run]
+
+
+async def test_on_terminal_fires_once_on_cancel_while_running():
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+
+    async def orch(run):
+        await asyncio.Event().wait()  # never completes on its own
+
+    run = reg.submit(kind="agent", owner_id="operator", orchestrator=orch)
+    await asyncio.sleep(0)
+    assert await reg.cancel(run.id) is True
+    await run.wait()
+
+    assert calls == [run]
+
+
+async def test_on_terminal_not_fired_on_park_but_fires_on_cancel_while_parked():
+    # Parking isn't a terminal transition — the hook must stay silent until the run
+    # is actually decided (approved/denied/resumed to completion) or, here, cancelled
+    # out of band while still parked (the only close() path that bypasses `_execute`).
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+
+    async def orch(run):
+        run.park(None)
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.awaiting_input
+    assert calls == []
+
+    assert await reg.cancel(run.id) is True
+    assert calls == [run]
+    assert run.status is RunStatus.cancelled
+
+
+async def test_on_terminal_hook_failure_is_swallowed_and_logged(caplog):
+    def boom(run):
+        raise RuntimeError("notifier exploded")
+
+    reg = RunRegistry(on_terminal=boom)
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="hi"))
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()  # must not raise, and must not affect the run's own outcome
+
+    assert run.status is RunStatus.done
+    assert "on_terminal hook failed" in caplog.text
+
+
+async def test_on_terminal_reads_the_live_subscriber_count_before_close():
+    # The subscriber count must reflect "was anyone watching" at the moment of the
+    # terminal transition — captured synchronously by the hook, before the stream
+    # (and thus each subscriber's own cleanup) has had any chance to run.
+    seen: dict[str, int] = {}
+    reg = RunRegistry(on_terminal=lambda run: seen.setdefault("count", run.stream.subscriber_count))
+
+    ready, proceed = asyncio.Event(), asyncio.Event()
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="hi"))
+        ready.set()
+        await proceed.wait()
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await ready.wait()
+
+    async def consume():
+        async for _ in run.stream.subscribe():
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)  # let it register
+    proceed.set()
+    await run.wait()
+    await task
+
+    assert seen["count"] == 1
+
+
+async def test_on_terminal_sees_zero_subscribers_when_nobody_is_watching():
+    seen: dict[str, int] = {}
+    reg = RunRegistry(on_terminal=lambda run: seen.setdefault("count", run.stream.subscriber_count))
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="hi"))
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert seen["count"] == 0

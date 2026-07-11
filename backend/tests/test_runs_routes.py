@@ -100,6 +100,46 @@ async def test_list_runs_empty():
         assert (await client.get("/runs")).json() == []
 
 
+async def test_list_runs_enriches_with_conversation_id_and_title():
+    async with client_app() as (client, app):
+        conv_id = await app.state.conversations.create_conversation("operator")
+        await app.state.conversations.set_title(conv_id, "Weekend plans")
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def orch(run):
+            started.set()
+            await release.wait()
+
+        run = app.state.runs.submit(
+            kind="chat", owner_id="operator", orchestrator=orch, conversation_id=conv_id
+        )
+        await started.wait()
+
+        body = (await client.get("/runs")).json()
+        assert len(body) == 1
+        assert body[0]["conversationId"] == conv_id
+        assert body[0]["conversationTitle"] == "Weekend plans"
+        assert body[0]["status"] in ("queued", "running", "awaiting_input")
+        # Existing fields keep their original (snake_case) key — backward compatible.
+        assert body[0]["owner_id"] == "operator"
+
+        release.set()
+        await run.wait()
+
+
+async def test_get_run_conversation_fields_are_null_without_a_conversation():
+    async with client_app() as (client, app):
+        async def orch(run):
+            return None
+
+        run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await run.wait()
+
+        body = (await client.get(f"/runs/{run.id}")).json()
+        assert body["conversationId"] is None
+        assert body["conversationTitle"] is None
+
+
 async def test_unknown_run_is_404():
     async with client_app() as (client, _app):
         assert (await client.get("/runs/nope")).status_code == 404

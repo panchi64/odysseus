@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from services.corpus import CorpusIndex
     from services.documents import DocumentStore
     from services.memory import MemoryStore
+    from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
     from services.uploads import UploadStore
@@ -55,6 +56,12 @@ class Capabilities:
     # The document library — lets the document tool create/edit versioned documents that
     # surface live in the chat View. None ⇒ the document tool degrades.
     documents: DocumentStore | None = None
+    # The attention/notification surface. The engine calls this when a run parks
+    # awaiting approval (an ALWAYS-notify per the emit policy) and defensively at a
+    # grant short-circuit (idempotent — resolves any notification a prior park left
+    # pending). None ⇒ approval parks simply don't notify (graceful degradation, never
+    # blocks the turn).
+    notifications: NotificationService | None = None
 
 
 @dataclass

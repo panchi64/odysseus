@@ -99,6 +99,24 @@ async def test_slow_subscriber_is_dropped_not_grown_unbounded():
     task.cancel()
 
 
+async def test_subscriber_count_tracks_live_registration_and_departure():
+    stream = RunStream()
+    assert stream.subscriber_count == 0
+
+    async def consume():
+        async for _ in stream.subscribe():
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0)  # let it register
+    assert stream.subscriber_count == 1
+
+    stream.emit(AnswerDelta(text="a"))
+    stream.close()
+    await task
+    assert stream.subscriber_count == 0
+
+
 async def test_fanout_to_multiple_subscribers():
     stream = RunStream()
     out_a: list = []

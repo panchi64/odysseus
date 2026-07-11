@@ -10,12 +10,16 @@ and cancellation — so every orchestrator inherits them for free.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Callable
 from contextlib import suppress
 from uuid import uuid4
 
 from .events import LimitNotice, RunEnded, RunError, RunMetrics, RunStarted, now_utc
 from .run import Orchestrator, Run, RunStatus
 from .stream import RunStream
+
+logger = logging.getLogger(__name__)
 
 _UNSET = object()
 
@@ -92,6 +96,7 @@ class RunRegistry:
         wall_clock_timeout_s: float | None = None,
         inactivity_timeout_s: float | None = None,
         max_retained: int = 200,
+        on_terminal: Callable[[Run], None] | None = None,
     ) -> None:
         self._runs: dict[str, Run] = {}
         self._sem = asyncio.Semaphore(max_concurrency)
@@ -103,6 +108,12 @@ class RunRegistry:
         # still block a second request from mutating/submitting on the same
         # conversation. See `claim`/`release`.
         self._claims: set[tuple[str, str]] = set()
+        # Optional hook fired exactly once per run at its terminal transition (done,
+        # blocked, error, or cancelled), *before* the stream closes — the substrate
+        # stays decoupled from what a caller does with it (app.py composes the
+        # attention-surface emit policy over this; nothing in `runs/` imports
+        # `services/`). Synchronous and best-effort: see `_fire_terminal`.
+        self._on_terminal = on_terminal
 
     # --- lookup ---------------------------------------------------------------
     def get(self, run_id: str) -> Run | None:
@@ -222,6 +233,7 @@ class RunRegistry:
             run.status = RunStatus.cancelled
             run.emit(RunEnded(outcome="cancelled"))
             run.ended_at = now_utc()
+            self._fire_terminal(run)
             run.stream.close()
             return True
         if run.cancel_requested:
@@ -317,6 +329,7 @@ class RunRegistry:
             # stream open for the eventual resume.
             if run.is_terminal:
                 run.ended_at = run.ended_at or now_utc()
+                self._fire_terminal(run)
                 run.stream.close()
 
     async def _supervise(
@@ -399,6 +412,20 @@ class RunRegistry:
             return
         with suppress(Exception):
             run.on_cancel()
+
+    def _fire_terminal(self, run: Run) -> None:
+        """Invoke the injected ``on_terminal`` hook exactly once, synchronously, right
+        before the stream closes — so it can still read an accurate
+        ``run.stream.subscriber_count`` (see that property's docstring for why after
+        ``close()`` would race the subscribers' own cleanup). Swallows (and logs) any
+        exception: a notification failure must never affect a run's own recorded
+        outcome, which has already been decided by the time this fires."""
+        if self._on_terminal is None:
+            return
+        try:
+            self._on_terminal(run)
+        except Exception:
+            logger.exception("runs: on_terminal hook failed for run %s", run.id)
 
     def _evict_old(self) -> None:
         """Bound memory: drop the oldest terminal runs past the retention cap."""
