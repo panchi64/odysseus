@@ -1,187 +1,228 @@
-import {
-  createResource,
-  createSignal,
-  onCleanup,
-  type Resource,
-} from "solid-js";
-import { createStore, produce } from "solid-js/store";
+import { createResource, createSignal, type Resource } from "solid-js";
+import { createStore } from "solid-js/store";
+import { api, isApiError } from "~/lib/api";
+import { StreamDetachedError, streamRun, type RunEvent } from "~/lib/stream";
+import { toast } from "~/ui";
 import type {
-  ResearchReport,
-  ResearchRunState,
-  ResearchSummary,
+  ResearchListItem,
+  ResearchOut,
   ResearchPhase,
+  ResearchProgressState,
 } from "./model";
-import { mockReport, mockReportSummaries } from "./mocks";
 
-/* ── Read accessors (the seam) ─────────────────────────────────────────────── */
+/* ── Draft flow (intake → clarify/refine → start) — plain REST, no Run involved
+   until `start` mints one (design: the pre-run stage is lightweight REST/utility
+   calls, not a parked Run). Each call returns the revised `ResearchOut` directly,
+   so the entry screen updates its local view from the response — no refetch. ── */
 
-async function fetchReportSummaries(): Promise<ResearchSummary[]> {
-  return mockReportSummaries;
+export async function intakeResearch(question: string): Promise<ResearchOut> {
+  const out = await api.post<ResearchOut>("/research/intake", { question });
+  refreshResearchList();
+  return out;
 }
 
-async function fetchReport(_id: string): Promise<ResearchReport> {
-  return mockReport;
+export interface RefineInput {
+  answers?: string[];
+  feedback?: string;
 }
 
-export function useReportSummaries(): Resource<ResearchSummary[]> {
-  const [data] = createResource(fetchReportSummaries);
+export async function refineResearch(
+  id: string,
+  input: RefineInput,
+): Promise<ResearchOut> {
+  return api.post<ResearchOut>(`/research/${id}/refine`, input);
+}
+
+export async function startResearch(id: string): Promise<ResearchOut> {
+  const out = await api.post<ResearchOut>(`/research/${id}/start`, {});
+  refreshResearchList();
+  return out;
+}
+
+export async function continueResearch(
+  id: string,
+): Promise<{ conversationId: string }> {
+  return api.post<{ conversationId: string }>(`/research/${id}/continue`, {});
+}
+
+export async function deleteResearch(id: string): Promise<void> {
+  await api.del(`/research/${id}`);
+  refreshResearchList();
+}
+
+/* ── Library list ──────────────────────────────────────────────────────────── */
+
+const [listTick, setListTick] = createSignal(0);
+
+async function fetchResearchList(): Promise<ResearchListItem[]> {
+  const { items } = await api.get<{ items: ResearchListItem[] }>("/research");
+  return items;
+}
+
+export function useResearchList(): Resource<ResearchListItem[]> {
+  const [data] = createResource(listTick, fetchResearchList);
   return data;
 }
 
-export function useReport(id: () => string): Resource<ResearchReport> {
-  const [data] = createResource(id, fetchReport);
+export function refreshResearchList(): void {
+  setListTick((n) => n + 1);
+}
+
+/* ── Single entry (the draft/progress/report screen) ──────────────────────── */
+
+const [entryTick, setEntryTick] = createSignal(0);
+
+export function useResearchEntry(id: () => string): Resource<ResearchOut> {
+  const [data] = createResource(
+    () => ({ id: id(), tick: entryTick() }),
+    (src) => api.get<ResearchOut>(`/research/${src.id}`),
+  );
   return data;
 }
 
-/* ── Mutable summaries store (Phase-1 local state for library actions) ───── */
-
-type SummariesStore = { list: ResearchSummary[] };
-
-let summariesStore: ReturnType<typeof createStore<SummariesStore>> | null =
-  null;
-
-/** Returns the shared mutable list used by library action handlers.
- *  Seeded lazily from mockReportSummaries on first call. */
-export function useSummariesStore(): ReturnType<
-  typeof createStore<SummariesStore>
-> {
-  if (!summariesStore) {
-    summariesStore = createStore<SummariesStore>({
-      list: mockReportSummaries.map((s) => ({ ...s })),
-    });
-  }
-  return summariesStore;
+/** Refetch the current entry — used once a run reaches a terminal event, since
+ *  the finished report/stats/final status live on `ResearchOut`, not the event
+ *  stream (see `createResearchProgress`'s `onTerminal`). */
+export function refreshResearchEntry(): void {
+  setEntryTick((n) => n + 1);
 }
 
-/* ── Live-run controller ────────────────────────────────────────────────────
-   Drives the research phase progress display. Phase 2: replace timers with
-   SSE events from the research engine endpoint; RunState shape is unchanged. */
+/* ── Live progress controller ─────────────────────────────────────────────────
+   Folds a running entry's run events into a small store — the research-surface
+   counterpart to chat's `foldEvent`/`driveRun`, scoped to exactly what the
+   pipeline documents it streams (backend `research/CLAUDE.md`): step.started's
+   `title` is the phase, a `planning` step's count is the round number,
+   `tool.progress`'s partial is the cumulative sources/findings, and a search-
+   unavailable `limit.notice` (immediately followed by `run.error`) is the one
+   robustness case with an operator-facing message. Reattach mirrors chat's cold-
+   reload path: a `"running"` entry loaded fresh resumes from seq 0, replaying
+   the whole buffer to rebuild phase/round/counts rather than trusting a snapshot. ── */
 
-const PHASES: ResearchPhase[] = [
-  "PLANNING",
-  "SEARCHING",
-  "READING",
-  "ANALYZING",
-  "WRITING",
-  "DONE",
-];
+const ROUND_COUNTS_RE = /(\d+)\s+sources,\s+(\d+)\s+findings/;
 
-const PHASE_PROGRESS: Record<ResearchPhase, number> = {
-  PLANNING: 8,
-  SEARCHING: 28,
-  READING: 52,
-  ANALYZING: 74,
-  WRITING: 92,
-  DONE: 100,
-};
+export interface ResearchProgressController {
+  state: ResearchProgressState;
+  /** Start (or resume, via `fromSeq`) following a run's events. */
+  start: (runId: string, fromSeq?: number) => Promise<void>;
+  /** Re-attach after a `detached` transport gave up — resumes from the last
+   *  folded seq, same as chat's reattach affordance. */
+  reattach: () => void;
+  /** `POST /runs/{id}/cancel` — cancellation itself is backend-owned; this only
+   *  relays the request. Progress reflects the eventual `run.ended`. */
+  cancel: () => Promise<void>;
+  /** Abort the local stream reader (screen teardown) without cancelling the run. */
+  stop: () => void;
+  /** Called once the run reaches a terminal event — the entry's `report`/`stats`/
+   *  final `status` live on `ResearchOut`, not the event stream, so the caller
+   *  refetches the entry when this fires. */
+  onTerminal: (fn: () => void) => void;
+}
 
-const PHASE_DURATIONS: Record<ResearchPhase, number> = {
-  PLANNING: 900,
-  SEARCHING: 2200,
-  READING: 3100,
-  ANALYZING: 2400,
-  WRITING: 2800,
-  DONE: 0,
-};
-
-export function createResearchRun() {
-  const [running, setRunning] = createSignal(false);
-  const [state, setState] = createStore<ResearchRunState>({
-    phase: "PLANNING",
-    round: 1,
-    sourcesFound: 0,
-    findingsExtracted: 0,
-    progress: 0,
-    query: "",
-    attachmentIds: [],
-    error: null,
+export function createResearchProgress(): ResearchProgressController {
+  const [state, setState] = createStore<ResearchProgressState>({
+    phase: null,
+    round: 0,
+    sources: 0,
+    findings: 0,
+    running: false,
+    detached: false,
+    errorMessage: null,
   });
 
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  const after = (ms: number, fn: () => void) => timers.push(setTimeout(fn, ms));
+  let controller: AbortController | null = null;
+  let maxFoldedSeq = 0;
+  let currentRunId: string | null = null;
+  let terminalCb: (() => void) | null = null;
 
-  function run(query: string, attachmentIds: string[] = []) {
-    if (!query.trim() || running()) return;
-    setRunning(true);
-    setState(
-      produce((s) => {
-        s.query = query.trim();
-        s.attachmentIds = attachmentIds;
-        s.phase = "PLANNING";
-        s.round = 1;
-        s.sourcesFound = 0;
-        s.findingsExtracted = 0;
-        s.progress = 0;
-        s.error = null;
-      }),
-    );
-
-    let elapsed = 0;
-    PHASES.forEach((phase, i) => {
-      if (phase === "DONE") {
-        after(elapsed, () => {
-          setState(
-            produce((s) => {
-              s.phase = "DONE";
-              s.progress = 100;
-              s.sourcesFound = 31;
-              s.findingsExtracted = 47;
-              s.round = 4;
-            }),
-          );
-          setRunning(false);
-        });
-        return;
+  function foldEvent(ev: RunEvent): void {
+    if (ev.seq <= maxFoldedSeq) return;
+    maxFoldedSeq = ev.seq;
+    switch (ev.type) {
+      case "step.started": {
+        const phase = ev.title as ResearchPhase | null;
+        setState("phase", phase);
+        if (phase === "planning") setState("round", (r) => r + 1);
+        break;
       }
-
-      after(elapsed, () => {
-        setState(
-          produce((s) => {
-            s.phase = phase;
-            s.progress = PHASE_PROGRESS[phase];
-          }),
-        );
-      });
-
-      // Tick up sources / findings during SEARCHING and READING
-      if (phase === "SEARCHING") {
-        for (let t = 200; t <= PHASE_DURATIONS[phase]; t += 300) {
-          after(elapsed + t, () =>
-            setState(
-              produce((s) => {
-                s.sourcesFound = Math.min(s.sourcesFound + 3, 31);
-              }),
-            ),
-          );
+      case "tool.progress": {
+        const m = ROUND_COUNTS_RE.exec(ev.partial ?? "");
+        if (m) {
+          setState("sources", Number(m[1]));
+          setState("findings", Number(m[2]));
         }
+        break;
       }
-      if (phase === "READING") {
-        for (let t = 200; t <= PHASE_DURATIONS[phase]; t += 400) {
-          after(elapsed + t, () =>
-            setState(
-              produce((s) => {
-                s.findingsExtracted = Math.min(s.findingsExtracted + 4, 47);
-              }),
-            ),
-          );
-        }
-      }
-      // Simulate round advances
-      if (phase === "ANALYZING" && i === 3) {
-        after(elapsed + PHASE_DURATIONS[phase] * 0.5, () =>
-          setState(
-            produce((s) => {
-              s.round = Math.min(s.round + 2, 4);
-            }),
-          ),
-        );
-      }
-
-      elapsed += PHASE_DURATIONS[phase];
-    });
+      case "limit.notice":
+        // The frozen union's `limit` field is a plain string on the backend
+        // (`runs/events.py`); "search" (DR-4.1's two-empty-rounds abort) is a
+        // valid value the closed frontend literal doesn't (yet) enumerate —
+        // cast rather than widen that shared mirror from here.
+        if ((ev.limit as string) === "search")
+          setState("errorMessage", ev.message);
+        break;
+      case "run.error":
+        setState("errorMessage", ev.message);
+        break;
+      default:
+        break;
+    }
   }
 
-  onCleanup(() => timers.forEach(clearTimeout));
+  async function start(runId: string, fromSeq = 0): Promise<void> {
+    controller?.abort();
+    const resuming = runId === currentRunId;
+    currentRunId = runId;
+    maxFoldedSeq = fromSeq;
+    setState({
+      running: true,
+      detached: false,
+      errorMessage: null,
+      ...(resuming ? {} : { phase: null, round: 0, sources: 0, findings: 0 }),
+    });
+    controller = new AbortController();
+    try {
+      await streamRun(runId, {
+        signal: controller.signal,
+        fromSeq,
+        onEvent: foldEvent,
+      });
+      setState("running", false);
+      terminalCb?.();
+    } catch (err) {
+      if (err instanceof StreamDetachedError) {
+        setState({ running: false, detached: true });
+      } else {
+        setState("running", false);
+      }
+    }
+  }
 
-  return { running, state, run };
+  function reattach(): void {
+    if (!currentRunId) return;
+    void start(currentRunId, maxFoldedSeq);
+  }
+
+  async function cancel(): Promise<void> {
+    if (!currentRunId) return;
+    try {
+      await api.post(`/runs/${currentRunId}/cancel`, {});
+    } catch (err) {
+      toast.error(isApiError(err) ? err.detail : "Unable to cancel the run.");
+    }
+  }
+
+  function stop(): void {
+    controller?.abort();
+  }
+
+  return {
+    state,
+    start,
+    reattach,
+    cancel,
+    stop,
+    onTerminal: (fn) => {
+      terminalCb = fn;
+    },
+  };
 }

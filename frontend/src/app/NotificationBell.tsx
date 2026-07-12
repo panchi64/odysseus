@@ -107,6 +107,8 @@ export function NotificationBell(): JSX.Element {
     if (n.conversationId) {
       openConversation(n.conversationId);
       navigate("/chat");
+    } else if (n.researchId) {
+      navigate(`/research/${n.researchId}`);
     }
   };
 

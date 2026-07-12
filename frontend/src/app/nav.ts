@@ -91,6 +91,7 @@ export const NAV: NavSection[] = [
         label: "Research",
         href: "/research",
         icon: "research",
+        connected: true,
         description: "Deep, multi-source research reports, kept as reference",
       },
     ],

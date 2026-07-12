@@ -1,25 +1,26 @@
 import { For, type JSX } from "solid-js";
-import { Text } from "~/ui";
-import { cx } from "~/ui";
+import { Text, cx } from "~/ui";
 import type { ResearchPhase } from "../model";
 
 const PHASES: ResearchPhase[] = [
-  "PLANNING",
-  "SEARCHING",
-  "READING",
-  "ANALYZING",
-  "WRITING",
+  "planning",
+  "searching",
+  "reading",
+  "analyzing",
+  "writing",
 ];
 
 interface PhaseTrackProps {
-  current: ResearchPhase;
+  /** Null before the first `step.started` frame has arrived. */
+  current: ResearchPhase | null;
 }
 
-function phaseOrdinal(phase: ResearchPhase): number {
-  return PHASES.indexOf(phase);
+function phaseOrdinal(phase: ResearchPhase | null): number {
+  return phase === null ? -1 : PHASES.indexOf(phase);
 }
 
-/** Horizontal phase progress indicator for the live-run panel. */
+/** Horizontal phase progress indicator for the live-run panel — the five
+ *  phases DR-5.1 requires the stream to convey, in pipeline order. */
 export function PhaseTrack(props: PhaseTrackProps): JSX.Element {
   return (
     <div class="flex items-stretch gap-0 w-full">
@@ -42,7 +43,7 @@ export function PhaseTrack(props: PhaseTrackProps): JSX.Element {
                 tone={done() ? "nominal" : active() ? "info" : "dim"}
                 class="truncate px-1"
               >
-                {phase}
+                {phase.toUpperCase()}
               </Text>
             </div>
           );

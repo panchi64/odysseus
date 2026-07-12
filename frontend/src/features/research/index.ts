@@ -1,2 +1,2 @@
 export { ResearchLibraryScreen } from "./screens/ResearchLibraryScreen";
-export { ResearchReportScreen } from "./screens/ResearchReportScreen";
+export { ResearchEntryScreen } from "./screens/ResearchEntryScreen";

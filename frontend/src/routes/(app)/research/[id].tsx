@@ -1,5 +1,5 @@
-import { ResearchReportScreen } from "~/features/research";
+import { ResearchEntryScreen } from "~/features/research";
 
-export default function ResearchReportRoute() {
-  return <ResearchReportScreen />;
+export default function ResearchEntryRoute() {
+  return <ResearchEntryScreen />;
 }

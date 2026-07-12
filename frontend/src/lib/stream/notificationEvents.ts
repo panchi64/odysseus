@@ -30,6 +30,11 @@ export interface Notification {
   title: string;
   body: string | null;
   conversationId: string | null;
+  /** Set on a research-linked `run_completed`/`run_failed` notification (a
+   *  research run that isn't itself conversation-linked) — deep-links to the
+   *  research entry (`/research/{id}`) the same way `conversationId` deep-links
+   *  to a thread. The two are mutually exclusive on any one notification. */
+  researchId: string | null;
   runId: string | null;
   createdAt: string;
   /** Set once the operator has seen/dismissed it. */

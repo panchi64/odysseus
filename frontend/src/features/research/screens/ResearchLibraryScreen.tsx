@@ -1,53 +1,51 @@
-import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
-import { produce } from "solid-js/store";
+import { For, Show, createSignal, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
   Button,
-  confirm,
-  EmptyState,
-  ErrorState,
-  ListRow,
+  Chip,
+  Composer,
   ListToolbar,
-  LoadingText,
   Menu,
   PageHeader,
   Panel,
+  Resource,
   Stack,
   StatusFlag,
-  Tabs,
   Text,
+  confirm,
   toast,
   type Status,
 } from "~/ui";
 import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
-import {
-  useReportSummaries,
-  createResearchRun,
-  useSummariesStore,
-} from "../data";
-import { RunPanel } from "../components/RunPanel";
-import type { ResearchStatus, ResearchSummary } from "../model";
+import { deleteResearch, intakeResearch, useResearchList } from "../data";
+import type { ResearchListItem, ResearchStatus } from "../model";
 
-const statusMap: Record<ResearchStatus, Status> = {
-  complete: "nominal",
-  running: "info",
-  archived: "idle",
-  error: "alert",
+const STATUS_MAP: Record<ResearchStatus, { status: Status; label: string }> = {
+  draft: { status: "idle", label: "DRAFT" },
+  running: { status: "info", label: "RUNNING" },
+  done: { status: "nominal", label: "DONE" },
+  error: { status: "alert", label: "ERROR" },
+  cancelled: { status: "idle", label: "CANCELLED" },
 };
 
-/** Research library + run hub. Two-tab layout: RUN and LIBRARY. */
-export function ResearchLibraryScreen(): JSX.Element {
-  const [tab, setTab] = createSignal<string>("run");
-  const summariesResource = useReportSummaries();
-  const [store, setStore] = useSummariesStore();
-  const { running, state, run } = createResearchRun();
+const EXAMPLE_QUERIES = [
+  "Compare the energy efficiency of leading local-LLM inference runtimes in 2026",
+  "What are the trade-offs between RAG and long-context for personal knowledge bases?",
+  "Summarize recent advances in on-device speech-to-text for Apple Silicon",
+];
 
-  // Seed the mutable store from the resource once loaded (idempotent after first call)
-  const summaries = () => store.list;
+/** Research library + new-research entry point. A question starts a draft
+ *  (`intake`) and hands off to the entry screen for clarify/plan/refine/start —
+ *  this screen never drives that flow itself. */
+export function ResearchLibraryScreen(): JSX.Element {
+  const navigate = useNavigate();
+  const list = useResearchList();
+  const [starting, setStarting] = createSignal(false);
 
   const view = createListView({
-    source: summaries,
-    search: (r) => r.title,
+    source: () => list() ?? [],
+    search: (r: ResearchListItem) => r.question,
     sorts: {
       recent: {
         label: "DATE",
@@ -62,43 +60,36 @@ export function ResearchLibraryScreen(): JSX.Element {
     initialDir: "desc",
   });
 
-  async function handleArchive(r: ResearchSummary) {
-    if (r.status === "archived") {
-      toast.info(`"${r.title}" is already archived.`);
-      return;
+  async function handleStart(question: string): Promise<void> {
+    const q = question.trim();
+    if (!q || starting()) return;
+    setStarting(true);
+    try {
+      const out = await intakeResearch(q);
+      navigate(`/research/${out.id}`);
+    } catch {
+      toast.error("Could not start research — try again.");
+    } finally {
+      setStarting(false);
     }
-    setStore(
-      "list",
-      (item) => item.id === r.id,
-      produce((item) => {
-        item.status = "archived";
-      }),
-    );
-    toast.success(`Archived — ${r.title}`);
   }
 
-  async function handleDelete(r: ResearchSummary) {
+  async function handleDelete(r: ResearchListItem): Promise<void> {
     const ok = await confirm({
-      title: `Delete "${r.title}"?`,
+      title: `Delete "${r.question}"?`,
       detail:
-        "This research report and all its sources will be permanently removed. This cannot be undone.",
+        "This research entry and its report (if any) will be permanently removed. This cannot be undone.",
       confirmLabel: "DELETE",
       cancelLabel: "CANCEL",
       tone: "alert",
     });
     if (!ok) return;
-
-    const deleted = r;
-    setStore("list", (list) => list.filter((item) => item.id !== r.id));
-    toast.success(`Deleted — ${deleted.title}`, {
-      action: {
-        label: "UNDO",
-        onClick: () => {
-          setStore("list", (list) => [deleted, ...list]);
-          toast.success("Delete undone.");
-        },
-      },
-    });
+    try {
+      await deleteResearch(r.id);
+      toast.success("Deleted.");
+    } catch {
+      toast.error("Could not delete this entry.");
+    }
   }
 
   return (
@@ -107,121 +98,121 @@ export function ResearchLibraryScreen(): JSX.Element {
         title="DEEP RESEARCH"
         subtitle="Multi-round synthesis engine. Plan → search → read → analyze → write."
         assetId="ODY-RES-01.0"
-        actions={
-          <StatusFlag status={running() ? "info" : "idle"} dot={running()}>
-            {running() ? "RUNNING" : "IDLE"}
-          </StatusFlag>
-        }
       />
 
-      <Tabs
-        items={[
-          { value: "run", label: "RUN" },
-          { value: "library", label: "LIBRARY" },
-        ]}
-        value={tab()}
-        onChange={setTab}
-      />
+      <Panel label="NEW RESEARCH" state={starting() ? "active" : "default"}>
+        <Stack gap={3}>
+          <Stack gap={2}>
+            <Text variant="micro" tone="dim">
+              TRY AN EXAMPLE
+            </Text>
+            <div class="flex flex-wrap gap-2">
+              <For each={EXAMPLE_QUERIES}>
+                {(example) => (
+                  <Chip onClick={() => handleStart(example)}>{example}</Chip>
+                )}
+              </For>
+            </div>
+          </Stack>
+          <Composer
+            size="md"
+            disabled={starting()}
+            storageKey="research:query"
+            placeholder="What do you want to research? Be specific — the engine will plan, search, read, and synthesize."
+            onSend={(question) => handleStart(question)}
+          />
+        </Stack>
+      </Panel>
 
-      <Show when={tab() === "run"}>
-        <RunPanel running={running()} state={state} onRun={run} />
-      </Show>
-
-      <Show when={tab() === "library"}>
-        <Panel label="RESEARCH REPORTS" flush>
-          <div class="border-b border-line p-3">
-            <ListToolbar
-              query={view.query()}
-              onQueryChange={view.setQuery}
-              placeholder="Search reports by title…"
-              sortKey={view.sortKey()}
-              sortOptions={view.sortOptions}
-              onSortChange={view.setSort}
-              dir={view.dir()}
-              onToggleDir={view.toggleDir}
-              count={view.count()}
-              total={view.total()}
-            />
-          </div>
-          <Suspense
-            fallback={
-              <div class="p-4">
-                <LoadingText />
-              </div>
-            }
-          >
-            <Show when={summariesResource.error}>
-              <div class="p-4">
-                <ErrorState
-                  message="FAILED TO LOAD REPORTS"
-                  hint="Could not retrieve the research library."
-                />
-              </div>
+      <Panel label="LIBRARY" flush>
+        <div class="border-b border-line p-3">
+          <ListToolbar
+            query={view.query()}
+            onQueryChange={view.setQuery}
+            placeholder="Search by question…"
+            sortKey={view.sortKey()}
+            sortOptions={view.sortOptions}
+            onSortChange={view.setSort}
+            dir={view.dir()}
+            onToggleDir={view.toggleDir}
+            count={view.count()}
+            total={view.total()}
+          />
+        </div>
+        <Resource
+          data={list}
+          emptyMessage="NO RESEARCH YET"
+          emptyHint="Ask a question above to generate your first report."
+          isEmpty={(items) => items.length === 0}
+        >
+          {() => (
+            <Show
+              when={view.items().length > 0}
+              fallback={
+                <div class="p-4">
+                  <Text variant="body" tone="dim">
+                    No entries match your search.
+                  </Text>
+                </div>
+              }
+            >
+              <For each={view.items()}>
+                {(r) => {
+                  const meta = STATUS_MAP[r.status];
+                  return (
+                    <div class="flex items-center justify-between gap-3 border-b border-line px-3 py-2 last:border-0">
+                      <button
+                        type="button"
+                        class="min-w-0 flex-1 text-left"
+                        onClick={() => navigate(`/research/${r.id}`)}
+                      >
+                        <Text variant="label" tone="bright" class="truncate">
+                          {r.question}
+                        </Text>
+                      </button>
+                      <div class="flex shrink-0 items-center gap-3">
+                        <Show when={r.stats}>
+                          {(s) => (
+                            <Text variant="micro" tone="dim">
+                              {s().sources} SRC
+                            </Text>
+                          )}
+                        </Show>
+                        <Text variant="micro" tone="dim">
+                          {relativeTime(r.createdAt)}
+                        </Text>
+                        <StatusFlag
+                          status={meta.status}
+                          dot={r.status === "running"}
+                        >
+                          {meta.label}
+                        </StatusFlag>
+                        <Menu
+                          trigger={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              leading="settings"
+                            />
+                          }
+                          items={[
+                            {
+                              label: "Delete",
+                              icon: "trash",
+                              danger: true,
+                              onSelect: () => handleDelete(r),
+                            },
+                          ]}
+                        />
+                      </div>
+                    </div>
+                  );
+                }}
+              </For>
             </Show>
-            <Show when={!summariesResource.error}>
-              <Show
-                when={view.items().length > 0}
-                fallback={
-                  <EmptyState
-                    icon="research"
-                    message="NO REPORTS"
-                    hint={
-                      view.isFiltered()
-                        ? "No reports match your search."
-                        : "Run a research query to generate your first report."
-                    }
-                  />
-                }
-              >
-                <For each={view.items()}>
-                  {(r) => (
-                    <ListRow
-                      label={r.title}
-                      leading="file"
-                      href={`/research/${r.id}`}
-                      right={
-                        <div class="flex items-center gap-3">
-                          <Text variant="micro" tone="dim">
-                            {r.sourceCount} SRC
-                          </Text>
-                          <Text variant="micro" tone="dim">
-                            {relativeTime(r.createdAt)}
-                          </Text>
-                          <StatusFlag status={statusMap[r.status]}>
-                            {r.status.toUpperCase()}
-                          </StatusFlag>
-                          <Menu
-                            trigger={
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                leading="settings"
-                              />
-                            }
-                            items={[
-                              {
-                                label: "Archive",
-                                icon: "archive",
-                                onSelect: () => handleArchive(r),
-                              },
-                              {
-                                label: "Delete",
-                                icon: "trash",
-                                danger: true,
-                                onSelect: () => handleDelete(r),
-                              },
-                            ]}
-                          />
-                        </div>
-                      }
-                    />
-                  )}
-                </For>
-              </Show>
-            </Show>
-          </Suspense>
-        </Panel>
-      </Show>
+          )}
+        </Resource>
+      </Panel>
     </Stack>
   );
 }
