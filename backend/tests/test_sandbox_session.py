@@ -15,6 +15,7 @@ from services.sandbox import (
     ContainerSandbox,
     PreviewHandle,
     SandboxError,
+    SandboxResult,
     SandboxSession,
     SandboxSessionManager,
     SandboxSpec,
@@ -296,6 +297,47 @@ async def test_ensure_up_proceeds_when_the_pull_resolved_but_failed(tmp_path, mo
 
     with pytest.raises(SandboxError, match="failed to start sandbox session"):
         await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+
+
+async def test_run_in_waits_for_a_pending_image_warmup_before_the_network_call(
+    tmp_path, monkeypatch
+):
+    # The `spec.network=True` path bypasses `_ensure_up` entirely (it runs a
+    # throwaway bridge container via `run_in` instead of exec-ing into the warm
+    # session), so it needs its own wait-out-the-pull coordination — otherwise a
+    # cold-boot network call can race its own implicit pull against a much shorter
+    # exec timeout (sandbox-01, extended to the network branch).
+    vault = await _vault(tmp_path)
+    warmup = ImageWarmup()
+    warmup.start_pulling()  # simulate the background pull actually being in flight
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+        warmup=warmup,
+    )
+
+    called: list[SandboxSpec] = []
+
+    async def fake_run_in(_workspace, spec):
+        called.append(spec)
+        return SandboxResult(exit_code=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(session._backend, "run_in", fake_run_in)
+
+    spec = SandboxSpec(command=["true"], network=True)
+    task = asyncio.create_task(session.run(spec))
+    await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
+    assert not task.done()
+    assert not called  # no network call attempted while the pull is in flight
+
+    warmup.mark_done(True)  # the background pull resolves
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result.exit_code == 0
+    assert called  # now proceeds to the (fast, image-cached) network call
 
 
 # --- the idle reaper ---------------------------------------------------------

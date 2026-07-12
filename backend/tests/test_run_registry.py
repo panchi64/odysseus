@@ -438,3 +438,27 @@ async def test_on_terminal_sees_zero_subscribers_when_nobody_is_watching():
     await run.wait()
 
     assert seen["count"] == 0
+
+
+# --- duration formatting: exact minutes, no silent rounding --------------------------
+
+
+def test_adj_duration_reports_a_fractional_bound_exactly():
+    from runs.registry import _adj_duration
+
+    assert _adj_duration(1800) == "30-minute"
+    assert _adj_duration(45) == "45-second"
+    # Python's round() is round-half-to-even (round(2.5) == 2) — a naive round()
+    # would understate a 150s/2.5-minute bound as "2-minute"; this reports the
+    # operator's actual configured duration instead.
+    assert _adj_duration(150) == "2.5-minute"
+    assert _adj_duration(90) == "1.5-minute"
+
+
+def test_count_duration_reports_a_fractional_bound_exactly():
+    from runs.registry import _count_duration
+
+    assert _count_duration(120) == "2 minutes"
+    assert _count_duration(1) == "1 second"
+    assert _count_duration(150) == "2.5 minutes"
+    assert _count_duration(60) == "1 minute"

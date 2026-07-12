@@ -243,6 +243,10 @@ class SandboxSession:
         if spec.network:
             # Egress is granted per-call via a throwaway bridge container over
             # the same workspace, so the live session itself stays no-network.
+            # Still wait out an in-flight background image pull first, same as
+            # `_ensure_up` below — otherwise this container's own implicit pull can
+            # race the much shorter exec timeout on a genuinely cold boot (sandbox-01).
+            await self._await_image_ready()
             return await self._backend.run_in(self.workspace, spec)
         await self._ensure_up()
         backstop_timed_out, code, out, err = await run_subprocess(

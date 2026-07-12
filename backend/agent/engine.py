@@ -371,6 +371,20 @@ def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
     return "steps"
 
 
+def _usage_limit_message(exc: UsageLimitExceeded) -> str:
+    """An operator-legible sentence for a usage-limit stop, mirroring the treatment
+    ``_timeout_message`` (``runs/registry.py``) gives wall-clock/inactivity bounds:
+    this reaches the operator verbatim, as the toast (``LimitNotice.message``), so it
+    must read as a plain sentence — never ``str(exc)``'s raw internal phrasing (e.g.
+    pydantic_ai's own ``{tool_calls=}`` repr syntax)."""
+    kind = _usage_limit_kind(exc)
+    if kind == "tool_calls":
+        return "this run made too many tool calls and stopped"
+    if kind == "tokens":
+        return "this run generated too many tokens and stopped"
+    return "this run took too many steps and stopped"
+
+
 def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
     """Strip a trailing tool call that never received its result.
 
@@ -497,7 +511,7 @@ async def _drive_turn(
                 result = agent_run.result
         except UsageLimitExceeded as exc:
             # Hit a usage bound — stop and report state, don't error.
-            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=str(exc)))
+            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=_usage_limit_message(exc)))
             detail = "usage limit reached"
             run.block(detail)
             return _TurnResult(
@@ -701,6 +715,38 @@ def _finalize(
             persisted=persisted,
             blocked_reason=turn.blocked_reason,
         )
+
+
+def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None:
+    """Persist a parked turn's own messages when the operator cancels it while it is
+    still awaiting an approval decision, instead of its resume-only persistence
+    silently dropping the whole turn (the operator's own prompt included) — the
+    parked counterpart of ``_on_cancel``'s flush for a still-running turn. Wired as
+    ``run.on_park_cancel`` right after the parking ``_finalize`` call populates
+    ``ParkedTurn``'s persistence context, so it's armed before any further ``await``
+    a concurrent cancel could otherwise slip through (see ``_park_for_approval``'s
+    identical notify-before-park ordering concern). Called by
+    ``RunRegistry.cancel``'s parked branch *after* it has already set the terminal
+    ``cancelled`` status, so ``_finalize`` takes its normal persist branch rather
+    than its still-parked one."""
+    parked = run.parked_payload
+    if not isinstance(parked, ParkedTurn):
+        return
+    _finalize(
+        run,
+        _TurnResult(
+            answer=None,
+            messages=parked.message_history,
+            blocked_reason=_CANCELLED_DETAIL,
+        ),
+        store=store,
+        conversation_id=parked.conversation_id,
+        start=parked.persist_from,
+        clean_drop=parked.clean_drop,
+        attachment_ids=parked.attachment_ids,
+        persisted=parked.persisted,
+        compaction=parked.compaction,
+    )
 
 
 async def _maybe_title(
@@ -1076,6 +1122,12 @@ def build_chat_orchestrator(
             finalized = True
 
             if run.status is RunStatus.awaiting_input:
+                # Arm the park-cancel flush now, before any further `await` — a
+                # concurrent cancel of this now-externally-visible parked run must
+                # find `ParkedTurn`'s persistence context already wired (see
+                # `_persist_parked_cancel`'s docstring for why this can't wait until
+                # after `_discard_title`'s own await below).
+                run.on_park_cancel = lambda: _persist_parked_cancel(run, store=store)
                 # Parked for approval before producing an answer: abandon the
                 # concurrent title and carry the context forward so the resume names
                 # the thread once it completes (the resume titles from history).
@@ -1223,8 +1275,11 @@ def build_resume_orchestrator(
             finalized = True
 
             if run.status is RunStatus.awaiting_input:
-                # Re-parked on a further approval: carry the title context forward to
-                # the new parked payload so the eventual completion still names it.
+                # Re-parked on a further approval: re-arm the park-cancel flush (see
+                # the chat orchestrator's identical wiring) and carry the title
+                # context forward to the new parked payload so the eventual
+                # completion still names it.
+                run.on_park_cancel = lambda: _persist_parked_cancel(run, store=store)
                 if isinstance(run.parked_payload, ParkedTurn):
                     run.parked_payload.title = parked.title
             else:

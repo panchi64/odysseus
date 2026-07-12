@@ -88,6 +88,14 @@ class Run:
     # the terminal ``cancelled`` status once the cancellation actually lands, so this
     # hook is finalize-only. A raising hook is swallowed by the caller.
     on_cancel: Callable[[], None] | None = None
+    # The parked counterpart of ``on_cancel``: set by the orchestrator once a turn has
+    # parked (``awaiting_input``) awaiting an approval decision, so cancelling the
+    # *parked* run — there is no task left to interrupt, see ``RunRegistry.cancel``'s
+    # parked branch — still persists the parked turn instead of silently dropping it
+    # (including the operator's own prompt). Called synchronously from the registry's
+    # own coroutine, after ``run.status`` has already been set to the terminal
+    # ``cancelled`` value. A raising hook is swallowed by the caller.
+    on_park_cancel: Callable[[], None] | None = None
 
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog."""

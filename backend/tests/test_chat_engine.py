@@ -76,6 +76,11 @@ async def test_usage_limit_blocks_the_turn(monkeypatch):
     assert "limit.notice" in types
     notice = next(b for b in _bodies(run) if b.type == "limit.notice")
     assert notice.limit == "steps"
+    # The operator-facing message is a plain sentence, not pydantic_ai's own raw
+    # internal phrasing (e.g. its `{tool_calls=}` repr syntax) — mirrors the
+    # legibility treatment `RunTimeout` gets in `runs/registry.py`.
+    assert "request_limit" not in notice.message
+    assert notice.message == "this run took too many steps and stopped"
     assert _bodies(run)[-1].outcome == "blocked"
 
 
@@ -121,3 +126,21 @@ def test_usage_limit_kind_distinguishes_the_tripped_bound():
 
     tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
     assert _usage_limit_kind(tokens) == "tokens"
+
+
+def test_usage_limit_message_is_operator_legible_for_every_kind():
+    from pydantic_ai import UsageLimitExceeded
+
+    from agent.engine import _usage_limit_message
+
+    steps = UsageLimitExceeded("The next request would exceed the request_limit of 25")
+    assert _usage_limit_message(steps) == "this run took too many steps and stopped"
+
+    tool_calls = UsageLimitExceeded(
+        "The next tool call(s) would exceed the tool_calls_limit of 0 (tool_calls=1)."
+    )
+    assert "{tool_calls=}" not in _usage_limit_message(tool_calls)
+    assert _usage_limit_message(tool_calls) == "this run made too many tool calls and stopped"
+
+    tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
+    assert _usage_limit_message(tokens) == "this run generated too many tokens and stopped"

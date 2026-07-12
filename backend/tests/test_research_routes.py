@@ -418,6 +418,42 @@ async def test_continue_seeds_a_conversation_with_the_report_and_is_idempotent(m
         assert second.json()["conversationId"] == conversation_id
 
 
+async def test_continue_seeds_the_report_wrapped_as_untrusted_history(monkeypatch):
+    # The seeded report becomes the assistant's own prior turn — retained, poisonable
+    # context for every future turn — but it was built from web content, so it must
+    # carry the same untrusted marking every other web-sourced text carries through
+    # history (security-01), not read back as fully-trusted analyst output.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+
+        async def ok(plan, question, deps, emit):
+            return ResearchResult(
+                report="the finished report", rounds=1, sources=1, queries=1,
+                duration_s=0.1, model="m",
+            )
+
+        monkeypatch.setattr("routes.research.run_research", ok)
+        await client.post(f"/research/{created['id']}/start")
+        await _await_status(client, app, created["id"], "done")
+
+        resp = await client.post(f"/research/{created['id']}/continue")
+        conversation_id = resp.json()["conversationId"]
+
+        history = await app.state.conversations.history(conversation_id)
+        assistant_text = next(
+            part.content
+            for message in history
+            for part in message.parts
+            if hasattr(part, "content")
+            and isinstance(part.content, str)
+            and "the finished report" in part.content
+        )
+        assert "BEGIN UNTRUSTED CONTENT" in assistant_text
+        assert "END UNTRUSTED CONTENT" in assistant_text
+        assert "the finished report" in assistant_text
+
+
 # --- delete: guarded while running, 404 unknown -----------------------------------------
 
 

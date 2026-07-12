@@ -46,6 +46,7 @@ from sqlmodel import Session, select
 
 from core.config import get_settings
 from core.db import in_session
+from core.untrusted import wrap_untrusted
 from core.vault import Vault
 from models._fields import utcnow
 from models.research import ResearchRun, ResearchStatus
@@ -678,12 +679,19 @@ async def continue_research(research_id: str, request: Request) -> ContinueOut:
     # Seed the new thread with the question and the finished report as an ordinary
     # request/response exchange — the exact mechanism a live chat turn already
     # persists through (`ConversationStore.record`), so the report becomes available
-    # context for a follow-up without re-running the research (DR-1.5/7.3).
+    # context for a follow-up without re-running the research (DR-1.5/7.3). The report
+    # is seeded as the assistant's own prior turn — retained, poisonable history for
+    # every future turn in this conversation — but it was built from web content that
+    # only survived a soft-instruction extraction step (see
+    # `EvidenceLedger.render_context`), so it must still carry the same untrusted
+    # marking every other web-sourced text carries through history, or a successful
+    # prompt injection in a source page becomes an assistant-authored instruction the
+    # model later treats as its own trusted past statement.
     store.record(
         conversation_id,
         [
             ModelRequest(parts=[UserPromptPart(content=f"Research: {question}")]),
-            ModelResponse(parts=[TextPart(content=report)]),
+            ModelResponse(parts=[TextPart(content=wrap_untrusted(report, source="research"))]),
         ],
     )
     if not await _set_conversation_id_if_absent(engine, research_id, conversation_id):

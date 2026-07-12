@@ -327,6 +327,54 @@ async def test_double_cancel_does_not_duplicate_the_persisted_turn(tmp_path):
     await store.stop()
 
 
+async def test_cancel_parked_run_persists_the_parked_turn(tmp_path):
+    # Cancelling a *parked* run (RunRegistry.cancel's awaiting_input branch) has no
+    # task left to interrupt — a parked turn's persistence is otherwise only ever
+    # recorded on resume (`agent.engine._finalize`'s parked branch just wires resume
+    # context). The engine's `on_park_cancel` hook — the parked counterpart of
+    # `on_cancel` — is what persists it instead, so cancelling instead of resuming
+    # doesn't silently drop the operator's own prompt (backend-correctness-01).
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True)
+    def delete_thing(name: str) -> str:
+        return f"deleted {name}"
+
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "delete the thing",
+        model=TestModel(custom_output_text="done"),
+        categories={"danger": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=orch, conversation_id=conv
+    )
+    await run.wait()
+    assert run.status is RunStatus.awaiting_input
+
+    assert await reg.cancel(run.id) is True
+    assert run.status is RunStatus.cancelled
+    assert run.stream.closed
+
+    views = await store.messages_view(conv)
+    assert views[0].role == "user"
+    assert views[-1].blocked_reason == "cancelled by the operator"
+
+    # Reload parity: a cold store rehydrates the same marker from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert cold_views[-1].blocked_reason == "cancelled by the operator"
+    await cold.stop()
+
+
 async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path):
     # Anything that escapes `_drive_turn` besides its specific bound catches (here: a
     # tool raising a plain exception) must not silently drop the operator's own prompt

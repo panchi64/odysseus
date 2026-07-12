@@ -256,8 +256,9 @@ class ApprovalRequired(_Body):
 
 class LimitNotice(_Body):
     type: Literal["limit.notice"] = "limit.notice"
-    # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context"
-    # ("context" = the model's context window was exceeded; the run stops, it isn't degraded).
+    # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context" | "search"
+    # ("context" = the model's context window was exceeded; the run stops, it isn't degraded.
+    # "search" = deep research's two-empty-rounds abort.)
     limit: str
     message: str
 

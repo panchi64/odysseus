@@ -94,8 +94,7 @@ async def refine_answer(
     )
     prompt = (
         f"Question: {question}\n\nPlan objective: {plan.objective}\n\n"
-        f"Numbered sources:\n{ledger.render_sources()}\n\n"
-        f"Evidence claims:\n{ledger.render_claims()}"
+        f"{ledger.render_context()}"
     )
     result = await agent.run(prompt, model_settings=deps.main_settings)
     return result.output
@@ -206,8 +205,7 @@ async def write_report(
     )
     prompt = (
         f"Question: {question}\n\nPlan objective: {plan.objective}\n\n"
-        f"Numbered sources:\n{ledger.render_sources()}\n\n"
-        f"Evidence claims:\n{ledger.render_claims()}"
+        f"{ledger.render_context()}"
     )
     result = await agent.run(prompt, model_settings=deps.main_settings)
     return result.output

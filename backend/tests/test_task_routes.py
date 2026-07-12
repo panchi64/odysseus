@@ -376,6 +376,36 @@ async def test_webhook_fires_bad_token_404s_and_rotation_invalidates_old(monkeyp
         assert (await client.post(f"/tasks/hooks/{new_token}")).status_code == 202
 
 
+async def test_webhook_does_not_fire_once_the_task_is_disabled(monkeypatch):
+    # security-02: disabling a task is the operator's only way to "pause" a webhook
+    # trigger — the token itself stays unguessable and unrotated, so this must be
+    # what actually stops it firing. Still 202 (no info leak to whoever holds the
+    # token either way), but no TaskRun is ever recorded.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        created = await _create_task(client, schedule={"type": "webhook"})
+        task_id = created["id"]
+        token = created["webhookUrl"].rsplit("/", 1)[-1]
+
+        disabled = await client.patch(f"/tasks/{task_id}", json={"enabled": False})
+        assert disabled.status_code == 200
+        assert disabled.json()["enabled"] is False
+
+        assert (await client.post(f"/tasks/hooks/{token}")).status_code == 202
+        await asyncio.sleep(0.05)
+        assert (await client.get(f"/tasks/{task_id}/runs")).json()["items"] == []
+
+
+async def test_run_now_refuses_a_disabled_task():
+    # security-04: the same gate as the webhook path, but for the authenticated
+    # manual-fire route — a clear 409 rather than silently running (or the
+    # misleading generic 404 "not found").
+    async with client_app() as (client, _app):
+        created = await _create_task(client, enabled=False)
+        resp = await client.post(f"/tasks/{created['id']}/run_now")
+        assert resp.status_code == 409
+
+
 async def test_rotate_webhook_token_rejected_for_non_webhook_task():
     async with client_app() as (client, _app):
         created = await _create_task(client)  # schedule type "once"

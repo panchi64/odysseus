@@ -58,11 +58,22 @@ class RunTimeout(Exception):
         self.kind = kind
 
 
+def _fmt_minutes(minutes: float) -> str:
+    """The minutes count as a plain string — a whole number when the bound is an
+    exact multiple of a minute, else one decimal place. Plain ``round()`` is
+    round-half-to-even (``round(2.5) == 2``), which would silently understate (or
+    overstate) a fractional operator-configured bound like 150s/2.5 minutes; this
+    reports the actual configured duration instead of any rounded approximation."""
+    if minutes.is_integer():
+        return str(int(minutes))
+    return f"{minutes:.1f}"
+
+
 def _adj_duration(bound_s: float) -> str:
     """A hyphenated adjective phrase for a duration, e.g. ``30-minute``/``45-second``."""
     minutes = bound_s / 60
     if minutes >= 1:
-        return f"{round(minutes)}-minute"
+        return f"{_fmt_minutes(minutes)}-minute"
     return f"{max(1, round(bound_s))}-second"
 
 
@@ -70,8 +81,8 @@ def _count_duration(bound_s: float) -> str:
     """A counted-noun phrase for a duration, e.g. ``2 minutes``/``1 second``."""
     minutes = bound_s / 60
     if minutes >= 1:
-        n = round(minutes)
-        return f"{n} {'minute' if n == 1 else 'minutes'}"
+        label = _fmt_minutes(minutes)
+        return f"{label} {'minute' if label == '1' else 'minutes'}"
     n = max(1, round(bound_s))
     return f"{n} {'second' if n == 1 else 'seconds'}"
 
@@ -227,10 +238,15 @@ class RunRegistry:
         if run is None or run.is_terminal:
             return False
         if run.status is RunStatus.awaiting_input:
-            # Parked: the task already ended, so there is nothing to interrupt —
-            # finalize directly and close the stream.
+            # Parked: the task already ended, so there is nothing to interrupt — but
+            # unlike a running turn, a parked turn's own persistence is otherwise only
+            # ever recorded on resume, so flush it here first (see `_flush_park_cancel`)
+            # before finalizing and closing the stream, or the operator's own prompt
+            # (and any tool calls already completed before the deferred one) is
+            # silently dropped.
             run.cancel_requested = True
             run.status = RunStatus.cancelled
+            self._flush_park_cancel(run)
             run.emit(RunEnded(outcome="cancelled"))
             run.ended_at = now_utc()
             self._fire_terminal(run)
@@ -394,6 +410,23 @@ class RunRegistry:
             return
         with suppress(Exception):
             run.on_timeout(message)
+
+    @staticmethod
+    def _flush_park_cancel(run: Run) -> None:
+        """Give a parked (awaiting-approval) run the same pre-cancel flush opportunity
+        `_flush_cancel` gives a still-running turn. A parked turn's task has already
+        exited, so there is nothing to interrupt — but its persistence is otherwise
+        deferred until the eventual resume (see `agent.engine._finalize`'s parked
+        branch), so without this hook, cancelling it instead of resuming it silently
+        drops the whole parked turn (the operator's own prompt included) on the next
+        reload. Called after `run.status` has already been set to the terminal
+        `cancelled` value, so the orchestrator's own finalize path persists rather than
+        re-wiring resume context for a run that is no longer going to resume.
+        Best-effort: a hook that raises must not stop the cancel from proceeding."""
+        if run.on_park_cancel is None:
+            return
+        with suppress(Exception):
+            run.on_park_cancel()
 
     @staticmethod
     def _flush_cancel(run: Run) -> None:

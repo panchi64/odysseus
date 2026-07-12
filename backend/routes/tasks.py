@@ -403,8 +403,13 @@ async def run_now(task_id: str, request: Request) -> RunNowOut:
     existing = await _get_owned_task(engine, OPERATOR_ID, task_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="task not found")
+    if not existing.enabled:
+        # A distinct, clearer error than the generic "not found" below — the task
+        # exists, it's just been told not to run; re-enable it before firing.
+        raise HTTPException(status_code=409, detail="task is disabled")
     task_run_id = await deps.scheduler(request).fire_now(task_id)
-    if task_run_id is None:  # raced delete between the ownership check and the fire
+    if task_run_id is None:  # raced delete (or a concurrent disable) between the
+        # ownership check above and the fire itself
         raise HTTPException(status_code=404, detail="task not found")
     return RunNowOut(task_run_id=task_run_id)
 

@@ -8,12 +8,15 @@ the Run substrate directly — that happens in ``agents.py`` and ``pipeline.py``
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic_ai.settings import ModelSettings
+
+from core.untrusted import untrusted_fence, untrusted_preamble
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -98,6 +101,25 @@ class EvidenceLedger:
         return "\n".join(
             f"[{self.source_index(c.source_url)}] {c.claim}" for c in self.claims
         )
+
+    def render_context(self) -> str:
+        """The numbered sources + evidence claims, wrapped as untrusted content.
+
+        Every title/claim here originated on a fetched web page — extraction only
+        soft-instructs the model to ignore embedded instructions, it does not
+        re-fence the page's own untrusted marking (`services/webfetch` wraps the raw
+        page, but `extract_evidence`'s typed output is unstructured free text with no
+        surviving sentinel). Without this, a claim that carries a successful prompt
+        injection would read to `refine_answer`/`write_report` as fully-trusted
+        analyst input. One preamble + one fence for the whole block (mirrors the
+        batch pattern `services/search.py` already uses) — no need to wrap each
+        source/claim individually."""
+        nonce = secrets.token_hex(8)
+        body = (
+            f"Numbered sources:\n{self.render_sources()}\n\n"
+            f"Evidence claims:\n{self.render_claims()}"
+        )
+        return untrusted_preamble(nonce) + "\n" + untrusted_fence(body, nonce, source="research")
 
 
 class SearchUnavailableError(Exception):
