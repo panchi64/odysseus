@@ -4,6 +4,7 @@ import {
   Button,
   Chip,
   Composer,
+  ListRow,
   ListToolbar,
   Menu,
   PageHeader,
@@ -160,52 +161,48 @@ export function ResearchLibraryScreen(): JSX.Element {
                 {(r) => {
                   const meta = STATUS_MAP[r.status];
                   return (
-                    <div class="flex items-center justify-between gap-3 border-b border-line px-3 py-2 last:border-0">
-                      <button
-                        type="button"
-                        class="min-w-0 flex-1 text-left"
-                        onClick={() => navigate(`/research/${r.id}`)}
-                      >
-                        <Text variant="label" tone="bright" class="truncate">
-                          {r.question}
-                        </Text>
-                      </button>
-                      <div class="flex shrink-0 items-center gap-3">
-                        <Show when={r.stats}>
-                          {(s) => (
-                            <Text variant="micro" tone="dim">
-                              {s().sources} SRC
-                            </Text>
-                          )}
-                        </Show>
-                        <Text variant="micro" tone="dim">
-                          {relativeTime(r.createdAt)}
-                        </Text>
-                        <StatusFlag
-                          status={meta.status}
-                          dot={r.status === "running"}
-                        >
-                          {meta.label}
-                        </StatusFlag>
-                        <Menu
-                          trigger={
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              leading="settings"
-                            />
-                          }
-                          items={[
-                            {
-                              label: "Delete",
-                              icon: "trash",
-                              danger: true,
-                              onSelect: () => handleDelete(r),
-                            },
-                          ]}
-                        />
-                      </div>
-                    </div>
+                    <ListRow
+                      label={r.question}
+                      leading="file"
+                      href={`/research/${r.id}`}
+                      right={
+                        <>
+                          <Show when={r.stats}>
+                            {(s) => (
+                              <Text variant="micro" tone="dim">
+                                {s().sources} SRC
+                              </Text>
+                            )}
+                          </Show>
+                          <Text variant="micro" tone="dim">
+                            {relativeTime(r.createdAt)}
+                          </Text>
+                          <StatusFlag
+                            status={meta.status}
+                            dot={r.status === "running"}
+                          >
+                            {meta.label}
+                          </StatusFlag>
+                          <Menu
+                            trigger={
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                leading="settings"
+                              />
+                            }
+                            items={[
+                              {
+                                label: "Delete",
+                                icon: "trash",
+                                danger: true,
+                                onSelect: () => handleDelete(r),
+                              },
+                            ]}
+                          />
+                        </>
+                      }
+                    />
                   );
                 }}
               </For>

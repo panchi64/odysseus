@@ -133,6 +133,11 @@ export function createResearchProgress(): ResearchProgressController {
   let maxFoldedSeq = 0;
   let currentRunId: string | null = null;
   let terminalCb: (() => void) | null = null;
+  // Bumped on every start()/stop() so a stream that resolves (including via
+  // abort — streamRun resolves rather than rejects on abort) after teardown or
+  // supersession can tell it's stale and skip its continuation, mirroring
+  // chat's driveGen guard.
+  let gen = 0;
 
   function foldEvent(ev: RunEvent): void {
     if (ev.seq <= maxFoldedSeq) return;
@@ -153,12 +158,8 @@ export function createResearchProgress(): ResearchProgressController {
         break;
       }
       case "limit.notice":
-        // The frozen union's `limit` field is a plain string on the backend
-        // (`runs/events.py`); "search" (DR-4.1's two-empty-rounds abort) is a
-        // valid value the closed frontend literal doesn't (yet) enumerate —
-        // cast rather than widen that shared mirror from here.
-        if ((ev.limit as string) === "search")
-          setState("errorMessage", ev.message);
+        // DR-4.1's two-empty-rounds abort.
+        if (ev.limit === "search") setState("errorMessage", ev.message);
         break;
       case "run.error":
         setState("errorMessage", ev.message);
@@ -173,6 +174,7 @@ export function createResearchProgress(): ResearchProgressController {
     const resuming = runId === currentRunId;
     currentRunId = runId;
     maxFoldedSeq = fromSeq;
+    const myGen = ++gen;
     setState({
       running: true,
       detached: false,
@@ -186,9 +188,13 @@ export function createResearchProgress(): ResearchProgressController {
         fromSeq,
         onEvent: foldEvent,
       });
+      // streamRun resolves (doesn't throw) on abort, so a teardown/supersession
+      // abort lands here too — skip the terminal continuation if we're stale.
+      if (myGen !== gen) return;
       setState("running", false);
       terminalCb?.();
     } catch (err) {
+      if (myGen !== gen) return;
       if (err instanceof StreamDetachedError) {
         setState({ running: false, detached: true });
       } else {
@@ -212,6 +218,7 @@ export function createResearchProgress(): ResearchProgressController {
   }
 
   function stop(): void {
+    gen++; // supersede any in-flight start() so its resolved/aborted continuation is a no-op
     controller?.abort();
   }
 

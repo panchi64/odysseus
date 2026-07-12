@@ -1605,6 +1605,10 @@ export function createChatStream(
       const detail = await api.get<ConversationDetailDTO>(
         `/conversations/${conversationId}`,
       );
+      // Bail if the operator navigated to a different thread while the read was
+      // in flight — reattachRun's abort+seed-push would otherwise contaminate
+      // whatever conversation is live now with this one's run.
+      if (activeConversationId !== conversationId) return;
       const ar = toActiveRun(detail.active_run);
       if (ar) await reattachRun(ar.id, { fromSeq: 0 });
     } catch {
@@ -1622,10 +1626,15 @@ export function createChatStream(
    *  stale marker as the only signal, but never re-throws into an unhandled turn. */
   async function reconcileStaleDecision(): Promise<void> {
     if (activeConversationId === null) return;
+    const convAtStart = activeConversationId;
     try {
       const detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${activeConversationId}`,
+        `/conversations/${convAtStart}`,
       );
+      // Bail if the operator switched threads while the read was in flight — a
+      // different thread is live now, so this stale decision's conversation
+      // must not overwrite its store.
+      if (activeConversationId !== convAtStart) return;
       reseatFromDetail(detail);
       const ar = toActiveRun(detail.active_run);
       if (ar) await reattachRun(ar.id, { fromSeq: 0 });

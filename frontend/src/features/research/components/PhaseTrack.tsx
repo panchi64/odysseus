@@ -34,7 +34,7 @@ export function PhaseTrack(props: PhaseTrackProps): JSX.Element {
             <div class="flex flex-1 flex-col gap-1 min-w-0">
               <div
                 class={cx(
-                  "h-0.5 w-full transition-colors",
+                  "h-0.5 w-full transition-colors transition-fast",
                   done() ? "bg-nominal" : active() ? "bg-info" : "bg-line",
                 )}
               />

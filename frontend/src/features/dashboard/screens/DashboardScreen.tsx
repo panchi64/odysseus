@@ -1,11 +1,10 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
-import { Dynamic } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import {
   Combobox,
   Composer,
-  cx,
   EmptyState,
+  ListRow,
   PageHeader,
   Panel,
   Resource,
@@ -213,34 +212,28 @@ export function DashboardScreen(): JSX.Element {
                     // renders as a plain row — nothing to navigate to.
                     const clickable = () => !!run.conversationId;
                     return (
-                      <Dynamic
-                        component={clickable() ? "button" : "div"}
-                        type={clickable() ? "button" : undefined}
+                      <ListRow
+                        label={
+                          <span class="flex min-w-0 items-center gap-2">
+                            <Text variant="label" tone="dim">
+                              {run.kind}
+                            </Text>
+                            <Text variant="micro" tone="dim" class="truncate">
+                              {run.label}
+                            </Text>
+                          </span>
+                        }
                         onClick={
                           clickable()
                             ? () => openThread(run.conversationId!)
                             : undefined
                         }
-                        class={cx(
-                          "flex w-full items-center justify-between gap-2 border-b border-line px-3 py-2 text-left last:border-0",
-                          clickable() && "transition-colors hover:bg-raised",
-                        )}
-                      >
-                        <span class="flex min-w-0 items-center gap-2">
-                          <Text variant="label" tone="dim">
-                            {run.kind}
-                          </Text>
-                          <Text variant="micro" tone="dim" class="truncate">
-                            {run.label}
-                          </Text>
-                        </span>
-                        <StatusFlag
-                          status={RUN_STATUS_TONE[run.status]}
-                          class="shrink-0"
-                        >
-                          {run.detail}
-                        </StatusFlag>
-                      </Dynamic>
+                        right={
+                          <StatusFlag status={RUN_STATUS_TONE[run.status]}>
+                            {run.detail}
+                          </StatusFlag>
+                        }
+                      />
                     );
                   }}
                 </For>

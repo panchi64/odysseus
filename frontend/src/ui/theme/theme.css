@@ -85,6 +85,15 @@ body {
   transition-duration: var(--motion-fast);
 }
 
+/* Shared utility for non-interactive elements that need the same ≤120ms,
+   no-easing motion (§8) as the rule above but sit outside its selector list
+   (e.g. a plain progress-bar fill). Pair with a `transition-*` property
+   utility (e.g. `transition-colors`). */
+.transition-fast {
+  transition-duration: var(--motion-fast);
+  transition-timing-function: linear;
+}
+
 /* Clickable affordance. Tailwind v4's preflight drops the legacy
    `cursor: pointer` on buttons (browser default is now the arrow), so restore it
    for every interactive control. Disabled controls fall back to `not-allowed`. */

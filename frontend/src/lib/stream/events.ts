@@ -180,7 +180,8 @@ export interface ApprovalRequired extends Base {
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
-   *  silently degraded). The bound stops mirror backend/runs/events.py. */
+   *  silently degraded). "search" = deep research's two-empty-rounds abort
+   *  (DR-4.1). The bound stops mirror backend/runs/events.py. */
   limit:
     | "steps"
     | "tool_calls"
@@ -188,7 +189,8 @@ export interface LimitNotice extends Base {
     | "time"
     | "loop"
     | "verify"
-    | "context";
+    | "context"
+    | "search";
   message: string;
 }
 

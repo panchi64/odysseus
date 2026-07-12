@@ -137,13 +137,14 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
                     tone="dim"
                   />
                   <Show when={run.summary!.length > 120}>
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setOutputRun(run)}
-                      class="self-start text-label uppercase tracking-label text-dim transition-colors hover:text-bright"
+                      class="self-start"
                     >
-                      View output
-                    </button>
+                      VIEW OUTPUT
+                    </Button>
                   </Show>
                 </Show>
               </div>

@@ -5,8 +5,10 @@ import { Text } from "../primitives/Text";
 import { Icon, type IconProps } from "../primitives/Icon";
 
 export interface ListRowProps {
-  /** Primary label, left-aligned. */
-  label: string;
+  /** Primary label, left-aligned. A plain string renders through the row's
+   *  own label typography; pass JSX when the label needs a composite look
+   *  (e.g. a secondary tone/size alongside the main text). */
+  label: string | JSX.Element;
   /** Leading icon. */
   leading?: IconProps["name"];
   /** Right-aligned content: status flag, meta, icon. */

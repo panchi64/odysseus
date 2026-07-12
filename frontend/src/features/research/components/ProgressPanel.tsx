@@ -50,9 +50,9 @@ export function ProgressPanel(props: ProgressPanelProps): JSX.Element {
             justify="between"
             align="center"
             gap={2}
-            class="border border-warn/40 px-3 py-2"
+            class="border border-alert/40 px-3 py-2"
           >
-            <Text variant="micro" tone="warn">
+            <Text variant="micro" tone="alert">
               Connection lost — the run may still be active.
             </Text>
             <Button

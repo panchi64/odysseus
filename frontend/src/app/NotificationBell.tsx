@@ -5,6 +5,7 @@ import {
   EmptyState,
   Icon,
   Popover,
+  StatusDot,
   Text,
   cx,
   type IconName,
@@ -61,10 +62,7 @@ function NotificationRow(props: {
       <span class="min-w-0 flex-1">
         <span class="flex items-center gap-1.5">
           <Show when={unread()}>
-            <span
-              class="size-1.5 shrink-0 rounded-full bg-info"
-              aria-hidden="true"
-            />
+            <StatusDot status="info" />
           </Show>
           <Text
             variant="label"
@@ -126,7 +124,7 @@ export function NotificationBell(): JSX.Element {
         >
           <Icon name="bell" size={14} />
           <Show when={notifications.unreadCount > 0}>
-            <span class="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-ctl bg-alert px-0.5 text-[10px] font-mono font-bold leading-none text-bg">
+            <span class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-ctl bg-alert px-0.5 text-micro font-mono font-bold text-bg">
               {badge()}
             </span>
           </Show>
