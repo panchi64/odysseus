@@ -33,6 +33,7 @@ import models.gallery  # noqa: F401
 import models.memory  # noqa: F401
 import models.notification  # noqa: F401
 import models.registry  # noqa: F401
+import models.research  # noqa: F401
 import models.search  # noqa: F401
 import models.service_credential  # noqa: F401
 import models.serving  # noqa: F401

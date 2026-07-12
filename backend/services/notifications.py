@@ -68,6 +68,7 @@ class NotificationView:
     conversation_id: str | None
     run_id: str | None
     task_id: str | None
+    research_id: str | None
     created_at: datetime
     read_at: datetime | None
     resolved_at: datetime | None
@@ -101,6 +102,7 @@ class _Job:
     conversation_id: str | None = None
     run_id: str | None = None
     task_id: str | None = None
+    research_id: str | None = None
     created_at: datetime | None = None
     read_at: datetime | None = None
     resolved_at: datetime | None = None
@@ -160,6 +162,7 @@ class NotificationService:
         conversation_id: str | None = None,
         run_id: str | None = None,
         task_id: str | None = None,
+        research_id: str | None = None,
     ) -> NotificationView:
         """Record a new notification: cached + streamed immediately, persisted off the
         critical path."""
@@ -172,6 +175,7 @@ class NotificationService:
             conversation_id=conversation_id,
             run_id=run_id,
             task_id=task_id,
+            research_id=research_id,
             created_at=utcnow(),
             read_at=None,
             resolved_at=None,
@@ -189,6 +193,7 @@ class NotificationService:
                 conversation_id=conversation_id,
                 run_id=run_id,
                 task_id=task_id,
+                research_id=research_id,
                 created_at=view.created_at,
             )
         )
@@ -346,6 +351,7 @@ class NotificationService:
             conversation_id=row.conversation_id,
             run_id=row.run_id,
             task_id=row.task_id,
+            research_id=row.research_id,
             created_at=row.created_at,
             read_at=row.read_at,
             resolved_at=row.resolved_at,
@@ -367,6 +373,7 @@ class NotificationService:
                         conversation_id=job.conversation_id,
                         run_id=job.run_id,
                         task_id=job.task_id,
+                        research_id=job.research_id,
                         created_at=job.created_at,
                     )
                 )

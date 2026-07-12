@@ -12,7 +12,10 @@ read/resolved state) is structural metadata the DB can index and order by, so it
 the clear. ``task_id`` links a notification back to the scheduled task it's about — a
 reminder's own fire, or an agent task's outcome when its output channel is
 ``notification`` (`app.py`'s task executor/notify closures write it; see
-`services/scheduler.py`).
+`services/scheduler.py`). ``research_id`` is the same kind of link for a research run's
+terminal outcome (`app.py`'s run-terminal notifier, extended for research — see
+`routes/research.py`) — additive and nullable so every notification predating this
+column reads back with it simply absent.
 """
 
 from __future__ import annotations
@@ -59,6 +62,10 @@ class Notification(SQLModel, table=True):
     run_id: str | None = Field(default=None, index=True)
     # Nullable seam for the scheduler's task outcomes (a later phase) — unused until then.
     task_id: str | None = Field(default=None, index=True)
+    # Nullable seam for a research run's terminal outcome — set only on the
+    # `run_completed`/`run_failed` notifications a research run itself fires (see
+    # `routes/research.py`'s `find_by_run`); absent on every other kind.
+    research_id: str | None = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)
     # Set when the operator has seen it (a REST mark-read, or opening the conversation
     # it's linked to). Independent of resolution — a read notification can still be

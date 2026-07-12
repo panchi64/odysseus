@@ -40,6 +40,7 @@ from routes import (
     offline,
     overview,
     previews,
+    research,
     runs,
     search,
     serving,
@@ -185,6 +186,13 @@ async def lifespan(app: FastAPI):
     # outcome, with no separate polling loop.
     app.state.task_run_waiters: dict[str, asyncio.Future[Run]] = {}
 
+    # Same shape as the above, kept separate: `routes/research.py`'s `start` route
+    # registers one of these per research Run it submits, and its own background
+    # finalize task awaits it to learn the outcome to persist (report/stats/status) —
+    # independent bookkeeping from the scheduler's so the two features never collide
+    # on a run id.
+    app.state.research_run_waiters: dict[str, asyncio.Future[Run]] = {}
+
     def _on_run_terminal(run: Run) -> None:
         """The registry's injected terminal-transition hook — composes the attention
         surface's emit policy over the run substrate without `runs/` importing
@@ -199,6 +207,9 @@ async def lifespan(app: FastAPI):
         waiter = app.state.task_run_waiters.pop(run.id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(run)
+        research_waiter = app.state.research_run_waiters.pop(run.id, None)
+        if research_waiter is not None and not research_waiter.done():
+            research_waiter.set_result(run)
         watched = run.stream.subscriber_count > 0
         task = asyncio.create_task(_notify_run_terminal(run, watched=watched))
         app.state.run_terminal_tasks.add(task)
@@ -213,6 +224,44 @@ async def lifespan(app: FastAPI):
             await notifications.resolve_for_run(OPERATOR_ID, run.id)
         except Exception:
             logger.exception("notifications: failed to resolve run %s at terminal", run.id)
+        # Research runs are conversation-less (no thread to deep-link to) but are their
+        # own noteworthy surface: unlike a chat turn, finishing is worth a notification
+        # even if the operator's tab was open and watching the live progress the whole
+        # time (they may well have navigated away for the several minutes a run takes).
+        # Cancelled stays silent (the operator asked for it); blocked never happens here
+        # (the pipeline never calls `run.block()`) but would fall through to silence too.
+        if run.kind == "research":
+            if run.status not in (RunStatus.done, RunStatus.error):
+                return
+            try:
+                research_row = await research.find_by_run(app.state.db_engine, run.id)
+            except Exception:
+                logger.exception(
+                    "notifications: failed to resolve research run %s at terminal", run.id
+                )
+                return
+            if research_row is None:
+                return
+            question = app.state.vault.decrypt_str(research_row.question_enc)
+            title = question if len(question) <= 80 else question[:79] + "…"
+            if run.status is RunStatus.error:
+                await notifications.notify(
+                    OPERATOR_ID,
+                    "run_failed",
+                    f'Research on "{title}" failed',
+                    body=run.error,
+                    run_id=run.id,
+                    research_id=research_row.id,
+                )
+            else:
+                await notifications.notify(
+                    OPERATOR_ID,
+                    "run_completed",
+                    f'Research on "{title}" is ready',
+                    run_id=run.id,
+                    research_id=research_row.id,
+                )
+            return
         # Only conversation-linked runs notify (a stateless/detached run has no thread
         # to deep-link to); cancelled and blocked outcomes stay silent — the operator
         # asked for the cancel, and a bound/limit stop isn't a noteworthy failure.
@@ -719,6 +768,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(offline.router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
+    app.include_router(research.router)
     return app
 
 

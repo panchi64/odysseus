@@ -48,6 +48,7 @@ class NotificationOut(CamelModel):
     body: str | None = None
     conversation_id: str | None = None
     run_id: str | None = None
+    research_id: str | None = None
     created_at: datetime
     read_at: datetime | None = None
     resolved_at: datetime | None = None
@@ -83,6 +84,7 @@ def _out(view: NotificationView) -> NotificationOut:
         body=view.body,
         conversation_id=view.conversation_id,
         run_id=view.run_id,
+        research_id=view.research_id,
         created_at=view.created_at,
         read_at=view.read_at,
         resolved_at=view.resolved_at,

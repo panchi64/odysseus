@@ -7,13 +7,15 @@ FastAPI ``Depends`` later).
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import HTTPException, Request
 from sqlalchemy import Engine
 
 from core.auth import AuthManager
 from core.ratelimit import RateLimiter
 from core.vault import Vault
-from runs import ConversationBusyError, RunRegistry
+from runs import ConversationBusyError, Run, RunRegistry
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
@@ -187,3 +189,20 @@ def db_engine(request: Request) -> Engine:
 
 def scheduler(request: Request) -> SchedulerService:
     return request.app.state.scheduler
+
+
+def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:
+    """Keyed by run id, resolved by ``app.py``'s ``_on_run_terminal`` hook the moment a
+    research run reaches a genuinely terminal state — the research route awaits one of
+    these to learn the outcome once the underlying Run settles, the same shape the
+    scheduler's agent-task executor uses (`app.state.task_run_waiters`), kept as its own
+    dict rather than shared so the two features' bookkeeping stays independent."""
+    return request.app.state.research_run_waiters
+
+
+def run_terminal_tasks(request: Request) -> set[asyncio.Task[None]]:
+    """The shared bucket of in-flight terminal-transition background tasks — a route
+    that spawns one (research's finalize-on-terminal task) adds it here so shutdown can
+    drain it alongside the notification surface's own, rather than tearing the DB
+    engine/vault down from under it."""
+    return request.app.state.run_terminal_tasks
