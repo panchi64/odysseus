@@ -9,8 +9,10 @@ dies with its run.
 At-rest posture mirrors documents/memory: the content the notification *is* — its
 ``title`` and optional ``body`` — is encrypted; everything else (kind, links, timestamps,
 read/resolved state) is structural metadata the DB can index and order by, so it stays in
-the clear. ``task_id`` is a nullable seam for the scheduler's task outcomes (a later
-phase) — nothing writes it yet.
+the clear. ``task_id`` links a notification back to the scheduled task it's about — a
+reminder's own fire, or an agent task's outcome when its output channel is
+``notification`` (`app.py`'s task executor/notify closures write it; see
+`services/scheduler.py`).
 """
 
 from __future__ import annotations
@@ -31,7 +33,12 @@ class NotificationKind(StrEnum):
     APPROVAL_NEEDED = "approval_needed"
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
-    TASK_OUTCOME = "task_outcome"  # forward-compat seam — nothing emits this yet
+    # The scheduler's two kinds (`app.py`'s task executor/notify closures): a
+    # reminder task fires REMINDER directly (title = task title, body = the prompt
+    # verbatim); any task whose output channel is "notification" also fires
+    # TASK_OUTCOME at terminal with a short outcome summary.
+    REMINDER = "reminder"
+    TASK_OUTCOME = "task_outcome"
     SYSTEM = "system"
 
 

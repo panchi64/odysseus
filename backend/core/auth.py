@@ -30,7 +30,11 @@ _PUBLIC_PATHS = frozenset({"/auth/status", "/auth/login", "/setup", "/openapi.js
 # credential (so a sandboxed, opaque-origin iframe can load assets without the
 # operator's cookie), and the route only ever proxies to a loopback preview
 # container — never to operator data.
-_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/previews")
+# `/tasks/hooks` is the same pattern for the task scheduler's inbound webhook
+# trigger (`POST /tasks/hooks/{token}`): the per-task unguessable token in the path
+# is the credential, so an external caller can fire a task without the operator's
+# session. Every other `/tasks` route stays behind the gate.
+_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/previews", "/tasks/hooks")
 
 
 class AuthManager:

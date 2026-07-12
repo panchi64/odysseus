@@ -1,0 +1,573 @@
+"""SchedulerService: the tick loop, non-overlap, lock-awareness, and its two
+injected executor/notify paths. See test_task_schedule.py for the pure next-run
+math this loop leans on."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, timedelta
+from pathlib import Path
+
+from sqlmodel import Session, select
+
+from core.db import init_db, make_engine
+from core.vault import Vault
+from models._fields import utcnow
+from models.task import ScheduledTask, ScheduleType, TaskKind, TaskOutcome, TaskOutput, TaskRun
+from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
+
+OWNER = "operator"
+
+
+def _as_utc(value):
+    """SQLite round-trips a datetime naive even though it was written tz-aware —
+    normalize before comparing against a fresh `utcnow()` (mirrors the same
+    normalization `services/scheduler.py` applies internally)."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+async def _vault(tmp_path: Path) -> Vault:
+    v = Vault(tmp_path / "keyfile.json")
+    await v.setup("pw")
+    return v
+
+
+def _engine():
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    return engine
+
+
+def _add_task(
+    engine,
+    vault: Vault,
+    *,
+    kind: str = TaskKind.AGENT.value,
+    schedule_type: str = ScheduleType.ONCE.value,
+    run_at=None,
+    every_seconds: float | None = None,
+    cron_expr: str | None = None,
+    output: str = TaskOutput.CHAT.value,
+    next_run_at=None,
+    enabled: bool = True,
+    title: str = "a task",
+    prompt: str = "do the thing",
+) -> str:
+    task = ScheduledTask(
+        owner_id=OWNER,
+        kind=kind,
+        title_enc=vault.encrypt_str(title),
+        prompt_enc=vault.encrypt_str(prompt),
+        schedule_type=schedule_type,
+        run_at=run_at,
+        every_seconds=every_seconds,
+        cron_expr=cron_expr,
+        output=output,
+        pre_authorized=[],
+        enabled=enabled,
+        next_run_at=next_run_at,
+    )
+    with Session(engine) as session:
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+        return task.id
+
+
+def _get_task(engine, task_id: str) -> ScheduledTask:
+    with Session(engine, expire_on_commit=False) as session:
+        return session.get(ScheduledTask, task_id)
+
+
+def _list_runs(engine, task_id: str) -> list[TaskRun]:
+    with Session(engine, expire_on_commit=False) as session:
+        return list(session.exec(select(TaskRun).where(TaskRun.task_id == task_id)).all())
+
+
+async def _never_notify(view: ScheduledTaskView) -> None:
+    raise AssertionError("notify must not be called for an agent task")
+
+
+async def _never_execute(view: ScheduledTaskView) -> TaskRunResult:
+    raise AssertionError("executor must not be called for a reminder task")
+
+
+# --- firing due tasks ---------------------------------------------------------
+
+
+async def test_once_agent_task_fires_records_the_run_and_self_disables(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        assert view.output == TaskOutput.NOTIFICATION.value
+        assert view.prompt == "do the thing"
+        return TaskRunResult(
+            outcome=TaskOutcome.OK.value,
+            run_id="run-1",
+            conversation_id="conv-1",
+            summary="did it",
+        )
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.ONCE.value,
+        run_at=utcnow(),
+        next_run_at=utcnow(),
+        output=TaskOutput.NOTIFICATION.value,
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.2)
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == TaskOutcome.OK.value
+        assert runs[0].run_id == "run-1"
+        assert runs[0].conversation_id == "conv-1"
+        assert vault.decrypt_str(runs[0].summary_enc) == "did it"
+
+        task = _get_task(engine, task_id)
+        assert task.enabled is False  # a spent "once" self-disables
+        assert task.next_run_at is None
+        assert task.last_run_at is not None
+    finally:
+        await scheduler.stop()
+
+
+async def test_interval_task_recomputes_forward_and_stays_enabled(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    before = utcnow()
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=3600,
+        next_run_at=before,
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.2)
+        assert calls == [task_id]
+        task = _get_task(engine, task_id)
+        assert task.enabled is True
+        # Anchored on settlement (~now), not left at the stale past next_run_at.
+        assert _as_utc(task.next_run_at) > before + timedelta(seconds=3500)
+    finally:
+        await scheduler.stop()
+
+
+async def test_reminder_task_calls_notify_verbatim_not_the_executor(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    notified: list[tuple[str, str]] = []
+
+    async def notify(view: ScheduledTaskView) -> None:
+        notified.append((view.title, view.prompt))
+
+    task_id = _add_task(
+        engine,
+        vault,
+        kind=TaskKind.REMINDER.value,
+        schedule_type=ScheduleType.ONCE.value,
+        run_at=utcnow(),
+        next_run_at=utcnow(),
+        title="Take a break",
+        prompt="Stand up and stretch",
+    )
+    scheduler = SchedulerService(engine, vault, _never_execute, notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.2)
+        assert notified == [("Take a break", "Stand up and stretch")]
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == TaskOutcome.OK.value
+    finally:
+        await scheduler.stop()
+
+
+async def test_executor_exception_records_error_outcome_without_killing_the_loop(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+
+    async def bad_executor(view: ScheduledTaskView) -> TaskRunResult:
+        raise RuntimeError("boom")
+
+    task_id = _add_task(
+        engine, vault, schedule_type=ScheduleType.ONCE.value, run_at=utcnow(), next_run_at=utcnow()
+    )
+    scheduler = SchedulerService(engine, vault, bad_executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.2)
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == TaskOutcome.ERROR.value
+        assert vault.decrypt_str(runs[0].summary_enc) == "boom"
+        # A raising executor still counts as "it ran" — a once still self-disables.
+        assert _get_task(engine, task_id).enabled is False
+    finally:
+        await scheduler.stop()
+
+
+async def test_advance_failure_releases_the_task_so_the_next_due_fire_runs(tmp_path):
+    """A DB error in the post-finalize schedule advance must not strand the task id
+    in `_running` — a phantom in-flight entry would turn every future due fire into
+    a `skipped` row until restart. The failed advance leaves `next_run_at` at its
+    stale past value, so the very next tick re-detects the task as due and the real
+    fire (not a skip) runs."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    second_fire = asyncio.Event()
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        if len(calls) >= 2:
+            second_fire.set()
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=3600,
+        next_run_at=utcnow(),
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify, skip_recheck_s=0.05)
+    real_advance = scheduler._advance
+    failed = False
+
+    async def flaky_advance(task_id: str, **kwargs) -> None:
+        # Only the fire path passes `last_run_at` — the skip path's own advance runs
+        # inside the tick loop itself, so failing it here would test the wrong thing.
+        nonlocal failed
+        if not failed and kwargs.get("last_run_at") is not None:
+            failed = True
+            raise RuntimeError("transient DB failure")
+        await real_advance(task_id, **kwargs)
+
+    scheduler._advance = flaky_advance
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(second_fire.wait(), timeout=2.0)
+        await asyncio.sleep(0.2)  # let the second fire's own bookkeeping settle
+        live = scheduler._running.get(task_id)
+        assert live is None or live.done()  # no phantom in-flight entry
+        completed = [r for r in _list_runs(engine, task_id) if r.outcome == TaskOutcome.OK.value]
+        assert len(completed) == 2  # the re-detected fire ran for real, not skipped
+        assert all(r.finished_at is not None for r in completed)  # both rows finalized
+    finally:
+        await scheduler.stop()
+
+
+async def test_compute_next_run_failure_still_finalizes_and_loop_survives(tmp_path, monkeypatch):
+    """An unexpected error in `compute_next_run` after finalize must be contained the
+    same way: the `TaskRun` row stays finalized, the task id leaves `_running`, and a
+    subsequent due detection fires the task again instead of skipping forever."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    fired_again = asyncio.Event()
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        if len(calls) >= 2:
+            fired_again.set()
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=3600,
+        next_run_at=utcnow(),
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+
+    import services.scheduler as scheduler_mod
+
+    real_compute = scheduler_mod.compute_next_run
+    failed = False
+
+    def flaky_compute(schedule_type: str, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("recompute blew up")
+        return real_compute(schedule_type, **kwargs)
+
+    monkeypatch.setattr(scheduler_mod, "compute_next_run", flaky_compute)
+
+    # Fire on demand (no tick loop yet) so the failing recompute deterministically
+    # hits this fire's own path, never a concurrent skip's.
+    run_row_id = await scheduler.fire_now(task_id)
+    assert run_row_id is not None
+    fire_task = scheduler._running.get(task_id)
+    if fire_task is not None:
+        await asyncio.wait_for(fire_task, timeout=2.0)
+    assert task_id not in scheduler._running  # released despite the raise
+    runs = {r.id: r for r in _list_runs(engine, task_id)}
+    assert runs[run_row_id].outcome == TaskOutcome.OK.value
+    assert runs[run_row_id].finished_at is not None  # still finalized
+
+    # The advance never landed, so the task is still due — a live loop must pick it
+    # up and run it for real (the loop survived; no permanent phantom skip).
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(fired_again.wait(), timeout=2.0)
+        assert calls == [task_id, task_id]
+    finally:
+        await scheduler.stop()
+
+
+# --- non-overlap ---------------------------------------------------------------
+
+
+async def test_still_live_execution_is_skipped_not_run_twice(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    executing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_executor(view: ScheduledTaskView) -> TaskRunResult:
+        executing.set()
+        await release.wait()
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=3600,
+        next_run_at=utcnow() - timedelta(milliseconds=10),
+    )
+    scheduler = SchedulerService(engine, vault, slow_executor, _never_notify, skip_recheck_s=0.05)
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(executing.wait(), timeout=2.0)
+        await asyncio.sleep(0.2)  # let the loop re-tick a few times while still busy
+
+        runs = _list_runs(engine, task_id)
+        in_flight = [r for r in runs if r.finished_at is None]
+        skipped = [r for r in runs if r.outcome == TaskOutcome.SKIPPED.value]
+        assert len(in_flight) == 1  # exactly one execution actually running
+        assert len(skipped) >= 1  # at least one overlap attempt recorded, not silently dropped
+
+        release.set()
+        await asyncio.sleep(0.2)
+        runs = _list_runs(engine, task_id)
+        completed = [r for r in runs if r.outcome == TaskOutcome.OK.value]
+        assert len(completed) == 1
+    finally:
+        await scheduler.stop()
+
+
+# --- lock-awareness --------------------------------------------------------------
+
+
+async def test_vault_locked_mid_execution_parks_finalize_until_unlock(tmp_path):
+    """The operator can lock the vault via `POST /auth/lock` while an agent task's
+    executor is still running. The finalize step (which encrypts the summary) must
+    park and retry rather than let `VaultLocked` escape the detached `_fire` task —
+    otherwise the `TaskRun` row is stranded unfinished and the task's own
+    reschedule never advances."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        vault.lock()  # simulates the operator locking mid-execution
+        return TaskRunResult(outcome=TaskOutcome.OK.value, summary="finished while locked")
+
+    task_id = _add_task(
+        engine, vault, schedule_type=ScheduleType.ONCE.value, run_at=utcnow(), next_run_at=utcnow()
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.2)
+        # Finalize is parked, not dropped: the row exists but isn't finished yet,
+        # and the task's own schedule hasn't advanced.
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].finished_at is None
+        assert _get_task(engine, task_id).enabled is True
+
+        await vault.unlock("pw")
+        await asyncio.sleep(0.2)
+
+        # The tick loop may also wake right as the vault unlocks and re-detect the
+        # still-due task while the original fire is finishing its parked finalize —
+        # a legitimate non-overlap "skipped" row, the same race
+        # `test_still_live_execution_is_skipped_not_run_twice` already exercises.
+        # What matters here is that the original fire's own row finalized exactly
+        # once, with its summary intact, rather than being dropped.
+        runs = _list_runs(engine, task_id)
+        completed = [r for r in runs if r.outcome == TaskOutcome.OK.value]
+        assert len(completed) == 1
+        assert completed[0].finished_at is not None
+        assert vault.decrypt_str(completed[0].summary_enc) == "finished while locked"
+        assert _get_task(engine, task_id).enabled is False  # once task self-disables
+    finally:
+        await scheduler.stop()
+
+
+async def test_locked_vault_parks_and_fires_at_most_one_catch_up_on_unlock(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    overdue = utcnow() - timedelta(hours=5)  # long overdue: a locked vault or a long boot gap
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=60,
+        next_run_at=overdue,
+    )
+    vault.lock()
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.1)
+        assert calls == []  # parked while locked — never touches the encrypted prompt
+
+        await vault.unlock("pw")
+        await asyncio.sleep(0.2)
+        assert calls == [task_id]  # exactly one catch-up fire, not a backlog burst
+
+        task = _get_task(engine, task_id)
+        # Recomputed from now, not the stale hour-old timestamp.
+        assert _as_utc(task.next_run_at) > utcnow()
+    finally:
+        await scheduler.stop()
+
+
+# --- wake / re-arm ---------------------------------------------------------------
+
+
+async def test_wake_picks_up_a_freshly_armed_task_without_waiting_out_the_old_sleep(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    fired = asyncio.Event()
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        fired.set()
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.05)  # nothing scheduled yet — the loop parks indefinitely
+
+        # What a task-creation route does: insert directly, then nudge the scheduler.
+        _add_task(
+            engine,
+            vault,
+            schedule_type=ScheduleType.ONCE.value,
+            run_at=utcnow(),
+            next_run_at=utcnow(),
+        )
+        scheduler.wake()
+
+        await asyncio.wait_for(fired.wait(), timeout=1.0)
+    finally:
+        await scheduler.stop()
+
+
+# --- on-demand fire (fire_now) ---------------------------------------------------
+
+
+async def test_fire_now_fires_a_not_yet_due_task_immediately(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        return TaskRunResult(outcome=TaskOutcome.OK.value, summary="ran on demand")
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.ONCE.value,
+        run_at=utcnow() + timedelta(hours=1),
+        next_run_at=utcnow() + timedelta(hours=1),  # not due for an hour
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    await scheduler.start()
+    try:
+        task_run_id = await scheduler.fire_now(task_id)
+        assert task_run_id is not None
+        await asyncio.sleep(0.2)
+        assert calls == [task_id]
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].id == task_run_id
+        assert runs[0].outcome == TaskOutcome.OK.value
+    finally:
+        await scheduler.stop()
+
+
+async def test_fire_now_returns_none_for_an_unknown_task(tmp_path):
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    scheduler = SchedulerService(engine, vault, _never_execute, _never_notify)
+    await scheduler.start()
+    try:
+        assert await scheduler.fire_now("nope") is None
+    finally:
+        await scheduler.stop()
+
+
+async def test_fire_now_shares_non_overlap_with_the_tick_loop(tmp_path):
+    """A manual `fire_now` and the tick loop's own due-detection must never double-run
+    the same task — both funnel through `_dispatch`'s single `_running` check."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    executing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_executor(view: ScheduledTaskView) -> TaskRunResult:
+        executing.set()
+        await release.wait()
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.INTERVAL.value,
+        every_seconds=3600,
+        next_run_at=utcnow() - timedelta(milliseconds=10),  # already due for the tick loop
+    )
+    scheduler = SchedulerService(engine, vault, slow_executor, _never_notify)
+    await scheduler.start()
+    try:
+        await asyncio.wait_for(executing.wait(), timeout=2.0)
+        # The tick loop's own fire is already live — a manual fire_now right now must
+        # skip, not start a second concurrent execution.
+        task_run_id = await scheduler.fire_now(task_id)
+        assert task_run_id is not None
+        runs = {r.id: r for r in _list_runs(engine, task_id)}
+        assert runs[task_run_id].outcome == TaskOutcome.SKIPPED.value
+
+        release.set()
+        await asyncio.sleep(0.2)
+        completed = [r for r in _list_runs(engine, task_id) if r.outcome == TaskOutcome.OK.value]
+        assert len(completed) == 1
+    finally:
+        await scheduler.stop()

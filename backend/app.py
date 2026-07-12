@@ -22,6 +22,7 @@ from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.ratelimit import RateLimiter
 from core.vault import Vault
+from models.task import TaskOutcome, TaskOutput
 from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
     api_tokens,
@@ -42,9 +43,11 @@ from routes import (
     runs,
     search,
     serving,
+    tasks,
     uploads,
     views,
 )
+from routes.chat import compose_turn, resolve_turn_models
 from routes.deps import OPERATOR_ID
 from runs import Run, RunRegistry, RunStatus
 from services.approval_grants import ApprovalGrantStore
@@ -72,6 +75,7 @@ from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
+from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingPaths, ServingService
@@ -81,8 +85,23 @@ from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser, WebDistiller
 from services.workspace_history import WorkspaceHistoryStore
+from tools import Capabilities
 
 logger = logging.getLogger(__name__)
+
+# A scheduled task's outcome summary is a short factual line, not a transcript —
+# just enough for the operator to judge at a glance whether to open the conversation.
+_TASK_SUMMARY_MAX_CHARS = 280
+
+# `TaskRun.outcome` from the Run status it settled at — the three failure-shaped
+# statuses map onto the matching `TaskOutcome` verbatim; `cancelled` covers both an
+# operator-cancelled run and one still parked (never approved/denied) at shutdown.
+_TASK_OUTCOME_BY_RUN_STATUS = {
+    RunStatus.done: TaskOutcome.OK.value,
+    RunStatus.error: TaskOutcome.ERROR.value,
+    RunStatus.blocked: TaskOutcome.BLOCKED.value,
+    RunStatus.cancelled: TaskOutcome.CANCELLED.value,
+}
 
 
 def _build_upload_extractor(
@@ -157,6 +176,15 @@ async def lifespan(app: FastAPI):
     # one) and lets a test await "every pending notify has settled" deterministically.
     app.state.run_terminal_tasks: set[asyncio.Task[None]] = set()
 
+    # Keyed by run id — the scheduler's agent-task executor (below) awaits one of
+    # these futures to learn when its Run reaches a genuinely terminal state, which
+    # may be long after an approval park + operator resume round-trip (`AE-3.2`/
+    # `AE-3.5`). Resolved synchronously inside `_on_run_terminal`, the same one-shot
+    # hook the attention surface's own notify composes over — so a task execution's
+    # eventual settle is observed the same way anything else observes a run's
+    # outcome, with no separate polling loop.
+    app.state.task_run_waiters: dict[str, asyncio.Future[Run]] = {}
+
     def _on_run_terminal(run: Run) -> None:
         """The registry's injected terminal-transition hook — composes the attention
         surface's emit policy over the run substrate without `runs/` importing
@@ -168,6 +196,9 @@ async def lifespan(app: FastAPI):
         inside the scheduled task, not here — a run can't reach terminal before both
         exist, so the forward reference is safe despite the registry being built
         before either singleton below."""
+        waiter = app.state.task_run_waiters.pop(run.id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(run)
         watched = run.stream.subscriber_count > 0
         task = asyncio.create_task(_notify_run_terminal(run, watched=watched))
         app.state.run_terminal_tasks.add(task)
@@ -487,6 +518,8 @@ async def lifespan(app: FastAPI):
             reap_interval_s=settings.sandbox_session_reap_interval_s,
             excludes=settings.sandbox_session_seal_excludes,
             preview_startup_timeout_s=settings.sandbox_preview_startup_timeout_s,
+            spare_enabled=settings.sandbox_spare_enabled,
+            spare_count=settings.sandbox_spare_count,
         )
         if backend is not None
         else None
@@ -502,9 +535,118 @@ async def lifespan(app: FastAPI):
     # redirect following — the proxy rewrites Location and returns it to the browser.
     preview_client = httpx.AsyncClient(follow_redirects=False)
     app.state.preview_client = preview_client
+
+    async def _task_run_summary(run: Run, conversation_id: str) -> str | None:
+        """A short, plain factual line about how the run settled — no extra model
+        call. An error/blocked/cancelled run already carries its own operator-legible
+        reason; a `done` run's summary is the start of its final answer."""
+        if run.status is RunStatus.error:
+            return run.error
+        if run.status is RunStatus.blocked:
+            return run.detail
+        if run.status is RunStatus.cancelled:
+            return run.detail or "cancelled"
+        if run.status is RunStatus.done:
+            turns = await app.state.conversations.messages_view(conversation_id)
+            for turn in reversed(turns):
+                if turn.role == "assistant" and turn.content:
+                    return turn.content[:_TASK_SUMMARY_MAX_CHARS]
+            return None
+        return None
+
+    async def _task_executor(view: ScheduledTaskView) -> TaskRunResult:
+        """An agent task's fire — an ordinary Run in a fresh conversation (titled from
+        the task), seeded with the task's own pre-authorization as a conversation
+        grant (`AE-3.5`) so its unattended sensitive actions within that scope don't
+        pause; anything outside it still parks + notifies exactly like an
+        interactive run. Reuses `routes.chat`'s own turn composition
+        (`resolve_turn_models`/`compose_turn`) so a task's run is submitted through
+        the identical path a live chat turn is — no forked run-submission logic."""
+        conversations = app.state.conversations
+        models = await resolve_turn_models(
+            app.state.models, None, None, owner_id=view.owner_id
+        )
+        conversation_id = await conversations.create_conversation(
+            view.owner_id, title=view.title
+        )
+        for tool_name in view.pre_authorized:
+            await app.state.approval_grants.grant(view.owner_id, conversation_id, tool_name)
+
+        waiter: asyncio.Future[Run] = asyncio.get_running_loop().create_future()
+        created = compose_turn(
+            prompt=view.prompt,
+            conversation_id=conversation_id,
+            models=models,
+            capabilities=Capabilities(
+                memory=app.state.memory,
+                sandbox_sessions=app.state.sandbox,
+                artifacts=app.state.artifacts,
+                search=app.state.search,
+                fetcher=app.state.fetcher,
+                conversation_search=app.state.conversation_search,
+                corpus=app.state.corpus,
+                uploads=app.state.uploads,
+                grants=app.state.approval_grants,
+                workspace_history=app.state.workspace_history,
+                documents=app.state.documents,
+                notifications=app.state.notifications,
+            ),
+            registry=app.state.runs,
+            store=conversations,
+            uploads=app.state.uploads,
+            disabled_tools=app.state.offline.web_tools_disabled(),
+            owner_id=view.owner_id,
+        )
+        # Registered before the very first `await` below — the newly submitted Run's
+        # task hasn't had a chance to run yet (`RunRegistry.submit` only schedules
+        # it), so there is no window for it to reach terminal and fire
+        # `_on_run_terminal` before this waiter exists.
+        app.state.task_run_waiters[created.run_id] = waiter
+        run = await waiter
+
+        outcome = _TASK_OUTCOME_BY_RUN_STATUS.get(run.status, TaskOutcome.ERROR.value)
+        summary = await _task_run_summary(run, conversation_id)
+        if view.output == TaskOutput.NOTIFICATION.value:
+            await app.state.notifications.notify(
+                view.owner_id,
+                "task_outcome",
+                view.title,
+                body=summary,
+                conversation_id=conversation_id,
+                task_id=view.id,
+            )
+        return TaskRunResult(
+            outcome=outcome,
+            run_id=run.id,
+            conversation_id=conversation_id,
+            summary=summary,
+        )
+
+    async def _task_notify(view: ScheduledTaskView) -> None:
+        """A reminder task's fire — its prompt delivered verbatim as the notification
+        body (no AI phrasing in v1); title = the task's own title."""
+        await app.state.notifications.notify(
+            view.owner_id,
+            "reminder",
+            view.title,
+            body=view.prompt,
+            task_id=view.id,
+        )
+
+    # The task scheduler — single-instance, in-process. Lock-aware like the
+    # write-behind drainers above (task prompts are encrypted): it parks its tick
+    # loop while the vault is locked and resumes on unlock.
+    app.state.scheduler = SchedulerService(
+        engine,
+        vault,
+        executor=_task_executor,
+        notify=_task_notify,
+    )
+    await app.state.scheduler.start()
     try:
         yield
     finally:
+        await app.state.scheduler.stop()
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
@@ -576,6 +718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(api_tokens.router)
     app.include_router(offline.router)
     app.include_router(notifications.router)
+    app.include_router(tasks.router)
     return app
 
 

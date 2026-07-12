@@ -9,6 +9,12 @@ Beyond a fresh turn it also drives the two history-rewriting turns — **regener
 (re-answer the last request) and **edit** (re-ask a changed request) — which share
 this router because both create a Run. They differ only in how the conversation
 store repositions the active leaf first; the launch is identical.
+
+``resolve_turn_models``/``compose_turn`` are the two Request-agnostic halves of that
+composition (model resolution, then build-the-orchestrator-and-submit), exported so a
+non-HTTP caller can drive an ordinary chat turn the same way a route does — the
+scheduler's agent-task executor (`app.py`) reuses them rather than forking a second
+run-submission path.
 """
 
 from __future__ import annotations
@@ -24,7 +30,9 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ConversationBusyError
+from runs import ConversationBusyError, RunRegistry
+from services.conversations import ConversationStore
+from services.registry import ModelRegistry
 from services.settings_store import (
     CompactionSettings,
     get_attachment_inline_max_tokens,
@@ -33,9 +41,12 @@ from services.settings_store import (
     set_attachment_inline_max_tokens,
     set_compaction,
 )
+from services.uploads import UploadStore
 from tools import Capabilities, CompactionContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+_CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
 
 
 class ChatCreate(BaseModel):
@@ -100,8 +111,12 @@ class ChatSettings(BaseModel):
     compaction_min_tokens: int | None = Field(default=None, ge=0)
 
 
-async def _resolve_models(
-    request: Request, endpoint_id: str | None, model: str | None
+async def resolve_turn_models(
+    model_registry: ModelRegistry,
+    endpoint_id: str | None,
+    model: str | None,
+    *,
+    owner_id: str = OPERATOR_ID,
 ) -> tuple[Model, Model, ModelSettings | None, int | None, bool]:
     """Resolve the `main` model plus the background (utility/title) pair, raising a
     clear 4xx/503 on misconfiguration.
@@ -112,11 +127,10 @@ async def _resolve_models(
     # Resolve the `main` model now (per-conversation endpoint override included),
     # so a model misconfiguration surfaces as a clear 4xx/503 rather than a run
     # that starts and immediately errors.
-    registry = deps.models(request)
     try:
-        main = await registry.resolve_detailed(
+        main = await model_registry.resolve_detailed(
             "main",
-            owner_id=OPERATOR_ID,
+            owner_id=owner_id,
             override_endpoint_id=endpoint_id,
             override_model=model,
         )
@@ -136,8 +150,8 @@ async def _resolve_models(
     utility_model = resolved
     title_settings: ModelSettings | None = None
     if settings.verify_enabled or settings.title_enabled:
-        background = await registry.resolve_background(
-            owner_id=OPERATOR_ID,
+        background = await model_registry.resolve_background(
+            owner_id=owner_id,
             override_endpoint_id=endpoint_id,
             override_model=model,
         )
@@ -146,18 +160,34 @@ async def _resolve_models(
     return resolved, utility_model, title_settings, main.context_window, main.vision
 
 
-def _submit_turn(
-    request: Request,
+async def _resolve_models(
+    request: Request, endpoint_id: str | None, model: str | None
+) -> tuple[Model, Model, ModelSettings | None, int | None, bool]:
+    return await resolve_turn_models(deps.models(request), endpoint_id, model)
+
+
+def compose_turn(
     *,
     prompt: str | None,
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None, int | None, bool],
+    capabilities: Capabilities,
+    registry: RunRegistry,
+    store: ConversationStore,
+    uploads: UploadStore,
+    disabled_tools: frozenset[str] = frozenset(),
+    owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
     inline_max_tokens: int | None = None,
     compaction: CompactionContext | None = None,
 ) -> ChatCreated:
-    """Build the chat orchestrator from pre-resolved models and submit the Run.
+    """Build the chat orchestrator from pre-resolved models/capabilities and submit
+    the Run — the one composition path a live chat turn (`_submit_turn`, resolving
+    its resources from the `Request` via `routes.deps`) and an unattended scheduled
+    task's execution (`app.py`'s task executor, resolving them straight from
+    `app.state`) both fire through, so approval parking, conversation grants, and the
+    orchestrator's own wiring can never diverge between the two.
 
     No failure path after the caller's conversation mutation — ``prompt is None``
     is a regenerate (re-run from a history that already ends in the user request).
@@ -173,6 +203,49 @@ def _submit_turn(
         title_model=None if ephemeral else utility_model,
         title_settings=None if ephemeral else background_settings,
         context_window=context_window,
+        capabilities=capabilities,
+        store=store,
+        conversation_id=conversation_id,
+        uploads=uploads,
+        attachment_ids=attachment_ids,
+        vision=vision,
+        inline_max_tokens=inline_max_tokens,
+        compaction=compaction,
+        # While offline mode is active the web containers are down, so hide the web
+        # tools from the agent rather than let it discover they're unavailable.
+        disabled_tools=disabled_tools,
+    )
+    try:
+        run = registry.submit(
+            kind="chat",
+            owner_id=owner_id,
+            orchestrator=orchestrator,
+            conversation_id=conversation_id,
+        )
+    except ConversationBusyError as exc:
+        # The registry's own atomic check-and-claim caught a race the caller's
+        # earlier `require_conversation_free` guard couldn't (two requests that
+        # both saw no active run before either submitted).
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from exc
+    return ChatCreated(run_id=run.id, conversation_id=conversation_id)
+
+
+def _submit_turn(
+    request: Request,
+    *,
+    prompt: str | None,
+    conversation_id: str,
+    models: tuple[Model, Model, ModelSettings | None, int | None, bool],
+    attachment_ids: list[str] | None = None,
+    ephemeral: bool = False,
+    inline_max_tokens: int | None = None,
+    compaction: CompactionContext | None = None,
+) -> ChatCreated:
+    """Gather this route's resources from the `Request` and hand off to `compose_turn`."""
+    return compose_turn(
+        prompt=prompt,
+        conversation_id=conversation_id,
+        models=models,
         capabilities=Capabilities(
             memory=deps.memory(request),
             sandbox_sessions=deps.sandbox_sessions(request),
@@ -187,33 +260,15 @@ def _submit_turn(
             documents=deps.documents(request),
             notifications=deps.notifications(request),
         ),
+        registry=deps.registry(request),
         store=deps.store(request),
-        conversation_id=conversation_id,
         uploads=deps.uploads(request),
+        disabled_tools=deps.offline(request).web_tools_disabled(),
         attachment_ids=attachment_ids,
-        vision=vision,
+        ephemeral=ephemeral,
         inline_max_tokens=inline_max_tokens,
         compaction=compaction,
-        # While offline mode is active the web containers are down, so hide the web
-        # tools from the agent rather than let it discover they're unavailable.
-        disabled_tools=deps.offline(request).web_tools_disabled(),
     )
-    try:
-        run = deps.registry(request).submit(
-            kind="chat",
-            owner_id=OPERATOR_ID,
-            orchestrator=orchestrator,
-            conversation_id=conversation_id,
-        )
-    except ConversationBusyError as exc:
-        # The registry's own atomic check-and-claim caught a race the caller's
-        # earlier `require_conversation_free` guard couldn't (two requests that
-        # both saw no active run before either submitted).
-        raise HTTPException(
-            status_code=409,
-            detail="A response is already in progress in this conversation",
-        ) from exc
-    return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
 async def _validate_attachments(request: Request, attachment_ids: list[str]) -> None:

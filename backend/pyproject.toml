@@ -36,6 +36,7 @@ dependencies = [
     # The inference engines themselves are NOT Python deps — llama.cpp is a fetched/detected
     # binary and mlx-openai-server installs into an adapter-owned isolated env.
     "huggingface-hub>=1.18",
+    "croniter>=6.2.4",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

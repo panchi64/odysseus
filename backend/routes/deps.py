@@ -8,6 +8,7 @@ FastAPI ``Depends`` later).
 from __future__ import annotations
 
 from fastapi import HTTPException, Request
+from sqlalchemy import Engine
 
 from core.auth import AuthManager
 from core.ratelimit import RateLimiter
@@ -28,6 +29,7 @@ from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
+from services.scheduler import SchedulerService
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingService
@@ -175,3 +177,13 @@ def vault(request: Request) -> Vault:
 
 def auth_manager(request: Request) -> AuthManager:
     return request.app.state.auth_manager
+
+
+def db_engine(request: Request) -> Engine:
+    """The raw DB engine — for the surfaces (like `routes/tasks.py`) that don't yet
+    have a dedicated service and read/write their own SQLModel rows directly."""
+    return request.app.state.db_engine
+
+
+def scheduler(request: Request) -> SchedulerService:
+    return request.app.state.scheduler
