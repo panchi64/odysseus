@@ -14,7 +14,7 @@
 | 🔭 | **Deferred by decision** — design is settled (a D-number), build is deliberately held until its feature/seam is in scope. The seam is reserved; this is *not* an oversight. |
 | ⬜ | **Pending** — capability/feature not yet started. |
 
-**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, the code-execution sandbox (built — per-conversation live session, host-isolated, fail-closed), and the first surfaces on top of it — encrypted **artifacts** + live **previews** (token-gated reverse proxy), a **conversation** read/manage layer, and the **attention/notification surface** (D30 — its own SSE stream + durable REST backfill, app-wide approval/failure/completion notices). The long tail — most feature surfaces (mail, calendar, documents, research, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
+**Rollup (≈153 requirements).** Foundation + first slices are in: the agent engine, run substrate, event protocol, approval, memory, auth, at-rest encryption, model registry, the code-execution sandbox (built — per-conversation live session, host-isolated, fail-closed), and the first surfaces on top of it — encrypted **artifacts** + live **previews** (token-gated reverse proxy), a **conversation** read/manage layer, the **attention/notification surface** (D30 — its own SSE stream + durable REST backfill, app-wide approval/failure/completion notices), and **deep research** (`DR-*` — clarify/plan, the rounds pipeline as a Run, the report library, wired end to end into the frontend). The long tail — most remaining feature surfaces (mail, calendar, documents, model serving, uploads, …) — is pending, awaiting its `services/` capability. The pattern throughout: **the hard cross-cutting machinery is built once and inherited; each pending feature is now "add a capability + a thin tool + a route," not new infrastructure.**
 
 ---
 
@@ -167,25 +167,32 @@
 
 ## Deep research (`DR-*`)
 
-The orchestrator (`research/`) is a stub; the build approach is decided (**D19** — hand-coded outer pipeline + in-round agent, on the Run substrate, reusing search + LLM capabilities). All `DR-*` are ⬜ **pending** — but their blocking dependency, the `search` capability, **now exists** (`services/search`, `SEARCH-*` ✅), so deep research is unblocked. Substrate-level pieces it will inherit *already exist*: the Run lifecycle, cancellation at step boundary (`DR-3.3` ↔ `CHAT-5`), bounds (`DR-3.1` ↔ `runs/registry`), phase/progress streaming (`DR-5.1` ↔ the event protocol), and graceful degradation (`DR-4.1` ↔ `XC-DEG-2`). So deep research is "write the pipeline orchestrator + wire search," not new chassis.
+Landed end to end (**D19** — hand-coded outer pipeline + in-round agent, on the Run
+substrate, reusing search + LLM capabilities): the pipeline core (`research/`) driven by
+`routes/research.py`'s REST surface (clarify/plan exchange, `start` submits it as a Run,
+terminal report/stats/status persistence, research-linked notifications, "continue in
+chat") over `models/research.py`, with `frontend/src/features/research/` wired to it end
+to end (library + new-research entry, clarify/plan/refine, live progress over the run
+stream, the finished report, "continue in chat") — no mock surface remains. Substrate-level
+pieces it inherits: the Run lifecycle, cancellation at step boundary (`DR-3.3` ↔ `CHAT-5`),
+bounds (`DR-3.1` ↔ `runs/registry`), phase/progress streaming (`DR-5.1` ↔ the event
+protocol), and graceful degradation (`DR-4.1` ↔ `XC-DEG-2`).
 
 | Group | Status | Notes |
 |---|---|---|
-| DR-1 capability (iterative multi-source → cited report) | ⬜ | Needs `search` + the pipeline. |
-| DR-2 output (long-form, structured, evidence, document) | ⬜ | Document render ties `DOC-*`. |
-| DR-3 limits & control (rounds + time, early-stop, cancel, concurrency) | ⬜ | Bounds/cancel inherited from the substrate. |
-| DR-4 robustness (search-unavailable, step-failure isolation, prune) | ⬜ | `DR-4.1` ties `XC-DEG-2`. |
-| DR-5 progress (phase + counts; optional ETA) | ⬜ | Rides the event protocol. |
-| DR-6 configuration (per-run limits, provider) | ⬜ | |
-| DR-7 library (retain, list, search/sort, follow-up conversation) | ⬜ | |
+| DR-1 capability (iterative multi-source → cited report) | ✅ | Clarify/plan (`DR-1.6`) → rounds loop → cited report; dedupe (`DR-1.4`) in `research/dedupe.py`; "continue in chat" (`DR-1.5`) reuses `ConversationStore.record`. |
+| DR-2 output (long-form, structured, evidence, document) | 🟡 | Writer produces the long-form/structured/evidence report (`DR-2.1`–`2.3`) and stats (`DR-2.5`); `ReportView` renders it self-contained via the same `Markdown` component chat/documents use (`DR-2.4` ✅). `DR-2.6` (representative images, hide/restore) is deferred by spec edit — not built either side. |
+| DR-3 limits & control (rounds + time, early-stop, cancel, concurrency) | ✅ | Rounds/time bounds + judge/round-floor early-stop in `research/pipeline.py`; cancel/concurrency inherited from the substrate. |
+| DR-4 robustness (search-unavailable, step-failure isolation, prune) | ✅ | `DR-4.1`'s 2-consecutive-empty-rounds abort raises `SearchUnavailableError`, persisted as the research entry's `report` (the frozen `ResearchOut` contract has no separate error field); `DR-4.2` isolates a worker's own failure. |
+| DR-5 progress (phase + counts; optional ETA) | 🟡 | Phase/count streaming (`DR-5.1`) rides the existing event protocol end to end — `ProgressPanel` folds `step.*`/`tool.progress` into phase/round/source/finding counters live; `DR-5.2` (ETA) deferred by spec edit. |
+| DR-6 configuration (per-run limits, provider) | ✅ | `core.config.Settings`'s `research_*` fields; no live operator-facing settings route in this batch (mirrors how sandbox/search config is env-set). |
+| DR-7 library (retain, list, search/sort, follow-up conversation) | 🟡 | `DR-7.1` (retain + list, survives restart), `DR-7.2`'s search/sort (`ResearchLibraryScreen`'s `ListToolbar` — by question text, date, or status), and `DR-7.3` (continue in chat) are all in; archiving/restoring a report (the other half of `DR-7.2`, a `SHOULD`) is not built. |
 
 ---
 
 ## What this says about "next"
 
-The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with the unified View (versions + live head) on top, **web search is in** (`SEARCH-*`/`XC-DEG-2` ✅, which also stood up the first untrusted-content marking, `XC-SEC-5` 🟡), and **the task scheduler is now in** (`TASK-*`/D13, `AE-3.5`/D24 ✅) — unattended automation reusing the approval mechanism already built. The cheapest, highest-leverage next slice is the one whose **chassis already exists and only the capability is missing**:
-
-1. **Deep research** (`DR-*` / D19) — now unblocked (its `search` dependency landed); it's "write the pipeline orchestrator + wire the existing search/fetch tools," reusing the Run substrate, bounds, cancellation, and progress streaming it already inherits. Chat attachments enrolled at upload time are already corpus-reachable from a research run; the orchestrator references them via `corpus.retrieve` and the shared `agent/attachments` helper when built.
+The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with the unified View (versions + live head) on top, **web search is in** (`SEARCH-*`/`XC-DEG-2` ✅, which also stood up the first untrusted-content marking, `XC-SEC-5` 🟡), **the task scheduler is in** (`TASK-*`/D13, `AE-3.5`/D24 ✅) — unattended automation reusing the approval mechanism already built — and **deep research is in** (`DR-*` / D19 ✅) — the pipeline orchestrator + the clarify/plan/library REST surface, reusing the Run substrate, bounds, cancellation, and progress streaming it inherits, plus `search`/`webfetch` — wired end to end into the frontend (`features/research/`), no mock surface left.
 
 This is additive over the foundation, not a rebuild — which is the whole point of having spent the early passes on the chassis.
 
