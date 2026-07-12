@@ -71,7 +71,7 @@
 | AE-3.2 approval channel per run; pause unattended | 🟡 | inline approval + `/runs/{id}/approve`; D30 in-app notifications (`models/notification.py`, `services/notifications.py`, `routes/notifications.py`) | Interactive path ✅; in-app unattended channel ✅ — an `approval_needed` notification always fires when a run parks, persists durably, and surfaces app-wide (REST + its own SSE stream) so the operator learns of it away from the conversation. Push/email channels still ⬜. |
 | AE-3.3 operator can disable individual tools | ✅ | `tools/toolsets` `_enabled_gate` | |
 | AE-3.4 host-exec approval carries plain-language explanation | ✅ | `tools/code.py` `run_host_command(explanation=…)` | Explanation surfaced on `approval.required` (D23). |
-| AE-3.5 scheduled-task pre-authorization (scoped standing grant) | 🔭 | — | Designed (D24); lands with `TASK-*`. |
+| AE-3.5 scheduled-task pre-authorization (scoped standing grant) | ✅ | D24; `services/scheduler.py`, `routes/tasks.py` seed a conversation grant from `preAuthorized` at each task execution | An out-of-scope sensitive action still parks + notifies exactly like an interactive run (`test_task_run_hitting_sensitive_tool_outside_grants_parks_and_notifies`); revoking the scope is just editing `preAuthorized` via `PATCH /tasks/{id}`. |
 | AE-3.6 external tools sensitive-by-default + trusted opt-out | 🔭 | — | Designed (D25); lands with `MCP-*`/`INTEG-*`. |
 | AE-3.7 conversation-scoped auto-approval grant (opt-in, TTL'd, revocable) | ✅ | D28; `services/approval_grants`, `models/approval_grant`, engine auto-approve split, `ApprovalDecision.scope`, `GET`/`DELETE /conversations/{id}/grants` | Generic over any deferred tool; off by default; UI affordance on the shared `ApprovalCard` + revocable strip. |
 | AE-3.8 global knowledge-base recall is approval-gated (context gate) | ✅ | D28; `tools/recall_gate.py` shared by `corpus.retrieve` (no `source_ids`), `memory.recall`, `conversations.search` — all raise `ApprovalRequired` on global recall | Conditional — explicit-id reads pass through (`corpus.retrieve` with `source_ids`, `conversations.read` by id); not in the `AE-3.1` sensitive set (read-only). |
@@ -133,7 +133,7 @@
 |---|---|---|
 | EMAIL-1…5 | ⬜ | Agent send/reply is approval-gated when built (`AE-3.1`). |
 | CAL-1…3 | ⬜ | CalDAV sync. |
-| TASK-1…6 | ⬜ | Scheduler designed (D13); scheduling pre-auth designed (D24, `AE-3.5`). `TASK-6` (reminders via in-app/email/push, no duplicates, optional AI phrasing) absorbs the former Notes reminders. |
+| TASK-1…6 | 🟡 | **`models/task.py`, `services/scheduler.py`, `routes/tasks.py`.** The scheduler is built and wired into the product: `ScheduledTask`/`TaskRun` (vault-sealed title/prompt), an in-process lock-aware tick loop (once/interval/cron, non-overlap → `skipped`, at-most-one missed-fire catch-up), full CRUD + validation + manual `run_now` + run history over `/tasks`, and an auth-exempt per-task webhook trigger (`POST /tasks/hooks/{token}`, the unguessable token *is* the credential, mirroring `/previews`) (`TASK-1`, `TASK-5`). An agent task executes as an ordinary Run in a fresh conversation, reusing the exact chat-turn composition (`routes/chat.py`'s `resolve_turn_models`/`compose_turn`) so approval parking behaves identically; its `preAuthorized` seeds a conversation grant at each execution (`AE-3.5`) — an out-of-scope sensitive action still parks + notifies like an interactive run. Output routes to the conversation (`chat`, relying on the existing unwatched-completion notice) or additionally to a `task_outcome` notification (`notification`) (`TASK-2`); a reminder fires its prompt verbatim as a `reminder` notification, in-app only (`TASK-6` — email/push channels deferred, no AI phrasing in v1). **Remaining:** `TASK-3` (predefined automation actions, follow-up chaining) and `TASK-4` (NL→schedule parsing) are not built. |
 
 ## Feature inventory — D. Models & infrastructure
 
@@ -183,11 +183,10 @@ The orchestrator (`research/`) is a stub; the build approach is decided (**D19**
 
 ## What this says about "next"
 
-The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with the unified View (versions + live head) on top, and **web search is now in** (`SEARCH-*`/`XC-DEG-2` ✅), which also stood up the first untrusted-content marking (`XC-SEC-5` 🟡). The cheapest, highest-leverage next slices are the ones whose **chassis already exists and only the capability is missing**:
+The code-execution sandbox is in (`XC-SEC-7`/`AE-3.4` ✅) with the unified View (versions + live head) on top, **web search is in** (`SEARCH-*`/`XC-DEG-2` ✅, which also stood up the first untrusted-content marking, `XC-SEC-5` 🟡), and **the task scheduler is now in** (`TASK-*`/D13, `AE-3.5`/D24 ✅) — unattended automation reusing the approval mechanism already built. The cheapest, highest-leverage next slice is the one whose **chassis already exists and only the capability is missing**:
 
 1. **Deep research** (`DR-*` / D19) — now unblocked (its `search` dependency landed); it's "write the pipeline orchestrator + wire the existing search/fetch tools," reusing the Run substrate, bounds, cancellation, and progress streaming it already inherits. Chat attachments enrolled at upload time are already corpus-reachable from a research run; the orchestrator references them via `corpus.retrieve` and the shared `agent/attachments` helper when built.
-2. **The scheduler** (`TASK-*` + D13) — turns `AE-3.5`/D24 pre-authorization from design into running unattended automation, reusing the approval mechanism already built.
 
-Each is additive over the foundation, not a rebuild — which is the whole point of having spent the early passes on the chassis.
+This is additive over the foundation, not a rebuild — which is the whole point of having spent the early passes on the chassis.
 
 → see also: [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md) (gating detail), [`decisions.md`](./decisions.md) (the D-numbers cited here), and the per-area specs under [`../spec/`](../spec/).
