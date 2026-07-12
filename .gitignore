@@ -68,8 +68,8 @@ output.txt.txt
 !docs/*.webp
 
 # Reports and temp files
-reports/
-tasks/
+/reports/
+/tasks/
 scripts/compound/*.json
 research_data/
 **/search_analytics.json

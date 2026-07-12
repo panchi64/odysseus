@@ -18,12 +18,12 @@ import type {
 import { openConversation } from "~/features/chat/data";
 
 /** Icon + accent per kind (design: approval_needed = warn, run_failed = danger,
- *  run_completed = neutral). `task_outcome`/`system` read neutral too — nothing
- *  emits `task_outcome` yet (Phase 5 seam). */
+ *  run_completed/task_outcome = neutral, reminder = info accent). */
 const KIND_ICON: Record<NotificationKind, IconName> = {
   approval_needed: "warning",
   run_failed: "close",
   run_completed: "check",
+  reminder: "bell",
   task_outcome: "activity",
   system: "info",
 };
@@ -32,6 +32,7 @@ const KIND_TONE: Record<NotificationKind, string> = {
   approval_needed: "text-warn",
   run_failed: "text-alert",
   run_completed: "text-dim",
+  reminder: "text-info",
   task_outcome: "text-dim",
   system: "text-dim",
 };

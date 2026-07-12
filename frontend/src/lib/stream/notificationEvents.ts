@@ -9,12 +9,15 @@
  * vice versa.
  */
 
-/** `task_outcome` is a forward-compat seam for the scheduler/tasks surface —
- *  nothing emits it yet. */
+/** `reminder` and `task_outcome` are the scheduler/tasks surface's two kinds —
+ *  a reminder task fires `reminder` directly (title = task title, body = the
+ *  prompt verbatim); any task whose output channel is `notification` also
+ *  fires `task_outcome` at terminal with a short outcome summary. */
 export type NotificationKind =
   | "approval_needed"
   | "run_completed"
   | "run_failed"
+  | "reminder"
   | "task_outcome"
   | "system";
 
