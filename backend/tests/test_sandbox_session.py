@@ -3,20 +3,24 @@ reaper, and (with a runtime) file continuity across calls and across a reap."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
 
+import services.sandbox.session as session_mod
 from core.config import Settings
 from core.vault import Vault
 from services.sandbox import (
     ContainerSandbox,
     PreviewHandle,
     SandboxError,
+    SandboxSession,
     SandboxSessionManager,
     SandboxSpec,
 )
 from services.sandbox.session import (
+    ImageWarmup,
     _excluded,
     _restore_workspace,
     _safe_key,
@@ -35,6 +39,7 @@ async def _vault(tmp_path) -> Vault:
 
 
 def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
+    backend = overrides.pop("backend", None) or ContainerSandbox()
     opts = dict(
         data_dir=tmp_path,
         idle_ttl_s=1800.0,
@@ -42,7 +47,7 @@ def _manager(tmp_path, vault, **overrides) -> SandboxSessionManager:
         excludes=_EXCLUDES,
     )
     opts.update(overrides)
-    return SandboxSessionManager(ContainerSandbox(), vault, **opts)
+    return SandboxSessionManager(backend, vault, **opts)
 
 
 # --- naming + exclusion ------------------------------------------------------
@@ -176,6 +181,123 @@ async def test_acquire_is_lazy_and_idempotent_per_key(tmp_path):
     assert not first.workspace.exists()
 
 
+# --- image warm-up coordination: a cold create waits, not races (sandbox-01) --
+def _pinned_backend() -> ContainerSandbox:
+    return ContainerSandbox(runtime="docker")
+
+
+async def test_ensure_up_waits_for_a_pending_image_warmup_before_creating(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    warmup = ImageWarmup()
+    warmup.start_pulling()  # simulate the background pull actually being in flight
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+        warmup=warmup,
+    )
+
+    created: list[list[str]] = []
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        created.append(argv)
+        return False, 0, b"", b""
+
+    async def fake_kill_quietly(_runtime) -> None:
+        return None
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session, "_kill_quietly", fake_kill_quietly)
+
+    task = asyncio.create_task(session._ensure_up())
+    await asyncio.sleep(0.02)  # let it start and block on the still-pending pull
+    assert not task.done()
+    assert not created  # no container-create attempted while the pull is in flight
+
+    warmup.mark_done(True)  # the background pull resolves
+    await asyncio.wait_for(task, timeout=1.0)
+    assert session.is_warm
+    assert created  # now proceeds to the (fast, image-cached) create
+
+
+async def test_ensure_up_needs_no_warmup_wire_up_at_all(tmp_path, monkeypatch):
+    # A bare unit-constructed session (warmup=None, the default) skips the
+    # coordination outright — existing callers that don't wire one keep working.
+    vault = await _vault(tmp_path)
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+    )
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        return False, 0, b"", b""
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+
+    await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+    assert session.is_warm
+
+
+async def _noop() -> None:
+    return None
+
+
+async def test_ensure_up_gives_a_truthful_message_when_the_pull_never_resolves(
+    tmp_path, monkeypatch
+):
+    vault = await _vault(tmp_path)
+    warmup = ImageWarmup()
+    warmup.start_pulling()  # in flight, and never marked done — simulates a stuck pull
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+        warmup=warmup,
+    )
+    monkeypatch.setattr(session_mod, "IMAGE_PULL_TIMEOUT_S", 0.05)
+
+    with pytest.raises(SandboxError, match="still downloading"):
+        await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+
+
+async def test_ensure_up_proceeds_when_the_pull_resolved_but_failed(tmp_path, monkeypatch):
+    # The pull resolved (event set) but found nothing cached either — that's a
+    # genuinely-unavailable image, not "still downloading"; let the ordinary
+    # create attempt run and report its own real error (fail-closed, unchanged).
+    vault = await _vault(tmp_path)
+    warmup = ImageWarmup()
+    warmup.mark_done(False)
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+        warmup=warmup,
+    )
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        return False, 1, b"", b"no such image"
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session, "_kill_quietly", lambda _r: _noop())
+
+    with pytest.raises(SandboxError, match="failed to start sandbox session"):
+        await asyncio.wait_for(session._ensure_up(), timeout=1.0)
+
+
 # --- the idle reaper ---------------------------------------------------------
 async def test_reaper_seals_then_drops_an_idle_session(tmp_path):
     vault = await _vault(tmp_path)
@@ -220,6 +342,91 @@ async def test_reaper_spares_fresh_and_busy_sessions(tmp_path):
         assert busy_mgr._sessions  # never reaped mid-run, even past TTL
     finally:
         session._lock.release()
+
+
+# --- a sweep's sealing must not stall unrelated conversations (sandbox-02) ---
+async def test_sweep_does_not_block_acquire_for_an_unrelated_conversation(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    stale = await manager.acquire("conv-stale")
+    stale.workspace.mkdir(parents=True, exist_ok=True)
+
+    seal_started = asyncio.Event()
+    release_seal = asyncio.Event()
+
+    async def slow_shutdown(self) -> None:
+        seal_started.set()
+        await release_seal.wait()
+
+    monkeypatch.setattr(SandboxSession, "shutdown", slow_shutdown)
+
+    sweep_task = asyncio.create_task(manager._sweep())
+    await asyncio.wait_for(seal_started.wait(), timeout=1.0)
+
+    # A different conversation must proceed immediately — it must not wait on
+    # the manager lock for the sum of every in-flight seal.
+    other = await asyncio.wait_for(manager.acquire("conv-other"), timeout=1.0)
+    assert other is not None
+
+    release_seal.set()
+    await asyncio.wait_for(sweep_task, timeout=1.0)
+
+
+async def test_acquire_for_a_mid_seal_key_waits_for_its_own_teardown(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    original = await manager.acquire("conv-a")
+    original.workspace.mkdir(parents=True, exist_ok=True)
+
+    seal_started = asyncio.Event()
+    release_seal = asyncio.Event()
+
+    async def slow_shutdown(self) -> None:
+        seal_started.set()
+        await release_seal.wait()
+
+    monkeypatch.setattr(SandboxSession, "shutdown", slow_shutdown)
+
+    sweep_task = asyncio.create_task(manager._sweep())
+    await asyncio.wait_for(seal_started.wait(), timeout=1.0)
+
+    acquire_task = asyncio.create_task(manager.acquire("conv-a"))
+    await asyncio.sleep(0.05)
+    assert not acquire_task.done()  # same key mid-seal — must wait for it specifically
+
+    release_seal.set()
+    revived = await asyncio.wait_for(acquire_task, timeout=1.0)
+    await asyncio.wait_for(sweep_task, timeout=1.0)
+    assert revived is not original  # a fresh session, minted only once teardown finished
+    assert not manager._tearing_down  # the tombstone is cleared afterward
+
+
+async def test_purge_waits_for_an_in_flight_sweep_seal_on_the_same_key(tmp_path, monkeypatch):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, idle_ttl_s=0.0)
+    session = await manager.acquire("conv-a")
+    session.workspace.mkdir(parents=True, exist_ok=True)
+
+    seal_started = asyncio.Event()
+    release_seal = asyncio.Event()
+
+    async def slow_shutdown(self) -> None:
+        seal_started.set()
+        await release_seal.wait()
+
+    monkeypatch.setattr(SandboxSession, "shutdown", slow_shutdown)
+
+    sweep_task = asyncio.create_task(manager._sweep())
+    await asyncio.wait_for(seal_started.wait(), timeout=1.0)
+
+    purge_task = asyncio.create_task(manager.purge("conv-a"))
+    await asyncio.sleep(0.05)
+    assert not purge_task.done()  # waits for the sweep's seal before deleting anything
+
+    release_seal.set()
+    await asyncio.wait_for(purge_task, timeout=1.0)
+    await asyncio.wait_for(sweep_task, timeout=1.0)
+    assert not manager._tearing_down
 
 
 # --- purge: deleting a conversation removes its sandbox outright -------------
@@ -339,6 +546,136 @@ async def test_stopped_tokens_are_pruned_after_their_ttl(tmp_path, monkeypatch):
 
     assert manager.preview_status("tok-1") == "unknown"  # aged out
     assert manager.preview_status("tok-2") == "stopped"  # freshly tombstoned
+
+
+# --- the pre-warmed spare pool (sandbox-06) -----------------------------------
+def _fake_container_create(monkeypatch, *, created: list[list[str]] | None = None):
+    """Fake every `docker run --detach ...` as an instant success — no real
+    runtime needed to exercise the spare pool's bookkeeping."""
+    log = created if created is not None else []
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        log.append(argv)
+        return False, 0, b"", b""
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    return log
+
+
+async def test_replenish_only_proceeds_once_the_image_warmup_resolves_ready(
+    tmp_path, monkeypatch
+):
+    created = _fake_container_create(monkeypatch)
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
+    )
+    manager._image_warmup.start_pulling()  # simulate the boot pull actually in flight
+
+    manager._kick_replenish()
+    await asyncio.sleep(0.02)
+    assert not manager._spares  # the pull hasn't resolved yet — no spare created
+    assert not created
+
+    manager._image_warmup.mark_done(True)
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+
+    assert len(manager._spares) == 1
+    spare = manager._spares[0]
+    assert spare.workspace.exists()
+    # Same hardening as an ordinary session's container.
+    joined = " ".join(created[-1])
+    assert "--network none" in joined
+    assert "--cap-drop ALL" in joined
+    assert "--read-only" in joined
+    assert "--pids-limit" in joined
+
+
+async def test_replenish_skips_silently_when_the_image_is_confirmed_unavailable(
+    tmp_path, monkeypatch
+):
+    created = _fake_container_create(monkeypatch)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=True)
+    manager._image_warmup.mark_done(False)  # pull failed, nothing cached either
+
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+
+    assert not manager._spares
+    assert not created  # never even attempted a create against a known-bad image
+
+
+async def test_a_cold_acquire_claims_a_spare_and_kicks_a_background_replenish(
+    tmp_path, monkeypatch
+):
+    _fake_container_create(monkeypatch)
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
+    )
+    manager._image_warmup.mark_done(True)
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    spare = manager._spares[0]
+
+    session = await manager.acquire("conv-claim")
+
+    assert session.is_warm  # adopted the spare's already-running container — no cold start
+    assert session.container == spare.container
+    assert session.workspace == manager._work_root / _safe_key("conv-claim")
+    assert session.workspace.exists()  # the neutral dir now lives at the canonical path
+    assert not spare.workspace.exists()  # renamed away, not copied
+    assert not manager._spares  # claimed, not left dangling in the pool
+
+    # Claiming kicks a background top-up so the pool returns to `spare_count`.
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    assert len(manager._spares) == 1
+    assert manager._spares[0] is not spare
+
+
+async def test_a_stale_unclaimed_spare_is_reaped_by_the_idle_sweep_and_replenished(
+    tmp_path, monkeypatch
+):
+    removed: list[str] = []
+
+    async def fake_force_remove(_runtime, name: str) -> None:
+        removed.append(name)
+
+    _fake_container_create(monkeypatch)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=_pinned_backend(), idle_ttl_s=0.0, spare_count=1
+    )
+    manager._image_warmup.mark_done(True)
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    stale_workspace = manager._spares[0].workspace
+    stale_container = manager._spares[0].container
+
+    await manager._sweep()  # idle_ttl_s=0.0 ⇒ immediately stale, never claimed
+
+    assert stale_container in removed  # its container was torn down
+    assert not stale_workspace.exists()  # and its neutral workspace deleted
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    assert len(manager._spares) == 1  # the pool topped itself back up
+    assert manager._spares[0].workspace != stale_workspace
+
+
+async def test_spare_disabled_never_creates_one(tmp_path, monkeypatch):
+    created = _fake_container_create(monkeypatch)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=False)
+    manager._image_warmup.mark_done(True)
+
+    manager._kick_replenish()  # a no-op — spares are disabled
+    assert manager._replenish_task is None
+
+    session = await manager.acquire("conv-x")  # falls back to the ordinary lazy path
+    assert not session.is_warm
+    assert not created
 
 
 # --- live container (only when a real runtime is present) --------------------

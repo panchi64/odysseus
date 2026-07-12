@@ -30,6 +30,7 @@ async def detect_sandbox(settings: Settings) -> Sandbox | None:
         image=settings.sandbox_image,
         memory=settings.sandbox_memory,
         cpus=settings.sandbox_cpus,
+        pids_limit=settings.sandbox_pids_limit,
     )
     if await backend.available():
         return backend

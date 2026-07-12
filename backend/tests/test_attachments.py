@@ -37,6 +37,7 @@ from services.corpus.chunk_store import CorpusChunkStore
 from services.corpus.index import CorpusIndex
 from services.corpus.uploads import UploadsAdapter
 from services.registry import ModelRegistry
+from services.sandbox import SandboxError
 from services.upload_extraction import BasicExtractor
 from services.uploads import UploadStore
 from tools import RunDeps, build_agent_toolsets
@@ -271,13 +272,20 @@ async def test_image_attachment_is_retained_inline_in_history():
 
 
 class _FakeSandboxSession:
-    """Records files staged into its (host-side) workspace, for the provision tool."""
+    """Records files staged into its (host-side) workspace, for the provision tool.
+    Mirrors the real ``SandboxSession``'s ``read_file``/``write_file`` contract closely
+    enough to exercise the collision-safe staging path (`_stage_unique`)."""
 
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
 
     def write_file(self, relpath: str, content: bytes) -> None:
         self.files[relpath] = content
+
+    def read_file(self, relpath: str) -> bytes:
+        if relpath not in self.files:
+            raise SandboxError(f"no such file in the sandbox: {relpath!r}")
+        return self.files[relpath]
 
 
 class _FakeSandboxSessions:
@@ -373,6 +381,52 @@ async def test_provision_degrades_without_a_sandbox():
     [ret] = returns
     assert ret.content["ok"] is False
     assert "unavailable" in ret.content["error"].lower()
+
+
+# --- sandbox-04: collision-safe staging --------------------------------------
+
+
+async def test_provision_disambiguates_a_filename_collision():
+    # Two distinct attachments both sanitize to "dossier" (_insert_upload's fixed
+    # filename) but carry different bytes — the second must not silently clobber
+    # the first, and the result must report the actual path it landed at.
+    engine, _v, _c, _a, uploads = await _uploads_store()
+    uid1 = await _insert_upload(engine, uploads._vault, mime="text/csv", content=b"a,b\n1,2\n")
+    uid2 = await _insert_upload(engine, uploads._vault, mime="text/csv", content=b"c,d\n3,4\n")
+    sessions = _FakeSandboxSessions()
+
+    returns1, _r1 = await _run_provision(uid1, uploads=uploads, sessions=sessions)
+    returns2, _r2 = await _run_provision(uid2, uploads=uploads, sessions=sessions)
+
+    [ret1] = returns1
+    [ret2] = returns2
+    assert ret1.content["path"] == "/work/attachments/dossier"
+    assert "renamed" not in ret1.content
+
+    # The second attachment gets a disambiguated, distinct path — and is told so.
+    assert ret2.content["path"] == "/work/attachments/dossier-2"
+    assert ret2.content["renamed"] is True
+    assert "already used this name" in ret2.content["note"]
+
+    # Both files survive, distinct and intact — neither clobbered the other.
+    assert sessions.session.files["attachments/dossier"] == b"a,b\n1,2\n"
+    assert sessions.session.files["attachments/dossier-2"] == b"c,d\n3,4\n"
+
+
+async def test_provision_reprovisioning_the_same_attachment_is_idempotent():
+    # Re-provisioning the *same* attachment (same bytes at the same name) is a
+    # no-op re-stage, not a collision — it must land back at the original path.
+    engine, _v, _c, _a, uploads = await _uploads_store()
+    uid = await _insert_upload(engine, uploads._vault, mime="text/csv", content=b"a,b\n1,2\n")
+    sessions = _FakeSandboxSessions()
+
+    returns1, _r1 = await _run_provision(uid, uploads=uploads, sessions=sessions)
+    returns2, _r2 = await _run_provision(uid, uploads=uploads, sessions=sessions)
+
+    assert returns1[0].content["path"] == "/work/attachments/dossier"
+    assert returns2[0].content["path"] == "/work/attachments/dossier"
+    assert "renamed" not in returns2[0].content
+    assert sessions.session.files.keys() == {"attachments/dossier"}
 
 
 # --- the retroactive knowledge-base exclude toggle --------------------------

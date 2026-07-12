@@ -43,6 +43,12 @@ _RUNTIMES = ("docker", "podman")
 # enough to let the in-container `timeout` send SIGTERM then escalate to SIGKILL.
 _BACKSTOP_GRACE_S = 15.0
 
+# Budget for a fresh image pull (the ~150MB default slim image on a slow link).
+# Shared by `ensure_image` itself and by anything that must *wait* on the
+# background pull rather than race an implicit pull against a short
+# container-create timeout (see `session.py`'s `_ensure_up`/`start_preview`).
+IMAGE_PULL_TIMEOUT_S = 300.0
+
 
 def with_in_container_timeout(command: list[str], timeout_s: float) -> list[str]:
     """Wrap a command so the time limit is enforced *inside* the container.
@@ -312,7 +318,7 @@ async def ensure_image(runtime: str, image: str) -> bool:
     image. Shared by the managed SearXNG instance and the sandbox warm-up so both
     keep their image current with one rule."""
     _timed_out, code, _out, err = await run_subprocess(
-        [runtime, "pull", image], timeout_s=300.0
+        [runtime, "pull", image], timeout_s=IMAGE_PULL_TIMEOUT_S
     )
     if code == 0:
         return True

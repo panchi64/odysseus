@@ -27,3 +27,23 @@ def truncate_on_boundary(text: str, max_chars: int) -> str:
     if boundary > max_chars * 0.8:
         cut = cut[:boundary]
     return cut.rstrip()
+
+
+def truncate_middle(text: str, max_chars: int) -> tuple[str, str, int]:
+    """Cap ``text`` to ``max_chars`` by keeping a **head and a tail** and eliding the
+    middle — the mirror image of :func:`truncate_on_boundary`, which keeps only the
+    head. Useful when the interesting part could be either the setup (head) or the
+    final state/error (tail, where a failing process's output usually lands).
+
+    Returns ``(head, tail, elided_chars)``. When ``text`` already fits, ``head`` is
+    the text unchanged, ``tail`` is empty, and ``elided_chars`` is 0 — the caller can
+    always safely use ``head`` alone in that case, and insert its own marker between
+    ``head``/``tail`` only when ``elided_chars`` is nonzero."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text, "", 0
+    head_len = max_chars // 2
+    tail_len = max_chars - head_len
+    head = text[:head_len]
+    tail = text[len(text) - tail_len :] if tail_len else ""
+    elided = len(text) - head_len - tail_len
+    return head, tail, elided

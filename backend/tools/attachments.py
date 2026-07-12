@@ -16,6 +16,7 @@ can act on.
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
@@ -27,6 +28,9 @@ from .deps import RunDeps
 # Where staged attachments land inside the sandbox working directory.
 _STAGE_DIR = "attachments"
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+# Hard bound on the collision-suffix search below — sized generously above any
+# realistic same-named-attachment count so a bug can't spin this forever.
+_MAX_SUFFIX_ATTEMPTS = 1000
 
 
 def _safe_name(filename: str, upload_id: str) -> str:
@@ -36,6 +40,37 @@ def _safe_name(filename: str, upload_id: str) -> str:
     base = filename.replace("\\", "/").rsplit("/", 1)[-1]
     cleaned = _UNSAFE.sub("-", base).strip("-.")
     return cleaned or upload_id
+
+
+def _suffixed(relpath: str, n: int) -> str:
+    """``relpath`` with a ``-{n}`` suffix inserted before its extension, for the next
+    collision-safe candidate name (``attachments/data.csv`` → ``attachments/data-2.csv``)."""
+    path = PurePosixPath(relpath)
+    return str(path.with_name(f"{path.stem}-{n}{path.suffix}"))
+
+
+def _stage_unique(session, relpath: str, content: bytes) -> tuple[str, bool]:
+    """Write ``content`` at ``relpath``, or the next available ``-2``/``-3``… suffixed
+    name when that path is already taken by *different* bytes — two attachments sharing
+    a sanitized basename (e.g. two files both named ``invoice.pdf``). The same bytes
+    already at that path means the same attachment is simply being re-provisioned, so
+    it is staged in place rather than renamed — re-provisioning stays idempotent.
+
+    Returns ``(staged_relpath, renamed)``."""
+    candidate = relpath
+    for n in range(2, _MAX_SUFFIX_ATTEMPTS + 2):
+        try:
+            existing = session.read_file(candidate)
+        except SandboxError:
+            break  # nothing at this path — safe to use
+        if existing == content:
+            break  # the same file, already staged — reuse the same path
+        candidate = _suffixed(relpath, n)
+    # If every suffix up to _MAX_SUFFIX_ATTEMPTS is genuinely taken (astronomically
+    # unlikely), the loop exits without re-checking this final candidate — it is
+    # written to unverified rather than exhaustively proven free.
+    session.write_file(candidate, content)
+    return candidate, candidate != relpath
 
 
 def attachments_toolset() -> FunctionToolset[RunDeps]:
@@ -49,11 +84,15 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
         chip). Use this whenever you need to *work on* an attached file — any type, not
         just images: parse a CSV, analyze a spreadsheet, run code over a document, crop
         an image, and so on. It returns the ``path`` where the file was written; read it
-        from there in your next ``code_execute`` call. For just searching a document's
-        text, prefer ``corpus.retrieve`` with the id instead.
+        from there in your next ``code_execute`` call — always use this returned path
+        verbatim, not one you construct from the filename: when another attachment in
+        this conversation already staged a file under the same name, this one is staged
+        under a disambiguated name instead (the result says so). For just searching a
+        document's text, prefer ``corpus.retrieve`` with the id instead.
 
         The result has ``ok`` and, on success, ``path``/``filename``/``mime``/
-        ``size_bytes``; on failure an ``error`` you can act on (e.g. a bad id)."""
+        ``size_bytes`` (plus ``renamed``/``note`` when the name was disambiguated); on
+        failure an ``error`` you can act on (e.g. a bad id)."""
         uploads = ctx.deps.uploads
         if uploads is None:
             return {"ok": False, "error": "Attachments are unavailable right now."}
@@ -75,15 +114,23 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
         relpath = f"{_STAGE_DIR}/{_safe_name(blob.filename, attachment_id)}"
         try:
             session = await sessions.acquire(ctx.deps.sandbox_key)
-            session.write_file(relpath, blob.content)
+            staged_relpath, renamed = _stage_unique(session, relpath, blob.content)
         except SandboxError as exc:
             return {"ok": False, "error": f"Could not stage the file: {exc}"}
-        return {
+        result = {
             "ok": True,
-            "path": f"/work/{relpath}",
+            "path": f"/work/{staged_relpath}",
             "filename": blob.filename,
             "mime": blob.mime,
             "size_bytes": len(blob.content),
         }
+        if renamed:
+            result["renamed"] = True
+            result["note"] = (
+                f"Another attachment already used this name — staged as "
+                f"{PurePosixPath(staged_relpath).name!r} instead. Use the returned "
+                "path verbatim, not the original filename."
+            )
+        return result
 
     return toolset

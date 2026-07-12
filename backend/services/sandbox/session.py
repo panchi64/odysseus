@@ -39,6 +39,7 @@ from core.vault import Vault
 from .base import SandboxError, SandboxResult, SandboxSpec
 from .container import (
     _BACKSTOP_GRACE_S,
+    IMAGE_PULL_TIMEOUT_S,
     ContainerSandbox,
     detached_run_argv,
     ensure_image,
@@ -54,10 +55,65 @@ logger = logging.getLogger(__name__)
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
+# How many stale sessions a sweep will seal concurrently (tar+gzip+AEAD is CPU/IO
+# work off-thread) — bounded so a mass reap doesn't itself thrash the host, but
+# no longer serial, so unrelated conversations aren't stalled behind one another.
+_SWEEP_SEAL_CONCURRENCY = 3
+
 
 def _safe_key(key: str) -> str:
     """A container/dir-safe token for a conversation id (leading char guaranteed)."""
     return "s" + _SAFE.sub("-", key)
+
+
+class ImageWarmup:
+    """Coordinates the background image pull (``SandboxSessionManager._warm_image``)
+    with a session's first container create, so a cold ``_ensure_up``/
+    ``start_preview`` never races an implicit ``docker run`` pull against its own
+    short create-timeout (sandbox-01). One instance per manager, shared by every
+    session it mints; a bare :class:`SandboxSession` used without one (e.g. direct
+    unit construction) simply skips the coordination — see ``warmup=None``.
+
+    Defaults to "nothing to wait for" (``ready``, not ``pending``) until
+    :meth:`start_pulling` says otherwise — so a manager that's never actually
+    started warming (e.g. most unit tests, which construct one without calling
+    :meth:`SandboxSessionManager.start`) behaves exactly as it did before this
+    coordination existed, rather than waiting on a pull that will never run."""
+
+    def __init__(self) -> None:
+        self._done = asyncio.Event()
+        self._done.set()
+        self.ready = True
+
+    @property
+    def pending(self) -> bool:
+        """True only while a background pull is actually in flight."""
+        return not self._done.is_set()
+
+    def start_pulling(self) -> None:
+        """Call right before kicking off the background pull — flips to
+        pending so a concurrent create knows to wait rather than assume
+        readiness."""
+        self.ready = False
+        self._done.clear()
+
+    def mark_done(self, ready: bool) -> None:
+        self.ready = ready
+        self._done.set()
+
+    async def wait(self, timeout_s: float) -> bool:
+        """Wait up to ``timeout_s`` for the pull to resolve. Returns whether the
+        image is now known ready. A caller that times out here still sees
+        ``pending`` True afterwards, distinguishing "still pulling" (worth a
+        clear retry message) from "resolved and confirmed missing" (let the
+        ordinary create attempt run and report its own real error)."""
+        if not self.pending:
+            return self.ready
+        try:
+            await asyncio.wait_for(self._done.wait(), timeout=timeout_s)
+        except TimeoutError:
+            return False
+        return self.ready
 
 
 def _excluded(arcname: str, excludes: Iterable[str]) -> bool:
@@ -109,6 +165,7 @@ class SandboxSession:
         backend: ContainerSandbox,
         vault: Vault,
         excludes: Iterable[str],
+        warmup: ImageWarmup | None = None,
     ) -> None:
         self.key = key
         self.workspace = workspace
@@ -118,6 +175,7 @@ class SandboxSession:
         self._backend = backend
         self._vault = vault
         self._excludes = tuple(excludes)
+        self._warmup = warmup
         self._runtime: str | None = None
         self._running = False
         self._preview: PreviewHandle | None = None
@@ -144,6 +202,31 @@ class SandboxSession:
 
     def idle_seconds(self, now: float) -> float:
         return now - self._last_used
+
+    def _adopt_running_container(self, *, container: str, runtime: str) -> None:
+        """Wire this session onto an already-running container (a claimed spare,
+        sandbox-06) instead of the one ``_ensure_up`` would otherwise lazily
+        start. The caller has already renamed the spare's neutral workspace onto
+        this session's canonical ``self.workspace`` path before calling this."""
+        self.container = container
+        self._runtime = runtime
+        self._running = True
+
+    async def _await_image_ready(self) -> None:
+        """Wait out an in-flight background image pull before creating a
+        container, rather than let the create step's own implicit pull race a
+        short create-timeout (sandbox-01). A caller with no ``warmup`` wired
+        (e.g. a bare unit-constructed session) skips this outright."""
+        if self._warmup is None or not self._warmup.pending:
+            return
+        ready = await self._warmup.wait(IMAGE_PULL_TIMEOUT_S)
+        if not ready and self._warmup.pending:
+            # Still unresolved after our own bounded wait — say so plainly
+            # instead of racing another implicit pull against the create
+            # step's short timeout below.
+            raise SandboxError(
+                "the sandbox image is still downloading; try again shortly"
+            )
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         async with self._lock:
@@ -213,6 +296,7 @@ class SandboxSession:
             runtime = self._backend.runtime
             if runtime is None:  # disappeared since detection — fail closed
                 raise SandboxError("no container runtime available")
+            await self._await_image_ready()
             await self._stop_preview_locked()
             handle = await launch_preview(
                 runtime=runtime,
@@ -330,6 +414,7 @@ class SandboxSession:
         runtime = self._backend.runtime
         if runtime is None:  # disappeared since detection — fail closed
             raise SandboxError("no container runtime available")
+        await self._await_image_ready()
         await self._kill_quietly(runtime)  # clear any stale same-named container
         argv = detached_run_argv(
             runtime,
@@ -368,6 +453,25 @@ class SandboxSession:
         await force_remove_container(runtime, self.container)
 
 
+class _Spare:
+    """An idle, conversation-unattached container pre-created off the critical
+    path (sandbox-06) — same hardening as an ordinary session, ``sleep
+    infinity``-parked over a neutral, never-written-to workspace. A cold
+    ``acquire()`` claims one instead of paying the container-create round trip:
+    the neutral workspace is renamed onto the conversation's canonical path (a
+    same-filesystem rename, which the running container's already-established
+    bind mount survives — the kernel tracks it by dentry, not by path string) and
+    the container is adopted as-is, no rebind/restart needed."""
+
+    __slots__ = ("container", "workspace", "runtime", "created")
+
+    def __init__(self, *, container: str, workspace: Path, runtime: str) -> None:
+        self.container = container
+        self.workspace = workspace
+        self.runtime = runtime
+        self.created = time.monotonic()
+
+
 class SandboxSessionManager:
     """Maps a conversation to its live :class:`SandboxSession`, reaping idle ones.
 
@@ -391,6 +495,8 @@ class SandboxSessionManager:
         reap_interval_s: float,
         excludes: Iterable[str],
         preview_startup_timeout_s: float = 20.0,
+        spare_enabled: bool = True,
+        spare_count: int = 1,
     ) -> None:
         self._backend = backend
         self._vault = vault
@@ -400,6 +506,8 @@ class SandboxSessionManager:
         self._reap_interval = reap_interval_s
         self._excludes = tuple(excludes)
         self._preview_startup_timeout_s = preview_startup_timeout_s
+        self._spare_enabled = spare_enabled
+        self._spare_count = spare_count
         self._sessions: dict[str, SandboxSession] = {}
         # token → safe session key, so the proxy route resolves a preview in O(1).
         self._previews: dict[str, str] = {}
@@ -409,9 +517,27 @@ class SandboxSessionManager:
         # 404. Explicit closes don't need a tombstone: the model's `view_close` already
         # emits `view.live.stopped` on the live run stream.
         self._stopped_tokens: dict[str, float] = {}
+        # safe key → set once its (former) session's teardown (a sweep's seal, or
+        # a purge) is in flight. A concurrent acquire()/purge() for THIS key waits
+        # on it; every other key is unaffected (sandbox-02).
+        self._tearing_down: dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
         self._warm: asyncio.Task | None = None
+        # The pre-warmed spare pool (sandbox-06) — coordinates with the same
+        # background image pull a cold session waits on, so a spare is never
+        # created before the image it needs is actually cached.
+        self._image_warmup = ImageWarmup()
+        self._spares: list[_Spare] = []
+        self._spare_seq = 0
+        self._replenish_task: asyncio.Task | None = None
+
+    @property
+    def image_warmup_pending(self) -> bool:
+        """Whether the boot-time image pull is still in flight — lets a caller
+        (e.g. the ``code_execute`` tool) distinguish an ordinary cold start from
+        one that's actually waiting on a still-downloading image."""
+        return self._image_warmup.pending
 
     def existing(self, key: str) -> SandboxSession | None:
         """The live session for a conversation if one exists, **without creating** it,
@@ -419,24 +545,54 @@ class SandboxSessionManager:
         return self._sessions.get(_safe_key(key))
 
     async def acquire(self, key: str) -> SandboxSession:
-        """The session for a conversation, created (object only) on first use."""
+        """The session for a conversation, created (object only) on first use —
+        claiming a pre-warmed spare (sandbox-06) if one is available. If this key
+        is mid-teardown from a concurrent sweep/purge, waits for THAT teardown
+        specifically rather than racing a second session onto the same workspace
+        path; every other key proceeds immediately (sandbox-02)."""
         safe = _safe_key(key)
-        async with self._lock:
-            session = self._sessions.get(safe)
-            if session is None:
-                session = SandboxSession(
-                    safe,
-                    workspace=self._work_root / safe,
-                    sealed=self._sealed_root / f"{safe}.tar.enc.gz",
-                    backend=self._backend,
-                    vault=self._vault,
-                    excludes=self._excludes,
-                )
-                self._sessions[safe] = session
-            # Mark it freshly used so a reap sweep can't evict it out from under the
-            # caller in the window between acquiring it and running on it.
-            session.touch()
+        while True:
+            async with self._lock:
+                session = self._sessions.get(safe)
+                if session is not None:
+                    session.touch()
+                    return session
+                other = self._tearing_down.get(safe)
+                if other is None:
+                    spare = self._spares.pop() if self._spares else None
+                    session = self._new_session(safe, spare=spare)
+                    self._sessions[safe] = session
+                    session.touch()
+                    if spare is not None:
+                        self._kick_replenish()
+                    return session
+            await other.wait()
+
+    def _new_session(self, safe: str, *, spare: _Spare | None) -> SandboxSession:
+        session = SandboxSession(
+            safe,
+            workspace=self._work_root / safe,
+            sealed=self._sealed_root / f"{safe}.tar.enc.gz",
+            backend=self._backend,
+            vault=self._vault,
+            excludes=self._excludes,
+            warmup=self._image_warmup,
+        )
+        if spare is None:
             return session
+        try:
+            if session.workspace.exists():
+                shutil.rmtree(session.workspace)  # a stale empty dir from a prior reap
+            session.workspace.parent.mkdir(parents=True, exist_ok=True)
+            spare.workspace.rename(session.workspace)
+        except OSError:
+            logger.warning(
+                "sandbox: could not adopt spare workspace for a new session; discarding it"
+            )
+            asyncio.create_task(force_remove_container(spare.runtime, spare.container))
+            return session  # falls back to the ordinary lazy cold-start path
+        session._adopt_running_container(container=spare.container, runtime=spare.runtime)
+        return session
 
     async def start_preview(
         self, key: str, command: list[str], port: int
@@ -509,19 +665,35 @@ class SandboxSessionManager:
         remove its workspace **and** sealed archive from disk. Called when the
         conversation is deleted, so nothing is kept. Idempotent and safe for a cold
         conversation (no live session, only a sealed archive on disk), and works
-        while the vault is locked (it only destroys)."""
+        while the vault is locked (it only destroys).
+
+        Registers itself in ``_tearing_down`` (the same gate a sweep's seal uses)
+        for the duration of its own teardown+delete: if a sweep is already mid-seal
+        for this key we wait for that first, and a concurrent ``acquire()`` for
+        this key waits for us in turn — so nothing ever recreates a session onto
+        files we're in the middle of removing (sandbox-02)."""
         safe = _safe_key(key)
-        async with self._lock:
-            session = self._sessions.pop(safe, None)
-            self._drop_preview_tokens(safe)
-            # Hold the lock across teardown + delete (as the reaper does for shutdown)
-            # so a concurrent acquire() can't recreate the session onto files we're
-            # about to remove. Kill the containers first to free the workspace mount,
-            # then delete in one place.
+        my_event = asyncio.Event()
+        session: SandboxSession | None = None
+        while True:
+            async with self._lock:
+                other = self._tearing_down.get(safe)
+                if other is None:
+                    session = self._sessions.pop(safe, None)
+                    if session is not None:
+                        self._mark_preview_stopped(session)
+                        self._drop_preview_tokens(safe)
+                    self._tearing_down[safe] = my_event
+                    break
+            await other.wait()
+        try:
             if session is not None:
-                self._mark_preview_stopped(session)
                 await session.discard()
             await asyncio.to_thread(self._purge_disk, safe)
+        finally:
+            async with self._lock:
+                self._tearing_down.pop(safe, None)
+            my_event.set()
 
     def _purge_disk(self, safe: str) -> None:
         shutil.rmtree(self._work_root / safe, ignore_errors=True)
@@ -542,15 +714,21 @@ class SandboxSessionManager:
     async def _warm_image(self) -> None:
         """Pull the latest container image so the first code run / preview doesn't
         pay the pull cost. Best-effort: a failure leaves the image to be pulled
-        lazily on first use rather than blocking or crashing startup."""
+        lazily on first use rather than blocking or crashing startup. Resolves
+        ``_image_warmup`` either way, so any session waiting on it (sandbox-01)
+        and the spare pool (sandbox-06, which only pre-creates once the image is
+        confirmed cached) both unblock."""
+        self._image_warmup.start_pulling()
         runtime = self._backend.runtime
         if runtime is None:  # disappeared since detection — nothing to warm
+            self._image_warmup.mark_done(False)
             return
         image = self._backend.image
         try:
             ready = await ensure_image(runtime, image)
         except Exception:  # noqa: BLE001 — warming must never crash the background task
             logger.exception("sandbox: image warm-up failed unexpectedly")
+            self._image_warmup.mark_done(False)
             return
         if ready:
             logger.info("sandbox: image %s ready", image)
@@ -560,9 +738,72 @@ class SandboxSessionManager:
                 "sandbox/preview: image %s unavailable — first run will pull it on demand",
                 image,
             )
+        self._image_warmup.mark_done(ready)
+        self._kick_replenish()
+
+    def _kick_replenish(self) -> None:
+        """Top the spare pool back up in the background — after the image is
+        confirmed ready, after a spare is claimed, and after a stale one is
+        reaped. A no-op while a replenish is already in flight."""
+        if not self._spare_enabled:
+            return
+        if self._replenish_task is None or self._replenish_task.done():
+            self._replenish_task = asyncio.create_task(self._replenish_spares())
+
+    async def _replenish_spares(self) -> None:
+        """Create idle, conversation-unattached containers up to ``spare_count``
+        (sandbox-06), entirely off the request path. Waits for the image to be
+        confirmed ready first (never races the boot pull); if the image turned
+        out unavailable, skips silently — the ordinary lazy per-conversation path
+        will report the real reason when something actually tries to use it."""
+        if not self._spare_enabled or self._image_warmup.pending or not self._image_warmup.ready:
+            return
+        runtime = self._backend.runtime
+        if runtime is None:
+            return
+        while len(self._spares) < self._spare_count:
+            try:
+                spare = await self._create_spare(runtime)
+            except SandboxError:
+                logger.warning("sandbox: could not pre-warm a spare container", exc_info=True)
+                return
+            self._spares.append(spare)
+
+    async def _create_spare(self, runtime: str) -> _Spare:
+        """One idle spare: a hardened container over a fresh, neutral workspace
+        directory that nothing has written to yet, kept alive with the same
+        ``sleep infinity`` pattern a session's own container uses."""
+        self._spare_seq += 1
+        token = secrets.token_hex(4)
+        name = f"odysseus-sbx-spare-{self._spare_seq}-{token}"
+        workspace = self._work_root / f"_spare-{self._spare_seq}-{token}"
+        workspace.mkdir(parents=True, exist_ok=True)
+        prepare_workspace(workspace)
+        argv = detached_run_argv(
+            runtime,
+            name,
+            hardened_flags(
+                network=False,
+                memory=self._backend.memory,
+                cpus=self._backend.cpus,
+                pids_limit=self._backend.pids_limit,
+                workdir=self._backend.workdir,
+                mount=workspace,
+                env={},
+            ),
+            self._backend.image,
+            ["sleep", "infinity"],
+        )
+        _timed_out, code, _out, err = await run_subprocess(argv, timeout_s=60.0)
+        if code != 0:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise SandboxError(
+                f"failed to pre-warm a spare container: {err.decode('utf-8', 'replace')}"
+            )
+        return _Spare(container=name, workspace=workspace, runtime=runtime)
 
     async def stop(self) -> None:
-        for task in (self._reaper, self._warm):
+        for task in (self._reaper, self._warm, self._replenish_task):
             if task is not None:
                 task.cancel()
                 try:
@@ -571,6 +812,7 @@ class SandboxSessionManager:
                     pass
         self._reaper = None
         self._warm = None
+        self._replenish_task = None
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
@@ -579,6 +821,10 @@ class SandboxSessionManager:
                     pass
             self._sessions.clear()
             self._previews.clear()
+            spares, self._spares = self._spares, []
+        for spare in spares:
+            await force_remove_container(spare.runtime, spare.container)
+            await asyncio.to_thread(shutil.rmtree, spare.workspace, ignore_errors=True)
 
     async def _reaper_loop(self) -> None:
         while True:
@@ -601,14 +847,43 @@ class SandboxSessionManager:
                 for key, s in self._sessions.items()
                 if not s.is_busy and s.idle_seconds(now) >= self._idle_ttl
             ]
-            # shutdown() runs under the manager lock so a concurrent acquire can't
-            # mint a second session (same container name/workspace) mid-teardown;
-            # the seal is off-thread, so the loop itself is not blocked.
+            # Snapshot + detach under the lock (so a concurrent acquire() can't
+            # mint a second session onto the same workspace mid-teardown), but the
+            # seal itself (tar+gzip+AEAD, potentially slow) runs OUTSIDE the lock,
+            # a few at a time — a mass reap must not stall unrelated conversations'
+            # acquire()/start_preview()/purge() for the sum of every seal (sandbox-02).
+            # A per-key tombstone in `_tearing_down` lets that *same* key's acquire/
+            # purge wait for its own teardown specifically, never anyone else's.
+            detached: list[tuple[str, SandboxSession, asyncio.Event]] = []
             for key in stale:
                 session = self._sessions.pop(key)
                 self._mark_preview_stopped(session)
                 self._drop_preview_tokens(key)
+                event = asyncio.Event()
+                self._tearing_down[key] = event
+                detached.append((key, session, event))
+            stale_spares = [s for s in self._spares if now - s.created >= self._idle_ttl]
+            for spare in stale_spares:
+                self._spares.remove(spare)
+
+        if detached:
+            sem = asyncio.Semaphore(_SWEEP_SEAL_CONCURRENCY)
+
+            async def _seal(key: str, session: SandboxSession, event: asyncio.Event) -> None:
                 try:
-                    await session.shutdown()
+                    async with sem:
+                        await session.shutdown()
                 except Exception:  # noqa: BLE001 — one bad teardown must not stall the reaper
                     pass
+                finally:
+                    async with self._lock:
+                        self._tearing_down.pop(key, None)
+                    event.set()
+
+            await asyncio.gather(*(_seal(key, session, event) for key, session, event in detached))
+
+        for spare in stale_spares:
+            await force_remove_container(spare.runtime, spare.container)
+            await asyncio.to_thread(shutil.rmtree, spare.workspace, ignore_errors=True)
+        if stale_spares:
+            self._kick_replenish()

@@ -7,9 +7,11 @@ from pydantic_ai import Agent, DeferredToolRequests, ToolApproved
 from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator, stream_agent_run
+from core.config import Settings
 from runs import Run, RunRegistry, RunStatus, RunStream
 from services.sandbox import SandboxError, SandboxResult, SandboxSpec
 from tools import RunDeps, build_agent_toolsets
+from tools import code as code_module
 from tools.code import code_toolset
 
 
@@ -112,6 +114,20 @@ async def test_cold_session_announces_the_spin_up():
     assert "sandbox" in progress[0].partial.lower()
 
 
+async def test_cold_session_announces_a_download_when_the_image_is_still_pulling():
+    # sandbox-01: distinguishes an ordinary cold start from one that's actually
+    # waiting on the boot-time image pull, so the wait reads truthfully.
+    class WarmingSessionManager(FakeSessionManager):
+        image_warmup_pending = True
+
+    manager = WarmingSessionManager()
+    run = await _run_one_tool("code_execute", sessions=manager)
+
+    progress = [b for b in _bodies(run) if b.type == "tool.progress"]
+    assert len(progress) == 1
+    assert "download" in progress[0].partial.lower()
+
+
 async def test_execute_code_fails_closed_without_a_runtime():
     # No sandbox wired in ⇒ the tool reports unavailable and does NOT touch host.
     run = await _run_one_tool("code_execute", sessions=None)
@@ -149,6 +165,103 @@ async def test_sandbox_failure_feeds_back_instead_of_crashing_the_run():
     result = await _run_canned(error=SandboxError("container would not start"))
     assert result["ok"] is False
     assert "container would not start" in result["error"]
+
+
+# --- sandbox-07: failure hints name the actual configured cap ----------------
+
+
+async def test_sigsegv_hint_is_distinguished_from_oom_and_pid_cap():
+    crashed = SandboxResult(exit_code=139, stdout="", stderr="")
+    hint = (await _run_canned(result=crashed))["error"]
+    assert "139" in hint and "SIGSEGV" in hint
+    assert "memory" not in hint.lower()
+    assert "processes/threads" not in hint
+
+
+async def test_memory_hint_names_the_actual_configured_cap(monkeypatch):
+    monkeypatch.setattr(code_module, "get_settings", lambda: Settings(sandbox_memory="777m"))
+    killed = SandboxResult(exit_code=137, stdout="", stderr="")
+    hint = (await _run_canned(result=killed))["error"]
+    assert "777m" in hint
+
+
+async def test_pid_cap_hint_is_distinguished_from_plain_nonzero(monkeypatch):
+    monkeypatch.setattr(code_module, "get_settings", lambda: Settings(sandbox_pids_limit=64))
+    stderr = "OSError: [Errno 11] Resource temporarily unavailable: fork failed"
+    failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
+    hint = (await _run_canned(result=failing))["error"]
+    assert "processes/threads" in hint
+    assert "64" in hint  # the actual configured pids_limit, not a guess
+
+
+async def test_execute_description_states_the_live_config_caps(monkeypatch):
+    settings = Settings(
+        sandbox_memory="256m",
+        sandbox_cpus="0.5",
+        sandbox_pids_limit=64,
+        sandbox_output_max_chars=8000,
+    )
+    monkeypatch.setattr(code_module, "get_settings", lambda: settings)
+
+    description = code_module.code_toolset().tools["execute"].description
+
+    assert "256m" in description
+    assert "0.5" in description
+    assert "64" in description
+    assert "4,000" in description  # the per-stream cap: 8000 // 2
+
+
+# --- sandbox-03: stdout/stderr are capped, truncated in the middle -----------
+
+
+async def test_output_under_the_cap_is_untouched(monkeypatch):
+    settings = Settings(sandbox_output_max_chars=1000)
+    monkeypatch.setattr(code_module, "get_settings", lambda: settings)
+    result = await _run_canned(result=SandboxResult(exit_code=0, stdout="hello", stderr="world"))
+    assert result["stdout"] == "hello"
+    assert result["stderr"] == "world"
+
+
+async def test_output_over_the_cap_is_truncated_in_the_middle(monkeypatch):
+    # A 40-char combined budget ⇒ 20 chars per stream (10 head + 10 tail).
+    monkeypatch.setattr(code_module, "get_settings", lambda: Settings(sandbox_output_max_chars=40))
+    big = "".join(f"{i:04d}\n" for i in range(100))  # 500 chars, far over the cap
+    result = await _run_canned(result=SandboxResult(exit_code=0, stdout=big, stderr=""))
+    stdout = result["stdout"]
+
+    head, tail = big[:10], big[-10:]
+    assert stdout.startswith(head)  # the head survives verbatim
+    assert stdout.endswith(tail)  # the tail (where errors/final state live) survives too
+    assert big not in stdout  # the untruncated blob never reaches the model
+    assert "480 characters elided" in stdout  # the exact elided count is stated
+    assert "full output was not kept" in stdout
+    assert "/work" in stdout  # sandboxed execution points at the sandbox, not the host
+
+
+async def test_host_command_output_is_capped_with_the_host_phrasing():
+    # run_host_command shares `_exec_result` but isn't sandboxed — its overflow note
+    # must not claim a `/work` path that doesn't exist on the real host.
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "change the host",
+        model=TestModel(call_tools=["code_run_host_command"]),
+        categories={"code": code_toolset()},
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+    parked: ParkedTurn = run.parked_payload
+    call_id = parked.requests.approvals[0].tool_call_id
+    big_echo = "x" * 20_000  # comfortably over the default 12,000-char per-stream cap
+    decision = {
+        call_id: ToolApproved(override_args={"command": f"echo {big_echo}", "explanation": "x"})
+    }
+    await reg.resume(run.id, build_resume_orchestrator(parked, decision))
+    await run.wait()
+
+    completed = next(b for b in _bodies(run) if b.type == "tool.completed")
+    stdout = completed.result["stdout"]
+    assert "/work" not in stdout
+    assert "redirecting it to a file" in stdout
 
 
 # --- host execution (the deliberate, approval-gated escape hatch) ------------
