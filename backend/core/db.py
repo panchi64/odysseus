@@ -42,6 +42,13 @@ _CONN_LOCKS: WeakKeyDictionary[Engine, threading.Lock] = WeakKeyDictionary()
 # script_location is `%(here)s/migrations`, so resolution is cwd-independent.
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
+# How long a connection waits for SQLite's single write lock before erroring with
+# "database is locked". File-backed engines hand every threadpool thread its own
+# connection, so the write-behind drainers (conversations, notifications, corpus,
+# the scheduler) routinely collide on that one lock — 5s comfortably outlasts any
+# of their short bookkeeping transactions.
+_BUSY_TIMEOUT_MS = 5000
+
 
 def make_engine(url: str) -> Engine:
     """Build the SQLite engine. In-memory URLs share one connection (for tests)."""
@@ -72,6 +79,15 @@ def make_engine(url: str) -> Engine:
         # conversation_id would silently orphan rows. Turn it on for every connection.
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+
+        # SQLite admits one writer at a time, and without a busy handler a connection
+        # that finds the write lock held errors *immediately* instead of waiting — so
+        # two concurrent threadpool sessions (say, a write-behind drainer flushing
+        # while the scheduler finalizes a task run) turn a microseconds-long overlap
+        # into a hard `database is locked`. A busy_timeout makes the loser wait the
+        # lock out and only error once the budget is truly exhausted. Per-connection,
+        # like foreign_keys, so it rides along on every pooled connect.
+        cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         cursor.close()
 
     @event.listens_for(engine, "begin")

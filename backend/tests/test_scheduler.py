@@ -5,11 +5,14 @@ math this loop leans on."""
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, timedelta
 from pathlib import Path
 
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
+import services.scheduler as scheduler_mod
 from core.db import init_db, make_engine
 from core.vault import Vault
 from models._fields import utcnow
@@ -295,8 +298,6 @@ async def test_compute_next_run_failure_still_finalizes_and_loop_survives(tmp_pa
     )
     scheduler = SchedulerService(engine, vault, executor, _never_notify)
 
-    import services.scheduler as scheduler_mod
-
     real_compute = scheduler_mod.compute_next_run
     failed = False
 
@@ -329,6 +330,146 @@ async def test_compute_next_run_failure_still_finalizes_and_loop_survives(tmp_pa
         assert calls == [task_id, task_id]
     finally:
         await scheduler.stop()
+
+
+# --- transient locked database ---------------------------------------------------
+
+
+def _locked_error() -> OperationalError:
+    """What SQLAlchemy raises when SQLite's write lock is held by another connection
+    (e.g. a write-behind drainer flushing concurrently) past the busy_timeout."""
+    return OperationalError(
+        "UPDATE taskrun …", {}, sqlite3.OperationalError("database is locked")
+    )
+
+
+async def test_transient_locked_db_on_finalize_retries_and_never_double_fires(tmp_path):
+    """The live-drive regression: a concurrent write-behind drainer held SQLite's
+    write lock, `_finalize_task_run` raised `database is locked`, the error escaped
+    `_finalize_parked` (which only parked on `VaultLocked`) so `_advance` never ran —
+    yet `_fire`'s `finally` still freed the in-flight claim, and the next tick
+    re-dispatched a duplicate REAL fire. A transient lock must be retried like a
+    vault park: exactly one fire, the row finalized, a spent `once` disabled."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        return TaskRunResult(outcome=TaskOutcome.OK.value, summary="ran once")
+
+    task_id = _add_task(
+        engine, vault, schedule_type=ScheduleType.ONCE.value, run_at=utcnow(), next_run_at=utcnow()
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    real_finalize = scheduler._finalize_task_run
+    failed = False
+
+    async def flaky_finalize(run_row_id: str, **kwargs) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise _locked_error()
+        await real_finalize(run_row_id, **kwargs)
+
+    scheduler._finalize_task_run = flaky_finalize
+    await scheduler.start()
+    try:
+        # Long enough to span the retry backoff plus several ticks — with the old
+        # behavior the still-due task re-fires well within this window.
+        await asyncio.sleep(0.5)
+        assert calls == [task_id]  # exactly one REAL fire, no phantom re-dispatch
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1  # no orphaned second TaskRun row either
+        assert runs[0].outcome == TaskOutcome.OK.value
+        assert runs[0].finished_at is not None  # the retried finalize landed
+        task = _get_task(engine, task_id)
+        assert task.enabled is False  # the once self-disabled — not re-fireable
+        assert task.next_run_at is None
+        live = scheduler._running.get(task_id)
+        assert live is None or live.done()  # the claim isn't stranded
+    finally:
+        await scheduler.stop()
+
+
+async def test_transient_locked_db_on_advance_retries_and_schedule_still_advances(tmp_path):
+    """Same invariant one write later: finalize lands, then the schedule advance hits
+    a transient lock. `_advance` must retry it out — a once task that stayed due with
+    its claim freed would be re-dispatched for real on the very next tick."""
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    calls: list[str] = []
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        calls.append(view.id)
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine, vault, schedule_type=ScheduleType.ONCE.value, run_at=utcnow(), next_run_at=utcnow()
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    real_advance_once = scheduler._advance_once
+    failed = False
+
+    async def flaky_advance_once(task_id: str, **kwargs) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise _locked_error()
+        await real_advance_once(task_id, **kwargs)
+
+    scheduler._advance_once = flaky_advance_once
+    await scheduler.start()
+    try:
+        await asyncio.sleep(0.5)
+        assert calls == [task_id]  # one fire — the retried advance closed the window
+        runs = _list_runs(engine, task_id)
+        assert len(runs) == 1
+        assert runs[0].outcome == TaskOutcome.OK.value
+        assert runs[0].finished_at is not None
+        task = _get_task(engine, task_id)
+        assert task.enabled is False
+        assert task.next_run_at is None
+    finally:
+        await scheduler.stop()
+
+
+async def test_permanently_locked_db_gives_up_after_bounded_retries(tmp_path, monkeypatch):
+    """A lock that never clears must surface after the bounded retry budget — never
+    loop forever holding the fire task open (a permanent DB failure has to become
+    visible, not spin silently)."""
+    monkeypatch.setattr(scheduler_mod, "_DB_LOCK_RETRY_BASE_S", 0.01)
+    monkeypatch.setattr(scheduler_mod, "_DB_LOCK_RETRY_MAX_S", 0.02)
+    engine = _engine()
+    vault = await _vault(tmp_path)
+
+    async def executor(view: ScheduledTaskView) -> TaskRunResult:
+        return TaskRunResult(outcome=TaskOutcome.OK.value)
+
+    task_id = _add_task(
+        engine, vault, schedule_type=ScheduleType.ONCE.value, run_at=utcnow(), next_run_at=utcnow()
+    )
+    scheduler = SchedulerService(engine, vault, executor, _never_notify)
+    attempts = 0
+
+    async def always_locked(run_row_id: str, **kwargs) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise _locked_error()
+
+    scheduler._finalize_task_run = always_locked
+
+    # Fire on demand (no tick loop) so the one detached fire task is directly awaitable.
+    run_row_id = await scheduler.fire_now(task_id)
+    assert run_row_id is not None
+    fire_task = scheduler._running.get(task_id)
+    assert fire_task is not None
+    [outcome] = await asyncio.wait_for(
+        asyncio.gather(fire_task, return_exceptions=True), timeout=2.0
+    )
+    assert isinstance(outcome, OperationalError)  # surfaced, not swallowed or looped
+    assert attempts == scheduler_mod._DB_LOCK_RETRIES  # exactly the bounded budget
+    assert task_id not in scheduler._running  # the claim was still released
 
 
 # --- non-overlap ---------------------------------------------------------------
@@ -530,6 +671,31 @@ async def test_fire_now_returns_none_for_an_unknown_task(tmp_path):
     await scheduler.start()
     try:
         assert await scheduler.fire_now("nope") is None
+    finally:
+        await scheduler.stop()
+
+
+async def test_fire_now_refuses_a_disabled_task(tmp_path):
+    # Mirrors the tick loop's own due-detection (`_load_due` filters on `enabled`) —
+    # an operator disabling a task must actually stop it from firing on-demand too,
+    # not just stop its own schedule. This is the one gate shared by `run_now` and
+    # the auth-exempt inbound webhook (security-02/04): a leaked webhook token, or an
+    # operator's own accidental click, must not still run the task once disabled.
+    engine = _engine()
+    vault = await _vault(tmp_path)
+    task_id = _add_task(
+        engine,
+        vault,
+        schedule_type=ScheduleType.ONCE.value,
+        run_at=utcnow(),
+        next_run_at=utcnow(),
+        enabled=False,
+    )
+    scheduler = SchedulerService(engine, vault, _never_execute, _never_notify)
+    await scheduler.start()
+    try:
+        assert await scheduler.fire_now(task_id) is None
+        assert _list_runs(engine, task_id) == []  # never dispatched, no TaskRun at all
     finally:
         await scheduler.stop()
 

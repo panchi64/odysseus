@@ -39,6 +39,7 @@ from datetime import UTC, datetime, timedelta
 
 from croniter import croniter
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from core.db import in_session
@@ -56,6 +57,26 @@ _SKIP_RECHECK_S = 5.0
 # The tick loop's own floor on how soon it re-checks after finding something already
 # due — see `_wait_for`.
 _MIN_POLL_S = 0.05
+
+# Bounded retry for SQLite's transient "database is locked"/"database is busy" on the
+# scheduler's own bookkeeping writes (`_retry_locked`). `core.db` sets a busy_timeout
+# so a colliding write normally just waits the lock out, but a wait can still lose
+# under pathological contention — and the finalize/advance writes are exactly the ones
+# a double-fire hides behind: if they escape, the task's schedule is never advanced
+# while `_fire`'s `finally` has already freed the in-flight claim, so the very next
+# tick re-dispatches a duplicate REAL fire. Bounded so a genuinely broken database
+# still surfaces instead of looping forever.
+_DB_LOCK_RETRIES = 5
+_DB_LOCK_RETRY_BASE_S = 0.05
+_DB_LOCK_RETRY_MAX_S = 0.5
+
+
+def _is_transient_lock(exc: OperationalError) -> bool:
+    """A SQLite "busy" — another connection holds the write lock *right now* — as
+    opposed to a genuinely broken database (missing table, corrupt file), which no
+    amount of retrying will fix."""
+    message = str(exc.orig if exc.orig is not None else exc).lower()
+    return "database is locked" in message or "database is busy" in message
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -243,13 +264,20 @@ class SchedulerService:
         same task. Returns the id of the `TaskRun` row this attempt recorded (fired or
         skipped), or ``None`` if no such task exists (the caller — the route — already
         checked ownership; this is a defensive re-check against a delete racing the
-        request)."""
+        request) **or the task is disabled** — mirrors the tick loop's own due-detection
+        (`_load_due` filters on ``enabled``), so an operator turning a task off actually
+        stops it from firing rather than only stopping its own schedule. This is the one
+        gate shared by both on-demand callers: the authenticated `run_now` route checks
+        `enabled` itself first (for a clearer 409 than a bare "not found"), but the
+        auth-exempt inbound webhook has no other opportunity to be told a disabled task's
+        trigger is dead — an unguessable token leaked or left behind must stop working
+        the moment the task is disabled, not keep firing indefinitely."""
 
         def work(session: Session) -> ScheduledTask | None:
             return session.get(ScheduledTask, task_id)
 
         task = await in_session(self._engine, work)
-        if task is None:
+        if task is None or not task.enabled:
             return None
         return await self._dispatch(task, utcnow())
 
@@ -320,9 +348,11 @@ class SchedulerService:
                     )
                     await self._advance(task.id, last_run_at=finished, next_run_at=next_run)
             except Exception:  # noqa: BLE001 — a failed reschedule must never kill the loop
-                # The advance never landed, so `next_run_at` still holds its stale
-                # past value — the next tick simply re-detects the task as due and
-                # re-fires it once the transient (a DB hiccup, a bad recompute) passes.
+                # A transient locked database is already retried inside `_advance`
+                # itself; landing here means the advance genuinely never landed, so
+                # `next_run_at` still holds its stale past value — the next tick
+                # simply re-detects the task as due and re-fires it once whatever
+                # broke (a dead DB, a bad recompute) passes.
                 logger.exception("scheduler: task %s schedule advance failed", task.id)
         finally:
             # Always release the in-flight claim, whatever path got us here — a task
@@ -426,18 +456,24 @@ class SchedulerService:
         already returned) — mirrors `WriteBehindWorker`'s "a lock landing
         mid-handler is a park, not a failed attempt" rule rather than letting the
         exception escape the bare `asyncio.create_task` in `_tick` and strand this
-        run's row and the task's own reschedule forever. Returns False only if the
-        loop is stopping while the vault never unlocked again — same as
-        `WriteBehindWorker.stop()` leaving a locked queue's items unflushed."""
+        run's row and the task's own reschedule forever. A transient locked
+        database is ridden out the same way (`_retry_locked`) — bounded rather than
+        parked, since unlike a vault lock nothing signals when it clears. Returns
+        False only if the loop is stopping while the vault never unlocked again —
+        same as `WriteBehindWorker.stop()` leaving a locked queue's items
+        unflushed."""
         while True:
             try:
-                await self._finalize_task_run(
-                    run_row_id,
-                    finished_at=finished_at,
-                    outcome=outcome,
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                    summary=summary,
+                await self._retry_locked(
+                    lambda: self._finalize_task_run(
+                        run_row_id,
+                        finished_at=finished_at,
+                        outcome=outcome,
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        summary=summary,
+                    ),
+                    what=f"task run {run_row_id} finalize",
                 )
                 return True
             except VaultLocked:
@@ -473,7 +509,58 @@ class SchedulerService:
 
         await in_session(self._engine, work)
 
+    async def _retry_locked(self, attempt: Callable[[], Awaitable[None]], *, what: str) -> None:
+        """Run a DB write, riding out SQLite's transient `database is locked`/`busy`
+        (another connection — typically a write-behind drainer mid-flush — holds the
+        single write lock). `core.db`'s busy_timeout makes this rare, but not
+        impossible, and the scheduler's bookkeeping writes must not be allowed to
+        escape on a moment's contention: an escaped finalize/advance strands the
+        task's schedule un-advanced with its in-flight claim freed — a duplicate real
+        fire on the next tick. Bounded with backoff so a genuinely permanent error
+        (or a lock that outlives every attempt) still surfaces rather than looping."""
+        delay = _DB_LOCK_RETRY_BASE_S
+        for attempts_left in range(_DB_LOCK_RETRIES - 1, -1, -1):
+            try:
+                return await attempt()
+            except OperationalError as exc:
+                if not _is_transient_lock(exc):
+                    raise
+                if attempts_left == 0:
+                    logger.error(
+                        "scheduler: %s still hitting a locked database after %d attempts"
+                        " — giving up",
+                        what,
+                        _DB_LOCK_RETRIES,
+                    )
+                    raise
+                logger.warning(
+                    "scheduler: %s hit a locked database — retrying in %.2fs", what, delay
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _DB_LOCK_RETRY_MAX_S)
+
     async def _advance(
+        self,
+        task_id: str,
+        *,
+        next_run_at: datetime | None,
+        last_run_at: datetime | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """Advance a task's schedule, riding out a transient locked database — this
+        is the write that makes a fire un-repeatable (moves/clears `next_run_at`,
+        disables a spent `once`), so a moment's lock contention here must be retried
+        rather than allowed to leave the task still due after `_fire`'s `finally`
+        has already freed the in-flight claim (the exact recipe for a duplicate real
+        fire on the next tick)."""
+        await self._retry_locked(
+            lambda: self._advance_once(
+                task_id, next_run_at=next_run_at, last_run_at=last_run_at, enabled=enabled
+            ),
+            what=f"task {task_id} schedule advance",
+        )
+
+    async def _advance_once(
         self,
         task_id: str,
         *,
