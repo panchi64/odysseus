@@ -1,14 +1,25 @@
-/** Host shell feature data contracts. */
+/** Operator shell feature data contracts. */
 
-export type ShellLineKind = "command" | "stdout" | "stderr";
+/** Lifecycle of the operator shell UI. The backend owns every transition —
+ *  this only names the states the screen renders. */
+export type SessionPhase =
+  | "prompt"
+  | "authenticating"
+  | "connecting"
+  | "live"
+  | "ended"
+  | "denied";
 
-export interface ShellLine {
-  id: string;
-  kind: ShellLineKind;
-  text: string;
-  at: string;
-  /** Process exit code, set on the terminal line of a completed command. */
-  exitCode?: number;
-  /** Wall-clock execution time in ms, set on the terminal line of a command. */
-  durationMs?: number;
+/** A short-lived, single-use grant minted by re-authenticating with the
+ *  operator password (`POST /shell/host-mode`). Spent by the first WebSocket
+ *  auth frame that presents it. */
+export interface HostModeGrant {
+  token: string;
+  expiresInS: number;
+}
+
+/** How a live PTY session concluded. */
+export interface SessionEnd {
+  exitCode: number | null;
+  reason: string;
 }

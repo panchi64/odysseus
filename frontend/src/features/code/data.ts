@@ -3,13 +3,17 @@ import {
   createResource,
   createSignal,
   onCleanup,
+  type Accessor,
   type Resource,
 } from "solid-js";
 import type { CodeLanguage, CodeRun, RunStatus } from "./model";
-import { mockRuns, mockOutputs, starterCode } from "./mocks";
+import { starterCode } from "./mocks";
+import { loadHistory, saveHistory } from "./historyStore";
+import { startBrowserRun, type RunHandle } from "./browserRun";
+import { runPython, disposePythonWorker } from "./pythonRun";
 
 async function fetchRuns(): Promise<CodeRun[]> {
-  return mockRuns;
+  return loadHistory();
 }
 
 export function useCodeRuns(): Resource<CodeRun[]> {
@@ -17,26 +21,53 @@ export function useCodeRuns(): Resource<CodeRun[]> {
   return data;
 }
 
-/* ── Run controller ──────────────────────────────────────────────────────────
-   Drives the editor + output panel. Phase 2: replace the setInterval streamer
-   with a real execution endpoint; the return shape is unchanged. */
+/* ── HTML/JS preview mount ───────────────────────────────────────────────────
+   The blob: URL of the current HTML/JS run's sandboxed document, for CodeScreen
+   to mount via `SandboxedFrame`. Module-scoped: the screen is a single-instance
+   route, and `createCodeRunner`'s own return shape is a fixed, documented
+   contract that callers destructure by name — this is the one output of a run
+   that isn't console text, so it's exposed as its own small hook instead of
+   growing that contract. */
+const [previewSrc, setPreviewSrcSignal] = createSignal<string | null>(null);
+let currentBlobUrl: string | null = null;
 
-let runCounter = 100;
-const nextRunId = () => `r-live-${++runCounter}`;
+function setPreviewSrc(url: string | null): void {
+  if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+  currentBlobUrl = url;
+  setPreviewSrcSignal(url);
+}
+
+/** The live HTML/JS run's sandboxed document, or null outside a browser run. */
+export function useCodePreview(): Accessor<string | null> {
+  return previewSrc;
+}
+
+/* ── Run controller ──────────────────────────────────────────────────────────
+   Drives the editor + output panel. Python runs in a warm Pyodide Web Worker
+   (pythonRun.ts); HTML/JS run in the app's sandboxed iframe vehicle
+   (browserRun.ts) via a blob: document. Both report back through the same
+   { onLine, onDone } shape so this controller doesn't fork per language. */
+
+let runCounter = 0;
+const nextRunId = () =>
+  `r-${Date.now().toString(36)}-${(++runCounter).toString(36)}`;
 
 export function createCodeRunner(initial: () => CodeRun[] | undefined) {
   const [language, setLanguage] = createSignal<CodeLanguage>("python");
-  const [source, setSource] = createSignal(starterCode["python"]);
+  const [source, setSource] = createSignal(starterCode.python);
   const [running, setRunning] = createSignal(false);
   const [outputLines, setOutputLines] = createSignal<string[]>([]);
   const [lastStatus, setLastStatus] = createSignal<RunStatus | null>(null);
   const [lastDuration, setLastDuration] = createSignal<number | null>(null);
   const [history, setHistory] = createSignal<CodeRun[]>([]);
 
-  const [cancelled, setCancelled] = createSignal(false);
+  let activeCancel: RunHandle["cancel"] | null = null;
 
-  const intervals: ReturnType<typeof setInterval>[] = [];
-  onCleanup(() => intervals.forEach(clearInterval));
+  onCleanup(() => {
+    activeCancel?.();
+    setPreviewSrc(null);
+    disposePythonWorker();
+  });
 
   // Seed history once from the (async) resource
   let seeded = false;
@@ -54,6 +85,31 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
     setSource(starterCode[lang]);
     setOutputLines([]);
     setLastStatus(null);
+    setPreviewSrc(null);
+  }
+
+  function finalize(
+    lang: CodeLanguage,
+    src: string,
+    output: string,
+    status: RunStatus,
+    durationMs: number,
+  ) {
+    activeCancel = null;
+    setLastStatus(status);
+    setLastDuration(durationMs);
+    setRunning(false);
+
+    const newRun: CodeRun = {
+      id: nextRunId(),
+      language: lang,
+      source: src,
+      output,
+      status,
+      durationMs,
+      ranAt: new Date().toISOString(),
+    };
+    setHistory((prev) => saveHistory([newRun, ...prev]));
   }
 
   function runCode() {
@@ -62,47 +118,45 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
     setOutputLines([]);
     setLastStatus(null);
     setLastDuration(null);
+    setPreviewSrc(null);
 
     const lang = language();
-    const mock = mockOutputs[lang];
-    const lines = mock.output.split("\n").filter(Boolean);
-    let i = 0;
+    const src = source();
+    const lines: string[] = [];
+    let sawError = false;
 
-    setCancelled(false);
+    const onLine = (stream: "stdout" | "stderr", line: string) => {
+      lines.push(line);
+      setOutputLines((prev) => [...prev, line]);
+      if (stream === "stderr") sawError = true;
+    };
+    const onDone = (durationMs: number) => {
+      finalize(
+        lang,
+        src,
+        lines.join("\n"),
+        sawError ? "error" : "ok",
+        durationMs,
+      );
+    };
 
-    const iv = setInterval(() => {
-      if (cancelled()) {
-        clearInterval(iv);
-        setRunning(false);
-        return;
-      }
-      if (i < lines.length) {
-        setOutputLines((prev) => [...prev, lines[i]]);
-        i++;
-      } else {
-        clearInterval(iv);
-        setLastStatus(mock.status);
-        setLastDuration(mock.durationMs);
-        setRunning(false);
-
-        const newRun: CodeRun = {
-          id: nextRunId(),
-          language: lang,
-          source: source(),
-          output: mock.output,
-          status: mock.status,
-          durationMs: mock.durationMs,
-          ranAt: new Date().toISOString(),
-        };
-        setHistory((prev) => [newRun, ...prev]);
-      }
-    }, 120);
-    intervals.push(iv);
+    if (lang === "python") {
+      activeCancel = runPython(src, { onLine, onDone }).cancel;
+    } else {
+      activeCancel = startBrowserRun(lang, src, {
+        onPreview: setPreviewSrc,
+        onLine,
+        onDone,
+      }).cancel;
+    }
   }
 
   function cancelRun() {
     if (!running()) return;
-    setCancelled(true);
+    activeCancel?.();
+    activeCancel = null;
+    setPreviewSrc(null);
+    setRunning(false);
   }
 
   function resetToTemplate() {
@@ -110,6 +164,7 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
     setOutputLines([]);
     setLastStatus(null);
     setLastDuration(null);
+    setPreviewSrc(null);
   }
 
   return {

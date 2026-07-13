@@ -308,6 +308,24 @@ class Settings(BaseSettings):
     research_max_concurrency: int = 4
     research_empty_rounds_abort: int = 2
 
+    # Operator Shell (`SHELL-1..3`): a host PTY streamed to the browser over a
+    # WebSocket, agent-unreachable by construction (no tool references it — see
+    # `tests/test_shell_guard.py`). `shell_enabled` is the on/off switch;
+    # `shell_idle_timeout_s` kills a session with no keystrokes for that long;
+    # `shell_max_sessions` bounds concurrent live sessions (single operator, so a
+    # small number is deliberate, not a scaling limit); `shell_host_token_ttl_s` is
+    # how long a minted host-mode token stays redeemable before it must be
+    # re-requested (it's single-use regardless, so this only bounds an unused
+    # token's shelf life); `shell_auth_rate_per_minute`/`shell_auth_rate_burst`
+    # throttle password attempts against `POST /shell/host-mode` the same way
+    # uploads throttle theirs.
+    shell_enabled: bool = True
+    shell_idle_timeout_s: float = 900.0
+    shell_max_sessions: int = 1
+    shell_host_token_ttl_s: float = 60.0
+    shell_auth_rate_per_minute: float = 5.0
+    shell_auth_rate_burst: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,252 +1,195 @@
-import { For, Show, onCleanup, onMount, type JSX } from "solid-js";
-import type { ShellLine } from "../model";
+import { Show, createSignal, type JSX } from "solid-js";
 import {
   Button,
   Icon,
+  Input,
   PageHeader,
   Panel,
-  Row,
+  Readout,
   Stack,
   StatusFlag,
   Text,
-  confirm,
   toast,
+  type Status,
 } from "~/ui";
-import { timestamp } from "~/lib/format";
-import { createShellSession, isDangerousCommand } from "../data";
+import { isApiError } from "~/lib/api";
+import { requestHostMode } from "../data";
+import type { HostModeGrant, SessionEnd, SessionPhase } from "../model";
+import { Terminal } from "../components/Terminal";
 
-/** UTC clock (HH:MM:SS) for a scrollback line's timestamp gutter. */
-function clockOf(iso: string): string {
-  return timestamp(iso).slice(11);
+/** Chip label + accent for the current session phase. */
+function flagFor(phase: SessionPhase): { status: Status; label: string } {
+  switch (phase) {
+    case "authenticating":
+      return { status: "info", label: "AUTHENTICATING" };
+    case "connecting":
+      return { status: "warn", label: "CONNECTING" };
+    case "live":
+      return { status: "warn", label: "SESSION LIVE" };
+    case "ended":
+      return { status: "idle", label: "SESSION ENDED" };
+    case "denied":
+      return { status: "alert", label: "ACCESS DENIED" };
+    default:
+      return { status: "idle", label: "HOST MODE" };
+  }
 }
 
 export function ShellScreen(): JSX.Element {
-  const {
-    lines,
-    input,
-    setInput,
-    running,
-    cancel,
-    clear,
-    history,
-    historyIdx,
-    setHistoryIdx,
-    run,
-  } = createShellSession();
+  const [phase, setPhase] = createSignal<SessionPhase>("prompt");
+  const [password, setPassword] = createSignal("");
+  const [error, setError] = createSignal("");
+  const [grant, setGrant] = createSignal<HostModeGrant>();
+  const [end, setEnd] = createSignal<SessionEnd>();
 
-  let scrollRef: HTMLDivElement | undefined;
-  let inputRef: HTMLInputElement | undefined;
-
-  function scrollToBottom() {
-    if (scrollRef) scrollRef.scrollTop = scrollRef.scrollHeight;
-  }
-
-  // Re-entrancy guard: blocks a second submit while the confirm dialog is open.
-  let confirming = false;
-
-  async function runCommand() {
-    const cmd = input().trim();
-    if (!cmd || running() || confirming) return;
-
-    // Gate destructive commands behind an explicit confirmation.
-    if (isDangerousCommand(cmd)) {
-      confirming = true;
-      const ok = await confirm({
-        title: `Run this command?`,
-        detail: `"${cmd}" — This action cannot be undone.`,
-        confirmLabel: "RUN",
-        tone: "alert",
-      });
-      confirming = false;
-      if (!ok) {
-        toast.warn("Command cancelled.");
-        return;
-      }
+  async function handleSubmit(e: SubmitEvent) {
+    e.preventDefault();
+    const pw = password();
+    if (!pw) {
+      setError("Password is required.");
+      return;
     }
-
-    run(cmd, scrollToBottom);
-  }
-
-  function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      void runCommand();
-    } else if (e.key === "Escape") {
-      if (input().length > 0) {
-        // Clear input on first Escape.
-        setInput("");
-        setHistoryIdx(-1);
+    setError("");
+    setPhase("authenticating");
+    try {
+      const g = await requestHostMode(pw);
+      setPassword("");
+      setEnd(undefined);
+      setGrant(g);
+      setPhase("connecting");
+    } catch (err) {
+      setPhase("denied");
+      if (isApiError(err) && err.status === 401) {
+        setError("Invalid password.");
+      } else if (isApiError(err) && err.status === 429) {
+        setError(`Rate limited — ${err.detail || "try again shortly"}.`);
+      } else if (isApiError(err)) {
+        setError(err.detail || "Unable to grant host mode.");
       } else {
-        // Unfocus on second Escape (empty field).
-        inputRef?.blur();
+        setError("Unable to reach the backend.");
       }
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      const h = history();
-      const idx = Math.min(historyIdx() + 1, h.length - 1);
-      setHistoryIdx(idx);
-      if (h[idx]) setInput(h[idx]);
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      const idx = Math.max(historyIdx() - 1, -1);
-      setHistoryIdx(idx);
-      setInput(idx >= 0 ? (history()[idx] ?? "") : "");
     }
   }
 
-  /** Global Ctrl+C handler: cancel a running command. */
-  function handleGlobalKeyDown(e: KeyboardEvent) {
-    if (e.ctrlKey && e.key === "c" && running()) {
-      e.preventDefault();
-      cancel();
-      toast.warn("Interrupt sent — awaiting process exit.");
-    }
+  /** Drop the terminal and return to the HOST MODE prompt — a fresh
+   *  challenge is minted every session by design. */
+  function reconnect() {
+    setGrant(undefined);
+    setEnd(undefined);
+    setError("");
+    setPhase("prompt");
   }
 
-  function clearScrollback() {
-    if (running()) return;
-    clear();
-    toast.info("Scrollback cleared.");
-    inputRef?.focus();
+  function handleEnded(sessionEnd: SessionEnd) {
+    setEnd(sessionEnd);
+    setPhase("ended");
   }
 
-  onMount(() => {
-    inputRef?.focus();
-    window.addEventListener("keydown", handleGlobalKeyDown);
-  });
-  onCleanup(() => window.removeEventListener("keydown", handleGlobalKeyDown));
+  function handleAuthFailure() {
+    // handleAuthFailure() (~/lib/api) already cleared the session token and
+    // routed to login via the session store — nothing further to do here.
+  }
 
-  const toneClass = (kind: ShellLine["kind"]) => {
-    if (kind === "command") return "text-bright";
-    if (kind === "stderr") return "text-alert";
-    return "text-dim";
-  };
+  function handleExpired() {
+    toast.warn("Host mode expired — re-authenticate.");
+    setGrant(undefined);
+    setPhase("prompt");
+  }
 
-  const prefixFor = (kind: ShellLine["kind"]) => {
-    if (kind === "command") return "$ ";
-    return "  ";
-  };
+  const flag = () => flagFor(phase());
+  const showPrompt = () =>
+    phase() === "prompt" ||
+    phase() === "authenticating" ||
+    phase() === "denied";
+  const showTerminal = () => phase() === "connecting" || phase() === "live";
 
   return (
     <Stack gap={6} class="flex h-full min-h-0 flex-col">
       <PageHeader
-        title="HOST SHELL"
-        subtitle="Execute commands directly on the server host. Administrator only."
-        assetId="ODY-ADM-07.0 EDITION 01"
+        title="OPERATOR SHELL"
+        subtitle="Live terminal on the server host. Re-authentication required every session."
+        assetId="ODY-ADM-07.0 EDITION 02"
         actions={
-          <Row gap={2} align="center">
-            <StatusFlag status={running() ? "warn" : "nominal"} dot>
-              {running() ? "RUNNING" : "READY"}
-            </StatusFlag>
-            {running() && (
-              <Text variant="micro" tone="dim" class="select-none">
-                Ctrl+C to interrupt
-              </Text>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              leading="trash"
-              onClick={clearScrollback}
-              disabled={running() || lines.length === 0}
-            >
-              CLEAR
-            </Button>
-          </Row>
+          <StatusFlag status={flag().status} dot pulse={phase() === "live"}>
+            {flag().label}
+          </StatusFlag>
         }
       />
 
-      <div class="flex min-h-0 flex-1 flex-col gap-3">
-        {/* Danger notice */}
-        <div class="flex items-center gap-2 border border-alert px-3 py-2">
-          <Icon name="warning" size={12} class="text-alert shrink-0" />
-          <Text variant="micro" tone="alert">
-            Commands execute on the host machine with server-process privileges.
-            Admin only. No undo.
-          </Text>
-        </div>
-
-        {/* Scrollback output */}
-        <Panel label="TERMINAL" class="flex min-h-0 flex-1 flex-col" flush>
-          <div
-            ref={scrollRef}
-            class="min-h-0 flex-1 overflow-auto p-3 font-mono"
-            style={{
-              "max-height": "calc(100vh - 360px)",
-              "min-height": "280px",
-            }}
-          >
-            <For each={lines}>
-              {(line) => (
-                <div
-                  class={`flex gap-2 py-0.5 leading-5 text-body ${toneClass(line.kind)}`}
-                >
-                  <span class="select-none text-dim shrink-0 tabular-nums">
-                    {clockOf(line.at)}
-                  </span>
-                  <span class="select-none text-dim shrink-0">
-                    {prefixFor(line.kind)}
-                  </span>
-                  <span class="break-all flex-1">{line.text}</span>
-                  <Show when={line.exitCode !== undefined}>
-                    <span class="flex shrink-0 select-none items-center gap-2">
-                      <Text variant="micro" tone="dim">
-                        {line.durationMs}MS
-                      </Text>
-                      <StatusFlag
-                        status={line.exitCode === 0 ? "nominal" : "alert"}
-                      >
-                        {`EXIT ${line.exitCode ?? ""}`}
-                      </StatusFlag>
-                    </span>
-                  </Show>
-                </div>
-              )}
-            </For>
-          </div>
-
-          {/* Command input */}
-          <div class="border-t border-line px-3 py-2">
-            <Row gap={2} align="center">
-              <Text
-                variant="label"
-                tone="dim"
-                class="select-none font-mono shrink-0"
-              >
-                $
+      <Show when={showPrompt()}>
+        <Panel label="HOST MODE" class="max-w-md">
+          <Stack gap={4}>
+            <div class="flex items-center gap-2 border border-alert px-3 py-2">
+              <Icon name="warning" size={12} class="text-alert shrink-0" />
+              <Text variant="micro" tone="alert">
+                Grants a live shell on the server host with server-process
+                privileges. Administrator only. No undo.
               </Text>
-              <input
-                ref={inputRef}
-                type="text"
-                value={input()}
-                onInput={(e) => setInput(e.currentTarget.value)}
-                onKeyDown={handleKeyDown}
-                disabled={running()}
-                placeholder="enter command…"
-                class="flex-1 bg-transparent font-mono text-body text-bright outline-none placeholder:text-dim disabled:opacity-40"
-                spellcheck={false}
-                autocomplete="off"
-              />
-              <Button
-                variant="primary"
-                size="sm"
-                leading="play"
-                onClick={() => void runCommand()}
-                disabled={!input().trim() || running()}
-              >
-                RUN
-              </Button>
-            </Row>
-          </div>
+            </div>
+            <form onSubmit={(e) => void handleSubmit(e)}>
+              <Stack gap={3}>
+                <Input
+                  label="OPERATOR PASSWORD"
+                  type="password"
+                  value={password()}
+                  onInput={(e) => {
+                    setPassword(e.currentTarget.value);
+                    setError("");
+                  }}
+                  placeholder="••••••••"
+                  autocomplete="current-password"
+                  disabled={phase() === "authenticating"}
+                  invalid={!!error()}
+                  hint={error() || undefined}
+                />
+                <Button
+                  variant="primary"
+                  type="submit"
+                  disabled={phase() === "authenticating" || !password()}
+                >
+                  {phase() === "authenticating"
+                    ? "AUTHENTICATING…"
+                    : "ENTER HOST MODE"}
+                </Button>
+              </Stack>
+            </form>
+          </Stack>
         </Panel>
+      </Show>
 
-        <Row gap={2} align="center">
-          <Icon name="clock" size={12} class="text-dim" />
-          <Text variant="micro" tone="dim">
-            HISTORY: {history().length} commands this session · Use ↑/↓ to
-            navigate
-          </Text>
-        </Row>
-      </div>
+      <Show when={showTerminal() && grant()}>
+        {(g) => (
+          <Panel label="TERMINAL" class="flex min-h-0 flex-1 flex-col" flush>
+            <div class="min-h-0 flex-1" style={{ "min-height": "360px" }}>
+              <Terminal
+                token={g().token}
+                onReady={() => setPhase("live")}
+                onEnded={handleEnded}
+                onAuthFailure={handleAuthFailure}
+                onExpired={handleExpired}
+              />
+            </div>
+          </Panel>
+        )}
+      </Show>
+
+      <Show when={phase() === "ended"}>
+        <Panel label="SESSION ENDED" class="max-w-md">
+          <Stack gap={4}>
+            <Readout
+              label="EXIT CODE"
+              value={end()?.exitCode ?? "—"}
+              tone={end()?.exitCode === 0 ? "nominal" : "alert"}
+            />
+            <Text variant="micro" tone="dim">
+              {end()?.reason}
+            </Text>
+            <Button variant="primary" leading="refresh" onClick={reconnect}>
+              RECONNECT
+            </Button>
+          </Stack>
+        </Panel>
+      </Show>
     </Stack>
   );
 }

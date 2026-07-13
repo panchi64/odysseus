@@ -14,6 +14,9 @@ app.config.timestamp_*.js
 # dependencies
 /node_modules
 
+# Pyodide runtime assets — copied from node_modules on postinstall
+public/pyodide/
+
 # This project uses bun only — never pnpm/npm/yarn lockfiles
 pnpm-lock.yaml
 package-lock.json

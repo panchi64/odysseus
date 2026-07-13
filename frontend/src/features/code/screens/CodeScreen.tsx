@@ -16,7 +16,8 @@ import {
   Tooltip,
 } from "~/ui";
 import { relativeTime, pad } from "~/lib/format";
-import { useCodeRuns, createCodeRunner } from "../data";
+import { SandboxedFrame } from "~/features/chat/components/SandboxedFrame";
+import { useCodeRuns, createCodeRunner, useCodePreview } from "../data";
 
 const LANGUAGE_OPTIONS = [
   { value: "python", label: "Python 3" },
@@ -40,6 +41,7 @@ export function CodeScreen(): JSX.Element {
     cancelRun,
     resetToTemplate,
   } = createCodeRunner(runs);
+  const previewSrc = useCodePreview();
 
   function onEditorKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -162,6 +164,23 @@ export function CodeScreen(): JSX.Element {
               </Show>
             }
           >
+            {/* HTML runs render their live document here — the actual visual
+                output. JS runs mount the same sandboxed vehicle off-screen
+                (a script needs an attached frame to execute) purely to
+                capture console output; it has no visual output of its own. */}
+            <Show when={language() === "html" && previewSrc()}>
+              <div class="h-72 border border-line mb-3">
+                <SandboxedFrame src={previewSrc()!} title="HTML preview" />
+              </div>
+            </Show>
+            <Show when={language() === "javascript" && previewSrc()}>
+              <div class="sr-only">
+                <SandboxedFrame
+                  src={previewSrc()!}
+                  title="JavaScript sandbox"
+                />
+              </div>
+            </Show>
             <Show
               when={running() || outputLines().length > 0}
               fallback={

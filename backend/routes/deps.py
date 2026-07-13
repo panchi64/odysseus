@@ -25,6 +25,7 @@ from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.gallery import GalleryService
+from services.host_shell import ShellService
 from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
@@ -189,6 +190,14 @@ def db_engine(request: Request) -> Engine:
 
 def scheduler(request: Request) -> SchedulerService:
     return request.app.state.scheduler
+
+
+def shell(request: Request) -> ShellService:
+    return request.app.state.shell
+
+
+def shell_auth_rate_limiter(request: Request) -> RateLimiter:
+    return request.app.state.shell_auth_rate_limiter
 
 
 def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:

@@ -44,6 +44,7 @@ from routes import (
     runs,
     search,
     serving,
+    shell,
     tasks,
     uploads,
     views,
@@ -70,6 +71,7 @@ from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
 from services.gallery import GalleryService
+from services.host_shell import ShellService
 from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
@@ -315,6 +317,21 @@ async def lifespan(app: FastAPI):
             await vault.unlock(settings.unlock_passphrase)
         else:
             await vault.setup(settings.unlock_passphrase)
+
+    # The Operator Shell — a host PTY streamed to the browser, agent-unreachable by
+    # construction (`services/host_shell.py`). Its own rate limiter throttles
+    # password attempts against the host-mode grant endpoint like uploads throttle
+    # theirs; killing every live session the instant the vault locks is wired via
+    # the vault's on-lock callback registry rather than the auth route knowing the
+    # shell exists.
+    app.state.shell_auth_rate_limiter = RateLimiter(
+        rate_per_second=settings.shell_auth_rate_per_minute / 60.0,
+        burst=settings.shell_auth_rate_burst,
+    )
+    app.state.shell = ShellService(
+        settings=settings, vault=vault, auth_manager=app.state.auth_manager
+    )
+    vault.register_on_lock(app.state.shell.kill_all)
 
     # Pooled outbound client for provider model discovery (the chat model picker).
     # Connection-reused across endpoints; follows redirects (some providers 30x).
@@ -696,6 +713,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.scheduler.stop()
+        await app.state.shell.stop()
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
@@ -769,6 +787,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(research.router)
+    app.include_router(shell.router)
     return app
 
 

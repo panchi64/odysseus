@@ -1,157 +1,63 @@
-import { createSignal, onCleanup } from "solid-js";
-import { createStore, produce } from "solid-js/store";
-import type { ShellLine } from "./model";
-import { mockInitialLines, mockOutputFor } from "./mocks";
+import { api } from "~/lib/api";
+import { API_BASE } from "~/lib/config";
+import type { HostModeGrant, SessionEnd } from "./model";
 
-/* ── Shell session controller ────────────────────────────────────────────────
-   Owns the scrollback store and the command streamer. Phase 2: replace
-   mockOutputFor with a real shell WebSocket/SSE subscription; the return
-   shape is unchanged, so ShellScreen doesn't change. */
+/* ── Operator shell data seam ────────────────────────────────────────────────
+   Host-mode re-auth is a plain REST call; the live session itself rides a
+   WebSocket carrying raw PTY bytes, which is imperative and owned by the
+   Terminal component (xterm + the socket are not resource-shaped state). */
 
-let lineCounter = mockInitialLines.length;
-const nextId = () => `l-live-${++lineCounter}`;
-
-/** Patterns that require a confirm gate before execution. */
-export const DANGEROUS_CMD_PATTERNS = [
-  /^rm\s/i,
-  /^rmdir\s/i,
-  /^kill\s+-9\b/i,
-  /^truncate\s/i,
-  /^dd\s/i,
-  /sudo\s/i,
-];
-
-export function isDangerousCommand(cmd: string): boolean {
-  const trimmed = cmd.trim();
-  return DANGEROUS_CMD_PATTERNS.some((re) => re.test(trimmed));
+/** Re-authenticate with the operator password to mint a one-time host-mode
+ *  token. The backend decides validity/lockout/rate-limiting; this only
+ *  relays the request and reshapes the response to `model.ts`. */
+export async function requestHostMode(
+  password: string,
+): Promise<HostModeGrant> {
+  const r = await api.post<{ token: string; expires_in_s: number }>(
+    "/shell/host-mode",
+    { password },
+  );
+  return { token: r.token, expiresInS: r.expires_in_s };
 }
 
-export function createShellSession() {
-  const [lines, setLines] = createStore<ShellLine[]>([...mockInitialLines]);
-  const [input, setInput] = createSignal("");
-  const [running, setRunning] = createSignal(false);
-  const [cancelled, setCancelled] = createSignal(false);
-  const [history, setHistory] = createSignal<string[]>([]);
-  const [historyIdx, setHistoryIdx] = createSignal(-1);
+/** The operator-shell WebSocket endpoint, derived from the same API origin
+ *  the REST client uses (scheme swapped http→ws / https→wss). */
+export function buildShellWsUrl(): string {
+  return `${API_BASE.replace(/^http/, "ws")}/shell/ws`;
+}
 
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => timers.forEach(clearTimeout));
+/** What the UI should do next for a given WebSocket close code, per the
+ *  operator-shell wire contract. Pure mapping — no side effects; the caller
+ *  (Terminal) performs the actual auth-failure/reconnect/end handling. */
+export type CloseAction =
+  | { kind: "auth-failure" }
+  | { kind: "expired" }
+  | { kind: "ended"; end: SessionEnd };
 
-  /** Request cancellation of the running command (Phase 2: sends SIGINT). */
-  function cancel() {
-    if (!running()) return;
-    setCancelled(true);
+export function actionForCloseCode(
+  code: number,
+  exitCode: number | null,
+): CloseAction {
+  switch (code) {
+    case 4401:
+    case 4423:
+      return { kind: "auth-failure" };
+    case 4403:
+    case 4408:
+      return { kind: "expired" };
+    case 4409:
+      return {
+        kind: "ended",
+        end: { exitCode: null, reason: "Host busy — session limit reached." },
+      };
+    default:
+      return {
+        kind: "ended",
+        end: {
+          exitCode,
+          reason:
+            code === 1000 ? "Session ended." : `Connection closed (${code}).`,
+        },
+      };
   }
-
-  /** Reset the scrollback to an empty terminal. */
-  function clear() {
-    if (running()) return;
-    setLines(produce((l) => l.splice(0, l.length)));
-  }
-
-  function run(cmd: string, onScrollBottom?: () => void) {
-    if (!cmd || running()) return;
-
-    setRunning(true);
-    setCancelled(false);
-    setHistory((h) => [cmd, ...h]);
-    setHistoryIdx(-1);
-    setInput("");
-
-    const startedAt = Date.now();
-
-    setLines(
-      produce((l) => {
-        l.push({
-          id: nextId(),
-          kind: "command",
-          text: cmd,
-          at: new Date().toISOString(),
-        });
-      }),
-    );
-    onScrollBottom?.();
-
-    const outputLines = mockOutputFor(cmd);
-    const hadOutput = outputLines.length > 0;
-    let sawError = false;
-    let i = 0;
-
-    const interval = setInterval(() => {
-      // Handle cancel request
-      if (cancelled()) {
-        clearInterval(interval);
-        setLines(
-          produce((l) => {
-            l.push({
-              id: nextId(),
-              kind: "stderr",
-              text: "^C",
-              at: new Date().toISOString(),
-              exitCode: 130,
-              durationMs: Date.now() - startedAt,
-            });
-          }),
-        );
-        onScrollBottom?.();
-        setRunning(false);
-        setCancelled(false);
-        return;
-      }
-
-      const line = outputLines[i];
-      const isErr =
-        line?.toLowerCase().includes("error") ||
-        line?.toLowerCase().includes("stderr");
-      if (isErr) sawError = true;
-      setLines(
-        produce((l) => {
-          l.push({
-            id: nextId(),
-            kind: isErr ? "stderr" : "stdout",
-            text: line ?? "",
-            at: new Date().toISOString(),
-          });
-        }),
-      );
-      onScrollBottom?.();
-      i++;
-      if (i >= outputLines.length) {
-        clearInterval(interval);
-        const exitCode = sawError ? 1 : 0;
-        const durationMs = Date.now() - startedAt;
-        // Always append a terminal status line carrying exit code + duration.
-        // For zero-output commands this doubles as the visible success marker
-        // so the user knows the command ran (e.g. mkdir, touch, mv).
-        setLines(
-          produce((l) => {
-            l.push({
-              id: nextId(),
-              kind: sawError ? "stderr" : "stdout",
-              text: hadOutput ? "" : "[ok]",
-              at: new Date().toISOString(),
-              exitCode,
-              durationMs,
-            });
-          }),
-        );
-        onScrollBottom?.();
-        setRunning(false);
-      }
-    }, 120);
-    timers.push(interval);
-  }
-
-  return {
-    lines,
-    input,
-    setInput,
-    running,
-    cancel,
-    clear,
-    history,
-    historyIdx,
-    setHistoryIdx,
-    run,
-  };
 }

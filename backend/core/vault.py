@@ -12,9 +12,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from core import crypto
+
+logger = logging.getLogger(__name__)
 
 _KEYFILE_VERSION = 1
 
@@ -40,6 +44,10 @@ class Vault:
         self._keyfile = keyfile
         self._dek: bytes | None = None
         self._unlocked = asyncio.Event()  # lets lock-aware workers wait on unlock
+        # Callbacks other services register to react to a lock without the auth
+        # route (or this class) knowing who they are — e.g. the operator shell
+        # tearing down every live PTY session the instant the vault re-locks.
+        self._on_lock: list[Callable[[], None]] = []
 
     @property
     def is_initialized(self) -> bool:
@@ -85,9 +93,29 @@ class Vault:
         self._set_dek(dek)
         return True
 
+    def verify_password(self, password: str) -> bool:
+        """Check the password against the stored verifier without unlocking —
+        doesn't touch ``_dek``. Used by host-mode re-authentication, which needs
+        proof of the password without granting/renewing decrypt access."""
+        if not self.is_initialized:
+            return False
+        data = json.loads(self._keyfile.read_text())
+        return crypto.verify_password(data["verifier"], password)
+
+    def register_on_lock(self, cb: Callable[[], None]) -> None:
+        """Register a callback fired synchronously from `lock()`. Lets a
+        capability (like the operator shell) react to a lock without this class
+        knowing about it."""
+        self._on_lock.append(cb)
+
     def lock(self) -> None:
         self._dek = None
         self._unlocked.clear()
+        for cb in self._on_lock:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 — one bad callback must not block the lock
+                logger.exception("vault: on-lock callback failed")
 
     def encrypt_str(self, plaintext: str) -> str:
         return _b64e(crypto.aead_encrypt(self._require_dek(), plaintext.encode()))
