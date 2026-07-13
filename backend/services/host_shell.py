@@ -167,10 +167,15 @@ class ShellService:
             await asyncio.sleep(_REAP_POLL_S)
         # A pump task that never got scheduled before shutdown (e.g. the loop is
         # being torn down without another yield) is force-killed directly so no
-        # PTY child is orphaned past process exit.
+        # PTY child is orphaned past process exit. That pump never ran its own
+        # cleanup, so its reader may still be registered on `master_fd` — drop it
+        # before closing so the selector never references a closed fd.
+        loop = asyncio.get_running_loop()
         for session in list(self._sessions.values()):
             with suppress(ProcessLookupError, OSError):
                 os.killpg(session.pgid, signal.SIGKILL)
+            with suppress(ValueError, OSError):
+                loop.remove_reader(session.master_fd)
             self._close_master(session)
             self._sessions.pop(session.id, None)
 

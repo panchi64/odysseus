@@ -176,6 +176,14 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
   }
 
   function resetToTemplate() {
+    // Self-guard like onLanguageChange/cancelRun: never leave a run executing
+    // whose later finalize would stomp the reset editor's state. Unreachable
+    // through the RESET button (disabled while running), but every other
+    // run-affecting action here cancels its own in-flight run.
+    activeCancel?.();
+    activeCancel = null;
+    setRunning(false);
+
     setSource(starterCode[language()]);
     setOutputLines([]);
     setLastStatus(null);
