@@ -323,15 +323,19 @@ async def lifespan(app: FastAPI):
     # password attempts against the host-mode grant endpoint like uploads throttle
     # theirs; killing every live session the instant the vault locks is wired via
     # the vault's on-lock callback registry rather than the auth route knowing the
-    # shell exists.
-    app.state.shell_auth_rate_limiter = RateLimiter(
-        rate_per_second=settings.shell_auth_rate_per_minute / 60.0,
-        burst=settings.shell_auth_rate_burst,
-    )
-    app.state.shell = ShellService(
-        settings=settings, vault=vault, auth_manager=app.state.auth_manager
-    )
-    vault.register_on_lock(app.state.shell.kill_all)
+    # shell exists. `shell_enabled` is the kill-switch: when off, its router isn't
+    # even registered (see `create_app`), so nothing here needs to exist either.
+    if settings.shell_enabled:
+        app.state.shell_auth_rate_limiter = RateLimiter(
+            rate_per_second=settings.shell_auth_rate_per_minute / 60.0,
+            burst=settings.shell_auth_rate_burst,
+        )
+        app.state.shell = ShellService(
+            settings=settings, vault=vault, auth_manager=app.state.auth_manager
+        )
+        vault.register_on_lock(app.state.shell.kill_all)
+    else:
+        app.state.shell = None
 
     # Pooled outbound client for provider model discovery (the chat model picker).
     # Connection-reused across endpoints; follows redirects (some providers 30x).
@@ -713,7 +717,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.scheduler.stop()
-        await app.state.shell.stop()
+        if app.state.shell is not None:
+            await app.state.shell.stop()
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
@@ -787,7 +792,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(research.router)
-    app.include_router(shell.router)
+    # `shell_enabled` is the on/off switch (`core/config.py`): disabled ⇒ the
+    # router is never registered at all, so `/shell/host-mode` and `/shell/ws`
+    # are simply 404 — the natural kill-switch.
+    if settings.shell_enabled:
+        app.include_router(shell.router)
     return app
 
 

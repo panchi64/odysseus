@@ -52,11 +52,19 @@ let runCounter = 0;
 const nextRunId = () =>
   `r-${Date.now().toString(36)}-${(++runCounter).toString(36)}`;
 
+/** One line of run output, tagged by the stream it came from so the screen can
+ *  render stderr in the alert tone instead of flattening everything to stdout's
+ *  look. */
+export interface OutputLine {
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
 export function createCodeRunner(initial: () => CodeRun[] | undefined) {
   const [language, setLanguage] = createSignal<CodeLanguage>("python");
   const [source, setSource] = createSignal(starterCode.python);
   const [running, setRunning] = createSignal(false);
-  const [outputLines, setOutputLines] = createSignal<string[]>([]);
+  const [outputLines, setOutputLines] = createSignal<OutputLine[]>([]);
   const [lastStatus, setLastStatus] = createSignal<RunStatus | null>(null);
   const [lastDuration, setLastDuration] = createSignal<number | null>(null);
   const [history, setHistory] = createSignal<CodeRun[]>([]);
@@ -80,6 +88,14 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
   });
 
   function onLanguageChange(value: string) {
+    // Switching language mid-run must not leave the old run executing under
+    // the operator's feet — its later finalize would stomp the running/
+    // lastStatus/lastDuration/outputLines signals for the language they've
+    // since switched to.
+    activeCancel?.();
+    activeCancel = null;
+    setRunning(false);
+
     const lang = value as CodeLanguage;
     setLanguage(lang);
     setSource(starterCode[lang]);
@@ -127,7 +143,7 @@ export function createCodeRunner(initial: () => CodeRun[] | undefined) {
 
     const onLine = (stream: "stdout" | "stderr", line: string) => {
       lines.push(line);
-      setOutputLines((prev) => [...prev, line]);
+      setOutputLines((prev) => [...prev, { stream, text: line }]);
       if (stream === "stderr") sawError = true;
     };
     const onDone = (durationMs: number) => {

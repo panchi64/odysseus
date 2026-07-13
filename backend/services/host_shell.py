@@ -11,10 +11,11 @@ sensitive-action approval gate at once.
 
 The WebSocket upgrade bypasses the ASGI auth middleware entirely (it only
 inspects `scope["type"] == "http"`), so `open_session` re-implements the full
-auth chain itself: bearer session token, vault-unlocked, host-mode token,
-concurrent-session limit — in that order, each a distinct close code so the
-frontend can react precisely (re-login vs re-unlock vs re-authenticate host
-mode vs "busy").
+auth chain itself: bearer session token, vault-unlocked, concurrent-session
+limit, host-mode token — in that order (the session-limit check comes before
+the token is spent, so a busy rejection never burns a still-valid token) —
+each a distinct close code so the frontend can react precisely (re-login vs
+re-unlock vs "busy" vs re-authenticate host mode).
 
 A vault lock must kill every live session immediately (a locked vault means the
 operator's key is gone from memory; leaving a root shell open past that point
@@ -74,6 +75,7 @@ class _Session:
     exit_code: int = 0
     reaped: bool = False
     last_activity: float = field(default_factory=time.monotonic)
+    fd_closed: bool = False
 
 
 class ShellService:
@@ -129,14 +131,28 @@ class ShellService:
     def kill_all(self) -> None:
         """Synchronous — the vault's on-lock callback. Signals every live session's
         process group and flips its termination event; the async pump loops (already
-        running) observe that event and close their own sockets."""
+        running) observe that event and close their own sockets. Deliberately never
+        touches `master_fd` itself — `_pump`'s own reader is still registered on it
+        at this point, so closing here would race `_pump`'s eventual
+        `_kill_with_grace` close. The fd is single-owner: only `_close_master`
+        (called after the reader is removed) ever closes it."""
         for session in list(self._sessions.values()):
             session.close_code = 4423
             with suppress(ProcessLookupError, OSError):
                 os.killpg(session.pgid, signal.SIGHUP)
-            with suppress(OSError):
-                os.close(session.master_fd)
             session.terminate.set()
+
+    @staticmethod
+    def _close_master(session: _Session) -> None:
+        """Idempotent, single-owner close of `master_fd` — safe to call from both
+        `_kill_with_grace` and `stop()`'s force-kill branch even if the other
+        already closed it (or will), since exactly one call ever actually closes
+        the fd. Callers must remove the event-loop reader before calling this."""
+        if session.fd_closed:
+            return
+        session.fd_closed = True
+        with suppress(OSError):
+            os.close(session.master_fd)
 
     async def stop(self) -> None:
         """App shutdown: terminate and fully clean up every live session."""
@@ -155,8 +171,7 @@ class ShellService:
         for session in list(self._sessions.values()):
             with suppress(ProcessLookupError, OSError):
                 os.killpg(session.pgid, signal.SIGKILL)
-            with suppress(OSError):
-                os.close(session.master_fd)
+            self._close_master(session)
             self._sessions.pop(session.id, None)
 
     # --- the socket lifecycle -----------------------------------------------------
@@ -189,11 +204,13 @@ class ShellService:
         if not self._vault.is_unlocked:
             await self._safe_close(websocket, 4423)
             return
-        if not self.consume_host_token(host_token):
-            await self._safe_close(websocket, 4403)
-            return
+        # Checked before the token is spent: a busy rejection must leave a
+        # still-valid host-mode token unspent so the client can retry it.
         if not self.can_open():
             await self._safe_close(websocket, 4409)
+            return
+        if not self.consume_host_token(host_token):
+            await self._safe_close(websocket, 4403)
             return
 
         try:
@@ -245,6 +262,12 @@ class ShellService:
                 os.close(master_fd)
                 os.close(slave_fd)
                 continue
+            except BaseException:
+                # Any other Popen failure (permissions, fd/proc exhaustion, …)
+                # must not leak the pair we just opened before it propagates.
+                os.close(master_fd)
+                os.close(slave_fd)
+                raise
             os.close(slave_fd)  # only the child needs the slave end now
             return _Session(
                 id=secrets.token_urlsafe(16),
@@ -392,8 +415,7 @@ class ShellService:
             with suppress(ProcessLookupError, OSError):
                 os.killpg(session.pgid, signal.SIGKILL)
             await self._wait_exit(session, timeout_s=_KILL_HARD_TIMEOUT_S)
-        with suppress(OSError):
-            os.close(session.master_fd)
+        self._close_master(session)
 
     @staticmethod
     async def _wait_exit(session: _Session, *, timeout_s: float) -> bool:

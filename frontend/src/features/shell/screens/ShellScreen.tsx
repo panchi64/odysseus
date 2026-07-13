@@ -159,8 +159,8 @@ export function ShellScreen(): JSX.Element {
 
       <Show when={showTerminal() && grant()}>
         {(g) => (
-          <Panel label="TERMINAL" class="flex min-h-0 flex-1 flex-col" flush>
-            <div class="min-h-0 flex-1" style={{ "min-height": "360px" }}>
+          <Panel label="TERMINAL" flush fill class="h-full">
+            <div class="flex h-full min-h-0 flex-col">
               <Terminal
                 token={g().token}
                 onReady={() => setPhase("live")}

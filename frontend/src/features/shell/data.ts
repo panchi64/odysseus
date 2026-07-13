@@ -50,6 +50,14 @@ export function actionForCloseCode(
         kind: "ended",
         end: { exitCode: null, reason: "Host busy — session limit reached." },
       };
+    case 1011:
+      return {
+        kind: "ended",
+        end: {
+          exitCode: null,
+          reason: "Failed to start a shell on the host.",
+        },
+      };
     default:
       return {
         kind: "ended",

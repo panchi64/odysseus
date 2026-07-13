@@ -24,6 +24,17 @@ def _source_files() -> list[Path]:
     ]
 
 
+def test_scan_dirs_contain_source_files() -> None:
+    # A parametrize over a possibly-empty rglob list collects zero cases and
+    # pytest reports the parametrized test below as SKIPPED, not FAILED — so a
+    # renamed/missing scan dir would silently drop the SHELL-2 guard instead of
+    # failing loudly. This asserts the scan actually found something to check.
+    assert _source_files(), (
+        f"expected source files under {_SCAN_DIRS} to scan — the SHELL-2 guard "
+        "would otherwise pass vacuously"
+    )
+
+
 @pytest.mark.parametrize("path", _source_files(), ids=lambda p: str(p))
 def test_agent_reachable_code_never_references_the_shell(path: Path) -> None:
     text = path.read_text()

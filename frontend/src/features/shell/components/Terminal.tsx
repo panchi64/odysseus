@@ -101,6 +101,7 @@ export function Terminal(props: TerminalProps): JSX.Element {
     let ready = false;
     let exitCode: number | null = null;
     let stdinDispose: { dispose(): void } | undefined;
+    let disposed = false;
 
     const socket = new WebSocket(buildShellWsUrl());
     socket.binaryType = "arraybuffer";
@@ -123,10 +124,18 @@ export function Terminal(props: TerminalProps): JSX.Element {
     };
 
     socket.onmessage = (ev) => {
+      if (disposed) return;
       if (typeof ev.data === "string") {
-        const msg = JSON.parse(ev.data) as
-          | { type: "ready" }
-          | { type: "exit"; code: number };
+        let msg: { type: "ready" } | { type: "exit"; code: number };
+        try {
+          msg = JSON.parse(ev.data) as typeof msg;
+        } catch {
+          props.onEnded({
+            exitCode: null,
+            reason: "Lost sync with the host session.",
+          });
+          return;
+        }
         if (msg.type === "ready") {
           ready = true;
           fit.fit();
@@ -163,7 +172,11 @@ export function Terminal(props: TerminalProps): JSX.Element {
     ro.observe(container);
 
     onCleanup(() => {
+      disposed = true;
       ro.disconnect();
+      socket.onmessage = null;
+      socket.onopen = null;
+      socket.onclose = null;
       stdinDispose?.dispose();
       socket.close();
       term.dispose();

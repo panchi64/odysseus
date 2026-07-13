@@ -51,7 +51,9 @@ export function CodeScreen(): JSX.Element {
   }
 
   function handleCopyError() {
-    const errorText = outputLines().join("\n");
+    const errorText = outputLines()
+      .map((line) => line.text)
+      .join("\n");
     void navigator.clipboard.writeText(errorText).then(() => {
       toast.success("Error copied to clipboard");
     });
@@ -135,7 +137,6 @@ export function CodeScreen(): JSX.Element {
               value={source()}
               onInput={(e) => setSource(e.currentTarget.value)}
               onKeyDown={onEditorKeyDown}
-              class="font-mono text-sm"
             />
           </Panel>
 
@@ -191,8 +192,18 @@ export function CodeScreen(): JSX.Element {
                 />
               }
             >
-              <div class="font-mono text-xs text-nominal bg-bg border border-line p-3 min-h-24 whitespace-pre-wrap">
-                <For each={outputLines()}>{(line) => <div>{line}</div>}</For>
+              <div class="bg-bg border border-line p-3 min-h-24 whitespace-pre-wrap">
+                <For each={outputLines()}>
+                  {(line) => (
+                    <Text
+                      as="div"
+                      variant="micro"
+                      tone={line.stream === "stderr" ? "alert" : "nominal"}
+                    >
+                      {line.text}
+                    </Text>
+                  )}
+                </For>
                 <Show when={running()}>
                   <LoadingText label="EXECUTING" />
                 </Show>
