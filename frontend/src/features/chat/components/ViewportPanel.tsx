@@ -16,7 +16,9 @@ import {
   type PriorVersion,
   type ViewItem,
 } from "../viewport";
+import { ViewActionRow } from "./ViewActionRow";
 import { ViewStage } from "./ViewStage";
+import { ViewTimelineRail } from "./ViewTimelineRail";
 
 type Mode = "preview" | "code";
 
@@ -26,17 +28,38 @@ const MODE_TABS: TabItem[] = [
 ];
 
 /** The chat workspace's viewport — the conversation's **View** rendered beside the
- *  transcript. One consolidated list of **versions** (a dropdown) with a PREVIEW / CODE
- *  toggle; the newest version is followed by default and shows its HTML preview first.
- *  The frontend only renders what the run's events describe; it decides nothing.
- *  Empty until the agent shows something. */
+ *  transcript (or, below `lg` / in fullscreen, in a full-screen sheet — the caller
+ *  mounts this same component in either slot). One consolidated list of
+ *  **versions**: a dropdown + a horizontal timeline rail, a PREVIEW / CODE toggle,
+ *  and an action row (download, keeper, font size, wrap, refresh, fullscreen,
+ *  collapse). The newest version is followed by default and shows its HTML preview
+ *  first. The frontend only renders what the run's events describe; it decides
+ *  nothing — all state (pin, tab, font, wrap, fullscreen) is the operator's own
+ *  view preference, owned by the caller via `useViewerPersistence`. */
 export function ViewportPanel(props: {
   items: ViewItem[];
   selectedKey: string | null;
   onSelect: (key: string) => void;
+  activeTab: Mode;
+  onSelectTab: (tab: Mode) => void;
+  fontStep: number;
+  onFontStep: (step: number) => void;
+  softWrap: boolean;
+  onToggleWrap: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
   onClose: () => void;
+  /** Rendered only when provided — P5 wires the backend keeper flip. */
+  onKeeper?: (item: ViewItem) => void;
   /** Relays an inline document edit to the backend (SAVE mints a new version). */
   onSaveDocument: (documentId: string, body: string) => Promise<void>;
+  /** A navigation (pin/tab change) is blocked on an unsaved document edit. */
+  pendingNav?: boolean;
+  onDiscardEdits?: () => void;
+  onKeepEditing?: () => void;
+  /** Captures the focusable panel container for the global keymap's focus-jump
+   *  and focus-visible ring. */
+  panelRef?: (el: HTMLDivElement) => void;
 }): JSX.Element {
   // The version actually shown: the selection if still present, else the newest
   // (last) — so a stale selection or a fresh thread always lands on the latest.
@@ -47,8 +70,6 @@ export function ViewportPanel(props: {
       items.find((i) => i.key === props.selectedKey) ?? items[items.length - 1]
     );
   });
-  // PREVIEW first — the HTML render is shown before the code whenever a View opens.
-  const [mode, setMode] = createSignal<Mode>("preview");
   // Manual reload nonce: bumping it reloads only the live/preview iframe in place
   // (the one-click equivalent of closing and reopening), without tearing down the
   // surrounding stage — so a refresh no longer refetches the file tree or flashes.
@@ -70,96 +91,150 @@ export function ViewportPanel(props: {
     return sel ? priorDocumentVersions(props.items, sel.key) : [];
   });
 
+  // PREVIEW-only refresh, same condition the old loose header button used.
+  const refreshVisible = () =>
+    Boolean(selected()) && props.activeTab === "preview";
+
+  // Keeper only makes sense for a version the backend can actually bookmark: a
+  // captured snapshot, or a *committed* document version (not the in-progress
+  // version-0 head still streaming, and not a standalone live entry with neither).
+  const keeperEligible = (): boolean => {
+    const item = selected();
+    return (
+      Boolean(item?.snapshot) ||
+      Boolean(item?.document && item.document.version >= 1)
+    );
+  };
+
   return (
-    <Panel
-      label="VIEW"
-      meta={
-        <span class="flex min-w-0 items-center gap-2">
-          {/* Refresh reloads the previewed iframe in place; it only does anything in
-              PREVIEW (CODE is an immutable snapshot tree), so it's hidden there rather
-              than left as a dead control. */}
-          <Show when={selected() && mode() === "preview"}>
-            <Button
-              variant="ghost"
-              size="sm"
-              leading="refresh"
-              aria-label="Reload view"
-              onClick={() => setReloadKey((k) => k + 1)}
-            />
-          </Show>
-          <Button
-            variant="ghost"
-            size="sm"
-            leading="panel-right"
-            aria-label="Collapse viewport"
-            onClick={() => props.onClose()}
-          />
-        </span>
-      }
-      flush
-      fill
-      class="h-full"
+    <div
+      ref={props.panelRef}
+      tabindex={-1}
+      class="h-full outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
     >
-      <Show
-        when={props.items.length > 0}
-        fallback={
-          <EmptyState
-            icon="eye"
-            message="NOTHING TO SHOW YET"
-            hint="Pages, charts, files, and live servers from this conversation appear here."
+      <Panel
+        label="VIEW"
+        meta={
+          <ViewActionRow
+            keeper={selected()?.keeper}
+            onKeeper={
+              props.onKeeper && keeperEligible()
+                ? () => props.onKeeper!(selected()!)
+                : undefined
+            }
+            fontStep={props.fontStep}
+            onFontStep={props.onFontStep}
+            softWrap={props.softWrap}
+            onToggleWrap={props.onToggleWrap}
+            onRefresh={
+              refreshVisible() ? () => setReloadKey((k) => k + 1) : undefined
+            }
+            fullscreen={props.fullscreen}
+            onToggleFullscreen={props.onToggleFullscreen}
+            onClose={props.onClose}
           />
         }
+        flush
+        fill
+        class="h-full"
       >
-        <div class="flex h-full min-h-0 flex-col">
-          {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
-              dropdown collapses to its label. */}
-          <div class="flex items-center gap-2 border-b border-line px-3 py-2">
-            <Show
-              when={props.items.length > 1}
-              fallback={
-                <Text
-                  variant="micro"
-                  tone="dim"
-                  class="min-w-0 flex-1 truncate"
-                >
-                  {selected()?.label}
-                </Text>
-              }
-            >
-              <Select
-                aria-label="Select version"
-                class="min-w-0 flex-1"
-                options={versionOptions()}
-                value={selected()?.key}
-                onChange={props.onSelect}
-              />
-            </Show>
-            <Tabs
-              items={MODE_TABS}
-              value={mode()}
-              onChange={(v) => setMode(v as Mode)}
-              class="shrink-0"
+        <Show
+          when={props.items.length > 0}
+          fallback={
+            <EmptyState
+              icon="eye"
+              message="NOTHING TO SHOW YET"
+              hint="Pages, charts, files, and live servers from this conversation appear here."
             />
-          </div>
-          <div class="min-h-0 flex-1">
-            {/* The stage stays mounted and reacts to the selected version in place
-                (the live head's iframe survives a relabel when a newer version is
-                minted on the same server); only the refresh nonce reloads the iframe. */}
-            <Show when={selected()}>
-              {(entry) => (
-                <ViewStage
-                  entry={entry()}
-                  mode={mode()}
-                  reloadKey={reloadKey()}
-                  priorVersions={priorVersions()}
-                  priorDocuments={priorDocuments()}
-                  onSaveDocument={props.onSaveDocument}
-                />
-              )}
+          }
+        >
+          <div class="flex h-full min-h-0 flex-col">
+            {/* Unsaved-edit guard: blocks a pin/tab change that would navigate away
+                from the item currently being edited inline. Hard-cut, no dialog. */}
+            <Show when={props.pendingNav}>
+              <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+                <Text variant="label" tone="bright">
+                  UNSAVED EDITS
+                </Text>
+                <div class="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={props.onKeepEditing}
+                  >
+                    KEEP EDITING
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={props.onDiscardEdits}
+                  >
+                    DISCARD EDITS
+                  </Button>
+                </div>
+              </div>
             </Show>
+
+            {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
+                dropdown collapses to its label. */}
+            <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+              <Show
+                when={props.items.length > 1}
+                fallback={
+                  <Text
+                    variant="micro"
+                    tone="dim"
+                    class="min-w-0 flex-1 truncate"
+                  >
+                    {selected()?.label}
+                  </Text>
+                }
+              >
+                <Select
+                  aria-label="Select version"
+                  class="min-w-0 flex-1"
+                  options={versionOptions()}
+                  value={selected()?.key}
+                  onChange={props.onSelect}
+                />
+              </Show>
+              <Tabs
+                items={MODE_TABS}
+                value={props.activeTab}
+                onChange={(v) => props.onSelectTab(v as Mode)}
+                class="shrink-0"
+              />
+            </div>
+
+            <ViewTimelineRail
+              items={props.items}
+              selectedKey={selected()?.key ?? null}
+              followingLatest={props.selectedKey === null}
+              onSelect={props.onSelect}
+            />
+
+            <div class="min-h-0 flex-1">
+              {/* The stage stays mounted and reacts to the selected version in place
+                  (the live head's iframe survives a relabel when a newer version is
+                  minted on the same server); only the refresh nonce reloads the iframe. */}
+              <Show when={selected()}>
+                {(entry) => (
+                  <ViewStage
+                    entry={entry()}
+                    mode={props.activeTab}
+                    reloadKey={reloadKey()}
+                    priorVersions={priorVersions()}
+                    priorDocuments={priorDocuments()}
+                    onSaveDocument={props.onSaveDocument}
+                    fontStep={props.fontStep}
+                    softWrap={props.softWrap}
+                  />
+                )}
+              </Show>
+            </div>
           </div>
-        </div>
-      </Show>
-    </Panel>
+        </Show>
+      </Panel>
+    </div>
   );
 }

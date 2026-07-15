@@ -1,20 +1,43 @@
-import { For, type JSX } from "solid-js";
+import { createResource, For, Show, type JSX } from "solid-js";
 import { cx } from "../cx";
+import { highlightToHtml } from "./highlight";
 
 export interface CodeBlockProps {
   /** The source text to display, verbatim. */
   code: string;
   class?: string;
+  /** Optional language for syntax highlighting (an alias `highlight.ts`
+   *  recognizes, e.g. "ts", "python", "yaml"). Omitted, unrecognized, or still
+   *  loading -> the plain, unhighlighted rendering below (zero layout shift —
+   *  same table/gutter structure either way). */
+  lang?: string;
 }
 
-/** A monospace code view with a dim, tabular line-number gutter. No syntax
- *  highlighting — just a faithful, scrollable rendering that fills its container. */
+/** A monospace code view with a dim, tabular line-number gutter. Optionally
+ *  syntax-highlighted (lazily, via Shiki) when `lang` is set and recognized;
+ *  otherwise a faithful, scrollable plain rendering that fills its container. */
 export function CodeBlock(props: CodeBlockProps): JSX.Element {
   // Split once per render; a trailing newline shouldn't add a phantom blank line.
   const lines = (): string[] => {
     const text = props.code.replace(/\n$/, "");
     return text.length === 0 ? [""] : text.split("\n");
   };
+
+  // Highlighted lines, parsed out of Shiki's `<pre class="shiki"><code><span
+  // class="line">…</span>\n…</code></pre>` output — one inner-HTML string per
+  // source line, reused inside the SAME table/gutter cells the plain path
+  // renders, so there's no layout shift when highlighting resolves.
+  const [highlightedLines] = createResource(
+    () => (props.lang ? { code: props.code, lang: props.lang } : undefined),
+    async ({ code, lang }): Promise<string[] | null> => {
+      const html = await highlightToHtml(code, lang);
+      if (!html) return null;
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const spans = Array.from(doc.querySelectorAll("code > .line"));
+      return spans.length > 0 ? spans.map((s) => s.innerHTML) : null;
+    },
+  );
+
   return (
     <div
       class={cx(
@@ -30,9 +53,25 @@ export function CodeBlock(props: CodeBlockProps): JSX.Element {
                 <td class="select-none whitespace-nowrap px-3 py-0 text-right align-top text-dim tabular-nums">
                   {i() + 1}
                 </td>
-                <td class="w-full whitespace-pre py-0 pr-3 align-top text-text">
-                  {line || " "}
-                </td>
+                <Show
+                  when={highlightedLines()?.[i()]}
+                  fallback={
+                    <td class="w-full whitespace-pre py-0 pr-3 align-top text-text">
+                      {line || " "}
+                    </td>
+                  }
+                >
+                  {(html) => (
+                    <td
+                      class="w-full whitespace-pre py-0 pr-3 align-top text-text"
+                      // Shiki-escaped token spans over our own line text — never
+                      // the operator's raw markup (`ui/CLAUDE.md`'s innerHTML
+                      // rule targets untrusted markup, not our own highlighter
+                      // output over already-escaped code).
+                      innerHTML={html()}
+                    />
+                  )}
+                </Show>
               </tr>
             )}
           </For>

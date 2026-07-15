@@ -80,6 +80,8 @@ class DocumentVersionView:
     title: str
     body: str
     created_at: datetime
+    # The operator's durable bookmark on this version.
+    keeper: bool = False
 
 
 class DocumentStore:
@@ -248,6 +250,28 @@ class DocumentStore:
         self._adapter.index_document(owner_id, document_id, body)
         return view
 
+    async def set_keeper(
+        self, owner_id: str, document_id: str, version: int, keeper: bool
+    ) -> bool:
+        """Bookmark or unbookmark a version. Returns False if unknown/not owned."""
+
+        def work(session: Session) -> bool:
+            row = session.exec(
+                select(DocumentVersion).where(
+                    DocumentVersion.owner_id == owner_id,
+                    DocumentVersion.document_id == document_id,
+                    DocumentVersion.version == version,
+                )
+            ).first()
+            if row is None:
+                return False
+            row.keeper = keeper
+            session.add(row)
+            session.flush()
+            return True
+
+        return await in_session(self._engine, work)
+
     async def delete(self, owner_id: str, document_id: str) -> None:
         """Hard-delete a document, its version history, and its corpus chunks."""
         await self._require(owner_id, document_id)
@@ -328,6 +352,7 @@ class DocumentStore:
                     title=self._vault.decrypt_str(row.title_enc),
                     body=self._vault.decrypt_str(row.body_enc),
                     created_at=row.created_at,
+                    keeper=row.keeper,
                 )
                 for row in rows
             ]

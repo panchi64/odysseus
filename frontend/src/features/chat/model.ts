@@ -112,6 +112,9 @@ export interface ViewSnapshotRef {
   summary: string;
   /** The static preview the version was shown with, or null for a live/auto preview. */
   preview: ViewPreviewRef | null;
+  /** Whether the operator has pinned this version as a "keeper" (backend-owned;
+   *  `POST /views/snapshots/{id}/keeper`). Optional — absent until wired. */
+  keeper?: boolean;
 }
 
 /** One **committed version** of a document the agent authored during the thread —
@@ -127,6 +130,10 @@ export interface ViewDocumentRef {
   /** When this version was minted (ISO), so the View can order document versions and
    *  workspace snapshots into one timeline instead of concatenating them. */
   createdAt: string;
+  /** Whether the operator has pinned this version as a "keeper" (backend-owned;
+   *  `POST /documents/{id}/versions/{version}/keeper`). Optional — absent until
+   *  wired. */
+  keeper?: boolean;
 }
 
 /** One file in a workspace snapshot's tree, with its change status vs. the prior

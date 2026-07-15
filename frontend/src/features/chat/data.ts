@@ -216,6 +216,9 @@ interface ViewSnapshotDTO {
   summary: string;
   preview_kind: "html" | "image" | "text" | "other" | null;
   preview_artifact_id: string | null;
+  /** The operator's durable bookmark on this version. Optional on the wire —
+   *  older/mocked payloads may omit it. */
+  keeper?: boolean;
 }
 
 interface ConversationDocumentVersionDTO {
@@ -223,6 +226,9 @@ interface ConversationDocumentVersionDTO {
   origin: string;
   created_at: string;
   body: string;
+  /** The operator's durable bookmark on this version. Optional on the wire —
+   *  older/mocked payloads may omit it. */
+  keeper?: boolean;
 }
 
 interface ConversationDocumentDTO {
@@ -387,6 +393,7 @@ function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
       dto.preview_artifact_id && dto.preview_kind
         ? { kind: dto.preview_kind, artifactId: dto.preview_artifact_id }
         : null,
+    keeper: dto.keeper ?? false,
   };
 }
 
@@ -400,6 +407,7 @@ function toViewDocumentRefs(dto: ConversationDocumentDTO): ViewDocumentRef[] {
     origin: v.origin as ViewDocumentRef["origin"],
     body: v.body,
     createdAt: v.created_at,
+    keeper: v.keeper ?? false,
   }));
 }
 
@@ -2076,6 +2084,58 @@ export function createChatStream(
     });
   }
 
+  /** Flip a snapshot's keeper bookmark: optimistically replace the array element
+   *  (a spread copy — never mutate the stored ref in place), then confirm against
+   *  the backend, reverting the same way on failure. */
+  async function toggleSnapshotKeeper(
+    snapshotId: string,
+    keeper: boolean,
+  ): Promise<void> {
+    setSnapshots((prev) =>
+      prev.map((s) => (s.snapshotId === snapshotId ? { ...s, keeper } : s)),
+    );
+    try {
+      await api.post(`/views/snapshots/${snapshotId}/keeper`, { keeper });
+    } catch (err) {
+      setSnapshots((prev) =>
+        prev.map((s) =>
+          s.snapshotId === snapshotId ? { ...s, keeper: !keeper } : s,
+        ),
+      );
+      toastError(err, "Unable to update the keeper flag.");
+    }
+  }
+
+  /** Same optimistic-replace/revert pattern as `toggleSnapshotKeeper`, for one
+   *  committed document version (matched by document id + version number). */
+  async function toggleDocumentKeeper(
+    documentId: string,
+    version: number,
+    keeper: boolean,
+  ): Promise<void> {
+    setDocuments((prev) =>
+      prev.map((d) =>
+        d.documentId === documentId && d.version === version
+          ? { ...d, keeper }
+          : d,
+      ),
+    );
+    try {
+      await api.post(`/documents/${documentId}/versions/${version}/keeper`, {
+        keeper,
+      });
+    } catch (err) {
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.documentId === documentId && d.version === version
+            ? { ...d, keeper: !keeper }
+            : d,
+        ),
+      );
+      toastError(err, "Unable to update the keeper flag.");
+    }
+  }
+
   onCleanup(() => controller?.abort());
 
   return {
@@ -2085,6 +2145,8 @@ export function createChatStream(
     /** The conversation's documents, flattened to one entry per committed version. */
     documents,
     saveDocumentEdit,
+    toggleSnapshotKeeper,
+    toggleDocumentKeeper,
     sending,
     errored,
     /** True while the live run's transport is detached (reconnect budget

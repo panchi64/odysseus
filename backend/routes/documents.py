@@ -69,6 +69,12 @@ class DocumentVersionOut(CamelModel):
     title: str
     body: str
     created_at: datetime
+    # The operator's durable bookmark on this version.
+    keeper: bool = False
+
+
+class KeeperUpdate(BaseModel):
+    keeper: bool
 
 
 def _out(view: DocumentView, *, version: int | None = None) -> DocumentOut:
@@ -105,6 +111,7 @@ def _version_out(view: DocumentVersionView) -> DocumentVersionOut:
         title=view.title,
         body=view.body,
         created_at=view.created_at,
+        keeper=view.keeper,
     )
 
 
@@ -190,6 +197,17 @@ async def restore_version(document_id: str, version: int, request: Request) -> D
     except NotFoundError:
         raise HTTPException(status_code=404, detail="document or version not found") from None
     return _out(view)
+
+
+@router.post("/{document_id}/versions/{version}/keeper", status_code=204)
+async def set_version_keeper(
+    document_id: str, version: int, body: KeeperUpdate, request: Request
+) -> None:
+    """Bookmark or unbookmark a version — a durable keeper in the append-only history."""
+    if not await deps.documents(request).set_keeper(
+        OPERATOR_ID, document_id, version, body.keeper
+    ):
+        raise HTTPException(status_code=404, detail="document or version not found")
 
 
 @router.delete("/{document_id}", status_code=204)

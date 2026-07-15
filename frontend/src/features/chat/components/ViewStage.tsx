@@ -41,6 +41,10 @@ export function ViewStage(props: {
   priorDocuments: ViewDocumentRef[];
   /** Relays an inline document edit to the backend (SAVE mints a new version). */
   onSaveDocument: (documentId: string, body: string) => Promise<void>;
+  /** Operator font-size step (-2..+2) and soft-wrap preference, persisted by the
+   *  panel and threaded down to whichever content/code view is on stage. */
+  fontStep?: number;
+  softWrap?: boolean;
 }): JSX.Element {
   return (
     <Switch>
@@ -67,6 +71,8 @@ export function ViewStage(props: {
                     Boolean(props.entry.documentIsLatest) && doc().version >= 1
                   }
                   onSave={props.onSaveDocument}
+                  fontStep={props.fontStep}
+                  softWrap={props.softWrap}
                 />
               </Show>
             </Match>
@@ -74,6 +80,8 @@ export function ViewStage(props: {
               <ViewDocumentCode
                 document={doc()}
                 priorVersions={props.priorDocuments}
+                fontStep={props.fontStep}
+                softWrap={props.softWrap}
               />
             </Match>
           </Switch>
@@ -97,6 +105,8 @@ export function ViewStage(props: {
               mode={props.mode}
               reloadKey={props.reloadKey}
               priorVersions={props.priorVersions}
+              fontStep={props.fontStep}
+              softWrap={props.softWrap}
             />
           </Show>
         )}
@@ -125,8 +135,10 @@ function SnapshotStage(props: {
   mode: "preview" | "code";
   reloadKey: number;
   priorVersions: PriorVersion[];
+  fontStep?: number;
+  softWrap?: boolean;
 }): JSX.Element {
-  const [files] = createResource(
+  const [files, { refetch: refetchFiles }] = createResource(
     () => props.snapshot.snapshotId,
     fetchSnapshotFiles,
   );
@@ -147,12 +159,15 @@ function SnapshotStage(props: {
           preview={props.snapshot.preview!}
           title={props.snapshot.title ?? "Version"}
           reloadKey={props.reloadKey}
+          fontStep={props.fontStep}
+          softWrap={props.softWrap}
         />
       </Match>
       <Match when={props.mode === "preview"}>
         <ViewSnapshotPreview
           snapshot={props.snapshot}
           files={files}
+          onRetryFiles={() => void refetchFiles()}
           reloadKey={props.reloadKey}
         />
       </Match>
@@ -162,9 +177,12 @@ function SnapshotStage(props: {
         <ViewSnapshotCode
           snapshot={props.snapshot}
           files={files}
+          onRetryFiles={() => void refetchFiles()}
           selectedPath={selectedPath()}
           onSelectPath={setSelectedPath}
           priorVersions={props.priorVersions}
+          fontStep={props.fontStep}
+          softWrap={props.softWrap}
         />
       </Match>
     </Switch>

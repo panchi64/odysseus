@@ -59,4 +59,8 @@ class WorkspaceSnapshot(SQLModel, table=True):
     # Policy, not content — kept in the clear like `stats_json`.
     preview_artifact_id: str | None = None
     preview_kind: str | None = None
+    # The operator's durable bookmark on this version — a keeper worth finding again
+    # amid an otherwise disposable timeline. Policy, not content, kept in the clear
+    # like `preview_kind`.
+    keeper: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=utcnow, index=True)

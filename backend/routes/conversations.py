@@ -76,6 +76,7 @@ class ViewSnapshotRefOut(BaseModel):
     summary: str
     preview_kind: str | None
     preview_artifact_id: str | None
+    keeper: bool = False  # the operator's durable bookmark on this version
 
 
 class DocumentVersionRefOut(BaseModel):
@@ -87,6 +88,7 @@ class DocumentVersionRefOut(BaseModel):
     origin: str  # user | ai | extraction
     created_at: datetime
     body: str
+    keeper: bool = False  # the operator's durable bookmark on this version
 
 
 class DocumentRefOut(BaseModel):
@@ -277,6 +279,7 @@ async def _detail(
                     origin=v.origin,
                     created_at=v.created_at,
                     body=v.body,
+                    keeper=v.keeper,
                 )
                 for v in reversed(versions)  # list_versions is newest-first; want oldest-first
             ],
@@ -295,6 +298,7 @@ async def _detail(
                 summary=s.summary,
                 preview_kind=s.preview_kind,
                 preview_artifact_id=s.preview_artifact_id,
+                keeper=s.keeper,
             )
             for s in snapshots
         ],

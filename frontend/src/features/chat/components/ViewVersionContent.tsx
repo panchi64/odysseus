@@ -1,40 +1,105 @@
-import { createResource, Match, Switch, type JSX } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  onCleanup,
+  Match,
+  Show,
+  Switch,
+  type JSX,
+} from "solid-js";
 import { api, useAuthedBlobUrl } from "~/lib/api";
-import { ErrorState, LoadingText, Text } from "~/ui";
+import { bytes } from "~/lib/format";
+import { Button, CodeBlock, ErrorState, LoadingText, Text } from "~/ui";
 import type { ViewPreviewRef } from "../model";
+import { detectContentKind } from "../viewport";
+import { downloadBlob, setActiveDownload } from "../viewerPersistence";
+import { CsvTable } from "./renderers/CsvTable";
+import { JsonTree } from "./renderers/JsonTree";
+import { MediaPlayer } from "./renderers/MediaPlayer";
+import { PdfViewer } from "./renderers/PdfViewer";
+import { RawTextViewer } from "./renderers/RawTextViewer";
 import { SandboxedFrame } from "./SandboxedFrame";
+import { SvgContent } from "./renderers/SvgContent";
+
+/** Text/code under this size render inline (existing `pre` / `CodeBlock`); at or
+ *  over it, the same bytes hand off to `RawTextViewer`'s virtualized rendering. */
+const INLINE_TEXT_THRESHOLD = 200_000;
+
+/** The lowercased extension of `name` (no leading dot), or undefined — used only
+ *  to pick a `CodeBlock` highlight language, mirroring `viewport.ts`'s own
+ *  (private) extension parsing. */
+function extensionOf(name: string): string | undefined {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return undefined;
+  return name.slice(dot + 1).toLowerCase();
+}
 
 /**
  * Renders a version's static **preview** — the captured file a `show(file=…)` stamped on
- * it — by kind: image, HTML, or text (CODE is the version's workspace tree, shown by
- * `ViewSnapshotCode`, so this component only ever renders the preview). The bytes are
- * auth-gated, so image and HTML resolve through the shared blob-URL hook (an `<img>` /
- * iframe `src` can't carry a bearer); text is read inline. HTML renders in an
- * opaque-origin sandboxed iframe — no `allow-same-origin`, so model-generated markup
- * can't act as the operator.
+ * it — routed by detected content kind (CODE is the version's workspace tree, shown by
+ * `ViewSnapshotCode`, so this component only ever renders the preview). HTML and image
+ * bytes are auth-gated and resolve through the shared blob-URL hook (an `<img>` / iframe
+ * `src` can't carry a bearer); every other kind fetches the raw bytes once and hands them
+ * to the matching `chat/components/renderers/*` component. Whenever an artifact is on
+ * stage, the panel-level download button is armed with its already-fetched bytes. HTML
+ * renders in an opaque-origin sandboxed iframe — no `allow-same-origin`, so model-generated
+ * markup can't act as the operator.
  */
 export function ViewVersionContent(props: {
   preview: ViewPreviewRef;
   title: string;
   /** Manual reload nonce — bumping it reloads the framed HTML preview in place. */
   reloadKey: number;
+  /** Zoom step passed through to the renderers that support it. Default 0. */
+  fontStep?: number;
+  /** Soft-wrap passed through to the renderers that support it. Default false. */
+  softWrap?: boolean;
 }): JSX.Element {
   const contentPath = (): string =>
     `/views/${props.preview.artifactId}/content`;
+  const scrollKey = (): string => `view:${props.preview.artifactId}`;
 
-  // image + HTML render through the blob-URL hook (their src can't carry a bearer).
-  const isUrlKind = (): boolean =>
-    props.preview.kind === "image" || props.preview.kind === "html";
+  const kind = createMemo(() =>
+    detectContentKind(props.title, props.preview.kind),
+  );
+
+  // image + HTML render through the blob-URL hook (their src can't carry a bearer) —
+  // unchanged from the prior implementation.
+  const isUrlKind = (): boolean => kind() === "image" || kind() === "html";
   const objectUrl = useAuthedBlobUrl(() =>
     isUrlKind() ? contentPath() : undefined,
   );
 
-  // text renders inline, read through the auth-gated blob fetch.
-  const [text] = createResource(
-    () =>
-      props.preview.kind === "text" ? props.preview.artifactId : undefined,
-    async (): Promise<string> => (await api.getBlob(contentPath())).text(),
+  // Every other kind — plus the panel-level download button, for every kind — wants
+  // the raw bytes, fetched once per artifact independent of the url-kind path above.
+  const [blob, { refetch: refetchBlob }] = createResource(
+    () => props.preview.artifactId,
+    () => api.getBlob(contentPath()),
   );
+
+  // Whenever this component has an artifact's bytes in hand, arm the panel-level
+  // download button with them — a relay of what's already been fetched, not a
+  // decision the frontend makes on its own.
+  createEffect(() => {
+    const b = blob();
+    if (!b) return;
+    setActiveDownload({ name: props.title, getBlob: async () => b });
+  });
+  onCleanup(() => setActiveDownload(null));
+
+  const isTextLike = (): boolean => kind() === "text" || kind() === "code";
+  // Assume inline while the size isn't known yet, so the small/common case never
+  // flashes the RawTextViewer arm first; a genuinely large file flips this once
+  // `blob()` resolves with its real size.
+  const inline = (): boolean => (blob()?.size ?? 0) < INLINE_TEXT_THRESHOLD;
+
+  const [text] = createResource(
+    () => (isTextLike() && inline() ? blob() : undefined),
+    (b) => b.text(),
+  );
+
+  const codeLang = (): string | undefined => extensionOf(props.title);
 
   const urlArm = (render: (url: string) => JSX.Element): JSX.Element => (
     <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
@@ -45,9 +110,21 @@ export function ViewVersionContent(props: {
     </Switch>
   );
 
+  const blobArm = (render: (b: Blob) => JSX.Element): JSX.Element => (
+    <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
+      <Match when={blob.error}>
+        <ErrorState
+          message="Could not load this version."
+          onRetry={() => void refetchBlob()}
+        />
+      </Match>
+      <Match when={blob()}>{(b) => render(b())}</Match>
+    </Switch>
+  );
+
   return (
     <Switch>
-      <Match when={props.preview.kind === "image"}>
+      <Match when={kind() === "image"}>
         {urlArm((url) => (
           <img
             src={url}
@@ -56,7 +133,7 @@ export function ViewVersionContent(props: {
           />
         ))}
       </Match>
-      <Match when={props.preview.kind === "html"}>
+      <Match when={kind() === "html"}>
         {urlArm((url) => (
           <SandboxedFrame
             src={url}
@@ -65,24 +142,110 @@ export function ViewVersionContent(props: {
           />
         ))}
       </Match>
-      <Match when={props.preview.kind === "text"}>
+      <Match when={kind() === "svg"}>
+        {blobArm((b) => (
+          <SvgContent
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={kind() === "csv"}>
+        {blobArm((b) => (
+          <CsvTable
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={kind() === "json"}>
+        {blobArm((b) => (
+          <JsonTree
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={kind() === "pdf"}>
+        {blobArm((b) => (
+          <PdfViewer
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={kind() === "audio" || kind() === "video"}>
+        {blobArm((b) => (
+          <MediaPlayer
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={isTextLike() && inline()}>
         <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
           <Match when={text.error}>
             <ErrorState message="Could not load this version." />
           </Match>
           <Match when={text() !== undefined}>
-            <pre class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-body text-text">
-              {text()}
-            </pre>
+            <Show
+              when={kind() === "code"}
+              fallback={
+                <pre class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-body text-text">
+                  {text()}
+                </pre>
+              }
+            >
+              <CodeBlock code={text() ?? ""} lang={codeLang()} />
+            </Show>
           </Match>
         </Switch>
       </Match>
-      <Match when={props.preview.kind === "other"}>
-        <div class="flex h-full items-center justify-center p-4">
-          <Text variant="micro" tone="dim">
-            No inline render for this file.
-          </Text>
-        </div>
+      <Match when={isTextLike() && !inline()}>
+        {blobArm((b) => (
+          <RawTextViewer
+            data={b}
+            name={props.title}
+            fontStep={props.fontStep}
+            softWrap={props.softWrap}
+            scrollKey={scrollKey()}
+          />
+        ))}
+      </Match>
+      <Match when={kind() === "other"}>
+        {blobArm((b) => (
+          <div class="flex h-full flex-col items-center justify-center gap-2 p-4">
+            <Text variant="micro" tone="dim">
+              {props.title}
+            </Text>
+            <Text variant="micro" tone="dim">
+              {bytes(b.size)} · {kind().toUpperCase()}
+            </Text>
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="download"
+              onClick={() => downloadBlob(props.title, b)}
+            >
+              DOWNLOAD
+            </Button>
+          </div>
+        ))}
       </Match>
     </Switch>
   );

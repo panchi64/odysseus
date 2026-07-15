@@ -334,6 +334,7 @@ def test_show_result_round_trips_the_version_id():
         stats={"added": 1, "modified": 0, "removed": 0},
         preview_artifact_id="a1",
         preview_kind="image",
+        keeper=False,
     )
     assert snapshot_id_from_result(format_show_result(snap, "image")) == "deadbeef01"
 

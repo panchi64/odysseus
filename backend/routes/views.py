@@ -52,6 +52,12 @@ class SnapshotOut(BaseModel):
     # `show(file=…)`, both null for a live/auto preview.
     preview_artifact_id: str | None
     preview_kind: str | None
+    # The operator's durable bookmark on this version.
+    keeper: bool
+
+
+class KeeperUpdate(BaseModel):
+    keeper: bool
 
 
 class SnapshotFileOut(BaseModel):
@@ -73,6 +79,18 @@ class SnapshotDiffOut(BaseModel):
 async def list_snapshots(conversation_id: str, request: Request) -> list[SnapshotOut]:
     snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
     return [SnapshotOut.model_validate(s) for s in snapshots]
+
+
+@router.post("/snapshots/{snapshot_id}/keeper", status_code=204)
+async def set_snapshot_keeper(
+    snapshot_id: str, body: KeeperUpdate, request: Request
+) -> None:
+    """Bookmark or unbookmark a version — a durable keeper in an otherwise disposable
+    timeline."""
+    if not await deps.workspace_history(request).set_keeper(
+        OPERATOR_ID, snapshot_id, body.keeper
+    ):
+        raise HTTPException(status_code=404, detail="snapshot not found")
 
 
 @router.get("/snapshots/{snapshot_id}/files", response_model=list[SnapshotFileOut])

@@ -17,6 +17,9 @@ import { SandboxedFrame } from "./SandboxedFrame";
 export function ViewSnapshotPreview(props: {
   snapshot: ViewSnapshotRef;
   files: Resource<SnapshotFile[]>;
+  /** Retries the owning stage's file-list fetch — armed on the `files` resource's
+   *  own refetch, so a failed list load can be retried in place. */
+  onRetryFiles?: () => void;
   /** Manual reload nonce — bumping it reloads the framed entry page in place. */
   reloadKey: number;
 }): JSX.Element {
@@ -32,7 +35,10 @@ export function ViewSnapshotPreview(props: {
   return (
     <Switch fallback={<LoadingText label="LOADING PREVIEW…" />}>
       <Match when={props.files.error}>
-        <ErrorState message="Could not load this version." />
+        <ErrorState
+          message="Could not load this version."
+          onRetry={props.onRetryFiles}
+        />
       </Match>
       <Match when={props.files() && !entry()}>
         <EmptyState

@@ -44,6 +44,79 @@ export interface ViewItem {
    *  affordance: a document that isn't the conversation's single newest View item is
    *  still editable as long as it's the newest version of *itself*. */
   documentIsLatest?: boolean;
+  /** Detected content kind of the entry's primary artifact, for picking a renderer.
+   *  Optional — unset until a consumer populates it. */
+  kind?: ViewContentKind;
+  /** Whether this version is pinned as a "keeper" (backend-owned). Optional —
+   *  unset until a consumer populates it. */
+  keeper?: boolean;
+}
+
+/** The content kind a View item's primary artifact renders as — drives which
+ *  renderer (`chat/components/renderers/`) mounts it. Pure classification, no DOM. */
+export type ViewContentKind =
+  | "html"
+  | "image"
+  | "text"
+  | "csv"
+  | "json"
+  | "svg"
+  | "pdf"
+  | "audio"
+  | "video"
+  | "code"
+  | "other";
+
+const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "ogg", "m4a", "flac"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov"]);
+const CODE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "py",
+  "rs",
+  "go",
+  "css",
+  "sh",
+  "yml",
+  "yaml",
+  "toml",
+  "sql",
+]);
+const TEXT_EXTENSIONS = new Set(["md", "txt", "log"]);
+
+/** The lowercased extension of `filename` (no leading dot), or null when it has
+ *  none. */
+function extensionOf(filename: string | null): string | null {
+  if (!filename) return null;
+  const dot = filename.lastIndexOf(".");
+  if (dot <= 0 || dot === filename.length - 1) return null;
+  return filename.slice(dot + 1).toLowerCase();
+}
+
+/** Classifies a filename + backend-reported preview kind into the
+ *  `ViewContentKind` renderers key off. `html` always wins outright. `.svg` wins
+ *  over an `image` previewKind (so an SVG renders via the SVG path, not as a
+ *  raster `<img>`), but other extension rules only apply once `image` has been
+ *  ruled out. Pure — no DOM, unit-testable. */
+export function detectContentKind(
+  filename: string | null,
+  previewKind: string | null,
+): ViewContentKind {
+  if (previewKind === "html") return "html";
+  const ext = extensionOf(filename);
+  if (ext === "svg") return "svg";
+  if (previewKind === "image") return "image";
+  if (ext === "csv") return "csv";
+  if (ext === "json" || ext === "jsonl") return "json";
+  if (ext === "pdf") return "pdf";
+  if (ext && AUDIO_EXTENSIONS.has(ext)) return "audio";
+  if (ext && VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (ext && CODE_EXTENSIONS.has(ext)) return "code";
+  if ((ext && TEXT_EXTENSIONS.has(ext)) || previewKind === "text")
+    return "text";
+  return "other";
 }
 
 /** The selection key for the (single) live head — used when it stands alone. */
@@ -184,6 +257,11 @@ export function collectViewItems(
 
   items.forEach((item, i) => {
     item.label = entryLabel(item, i + 1, item.isLatest);
+    // Reflect whichever backing ref (snapshot, or the document version actually on
+    // this entry after the live/pending overlays above) is current — never the
+    // push-time value, so a live overlay swapping `item.document` still shows that
+    // version's own keeper flag.
+    item.keeper = item.snapshot?.keeper ?? item.document?.keeper ?? false;
   });
   return items;
 }

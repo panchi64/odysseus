@@ -1,11 +1,13 @@
 import {
   createEffect,
   createMemo,
+  For,
   onCleanup,
+  Show,
   splitProps,
   type JSX,
 } from "solid-js";
-import { marked } from "marked";
+import { marked, type Token } from "marked";
 import "katex/dist/katex.min.css";
 import { cx } from "../cx";
 import { copyToClipboard } from "../clipboard";
@@ -17,10 +19,68 @@ export interface MarkdownProps {
   class?: string;
   /** Add a hover copy button to each rendered code block. Default true. */
   copyCode?: boolean;
+  /** Opt-in streaming-stable rendering: source is split into top-level blocks
+   *  (`marked.lexer`) and each block is rendered/cached independently, so an
+   *  unchanged prefix of blocks keeps its DOM node across streaming deltas
+   *  instead of the whole body re-parsing and swapping wholesale (which is
+   *  what causes KaTeX/markdown flicker mid-stream). Default false — the
+   *  default path is unchanged. */
+  streamStable?: boolean;
 }
 
 marked.setOptions({ gfm: true, breaks: true });
 marked.use(markedMath);
+
+/** Top-level block sources for `source`, in document order — the exact strings
+ *  `marked.lexer` re-serializes each top-level token from. Reused by callers that
+ *  need to reason about "blocks" outside this component (e.g. mapping a changed
+ *  line number to a block index for a passage anchor). */
+export function markdownBlocks(source: string): string[] {
+  return marked.lexer(source ?? "").map((t) => t.raw);
+}
+
+/** Module-level cache: block raw source -> parsed HTML, shared across every
+ *  `streamStable` Markdown instance. Capped so a very long session can't grow it
+ *  unbounded; eviction is oldest-first (Map preserves insertion order). */
+const BLOCK_PARSE_CACHE_CAP = 500;
+const blockParseCache = new Map<string, string>();
+
+function cachedParse(raw: string): string {
+  const hit = blockParseCache.get(raw);
+  if (hit !== undefined) return hit;
+  const html = marked.parse(raw, { async: false }) as string;
+  blockParseCache.set(raw, html);
+  if (blockParseCache.size > BLOCK_PARSE_CACHE_CAP) {
+    const oldest = blockParseCache.keys().next().value;
+    if (oldest !== undefined) blockParseCache.delete(oldest);
+  }
+  return html;
+}
+
+/** Vertical rhythm between top-level blocks, replicating the `.ody-prose > * + *`
+ *  cascade (theme.css) at the block-wrapper level — the `streamStable` path
+ *  wraps each block in its own `div`, so those blocks (not the raw `<p>`/`<h*>`
+ *  elements) are the direct children `.ody-prose`'s CSS selectors key off, and
+ *  the heading-aware rules never see them. Token-backed spacing utilities
+ *  (space-2/4/6/8), same source-order precedence as the CSS: current-heading
+ *  size wins, else previous-heading tightens, else the space-4 default. */
+function headingDepth(token: Token | undefined): number | null {
+  return token?.type === "heading" ? token.depth : null;
+}
+
+function blockSpacingClass(
+  prev: Token | undefined,
+  curr: Token,
+  isFirst: boolean,
+): string {
+  if (isFirst) return "mt-0";
+  const currDepth = headingDepth(curr);
+  if (currDepth === 1) return "mt-8";
+  if (currDepth === 2) return "mt-6";
+  if (currDepth === 3 || currDepth === 4) return "mt-6";
+  if (headingDepth(prev) !== null) return "mt-2";
+  return "mt-4";
+}
 
 /** Token-classed copy affordance injected into the top-right of each `pre`. Built
  *  as a detached node (not innerHTML) so the markup stays theme-safe and the click
@@ -46,10 +106,26 @@ function makeCopyButton(): HTMLButtonElement {
  * DOMPurify) before injection.
  */
 export function Markdown(props: MarkdownProps): JSX.Element {
-  const [local] = splitProps(props, ["children", "class", "copyCode"]);
+  const [local] = splitProps(props, [
+    "children",
+    "class",
+    "copyCode",
+    "streamStable",
+  ]);
   const html = createMemo(
     () => marked.parse(local.children ?? "", { async: false }) as string,
   );
+  // Only computed/tracked in streamStable mode — the default path never lexes.
+  const tokens = createMemo(() =>
+    local.streamStable ? marked.lexer(local.children ?? "") : [],
+  );
+  // The `<For>` iterates raw strings, not token objects: `marked.lexer` mints a
+  // fresh token object per call, so iterating tokens directly would make every
+  // block look "new" on every delta (by reference) and defeat the whole point.
+  // Raw source strings for an unchanged prefix are `===`-equal by value across
+  // recomputes, which is what lets `<For>` keep that block's DOM node (and its
+  // already-rendered KaTeX) untouched while only the trailing block re-renders.
+  const blockRaws = createMemo(() => tokens().map((t) => t.raw));
 
   let ref: HTMLDivElement | undefined;
 
@@ -58,6 +134,9 @@ export function Markdown(props: MarkdownProps): JSX.Element {
   //   • wrap each <pre> in a relative `group/code` host + copy button
   //   • wrap each <table> in a scroll host so a wide table scrolls horizontally
   //     instead of bursting its container
+  // Scans the whole container regardless of path — cheap (idempotency check is a
+  // single dataset read per pre/table) and correct for the block path, where only
+  // the trailing block's DOM actually changed per delta.
   const enhance = (): void => {
     if (!ref || local.copyCode === false) return;
     const pres = ref.querySelectorAll<HTMLPreElement>("pre");
@@ -82,13 +161,16 @@ export function Markdown(props: MarkdownProps): JSX.Element {
 
   createEffect(() => {
     const enabled = local.copyCode !== false; // re-runs when toggled (stream end)
-    html(); // track re-parses (streaming deltas) so new blocks get enhanced
+    // Track re-parses (streaming deltas) so new blocks get enhanced.
+    if (local.streamStable) blockRaws();
+    else html();
     // Skip scheduling entirely while disabled (e.g. a streaming answer), so a long
     // stream doesn't re-scan/re-wrap the DOM on every token.
     if (enabled) queueMicrotask(enhance);
   });
 
   // One delegated click handler copies the sibling <code>'s text (already clean).
+  // Shared by both paths — attached once to the outer container.
   const onClick = (e: MouseEvent): void => {
     const target = e.target as HTMLElement;
     const btn = target.closest<HTMLButtonElement>("[data-code-copy]");
@@ -99,15 +181,47 @@ export function Markdown(props: MarkdownProps): JSX.Element {
 
   onCleanup(() => ref?.removeEventListener("click", onClick));
 
+  // Branch the whole element rather than conditionally setting `innerHTML`
+  // alongside JSX children on one node (Solid's `innerHTML` prop writes the DOM
+  // property directly — it can't coexist with rendered children on the same
+  // node). Keeps the default path's element byte-identical to before.
   return (
-    <div
-      ref={(el) => {
-        ref = el;
-        el.addEventListener("click", onClick);
-        queueMicrotask(enhance);
-      }}
-      class={cx("ody-prose", local.class)}
-      innerHTML={html()}
-    />
+    <Show
+      when={local.streamStable}
+      fallback={
+        <div
+          ref={(el) => {
+            ref = el;
+            el.addEventListener("click", onClick);
+            queueMicrotask(enhance);
+          }}
+          class={cx("ody-prose", local.class)}
+          innerHTML={html()}
+        />
+      }
+    >
+      <div
+        ref={(el) => {
+          ref = el;
+          el.addEventListener("click", onClick);
+          queueMicrotask(enhance);
+        }}
+        class={cx("ody-prose", local.class)}
+      >
+        <For each={blockRaws()}>
+          {(raw, i) => (
+            <div
+              data-block-index={i()}
+              class={blockSpacingClass(
+                tokens()[i() - 1],
+                tokens()[i()],
+                i() === 0,
+              )}
+              innerHTML={cachedParse(raw)}
+            />
+          )}
+        </For>
+      </div>
+    </Show>
   );
 }

@@ -270,6 +270,7 @@ def _snapshot_view(snapshot_id: str) -> SnapshotView:
         stats={"added": 1, "modified": 0, "removed": 0},
         preview_artifact_id="a1",
         preview_kind="image",
+        keeper=False,
     )
 
 

@@ -43,6 +43,8 @@ class SnapshotView:
     # `show(file=…)`, both None for a live/auto preview (frontend picks an entry HTML).
     preview_artifact_id: str | None
     preview_kind: str | None
+    # The operator's durable bookmark on this version.
+    keeper: bool
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,20 @@ class WorkspaceHistoryStore:
                 .order_by(WorkspaceSnapshot.created_at)  # type: ignore[arg-type]
             ).all()
             return [_to_view(row) for row in rows]
+
+        return await in_session(self._engine, work)
+
+    async def set_keeper(self, owner_id: str, snapshot_id: str, keeper: bool) -> bool:
+        """Bookmark or unbookmark a version. Returns False if unknown/not owned."""
+
+        def work(session: Session) -> bool:
+            row = session.get(WorkspaceSnapshot, snapshot_id)
+            if row is None or row.owner_id != owner_id:
+                return False
+            row.keeper = keeper
+            session.add(row)
+            session.flush()
+            return True
 
         return await in_session(self._engine, work)
 
@@ -327,6 +343,7 @@ def _to_view(row: WorkspaceSnapshot) -> SnapshotView:
         stats=stats,
         preview_artifact_id=row.preview_artifact_id,
         preview_kind=row.preview_kind,
+        keeper=row.keeper,
     )
 
 

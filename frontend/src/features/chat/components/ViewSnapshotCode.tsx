@@ -1,14 +1,17 @@
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
   For,
   Match,
+  onCleanup,
   Show,
   Switch,
   type JSX,
   type Resource,
 } from "solid-js";
+import { api } from "~/lib/api";
 import {
   CodeBlock,
   DiffView,
@@ -22,9 +25,15 @@ import {
   type SelectOption,
   type TextTone,
 } from "~/ui";
-import { fetchSnapshotDiffs, fetchSnapshotFileText } from "../data";
+import {
+  fetchSnapshotDiffs,
+  fetchSnapshotFiles,
+  fetchSnapshotFileText,
+  snapshotFilePath,
+} from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import type { PriorVersion } from "../viewport";
+import { rememberScroll, setActiveDownload } from "../viewerPersistence";
 
 /** "Compare vs" value for plain code (no diff). */
 const NO_DIFF = "";
@@ -39,48 +48,98 @@ function statusMark(status: SnapshotFile["status"]): string {
   return status === "added" ? "A" : status === "modified" ? "M" : "·";
 }
 
+/** The file's extension, lowercase — `CodeBlock`'s `lang` already resolves
+ *  extensions/short names to a canonical grammar id (`~/ui` `highlight.ts`) and
+ *  no-ops safely on anything unrecognized, so this needs no alias table of its
+ *  own. */
+function langForPath(path: string | null): string | undefined {
+  if (!path) return undefined;
+  return path.split(".").pop()?.toLowerCase();
+}
+
 /**
  * Renders a workspace snapshot's CODE — a left file list (with change-status markers)
  * selecting a file, and a content pane showing either its full source or a unified
- * diff. A "Compare vs" control picks what to diff against: nothing (full code), or any
- * prior version, defaulting to the immediately-previous snapshot. The file list and the
+ * diff. FROM and TO are both freely selectable versions (TO defaults to the entry on
+ * stage, FROM to the version immediately before it) — the backend's per-snapshot diff
+ * endpoint takes any snapshot id as the owning "TO" and any prior id as `base`, so both
+ * ends are real server data, not a client-side approximation. The file list and the
  * selected file are owned by the stage and passed in, so they survive a PREVIEW/CODE
  * flip. The frontend only displays what the snapshot endpoints return; it decides nothing.
  */
 export function ViewSnapshotCode(props: {
   snapshot: ViewSnapshotRef;
   files: Resource<SnapshotFile[]>;
+  /** Retries the owning stage's file-list fetch (armed on `files`'s own refetch);
+   *  only meaningful when TO is the entry on stage — an older TO's list is fetched
+   *  locally below and retries itself via `toFiles`'s own resource. */
+  onRetryFiles?: () => void;
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
   /** Prior snapshots, chronological (oldest → newest); the last is the previous. */
   priorVersions: PriorVersion[];
+  /** Accepted per the ViewStage contract; not yet wired — neither `CodeBlock` nor
+   *  `DiffView` exposes a font-size/wrap knob today, so there's nothing trivial to
+   *  apply them to yet. */
+  fontStep?: number;
+  softWrap?: boolean;
 }): JSX.Element {
   const id = (): string => props.snapshot.snapshotId;
 
-  // The previous snapshot (default compare target), or "" when there is none.
-  const previousId = createMemo(() => {
-    const priors = props.priorVersions;
-    return priors.length ? priors[priors.length - 1].id : NO_DIFF;
-  });
-  // Explicit compare pick; null = follow the default (previous snapshot). Fresh per
-  // version — SnapshotStage is remounted per snapshot id, so this can't carry a stale
-  // base id into a version whose options don't include it.
-  const [base, setBase] = createSignal<string | null>(null);
-  const baseId = createMemo(() => base() ?? previousId());
+  // Every version this entry can stand in for as TO: its priors, then itself
+  // (the default, and the newest option).
+  const allVersions = createMemo<PriorVersion[]>(() => [
+    ...props.priorVersions,
+    { id: id(), label: "This version" },
+  ]);
 
-  // Full source — only when comparing against nothing.
-  const [text] = createResource(
+  // TO — defaults to the entry on stage; freely selectable among any candidate.
+  const [toId, setToId] = createSignal(id());
+  // FROM candidates are every version strictly older than the selected TO.
+  const fromCandidates = createMemo<PriorVersion[]>(() => {
+    const all = allVersions();
+    const i = all.findIndex((v) => v.id === toId());
+    return i <= 0 ? [] : all.slice(0, i);
+  });
+  const defaultFromId = createMemo(
+    () => fromCandidates().at(-1)?.id ?? NO_DIFF,
+  );
+  // Explicit FROM pick; null = follow the default (the version immediately
+  // before TO). Reset whenever TO changes so a stale pick can't outlive it.
+  const [fromPick, setFromPick] = createSignal<string | null>(null);
+  const fromId = createMemo(() => fromPick() ?? defaultFromId());
+
+  const setTo = (v: string): void => {
+    setToId(v);
+    setFromPick(null);
+  };
+
+  // Full source of TO — only when comparing against nothing.
+  const [text, { refetch: refetchText }] = createResource(
     () => {
       const path = props.selectedPath;
-      return baseId() === NO_DIFF && path ? ([id(), path] as const) : undefined;
+      return fromId() === NO_DIFF && path
+        ? ([toId(), path] as const)
+        : undefined;
     },
     ([snapshotId, path]) => fetchSnapshotFileText(snapshotId, path),
   );
 
-  // Diffs against the chosen base — fetched lazily, only when one is selected.
-  const [diffs] = createResource(
+  // TO's own file list — reused from the stage when TO is the entry on stage
+  // (the common case, avoiding a redundant fetch); fetched locally only when
+  // the operator picks an older TO.
+  const [toFiles, { refetch: refetchToFiles }] = createResource(
+    () => (toId() !== id() ? toId() : undefined),
+    fetchSnapshotFiles,
+  );
+
+  // Diffs against the chosen FROM, owned by TO — fetched lazily, only when a
+  // base is selected.
+  const [diffs, { refetch: refetchDiffs }] = createResource(
     () =>
-      baseId() !== NO_DIFF ? ([id(), baseId()] as [string, string]) : undefined,
+      fromId() !== NO_DIFF
+        ? ([toId(), fromId()] as [string, string])
+        : undefined,
     ([snapshotId, b]) => fetchSnapshotDiffs(snapshotId, b),
   );
   const selectedDiff = createMemo(() => {
@@ -88,13 +147,33 @@ export function ViewSnapshotCode(props: {
     return path ? diffs()?.find((d) => d.path === path) : undefined;
   });
 
-  // Compare options: full code, then each prior version (newest first).
-  const compareOptions = createMemo<SelectOption[]>(() => [
+  const toOptions = createMemo<SelectOption[]>(() =>
+    allVersions().map((v) => ({ value: v.id, label: v.label })),
+  );
+  const fromOptions = createMemo<SelectOption[]>(() => [
     { value: NO_DIFF, label: "No diff · full code" },
-    ...[...props.priorVersions]
-      .reverse()
-      .map((v) => ({ value: v.id, label: `Diff vs ${v.label}` })),
+    ...[...fromCandidates()].reverse().map((v) => ({
+      value: v.id,
+      label: `Diff vs ${v.label}`,
+    })),
   ]);
+
+  // The currently selected file downloads from the entry on stage (this
+  // component's own snapshot — independent of whichever TO/FROM is active in
+  // the compare selectors above).
+  createEffect(() => {
+    const path = props.selectedPath;
+    if (!path) {
+      setActiveDownload(null);
+      return;
+    }
+    const snapshotId = id();
+    setActiveDownload({
+      name: path.split("/").pop() ?? path,
+      getBlob: () => api.getBlob(snapshotFilePath(snapshotId, path)),
+    });
+  });
+  onCleanup(() => setActiveDownload(null));
 
   return (
     <div class="flex h-full min-h-0">
@@ -107,7 +186,8 @@ export function ViewSnapshotCode(props: {
         </div>
         <div class="min-h-0 flex-1 overflow-y-auto">
           <ResourceView
-            data={props.files}
+            data={toId() === id() ? props.files : toFiles}
+            onRetry={toId() === id() ? props.onRetryFiles : refetchToFiles}
             loadingLabel="LOADING FILES…"
             isEmpty={(rows) => rows.length === 0}
             emptyMessage="NO FILES"
@@ -133,18 +213,28 @@ export function ViewSnapshotCode(props: {
         </div>
       </div>
 
-      {/* Content — full code or a diff against the chosen base. */}
+      {/* Content — full code or a diff against the chosen FROM. */}
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex items-center gap-2 border-b border-line px-3 py-2">
           <Text variant="micro" tone="dim" class="shrink-0">
-            COMPARE
+            TO
           </Text>
           <Select
-            aria-label="Compare against version"
+            aria-label="Compare TO version"
             class="min-w-0 flex-1"
-            options={compareOptions()}
-            value={baseId()}
-            onChange={(v) => setBase(v)}
+            options={toOptions()}
+            value={toId()}
+            onChange={setTo}
+          />
+          <Text variant="micro" tone="dim" class="shrink-0">
+            FROM
+          </Text>
+          <Select
+            aria-label="Compare FROM version"
+            class="min-w-0 flex-1"
+            options={fromOptions()}
+            value={fromId()}
+            onChange={(v) => setFromPick(v)}
           />
         </div>
         <div class="min-h-0 flex-1">
@@ -156,38 +246,57 @@ export function ViewSnapshotCode(props: {
                 hint="Pick a file to view."
               />
             }
+            keyed
           >
-            <Switch>
-              {/* Full code. */}
-              <Match when={baseId() === NO_DIFF}>
-                <Switch fallback={<LoadingText label="LOADING FILE…" />}>
-                  <Match when={text.error}>
-                    <ErrorState message="Could not load this file." />
+            {(path) => (
+              <div
+                ref={(el) =>
+                  rememberScroll(
+                    el,
+                    () => `${id()}:${toId()}:${fromId()}:${path}`,
+                  )
+                }
+                class="h-full min-h-0 overflow-auto"
+              >
+                <Switch>
+                  {/* Full code. */}
+                  <Match when={fromId() === NO_DIFF}>
+                    <Switch fallback={<LoadingText label="LOADING FILE…" />}>
+                      <Match when={text.error}>
+                        <ErrorState
+                          message="Could not load this file."
+                          onRetry={() => void refetchText()}
+                        />
+                      </Match>
+                      <Match when={text() !== undefined}>
+                        <CodeBlock code={text()!} lang={langForPath(path)} />
+                      </Match>
+                    </Switch>
                   </Match>
-                  <Match when={text() !== undefined}>
-                    <CodeBlock code={text()!} />
-                  </Match>
-                </Switch>
-              </Match>
 
-              {/* Diff against the chosen base. */}
-              <Match when={baseId() !== NO_DIFF}>
-                <Switch fallback={<LoadingText label="LOADING DIFF…" />}>
-                  <Match when={diffs.error}>
-                    <ErrorState message="Could not load this diff." />
-                  </Match>
-                  <Match when={diffs() && selectedDiff()?.diff}>
-                    <DiffView diff={selectedDiff()!.diff} />
-                  </Match>
-                  <Match when={diffs() && !selectedDiff()?.diff}>
-                    <EmptyState
-                      message="NO DIFF"
-                      hint="This file is unchanged from the selected version (or its diff is empty)."
-                    />
+                  {/* Diff against the chosen FROM. */}
+                  <Match when={fromId() !== NO_DIFF}>
+                    <Switch fallback={<LoadingText label="LOADING DIFF…" />}>
+                      <Match when={diffs.error}>
+                        <ErrorState
+                          message="Could not load this diff."
+                          onRetry={() => void refetchDiffs()}
+                        />
+                      </Match>
+                      <Match when={diffs() && selectedDiff()?.diff}>
+                        <DiffView diff={selectedDiff()!.diff} />
+                      </Match>
+                      <Match when={diffs() && !selectedDiff()?.diff}>
+                        <EmptyState
+                          message="NO DIFF"
+                          hint="This file is unchanged between the selected versions (or its diff is empty)."
+                        />
+                      </Match>
+                    </Switch>
                   </Match>
                 </Switch>
-              </Match>
-            </Switch>
+              </div>
+            )}
           </Show>
         </div>
       </div>
