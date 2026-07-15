@@ -225,33 +225,56 @@ function UserTurn(props: {
   );
 }
 
-/** The host portion of a URL, for the compact `[n] title (host)` citation label —
- *  falls back to the raw URL if it doesn't parse. */
+/** The base domain of a URL (host, minus a leading `www.`) for a compact
+ *  citation label — falls back to the raw URL if it doesn't parse. */
 function citationHost(url: string): string {
   try {
-    return new URL(url).host;
+    return new URL(url).host.replace(/^www\./, "");
   } catch {
     return url;
   }
 }
 
+const SOURCES_PREVIEW_COUNT = 3;
+
 /** The web sources a turn's `web_search`/`web_fetch` calls surfaced, as a compact
- *  row of chips beneath the answer — each opens its source in a new tab. */
+ *  row of chips beneath the answer — each opens its source in a new tab. Chips
+ *  show base domains rather than full titles to stay compact, and collapse behind
+ *  a toggle past SOURCES_PREVIEW_COUNT so a research-heavy turn doesn't dominate
+ *  the transcript. */
 function SourcesRow(props: { citations: Citation[] }): JSX.Element {
+  const [expanded, setExpanded] = createSignal(false);
+  const hidden = () =>
+    Math.max(props.citations.length - SOURCES_PREVIEW_COUNT, 0);
+  const shown = () =>
+    expanded()
+      ? props.citations
+      : props.citations.slice(0, SOURCES_PREVIEW_COUNT);
+
   return (
     <div class="flex flex-wrap items-center gap-2">
       <Text variant="label" tone="dim">
         SOURCES
       </Text>
-      <For each={props.citations}>
+      <For each={shown()}>
         {(c, i) => (
           <Chip
             onClick={() => window.open(c.url, "_blank", "noopener,noreferrer")}
           >
-            [{i() + 1}] {c.title ?? citationHost(c.url)} ({citationHost(c.url)})
+            [{i() + 1}] {citationHost(c.url)}
           </Chip>
         )}
       </For>
+      <Show when={hidden() > 0}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading={expanded() ? "chevron-up" : "chevron-down"}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded() ? "SHOW LESS" : `+${hidden()} MORE`}
+        </Button>
+      </Show>
     </div>
   );
 }
