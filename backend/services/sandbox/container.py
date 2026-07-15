@@ -49,6 +49,43 @@ _BACKSTOP_GRACE_S = 15.0
 # container-create timeout (see `session.py`'s `_ensure_up`/`start_preview`).
 IMAGE_PULL_TIMEOUT_S = 300.0
 
+# Error text the container runtime itself emits when it — not the code it was asked
+# to run — is what failed: a dead/broken container, a daemon that's down, or a stale
+# workdir mount (e.g. Docker Desktop on macOS shares bind mounts by *path*, so a
+# host-side rename of a mounted dir kills every later exec with an OCI cwd fault).
+# The CLI prints these to stdout or stderr depending on version, so check both.
+_RUNTIME_FAULT_MARKERS = (
+    "oci runtime exec failed",
+    "oci runtime error",
+    "error response from daemon",
+    "no such container",
+    "container is not running",
+    "unable to start container process",
+    "cannot connect to the docker daemon",
+)
+
+
+def runtime_fault_line(exit_code: int, stdout: str, stderr: str) -> str | None:
+    """The runtime's own error line when a non-zero exit came from the container
+    runtime rather than the executed code, else ``None``.
+
+    Matters because the two failures need opposite handling: a code failure goes
+    back to the model to fix, while a runtime fault is infrastructure — the model
+    can't fix it by editing its code, so the caller should rebuild/retry or report
+    the environment as broken instead of presenting it as the code's fault."""
+    if exit_code == 0:
+        return None
+    for stream in (stderr, stdout):
+        low = stream.lower()
+        for marker in _RUNTIME_FAULT_MARKERS:
+            idx = low.find(marker)
+            if idx == -1:
+                continue
+            start = stream.rfind("\n", 0, idx) + 1
+            end = stream.find("\n", idx)
+            return stream[start : end if end != -1 else len(stream)].strip()
+    return None
+
 
 def with_in_container_timeout(command: list[str], timeout_s: float) -> list[str]:
     """Wrap a command so the time limit is enforced *inside* the container.
@@ -425,10 +462,17 @@ class ContainerSandbox(Sandbox):
             stdin=spec.stdin,
             timeout_s=spec.timeout_s + _BACKSTOP_GRACE_S,
         )
+        stdout = out.decode("utf-8", "replace")
+        stderr = err.decode("utf-8", "replace")
+        fault = runtime_fault_line(exit_code, stdout, stderr)
+        if fault is not None:
+            # The runtime, not the code, failed — report it as an environment
+            # problem the model shouldn't try to "fix" by editing its code.
+            raise SandboxError(f"the container runtime failed to run the code: {fault}")
         return SandboxResult(
             exit_code=exit_code,
-            stdout=out.decode("utf-8", "replace"),
-            stderr=err.decode("utf-8", "replace"),
+            stdout=stdout,
+            stderr=stderr,
             # 124 is the in-container `timeout`'s exit on overrun; the backstop is
             # the rarer hung-CLI case. Either way the run timed out.
             timed_out=backstop_timed_out or exit_code == 124,

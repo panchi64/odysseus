@@ -666,9 +666,11 @@ async def test_a_cold_acquire_claims_a_spare_and_kicks_a_background_replenish(
 
     assert session.is_warm  # adopted the spare's already-running container — no cold start
     assert session.container == spare.container
-    assert session.workspace == manager._work_root / _safe_key("conv-claim")
-    assert session.workspace.exists()  # the neutral dir now lives at the canonical path
-    assert not spare.workspace.exists()  # renamed away, not copied
+    # Adopted in place: the session keeps the spare's own dir — the path the
+    # container's bind mount was established on. Renaming it under the live mount
+    # breaks the mount on VM-backed runtimes (Docker Desktop on macOS).
+    assert session.workspace == spare.workspace
+    assert session.workspace.exists()
     assert not manager._spares  # claimed, not left dangling in the pool
 
     # Claiming kicks a background top-up so the pool returns to `spare_count`.
@@ -718,6 +720,145 @@ async def test_spare_disabled_never_creates_one(tmp_path, monkeypatch):
     session = await manager.acquire("conv-x")  # falls back to the ordinary lazy path
     assert not session.is_warm
     assert not created
+
+
+async def _pooled_manager(tmp_path, monkeypatch, **overrides) -> SandboxSessionManager:
+    """A manager with one ready spare in the pool, no real runtime touched."""
+    _fake_container_create(monkeypatch)
+    vault = await _vault(tmp_path)
+    manager = _manager(
+        tmp_path, vault, backend=_pinned_backend(), spare_count=1, **overrides
+    )
+    manager._image_warmup.mark_done(True)
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    return manager
+
+
+async def test_a_spare_is_not_adopted_over_a_sealed_archive(tmp_path, monkeypatch):
+    # An adopted spare keeps its own empty workspace, which would skip the sealed
+    # restore — and the next reap would then seal that empty dir over the real
+    # archive. A conversation with prior state must take the ordinary cold path.
+    manager = await _pooled_manager(tmp_path, monkeypatch)
+    safe = _safe_key("conv-history")
+    sealed = tmp_path / "sandbox" / "sealed" / f"{safe}.tar.enc.gz"
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_bytes(b"sealed-bytes")
+
+    session = await manager.acquire("conv-history")
+
+    assert not session.is_warm  # ordinary lazy path — the restore stays in play
+    assert session.workspace == manager._work_root / safe
+    assert len(manager._spares) == 1  # the spare stays pooled for a cold key
+
+
+async def test_a_spare_is_not_adopted_over_a_plaintext_workspace(tmp_path, monkeypatch):
+    manager = await _pooled_manager(tmp_path, monkeypatch)
+    safe = _safe_key("conv-files")
+    work = tmp_path / "sandbox" / "work" / safe
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "kept.txt").write_text("data")
+
+    session = await manager.acquire("conv-files")
+
+    assert not session.is_warm
+    assert session.workspace == work
+    assert (work / "kept.txt").exists()
+    assert len(manager._spares) == 1
+
+
+async def test_purge_deletes_an_adopted_spare_workspace(tmp_path, monkeypatch):
+    # An adopted session's workspace is the spare's own dir, not the canonical
+    # path — purge must delete the dir the session actually lives in.
+    async def fake_force_remove(_runtime, name: str) -> None:
+        return None
+
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    manager = await _pooled_manager(tmp_path, monkeypatch)
+    session = await manager.acquire("conv-adopted")
+    assert session.is_warm
+    (session.workspace / "made.txt").write_text("x")
+
+    await manager.purge("conv-adopted")
+
+    assert not manager._sessions
+    assert not session.workspace.exists()
+
+
+# --- exec runtime faults heal by container rebuild, not model flailing --------
+_OCI_FAULT = (
+    b"OCI runtime exec failed: exec failed: unable to start container process: "
+    b"current working directory is outside of container mount namespace root "
+    b"-- possible container breakout detected\r\n"
+)
+
+
+async def _healing_session(tmp_path, monkeypatch, exec_results):
+    """A session whose fake runtime pops one canned (code, stdout) per exec and
+    succeeds every container create; returns (session, calls, removed)."""
+    calls: list[list[str]] = []
+    removed: list[str] = []
+
+    async def fake_run_subprocess(argv, **_kwargs):
+        calls.append(argv)
+        if argv[1] == "exec":
+            code, out = exec_results.pop(0)
+            return False, code, out, b""
+        return False, 0, b"", b""
+
+    async def fake_force_remove(_runtime, name: str) -> None:
+        removed.append(name)
+
+    monkeypatch.setattr(session_mod, "run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_enabled=False)
+    session = await manager.acquire("conv-heal")
+    return session, calls, removed
+
+
+async def test_exec_runtime_fault_rebuilds_the_container_and_retries(tmp_path, monkeypatch):
+    # The failure this guards: a broken warm container (e.g. a stale workdir
+    # mount) used to surface every exec as a "code failure" the model could only
+    # flail at — now the container is rebuilt and the exec retried once.
+    session, calls, removed = await _healing_session(
+        tmp_path, monkeypatch, [(128, _OCI_FAULT), (0, b"healed")]
+    )
+
+    result = await session.run(SandboxSpec(command=["bash", "-c", "true"], timeout_s=5))
+
+    assert result.ok
+    assert result.stdout == "healed"
+    # _ensure_up pre-clears the name once per create; the middle removal is the
+    # heal tearing the broken container down.
+    assert removed.count(session.container) == 3
+    assert len([a for a in calls if a[1] == "run"]) == 2  # create + rebuild
+    assert len([a for a in calls if a[1] == "exec"]) == 2  # fault + retry
+
+
+async def test_exec_runtime_fault_twice_raises_a_legible_sandbox_error(tmp_path, monkeypatch):
+    session, _calls, _removed = await _healing_session(
+        tmp_path, monkeypatch, [(128, _OCI_FAULT), (128, _OCI_FAULT)]
+    )
+
+    with pytest.raises(SandboxError, match="container rebuild"):
+        await session.run(SandboxSpec(command=["bash", "-c", "true"], timeout_s=5))
+
+
+async def test_ordinary_code_failure_is_not_mistaken_for_a_runtime_fault(tmp_path, monkeypatch):
+    session, calls, removed = await _healing_session(
+        tmp_path, monkeypatch, [(1, b"NameError: x is not defined")]
+    )
+
+    result = await session.run(SandboxSpec(command=["python", "-c", "x"], timeout_s=5))
+
+    assert not result.ok
+    assert result.exit_code == 1
+    # Only _ensure_up's one pre-create clear — no heal teardown, no rebuild: the
+    # failure goes back to the model to fix.
+    assert len(removed) == 1
+    assert len([a for a in calls if a[1] == "run"]) == 1
+    assert len([a for a in calls if a[1] == "exec"]) == 1
 
 
 # --- live container (only when a real runtime is present) --------------------

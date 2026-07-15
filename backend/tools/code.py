@@ -14,6 +14,7 @@ never silently falls back to the host.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic_ai import FunctionToolset, RunContext
@@ -41,18 +42,51 @@ _PID_CAP_MARKERS = (
     "fork failed",
 )
 
+# A Python import of a package that isn't installed — the single most common sandbox
+# failure, and the one worth deterministic install mechanics at the failure point.
+_MISSING_MODULE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
+
+# What a fetch/install attempt prints when the run had no egress — the symptom of
+# forgetting the `network=True` tool argument (or putting it inside the command
+# string, where it does nothing).
+_NO_NETWORK_MARKERS = (
+    "temporary failure in name resolution",
+    "name or service not known",
+    "network is unreachable",
+    "could not resolve host",
+    "failed to establish a new connection",
+    "no matching distribution found",
+    "could not find a version that satisfies",
+)
+
 
 def _looks_like_pid_cap(stderr: str) -> bool:
     low = stderr.lower()
     return "fork" in low and any(marker in low for marker in _PID_CAP_MARKERS)
 
 
+def _looks_like_no_network(output: str) -> bool:
+    low = output.lower()
+    return any(marker in low for marker in _NO_NETWORK_MARKERS)
+
+
 def _failure_hint(
-    exit_code: int, timed_out: bool, stderr: str, *, memory: str, pids_limit: int
+    exit_code: int,
+    timed_out: bool,
+    stdout: str,
+    stderr: str,
+    *,
+    memory: str,
+    pids_limit: int,
+    network: bool,
+    sandboxed: bool,
 ) -> str:
     """A short, plain reason for a failed run, naming the actual configured cap that
     was most likely hit — stderr is often empty for a hard kill, so being precise
-    matters more here than for an ordinary non-zero exit."""
+    matters more here than for an ordinary non-zero exit. For the two recoverable
+    sandbox failures (a missing package, a run that needed egress) it states the
+    exact next call to make, because the fix lives in the *tool arguments*, not in
+    the code the model would otherwise keep mutating."""
     if timed_out:
         return "It exceeded the time limit and was killed; reduce the work or raise timeout_s."
     if exit_code == 137:  # SIGKILL
@@ -66,12 +100,37 @@ def _failure_hint(
             "The process crashed (exit 139, SIGSEGV) — a fault in the code itself, "
             "not a resource cap."
         )
+    if sandboxed:
+        missing = _MISSING_MODULE.search(stderr)
+        if missing:
+            module = missing.group(1).split(".")[0]
+            return (
+                f"The Python package providing `{module}` is not installed on your "
+                f"machine. Install it first with a separate call — language='bash', "
+                f"code='pip install {module}' (or the PyPI package that provides that "
+                "module), and network=True — then re-run this code unchanged. "
+                "`network` is an argument of this tool call, not part of the command."
+            )
+        if not network and _looks_like_no_network(stderr + "\n" + stdout):
+            return (
+                "This run had no internet access — egress is off unless the "
+                "`network=True` tool argument is set. Retry with network=True passed "
+                "as an argument of this tool call; writing it inside the command "
+                "string does nothing."
+            )
     if _looks_like_pid_cap(stderr):
         return (
             f"The process could not create more processes/threads (capped at "
             f"{pids_limit}); reduce concurrency (fewer workers/threads/subprocesses)."
         )
-    return f"It exited with a non-zero status ({exit_code}); see stderr for the error."
+    if stderr.strip():
+        return f"It exited with a non-zero status ({exit_code}); see stderr for the error."
+    if stdout.strip():
+        return (
+            f"It exited with a non-zero status ({exit_code}); stderr is empty — "
+            "the error text is in stdout."
+        )
+    return f"It exited with a non-zero status ({exit_code}) and produced no output."
 
 
 def _cap_stream(text: str, max_chars: int, *, sandboxed: bool) -> str:
@@ -94,10 +153,14 @@ def _cap_stream(text: str, max_chars: int, *, sandboxed: bool) -> str:
     )
 
 
-def _exec_result(result, settings: Settings, *, sandboxed: bool) -> dict:
+def _exec_result(
+    result, settings: Settings, *, sandboxed: bool, network: bool = True
+) -> dict:
     """Shape an execution result for the model: an explicit success flag, stdout/stderr
     each capped to half of ``settings.sandbox_output_max_chars`` (see `_cap_stream`), and
-    on failure a legible hint naming which configured cap was likely hit."""
+    on failure a legible hint naming which configured cap was likely hit. ``network``
+    is whether the run actually had egress (the host always does), so the no-egress
+    hint only fires when turning the tool argument on would genuinely fix it."""
     per_stream_cap = settings.sandbox_output_max_chars // 2
     payload = {
         "ok": result.ok,
@@ -110,9 +173,12 @@ def _exec_result(result, settings: Settings, *, sandboxed: bool) -> dict:
         payload["error"] = _failure_hint(
             result.exit_code,
             result.timed_out,
+            result.stdout,
             result.stderr,
             memory=settings.sandbox_memory,
             pids_limit=settings.sandbox_pids_limit,
+            network=network,
+            sandboxed=sandboxed,
         )
     return payload
 
@@ -124,10 +190,10 @@ def _execute_description(settings: Settings) -> str:
     no way to verify, and is precise enough to self-diagnose a 137/pid-cap failure."""
     per_stream_cap = settings.sandbox_output_max_chars // 2
     return (
-        "Run `python` or a `bash` script on your own computer — a private Linux "
-        "machine that is yours alone (it is not the operator's host). It runs a "
-        "Debian userland with `python`, `bash`, and the usual command-line tools on "
-        "the path.\n\n"
+        "Run `python` (the default `language`) or a `bash` script on your own "
+        "computer — a private Linux machine that is yours alone (it is not the "
+        "operator's host). It runs a Debian userland with `python`, `bash`, and "
+        "the usual command-line tools on the path.\n\n"
         "Your working directory is `/work` (where your shell starts). It is writable "
         "and persists across calls in this conversation: files you write and packages "
         "you install stay there, so you can run something, hit an error, fix it, and "
@@ -135,11 +201,15 @@ def _execute_description(settings: Settings) -> str:
         "`/tmp` is small and temporary — keep anything that matters in your working "
         "directory. After a long stretch of inactivity the machine is reclaimed: your "
         "files are kept and restored, but installed packages may need reinstalling.\n\n"
-        "There is no internet unless you set `network=True` — do so to fetch "
-        "packages or data. Install packages the normal way (`pip install <pkg>` with "
-        "`network=True`); they land in your working directory and import on later "
-        "calls without needing the network again. Use it freely for computation, "
-        "scripting, and iterating toward a working result.\n\n"
+        "There is no internet unless you set the `network=True` argument on the "
+        "tool call — do so to fetch packages or data. `network` is an argument of "
+        "this tool, not a shell flag: writing it inside the command string does "
+        "nothing. Install Python packages with `pip install <pkg>` (a `bash` call "
+        "with `network=True`); they land in your working directory and import on "
+        "later calls without needing the network again. pip is the only installer "
+        "here — the OS itself is read-only, so `apt` and other system package "
+        "managers do not work. Use the machine freely for computation, scripting, "
+        "and iterating toward a working result.\n\n"
         f"It is capped at {settings.sandbox_memory} memory, {settings.sandbox_cpus} "
         f"CPU, and {settings.sandbox_pids_limit} processes/threads — exceeding memory "
         "gets the run killed, exceeding the CPU cap only throttles it (the run keeps "
@@ -166,8 +236,8 @@ def code_toolset() -> FunctionToolset[RunDeps]:
     @toolset.tool(description=_execute_description(settings))
     async def execute(
         ctx: RunContext[RunDeps],
-        language: Literal["python", "bash"],
         code: str,
+        language: Literal["python", "bash"] = "python",
         stdin: str | None = None,
         network: bool = False,
         timeout_s: float = 30.0,
@@ -215,7 +285,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             # Any sandbox/infra failure comes back as something the model can act
             # on — it never escapes to crash the run.
             return {"ok": False, "error": f"Your computer could not run the code: {exc}"}
-        return _exec_result(result, settings, sandboxed=True)
+        return _exec_result(result, settings, sandboxed=True, network=network)
 
     @toolset.tool(requires_approval=True)
     async def run_host_command(

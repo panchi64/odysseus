@@ -47,6 +47,7 @@ from .container import (
     hardened_flags,
     prepare_workspace,
     run_subprocess,
+    runtime_fault_line,
     with_in_container_timeout,
 )
 from .preview import PreviewHandle, launch_preview, stop_preview_container
@@ -206,8 +207,8 @@ class SandboxSession:
     def _adopt_running_container(self, *, container: str, runtime: str) -> None:
         """Wire this session onto an already-running container (a claimed spare,
         sandbox-06) instead of the one ``_ensure_up`` would otherwise lazily
-        start. The caller has already renamed the spare's neutral workspace onto
-        this session's canonical ``self.workspace`` path before calling this."""
+        start. The session was constructed over the spare's own workspace dir —
+        the one the container's bind mount was established on."""
         self.container = container
         self._runtime = runtime
         self._running = True
@@ -249,6 +250,33 @@ class SandboxSession:
             await self._await_image_ready()
             return await self._backend.run_in(self.workspace, spec)
         await self._ensure_up()
+        result = await self._exec_once(spec)
+        fault = runtime_fault_line(result.exit_code, result.stdout, result.stderr)
+        if fault is None:
+            return result
+        # The exec failed in the runtime itself (dead/broken container, daemon
+        # hiccup, stale workdir mount) — not in the code it was asked to run. The
+        # workspace holds all durable state and the container is disposable, so
+        # rebuild it and retry once rather than reporting the fault to the model
+        # as if its code had failed (an error it can only flail at).
+        logger.warning(
+            "sandbox %s: exec hit a runtime fault (%s); rebuilding the container",
+            self.key,
+            fault,
+        )
+        await self._kill()
+        self._running = False
+        await self._ensure_up()
+        result = await self._exec_once(spec)
+        fault = runtime_fault_line(result.exit_code, result.stdout, result.stderr)
+        if fault is not None:
+            raise SandboxError(
+                f"the container runtime failed to execute the code even after a "
+                f"container rebuild: {fault}"
+            )
+        return result
+
+    async def _exec_once(self, spec: SandboxSpec) -> SandboxResult:
         backstop_timed_out, code, out, err = await run_subprocess(
             self._exec_argv(spec),
             stdin=spec.stdin,
@@ -462,10 +490,14 @@ class _Spare:
     path (sandbox-06) — same hardening as an ordinary session, ``sleep
     infinity``-parked over a neutral, never-written-to workspace. A cold
     ``acquire()`` claims one instead of paying the container-create round trip:
-    the neutral workspace is renamed onto the conversation's canonical path (a
-    same-filesystem rename, which the running container's already-established
-    bind mount survives — the kernel tracks it by dentry, not by path string) and
-    the container is adopted as-is, no rebind/restart needed."""
+    the session adopts the container *and its workspace directory in place* —
+    the dir is never renamed onto the conversation's canonical path, because a
+    host-side rename under a live bind mount breaks it on VM-backed runtimes
+    (Docker Desktop on macOS shares mounts by path, not dentry; every later
+    ``exec`` then dies with an OCI cwd fault). Only a truly cold conversation
+    (no plaintext workspace, no sealed archive) is eligible — adopting a spare's
+    empty dir over existing state would skip the restore and the next reap would
+    seal the empty dir over the real archive."""
 
     __slots__ = ("container", "workspace", "runtime", "created")
 
@@ -563,7 +595,7 @@ class SandboxSessionManager:
                     return session
                 other = self._tearing_down.get(safe)
                 if other is None:
-                    spare = self._spares.pop() if self._spares else None
+                    spare = self._claim_spare(safe)
                     session = self._new_session(safe, spare=spare)
                     self._sessions[safe] = session
                     session.touch()
@@ -572,30 +604,36 @@ class SandboxSessionManager:
                     return session
             await other.wait()
 
+    def _claim_spare(self, safe: str) -> _Spare | None:
+        """Pop a spare for this key, but only for a **truly cold** conversation —
+        no plaintext workspace and no sealed archive on disk. An adopted spare
+        keeps its own (empty) workspace, so adopting over existing state would
+        bypass ``_ensure_workspace``'s restore, and the next reap would then seal
+        the near-empty spare dir over the real archive, destroying it."""
+        if not self._spares:
+            return None
+        has_state = (self._work_root / safe).exists() or (
+            self._sealed_root / f"{safe}.tar.enc.gz"
+        ).exists()
+        return None if has_state else self._spares.pop()
+
     def _new_session(self, safe: str, *, spare: _Spare | None) -> SandboxSession:
+        # An adopted spare keeps its own workspace dir: its container's bind
+        # mount was established on that path, and renaming a mounted dir on the
+        # host breaks the mount on VM-backed runtimes (Docker Desktop on macOS
+        # resolves shared mounts by path, not dentry) — every later exec would
+        # die with an OCI cwd fault.
         session = SandboxSession(
             safe,
-            workspace=self._work_root / safe,
+            workspace=spare.workspace if spare is not None else self._work_root / safe,
             sealed=self._sealed_root / f"{safe}.tar.enc.gz",
             backend=self._backend,
             vault=self._vault,
             excludes=self._excludes,
             warmup=self._image_warmup,
         )
-        if spare is None:
-            return session
-        try:
-            if session.workspace.exists():
-                shutil.rmtree(session.workspace)  # a stale empty dir from a prior reap
-            session.workspace.parent.mkdir(parents=True, exist_ok=True)
-            spare.workspace.rename(session.workspace)
-        except OSError:
-            logger.warning(
-                "sandbox: could not adopt spare workspace for a new session; discarding it"
-            )
-            asyncio.create_task(force_remove_container(spare.runtime, spare.container))
-            return session  # falls back to the ordinary lazy cold-start path
-        session._adopt_running_container(container=spare.container, runtime=spare.runtime)
+        if spare is not None:
+            session._adopt_running_container(container=spare.container, runtime=spare.runtime)
         return session
 
     async def start_preview(
@@ -693,13 +731,18 @@ class SandboxSessionManager:
         try:
             if session is not None:
                 await session.discard()
-            await asyncio.to_thread(self._purge_disk, safe)
+            workspace = session.workspace if session is not None else None
+            await asyncio.to_thread(self._purge_disk, safe, workspace)
         finally:
             async with self._lock:
                 self._tearing_down.pop(safe, None)
             my_event.set()
 
-    def _purge_disk(self, safe: str) -> None:
+    def _purge_disk(self, safe: str, workspace: Path | None = None) -> None:
+        # A live session's workspace may not sit at the canonical path (an adopted
+        # spare keeps its own dir), so remove both it and the canonical dir.
+        if workspace is not None:
+            shutil.rmtree(workspace, ignore_errors=True)
         shutil.rmtree(self._work_root / safe, ignore_errors=True)
         (self._sealed_root / f"{safe}.tar.enc.gz").unlink(missing_ok=True)
 

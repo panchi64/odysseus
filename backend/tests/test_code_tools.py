@@ -194,6 +194,48 @@ async def test_pid_cap_hint_is_distinguished_from_plain_nonzero(monkeypatch):
     assert "64" in hint  # the actual configured pids_limit, not a guess
 
 
+async def test_missing_module_hint_states_the_exact_install_mechanics():
+    # The failure mode this guards: the model knows it must install but botches
+    # the mechanics (network=True inside the code string, hallucinated pip flags).
+    # The hint states the exact next call, including that `network` is a tool
+    # argument, not part of the command.
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 1, in <module>\n'
+        "ModuleNotFoundError: No module named 'matplotlib'\n"
+    )
+    failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
+    hint = (await _run_canned(result=failing))["error"]
+    assert "pip install matplotlib" in hint
+    assert "network=True" in hint
+    assert "not part of the command" in hint
+
+
+async def test_offline_fetch_hint_points_at_the_network_tool_argument():
+    # A pip/fetch attempt without egress fails with resolution errors; the hint
+    # names the `network=True` tool argument as the fix (the run had network off).
+    stderr = (
+        "WARNING: Retrying... Temporary failure in name resolution\n"
+        "ERROR: No matching distribution found for matplotlib\n"
+    )
+    failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
+    hint = (await _run_canned(result=failing))["error"]
+    assert "network=True" in hint
+    assert "argument" in hint
+
+
+async def test_fallback_hint_points_at_the_stream_that_holds_the_error():
+    # Some runtimes print their error to stdout with an empty stderr — "see
+    # stderr" would send the model looking at nothing.
+    stdout_only = SandboxResult(exit_code=128, stdout="something exploded", stderr="")
+    hint = (await _run_canned(result=stdout_only))["error"]
+    assert "stdout" in hint
+
+    silent = SandboxResult(exit_code=3, stdout="", stderr="")
+    hint = (await _run_canned(result=silent))["error"]
+    assert "no output" in hint
+
+
 async def test_execute_description_states_the_live_config_caps(monkeypatch):
     settings = Settings(
         sandbox_memory="256m",

@@ -9,6 +9,7 @@ import subprocess
 
 import pytest
 
+import services.sandbox.container as container_mod
 from core.config import Settings
 from services.sandbox import (
     ContainerSandbox,
@@ -23,6 +24,7 @@ from services.sandbox.container import (
     discover_runtime,
     hardened_flags,
     prepare_workspace,
+    runtime_fault_line,
     workspace_env_defaults,
 )
 
@@ -47,6 +49,39 @@ def test_result_ok_only_when_clean_exit():
     assert SandboxResult(exit_code=0, stdout="", stderr="").ok
     assert not SandboxResult(exit_code=1, stdout="", stderr="").ok
     assert not SandboxResult(exit_code=0, stdout="", stderr="", timed_out=True).ok
+
+
+# --- runtime faults are the environment's failure, not the code's ------------
+def test_runtime_fault_line_matches_the_runtimes_own_errors():
+    oci = (
+        "OCI runtime exec failed: exec failed: unable to start container process: "
+        "current working directory is outside of container mount namespace root "
+        "-- possible container breakout detected"
+    )
+    assert runtime_fault_line(128, oci, "") == oci  # CLI printed it to stdout
+    assert runtime_fault_line(128, "", oci) == oci  # or to stderr
+    daemon = "Error response from daemon: No such container: odysseus-sbx-x"
+    assert runtime_fault_line(125, "", f"pulled layer\n{daemon}\n") == daemon
+
+
+def test_runtime_fault_line_ignores_ordinary_code_failures():
+    assert runtime_fault_line(0, "OCI runtime exec failed", "") is None  # clean exit
+    assert runtime_fault_line(1, "", "NameError: x is not defined") is None
+    assert runtime_fault_line(127, "", "bash: line 1: nope: command not found") is None
+
+
+async def test_run_in_raises_sandbox_error_on_a_runtime_fault(tmp_path, monkeypatch):
+    # A daemon-level failure of the one-shot path must surface as an environment
+    # problem (SandboxError → "your computer could not run the code"), never as a
+    # pseudo code-failure result the model would try to fix by editing its code.
+    async def fake_run_subprocess(argv, **_kwargs):
+        return False, 125, b"", b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+
+    monkeypatch.setattr(container_mod, "run_subprocess", fake_run_subprocess)
+    backend = ContainerSandbox(runtime="docker")
+
+    with pytest.raises(SandboxError, match="container runtime failed"):
+        await backend.run_in(tmp_path, SandboxSpec(command=["python", "-c", "1"], timeout_s=5))
 
 
 # --- fail-closed detection (the one safety rule) -----------------------------
