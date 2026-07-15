@@ -27,6 +27,7 @@ import {
   TypewriterText,
   confirm,
   confirmChoice,
+  copyToClipboard,
   toast,
   type MenuItem,
 } from "~/ui";
@@ -49,6 +50,8 @@ import { selectedModelLabel, setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
+import { assembleTranscript } from "../blocks";
+import type { ChatMessage } from "../model";
 import {
   activeDownload,
   clampWidth,
@@ -65,6 +68,20 @@ import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { ConversationCompactionToggle } from "../components/ConversationCompactionToggle";
 import { MessageItem } from "../components/MessageItem";
+
+/** Flatten the whole thread to plain text for COPY CONVERSATION — each turn's
+ *  role and content in order, assistant turns including their tool calls/
+ *  results via `assembleTranscript` (same shaping as per-message COPY
+ *  MESSAGE), separated by rules so the export reads as a transcript. */
+function buildConversationTranscript(messages: ChatMessage[]): string {
+  return messages
+    .map((m) => {
+      const label = m.role === "user" ? "OPERATOR" : "ASSISTANT";
+      const body = m.role === "user" ? m.content : assembleTranscript(m.blocks);
+      return `${label} · ${m.createdAt}\n${body}`;
+    })
+    .join("\n\n---\n\n");
+}
 
 /** Chat room: a searchable thread rail and a live streaming conversation. On
  *  entry it resumes the last conversation only while it's warm (recency-gated),
@@ -565,6 +582,13 @@ export function ChatRoomScreen(): JSX.Element {
     }
   };
 
+  const handleCopyConversation = () => {
+    copyToClipboard(
+      buildConversationTranscript(stream.messages),
+      "Conversation",
+    );
+  };
+
   // The panel's JSX is defined once and placed conditionally in either the
   // desktop aside or the fullscreen sheet (never both at once — only one Show
   // branch mounts at a time), so the panel's own state never runs twice.
@@ -701,6 +725,12 @@ export function ChatRoomScreen(): JSX.Element {
                     icon: "refresh",
                     disabled: !currentId(),
                     onSelect: handleRegenerateTitle,
+                  },
+                  {
+                    label: "COPY CONVERSATION",
+                    icon: "copy",
+                    disabled: stream.messages.length === 0,
+                    onSelect: handleCopyConversation,
                   },
                   {
                     label: "DELETE CONVERSATION",
