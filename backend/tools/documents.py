@@ -54,7 +54,12 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         )
         ctx.deps.run.emit(DocumentCreated(document_id=view.id, title=title))
         ctx.deps.run.emit(DocumentDelta(document_id=view.id, text=content))
-        ctx.deps.run.emit(DocumentCommitted(document_id=view.id, version=1))
+        # Version 1 is the document's first version, minted microseconds after the row in
+        # the same atomic create — no other version or snapshot can sort between them — so
+        # the document's ``created_at`` is a safe, inversion-free ordering key here.
+        ctx.deps.run.emit(
+            DocumentCommitted(document_id=view.id, version=1, created_at=view.created_at)
+        )
         return (
             f"Created the document {title!r} (id: {view.id}). "
             "Edit it later with document_edit using this id."
@@ -107,7 +112,7 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         # The find/replace + uniqueness check is the store's job (a domain edit reusable by
         # non-agent callers); the tool only maps its span error to a model-facing retry.
         try:
-            _view, version = await store.replace_span(
+            _view, version, created_at = await store.replace_span(
                 ctx.deps.owner_id,
                 document_id,
                 old_text,
@@ -125,7 +130,11 @@ def document_toolset() -> FunctionToolset[RunDeps]:
                 "so it identifies exactly one span."
             ) from exc
         ctx.deps.run.emit(DocumentDelta(document_id=document_id, text=_view.body))
-        ctx.deps.run.emit(DocumentCommitted(document_id=document_id, version=version))
+        ctx.deps.run.emit(
+            DocumentCommitted(
+                document_id=document_id, version=version, created_at=created_at
+            )
+        )
         return f"Edited {doc.title!r} (now version {version})."
 
     return toolset

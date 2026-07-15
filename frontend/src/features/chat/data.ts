@@ -1294,8 +1294,13 @@ export function createChatStream(
           );
           if (pending) {
             title = pending.title;
+            // Stamp the backend's authoritative mint time (not the pending entry's
+            // fabricated/inherited one), so this version orders in the timeline exactly
+            // as the cold read would — the fix for live-vs-refresh version reordering.
             return prev.map((d) =>
-              d === pending ? { ...d, version: ev.version } : d,
+              d === pending
+                ? { ...d, version: ev.version, createdAt: ev.created_at }
+                : d,
             );
           }
           const last = [...prev]
@@ -1310,7 +1315,7 @@ export function createChatStream(
               title: last?.title,
               origin: "ai",
               body: last?.body ?? "",
-              createdAt: new Date().toISOString(),
+              createdAt: ev.created_at,
             },
           ];
         });

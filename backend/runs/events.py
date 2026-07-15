@@ -164,6 +164,11 @@ class DocumentCommitted(_Body):
     type: Literal["document.committed"] = "document.committed"
     document_id: str
     version: int
+    # The committed version's mint time — the authoritative ordering key, the same
+    # ``DocumentVersion.created_at`` the cold read serves. The frontend orders the View's
+    # versions by it, so a version minted live sorts identically to one read back on
+    # refresh (without it the client had to fabricate a timestamp and could misorder).
+    created_at: datetime
 
 
 # --- View (the conversation's one versioned output surface) ------------------

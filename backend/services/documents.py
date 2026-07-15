@@ -172,17 +172,19 @@ class DocumentStore:
         new_text: str,
         *,
         origin: str = DocumentVersionOrigin.AI,
-    ) -> tuple[DocumentView, int]:
+    ) -> tuple[DocumentView, int, datetime]:
         """Apply a targeted edit — replace the single occurrence of ``old_text`` with
         ``new_text`` — and snapshot the result as a new version. Raises
         :class:`DocumentSpanError` (carrying the count) when ``old_text`` doesn't match
         exactly one span, so the caller can ask for a more precise span. Returns the updated
-        view **and the new version number**, so a caller (the document tool, the edit route)
-        need not re-query the history to report it. The uniqueness check runs against the
-        decrypted body inside the write transaction — the whole check-and-replace is atomic."""
+        view, **the new version number, and that version's ``created_at``** — the authoritative
+        ordering key the ``document.committed`` event carries so a live-minted version sorts
+        the same as one read back on refresh — so a caller (the document tool) need not
+        re-query the history. The uniqueness check runs against the decrypted body inside the
+        write transaction — the whole check-and-replace is atomic."""
         await self._require(owner_id, document_id)
 
-        def work(session: Session) -> tuple[DocumentView, str, int]:
+        def work(session: Session) -> tuple[DocumentView, str, int, datetime]:
             document = session.get(Document, document_id)
             assert document is not None
             body = self._vault.decrypt_str(document.body_enc)
@@ -195,13 +197,14 @@ class DocumentStore:
             document.updated_at = datetime.now(UTC)
             session.add(document)
             session.flush()
-            version = self._snapshot(session, document, origin).version
+            snapshot = self._snapshot(session, document, origin)
             title = self._vault.decrypt_str(document.title_enc)
-            return self._to_view(document, title, new_body), new_body, version
+            view = self._to_view(document, title, new_body)
+            return view, new_body, snapshot.version, snapshot.created_at
 
-        view, new_body, version = await in_session(self._engine, work)
+        view, new_body, version, created_at = await in_session(self._engine, work)
         self._adapter.index_document(owner_id, document_id, new_body)
-        return view, version
+        return view, version, created_at
 
     async def archive(self, owner_id: str, document_id: str) -> DocumentView:
         """Soft-archive (restorable). Drops the document's corpus chunks so an archived

@@ -122,6 +122,10 @@ export interface DocumentCommitted extends Base {
   type: "document.committed";
   document_id: string;
   version: number;
+  // The committed version's authoritative mint time (the same `created_at` the cold
+  // read serves). Order the View's versions by this so a version minted live sorts
+  // identically to one read back on refresh.
+  created_at: string;
 }
 
 // --- View (the conversation's one versioned output surface) ----------------

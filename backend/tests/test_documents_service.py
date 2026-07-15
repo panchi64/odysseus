@@ -218,8 +218,11 @@ async def test_list_user_edited_returns_only_docs_the_operator_last_touched():
 async def test_replace_span_edits_uniquely_and_returns_the_new_version():
     _engine, _vault, _chunks, adapter, store = await _store()
     doc = await store.create(OWNER, "A", "hello world", origin="ai")
-    view, version = await store.replace_span(OWNER, doc.id, "world", "there", origin="ai")
+    view, version, created_at = await store.replace_span(
+        OWNER, doc.id, "world", "there", origin="ai"
+    )
     assert view.body == "hello there" and version == 2
+    assert created_at is not None
 
     with pytest.raises(DocumentSpanError) as absent:
         await store.replace_span(OWNER, doc.id, "zzz", "!", origin="ai")
