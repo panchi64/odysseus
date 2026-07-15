@@ -32,6 +32,8 @@ export function ViewSnapshotPreview(props: {
   onRetryFiles?: () => void;
   /** Manual reload nonce — bumping it reloads the framed entry page in place. */
   reloadKey: number;
+  /** Operator zoom step (-2..+2), applied as whole-page scale on the frame. */
+  fontStep?: number;
 }): JSX.Element {
   const entry = createMemo(() => {
     const list = props.files();
@@ -83,6 +85,7 @@ export function ViewSnapshotPreview(props: {
             src={url()}
             title={entry()!}
             reloadKey={props.reloadKey}
+            fontStep={props.fontStep}
           />
         )}
       </Match>

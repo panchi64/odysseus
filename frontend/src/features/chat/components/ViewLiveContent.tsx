@@ -56,6 +56,8 @@ export function ViewLiveContent(props: {
   live: ViewLiveRef;
   /** Manual reload nonce — bumping it reloads the running server's page in place. */
   reloadKey: number;
+  /** Operator zoom step (-2..+2), applied as whole-page scale on the frame. */
+  fontStep?: number;
 }): JSX.Element {
   const [stopped, setStopped] = createSignal(false);
   const [unreachable, setUnreachable] = createSignal<string | null>(null);
@@ -134,6 +136,7 @@ export function ViewLiveContent(props: {
             src={apiUrl(props.live.url)}
             title={props.live.title ?? "Live view"}
             reloadKey={props.reloadKey}
+            fontStep={props.fontStep}
           />
         </div>
       </div>

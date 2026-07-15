@@ -92,7 +92,11 @@ export function ViewStage(props: {
           across version relabels so the running server's iframe isn't torn down. */}
       <Match when={props.mode === "preview" && props.entry.live}>
         {(live) => (
-          <ViewLiveContent live={live()} reloadKey={props.reloadKey} />
+          <ViewLiveContent
+            live={live()}
+            reloadKey={props.reloadKey}
+            fontStep={props.fontStep}
+          />
         )}
       </Match>
 
@@ -169,6 +173,7 @@ function SnapshotStage(props: {
           files={files}
           onRetryFiles={() => void refetchFiles()}
           reloadKey={props.reloadKey}
+          fontStep={props.fontStep}
         />
       </Match>
 

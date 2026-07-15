@@ -132,6 +132,7 @@ export function ViewVersionContent(props: {
             src={url}
             title={props.title}
             reloadKey={props.reloadKey}
+            fontStep={props.fontStep}
           />
         ))}
       </Match>
