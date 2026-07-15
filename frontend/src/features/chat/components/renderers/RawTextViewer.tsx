@@ -10,6 +10,7 @@ import {
   createResource,
   createSignal,
   For,
+  onCleanup,
   Show,
   type JSX,
 } from "solid-js";
@@ -23,6 +24,7 @@ import {
   Text,
 } from "~/ui";
 import { rememberScroll } from "../../viewerPersistence";
+import { fontStepMetrics } from "./fontStep";
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_LINES = 200_000;
@@ -32,21 +34,6 @@ const MAX_LINES = 200_000;
 // math), so instead of a second virtualization scheme we just cap what's rendered.
 const MAX_WRAP_LINES = 5_000;
 const OVERSCAN_ROWS = 8;
-
-/** fontStep (-2..2) -> {fontSize, lineHeight} in px. Presentation-only zoom; the
- *  line height doubles as the virtualization row height. */
-const FONT_STEPS: Array<{ size: number; line: number }> = [
-  { size: 11, line: 16 },
-  { size: 12, line: 18 },
-  { size: 13, line: 20 },
-  { size: 15, line: 22 },
-  { size: 17, line: 25 },
-];
-
-function fontForStep(step: number): { size: number; line: number } {
-  const clamped = Math.max(-2, Math.min(2, step));
-  return FONT_STEPS[clamped + 2];
-}
 
 interface LoadedText {
   lines: string[];
@@ -79,7 +66,7 @@ export function RawTextViewer(props: {
 }): JSX.Element {
   const [loaded] = createResource(() => props.data, loadText);
 
-  const font = createMemo(() => fontForStep(props.fontStep ?? 0));
+  const font = createMemo(() => fontStepMetrics(props.fontStep));
 
   const lines = createMemo(() => {
     const l = loaded();
@@ -167,12 +154,17 @@ export function RawTextViewer(props: {
 
   let resizeObserver: ResizeObserver | undefined;
   const attachContainer = (el: HTMLDivElement): void => {
+    // softWrap toggling swaps `<Show>` branches and calls this a second time on
+    // the same live component instance — disconnect any prior observer first so
+    // it isn't leaked.
+    resizeObserver?.disconnect();
     containerEl = el;
     setViewportH(el.clientHeight);
     resizeObserver = new ResizeObserver(() => setViewportH(el.clientHeight));
     resizeObserver.observe(el);
     rememberScroll(el, scrollKey);
   };
+  onCleanup(() => resizeObserver?.disconnect());
 
   const onScroll = (e: Event): void => {
     setScrollTop((e.currentTarget as HTMLDivElement).scrollTop);
@@ -211,6 +203,7 @@ export function RawTextViewer(props: {
             <Input
               leading="search"
               placeholder="SEARCH…"
+              aria-label="Search file contents"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
               onKeyDown={onSearchKeydown}

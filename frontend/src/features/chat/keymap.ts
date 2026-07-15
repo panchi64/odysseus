@@ -21,8 +21,16 @@ interface KeymapEntry {
 const registry: KeymapEntry[] = [];
 let attached = false;
 
+/** `navigator.userAgentData` isn't in the standard TS lib yet — a minimal
+ *  structural type instead of `any` keeps this typed without widening. */
+type NavigatorWithUAData = Navigator & {
+  userAgentData?: { platform?: string };
+};
+
 function isMac(): boolean {
   if (typeof navigator === "undefined") return false;
+  const uaPlatform = (navigator as NavigatorWithUAData).userAgentData?.platform;
+  if (uaPlatform !== undefined) return /mac/i.test(uaPlatform);
   return /mac/i.test(navigator.platform || navigator.userAgent);
 }
 

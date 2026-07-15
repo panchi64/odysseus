@@ -35,9 +35,7 @@ export function ViewDocumentCode(props: {
   document: ViewDocumentRef;
   /** Prior committed versions of the same document (oldest → newest). */
   priorVersions: ViewDocumentRef[];
-  /** Accepted per the ViewStage contract; not yet wired — neither `CodeBlock` nor
-   *  `DiffView` exposes a font-size/wrap knob today, so there's nothing trivial to
-   *  apply them to yet. */
+  /** Forwarded to `CodeBlock`/`DiffView` — the panel's zoom/wrap controls. */
   fontStep?: number;
   softWrap?: boolean;
 }): JSX.Element {
@@ -47,6 +45,8 @@ export function ViewDocumentCode(props: {
         <DocumentCodeStage
           document={props.document}
           priorVersions={props.priorVersions}
+          fontStep={props.fontStep}
+          softWrap={props.softWrap}
         />
       )}
     </Show>
@@ -60,6 +60,8 @@ export function ViewDocumentCode(props: {
 function DocumentCodeStage(props: {
   document: ViewDocumentRef;
   priorVersions: ViewDocumentRef[];
+  fontStep?: number;
+  softWrap?: boolean;
 }): JSX.Element {
   // Every version this entry can stand in for as TO: its priors, then itself
   // (the default, and the newest option).
@@ -145,10 +147,19 @@ function DocumentCodeStage(props: {
       <div class="min-h-0 flex-1">
         <Switch>
           <Match when={fromId() === NO_DIFF}>
-            <CodeBlock code={toDoc().body} lang="markdown" />
+            <CodeBlock
+              code={toDoc().body}
+              lang="markdown"
+              fontStep={props.fontStep}
+              softWrap={props.softWrap}
+            />
           </Match>
           <Match when={fromId() !== NO_DIFF}>
-            <DiffView diff={unifiedDiff(fromBody() ?? "", toDoc().body)} />
+            <DiffView
+              diff={unifiedDiff(fromBody() ?? "", toDoc().body)}
+              fontStep={props.fontStep}
+              softWrap={props.softWrap}
+            />
           </Match>
         </Switch>
       </div>

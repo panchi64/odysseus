@@ -32,7 +32,7 @@ import {
   snapshotFilePath,
 } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
-import type { PriorVersion } from "../viewport";
+import { extensionOf, type PriorVersion } from "../viewport";
 import { rememberScroll, setActiveDownload } from "../viewerPersistence";
 
 /** "Compare vs" value for plain code (no diff). */
@@ -46,15 +46,6 @@ function statusTone(status: SnapshotFile["status"]): TextTone {
 }
 function statusMark(status: SnapshotFile["status"]): string {
   return status === "added" ? "A" : status === "modified" ? "M" : "·";
-}
-
-/** The file's extension, lowercase — `CodeBlock`'s `lang` already resolves
- *  extensions/short names to a canonical grammar id (`~/ui` `highlight.ts`) and
- *  no-ops safely on anything unrecognized, so this needs no alias table of its
- *  own. */
-function langForPath(path: string | null): string | undefined {
-  if (!path) return undefined;
-  return path.split(".").pop()?.toLowerCase();
 }
 
 /**
@@ -78,9 +69,7 @@ export function ViewSnapshotCode(props: {
   onSelectPath: (path: string) => void;
   /** Prior snapshots, chronological (oldest → newest); the last is the previous. */
   priorVersions: PriorVersion[];
-  /** Accepted per the ViewStage contract; not yet wired — neither `CodeBlock` nor
-   *  `DiffView` exposes a font-size/wrap knob today, so there's nothing trivial to
-   *  apply them to yet. */
+  /** Forwarded to `CodeBlock`/`DiffView` — the panel's zoom/wrap controls. */
   fontStep?: number;
   softWrap?: boolean;
 }): JSX.Element {
@@ -269,7 +258,12 @@ export function ViewSnapshotCode(props: {
                         />
                       </Match>
                       <Match when={text() !== undefined}>
-                        <CodeBlock code={text()!} lang={langForPath(path)} />
+                        <CodeBlock
+                          code={text()!}
+                          lang={extensionOf(path) ?? undefined}
+                          fontStep={props.fontStep}
+                          softWrap={props.softWrap}
+                        />
                       </Match>
                     </Switch>
                   </Match>
@@ -284,7 +278,11 @@ export function ViewSnapshotCode(props: {
                         />
                       </Match>
                       <Match when={diffs() && selectedDiff()?.diff}>
-                        <DiffView diff={selectedDiff()!.diff} />
+                        <DiffView
+                          diff={selectedDiff()!.diff}
+                          fontStep={props.fontStep}
+                          softWrap={props.softWrap}
+                        />
                       </Match>
                       <Match when={diffs() && !selectedDiff()?.diff}>
                         <EmptyState

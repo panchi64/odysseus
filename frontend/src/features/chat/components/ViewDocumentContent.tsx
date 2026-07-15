@@ -5,8 +5,7 @@ import {
   Show,
   type JSX,
 } from "solid-js";
-import { Button, Markdown, Textarea, toast } from "~/ui";
-import { markdownBlocks } from "~/ui/components/Markdown";
+import { Button, Markdown, markdownBlocks, Textarea, toast } from "~/ui";
 import { lineDiff, type DiffResult } from "~/features/documents/diff";
 import type { ViewDocumentRef } from "../model";
 import { documentKey } from "../viewport";
@@ -16,21 +15,7 @@ import {
   setActiveDownload,
   setViewerDirty,
 } from "../viewerPersistence";
-
-/** fontStep (-2..2) -> px. Same scale `RawTextViewer` uses for the same prop, so
- *  the View panel's zoom reads consistently across renderers. */
-const FONT_STEP_PX: Record<number, number> = {
-  "-2": 11,
-  "-1": 12,
-  "0": 13,
-  "1": 15,
-  "2": 17,
-};
-
-function fontSizePx(step: number | undefined): number {
-  const clamped = Math.max(-2, Math.min(2, step ?? 0));
-  return FONT_STEP_PX[clamped];
-}
+import { fontStepMetrics } from "./renderers/fontStep";
 
 /** First line number in the NEW text touched by the diff — the anchor target.
  *  A pure deletion has no line of its own in the new text, so it resolves to
@@ -230,7 +215,7 @@ export function ViewDocumentContent(props: {
           rememberScroll(el, () => `${itemKey()}-read`);
         }}
         class="min-h-0 flex-1 overflow-auto p-3"
-        style={{ "font-size": `${fontSizePx(props.fontStep)}px` }}
+        style={{ "font-size": `${fontStepMetrics(props.fontStep).size}px` }}
       >
         <Show
           when={editing()}

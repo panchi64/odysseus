@@ -23,23 +23,9 @@ import {
   Text,
 } from "~/ui";
 import { downloadBlob, rememberScroll } from "../../viewerPersistence";
+import { fontStepClass } from "./fontStep";
 
 const ROW_CAP = 5_000;
-
-/** fontStep (-2..2) -> a text-size token utility. No inline font-size — these
- *  map straight onto the app's type-scale tokens (theme.css `--text-*`). */
-const FONT_STEP_CLASS = [
-  "text-micro",
-  "text-label",
-  "text-body",
-  "text-readout",
-  "text-readout-lg",
-] as const;
-
-function fontSizeClass(step: number | undefined): string {
-  const clamped = Math.max(-2, Math.min(2, step ?? 0));
-  return FONT_STEP_CLASS[clamped + 2];
-}
 
 /** Hand-rolled CSV parser: quoted fields, `""` escaped quotes inside a quoted
  *  field, and CRLF/LF line endings. No dependency — the format is simple
@@ -198,7 +184,7 @@ export function CsvTable(props: {
               ref={(el) => rememberScroll(el, scrollKey)}
               class={cx(
                 "min-h-0 flex-1 overflow-auto bg-surface font-mono",
-                fontSizeClass(props.fontStep),
+                fontStepClass(props.fontStep),
               )}
             >
               <table class="w-full border-collapse">

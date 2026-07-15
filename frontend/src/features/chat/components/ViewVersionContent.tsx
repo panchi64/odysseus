@@ -12,9 +12,10 @@ import { api, useAuthedBlobUrl } from "~/lib/api";
 import { bytes } from "~/lib/format";
 import { Button, CodeBlock, ErrorState, LoadingText, Text } from "~/ui";
 import type { ViewPreviewRef } from "../model";
-import { detectContentKind } from "../viewport";
+import { detectContentKind, extensionOf } from "../viewport";
 import { downloadBlob, setActiveDownload } from "../viewerPersistence";
 import { CsvTable } from "./renderers/CsvTable";
+import { fontStepMetrics } from "./renderers/fontStep";
 import { JsonTree } from "./renderers/JsonTree";
 import { MediaPlayer } from "./renderers/MediaPlayer";
 import { PdfViewer } from "./renderers/PdfViewer";
@@ -25,15 +26,6 @@ import { SvgContent } from "./renderers/SvgContent";
 /** Text/code under this size render inline (existing `pre` / `CodeBlock`); at or
  *  over it, the same bytes hand off to `RawTextViewer`'s virtualized rendering. */
 const INLINE_TEXT_THRESHOLD = 200_000;
-
-/** The lowercased extension of `name` (no leading dot), or undefined — used only
- *  to pick a `CodeBlock` highlight language, mirroring `viewport.ts`'s own
- *  (private) extension parsing. */
-function extensionOf(name: string): string | undefined {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return undefined;
-  return name.slice(dot + 1).toLowerCase();
-}
 
 /**
  * Renders a version's static **preview** — the captured file a `show(file=…)` stamped on
@@ -99,7 +91,8 @@ export function ViewVersionContent(props: {
     (b) => b.text(),
   );
 
-  const codeLang = (): string | undefined => extensionOf(props.title);
+  const codeLang = (): string | undefined =>
+    extensionOf(props.title) ?? undefined;
 
   const urlArm = (render: (url: string) => JSX.Element): JSX.Element => (
     <Switch fallback={<LoadingText label="LOADING VIEW…" />}>
@@ -206,12 +199,22 @@ export function ViewVersionContent(props: {
             <Show
               when={kind() === "code"}
               fallback={
-                <pre class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-body text-text">
+                <pre
+                  class="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-text"
+                  style={{
+                    "font-size": `${fontStepMetrics(props.fontStep).size}px`,
+                  }}
+                >
                   {text()}
                 </pre>
               }
             >
-              <CodeBlock code={text() ?? ""} lang={codeLang()} />
+              <CodeBlock
+                code={text() ?? ""}
+                lang={codeLang()}
+                fontStep={props.fontStep}
+                softWrap={props.softWrap}
+              />
             </Show>
           </Match>
         </Switch>

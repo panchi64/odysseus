@@ -37,7 +37,11 @@ export function ViewTimelineRail(props: {
 
   return (
     <Show when={props.items.length >= 2}>
-      <div class="flex shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface">
+      <div
+        role="listbox"
+        aria-label="Version timeline"
+        class="flex shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface"
+      >
         <For each={props.items}>
           {(item) => {
             const active = () => item.key === props.selectedKey;
@@ -49,7 +53,8 @@ export function ViewTimelineRail(props: {
                 type="button"
                 ref={(el) => cellRefs.set(item.key, el)}
                 onClick={() => props.onSelect(item.key)}
-                aria-pressed={active()}
+                role="option"
+                aria-selected={active()}
                 class={cx(
                   "flex shrink-0 flex-col items-start gap-0.5 border-r border-line px-2 py-1.5 text-left transition-colors",
                   active() ? "bg-raised" : "hover:bg-raised",

@@ -21,6 +21,12 @@ export interface ButtonProps extends Omit<
   href?: string;
   type?: "button" | "submit" | "reset";
   block?: boolean;
+  /** Pressed/toggled state for a `variant="ghost"` control acting as a toggle
+   *  (font-size step, wrap, keeper pin, …) — swaps the variant's resting `dim`
+   *  tone for `bright` so brightness alone carries the state, matching the
+   *  rest of the design system's color discipline. Pair with `aria-pressed`.
+   *  No effect on other variants. */
+  active?: boolean;
 }
 
 const variantClass: Record<ButtonVariant, string> = {
@@ -29,6 +35,12 @@ const variantClass: Record<ButtonVariant, string> = {
   ghost: "border border-transparent text-dim hover:text-bright",
   danger: "border border-alert text-alert hover:bg-raised",
 };
+
+/** `variant="ghost"` while `active` — the whole class string is swapped rather
+ *  than appending `text-bright` alongside `text-dim`, so the two never fight
+ *  over cascade order. */
+const GHOST_ACTIVE_CLASS =
+  "border border-transparent text-bright hover:text-bright";
 
 const sizeClass: Record<ButtonSize, string> = {
   sm: "h-6 px-2 gap-1",
@@ -55,9 +67,11 @@ export function Button(props: ButtonProps): JSX.Element {
     "href",
     "type",
     "block",
+    "active",
     "class",
     "children",
   ]);
+  const variant = local.variant ?? "default";
   return (
     <Dynamic
       component={local.href ? "a" : "button"}
@@ -66,7 +80,9 @@ export function Button(props: ButtonProps): JSX.Element {
       class={cx(
         "inline-flex items-center justify-center rounded-ctl text-label uppercase tracking-label font-mono transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        variantClass[local.variant ?? "default"],
+        local.active && variant === "ghost"
+          ? GHOST_ACTIVE_CLASS
+          : variantClass[variant],
         sizeClass[local.size ?? "md"],
         local.block && "w-full",
         local.class,

@@ -3,6 +3,7 @@ import { Button, Chip, Icon, Stack, Text, Textarea, Tooltip } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
+import type { ViewItem } from "../viewport";
 import { MessageActions } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { TurnBlocks } from "./TurnBlocks";
@@ -37,6 +38,13 @@ export interface MessageItemProps {
   /** Re-attach to this turn's run after its transport detached (reconnect
    *  budget exhausted) — the run may still be alive server-side. */
   onReattach?: () => void;
+  /** The conversation's consolidated View list — read-only here, so inline
+   *  transcript chips (`TurnBlocks`) can show the same version/time/NEW
+   *  metadata `ViewTimelineRail` shows for the same item. */
+  viewItems?: () => ViewItem[];
+  /** The key of the newest View item the operator has seen — items after it in
+   *  `viewItems()` render their inline chip tagged NEW. */
+  seenKey?: () => string | null;
 }
 
 /** A single chat turn. User turns fill the row with a distinct `surface`
@@ -59,6 +67,8 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           onTogglePin={props.onTogglePin}
           onOpenInView={props.onOpenInView}
           onReattach={props.onReattach}
+          viewItems={props.viewItems}
+          seenKey={props.seenKey}
         />
       }
     >
@@ -257,6 +267,8 @@ function AssistantTurn(props: {
   onTogglePin?: MessageItemProps["onTogglePin"];
   onOpenInView?: MessageItemProps["onOpenInView"];
   onReattach?: MessageItemProps["onReattach"];
+  viewItems?: MessageItemProps["viewItems"];
+  seenKey?: MessageItemProps["seenKey"];
 }): JSX.Element {
   const m = () => props.message;
   // Tri-state: undefined = each layer keeps its own default; true/false = force
@@ -323,6 +335,8 @@ function AssistantTurn(props: {
             props.onResolveHostCommands?.(m().id, decisions)
           }
           onOpenInView={props.onOpenInView}
+          viewItems={props.viewItems}
+          seenKey={props.seenKey}
         />
         <Show when={m().citations?.length}>
           <SourcesRow citations={m().citations!} />

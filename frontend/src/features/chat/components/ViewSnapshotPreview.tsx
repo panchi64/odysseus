@@ -1,9 +1,19 @@
-import { createMemo, Match, Switch, type JSX, type Resource } from "solid-js";
-import { useAuthedBlobUrl } from "~/lib/api";
+import {
+  createEffect,
+  createMemo,
+  createResource,
+  Match,
+  onCleanup,
+  Switch,
+  type JSX,
+  type Resource,
+} from "solid-js";
+import { api, useAuthedBlobUrl } from "~/lib/api";
 import { EmptyState, ErrorState, LoadingText } from "~/ui";
 import { snapshotFilePath } from "../data";
 import type { SnapshotFile, ViewSnapshotRef } from "../model";
 import { pickEntryHtml } from "../viewport";
+import { setActiveDownload } from "../viewerPersistence";
 import { SandboxedFrame } from "./SandboxedFrame";
 
 /**
@@ -31,6 +41,24 @@ export function ViewSnapshotPreview(props: {
     const path = entry();
     return path ? snapshotFilePath(props.snapshot.snapshotId, path) : undefined;
   });
+
+  // Arm the panel-level download button with the auto-picked entry page's raw
+  // bytes — the blob-URL hook above only exposes an object URL (for the iframe
+  // `src`), so this fetches the same content separately, once per entry path.
+  const [entryBlob] = createResource(
+    () => {
+      const path = entry();
+      return path ? ([props.snapshot.snapshotId, path] as const) : undefined;
+    },
+    ([snapshotId, path]) => api.getBlob(snapshotFilePath(snapshotId, path)),
+  );
+  createEffect(() => {
+    const path = entry();
+    const blob = entryBlob();
+    if (!path || !blob) return;
+    setActiveDownload({ name: path, getBlob: async () => blob });
+  });
+  onCleanup(() => setActiveDownload(null));
 
   return (
     <Switch fallback={<LoadingText label="LOADING PREVIEW…" />}>

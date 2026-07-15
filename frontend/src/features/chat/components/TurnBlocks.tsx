@@ -30,21 +30,46 @@ import {
   type BlockGroup,
   type LayoutItem,
 } from "../blocks";
-import { LIVE_KEY, documentKey, snapshotKey, versionIcon } from "../viewport";
+import {
+  LIVE_KEY,
+  documentKey,
+  snapshotKey,
+  versionIcon,
+  type ViewItem,
+} from "../viewport";
 import { ApprovalCard } from "./ApprovalCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
-import { ViewChip } from "./ViewChip";
+import {
+  classifyViewItem,
+  viewItemTimeLabel,
+  viewItemVersionLabel,
+  ViewChip,
+} from "./ViewChip";
 
 type Resolve = (decisions: ApprovalDecision[]) => void | Promise<void>;
 const noop: Resolve = () => {};
+
+/** A chip's matching `ViewItem` (when the transcript's own View list carries
+ *  one) plus its position in that chronologically-ordered list — the position
+ *  is what `isNew` compares against the "seen through" pointer, rather than a
+ *  fabricated per-render index. */
+interface ChipLookupEntry {
+  item: ViewItem;
+  index: number;
+}
 
 interface RowHandlers {
   onResolveApproval?: Resolve;
   onResolveHostCommands?: Resolve;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
+  /** Keyed lookup of the conversation's View list — lets an inline chip show the
+   *  same version/time metadata `ViewTimelineRail` shows for the same item. */
+  chipLookup?: Map<string, ChipLookupEntry>;
+  /** The matched item's index must exceed this to render its chip's NEW marker. */
+  seenIndex?: number;
 }
 
 /** How a row spaces itself from the one above:
@@ -117,6 +142,24 @@ function AnswerText(props: {
   );
 }
 
+/** A chip's kindWord/meta/isNew, derived from its matching `ViewItem` (when the
+ *  turn's own View list carries one) via the same helpers `ViewTimelineRail`
+ *  uses for the identical data. No match (e.g. cold history whose item fell out
+ *  of the list) falls back to `ViewChip`'s own icon-derived defaults. */
+function chipMeta(
+  lookup: Map<string, ChipLookupEntry> | undefined,
+  seenIndex: number | undefined,
+  key: string,
+): { kindWord?: string; meta?: string; isNew: boolean } {
+  const entry = lookup?.get(key);
+  if (!entry) return { isNew: false };
+  return {
+    kindWord: classifyViewItem(entry.item).word,
+    meta: viewItemVersionLabel(entry.item) ?? viewItemTimeLabel(entry.item),
+    isNew: entry.index > (seenIndex ?? -1),
+  };
+}
+
 /** Render one block group by kind. Approvals and host commands arrive as a
  *  group (consecutive blocks batched) so their cards keep one shared decision. */
 function BlockRow(
@@ -144,12 +187,17 @@ function BlockRow(
       <Match when={g().kind === "view_version"}>
         {(() => {
           const b = g().blocks[0] as ViewVersionBlock;
+          const key = snapshotKey(b.snapshotId);
+          const chip = () => chipMeta(props.chipLookup, props.seenIndex, key);
           return (
             <div class={fullWidthTop(props.top)}>
               <ViewChip
                 icon={versionIcon(b.previewKind)}
                 label={b.title || "Version"}
-                onOpen={() => props.onOpenInView?.(snapshotKey(b.snapshotId))}
+                kindWord={chip().kindWord}
+                meta={chip().meta}
+                isNew={chip().isNew}
+                onOpen={() => props.onOpenInView?.(key)}
               />
             </div>
           );
@@ -158,12 +206,17 @@ function BlockRow(
       <Match when={g().kind === "view_live"}>
         {(() => {
           const live = (g().blocks[0] as ViewLiveBlock).live;
+          const chip = () =>
+            chipMeta(props.chipLookup, props.seenIndex, LIVE_KEY);
           return (
             <div class={fullWidthTop(props.top)}>
               <ViewChip
                 icon="play"
                 label={live.title || "Live view"}
                 live
+                kindWord={chip().kindWord}
+                meta={chip().meta}
+                isNew={chip().isNew}
                 onOpen={() => props.onOpenInView?.(LIVE_KEY)}
               />
             </div>
@@ -173,14 +226,17 @@ function BlockRow(
       <Match when={g().kind === "view_document"}>
         {(() => {
           const b = g().blocks[0] as ViewDocumentBlock;
+          const key = documentKey(b.documentId, b.version);
+          const chip = () => chipMeta(props.chipLookup, props.seenIndex, key);
           return (
             <div class={fullWidthTop(props.top)}>
               <ViewChip
                 icon="file"
                 label={b.title || "Document"}
-                onOpen={() =>
-                  props.onOpenInView?.(documentKey(b.documentId, b.version))
-                }
+                kindWord={chip().kindWord}
+                meta={chip().meta}
+                isNew={chip().isNew}
+                onOpen={() => props.onOpenInView?.(key)}
               />
             </div>
           );
@@ -285,6 +341,8 @@ function WorkLogAccordion(
                 forceOpen={props.forceOpen}
                 onResolveApproval={props.onResolveApproval}
                 onResolveHostCommands={props.onResolveHostCommands}
+                chipLookup={props.chipLookup}
+                seenIndex={props.seenIndex}
               />
             )}
           </For>
@@ -303,7 +361,12 @@ export function TurnBlocks(
     streaming?: boolean;
     /** Expand-all / collapse-all from the turn header. */
     forceOpen?: boolean;
-  } & RowHandlers,
+    /** The conversation's consolidated View list, for the inline chips' own
+     *  version/time/NEW metadata — see `RowHandlers.chipLookup`. */
+    viewItems?: () => ViewItem[];
+    /** The "seen through" pointer — see `RowHandlers.seenIndex`. */
+    seenKey?: () => string | null;
+  } & Omit<RowHandlers, "chipLookup" | "seenIndex">,
 ): JSX.Element {
   // Memoized so a text/thinking delta (which doesn't change block *structure*)
   // doesn't re-group/re-plan, and so `activeId` reuses the same grouping rather
@@ -312,6 +375,22 @@ export function TurnBlocks(
   const layout = createMemo(() =>
     planTurnLayout(groups(), { streaming: props.streaming }),
   );
+  // One key -> {item, index} lookup for the turn's inline chips, built once per
+  // View-list change (not per chip) — mirrors `ViewTimelineRail`'s own use of
+  // `classifyViewItem`/`viewItemVersionLabel`/`viewItemTimeLabel` for the same
+  // data. `seenIndex` is the "seen through" key's position in that same
+  // chronological list (-1 when unset or no longer present, e.g. a rewind).
+  const chipLookup = createMemo(() => {
+    const items = props.viewItems?.() ?? [];
+    const map = new Map<string, ChipLookupEntry>();
+    items.forEach((item, index) => map.set(item.key, { item, index }));
+    return map;
+  });
+  const seenIndex = createMemo(() => {
+    const items = props.viewItems?.() ?? [];
+    const key = props.seenKey?.() ?? null;
+    return key ? items.findIndex((i) => i.key === key) : -1;
+  });
   // While streaming, the trailing group is the live one.
   const activeId = createMemo(() => {
     const gs = groups();
@@ -349,6 +428,8 @@ export function TurnBlocks(
               forceOpen={props.forceOpen}
               onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
+              chipLookup={chipLookup()}
+              seenIndex={seenIndex()}
             />
           ) : (
             <BlockRow
@@ -360,6 +441,8 @@ export function TurnBlocks(
               onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
               onOpenInView={props.onOpenInView}
+              chipLookup={chipLookup()}
+              seenIndex={seenIndex()}
             />
           )
         }

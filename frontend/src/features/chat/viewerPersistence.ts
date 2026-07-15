@@ -19,8 +19,13 @@ export interface ViewerPersistedState {
   fontStep: number;
   softWrap: boolean;
   fullscreen: boolean;
-  /** Items the operator has seen; the header badge is `items.length - seenCount`. */
-  seenCount: number;
+  /** The key of the newest View item the operator has seen, or null when none
+   *  has. The header badge counts items after this key's position in the
+   *  current (chronological) `viewItems()` list — a "seen through" pointer
+   *  rather than a raw count, so it self-corrects when the list shrinks (a
+   *  rewind/delete) and later regrows past a stale count. A key no longer
+   *  present in the list (dropped by a rewind) resolves to "nothing seen". */
+  seenKey: string | null;
 }
 
 const DEFAULT_STATE: ViewerPersistedState = {
@@ -30,7 +35,7 @@ const DEFAULT_STATE: ViewerPersistedState = {
   fontStep: 0,
   softWrap: false,
   fullscreen: false,
-  seenCount: 0,
+  seenKey: null,
 };
 
 const V2_KEY = "ody.chat.viewer.v2";
@@ -106,7 +111,10 @@ export function useViewerPersistence(conversationId: () => string): {
   return { state, patch };
 }
 
-const clampWidth = (w: number): number =>
+/** Clamps a candidate panel width to the draggable range — exported so a live
+ *  drag (e.g. `ChatRoomScreen`'s in-memory width signal) can apply the same
+ *  bounds per pointermove tick without persisting until the drag settles. */
+export const clampWidth = (w: number): number =>
   Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, w));
 
 const [widthSignal, setWidthSignal] = createSignal(

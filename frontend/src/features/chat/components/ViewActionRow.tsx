@@ -1,13 +1,12 @@
 import { Show, type JSX } from "solid-js";
-import { Button, Icon, Text, Tooltip, cx } from "~/ui";
+import { Button, Tooltip } from "~/ui";
 import { activeDownload, downloadBlob } from "../viewerPersistence";
 
 const FONT_MIN = -2;
 const FONT_MAX = 2;
 
-/** A bespoke text-label toggle (WRAP / EXPAND) — brightness carries the active
- *  state, never color, and it's a plain button (not `Button`) so the active tone
- *  isn't fighting the component's own fixed ghost-variant color class. */
+/** A text-label toggle (WRAP / EXPAND) — composes `Button`'s `active` state so
+ *  brightness carries the pressed state, never color. */
 function ToggleAction(props: {
   label: string;
   active: boolean;
@@ -15,17 +14,16 @@ function ToggleAction(props: {
   onToggle: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={props.onToggle}
+    <Button
+      variant="ghost"
+      size="sm"
+      active={props.active}
       aria-label={props.ariaLabel}
       aria-pressed={props.active}
-      class="flex h-6 items-center px-2 transition-colors hover:text-bright"
+      onClick={props.onToggle}
     >
-      <Text variant="label" tone={props.active ? "bright" : "dim"}>
-        {props.label}
-      </Text>
-    </button>
+      {props.label}
+    </Button>
   );
 }
 
@@ -77,18 +75,15 @@ export function ViewActionRow(props: {
           label={props.keeper ? "Unmark keeper" : "Mark as keeper"}
           side="bottom"
         >
-          <button
-            type="button"
-            onClick={() => props.onKeeper?.()}
+          <Button
+            variant="ghost"
+            size="sm"
+            leading="pin"
+            active={Boolean(props.keeper)}
             aria-label="Toggle keeper"
             aria-pressed={Boolean(props.keeper)}
-            class={cx(
-              "flex h-6 w-6 items-center justify-center transition-colors hover:text-bright",
-              props.keeper ? "text-bright" : "text-dim",
-            )}
-          >
-            <Icon name="pin" size={12} />
-          </button>
+            onClick={() => props.onKeeper?.()}
+          />
         </Tooltip>
       </Show>
       <Tooltip label="Smaller text" side="bottom">

@@ -13,6 +13,7 @@ import {
 } from "solid-js";
 import { cx, ErrorState, Icon, LoadingText, Text } from "~/ui";
 import { rememberScroll } from "../../viewerPersistence";
+import { fontStepClass } from "./fontStep";
 
 type JsonValue =
   | string
@@ -25,21 +26,6 @@ type JsonValue =
 const DEFAULT_EXPAND_DEPTH = 2;
 const ARRAY_PAGE = 100;
 const INDENT_PX = 14;
-
-/** fontStep (-2..2) -> a text-size token utility, matching the other renderers'
- *  class map (theme.css `--text-*`). */
-const FONT_STEP_CLASS = [
-  "text-micro",
-  "text-label",
-  "text-body",
-  "text-readout",
-  "text-readout-lg",
-] as const;
-
-function fontSizeClass(step: number | undefined): string {
-  const clamped = Math.max(-2, Math.min(2, step ?? 0));
-  return FONT_STEP_CLASS[clamped + 2];
-}
 
 function isContainer(
   v: JsonValue,
@@ -236,7 +222,7 @@ export function JsonTree(props: {
             ref={(el) => rememberScroll(el, scrollKey)}
             class={cx(
               "h-full overflow-auto bg-surface p-3 font-mono",
-              fontSizeClass(props.fontStep),
+              fontStepClass(props.fontStep),
             )}
           >
             <Show

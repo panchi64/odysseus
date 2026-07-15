@@ -1,5 +1,6 @@
-import { createResource, For, Show, type JSX } from "solid-js";
+import { createMemo, createResource, For, Show, type JSX } from "solid-js";
 import { cx } from "../cx";
+import { fontStepSize } from "./fontScale";
 import { highlightToHtml } from "./highlight";
 
 export interface CodeBlockProps {
@@ -11,6 +12,10 @@ export interface CodeBlockProps {
    *  loading -> the plain, unhighlighted rendering below (zero layout shift —
    *  same table/gutter structure either way). */
   lang?: string;
+  /** Zoom step (-2..+2), matching the View panel's font-size control. Default 0. */
+  fontStep?: number;
+  /** Wraps long lines instead of the default horizontal scroll. Default false. */
+  softWrap?: boolean;
 }
 
 /** A monospace code view with a dim, tabular line-number gutter. Optionally
@@ -38,12 +43,17 @@ export function CodeBlock(props: CodeBlockProps): JSX.Element {
     },
   );
 
+  const size = createMemo(() => fontStepSize(props.fontStep));
+  const cellWrap = (): string =>
+    props.softWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre";
+
   return (
     <div
       class={cx(
         "h-full overflow-auto bg-surface font-mono text-body",
         props.class,
       )}
+      style={{ "font-size": `${size()}px` }}
     >
       <table class="w-full border-collapse">
         <tbody>
@@ -56,14 +66,22 @@ export function CodeBlock(props: CodeBlockProps): JSX.Element {
                 <Show
                   when={highlightedLines()?.[i()]}
                   fallback={
-                    <td class="w-full whitespace-pre py-0 pr-3 align-top text-text">
+                    <td
+                      class={cx(
+                        "w-full py-0 pr-3 align-top text-text",
+                        cellWrap(),
+                      )}
+                    >
                       {line || " "}
                     </td>
                   }
                 >
                   {(html) => (
                     <td
-                      class="w-full whitespace-pre py-0 pr-3 align-top text-text"
+                      class={cx(
+                        "w-full py-0 pr-3 align-top text-text",
+                        cellWrap(),
+                      )}
                       // Shiki-escaped token spans over our own line text — never
                       // the operator's raw markup (`ui/CLAUDE.md`'s innerHTML
                       // rule targets untrusted markup, not our own highlighter

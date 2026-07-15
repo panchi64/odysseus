@@ -99,7 +99,11 @@ export {
   type ComposerProps,
   type ComposerAttachmentsApi,
 } from "./components/Composer";
-export { Markdown, type MarkdownProps } from "./components/Markdown";
+export {
+  Markdown,
+  markdownBlocks,
+  type MarkdownProps,
+} from "./components/Markdown";
 export { CodeBlock, type CodeBlockProps } from "./components/CodeBlock";
 export { DiffView, type DiffViewProps } from "./components/DiffView";
 export { Caret, type CaretProps } from "./components/Caret";

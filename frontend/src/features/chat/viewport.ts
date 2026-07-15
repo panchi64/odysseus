@@ -84,11 +84,16 @@ const CODE_EXTENSIONS = new Set([
   "toml",
   "sql",
 ]);
-const TEXT_EXTENSIONS = new Set(["md", "txt", "log"]);
+// .jsonl is newline-delimited JSON — JSON.parse() always fails on it past the
+// first line, so it must not route to JsonTree's single-document "json" kind;
+// it falls to the plain-text renderer instead.
+const TEXT_EXTENSIONS = new Set(["md", "txt", "log", "jsonl"]);
 
 /** The lowercased extension of `filename` (no leading dot), or null when it has
- *  none. */
-function extensionOf(filename: string | null): string | null {
+ *  none (including a leading-dot dotfile like `.env` or a trailing-dot name
+ *  like `notes.`). The one extension parser for the View — also used to pick a
+ *  `CodeBlock` highlight language (`ViewVersionContent`, `ViewSnapshotCode`). */
+export function extensionOf(filename: string | null): string | null {
   if (!filename) return null;
   const dot = filename.lastIndexOf(".");
   if (dot <= 0 || dot === filename.length - 1) return null;
@@ -109,7 +114,7 @@ export function detectContentKind(
   if (ext === "svg") return "svg";
   if (previewKind === "image") return "image";
   if (ext === "csv") return "csv";
-  if (ext === "json" || ext === "jsonl") return "json";
+  if (ext === "json") return "json";
   if (ext === "pdf") return "pdf";
   if (ext && AUDIO_EXTENSIONS.has(ext)) return "audio";
   if (ext && VIDEO_EXTENSIONS.has(ext)) return "video";

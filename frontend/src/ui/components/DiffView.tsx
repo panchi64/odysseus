@@ -8,6 +8,7 @@ import {
   type JSX,
 } from "solid-js";
 import { cx } from "../cx";
+import { fontStepSize } from "./fontScale";
 
 export interface DiffViewProps {
   /** Unified-diff text. */
@@ -21,6 +22,10 @@ export interface DiffViewProps {
   /** Forwards the scrolling root element — lets a caller hook up scroll-position
    *  persistence (e.g. `rememberScroll`) without DiffView owning that concern. */
   ref?: (el: HTMLDivElement) => void;
+  /** Zoom step (-2..+2), matching the View panel's font-size control. Default 0. */
+  fontStep?: number;
+  /** Wraps long lines instead of the default horizontal scroll. Default false. */
+  softWrap?: boolean;
 }
 
 /** Below this width (px) the two-column split can't breathe, so the layout
@@ -270,11 +275,20 @@ function WordSpans(props: {
   );
 }
 
-function LineRow(props: { line?: Line; class?: string }): JSX.Element {
+function LineRow(props: {
+  line?: Line;
+  class?: string;
+  wrap?: boolean;
+}): JSX.Element {
   const line = () => props.line ?? EMPTY_LINE;
   return (
     <div
-      class={cx("whitespace-pre px-3", TONE_CLASS[line().tone], props.class)}
+      class={cx(
+        props.wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+        "px-3",
+        TONE_CLASS[line().tone],
+        props.class,
+      )}
     >
       <Show when={line().segs} fallback={<>{line().raw || " "}</>}>
         {(segs) => (
@@ -291,12 +305,16 @@ function LineRow(props: { line?: Line; class?: string }): JSX.Element {
   );
 }
 
-function StackedBody(props: { segs: Seg[] }): JSX.Element {
+function StackedBody(props: { segs: Seg[]; wrap?: boolean }): JSX.Element {
   const lines = createMemo(() => stackedLines(props.segs));
-  return <For each={lines()}>{(line) => <LineRow line={line} />}</For>;
+  return (
+    <For each={lines()}>
+      {(line) => <LineRow line={line} wrap={props.wrap} />}
+    </For>
+  );
 }
 
-function SplitBody(props: { segs: Seg[] }): JSX.Element {
+function SplitBody(props: { segs: Seg[]; wrap?: boolean }): JSX.Element {
   const rows = createMemo(() => splitRows(props.segs));
   return (
     <div class="grid grid-cols-2">
@@ -306,14 +324,18 @@ function SplitBody(props: { segs: Seg[] }): JSX.Element {
             when={row.full}
             fallback={
               <>
-                <LineRow line={row.left} />
-                <LineRow line={row.right} class="border-l border-line" />
+                <LineRow line={row.left} wrap={props.wrap} />
+                <LineRow
+                  line={row.right}
+                  wrap={props.wrap}
+                  class="border-l border-line"
+                />
               </>
             }
           >
             {(full) => (
               <div class="col-span-2">
-                <LineRow line={full()} />
+                <LineRow line={full()} wrap={props.wrap} />
               </div>
             )}
           </Show>
@@ -347,6 +369,7 @@ export function DiffView(props: DiffViewProps): JSX.Element {
   const stacked = createMemo(
     () => Boolean(props.stacked) || width() < STACK_BREAKPOINT,
   );
+  const size = createMemo(() => fontStepSize(props.fontStep));
 
   return (
     <div
@@ -358,9 +381,13 @@ export function DiffView(props: DiffViewProps): JSX.Element {
         "h-full overflow-auto bg-surface font-mono text-body",
         props.class,
       )}
+      style={{ "font-size": `${size()}px` }}
     >
-      <Show when={stacked()} fallback={<SplitBody segs={segs()} />}>
-        <StackedBody segs={segs()} />
+      <Show
+        when={stacked()}
+        fallback={<SplitBody segs={segs()} wrap={props.softWrap} />}
+      >
+        <StackedBody segs={segs()} wrap={props.softWrap} />
       </Show>
     </div>
   );

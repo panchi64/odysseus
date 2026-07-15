@@ -1,5 +1,5 @@
 import { Show, type JSX } from "solid-js";
-import { Icon, Text, TypewriterText, cx } from "~/ui";
+import { Button, Text, TypewriterText, cx } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
 
 export interface SessionRowProps {
@@ -59,20 +59,20 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
           {props.meta}
         </Text>
       </button>
-      <button
-        type="button"
-        onClick={() => props.onTogglePin()}
+      <Button
+        variant="ghost"
+        size="sm"
+        leading="pin"
+        active={props.pinned}
         aria-label={props.pinned ? "Unpin thread" : "Pin thread"}
         aria-pressed={props.pinned}
+        onClick={() => props.onTogglePin()}
         class={cx(
-          "shrink-0 px-2 py-2 transition-colors hover:text-bright",
-          props.pinned
-            ? "text-bright"
-            : "text-dim opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
+          "shrink-0",
+          !props.pinned &&
+            "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
         )}
-      >
-        <Icon name="pin" size={12} />
-      </button>
+      />
     </div>
   );
 }

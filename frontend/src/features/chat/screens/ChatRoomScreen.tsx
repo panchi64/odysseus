@@ -51,6 +51,7 @@ import { ViewportPanel } from "../components/ViewportPanel";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
 import {
   activeDownload,
+  clampWidth,
   downloadBlob,
   requestAnchor,
   setViewerDirty,
@@ -236,10 +237,26 @@ export function ChatRoomScreen(): JSX.Element {
   // state on having items so a persisted-open thread that's since lost its items
   // (or a fresh chat that never had any) never shows an empty panel.
   const viewportShown = () => state().open && viewItems().length > 0;
-  const toggleViewport = () => patch({ open: !state().open });
+  // Closing (the false-going transition) is routed through the same unsaved-edit
+  // guard as requestPin/requestTab below — an operator mid-edit shouldn't lose a
+  // draft just because they hit the panel's own Collapse, the header eye, or
+  // mod+shift+v.
+  const toggleViewport = () => {
+    const nextOpen = !state().open;
+    if (!nextOpen && viewerDirty() !== null) {
+      setPendingNav(() => () => patch({ open: false }));
+      return;
+    }
+    patch({ open: nextOpen });
+  };
   const openViewport = () => {
     if (!state().open) patch({ open: true });
   };
+  // The aside's width while dragging: updated per pointermove tick (in-memory
+  // only) so the drag never writes localStorage on every move; `setViewerWidth`
+  // (the persisting setter) is only called once the drag settles, on
+  // `onResizeEnd`. Seeded from the persisted global width.
+  const [liveWidth, setLiveWidth] = createSignal(viewerWidth());
   // The newest version's key (the one collectViewItems flags as latest). Following
   // it (pinnedKey null) means freshly-minted versions keep advancing the view
   // instead of leaving it stranded on a now-stale pick.
@@ -296,15 +313,24 @@ export function ChatRoomScreen(): JSX.Element {
       openViewport();
     }
   });
-  // The badge on the header eye toggle: items the operator hasn't seen yet.
-  // Cleared whenever the panel is visible and following the latest — a pinned
-  // older version leaves later unseen items counted until the operator returns
-  // to following latest.
-  const unseenCount = () => Math.max(0, viewItems().length - state().seenCount);
+  // The badge on the header eye toggle: items minted after the "seen through"
+  // pointer (`seenKey`). Counting from a key's position — not a raw count —
+  // means a rewind that shrinks the list and a later regrow past the old count
+  // can't coincidentally read as "seen"; a dropped key (rewound away) resolves
+  // to index -1, i.e. nothing seen. Cleared (advanced to the newest key)
+  // whenever the panel is visible and following the latest — a pinned older
+  // version leaves later unseen items counted until the operator returns to
+  // following latest.
+  const unseenCount = () => {
+    const items = viewItems();
+    const idx = items.findIndex((i) => i.key === state().seenKey);
+    return Math.max(0, items.length - (idx + 1));
+  };
   createEffect(() => {
     if (viewportShown() && state().pinnedKey === null) {
-      const n = viewItems().length;
-      if (state().seenCount !== n) patch({ seenCount: n });
+      const latest = viewItems().at(-1)?.key ?? null;
+      if (latest !== null && state().seenKey !== latest)
+        patch({ seenKey: latest });
     }
   });
 
@@ -323,9 +349,16 @@ export function ChatRoomScreen(): JSX.Element {
   const asideOpen = () => viewportShown() && !sheetOpen();
   let sheetTrigger: HTMLButtonElement | undefined;
   const closeSheet = () => {
-    if (isDesktop()) patch({ fullscreen: false });
-    else patch({ fullscreen: false, open: false });
-    sheetTrigger?.focus();
+    const run = () => {
+      if (isDesktop()) patch({ fullscreen: false });
+      else patch({ fullscreen: false, open: false });
+      sheetTrigger?.focus();
+    };
+    if (viewerDirty() !== null) {
+      setPendingNav(() => run);
+      return;
+    }
+    run();
   };
 
   // Focus: the panel container (either mount) and the transcript scroll
@@ -347,7 +380,11 @@ export function ChatRoomScreen(): JSX.Element {
     const items = viewItems();
     if (items.length === 0) return;
     const idx = items.findIndex((i) => i.key === resolvedViewKey());
-    const target = items[Math.max(0, idx - 1)];
+    // A missing key (a persisted pin whose version no longer exists) follows
+    // latest, same as pinNext's fallback — so "previous" steps back from the
+    // newest item instead of jumping to the oldest.
+    const effIdx = idx === -1 ? items.length - 1 : idx;
+    const target = items[Math.max(0, effIdx - 1)];
     if (target) selectView(target.key);
   };
   const pinNext = () => {
@@ -407,7 +444,7 @@ export function ChatRoomScreen(): JSX.Element {
       combo: "escape",
       when: () => panelHasFocus() && !otherDialogOpen(),
       run: () => {
-        if (state().fullscreen) closeSheet();
+        if (sheetOpen()) closeSheet();
         else scrollEl?.focus();
       },
     },
@@ -531,7 +568,11 @@ export function ChatRoomScreen(): JSX.Element {
   // The panel's JSX is defined once and placed conditionally in either the
   // desktop aside or the fullscreen sheet (never both at once — only one Show
   // branch mounts at a time), so the panel's own state never runs twice.
-  const renderPanel = () => (
+  // `onClose` is passed in per mount site: the aside's own Collapse just
+  // toggles the panel, but the sheet's Collapse (routed through the same
+  // ViewActionRow) must reset `fullscreen` and return focus to the trigger —
+  // `closeSheet` does both, `toggleViewport` does neither.
+  const renderPanel = (onClose: () => void) => (
     <ViewportPanel
       items={viewItems()}
       selectedKey={state().pinnedKey}
@@ -544,7 +585,7 @@ export function ChatRoomScreen(): JSX.Element {
       onToggleWrap={() => patch({ softWrap: !state().softWrap })}
       fullscreen={state().fullscreen}
       onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
-      onClose={toggleViewport}
+      onClose={onClose}
       onKeeper={toggleKeeper}
       onSaveDocument={stream.saveDocumentEdit}
       pendingNav={pendingNav() !== null}
@@ -684,7 +725,7 @@ export function ChatRoomScreen(): JSX.Element {
             ref={scrollEl}
             tabindex={-1}
             onScroll={onScroll}
-            class="min-h-0 flex-1 overflow-y-auto py-2 outline-none"
+            class="min-h-0 flex-1 overflow-y-auto py-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
           >
             <Show
               when={stream.messages.length}
@@ -709,6 +750,8 @@ export function ChatRoomScreen(): JSX.Element {
                     }
                     onTogglePin={() => void stream.toggleMessagePin(message.id)}
                     onOpenInView={openViewTo}
+                    viewItems={viewItems}
+                    seenKey={() => state().seenKey}
                     onReattach={() => {
                       if (message.runId)
                         void stream.reattachRun(message.runId, {
@@ -770,14 +813,15 @@ export function ChatRoomScreen(): JSX.Element {
       <Show when={asideOpen()}>
         <ResizeHandle
           aria-label="Resize viewport panel"
-          onResize={(dx) => setViewerWidth(viewerWidth() - dx)}
+          onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
+          onResizeEnd={() => setViewerWidth(liveWidth())}
           class="hidden lg:block"
         />
         <aside
           class="hidden shrink-0 lg:block"
-          style={{ width: `${viewerWidth()}px` }}
+          style={{ width: `${liveWidth()}px` }}
         >
-          {renderPanel()}
+          {renderPanel(toggleViewport)}
         </aside>
       </Show>
 
@@ -786,6 +830,7 @@ export function ChatRoomScreen(): JSX.Element {
           <div
             role="dialog"
             aria-modal="true"
+            aria-labelledby="view-sheet-title"
             data-view-sheet
             class="fixed inset-0 z-50 flex flex-col bg-bg"
           >
@@ -798,8 +843,13 @@ export function ChatRoomScreen(): JSX.Element {
               >
                 BACK TO CHAT
               </Button>
+              <span id="view-sheet-title">
+                <Text variant="label" tone="bright">
+                  VIEW
+                </Text>
+              </span>
             </header>
-            <div class="min-h-0 flex-1">{renderPanel()}</div>
+            <div class="min-h-0 flex-1">{renderPanel(closeSheet)}</div>
           </div>
         </Portal>
       </Show>
