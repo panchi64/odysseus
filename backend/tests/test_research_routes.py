@@ -129,6 +129,42 @@ async def test_intake_rejects_empty_question(monkeypatch):
         assert resp.status_code == 422
 
 
+def _break_background_resolution(monkeypatch, exc: Exception) -> None:
+    """Make the background (utility→main) resolution the intake path hits first fail
+    with ``exc`` — a stand-in for a misconfigured registry (no model bound, or a
+    stale/deleted endpoint id)."""
+    from services.registry import ModelRegistry
+
+    async def resolve_background(self, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(ModelRegistry, "resolve_background", resolve_background)
+
+
+async def test_intake_maps_degraded_registry_to_503(monkeypatch):
+    from core.exceptions import DegradedCapabilityError
+
+    patch_model_resolution(monkeypatch)
+    _break_background_resolution(
+        monkeypatch,
+        DegradedCapabilityError("endpoint 'LM Studio' has no model configured"),
+    )
+    async with client_app() as (client, _app):
+        resp = await client.post("/research/intake", json={"question": "what to research"})
+        assert resp.status_code == 503, resp.text
+        assert "LM Studio" in resp.json()["detail"]
+
+
+async def test_intake_maps_stale_endpoint_id_to_404(monkeypatch):
+    from core.exceptions import NotFoundError
+
+    patch_model_resolution(monkeypatch)
+    _break_background_resolution(monkeypatch, NotFoundError("endpoint 'abc' not found"))
+    async with client_app() as (client, _app):
+        resp = await client.post("/research/intake", json={"question": "what to research"})
+        assert resp.status_code == 404, resp.text
+
+
 # --- refine ----------------------------------------------------------------------------
 
 

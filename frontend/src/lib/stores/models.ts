@@ -4,13 +4,18 @@
  *  source of truth (and a single `/models/endpoints` fetch).
  *
  *  An *endpoint* is a provider connection; its models are discovered at runtime
- *  from the provider (`GET /models/endpoints/{id}/models`). The selection is held
- *  structured (`{endpointId, model}`) and JSON-persisted; the `endpointId::model`
- *  composite exists only at the picker boundary (the Combobox needs one string
- *  per option), so a model id containing `::` never round-trips through storage.
- *  The backend re-resolves and is the authority — this is a presentation echo. */
+ *  from the provider (`GET /models/endpoints/{id}/models`). The chat model *is* the
+ *  backend `main` role binding: the picker reads it from `/models/roles` and writes
+ *  it back with `PUT /models/roles/main` (single endpoint + pinned model), so the
+ *  same fact every server-initiated consumer resolves (research, tasks, titling) is
+ *  the one the operator picked — no device-local authoritative state. The selection
+ *  is held structured (`{endpointId, model}`); the `endpointId::model` composite
+ *  exists only at the picker boundary (the Combobox needs one string per option),
+ *  so a model id containing `::` never round-trips. The Settings ROLE BINDINGS panel
+ *  writes the same binding — one source, two UIs. */
 
 import {
+  createComputed,
   createMemo,
   createResource,
   createRoot,
@@ -18,7 +23,6 @@ import {
   type Resource,
 } from "solid-js";
 import { api } from "~/lib/api";
-import { readLS, removeLS, writeLS } from "~/lib/storage";
 import { useSession } from "~/lib/stores/session";
 
 /** A specific model on a specific endpoint — the unit of selection. */
@@ -116,21 +120,22 @@ function decodeValue(value: string): ModelSelection | null {
   return endpointId && model ? { endpointId, model } : null;
 }
 
-/* ── Sticky selection (structured, JSON-persisted) ─────────────────────────── */
+/* ── The `main` binding (the backend source of truth) ──────────────────────── */
 
-const MODEL_KEY = "ody.chat.model";
+interface RoleViewDTO {
+  endpoint_ids: string[];
+  model: string | null;
+}
 
-function readSelection(): ModelSelection | null {
-  const raw = readLS(MODEL_KEY);
-  if (!raw) return null;
-  try {
-    const o = JSON.parse(raw) as Partial<ModelSelection>;
-    return o.endpointId && o.model
-      ? { endpointId: o.endpointId, model: o.model }
-      : null;
-  } catch {
-    return null;
-  }
+/** The chat model = the backend `main` role binding's head endpoint + pinned
+ *  model. `main` is single-endpoint (the picker overwrites the whole binding), so
+ *  the head is the only endpoint; a binding with no pinned model or no endpoint is
+ *  not yet a concrete pick (null) — the picker then displays the first available. */
+async function fetchMainSelection(): Promise<ModelSelection | null> {
+  const roles = await api.get<Record<string, RoleViewDTO>>("/models/roles");
+  const main = roles.main;
+  const endpointId = main?.endpoint_ids?.[0];
+  return endpointId && main.model ? { endpointId, model: main.model } : null;
 }
 
 /* ── Backend DTOs + mappers ────────────────────────────────────────────────── */
@@ -252,9 +257,21 @@ function statusOf(r: EndpointResult): DiscoveryStatus {
 const store = createRoot(() => {
   const session = useSession();
 
-  const [selection, setSelection] = createSignal<ModelSelection | null>(
-    readSelection(),
+  // The chat model is the backend `main` role binding — the single source of
+  // truth. `selection` is the local echo: seeded/reconciled from the binding and
+  // moved optimistically by a pick (which writes the binding back).
+  const [selection, setSelection] = createSignal<ModelSelection | null>(null);
+  const [rolesTick, setRolesTick] = createSignal(1);
+  const [mainBinding] = createResource(
+    () => (session.isAuthenticated ? rolesTick() : false),
+    fetchMainSelection,
   );
+  // Reconcile the echo with the backend binding whenever it (re)loads — on first
+  // unlock, after our own optimistic write, and after a Settings edit refreshes it.
+  // Only on `ready` (not mid-refetch), so an in-flight optimistic pick isn't clobbered.
+  createComputed(() => {
+    if (mainBinding.state === "ready") setSelection(mainBinding.latest ?? null);
+  });
 
   // The endpoint catalog — gated on unlock (a pre-auth call would 401); the tick
   // lets a write (create/update/delete) force a re-read, which cascades to
@@ -360,6 +377,7 @@ const store = createRoot(() => {
   return {
     selection,
     setSelection,
+    refreshRoles: () => setRolesTick((t) => t + 1),
     endpoints,
     setEndpointsTick,
     groups,
@@ -376,15 +394,42 @@ const store = createRoot(() => {
  *  `effectiveValue()` for display and `effectiveSelection()` for sending. */
 export const selectedModel = store.selection;
 
-export function setSelectedModel(sel: ModelSelection | null): void {
-  store.setSelection(sel);
-  if (sel) writeLS(MODEL_KEY, JSON.stringify(sel));
-  else removeLS(MODEL_KEY);
+/** Persist the chat model by writing the backend `main` binding (single endpoint +
+ *  pinned model), moving the local echo optimistically and reconciling from the
+ *  backend after — rolling the echo back if the write fails. `main` is
+ *  single-endpoint, so this overwrites the whole binding. A null pick is a no-op
+ *  write (the picker never clears the binding). */
+export async function setSelectedModel(
+  sel: ModelSelection | null,
+): Promise<void> {
+  if (!sel) return;
+  const previous = store.selection();
+  store.setSelection(sel); // optimistic
+  try {
+    await api.put("/models/roles/main", {
+      endpoint_ids: [sel.endpointId],
+      model: sel.model,
+    });
+    store.refreshRoles(); // reconcile with the persisted binding
+  } catch (e) {
+    store.setSelection(previous); // rollback
+    store.refreshRoles();
+    throw e;
+  }
 }
 
-/** Combobox onChange adapter: decode the option value into a structured pick. */
+/** Combobox onChange adapter: decode the option value into a structured pick.
+ *  Fire-and-forget — the optimistic echo (and its rollback on failure) is the UX. */
 export function selectModelByValue(value: string): void {
-  setSelectedModel(decodeValue(value));
+  void setSelectedModel(decodeValue(value)).catch((e) =>
+    console.error("failed to persist model selection", e),
+  );
+}
+
+/** Re-read the backend `main` binding into the picker — call after another surface
+ *  (Settings ROLE BINDINGS) writes `main`, so the top-bar picker reflects it live. */
+export function refreshMainSelection(): void {
+  store.refreshRoles();
 }
 
 /** Encode a structured selection into the composite string the picker uses as a

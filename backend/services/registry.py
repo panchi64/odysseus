@@ -316,7 +316,14 @@ class ModelRegistry:
         """The ordered, decrypted endpoint specs ``role`` resolves to: a
         per-conversation ``main`` override → the role's own chain. Shared by
         :meth:`resolve` (which builds a model) and :meth:`resolve_detailed` (which
-        also derives reasoning-off settings), so both see identical resolution."""
+        also derives reasoning-off settings), so both see identical resolution.
+
+        The role's **pinned model** is applied to the chain's primary (head)
+        endpoint — a stored binding is thus self-describing, so background /
+        server-initiated resolution (research, tasks, titling) sees the same model
+        the operator pinned, not only the per-conversation override path. The pin
+        names a model served by the head's provider, so it can't describe a fallback
+        tail; tail endpoints keep their own default."""
         if role not in llm.ROLES:
             raise ValueError(f"unknown model role: {role!r}")
 
@@ -330,7 +337,7 @@ class ModelRegistry:
                 raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is disabled")
             return [self._to_spec(endpoint, role, model_override=override_model)]
 
-        chain_ids = await self.get_role(owner_id, role)
+        chain_ids, pinned_model = await self.get_role_binding(owner_id, role)
         if not chain_ids:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
@@ -342,7 +349,11 @@ class ModelRegistry:
             raise DegradedCapabilityError(
                 f"all endpoints bound to role {role!r} are disabled"
             )
-        return [self._to_spec(endpoint, role) for endpoint in live]
+        # Pin applies to the head only; the tail falls back on each endpoint's default.
+        return [
+            self._to_spec(endpoint, role, model_override=pinned_model if i == 0 else None)
+            for i, endpoint in enumerate(live)
+        ]
 
     async def resolve(
         self,

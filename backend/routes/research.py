@@ -33,7 +33,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -46,6 +47,7 @@ from sqlmodel import Session, select
 
 from core.config import get_settings
 from core.db import in_session
+from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.untrusted import wrap_untrusted
 from core.vault import Vault
 from models._fields import utcnow
@@ -180,6 +182,21 @@ def _build_context(
     return "\n\n".join(parts)
 
 
+@contextmanager
+def _model_errors_to_http() -> Iterator[None]:
+    """Map a misconfigured model registry to a clean HTTP status, exactly as
+    ``chat.py`` does at run submission: a stale/deleted endpoint id → 404, an
+    otherwise-degraded capability (no model bound, no native tool-calling, every
+    endpoint in the chain disabled) → 503. Without this the research surface's
+    model resolution surfaces registry misconfiguration as an unhandled 500."""
+    try:
+        yield
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="model endpoint not found") from None
+    except DegradedCapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 async def _clarify_or_plan(
     request: Request, *, question: str, context: str, force_plan: bool
 ) -> tuple[list[str] | None, ResearchPlan | None]:
@@ -188,13 +205,15 @@ async def _clarify_or_plan(
     and no feedback forces a plan straight from whatever context exists)."""
     registry = deps.models(request)
     if not force_plan:
-        background = await registry.resolve_background(owner_id=OPERATOR_ID)
+        with _model_errors_to_http():
+            background = await registry.resolve_background(owner_id=OPERATOR_ID)
         verdict = await _judge_clarification(
             background.model, background.reasoning_off, question=question, context=context
         )
         if verdict.needs_clarification and verdict.questions:
             return verdict.questions[:_MAX_CLARIFYING_QUESTIONS], None
-    main = await registry.resolve_detailed("main", owner_id=OPERATOR_ID)
+    with _model_errors_to_http():
+        main = await registry.resolve_detailed("main", owner_id=OPERATOR_ID)
     # No conversation to inherit per-conversation settings from at this pre-run
     # stage either — deliberately `None`, not an oversight (see `start`'s
     # `research_deps.main_settings`).
@@ -543,8 +562,9 @@ async def _start_claimed(research_id: str, request: Request) -> ResearchOut:
 
     settings = get_settings()
     registry = deps.models(request)
-    main = await registry.resolve_detailed("main", owner_id=OPERATOR_ID)
-    background = await registry.resolve_background(owner_id=OPERATOR_ID)
+    with _model_errors_to_http():
+        main = await registry.resolve_detailed("main", owner_id=OPERATOR_ID)
+        background = await registry.resolve_background(owner_id=OPERATOR_ID)
     research_deps = ResearchDeps(
         owner_id=OPERATOR_ID,
         main_model=main.model,

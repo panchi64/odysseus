@@ -158,7 +158,7 @@ export async function connectAndSelectEndpoint(
       : preset.suggestedModel;
 
   if (model) {
-    setSelectedModel({ endpointId, model });
+    void setSelectedModel({ endpointId, model });
     toast.success(`Connected "${preset.name}" — using ${model}.`);
   } else {
     // Connected, but nothing is selectable: the provider advertised no models and

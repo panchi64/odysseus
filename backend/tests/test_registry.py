@@ -112,6 +112,53 @@ async def test_modelless_endpoint_without_override_is_degraded():
         await reg.resolve("main", owner_id=OWNER)
 
 
+async def test_role_pinned_model_resolves_a_modelless_endpoint():
+    """A discovery-only endpoint (no default model) is resolvable once the role pins
+    a model — the stored binding is self-describing, so resolution needs no
+    per-conversation override. This is the fact server-initiated callers (research,
+    tasks, titling) depend on, since they never carry the picker's override."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1")  # no model
+    await reg.set_role(OWNER, "main", [ep.id], model="qwen3-32b")
+
+    model = await reg.resolve("main", owner_id=OWNER)  # no override
+    assert isinstance(model, OpenAIChatModel)
+    assert model.model_name == "qwen3-32b"
+
+    # Same for a bound utility on a modelless endpoint.
+    util = await reg.create_endpoint(OWNER, name="u", base_url="http://u/v1")
+    await reg.set_role(OWNER, "utility", [util.id], model="qwen3-4b")
+    util_model = await reg.resolve("utility", owner_id=OWNER)
+    assert isinstance(util_model, OpenAIChatModel)
+    assert util_model.model_name == "qwen3-4b"
+
+
+async def test_role_pinned_model_applies_to_head_only_in_a_chain():
+    """The role's single pinned model names a model on the head provider, so it
+    applies to the chain head only; a fallback tail keeps its own default."""
+    reg = await _registry()
+    head = await reg.create_endpoint(OWNER, name="head", base_url="http://h/v1")  # no default
+    tail = await reg.create_endpoint(OWNER, name="tail", base_url="http://t/v1", model="tail-m")
+    await reg.set_role(OWNER, "utility", [head.id, tail.id], model="head-pinned")
+
+    model = await reg.resolve("utility", owner_id=OWNER)
+    assert isinstance(model, FallbackModel)
+    assert [m.model_name for m in model.models] == ["head-pinned", "tail-m"]
+
+
+async def test_resolve_background_uses_main_pinned_model_when_utility_unbound():
+    """The reported crash path: utility unbound, main on a discovery-only endpoint.
+    Background resolution degrades utility→main and must pick up main's pinned model
+    — no override in play — instead of raising 'no model configured'."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(OWNER, name="m", base_url="http://m/v1")  # no default model
+    await reg.set_role(OWNER, "main", [ep.id], model="qwen3-32b")
+
+    resolved = await reg.resolve_background(owner_id=OWNER)  # no override — as research calls it
+    assert isinstance(resolved.model, OpenAIChatModel)
+    assert resolved.model.model_name == "qwen3-32b"
+
+
 async def test_unconfigured_role_is_degraded():
     reg = await _registry()
     # No endpoints, no bindings → degraded; the registry is the only source of

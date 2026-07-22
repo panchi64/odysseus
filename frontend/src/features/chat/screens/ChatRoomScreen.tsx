@@ -195,7 +195,7 @@ export function ChatRoomScreen(): JSX.Element {
     if (draft) {
       // Only adopt an explicit pick — an empty draft (discovery not yet resolved
       // on the overview) must not clobber the operator's sticky selection.
-      if (draft.model) setSelectedModel(draft.model);
+      if (draft.model) void setSelectedModel(draft.model);
       setCurrentId(null);
       queueMicrotask(() => void stream.send(draft.text, draft.attachmentIds));
       markWarmResolved();

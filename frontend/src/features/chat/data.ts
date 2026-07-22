@@ -731,13 +731,11 @@ export async function renameConversation(
  *  assistant's replies), then this reveals the result with the same typewriter
  *  animation as the first-turn auto-title so both surfaces stay in lockstep. */
 export async function regenerateTitle(id: string): Promise<void> {
-  // The conversation doesn't persist its endpoint, so name it with the operator's
-  // current pick — the same selection a chat turn sends — rather than a default role
-  // the backend may not have bound.
-  const selection = effectiveSelection();
+  // Titling resolves the backend `utility`→`main` binding (with its pinned model),
+  // the same source every background caller uses — no per-request override needed.
   const summary = await api.post<ConversationSummaryDTO>(
     `/conversations/${id}/retitle`,
-    { endpoint_id: selection?.endpointId, model: selection?.model },
+    {},
   );
   if (summary.title) revealTitle(id, summary.title);
   refreshSessions();
@@ -1675,7 +1673,11 @@ export function createChatStream(
       createdAt: new Date().toISOString(),
       attachmentIds: attachmentIds.length ? attachmentIds : undefined,
     };
-    const selection = options.selection?.() ?? effectiveSelection();
+    // `override` is a genuine per-instance model (the compare panes); the default
+    // path sends none, so the backend resolves the stored `main` binding — the same
+    // source research/tasks/titling resolve. `selection` is only the display label.
+    const override = options.selection?.();
+    const selection = override ?? effectiveSelection();
     const assistantId = nextId("a");
     const assistantMsg: ChatMessage = {
       id: assistantId,
@@ -1694,8 +1696,8 @@ export function createChatStream(
       created = await api.post<ChatCreatedDTO>("/chat", {
         prompt: text.trim(),
         conversation_id: activeConversationId ?? undefined,
-        endpoint_id: selection?.endpointId,
-        model: selection?.model,
+        endpoint_id: override?.endpointId,
+        model: override?.model,
         attachment_ids: attachmentIds,
         // Only meaningful when this turn creates the conversation; the backend
         // ignores it when continuing one.
@@ -1869,13 +1871,14 @@ export function createChatStream(
     );
     if (i < 0) return;
     setSending(true);
-    const sel = options.selection?.() ?? effectiveSelection();
+    const override = options.selection?.();
+    const sel = override ?? effectiveSelection();
     try {
       const created = await api.post<ChatCreatedDTO>("/chat/regenerate", {
         conversation_id: activeConversationId,
         message_id: messageId,
-        endpoint_id: sel?.endpointId,
-        model: sel?.model,
+        endpoint_id: override?.endpointId,
+        model: override?.model,
       });
       const reset: ChatMessage = {
         id: messageId,
@@ -1917,15 +1920,16 @@ export function createChatStream(
     const ids = attachmentIds ?? messages[j].attachmentIds ?? [];
     if (!newText.trim() && ids.length === 0) return;
     setSending(true);
-    const sel = selection ?? options.selection?.() ?? effectiveSelection();
+    const override = selection ?? options.selection?.();
+    const sel = override ?? effectiveSelection();
     const prompt = newText.trim();
     try {
       const created = await api.post<ChatCreatedDTO>("/chat/edit", {
         conversation_id: activeConversationId,
         message_id: messageId,
         prompt,
-        endpoint_id: sel?.endpointId,
-        model: sel?.model,
+        endpoint_id: override?.endpointId,
+        model: override?.model,
         attachment_ids: ids,
       });
       const editedUser: ChatMessage = {
