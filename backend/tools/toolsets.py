@@ -27,6 +27,7 @@ from .deps import RunDeps
 from .documents import document_toolset
 from .memory import memory_toolset
 from .search import web_toolset
+from .skills import skills_toolset
 from .view import view_toolset
 
 
@@ -45,6 +46,7 @@ def default_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "code": code_toolset(),
         "view": view_toolset(),
         "document": document_toolset(),
+        "skills": skills_toolset(),
         "web": web_toolset(),
         "attachments": attachments_toolset(),
     }

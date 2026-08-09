@@ -1,9 +1,9 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
-import { createStore, produce } from "solid-js/store";
 import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
+  HIDDEN_FILE_INPUT,
   InfoHint,
   InstrumentBand,
   ListRow,
@@ -17,100 +17,157 @@ import {
   StatusFlag,
   Tabs,
   Text,
-  Tooltip,
   confirm,
   toast,
+  useFileDrop,
 } from "~/ui";
 import { createListView } from "~/lib/list";
-import { relativeTime } from "~/lib/format";
-import { useSkills } from "../data";
-import { skillStatusFlag, type Skill, type SkillStatus } from "../model";
-import { TestSkillModal } from "../components/TestSkillModal";
+import { bytes, relativeTime } from "~/lib/format";
+import {
+  deleteSkill,
+  exportSkill,
+  importSkill,
+  setSkillPublished,
+  skillErrorMessage,
+  useSkills,
+} from "../data";
+import {
+  skillSourceFlag,
+  skillStatusFlag,
+  skillStatusLabel,
+  type SkillSummary,
+} from "../model";
+import { NewSkillDialog } from "../components/NewSkillDialog";
 
 const STATUS_TABS = [
   { value: "all", label: "ALL" },
   { value: "published", label: "PUBLISHED" },
   { value: "draft", label: "DRAFT" },
-  { value: "auto", label: "AUTO" },
 ];
 
 export function SkillsDirectoryScreen(): JSX.Element {
   const navigate = useNavigate();
   const skillsResource = useSkills();
+  // Reading a Solid resource accessor re-throws its error, and there is no ErrorBoundary
+  // in this app (same hazard GalleryScreen documents). A 500 from /skills would otherwise
+  // blank the page — InstrumentBand reads this and sits outside the Suspense. Derive from
+  // `.latest`/`.error` so a failed load degrades to an empty library with a message.
+  const skills = (): SkillSummary[] =>
+    skillsResource.error ? [] : (skillsResource.latest ?? []);
+  const loadError = (): string | null =>
+    skillsResource.error
+      ? skillErrorMessage(skillsResource.error, "Could not load skills.")
+      : null;
   const [statusFilter, setStatusFilter] = createSignal("all");
-  const [testSkill, setTestSkill] = createSignal<Skill | null>(null);
+  const [newOpen, setNewOpen] = createSignal(false);
+  const [importing, setImporting] = createSignal(false);
 
-  // Mutable store seeded once from the resource (same pattern as tokens feature)
-  const [skills, setSkills] = createStore<Skill[]>([]);
-  let seeded = false;
+  // ── import ──────────────────────────────────────────────────────────────
 
-  function seed(list: Skill[]) {
-    if (!seeded) {
-      seeded = true;
-      setSkills(list.map((s) => ({ ...s })));
+  /** The endpoint takes one bundle per call, so only the first pick is sent. */
+  const picker = useFileDrop((files) => void handleImport(files[0]));
+
+  async function handleImport(file: File | undefined): Promise<void> {
+    if (!file || importing()) return;
+    setImporting(true);
+    try {
+      const { skill, warnings } = await importSkill(file);
+      toast.success(`Imported "${skill.name}" as a draft`, {
+        action: {
+          label: "OPEN",
+          onClick: () => navigate(`/skills/${skill.id}`),
+        },
+      });
+      // Everything the backend flagged about the bundle, verbatim — the operator
+      // reads these before deciding to publish.
+      for (const warning of warnings) toast.warn(warning);
+    } catch (err) {
+      toast.error(skillErrorMessage(err, "Could not import the bundle."));
+    } finally {
+      setImporting(false);
     }
   }
 
-  // ── delete ──────────────────────────────────────────────────────────────
+  // ── row actions ─────────────────────────────────────────────────────────
 
-  async function handleDelete(skill: Skill) {
-    if (
-      !(await confirm({
-        title: `Delete "${skill.name}"?`,
-        detail:
-          "This skill will be permanently removed and cannot be recovered.",
-        confirmLabel: "DELETE",
-        tone: "alert",
-      }))
-    )
-      return;
-
-    const removed = { ...skill };
-    setSkills((list) => list.filter((s) => s.id !== skill.id));
-
-    toast.success(`Deleted "${skill.name}"`, {
-      action: {
-        label: "UNDO",
-        onClick: () => setSkills((list) => [removed, ...list]),
-      },
+  async function handleDelete(skill: SkillSummary): Promise<void> {
+    const ok = await confirm({
+      title: `Delete "${skill.name}"?`,
+      detail:
+        "The skill and every file in its bundle are permanently removed. Export it first if you want a copy.",
+      confirmLabel: "DELETE",
+      tone: "alert",
     });
+    if (!ok) return;
+    try {
+      await deleteSkill(skill.id);
+      toast.success(`Deleted "${skill.name}"`);
+    } catch (err) {
+      toast.error(skillErrorMessage(err, `Could not delete "${skill.name}"`));
+    }
   }
 
-  // ── publish / unpublish ─────────────────────────────────────────────────
-
-  function handlePublishToggle(skill: Skill) {
-    if (skill.status === "auto") {
-      toast.warn("Auto-generated skills cannot be published or unpublished.");
+  async function handlePublishToggle(skill: SkillSummary): Promise<void> {
+    const next = !skill.published;
+    try {
+      await setSkillPublished(skill.id, next);
+    } catch (err) {
+      toast.error(
+        skillErrorMessage(
+          err,
+          `Could not ${next ? "publish" : "unpublish"} "${skill.name}"`,
+        ),
+      );
       return;
     }
-    const nextStatus = skill.status === "published" ? "draft" : "published";
-    setSkills(
-      (s) => s.id === skill.id,
-      produce((s) => {
-        s.status = nextStatus;
-      }),
-    );
     toast.success(
-      nextStatus === "published"
-        ? `"${skill.name}" published.`
-        : `"${skill.name}" unpublished — moved to draft.`,
+      next
+        ? `"${skill.name}" published — the agent can see it now.`
+        : `"${skill.name}" unpublished — back to draft.`,
+      {
+        action: {
+          label: "UNDO",
+          onClick: () => {
+            setSkillPublished(skill.id, !next).catch(() =>
+              toast.error("Could not undo"),
+            );
+          },
+        },
+      },
     );
+  }
+
+  async function handleExport(skill: SkillSummary): Promise<void> {
+    try {
+      await exportSkill(skill.id, skill.name);
+    } catch (err) {
+      toast.error(skillErrorMessage(err, `Could not export "${skill.name}"`));
+    }
   }
 
   // ── derived ─────────────────────────────────────────────────────────────
 
-  const allSkills = () => skills;
-  const countOf = (s: SkillStatus) =>
-    allSkills().filter((sk) => sk.status === s).length;
-  const byStatus = () => {
+  const publishedCount = () => skills().filter((s) => s.published).length;
+  const draftCount = () => skills().length - publishedCount();
+  const totalBytes = () => skills().reduce((sum, s) => sum + s.sizeBytes, 0);
+
+  const inTab = () => {
     const f = statusFilter();
-    if (f === "all") return allSkills().slice();
-    return allSkills().filter((s) => s.status === f);
+    if (f === "all") return skills();
+    return skills().filter((s) => s.published === (f === "published"));
+  };
+
+  /** Why the list is empty, when the load itself succeeded. */
+  const emptyHint = (): string => {
+    if (view.isFiltered()) return "No skills match your search.";
+    return statusFilter() === "all"
+      ? "Create a skill or import an Agent Skills bundle."
+      : "No skills match the current filter.";
   };
 
   const view = createListView({
-    source: byStatus,
-    search: (s) => `${s.name} ${s.trigger} ${s.description}`,
+    source: inTab,
+    search: (s) => `${s.name} ${s.description}`,
     sorts: {
       recent: {
         label: "NEWEST",
@@ -129,27 +186,46 @@ export function SkillsDirectoryScreen(): JSX.Element {
     <Stack gap={6}>
       <PageHeader
         title="SKILLS"
-        subtitle="Reusable procedures the assistant can invoke by trigger phrase."
+        subtitle="Agent Skills bundles — reusable procedures the assistant can follow."
         assetId="ODY-SKL-01.0"
         actions={
-          <Tooltip label="Available in Phase 2">
-            <Button variant="primary" leading="plus" disabled>
+          <Row gap={2}>
+            <input
+              ref={picker.bindInput}
+              {...HIDDEN_FILE_INPUT}
+              multiple={false}
+              accept=".zip,.md"
+              {...picker.inputHandlers}
+            />
+            <Button
+              variant="default"
+              leading="upload"
+              disabled={importing()}
+              onClick={picker.openPicker}
+            >
+              {importing() ? "IMPORTING…" : "IMPORT"}
+            </Button>
+            <Button
+              variant="primary"
+              leading="plus"
+              onClick={() => setNewOpen(true)}
+            >
               NEW SKILL
             </Button>
-          </Tooltip>
+          </Row>
         }
       />
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String(allSkills().length) },
+          { label: "TOTAL", value: String(skills().length) },
           {
             label: "PUBLISHED",
-            value: String(countOf("published")),
+            value: String(publishedCount()),
             tone: "nominal",
           },
-          { label: "DRAFT", value: String(countOf("draft")), tone: "warn" },
-          { label: "AUTO", value: String(countOf("auto")), tone: "info" },
+          { label: "DRAFT", value: String(draftCount()), tone: "dim" },
+          { label: "BUNDLES", value: bytes(totalBytes()) },
         ]}
       />
 
@@ -165,13 +241,13 @@ export function SkillsDirectoryScreen(): JSX.Element {
               <Text variant="micro" tone="dim">
                 DRAFT
               </Text>
-              <InfoHint label="A draft is unpublished — the assistant won't invoke it. Publishing requires a name, a trigger phrase, and a non-empty body." />
+              <InfoHint label="A draft is invisible to the agent. Publishing is what makes a skill's instructions something the assistant will follow — imported bundles always land as drafts so you can read them first." />
             </Row>
             <Row align="center" gap={1}>
               <Text variant="micro" tone="dim">
-                AUTO
+                IMPORT
               </Text>
-              <InfoHint label="Auto-generated skills are synthesized by the system from your usage patterns. They can be edited or deleted, but not manually published or unpublished." />
+              <InfoHint label="Accepts an Agent Skills bundle (.zip) or a lone SKILL.md. The bundle keeps its supporting files, and anything unusual about it is reported as a warning." />
             </Row>
           </Row>
         </div>
@@ -180,7 +256,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
           <ListToolbar
             query={view.query()}
             onQueryChange={view.setQuery}
-            placeholder="Search by name or trigger phrase…"
+            placeholder="Search by name or description…"
             sortKey={view.sortKey()}
             sortOptions={view.sortOptions}
             onSortChange={view.setSort}
@@ -198,25 +274,13 @@ export function SkillsDirectoryScreen(): JSX.Element {
             </div>
           }
         >
-          {/* Seed the mutable store from the resource once loaded */}
-          <Show when={skillsResource()} keyed>
-            {(list) => {
-              seed(list);
-              return null;
-            }}
-          </Show>
-
           <Show
             when={view.items().length}
             fallback={
               <EmptyState
-                icon="code"
-                message="NO SKILLS"
-                hint={
-                  view.isFiltered()
-                    ? "No skills match your search."
-                    : "No skills match the current filter."
-                }
+                icon="layers"
+                message={loadError() ? "SKILLS UNAVAILABLE" : "NO SKILLS"}
+                hint={loadError() ?? emptyHint()}
               />
             }
           >
@@ -224,15 +288,26 @@ export function SkillsDirectoryScreen(): JSX.Element {
               {(skill) => (
                 <ListRow
                   label={skill.name}
-                  leading="code"
+                  leading="layers"
                   href={`/skills/${skill.id}`}
                   right={
                     <span class="flex shrink-0 items-center gap-3">
-                      <Show when={skill.autoGenerated}>
-                        <StatusFlag status="info">AUTO</StatusFlag>
+                      {/* Shown for any bundle that has files at all — a row that
+                          drops the field at one file would make the column jump. */}
+                      <Show when={skill.fileCount > 0}>
+                        <Text variant="micro" tone="dim">
+                          {skill.fileCount}{" "}
+                          {skill.fileCount === 1 ? "FILE" : "FILES"} ·{" "}
+                          {bytes(skill.sizeBytes)}
+                        </Text>
                       </Show>
-                      <StatusFlag status={skillStatusFlag[skill.status]}>
-                        {skill.status.toUpperCase()}
+                      <Show when={skill.source !== "authored"}>
+                        <StatusFlag status={skillSourceFlag[skill.source]}>
+                          {skill.source.toUpperCase()}
+                        </StatusFlag>
+                      </Show>
+                      <StatusFlag status={skillStatusFlag(skill.published)}>
+                        {skillStatusLabel(skill.published)}
                       </StatusFlag>
                       <Text variant="micro" tone="dim">
                         {relativeTime(skill.updatedAt)}
@@ -257,17 +332,14 @@ export function SkillsDirectoryScreen(): JSX.Element {
                               onSelect: () => navigate(`/skills/${skill.id}`),
                             },
                             {
-                              label: "TEST",
-                              icon: "play",
-                              onSelect: () => setTestSkill(skill),
+                              label: "EXPORT",
+                              icon: "download",
+                              onSelect: () => void handleExport(skill),
                             },
                             {
-                              label:
-                                skill.status === "published"
-                                  ? "UNPUBLISH"
-                                  : "PUBLISH",
+                              label: skill.published ? "UNPUBLISH" : "PUBLISH",
                               icon: "check",
-                              onSelect: () => handlePublishToggle(skill),
+                              onSelect: () => void handlePublishToggle(skill),
                             },
                             {
                               label: "DELETE",
@@ -287,7 +359,14 @@ export function SkillsDirectoryScreen(): JSX.Element {
         </Suspense>
       </Panel>
 
-      <TestSkillModal skill={testSkill()} onClose={() => setTestSkill(null)} />
+      <NewSkillDialog
+        open={newOpen()}
+        onClose={() => setNewOpen(false)}
+        onCreated={(id) => {
+          setNewOpen(false);
+          navigate(`/skills/${id}`);
+        }}
+      />
     </Stack>
   );
 }

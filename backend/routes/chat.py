@@ -258,6 +258,7 @@ def _submit_turn(
             grants=deps.approval_grants(request),
             workspace_history=deps.workspace_history(request),
             documents=deps.documents(request),
+            skills=deps.skills(request),
             notifications=deps.notifications(request),
         ),
         registry=deps.registry(request),

@@ -34,6 +34,10 @@ async function trackedFetch(
 export interface ApiError {
   status: number;
   detail: string;
+  /** The input the backend blamed, when it said so (`detail: {field, message}`).
+   *  Lets a form attach `detail` to the control it names instead of only
+   *  toasting it. Absent for errors that name no field. */
+  field?: string;
 }
 
 export function isApiError(value: unknown): value is ApiError {
@@ -69,14 +73,29 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers;
 }
 
+/** The `{field, message}` object a route raises when it blames one input — the
+ *  skills surface does, so its editor can attach the message to the control it
+ *  names. Null for every other `detail` shape. */
+function fieldDetail(body: unknown): { field: string; message: string } | null {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail))
+    return null;
+  const { field, message } = detail as { field?: unknown; message?: unknown };
+  if (typeof field !== "string" || typeof message !== "string") return null;
+  return { field, message };
+}
+
 /** FastAPI's own `RequestValidationError` handler (triggered by any request a
  *  Pydantic model rejects before the route body runs) sends `detail` as an array
  *  of `{loc, msg, type}` objects rather than the string our hand-raised
- *  `HTTPException`s use. Normalize both shapes to a single readable string so no
- *  consumer has to special-case the array form. */
+ *  `HTTPException`s use — and a field-scoped rejection sends a `{field, message}`
+ *  object. Normalize all three shapes to a single readable string so no consumer
+ *  has to special-case them. */
 function normalizeDetail(body: unknown, fallback: string): string {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (typeof detail === "string") return detail;
+  const named = fieldDetail(body);
+  if (named) return named.message;
   if (Array.isArray(detail) && detail.length > 0) {
     const messages = detail
       .map((entry) => {
@@ -94,13 +113,15 @@ function normalizeDetail(body: unknown, fallback: string): string {
 
 async function toApiError(res: Response): Promise<ApiError> {
   let detail = res.statusText;
+  let field: string | undefined;
   try {
     const body = await res.json();
     detail = normalizeDetail(body, detail);
+    field = fieldDetail(body)?.field;
   } catch {
     /* non-JSON error body — keep the status text */
   }
-  return { status: res.status, detail };
+  return { status: res.status, detail, field };
 }
 
 export interface RequestOptions {
@@ -134,6 +155,26 @@ async function request<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** Send a multipart form (file upload). The browser sets the multipart
+ *  Content-Type+boundary itself, so we must NOT set it here. Bearer auth and the
+ *  401/423 handling match the JSON path. */
+async function sendForm<T>(
+  method: string,
+  path: string,
+  form: FormData,
+): Promise<T> {
+  const res = await trackedFetch(`${API_BASE}${path}`, {
+    method,
+    headers: authHeaders(),
+    credentials: "omit",
+    body: form,
+  });
+  if (res.status === 401 || res.status === 423) handleAuthFailure();
+  if (!res.ok) throw await toApiError(res);
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
 export const api = {
   get: <T>(path: string, opts?: RequestOptions) =>
     request<T>("GET", path, undefined, opts),
@@ -141,21 +182,12 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   del: <T = void>(path: string) => request<T>("DELETE", path),
-  /** POST a multipart form (file upload). The browser sets the multipart
-   *  Content-Type+boundary itself, so we must NOT set it here. Bearer auth and the
-   *  401/423 handling match the JSON path. */
-  async postForm<T>(path: string, form: FormData): Promise<T> {
-    const res = await trackedFetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: authHeaders(),
-      credentials: "omit",
-      body: form,
-    });
-    if (res.status === 401 || res.status === 423) handleAuthFailure();
-    if (!res.ok) throw await toApiError(res);
-    const text = await res.text();
-    return (text ? JSON.parse(text) : undefined) as T;
-  },
+  /** POST a multipart form (file upload). */
+  postForm: <T>(path: string, form: FormData) =>
+    sendForm<T>("POST", path, form),
+  /** PUT a multipart form — the same upload, at a caller-chosen address (e.g. a
+   *  skill bundle's file, whose path *is* its identity). */
+  putForm: <T>(path: string, form: FormData) => sendForm<T>("PUT", path, form),
   /** Fetch raw bytes (auth-gated content like artifacts) for a blob URL. */
   async getBlob(path: string): Promise<Blob> {
     const res = await trackedFetch(`${API_BASE}${path}`, {

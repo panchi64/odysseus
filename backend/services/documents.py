@@ -33,6 +33,7 @@ from sqlmodel import Session, select
 
 from core.db import in_session
 from core.exceptions import DocumentSpanError, NotFoundError
+from core.text import replace_unique
 from core.vault import Vault
 from models.document import Document, DocumentVersion, DocumentVersionOrigin
 from services.corpus.documents import DocumentsAdapter
@@ -188,10 +189,7 @@ class DocumentStore:
             document = session.get(Document, document_id)
             assert document is not None
             body = self._vault.decrypt_str(document.body_enc)
-            occurrences = body.count(old_text)
-            if occurrences != 1:
-                raise DocumentSpanError(occurrences)
-            new_body = body.replace(old_text, new_text, 1)
+            new_body = replace_unique(body, old_text, new_text, error=DocumentSpanError)
             document.body_enc = self._vault.encrypt_str(new_body)
             document.doc_type, document.language = detect_type_language(new_body)
             document.updated_at = datetime.now(UTC)

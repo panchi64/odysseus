@@ -127,6 +127,7 @@ export const NAV: NavSection[] = [
         label: "Skills",
         href: "/skills",
         icon: "layers",
+        connected: true,
         description: "Reusable instructions and capabilities for agents",
       },
       {

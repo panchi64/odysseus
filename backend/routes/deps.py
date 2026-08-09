@@ -37,6 +37,7 @@ from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingService
 from services.settings_store import SettingsStore
+from services.skills import SkillStore
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
 from services.workspace_history import WorkspaceHistoryStore
@@ -106,6 +107,10 @@ def approval_grants(request: Request) -> ApprovalGrantStore:
 
 def documents(request: Request) -> DocumentStore:
     return request.app.state.documents
+
+
+def skills(request: Request) -> SkillStore:
+    return request.app.state.skills
 
 
 def uploads(request: Request) -> UploadStore:

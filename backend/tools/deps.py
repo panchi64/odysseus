@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
+    from services.skills import SkillStore
     from services.uploads import UploadStore
     from services.webfetch import BrowserFetcher
     from services.workspace_history import WorkspaceHistoryStore
@@ -56,6 +57,10 @@ class Capabilities:
     # The document library — lets the document tool create/edit versioned documents that
     # surface live in the chat View. None ⇒ the document tool degrades.
     documents: DocumentStore | None = None
+    # The skill library (SKILL-1..3). Backs both the per-turn published-skill catalog the
+    # engine injects and the `skills` toolset. None ⇒ no catalog is injected and the skill
+    # tools degrade.
+    skills: SkillStore | None = None
     # The attention/notification surface. The engine calls this when a run parks
     # awaiting approval (an ALWAYS-notify per the emit policy) and defensively at a
     # grant short-circuit (idempotent — resolves any notification a prior park left
@@ -125,6 +130,10 @@ class RunDeps:
     # The document library — the document tool creates/edits versioned documents that
     # stream into the chat View. None ⇒ the document tool degrades.
     documents: DocumentStore | None = None
+    # The skill library (SKILL-1..3) — `skills_open` reads a published skill and stages its
+    # bundle into the sandbox; the engine reads the catalog from it each turn. None ⇒ the
+    # skill tools degrade and no catalog is injected.
+    skills: SkillStore | None = None
     # Tool-result compaction state for this turn — the history processor fills its handle
     # map; the `expand_tool_result` tool reads it. None ⇒ compaction is off for the run.
     compaction: CompactionContext | None = None

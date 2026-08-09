@@ -27,10 +27,11 @@ class DegradedCapabilityError(OdysseusError):
     """An optional capability is unavailable; the caller should degrade gracefully."""
 
 
-class DocumentSpanError(OdysseusError):
-    """A targeted document edit's ``old_text`` did not match exactly one span — either
+class SpanEditError(OdysseusError):
+    """A targeted (surgical) edit's ``old_text`` did not match exactly one span — either
     absent (``occurrences == 0``) or ambiguous (``occurrences > 1``). Carries the count so
-    the caller (the document tool) can phrase a precise retry for the model."""
+    the caller can phrase a precise retry for the model. Raised by
+    :func:`core.text.replace_unique`, the one implementation behind every surgical edit."""
 
     def __init__(self, occurrences: int) -> None:
         self.occurrences = occurrences
@@ -38,6 +39,24 @@ class DocumentSpanError(OdysseusError):
             "old_text was not found" if occurrences == 0
             else f"old_text matched {occurrences} spans"
         )
+
+
+class DocumentSpanError(SpanEditError):
+    """A :class:`SpanEditError` on a document body (`DOC-2`). Its own type so the document
+    routes/tool keep mapping it to their existing phrasing unchanged."""
+
+
+class SkillSpanError(SpanEditError):
+    """A :class:`SpanEditError` on a skill's ``SKILL.md`` body (`SKILL-3`)."""
+
+
+class SkillValidationError(OdysseusError):
+    """A skill bundle violates the Agent Skills standard. Carries the offending ``field`` so
+    the operator is told *which* part of their bundle to fix, not merely that it failed."""
+
+    def __init__(self, field: str, message: str) -> None:
+        self.field = field
+        super().__init__(message)
 
 
 class ModelLoadError(OdysseusError):

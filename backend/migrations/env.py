@@ -37,6 +37,7 @@ import models.research  # noqa: F401
 import models.search  # noqa: F401
 import models.service_credential  # noqa: F401
 import models.serving  # noqa: F401
+import models.skill  # noqa: F401
 import models.task  # noqa: F401
 import models.upload  # noqa: F401
 import models.workspace_history  # noqa: F401

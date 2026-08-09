@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -43,7 +43,14 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
 from core.exceptions import ModelLoadError
-from prompts.agent import CURRENT_DATE, INSTRUCTIONS, SYSTEM_PROMPT, VERIFIER_NUDGE
+from prompts.agent import (
+    CURRENT_DATE,
+    INSTRUCTIONS,
+    SKILL_CATALOG,
+    SKILL_CATALOG_BUDGET_CHARS,
+    SYSTEM_PROMPT,
+    VERIFIER_NUDGE,
+)
 from runs import (
     ApprovalRequired,
     ConversationTitled,
@@ -57,6 +64,7 @@ from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.documents import DocumentStore
 from services.notifications import NotificationService
+from services.skills import SkillCatalogEntry
 from services.uploads import UploadStore
 from tools import Capabilities, CompactionContext, RunDeps, build_agent_toolsets
 
@@ -181,6 +189,18 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
             store, ctx.deps.owner_id, conversation_id
         )
         return "\n\n".join(blocks)
+
+    @agent.instructions
+    async def _skill_catalog(ctx: RunContext[RunDeps]) -> str:
+        """Surface the operator's published skills to the agent automatically (`SKILL-2`) —
+        the standard's level-one disclosure: names and descriptions only, so the model knows
+        what procedures exist without paying for any of their instructions. A dynamic
+        instruction like the document state above, so it is always current and lives outside
+        history. Empty (no-op) when there's no skill store or nothing is published."""
+        store = ctx.deps.skills
+        if store is None:
+            return ""
+        return _skill_catalog_block(await store.catalog(ctx.deps.owner_id))
 
     @agent.instructions
     def _current_date() -> str:
@@ -441,6 +461,7 @@ async def _drive_turn(
         uploads=caps.uploads,
         workspace_history=caps.workspace_history,
         documents=caps.documents,
+        skills=caps.skills,
         # The turn's resolved compaction context (config + persistence boundary + handle map),
         # built once by the orchestrator and shared across the turn's segments (the grant-resume
         # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior
@@ -880,6 +901,26 @@ async def _document_context_blocks(
         f"since your last change]\n\n{doc.body}"
         for doc in docs
     ]
+
+
+def _skill_catalog_block(entries: Sequence[SkillCatalogEntry]) -> str:
+    """Render the published-skill catalog under its character budget (`SKILL-2`).
+
+    Entries arrive newest-first, so a library larger than the budget keeps the skills the
+    operator most recently touched and reports how many were left out — the model is told the
+    list is partial rather than being handed a silently truncated one."""
+    if not entries:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for index, entry in enumerate(entries):
+        line = f"- {entry.name}: {entry.description}"
+        if used + len(line) > SKILL_CATALOG_BUDGET_CHARS and lines:
+            lines.append(f"- …and {len(entries) - index} more (open by name if you know it)")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return SKILL_CATALOG.format(entries="\n".join(lines))
 
 
 def build_chat_orchestrator(

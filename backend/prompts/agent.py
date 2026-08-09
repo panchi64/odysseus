@@ -98,6 +98,24 @@ didn't work, here's why" is worth more to the operator than a confident fabricat
 CURRENT_DATE = "The current date is {date}."
 
 
+# The published-skill catalog (`SKILL-2`), surfaced as a dynamic instruction so it is
+# re-resolved fresh each turn and never accumulates in history. This is the Agent Skills
+# standard's first level of progressive disclosure: the model sees only each skill's name
+# and description here, and pays for the full instructions only when it opens one.
+# ``{entries}`` is the only field — one ``- name: description`` line per skill.
+SKILL_CATALOG = """\
+You have skills — procedures the operator saved for tasks like these:
+
+{entries}
+
+When a task matches one, call `skills_open` with its name and follow what it returns \
+before working. Only these skills exist; don't guess at others."""
+
+# How much of the turn's context the catalog may occupy. Skills past the budget are
+# dropped (newest kept) with a count, rather than silently truncating mid-entry.
+SKILL_CATALOG_BUDGET_CHARS = 4000
+
+
 # The verifier's corrective nudge. When the deliverable judge rules a turn fell
 # short, the engine re-asks with this — a single bounded re-attempt — interpolating
 # the judge's specific reason. ``{reason}`` is the only field.

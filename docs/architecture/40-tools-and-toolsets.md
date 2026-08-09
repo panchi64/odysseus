@@ -100,10 +100,17 @@ Two deliberate omissions, each a settled decision rather than an oversight:
 | `code` | `execute_code`, `run_host_command` | `services/sandbox` (`XC-SEC-7`) | ✅ built |
 | `view` | `view_show` (file → version, or serve → live head), `view_close` | `services/artifacts` (version store) + `services/sandbox` (live head) | ✅ built |
 | `web` | `search`, `fetch` | `services/search` + `services/searxng` (`SEARCH-*`) | ✅ built |
-| `mail`, `documents`, … | — | land with their `services/` capability | ⬜ pending |
+| `document` | `create`, `edit` | `services/documents` (versioned library, `DOC-1`/`DOC-2`) | ✅ built |
+| `attachments` | `provision` | `services/uploads` + `services/sandbox` (stage a file into `/work`) | ✅ built |
+| `skills` | `open`, `create`, `edit` | `services/skills` (Agent Skills bundles, `SKILL-1..3`) | ✅ built |
+| `mail`, … | — | land with their `services/` capability | ⬜ pending |
 | MCP servers, integrations | — | external (`MCP-*`, `INTEG-*`) | ⬜ pending (gating designed — §4.4) |
 
 Naming is `category_tool` (the `.prefixed(name)` step), so `recall` is offered as `memory_recall` — stable, collision-free names the operator's enable/disable list and the event stream both reference.
+
+### Progressive disclosure — how a large library stays three tools
+
+D3 fixed the catalog as lean and unfiltered: no runtime relevance step decides which tools a turn sees. `skills` is where that constraint met its hardest case — a library of a hundred procedures — and the answer is the Agent Skills standard's own: **the catalog carries tools, not content.** Every *published* skill's name and description rides in the turn's instructions (a budgeted `@agent.instructions` block, not a tool), the model calls `skills_open` for the full text of the one it needs, and that call also stages the skill's bundled files into the sandbox so its scripts and references are reachable through `code_execute`. A thousand skills is still three tools, and the only per-turn cost is one line per skill. See D32.
 
 ---
 

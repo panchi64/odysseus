@@ -37,6 +37,11 @@ dependencies = [
     # binary and mlx-openai-server installs into an adapter-owned isolated env.
     "huggingface-hub>=1.18",
     "croniter>=6.2.4",
+    # Agent Skills bundles (services/skills): SKILL.md frontmatter is YAML, and the format is
+    # an interop contract with Claude Code / the Skills API, so it is parsed and re-rendered
+    # rather than approximated. Already resolved transitively (huggingface-hub, uvicorn's
+    # extras); pinned direct since the bundle parser calls yaml.safe_load/safe_dump itself.
+    "pyyaml>=6",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

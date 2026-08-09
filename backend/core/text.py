@@ -4,12 +4,33 @@ There is no exact tokenizer at the points these are used (persist-time attachmen
 history compaction), and the budgets they serve are *soft*, so a coarse characters-per-token
 proxy is good enough to bound sizes deterministically. Kept here, in the foundation layer, so
 both the chat-attachments path and the compaction processor use one estimate, not two.
+
+:func:`replace_unique` is here for the same reason: surgical editing is the shape of both
+``DOC-2`` and ``SKILL-3``, and one implementation of "replace exactly one span or refuse"
+means both surfaces refuse identically.
 """
 
 from __future__ import annotations
 
+from .exceptions import SpanEditError
+
 # A coarse characters≈tokens proxy. Good enough for soft budgets; not a real tokenizer.
 CHARS_PER_TOKEN = 4
+
+
+def replace_unique(
+    text: str, old: str, new: str, *, error: type[SpanEditError] = SpanEditError
+) -> str:
+    """Replace the **single** occurrence of ``old`` in ``text`` with ``new``.
+
+    Raises ``error`` (a :class:`SpanEditError` subclass, carrying the occurrence count) when
+    ``old`` is absent or matches more than once, so the caller can ask for a more precise
+    span rather than guessing which match was meant. Callers run this inside their write
+    transaction so the check and the replace are atomic."""
+    occurrences = text.count(old)
+    if occurrences != 1:
+        raise error(occurrences)
+    return text.replace(old, new, 1)
 
 
 def tokens_to_chars(tokens: int) -> int:

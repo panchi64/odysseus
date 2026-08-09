@@ -45,6 +45,7 @@ from routes import (
     search,
     serving,
     shell,
+    skills,
     tasks,
     uploads,
     views,
@@ -83,6 +84,7 @@ from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
+from services.skills import SkillStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -416,6 +418,10 @@ async def lifespan(app: FastAPI):
     # on its own lock-aware worker.
     documents_adapter = DocumentsAdapter(engine, chunk_store, vault.unlocked_event)
     app.state.documents = DocumentStore(engine, vault, documents_adapter)
+    # The skills surface: Agent Skills bundles, sealed at rest. Deliberately *not* a corpus
+    # source — a skill is guidance to apply, not knowledge to retrieve, and it reaches the
+    # model through the per-turn catalog + `skills_open` instead (D32).
+    app.state.skills = SkillStore(engine, vault)
     # The uploads surface: a file's bytes are stored sealed; its extracted text (native
     # PDF text + vision OCR for scanned pages) is chunked into the same corpus_chunk
     # store. The UploadStore owns the rows and drains extraction off the request path on
@@ -659,6 +665,7 @@ async def lifespan(app: FastAPI):
                 grants=app.state.approval_grants,
                 workspace_history=app.state.workspace_history,
                 documents=app.state.documents,
+                skills=app.state.skills,
                 notifications=app.state.notifications,
             ),
             registry=app.state.runs,
@@ -781,6 +788,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(serving.router)
     app.include_router(memory.router)
     app.include_router(documents.router)
+    app.include_router(skills.router)
     app.include_router(uploads.router)
     app.include_router(gallery.router)
     app.include_router(corpus.router)

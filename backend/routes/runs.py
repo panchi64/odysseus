@@ -209,6 +209,11 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             uploads=deps.uploads(request),
             grants=grants,
             workspace_history=deps.workspace_history(request),
+            # A resumed turn re-runs the approved tool call, so it needs the same capability
+            # set the original turn had — a handle missing here degrades the very tool the
+            # operator just approved.
+            documents=deps.documents(request),
+            skills=deps.skills(request),
             notifications=deps.notifications(request),
         ),
         store=deps.store(request),
