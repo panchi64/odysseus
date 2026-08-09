@@ -1,11 +1,7 @@
 /** Calendar feature data contracts. */
 
 export type RecurrenceRule =
-  | "none"
-  | "daily"
-  | "weekly"
-  | "monthly"
-  | "weekdays";
+  "none" | "daily" | "weekly" | "monthly" | "weekdays";
 
 export interface Calendar {
   id: string;

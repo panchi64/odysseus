@@ -57,11 +57,7 @@ export type Workload = "chat" | "embedding" | "vision";
 
 /** Lifecycle state of a managed (downloaded/served) model. */
 export type ServeState =
-  | "stopped"
-  | "downloading"
-  | "starting"
-  | "running"
-  | "error";
+  "stopped" | "downloading" | "starting" | "running" | "error";
 
 /** A ranked engine recommendation for the current host. */
 export interface EngineRecommendation {

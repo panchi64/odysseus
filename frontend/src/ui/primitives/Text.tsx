@@ -3,21 +3,10 @@ import { Dynamic } from "solid-js/web";
 import { cx } from "../cx";
 
 export type TextVariant =
-  | "micro"
-  | "label"
-  | "body"
-  | "readout"
-  | "readout-lg"
-  | "display";
+  "micro" | "label" | "body" | "readout" | "readout-lg" | "display";
 
 export type TextTone =
-  | "dim"
-  | "default"
-  | "bright"
-  | "nominal"
-  | "warn"
-  | "alert"
-  | "info";
+  "dim" | "default" | "bright" | "nominal" | "warn" | "alert" | "info";
 
 /* The ONLY place the type scale is written. Each variant pairs size +
    line-height (via the text-* utilities defined in theme.css). */

@@ -11,8 +11,4 @@ export interface BackupManifest {
 }
 
 export type BackupInclude =
-  | "memories"
-  | "skills"
-  | "presets"
-  | "settings"
-  | "preferences";
+  "memories" | "skills" | "presets" | "settings" | "preferences";

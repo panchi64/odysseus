@@ -4,11 +4,7 @@
  *  on these types; `data.ts` is the only place that talks to the backend. */
 
 export type ResearchStatus =
-  | "draft"
-  | "running"
-  | "done"
-  | "error"
-  | "cancelled";
+  "draft" | "running" | "done" | "error" | "cancelled";
 
 /** The frozen plan the operator approved (or accepted as-is) before a run
  *  starts — objective + angles to investigate, plus optional planner notes. */
@@ -72,11 +68,7 @@ export type ResearchListItem = Omit<
 /** The five phases the pipeline streams via `step.started.title` (backend
  *  `research/CLAUDE.md`) — lowercase, matching the wire value verbatim. */
 export type ResearchPhase =
-  | "planning"
-  | "searching"
-  | "reading"
-  | "analyzing"
-  | "writing";
+  "planning" | "searching" | "reading" | "analyzing" | "writing";
 
 /** Live progress folded from a running research entry's run events — the
  *  research-surface counterpart to chat's per-message streaming state. */

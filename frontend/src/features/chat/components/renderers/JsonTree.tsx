@@ -16,12 +16,7 @@ import { rememberScroll } from "../../viewerPersistence";
 import { fontStepClass } from "./fontStep";
 
 type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 const DEFAULT_EXPAND_DEPTH = 2;
 const ARRAY_PAGE = 100;

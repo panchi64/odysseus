@@ -3,12 +3,7 @@
 /** Lifecycle of the operator shell UI. The backend owns every transition —
  *  this only names the states the screen renders. */
 export type SessionPhase =
-  | "prompt"
-  | "authenticating"
-  | "connecting"
-  | "live"
-  | "ended"
-  | "denied";
+  "prompt" | "authenticating" | "connecting" | "live" | "ended" | "denied";
 
 /** A short-lived, single-use grant minted by re-authenticating with the
  *  operator password (`POST /shell/host-mode`). Spent by the first WebSocket

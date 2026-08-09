@@ -5,11 +5,7 @@ export type TaskKind = "agent" | "reminder";
 export type ScheduleType = "once" | "interval" | "cron" | "webhook";
 export type OutputChannel = "chat" | "notification";
 export type TaskRunOutcome =
-  | "ok"
-  | "error"
-  | "blocked"
-  | "cancelled"
-  | "skipped";
+  "ok" | "error" | "blocked" | "cancelled" | "skipped";
 
 /** Exactly one of `runAt`/`everySeconds`/`cron` is meaningful, selected by `type`;
  *  a `webhook` task uses none of them (it fires only on its hook route). */
