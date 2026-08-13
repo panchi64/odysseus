@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Engine, or_
 from sqlmodel import Session, select
@@ -42,6 +43,12 @@ from services.calendar.recurrence import (
     next_occurrence,
     parse_zone,
 )
+
+if TYPE_CHECKING:
+    # Only ever an annotation here — the store never parses anything, it just carries the
+    # parser for its callers (see `CalendarService.nl`), so importing it lazily keeps the
+    # store's import free of the model layer.
+    from services.calendar.nl import CalendarNaturalLanguage
 
 # How far a "what's next" lookahead searches before giving up (see `upcoming`).
 _UPCOMING_HORIZON_DAYS = 366
@@ -111,9 +118,21 @@ class OccurrenceView:
 
 
 class CalendarService:
-    def __init__(self, engine: Engine, vault: Vault) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        vault: Vault,
+        *,
+        nl: CalendarNaturalLanguage | None = None,
+    ) -> None:
         self._engine = engine
         self._vault = vault
+        # Natural-language event entry (`CAL-3`). It hangs off the service rather than
+        # standing beside it because the calendar reaches its callers as ONE capability
+        # handle — a tool that has the calendar has everything the calendar can do. The
+        # service itself never calls it: parsing needs a model resolver, storing doesn't.
+        # None ⇒ no utility model was wired, and the parse entry points say so.
+        self.nl: CalendarNaturalLanguage | None = nl
 
     # --- calendars --------------------------------------------------------
 

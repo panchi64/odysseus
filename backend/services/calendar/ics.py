@@ -118,6 +118,10 @@ async def import_into(
     rejects (an unparseable rule, an impossible zone) is counted as skipped, never allowed
     to abort the rest of the file.
     """
+    # Checked up front rather than discovered per event: an import into a calendar that
+    # doesn't exist is a bad request, not an empty result.
+    await service.get_calendar(owner_id, calendar_id)
+
     created = updated = skipped = 0
     for entry in parse_ics(data):
         try:
