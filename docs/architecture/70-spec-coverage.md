@@ -157,9 +157,9 @@
 
 | Req | Status | Realized by | Notes |
 |---|---|---|---|
-| AUTH-1 password login + rate-limit + first-run setup | ✅ | `core/auth`, `/setup`, `/auth/login` | Dual cookie+bearer (D9). |
+| AUTH-1 password login + rate-limit + first-run setup | ✅ | `core/auth` (`auth_attempt_limiter`), `/setup`, `/auth/login` | Dual cookie+bearer (D9). The rate limit was ledgered but had no implementation; `/auth/login` now spends a shared per-caller attempt limiter — the same one the gate throttles API-token guesses with, since they are one attack. |
 | AUTH-3 user administration | 🔭 | `owner_id` seam | Deferred until a second human exists. |
-| AUTH-4 API tokens | ⬜ | — | |
+| AUTH-4 API tokens | ✅ | `models/api_token`, `core/api_scopes`, `services/api_token_store`, `routes/tokens` (`/tokens`), the gate in `core/auth`, frontend `features/access-tokens` (`/admin/access-tokens`) | **Inbound** scoped tokens — a different feature from `/credentials` (outbound service keys), which keeps its own surface. Minted `odyt_<prefix>_<secret>` and shown once: only the public prefix and a one-way Argon2id hash of the secret are stored (`XC-SEC-3`), so a lost token is reissued, not recovered. A scope is a group of API surfaces, resolved longest-prefix-first and **deny-by-default** — `/tokens`, `/credentials`, `/vault`, `/backup` and `/shell` belong to no scope, so no token can mint another, read the operator's secrets, or reach the host. Verified tokens are remembered in memory (Argon2id is far too costly to pay per request) and that memory is dropped on revoke, so revocation bites on the next request; a guess never hits it and so always meets the limiter. |
 | AUTH-5 inbound webhooks | ⬜ | — | Ties the scheduler/triggers (D13). |
 | VAULT-1 password vault (secrets manager) | ⬜ | — | Distinct from the at-rest encryption vault (`core/vault`, `XC-SEC-3`). |
 | VAULT-2 agent vault access approval-gated | 🔭 | — | Rides D20 when the vault tool lands. |

@@ -27,10 +27,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema — filled in by the platform track (T6)."""
-    pass
+    """Upgrade schema."""
+    op.create_table('api_tokens',
+    sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('label', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('token_prefix', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('token_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('scopes', sa.JSON(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('last_used_at', sa.DateTime(), nullable=True),
+    sa.Column('revoked_at', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('api_tokens', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_api_tokens_owner_id'), ['owner_id'], unique=False)
+        batch_op.create_index(
+            batch_op.f('ix_api_tokens_token_prefix'), ['token_prefix'], unique=True
+        )
 
 
 def downgrade() -> None:
-    """Downgrade schema — filled in by the platform track (T6)."""
-    pass
+    """Downgrade schema."""
+    with op.batch_alter_table('api_tokens', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_api_tokens_token_prefix'))
+        batch_op.drop_index(batch_op.f('ix_api_tokens_owner_id'))
+
+    op.drop_table('api_tokens')
