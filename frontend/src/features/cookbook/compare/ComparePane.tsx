@@ -1,6 +1,21 @@
-import { For, Show, createEffect, createMemo, type JSX } from "solid-js";
-import { Combobox, EmptyState, StatusFlag, Text, confirm, toast } from "~/ui";
-import { MessageItem } from "~/features/chat";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  type JSX,
+} from "solid-js";
+import {
+  Combobox,
+  EmptyState,
+  Modal,
+  StatusFlag,
+  Text,
+  confirm,
+  toast,
+} from "~/ui";
+import { MessageItem, ViewportPanel, collectViewItems } from "~/features/chat";
 import {
   decodeModelValue,
   encodeModelValue,
@@ -13,7 +28,12 @@ import type { ComparePane } from "./data";
  *  (`MessageItem`) wired to this pane's stream, so reasoning, tools, host
  *  commands, approvals, artifacts, and previews all render at full fidelity —
  *  and per-turn actions (regenerate / edit / version / pin / delete / rewind)
- *  operate on this pane's own conversation. */
+ *  operate on this pane's own conversation.
+ *
+ *  A pane is half a screen wide, so its View can't sit *beside* the transcript the way
+ *  chat's does; it opens as an overlay off the same inline chips instead. Same
+ *  `ViewportPanel`, same versions/PREVIEW/CODE — it's fully controlled, so the pane just
+ *  owns the little state it needs (`CMP-2`). */
 export function ComparePaneView(props: {
   pane: ComparePane;
   label: string;
@@ -63,6 +83,24 @@ export function ComparePaneView(props: {
     return sel ? encodeModelValue(sel) : "";
   };
 
+  // This pane's View: the same ordered version list the chat viewport builds, from this
+  // pane's own conversation. Opening is chip-driven — there is no persistent panel to
+  // auto-open into, and no per-thread persistence, because a compare thread is scratch.
+  const viewItems = createMemo(() =>
+    collectViewItems(
+      stream().messages,
+      stream().snapshots(),
+      stream().documents(),
+    ),
+  );
+  const [openKey, setOpenKey] = createSignal<string | null>(null);
+  const [tab, setTab] = createSignal<"preview" | "code">("preview");
+  const [fontStep, setFontStep] = createSignal(0);
+  const [softWrap, setSoftWrap] = createSignal(false);
+  // The overlay's own "fullscreen" is simply a wider dialog — the panel already owns the
+  // control, so it drives the width rather than rendering a dead button.
+  const [wide, setWide] = createSignal(false);
+
   return (
     <div class="flex min-h-0 min-w-0 flex-1 flex-col rounded-ctl border border-line">
       <header class="flex items-center justify-between gap-2 border-b border-line p-2">
@@ -111,6 +149,14 @@ export function ComparePaneView(props: {
                 message={message}
                 onResolveApproval={stream().resolveApproval}
                 onResolveHostCommands={stream().resolveHostCommands}
+                onOpenInView={setOpenKey}
+                viewItems={viewItems}
+                onReattach={() => {
+                  if (message.runId)
+                    void stream().reattachRun(message.runId, {
+                      fromSeq: stream().lastSeq(),
+                    });
+                }}
                 onRegenerate={() => void stream().regenerate(message.id)}
                 onEditMessage={(id, text) => void stream().edit(id, text)}
                 onSwitchVersion={(id, i) => void stream().switchVersion(id, i)}
@@ -134,6 +180,31 @@ export function ComparePaneView(props: {
           </For>
         </Show>
       </div>
+
+      <Modal
+        open={openKey() !== null}
+        onClose={() => setOpenKey(null)}
+        title={`${props.label} — VIEW`}
+        class={wide() ? "max-w-[95vw]" : "max-w-4xl"}
+      >
+        <div class="h-[70vh] min-h-0">
+          <ViewportPanel
+            items={viewItems()}
+            selectedKey={openKey()}
+            onSelect={setOpenKey}
+            activeTab={tab()}
+            onSelectTab={setTab}
+            fontStep={fontStep()}
+            onFontStep={setFontStep}
+            softWrap={softWrap()}
+            onToggleWrap={() => setSoftWrap((on) => !on)}
+            fullscreen={wide()}
+            onToggleFullscreen={() => setWide((on) => !on)}
+            onClose={() => setOpenKey(null)}
+            onSaveDocument={stream().saveDocumentEdit}
+          />
+        </div>
+      </Modal>
     </div>
   );
 }
