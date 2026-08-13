@@ -35,6 +35,7 @@ from services.sandbox import SandboxSessionManager
 from services.scheduler import SchedulerService
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.secret_vault import SecretVaultService
 from services.serving import ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
@@ -252,10 +253,21 @@ def external(request: Request) -> object | None:
     return getattr(request.app.state, "external", None)
 
 
-def secret_vault(request: Request) -> object | None:
-    """The operator's secrets manager (`VAULT-*`) — None until track T4 lands.
-    Distinct from `vault()` above, which is the at-rest key custody."""
-    return getattr(request.app.state, "secret_vault", None)
+def secret_vault(request: Request) -> SecretVaultService:
+    """The operator's secrets manager (`VAULT-*`). Distinct from `vault()` above, which is
+    the at-rest key custody.
+
+    Built on first use and cached on ``app.state``, so every caller shares one instance —
+    its whole point is holding a single in-memory unlock state, which a per-request instance
+    would throw away. Construction is pure (an engine handle plus the vault; no I/O, no
+    ``await``), so there is no suspension point for a concurrent request to race a duplicate
+    in. The lazy form exists only because ``app.py`` is shared with five parallel tracks this
+    sprint; it collapses into an ordinary lifespan-wired singleton at integration."""
+    service = getattr(request.app.state, "secret_vault", None)
+    if service is None:
+        service = SecretVaultService(request.app.state.db_engine, request.app.state.vault)
+        request.app.state.secret_vault = service
+    return service
 
 
 def backup(request: Request) -> object | None:
