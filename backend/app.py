@@ -27,6 +27,8 @@ from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
     api_tokens,
     auth,
+    backup,
+    calendar,
     chat,
     conversations,
     cookbook,
@@ -34,6 +36,9 @@ from routes import (
     documents,
     gallery,
     health,
+    integrations,
+    mail,
+    mcp,
     memory,
     models,
     notifications,
@@ -43,10 +48,12 @@ from routes import (
     research,
     runs,
     search,
+    secret_vault,
     serving,
     shell,
     skills,
     tasks,
+    tokens,
     uploads,
     views,
 )
@@ -800,6 +807,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(research.router)
+    # Reserved sprint surfaces — registered here up front so the parallel feature
+    # tracks each fill in only their own `routes/` module and never contend for this
+    # block. Each is an empty router until its track lands.
+    app.include_router(mail.router)
+    app.include_router(calendar.router)
+    app.include_router(mcp.router)
+    app.include_router(integrations.router)
+    app.include_router(secret_vault.router)
+    app.include_router(backup.router)
+    app.include_router(tokens.router)
     # `shell_enabled` is the on/off switch (`core/config.py`): disabled ⇒ the
     # router is never registered at all, so `/shell/host-mode` and `/shell/ws`
     # are simply 404 — the natural kill-switch.

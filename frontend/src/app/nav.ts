@@ -178,12 +178,6 @@ export const NAV: NavSection[] = [
         description: "App preferences and configuration",
       },
       {
-        label: "Users",
-        href: "/admin/users",
-        icon: "user",
-        description: "Manage accounts and privileges",
-      },
-      {
         label: "API Tokens",
         href: "/admin/tokens",
         icon: "key",

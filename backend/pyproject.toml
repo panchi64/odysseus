@@ -42,6 +42,26 @@ dependencies = [
     # rather than approximated. Already resolved transitively (huggingface-hub, uvicorn's
     # extras); pinned direct since the bundle parser calls yaml.safe_load/safe_dump itself.
     "pyyaml>=6",
+    # Mail (services/mail): IMAP reading with IDLE (so new mail arrives as a push rather
+    # than a poll) and SMTP submission. Both are pure-Python and async-native. The Gmail,
+    # Graph and JMAP transports need no client library of their own — they are REST/JSON
+    # over the httpx client this app already carries.
+    "aioimaplib>=2.0",
+    "aiosmtplib>=4.0",
+    # OAuth2 (auth-code + PKCE + refresh) for the Gmail/Graph mail transports. Chosen over
+    # google-api-python-client/msal: those are sync, heavy, and keep their own on-disk
+    # credential caches, which fights the memory-only-key posture — refresh tokens here are
+    # vault-sealed like every other secret.
+    "authlib>=1.6",
+    # Splitting a reply from the quoted thread beneath it (EMAIL-4).
+    "email-reply-parser>=0.5.12",
+    # Calendar (services/calendar): RFC 5545 parsing/emitting for ICS import/export, the
+    # maintained CalDAV client for remote sync (sync API — call it via anyio.to_thread), and
+    # dateutil's rrule for recurrence expansion. Time zones come from stdlib zoneinfo, not
+    # pytz. dateutil is already resolved transitively; pinned direct since we call it.
+    "icalendar>=6.1",
+    "caldav>=1.4",
+    "python-dateutil>=2.9",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

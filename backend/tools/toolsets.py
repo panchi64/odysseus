@@ -20,14 +20,18 @@ from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefini
 
 from .attachments import attachments_toolset
 from .builtin import builtin_toolset
+from .calendar import calendar_toolset
 from .code import code_toolset
 from .conversations import conversations_toolset
 from .corpus import corpus_toolset
 from .deps import RunDeps
 from .documents import document_toolset
+from .external import external_toolset
+from .mail import mail_toolset
 from .memory import memory_toolset
 from .search import web_toolset
 from .skills import skills_toolset
+from .vault import vault_toolset
 from .view import view_toolset
 
 
@@ -49,6 +53,14 @@ def default_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "skills": skills_toolset(),
         "web": web_toolset(),
         "attachments": attachments_toolset(),
+        # Reserved sprint categories — registered up front so the parallel feature
+        # tracks each fill in only their own `tools/` module and never contend for
+        # this dict. Each is empty until its track lands, and an empty category
+        # contributes no tool names, so today's catalog is unchanged.
+        "mail": mail_toolset(),
+        "calendar": calendar_toolset(),
+        "vault": vault_toolset(),
+        "external": external_toolset(),
     }
 
 

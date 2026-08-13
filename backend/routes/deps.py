@@ -214,6 +214,55 @@ def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:
     return request.app.state.research_run_waiters
 
 
+# --- Reserved sprint capabilities -------------------------------------------------
+# Accessors registered up front so the parallel feature tracks each wire only their own
+# service and never contend for this module. Each reads through `getattr` and returns
+# ``None`` until its track hangs the singleton on ``app.state``, so importing or calling
+# one before its track lands is safe rather than an AttributeError. When a track lands it
+# replaces its own accessor with the ordinary `request.app.state.<x>` form and a concrete
+# return type, exactly like the accessors above.
+
+
+def mail(request: Request) -> object | None:
+    """The mail capability (`EMAIL-*`) — None until track T1 lands."""
+    return getattr(request.app.state, "mail", None)
+
+
+def calendar(request: Request) -> object | None:
+    """The calendar capability (`CAL-*`) — None until track T2 lands."""
+    return getattr(request.app.state, "calendar", None)
+
+
+def mcp(request: Request) -> object | None:
+    """The MCP server registry (`MCP-*`) — None until track T3 lands."""
+    return getattr(request.app.state, "mcp", None)
+
+
+def integrations(request: Request) -> object | None:
+    """Third-party connectors (`INTEG-*`) — None until track T3 lands."""
+    return getattr(request.app.state, "integrations", None)
+
+
+def secret_vault(request: Request) -> object | None:
+    """The operator's secrets manager (`VAULT-*`) — None until track T4 lands.
+    Distinct from `vault()` above, which is the at-rest key custody."""
+    return getattr(request.app.state, "secret_vault", None)
+
+
+def backup(request: Request) -> object | None:
+    """Encrypted export/import (`BACKUP-*`) — None until track T4 lands."""
+    return getattr(request.app.state, "backup", None)
+
+
+def api_tokens(request: Request) -> object | None:
+    """Inbound scoped API tokens (`AUTH-4`) — None until track T6 lands.
+    Distinct from `credentials()` above, which holds outbound service keys."""
+    return getattr(request.app.state, "api_tokens", None)
+
+
+# --- End reserved sprint capabilities ----------------------------------------------
+
+
 def run_terminal_tasks(request: Request) -> set[asyncio.Task[None]]:
     """The shared bucket of in-flight terminal-transition background tasks — a route
     that spawns one (research's finalize-on-terminal task) adds it here so shutdown can
