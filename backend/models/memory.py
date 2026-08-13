@@ -23,11 +23,16 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
+from models._backup import BackupSpec
 from models._fields import new_id, utcnow
 
 
 class Memory(SQLModel, table=True):
     __tablename__ = "memories"
+    # Exported under "memories" (`BACKUP-1`). Two memories are the same memory when they say
+    # the same thing, so the decrypted content is the merge key; the vector derives from it
+    # and is re-embedded on the importing host.
+    __backup__ = BackupSpec(section="memories", natural_key=("content_enc",))
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)

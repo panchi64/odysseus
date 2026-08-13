@@ -33,6 +33,7 @@ from enum import StrEnum
 
 from sqlmodel import Field, SQLModel, UniqueConstraint
 
+from models._backup import BackupSpec
 from models._fields import new_id, utcnow
 
 
@@ -52,6 +53,9 @@ class SkillSource(StrEnum):
 class Skill(SQLModel, table=True):
     __tablename__ = "skills"
     __table_args__ = (UniqueConstraint("owner_id", "name", name="uq_skills_owner_name"),)
+    # Exported under "skills" (`BACKUP-1`), before its files. ``name`` is already the
+    # library's uniqueness key, so it is the merge key too.
+    __backup__ = BackupSpec(section="skills", natural_key=("name",), order=0)
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
@@ -90,6 +94,11 @@ class SkillFile(SQLModel, table=True):
     __tablename__ = "skill_files"
     __table_args__ = (
         UniqueConstraint("skill_id", "relpath", name="uq_skill_files_skill_relpath"),
+    )
+    # Rides its skill's section and lands after it. Ids are preserved across an import, so
+    # ``skill_id`` still points at the right bundle on the far host.
+    __backup__ = BackupSpec(
+        section="skills", natural_key=("skill_id", "relpath"), order=1
     )
 
     id: str = Field(default_factory=new_id, primary_key=True)
