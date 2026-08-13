@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 
 from services.mail.errors import MailError, MailUnsupportedError
+from services.mail.gmail import GmailTransport
+from services.mail.graph import GraphTransport
 from services.mail.imap import ImapTransport
 from services.mail.jmap import JmapTransport
 from services.mail.models import (
@@ -23,7 +25,7 @@ def test_fake_transport_satisfies_the_protocol():
     assert isinstance(FakeTransport(), MailTransport)
 
 
-@pytest.mark.parametrize("adapter", [ImapTransport, JmapTransport])
+@pytest.mark.parametrize("adapter", [ImapTransport, JmapTransport, GmailTransport, GraphTransport])
 def test_every_adapter_satisfies_the_protocol(adapter):
     spec = AccountSpec(
         account_id="a1",
@@ -36,7 +38,7 @@ def test_every_adapter_satisfies_the_protocol(adapter):
     assert isinstance(adapter(spec), MailTransport)
 
 
-@pytest.mark.parametrize("adapter", [ImapTransport, JmapTransport])
+@pytest.mark.parametrize("adapter", [ImapTransport, JmapTransport, GmailTransport, GraphTransport])
 def test_capabilities_are_declared_not_discovered(adapter):
     spec = AccountSpec(
         account_id="a1", address="op@example.com", provider="imap", auth_kind="password"

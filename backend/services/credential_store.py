@@ -59,6 +59,25 @@ KNOWN_SERVICES: tuple[ServiceInfo, ...] = (
         "Cookbook model catalog — an access token lifts the anonymous API rate limit.",
         "https://huggingface.co/settings/tokens",
     ),
+    # The two OAuth *client* registrations mail uses (`EMAIL-1`). One per install, not
+    # per mailbox — which is exactly what this static catalog models. The rotating
+    # per-account token bundle is a different secret and lives sealed on the account row
+    # (`MailAccount.secret_enc`), because this table cannot express several accounts,
+    # refresh tokens, or expiry.
+    ServiceInfo(
+        "google_oauth",
+        "Google (OAuth client)",
+        "Gmail accounts — the client secret of your Google OAuth app, used to obtain and "
+        "refresh each connected mailbox's access.",
+        "https://console.cloud.google.com/apis/credentials",
+    ),
+    ServiceInfo(
+        "microsoft_oauth",
+        "Microsoft (OAuth client)",
+        "Outlook / Microsoft 365 accounts — the client secret of your Entra app "
+        "registration, used to obtain and refresh each connected mailbox's access.",
+        "https://entra.microsoft.com/",
+    ),
 )
 _SERVICE_IDS = frozenset(s.id for s in KNOWN_SERVICES)
 

@@ -56,7 +56,9 @@ class MailTransport(Protocol):
         ...
 
     async def send(self, message: OutgoingMail) -> str:
-        """Send ``message``; returns the RFC 5322 Message-ID it was sent with."""
+        """Send ``message``; returns the RFC 5322 Message-ID it was sent with, or an
+        empty string where the provider mints the id server-side and doesn't disclose it
+        (Microsoft Graph). Callers must not treat the id as guaranteed."""
         ...
 
     async def flag(

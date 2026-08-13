@@ -16,6 +16,7 @@ from email import message_from_bytes, policy
 from email.headerregistry import Address
 from email.message import EmailMessage
 from email.utils import format_datetime, make_msgid, parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 
 import trafilatura
@@ -57,7 +58,14 @@ def parse_message(raw: bytes, *, uid: str, thread_id: str | None = None) -> Mail
 
 def html_to_text(html: str | None) -> str:
     """Reduce an HTML body to readable plain text, via the extractor `services/webfetch`
-    already depends on. Falls back to an empty string rather than leaking markup."""
+    already depends on, with a plain tag-strip behind it.
+
+    The fallback earns its place here in a way it doesn't for web pages: trafilatura is
+    tuned to find the *main article* of a document and discards everything else, which is
+    right for a news page and wrong for a three-sentence mail with no article structure —
+    or for the table-soup a marketing sender produces. When it finds nothing, the body is
+    stripped of markup rather than shown as empty. Markup never escapes either path.
+    """
     if not html:
         return ""
     try:
@@ -65,8 +73,53 @@ def html_to_text(html: str | None) -> str:
             html, output_format="markdown", include_tables=True, favor_recall=True
         )
     except Exception:  # noqa: BLE001 — extraction is best-effort; markup must not escape
+        extracted = None
+    return (extracted or "").strip() or _strip_tags(html)
+
+
+class _TextExtractor(HTMLParser):
+    """A minimal tag-stripper: text only, block elements separated by newlines, and the
+    contents of ``script``/``style`` dropped entirely."""
+
+    _SKIP = {"script", "style", "head", "title"}
+    _BREAK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._skipping = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._SKIP:
+            self._skipping += 1
+        elif tag in self._BREAK:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP and self._skipping:
+            self._skipping -= 1
+        elif tag in self._BREAK:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skipping:
+            self._chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        joined = "".join(self._chunks)
+        lines = [_WHITESPACE.sub(" ", line).strip() for line in joined.splitlines()]
+        return "\n".join(line for line in lines if line).strip()
+
+
+def _strip_tags(html: str) -> str:
+    parser = _TextExtractor()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 — malformed markup must not lose the message
         return ""
-    return (extracted or "").strip()
+    return parser.text
 
 
 def snippet_of(text: str, limit: int = SNIPPET_CHARS) -> str:
