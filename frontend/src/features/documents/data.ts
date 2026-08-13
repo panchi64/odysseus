@@ -5,6 +5,8 @@ import type {
   DocVersion,
   DocumentDetail,
   DocumentSummary,
+  SuggestionOutcome,
+  SuggestionSet,
 } from "./model";
 
 /* ── Backend DTOs → seam types ────────────────────────────────────────────── */
@@ -188,4 +190,83 @@ export async function restoreDocumentVersion(
   await api.post(`/documents/${id}/versions/${version}/restore`);
   refreshDocuments();
   refreshDocumentDetail();
+}
+
+/* ── AI suggestions (DOC-3) ───────────────────────────────────────────────── */
+
+/** The accept response. `document` is the document as it now stands — the backend is the
+ *  authority on the resulting body, so the screen adopts it rather than re-deriving it. */
+interface SuggestionAppliedOut {
+  document: DocumentOut;
+  version: number | null;
+  accepted: string[];
+  skipped: string[];
+}
+
+const [suggestionTick, setSuggestionTick] = createSignal(0);
+
+/** Invalidate a document's pending suggestions after a decision. */
+export function refreshSuggestions(): void {
+  setSuggestionTick((n) => n + 1);
+}
+
+/** The AI's still-undecided proposals for a document, newest set first. Fully reviewed
+ *  sets are omitted by the backend — this asks only for outstanding decisions. */
+export function useDocumentSuggestions(
+  id: () => string,
+): Resource<SuggestionSet[]> {
+  const [data] = createResource(
+    () => [id(), suggestionTick()] as const,
+    ([docId]) => api.get<SuggestionSet[]>(`/documents/${docId}/suggestions`),
+  );
+  return data;
+}
+
+function toOutcome(dto: SuggestionAppliedOut): SuggestionOutcome {
+  return {
+    body: dto.document.body,
+    version: dto.version,
+    accepted: dto.accepted,
+    skipped: dto.skipped,
+  };
+}
+
+/** Apply one proposed change. This is the only call here that changes the document — the
+ *  backend mints the version and returns the resulting body. */
+export async function acceptSuggestion(
+  documentId: string,
+  changeId: string,
+): Promise<SuggestionOutcome> {
+  const dto = await api.post<SuggestionAppliedOut>(
+    `/documents/${documentId}/suggestion-changes/${changeId}/accept`,
+  );
+  refreshSuggestions();
+  refreshDocuments();
+  refreshDocumentDetail();
+  return toOutcome(dto);
+}
+
+/** Decline one proposed change — no version, no edit. */
+export async function rejectSuggestion(
+  documentId: string,
+  changeId: string,
+): Promise<void> {
+  await api.post(
+    `/documents/${documentId}/suggestion-changes/${changeId}/reject`,
+  );
+  refreshSuggestions();
+}
+
+/** Apply every still-pending change in a set as one version. */
+export async function acceptAllSuggestions(
+  documentId: string,
+  setId: string,
+): Promise<SuggestionOutcome> {
+  const dto = await api.post<SuggestionAppliedOut>(
+    `/documents/${documentId}/suggestions/${setId}/accept-all`,
+  );
+  refreshSuggestions();
+  refreshDocuments();
+  refreshDocumentDetail();
+  return toOutcome(dto);
 }

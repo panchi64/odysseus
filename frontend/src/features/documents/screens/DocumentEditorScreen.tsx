@@ -20,7 +20,6 @@ import {
   StatusFlag,
   Text,
   Textarea,
-  Tooltip,
   confirm,
   toast,
 } from "~/ui";
@@ -32,8 +31,9 @@ import {
 } from "../data";
 import { lineDiff } from "../diff";
 import { DocumentDiff } from "../components/DocumentDiff";
+import { SuggestionReview } from "../components/SuggestionReview";
 import { RenameDialog } from "../components/RenameDialog";
-import type { DocVersion } from "../model";
+import type { DocVersion, SuggestionOutcome } from "../model";
 
 export function DocumentEditorScreen(props: { id: string }): JSX.Element {
   const detail = useDocumentDetail(() => props.id);
@@ -117,24 +117,21 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
     }
   }
 
+  /** Adopt the body the backend returned after an accept, so the editor isn't left
+   *  holding a draft that predates the change the operator just applied. */
+  function handleSuggestionApplied(outcome: SuggestionOutcome): void {
+    setBody(outcome.body);
+    setSavedSnapshot(outcome.body);
+  }
+
   const toolsPanel = () => (
     <>
-      {/* AI Assist — DOC-3 (streaming rewrite/suggest) lands in a later slice. */}
-      <Panel label="AI ASSIST">
-        <Tooltip label="Available in Phase 2">
-          <Row gap={2} wrap>
-            <Button variant="default" size="sm" leading="pen" disabled>
-              REWRITE
-            </Button>
-            <Button variant="default" size="sm" leading="note" disabled>
-              SUMMARIZE
-            </Button>
-            <Button variant="default" size="sm" leading="compare" disabled>
-              SUGGEST
-            </Button>
-          </Row>
-        </Tooltip>
-      </Panel>
+      {/* Change-by-change review of what the AI proposed (DOC-3). The AI itself is driven
+          from chat — the editor reviews proposals, it never asks for them. */}
+      <SuggestionReview
+        documentId={props.id}
+        onApplied={handleSuggestionApplied}
+      />
 
       <Panel
         label="VERSION HISTORY"

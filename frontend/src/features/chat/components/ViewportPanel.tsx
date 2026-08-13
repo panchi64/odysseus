@@ -53,6 +53,13 @@ export function ViewportPanel(props: {
   onKeeper?: (item: ViewItem) => void;
   /** Relays an inline document edit to the backend (SAVE mints a new version). */
   onSaveDocument: (documentId: string, body: string) => Promise<void>;
+  /** Fold in a version minted outside the run stream — an accepted AI suggestion
+   *  (`DOC-3`) applies through the documents surface, so the View is told. */
+  onDocumentVersion: (
+    documentId: string,
+    body: string,
+    version: number | null,
+  ) => void;
   /** A navigation (pin/tab change) is blocked on an unsaved document edit. */
   pendingNav?: boolean;
   onDiscardEdits?: () => void;
@@ -226,6 +233,7 @@ export function ViewportPanel(props: {
                     priorVersions={priorVersions()}
                     priorDocuments={priorDocuments()}
                     onSaveDocument={props.onSaveDocument}
+                    onDocumentVersion={props.onDocumentVersion}
                     fontStep={props.fontStep}
                     softWrap={props.softWrap}
                   />

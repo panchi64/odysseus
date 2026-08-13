@@ -2059,22 +2059,23 @@ export function createChatStream(
     void reattachRun(ar.id, { fromSeq: 0 });
   });
 
-  /** Save an inline edit to a document: PATCH the backend (which stamps origin=user
-   *  and mints a new version), then append that new user-origin version so the
-   *  viewport's dropdown updates in place. The **version number comes from the backend
-   *  response** — the frontend never invents an authoritative value — falling back only
-   *  if an older backend omits it. Throws on failure so the caller can surface it. */
-  async function saveDocumentEdit(
+  /** Fold a version the backend has already minted into the viewport's
+   *  conversation-scoped list, so its dropdown updates in place. The **version number
+   *  comes from the backend** — the frontend never invents an authoritative value —
+   *  falling back to "one past the highest we know" only when the response omits it.
+   *  One implementation for both non-SSE producers below. */
+  function appendDocumentVersion(
     documentId: string,
     body: string,
-  ): Promise<void> {
-    const saved = await saveDocument(documentId, { body });
+    origin: ViewDocumentRef["origin"],
+    version: number | null | undefined,
+  ): void {
     setDocuments((prev) => {
       const title = [...prev]
         .reverse()
         .find((d) => d.documentId === documentId)?.title;
-      const version =
-        saved.version ??
+      const next =
+        version ??
         prev.reduce(
           (m, d) => (d.documentId === documentId ? Math.max(m, d.version) : m),
           0,
@@ -2083,14 +2084,36 @@ export function createChatStream(
         ...prev,
         {
           documentId,
-          version,
+          version: next,
           title,
-          origin: "user",
+          origin,
           body,
           createdAt: new Date().toISOString(),
         },
       ];
     });
+  }
+
+  /** Save an inline edit to a document: PATCH the backend (which stamps origin=user
+   *  and mints a new version), then append that new user-origin version. Throws on
+   *  failure so the caller can surface it. */
+  async function saveDocumentEdit(
+    documentId: string,
+    body: string,
+  ): Promise<void> {
+    const saved = await saveDocument(documentId, { body });
+    appendDocumentVersion(documentId, body, "user", saved.version);
+  }
+
+  /** Reflect a version minted by accepting an AI suggestion (`DOC-3`). Accepting goes
+   *  through the documents surface rather than the run's event stream, so nothing tells
+   *  the View about it — the review UI hands the backend's resulting body straight here. */
+  function noteDocumentVersion(
+    documentId: string,
+    body: string,
+    version: number | null,
+  ): void {
+    appendDocumentVersion(documentId, body, "ai", version);
   }
 
   /** Flip a snapshot's keeper bookmark: optimistically replace the array element
@@ -2154,6 +2177,7 @@ export function createChatStream(
     /** The conversation's documents, flattened to one entry per committed version. */
     documents,
     saveDocumentEdit,
+    noteDocumentVersion,
     toggleSnapshotKeeper,
     toggleDocumentKeeper,
     sending,
