@@ -27,6 +27,7 @@ from services.documents import DocumentStore
 from services.external_tools import ExternalPolicyStore, set_external_runtime
 from services.gallery import GalleryService
 from services.host_shell import ShellService
+from services.integrations import IntegrationService
 from services.mcp import McpRegistry
 from services.memory import MemoryStore
 from services.notifications import NotificationService
@@ -254,9 +255,16 @@ def mcp(request: Request) -> McpRegistry:
     return registry
 
 
-def integrations(request: Request) -> object | None:
-    """Third-party connectors (`INTEG-*`) — None until track T3 lands."""
-    return getattr(request.app.state, "integrations", None)
+def integrations(request: Request) -> IntegrationService:
+    """Third-party connectors configured from presets (`INTEG-*`). Built and published
+    on first use, exactly like `mcp` above and for the same reason."""
+    state = request.app.state
+    service: IntegrationService | None = getattr(state, "integrations", None)
+    if service is None:
+        service = IntegrationService(state.db_engine, state.vault, _external_policy(request))
+        state.integrations = service
+        set_external_runtime(integrations=service)
+    return service
 
 
 def external(request: Request) -> object | None:
