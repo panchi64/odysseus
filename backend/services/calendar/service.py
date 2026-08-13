@@ -80,6 +80,11 @@ class EventView:
     exdates: list[str]
     created_at: datetime
     updated_at: datetime
+    # Remote-sync bookkeeping — where this event lives on its CalDAV server and the
+    # server's version stamp. Both null for a purely local event; the sync capability
+    # reads them to tell "never pushed" from "already there, unchanged".
+    remote_href: str | None = None
+    remote_etag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -303,6 +308,7 @@ class CalendarService:
         location: str | None = None,
         rrule: str | None = None,
         clear_rrule: bool = False,
+        remote_href: str | None = None,
         remote_etag: str | None = None,
     ) -> EventView:
         """Apply a partial edit to the whole event (the series, when it recurs).
@@ -338,6 +344,8 @@ class CalendarService:
                 event.description_enc = self._seal(description or None)
             if location is not None:
                 event.location_enc = self._seal(location or None)
+            if remote_href is not None:
+                event.remote_href = remote_href
             if remote_etag is not None:
                 event.remote_etag = remote_etag
             event.starts_at = start
@@ -563,6 +571,8 @@ class CalendarService:
             exdates=list(row.exdates),
             created_at=row.created_at,
             updated_at=row.updated_at,
+            remote_href=row.remote_href,
+            remote_etag=row.remote_etag,
         )
 
 
