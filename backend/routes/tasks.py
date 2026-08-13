@@ -47,7 +47,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 # vocabulary `ApprovalGrant.tool_name` already uses (see `services/approval_grants.py`,
 # `routes/conversations.py`'s conversation-grants routes), mirroring the actual
 # sensitive/gated tools: `tools/code.py`'s `run_host_command`
-# (`requires_approval=True`), `tools/documents.py`'s foreign-doc `edit`, and
+# (`requires_approval=True`), `tools/documents.py`'s foreign-doc `edit` and `suggest`, and
 # `tools/recall_gate.py`'s AE-3.8 global-recall gate over `corpus.retrieve`/
 # `memory.recall`/`conversations.search`. No runtime tool-catalog introspection exists
 # to derive this automatically, so it's kept here as a small hand-maintained constant —
@@ -56,6 +56,7 @@ _KNOWN_GRANT_SCOPES = frozenset(
     {
         "code_run_host_command",
         "document_edit",
+        "document_suggest",
         "corpus_retrieve",
         "memory_recall",
         "conversations_search",

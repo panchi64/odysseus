@@ -165,6 +165,107 @@ async def test_edit_rejects_a_span_that_is_absent():
     assert (await store.get(OWNER, doc.id)).body == "hello"
 
 
+# --- suggest: propose without applying (DOC-3) ------------------------------
+
+
+async def test_suggest_records_pending_changes_without_touching_the_document():
+    store = await _store()
+    doc = await store.create(
+        OWNER, "Report", "alpha\nbeta\ngamma\n", conversation_id=CONV, origin="ai"
+    )
+
+    run, out = await _drive(
+        store,
+        CONV,
+        "document_suggest",
+        {
+            "document_id": doc.id,
+            "summary": "two tweaks",
+            "changes": [
+                {"old_text": "alpha", "new_text": "ALPHA", "explanation": "louder"},
+                {"old_text": "gamma", "new_text": "GAMMA"},
+            ],
+        },
+    )
+
+    assert not isinstance(out, DeferredToolRequests)  # its own conversation ⇒ no gate
+    types = _types(run)
+    # Streamed as produced, but never committed — a version exists only once accepted.
+    assert types.count("document.delta") == 3  # two proposals + settling back on truth
+    assert "document.committed" not in types
+
+    assert (await store.get(OWNER, doc.id)).body == "alpha\nbeta\ngamma\n"
+    assert [v.version for v in await store.list_versions(OWNER, doc.id)] == [1]
+
+    sets = await store.suggestions.list_for_document(OWNER, doc.id)
+    assert len(sets) == 1 and sets[0].pending == 2
+    assert sets[0].summary == "two tweaks"
+    assert sets[0].conversation_id == CONV
+    assert sets[0].changes[0].explanation == "louder"
+
+
+async def test_suggest_streams_a_preview_then_settles_back_on_the_real_body():
+    store = await _store()
+    doc = await store.create(OWNER, "Report", "one two", conversation_id=CONV, origin="ai")
+
+    run, _out = await _drive(
+        store,
+        CONV,
+        "document_suggest",
+        {
+            "document_id": doc.id,
+            "changes": [
+                {"old_text": "one", "new_text": "1"},
+                {"old_text": "two", "new_text": "2"},
+            ],
+        },
+    )
+
+    bodies = [e.body.text for e in run.stream.replay() if e.body.type == "document.delta"]
+    # The proposal builds up in the View, then the last delta restores what the document
+    # actually says — nothing was applied.
+    assert bodies == ["1 two", "1 2", "one two"]
+
+
+async def test_suggest_on_a_foreign_document_pauses_for_approval():
+    store = await _store()
+    doc = await store.create(OWNER, "Library", "hello world")
+
+    run, out = await _drive(
+        store,
+        CONV,
+        "document_suggest",
+        {"document_id": doc.id, "changes": [{"old_text": "world", "new_text": "there"}]},
+    )
+
+    assert isinstance(out, DeferredToolRequests)
+    assert any(c.tool_name == "document_suggest" for c in out.approvals)
+    assert "document.delta" not in _types(run)
+    assert await store.suggestions.list_for_document(OWNER, doc.id) == []
+
+
+async def test_suggest_refuses_the_whole_set_when_one_span_is_ambiguous():
+    store = await _store()
+    doc = await store.create(OWNER, "Report", "la la la", conversation_id=CONV, origin="ai")
+
+    run, _out = await _drive(
+        store,
+        CONV,
+        "document_suggest",
+        {
+            "document_id": doc.id,
+            "changes": [
+                {"old_text": "la la la", "new_text": "LA LA LA"},
+                {"old_text": "la", "new_text": "LA"},
+            ],
+        },
+    )
+
+    assert "document.delta" not in _types(run)
+    assert await store.suggestions.list_for_document(OWNER, doc.id) == []
+    assert (await store.get(OWNER, doc.id)).body == "la la la"
+
+
 # --- next-turn context injection --------------------------------------------
 
 
