@@ -20,6 +20,7 @@ both are mapped here (404 / 422) rather than anywhere below.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,8 @@ from services.calendar import CalendarView, EventView, OccurrenceView
 from services.calendar.caldav import CalDavSync
 from services.calendar.ics import ICS_MEDIA_TYPE, export_calendar, import_into
 from services.calendar.nl import EventDraft
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -166,6 +169,20 @@ class SyncOut(CamelModel):
     last_synced_at: datetime | None = None
 
 
+class SyncAllOut(CamelModel):
+    """The result of reconciling every remote-bound calendar at once.
+
+    ``calendars`` is how many were bound to a server (0 ⇒ there was nothing to sync, which
+    is a different thing to say than "no changes"), ``changed`` the total number of events
+    that moved in either direction, and ``failed`` the calendars whose server refused —
+    a caller can report all three without deciding anything itself.
+    """
+
+    calendars: int
+    changed: int
+    failed: list[str] = []
+
+
 class ImportOut(CamelModel):
     created: int
     updated: int
@@ -272,6 +289,37 @@ async def sync_calendar(calendar_id: str, request: Request) -> SyncOut:
         skipped=result.skipped,
         last_synced_at=calendar.last_synced_at,
     )
+
+
+@router.post("/sync", response_model=SyncAllOut)
+async def sync_all_calendars(request: Request) -> SyncAllOut:
+    """Reconcile every calendar bound to a CalDAV server (`CAL-2`).
+
+    Which calendars are remote, and what "one sync" means across them, is decided here
+    rather than by the caller looping over `/calendars/{id}/sync` — the surface that shows
+    a SYNC button should be able to press it with one call and render what came back.
+
+    One server being unreachable doesn't abandon the others: the failure is collected and
+    the remaining calendars still sync, so a single stale binding can't silently stop the
+    rest of the schedule from updating.
+    """
+    service = deps.calendar(request)
+    syncer = CalDavSync(service)
+    remote = [row for row in await service.list_calendars(OPERATOR_ID) if row.synced]
+
+    changed = 0
+    failed: list[str] = []
+    for calendar in remote:
+        try:
+            result = await syncer.sync(OPERATOR_ID, calendar.id)
+        except Exception:  # noqa: BLE001 — one bad binding must not sink the others
+            logger.warning("calendar sync failed for %s", calendar.id, exc_info=True)
+            failed.append(calendar.name)
+            continue
+        changed += (
+            result.pulled_created + result.pulled_updated + result.pushed + result.removed_locally
+        )
+    return SyncAllOut(calendars=len(remote), changed=changed, failed=failed)
 
 
 # --- ICS files (`CAL-2`) --------------------------------------------------

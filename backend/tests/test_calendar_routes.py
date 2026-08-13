@@ -87,6 +87,32 @@ async def test_syncing_a_private_server_is_refused_as_an_upstream_error():
         assert resp.status_code == 502
 
 
+async def test_syncing_everything_with_nothing_bound_reports_zero_calendars():
+    """`calendars: 0` is a different answer to "no changes" — a caller must be able to say
+    "there is nothing to sync" rather than "everything is up to date"."""
+    async with client_app() as (client, _app):
+        await _calendar(client)  # local-only, so not remote
+        resp = await client.post("/calendar/sync")
+        assert resp.status_code == 200
+        assert resp.json() == {"calendars": 0, "changed": 0, "failed": []}
+
+
+async def test_syncing_everything_reports_a_failed_calendar_without_abandoning_the_rest():
+    """One unreachable server must not stop the others: the whole pass still succeeds and
+    names what failed, so a stale binding can't silently freeze the rest of the schedule."""
+    async with client_app() as (client, _app):
+        await _calendar(client, "Local")
+        await _calendar(
+            client, "LAN", caldavUrl="http://127.0.0.1:8080/dav/", caldavUsername="operator"
+        )
+        resp = await client.post("/calendar/sync")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["calendars"] == 1
+        assert body["changed"] == 0
+        assert body["failed"] == ["LAN"]
+
+
 # --- events + occurrences --------------------------------------------------
 
 

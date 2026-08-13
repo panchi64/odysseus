@@ -1,7 +1,15 @@
 /** Calendar feature data contracts. */
 
+/** The repetition choices the picker offers, plus `custom` — the read-only bucket for a
+ *  rule the backend holds that the picker can't express (an imported or CalDAV-synced
+ *  series). It reads as "repeats", never as "none", so a recurring event is never shown
+ *  as one-off. */
 export type RecurrenceRule =
-  "none" | "daily" | "weekly" | "monthly" | "weekdays";
+  "none" | "daily" | "weekly" | "monthly" | "weekdays" | "custom";
+
+/** What the picker can actually produce. `custom` is display-only — a rule the backend
+ *  holds and the picker can't express — so it is never something the operator can pick. */
+export type RecurrenceChoice = Exclude<RecurrenceRule, "custom">;
 
 export interface Calendar {
   id: string;
@@ -19,7 +27,12 @@ export interface CalendarEvent {
   start: string; // ISO datetime
   end: string; // ISO datetime
   location?: string;
+  /** How the event repeats, for display in the detail panel. */
   recurrence?: RecurrenceRule;
+  /** Whether this is one instance of a series — the backend's own answer, which is what
+   *  decides whether removing it cancels an occurrence or deletes the event. Never
+   *  inferred from `recurrence`: only the backend knows what it stored. */
+  recurring: boolean;
   allDay?: boolean;
   description?: string;
 }
