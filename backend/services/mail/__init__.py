@@ -8,6 +8,8 @@ network. See ``services/mail/CLAUDE.md``.
 
 from __future__ import annotations
 
+from .cache import MessageDetail, MessageView
+from .drafts import DraftView, StyleProfileView
 from .errors import MailAuthError, MailError, MailUnavailableError, MailUnsupportedError
 from .models import (
     AccountSpec,
@@ -18,20 +20,27 @@ from .models import (
     OutgoingMail,
     TransportCapabilities,
 )
+from .service import AccountView, MailService
 from .transport import MailTransport, WatchableTransport
 
 __all__ = [
     "AccountSpec",
+    "AccountView",
+    "DraftView",
     "MailAddress",
     "MailAuthError",
     "MailBody",
     "MailError",
     "MailFolder",
     "MailHeader",
+    "MailService",
     "MailTransport",
     "MailUnavailableError",
     "MailUnsupportedError",
+    "MessageDetail",
+    "MessageView",
     "OutgoingMail",
+    "StyleProfileView",
     "TransportCapabilities",
     "WatchableTransport",
 ]
