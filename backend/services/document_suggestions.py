@@ -229,12 +229,16 @@ class DocumentSuggestionStore:
 
         return await in_session(self._engine, work)
 
-    async def reject(self, owner_id: str, change_id: str) -> SuggestionChangeView:
+    async def reject(
+        self, owner_id: str, change_id: str, *, document_id: str | None = None
+    ) -> SuggestionChangeView:
         """Decline one change. Writes a status and nothing else — no version, no edit to
-        the document, no trace in the history."""
+        the document, no trace in the history. ``document_id`` is an optional scope guard
+        for callers that reached the change through a document (a nested REST path), so a
+        mismatched pair is a not-found rather than a decision on some other document."""
 
         def work(session: Session) -> SuggestionChangeView:
-            change = _require_pending(session, owner_id, change_id)
+            change = _require_pending(session, owner_id, change_id, document_id)
             change.status = SuggestionStatus.REJECTED
             change.decided_at = datetime.now(UTC)
             session.add(change)
@@ -245,15 +249,18 @@ class DocumentSuggestionStore:
 
     # --- accept -----------------------------------------------------------
 
-    async def accept(self, owner_id: str, change_id: str) -> SuggestionApplied:
+    async def accept(
+        self, owner_id: str, change_id: str, *, document_id: str | None = None
+    ) -> SuggestionApplied:
         """Apply exactly one proposed change and mint **one** version (origin ``ai``).
 
         Raises :class:`DocumentSpanError` — leaving the change pending and the document
         untouched — when the anchor no longer matches exactly one span, so a document that
-        moved underneath a suggestion refuses rather than corrupting."""
+        moved underneath a suggestion refuses rather than corrupting. ``document_id`` is
+        the same optional scope guard :meth:`reject` takes."""
 
         def work(session: Session) -> tuple[SuggestionApplied, str]:
-            change = _require_pending(session, owner_id, change_id)
+            change = _require_pending(session, owner_id, change_id, document_id)
             document = _require(session, owner_id, change.document_id)
             body = self._vault.decrypt_str(document.body_enc)
             new_body = replace_unique(
@@ -278,7 +285,9 @@ class DocumentSuggestionStore:
         self._adapter.index_document(owner_id, applied.document.id, new_body)
         return applied
 
-    async def accept_all(self, owner_id: str, set_id: str) -> SuggestionApplied:
+    async def accept_all(
+        self, owner_id: str, set_id: str, *, document_id: str | None = None
+    ) -> SuggestionApplied:
         """Apply every still-pending change in a set as **one** version.
 
         Changes are applied in the order their anchors appear in the current body, each
@@ -290,7 +299,11 @@ class DocumentSuggestionStore:
 
         def work(session: Session) -> tuple[SuggestionApplied, str | None]:
             suggestion_set = session.get(DocumentSuggestionSet, set_id)
-            if suggestion_set is None or suggestion_set.owner_id != owner_id:
+            if (
+                suggestion_set is None
+                or suggestion_set.owner_id != owner_id
+                or (document_id is not None and suggestion_set.document_id != document_id)
+            ):
                 raise NotFoundError(f"suggestion set {set_id!r} not found")
             document = _require(session, owner_id, suggestion_set.document_id)
             body = self._vault.decrypt_str(document.body_enc)
@@ -422,7 +435,7 @@ def _require(session: Session, owner_id: str, document_id: str) -> Document:
 
 
 def _require_pending(
-    session: Session, owner_id: str, change_id: str
+    session: Session, owner_id: str, change_id: str, document_id: str | None = None
 ) -> DocumentSuggestionChange:
     """The one pending change with this id, or a not-found. An already-decided change is
     *not* found on purpose: accepting or rejecting twice must never be a second decision."""
@@ -431,6 +444,7 @@ def _require_pending(
         change is None
         or change.owner_id != owner_id
         or change.status != SuggestionStatus.PENDING
+        or (document_id is not None and change.document_id != document_id)
     ):
         raise NotFoundError(f"pending suggestion {change_id!r} not found")
     return change
