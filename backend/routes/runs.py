@@ -215,6 +215,13 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             documents=deps.documents(request),
             skills=deps.skills(request),
             notifications=deps.notifications(request),
+            # The reserved sprint handles belong here for exactly the reason above, and
+            # more sharply: mail-send, vault-read and untrusted external tools are the
+            # approval-gated ones, so this resume path is the *only* way they ever run.
+            mail=deps.mail(request),
+            calendar=deps.calendar(request),
+            secret_vault=deps.secret_vault(request),
+            external=deps.external(request),
         ),
         store=deps.store(request),
         # A resumed turn respects the current offline state too — if connectivity
