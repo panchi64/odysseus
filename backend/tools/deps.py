@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from services.conversation_search import ConversationSearch
     from services.corpus import CorpusIndex
     from services.documents import DocumentStore
+    from services.mail import MailService
     from services.memory import MemoryStore
     from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
@@ -74,7 +75,9 @@ class Capabilities:
     # there — it never edits this file, the engine, `routes/chat.py`, or `app.py`.
     # Typed loosely because the concrete services don't exist yet; each track narrows
     # its own line to the real type when it lands (distinct lines ⇒ no conflicts).
-    mail: object | None = None
+    # The mail capability (`EMAIL-1..4`) — lets the mail toolset list/read/send the
+    # operator's email. None ⇒ the mail tools report email is unavailable.
+    mail: MailService | None = None
     calendar: object | None = None
     secret_vault: object | None = None
     external: object | None = None
@@ -153,7 +156,9 @@ class RunDeps:
     # engine unpacks them here for every turn. None ⇒ that track hasn't landed (or its
     # service is unavailable), so its tools degrade with an "unavailable" result rather
     # than failing the turn — the same contract every other capability here follows.
-    mail: object | None = None
+    # The mail capability (`EMAIL-1..4`) — the mail toolset lists/reads/sends through it.
+    # None ⇒ the mail tools report that email is unavailable.
+    mail: MailService | None = None
     calendar: object | None = None
     secret_vault: object | None = None
     external: object | None = None

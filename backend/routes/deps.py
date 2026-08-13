@@ -26,6 +26,7 @@ from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.gallery import GalleryService
 from services.host_shell import ShellService
+from services.mail import MailService
 from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
@@ -223,9 +224,27 @@ def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:
 # return type, exactly like the accessors above.
 
 
-def mail(request: Request) -> object | None:
-    """The mail capability (`EMAIL-*`) — None until track T1 lands."""
-    return getattr(request.app.state, "mail", None)
+def mail(request: Request) -> MailService:
+    """The mail capability (`EMAIL-1..5`).
+
+    Built on first use rather than in the app lifespan, and memoized on ``app.state`` so
+    every later call gets the same instance (its cached transports and freshness windows
+    live on it). Its background sync worker is started with it; the process exit tears the
+    task down, since nothing else holds it.
+    """
+    existing = getattr(request.app.state, "mail", None)
+    if existing is not None:
+        return existing
+    service = MailService(
+        db_engine(request),
+        vault(request),
+        credentials(request),
+        models(request),
+        notifications=notifications(request),
+    )
+    request.app.state.mail = service
+    request.app.state.mail_sync_task = asyncio.create_task(service.start(), name="mail-start")
+    return service
 
 
 def calendar(request: Request) -> object | None:
