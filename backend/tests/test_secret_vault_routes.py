@@ -33,7 +33,7 @@ async def test_lock_then_unlock_round_trip():
         await _unlocked(client)
 
         assert (await client.post("/vault/lock")).json()["unlocked"] is False
-        assert (await client.post("/vault/unlock", json={"passphrase": "wrong"})).status_code == 401
+        assert (await client.post("/vault/unlock", json={"passphrase": "wrong"})).status_code == 403
         assert (
             await client.post("/vault/unlock", json={"passphrase": PASSPHRASE})
         ).json()["unlocked"] is True
@@ -78,7 +78,7 @@ async def test_entry_crud():
         assert (await client.get("/vault/entries")).json() == []
 
 
-async def test_locked_vault_answers_423_everywhere():
+async def test_locked_vault_answers_409_everywhere():
     async with client_app() as (client, _):
         await _unlocked(client)
         entry_id = (
@@ -86,12 +86,12 @@ async def test_locked_vault_answers_423_everywhere():
         ).json()["id"]
         await client.post("/vault/lock")
 
-        assert (await client.get("/vault/entries")).status_code == 423
-        assert (await client.post("/vault/entries", json={"name": "x"})).status_code == 423
+        assert (await client.get("/vault/entries")).status_code == 409
+        assert (await client.post("/vault/entries", json={"name": "x"})).status_code == 409
         assert (
             await client.patch(f"/vault/entries/{entry_id}", json={"password": "x"})
-        ).status_code == 423
-        assert (await client.delete(f"/vault/entries/{entry_id}")).status_code == 423
+        ).status_code == 409
+        assert (await client.delete(f"/vault/entries/{entry_id}")).status_code == 409
 
 
 async def test_unknown_entry_is_404():

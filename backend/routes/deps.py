@@ -18,6 +18,7 @@ from core.vault import Vault
 from runs import ConversationBusyError, Run, RunRegistry
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
+from services.backup import BackupService
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
@@ -270,9 +271,18 @@ def secret_vault(request: Request) -> SecretVaultService:
     return service
 
 
-def backup(request: Request) -> object | None:
-    """Encrypted export/import (`BACKUP-*`) — None until track T4 lands."""
-    return getattr(request.app.state, "backup", None)
+def backup(request: Request) -> BackupService:
+    """Encrypted export/import (`BACKUP-*`). Built on first use and cached on
+    ``app.state``, like `secret_vault()` above and for the same sprint-scoped reason."""
+    service = getattr(request.app.state, "backup", None)
+    if service is None:
+        service = BackupService(
+            request.app.state.db_engine,
+            request.app.state.vault,
+            request.app.state.settings_store,
+        )
+        request.app.state.backup = service
+    return service
 
 
 def api_tokens(request: Request) -> object | None:

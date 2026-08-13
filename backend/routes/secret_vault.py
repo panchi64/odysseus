@@ -9,9 +9,14 @@ is ``secret_vault()``.
 See ``routes/mail.py`` for why the surface is registered before it exists.
 
 Thin, like every router: it parses, calls ``services/secret_vault``, and maps that layer's
-domain errors to status codes — **423** for a locked vault (the code the auth gate already
-uses for a locked app, which the frontend client treats as "re-authenticate"), 409 for a
-configure/unlock precondition, 404 for an unknown entry.
+domain errors to status codes — 409 for a locked vault or an unmet configure/unlock
+precondition, 403 for a wrong passphrase, 404 for an unknown entry.
+
+**Deliberately not 401/423 here.** Those two codes are spoken for app-wide: the frontend's
+API client treats either as *the session* having failed, clears the bearer token, and routes
+back to login. A wrong vault passphrase or a locked secrets manager is none of that — the
+operator's app session is perfectly fine — so this surface stays off those codes rather than
+logging someone out of everything for mistyping one passphrase.
 
 Unlock is not separately rate-limited: every attempt pays two Argon2id hashes (the verifier
 check, then the key derivation), which *is* the brute-force cost — the same reasoning that
@@ -93,7 +98,7 @@ def _out(view: SecretEntryView) -> EntryOut:
 
 
 def _locked() -> HTTPException:
-    return HTTPException(status_code=423, detail="the password vault is locked")
+    return HTTPException(status_code=409, detail="the password vault is locked")
 
 
 @router.get("/state", response_model=VaultStateOut)
@@ -122,7 +127,7 @@ async def unlock_vault(body: PassphraseIn, request: Request) -> VaultStateOut:
     except SecretVaultNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     if not opened:
-        raise HTTPException(status_code=401, detail="invalid vault passphrase")
+        raise HTTPException(status_code=403, detail="invalid vault passphrase")
     return _state(await service.status(OPERATOR_ID))
 
 
