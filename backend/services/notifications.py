@@ -20,6 +20,14 @@ Mirrors two existing disciplines rather than inventing a third:
 This module only records and streams what it's told. *Whether* to notify (the emit
 policy: which run outcomes are noteworthy, whether anyone was already watching) lives
 with the callers — the engine, the run registry, the approval routes — not here.
+
+**Out-of-band delivery** (`AE-3.2`, `TASK-6`) rides on top: the in-app record is always
+written, and any :mod:`services.notification_channels` channel handed in additionally
+carries the interruption-worthy kinds to email/push. Delivery uses a second lock-aware
+drainer, so a channel is never on the critical path of the thing that notified: an
+unreachable mail server degrades the run to in-app-only rather than breaking its approval
+park, and a locked vault parks the send (the sealed address can't be opened) rather than
+losing it.
 """
 
 from __future__ import annotations
@@ -41,6 +49,11 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id, utcnow
 from models.notification import Notification
+from services.notification_channels import (
+    OUT_OF_BAND_KINDS,
+    ChannelHealth,
+    NotificationChannel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,16 +121,29 @@ class _Job:
     resolved_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Delivery:
+    """One notification, queued for one channel. Deliberately **one job per channel**
+    rather than one per notification: a retry then re-runs only the channel that failed,
+    so a flaky push endpoint can never re-send an email the operator already got
+    (`TASK-6` forbids duplicates)."""
+
+    channel: NotificationChannel
+    view: NotificationView
+
+
 class NotificationService:
     def __init__(
         self,
         engine: Engine,
         vault: Vault,
         *,
+        channels: list[NotificationChannel] | None = None,
         ring_buffer_max: int = _RING_BUFFER_MAX,
     ) -> None:
         self._engine = engine
         self._vault = vault
+        self._channels = channels or []
         self._cache: dict[str, NotificationView] = {}
         self._buffer: deque[NotificationEvent] = deque(maxlen=ring_buffer_max)
         self._seq = 0
@@ -128,10 +154,21 @@ class NotificationService:
             unlocked=vault.unlocked_event,
             on_drop=self._on_drop,
         )
+        # Separate from the persistence drainer on purpose: a mail server that is slow or
+        # down must not hold up the durable write of the record itself, and the two have
+        # different failure meanings (a lost row is data loss; a lost send is a missed
+        # ping). Lock-aware because the channels' addresses are vault-sealed.
+        self._deliveries: WriteBehindWorker[_Delivery] = WriteBehindWorker(
+            self._deliver,
+            name="notifications-channels",
+            unlocked=vault.unlocked_event,
+            on_drop=self._on_delivery_drop,
+        )
         self._rehydrate_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self._worker.start()
+        await self._deliveries.start()
         # Best-effort, off the critical path: once unlocked, lift prior history into
         # the cache so a restart's REST/unread state reflects it, not just what's
         # notified after this boot (mirrors the embedding backfill's posture).
@@ -144,11 +181,17 @@ class NotificationService:
             self._rehydrate_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._rehydrate_task
+        await self._deliveries.stop()
         await self._worker.stop()
 
     @property
     def last_seq(self) -> int:
         return self._seq
+
+    async def channel_health(self, owner_id: str) -> list[ChannelHealth]:
+        """Every configured channel's health, for the operator's status surface
+        (`XC-DEG-3`). Never raises — each channel reports its own state."""
+        return [await channel.health(owner_id) for channel in self._channels]
 
     # --- writes -------------------------------------------------------------
 
@@ -197,6 +240,7 @@ class NotificationService:
                 created_at=view.created_at,
             )
         )
+        self._dispatch(view)
         return view
 
     async def mark_read(self, owner_id: str, ids: list[str]) -> int:
@@ -325,6 +369,31 @@ class NotificationService:
     def _on_drop(self, job: _Job, exc: Exception) -> None:
         logger.error(
             "notifications: dropped a %s write for %s after retries: %s", job.op, job.id, exc
+        )
+
+    # --- out-of-band delivery (AE-3.2, TASK-6) ------------------------------
+
+    def _dispatch(self, view: NotificationView) -> None:
+        """Queue the interruption-worthy kinds to every channel. Synchronous and
+        non-blocking, like the persistence submit beside it — the caller that notified
+        (an approval park, a reminder fire) never waits on a network."""
+        if view.kind not in OUT_OF_BAND_KINDS:
+            return
+        for channel in self._channels:
+            self._deliveries.submit(_Delivery(channel=channel, view=view))
+
+    async def _deliver(self, delivery: _Delivery) -> None:
+        await delivery.channel.deliver(delivery.view)
+
+    def _on_delivery_drop(self, delivery: _Delivery, exc: Exception) -> None:
+        """A channel that gave up. Logged loudly rather than swallowed — the operator's
+        in-app record still exists, so this is a degraded reach, not a lost notification
+        (`XC-DEG-3`)."""
+        logger.error(
+            "notifications: could not reach the operator over %s for %s after retries: %s",
+            delivery.channel.key,
+            delivery.view.id,
+            exc,
         )
 
     async def _rehydrate(self) -> None:
