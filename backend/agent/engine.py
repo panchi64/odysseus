@@ -462,6 +462,12 @@ async def _drive_turn(
         workspace_history=caps.workspace_history,
         documents=caps.documents,
         skills=caps.skills,
+        # Reserved sprint capabilities — forwarded unconditionally so a track only has to
+        # hang its service on `app.state`; None until then, and its tools degrade.
+        mail=caps.mail,
+        calendar=caps.calendar,
+        secret_vault=caps.secret_vault,
+        external=caps.external,
         # The turn's resolved compaction context (config + persistence boundary + handle map),
         # built once by the orchestrator and shared across the turn's segments (the grant-resume
         # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior

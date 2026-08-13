@@ -260,6 +260,13 @@ def _submit_turn(
             documents=deps.documents(request),
             skills=deps.skills(request),
             notifications=deps.notifications(request),
+            # Reserved sprint capabilities — each accessor reads through `getattr` and
+            # returns None until its track hangs the service on `app.state`, so these
+            # are wired once here rather than by every track that lands one.
+            mail=deps.mail(request),
+            calendar=deps.calendar(request),
+            secret_vault=deps.secret_vault(request),
+            external=deps.external(request),
         ),
         registry=deps.registry(request),
         store=deps.store(request),

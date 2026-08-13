@@ -674,6 +674,13 @@ async def lifespan(app: FastAPI):
                 documents=app.state.documents,
                 skills=app.state.skills,
                 notifications=app.state.notifications,
+                # Reserved sprint capabilities — read defensively so a scheduled task's
+                # run sees a track's service the moment it hangs one on `app.state`,
+                # without this file changing again.
+                mail=getattr(app.state, "mail", None),
+                calendar=getattr(app.state, "calendar", None),
+                secret_vault=getattr(app.state, "secret_vault", None),
+                external=getattr(app.state, "external", None),
             ),
             registry=app.state.runs,
             store=conversations,

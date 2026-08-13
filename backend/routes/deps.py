@@ -243,6 +243,15 @@ def integrations(request: Request) -> object | None:
     return getattr(request.app.state, "integrations", None)
 
 
+def external(request: Request) -> object | None:
+    """The agent-facing handle over MCP servers + configured connectors, behind the
+    `AE-3.6` per-tool trust gate — None until track T3 lands. `mcp()` and
+    `integrations()` above back the two REST surfaces; this is the single handle the
+    `external` toolset reaches, so the tool layer doesn't need to know which of the two
+    a given tool came from."""
+    return getattr(request.app.state, "external", None)
+
+
 def secret_vault(request: Request) -> object | None:
     """The operator's secrets manager (`VAULT-*`) — None until track T4 lands.
     Distinct from `vault()` above, which is the at-rest key custody."""

@@ -67,6 +67,17 @@ class Capabilities:
     # pending). None ⇒ approval parks simply don't notify (graceful degradation, never
     # blocks the turn).
     notifications: NotificationService | None = None
+    # --- Reserved sprint capabilities ---------------------------------------------
+    # Declared up front so the parallel feature tracks don't each have to add a field
+    # here and at every construction site. Both call sites already forward whatever is
+    # on ``app.state`` under the matching name, so a track only has to hang its service
+    # there — it never edits this file, the engine, `routes/chat.py`, or `app.py`.
+    # Typed loosely because the concrete services don't exist yet; each track narrows
+    # its own line to the real type when it lands (distinct lines ⇒ no conflicts).
+    mail: object | None = None
+    calendar: object | None = None
+    secret_vault: object | None = None
+    external: object | None = None
 
 
 @dataclass
@@ -137,6 +148,15 @@ class RunDeps:
     # Tool-result compaction state for this turn — the history processor fills its handle
     # map; the `expand_tool_result` tool reads it. None ⇒ compaction is off for the run.
     compaction: CompactionContext | None = None
+    # --- Reserved sprint capabilities ---------------------------------------------
+    # The tools-side half of the reserved handles on :class:`Capabilities` above; the
+    # engine unpacks them here for every turn. None ⇒ that track hasn't landed (or its
+    # service is unavailable), so its tools degrade with an "unavailable" result rather
+    # than failing the turn — the same contract every other capability here follows.
+    mail: object | None = None
+    calendar: object | None = None
+    secret_vault: object | None = None
+    external: object | None = None
 
     @property
     def sandbox_key(self) -> str:
