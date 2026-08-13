@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
+    from services.secret_vault import SecretVaultService
     from services.skills import SkillStore
     from services.uploads import UploadStore
     from services.webfetch import BrowserFetcher
@@ -76,7 +77,10 @@ class Capabilities:
     # its own line to the real type when it lands (distinct lines ⇒ no conflicts).
     mail: object | None = None
     calendar: object | None = None
-    secret_vault: object | None = None
+    # The operator's secrets manager (VAULT-1). Every tool that reaches it is
+    # approval-gated (VAULT-2); the service enforces its own lock on top. None ⇒ the vault
+    # tools report the capability absent.
+    secret_vault: SecretVaultService | None = None
     external: object | None = None
 
 
@@ -155,7 +159,10 @@ class RunDeps:
     # than failing the turn — the same contract every other capability here follows.
     mail: object | None = None
     calendar: object | None = None
-    secret_vault: object | None = None
+    # The operator's secrets manager — read by the approval-gated `vault` tools (VAULT-2),
+    # which still meet the vault's own lock behind the approval. None ⇒ they report the
+    # capability absent.
+    secret_vault: SecretVaultService | None = None
     external: object | None = None
 
     @property
