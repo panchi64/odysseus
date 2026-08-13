@@ -32,10 +32,145 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema — filled in by the mail track (T1)."""
-    pass
+    """Upgrade schema — the mail capability's four tables (`EMAIL-1..5`)."""
+    op.create_table(
+        'mail_accounts',
+        sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('address_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('provider', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('auth_kind', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('config', sa.JSON(), nullable=False),
+        sa.Column('secret_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('enabled', sa.Boolean(), nullable=False),
+        sa.Column('last_status', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('last_error_detail', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('last_synced_at', sa.DateTime(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(), nullable=False),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('owner_id', 'name', name='uq_mail_account_owner_name'),
+    )
+    with op.batch_alter_table('mail_accounts', schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f('ix_mail_accounts_owner_id'), ['owner_id'], unique=False
+        )
+
+    op.create_table(
+        'mail_messages',
+        sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('account_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('folder', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('uid', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('thread_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('message_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('in_reply_to', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('from_address_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('from_name_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('to_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('cc_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('subject_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('snippet_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('body_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('reply_text_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('quoted_text_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('signature_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('summary_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('implied_events_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('received_at', sa.DateTime(), nullable=False),
+        sa.Column('seen', sa.Boolean(), nullable=False),
+        sa.Column('flagged', sa.Boolean(), nullable=False),
+        sa.Column('has_attachments', sa.Boolean(), nullable=False),
+        sa.Column('size_bytes', sa.Integer(), nullable=True),
+        sa.Column('urgency', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('spam', sa.Boolean(), nullable=False),
+        sa.Column('tags', sa.JSON(), nullable=False),
+        sa.Column('triaged_at', sa.DateTime(), nullable=True),
+        sa.Column('cached_at', sa.DateTime(), nullable=False),
+        sa.ForeignKeyConstraint(['account_id'], ['mail_accounts.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('account_id', 'folder', 'uid', name='uq_mail_message_account_uid'),
+    )
+    with op.batch_alter_table('mail_messages', schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f('ix_mail_messages_account_id'), ['account_id'], unique=False
+        )
+        batch_op.create_index(batch_op.f('ix_mail_messages_folder'), ['folder'], unique=False)
+        batch_op.create_index(
+            batch_op.f('ix_mail_messages_owner_id'), ['owner_id'], unique=False
+        )
+        batch_op.create_index(
+            batch_op.f('ix_mail_messages_received_at'), ['received_at'], unique=False
+        )
+
+    op.create_table(
+        'mail_drafts',
+        sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('account_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('in_reply_to_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('kind', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('to_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('cc_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('bcc_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('subject_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('body_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('label_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('sent_at', sa.DateTime(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
+        sa.Column('updated_at', sa.DateTime(), nullable=False),
+        sa.ForeignKeyConstraint(['account_id'], ['mail_accounts.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['in_reply_to_id'], ['mail_messages.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    with op.batch_alter_table('mail_drafts', schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f('ix_mail_drafts_account_id'), ['account_id'], unique=False
+        )
+        batch_op.create_index(
+            batch_op.f('ix_mail_drafts_in_reply_to_id'), ['in_reply_to_id'], unique=False
+        )
+        batch_op.create_index(batch_op.f('ix_mail_drafts_owner_id'), ['owner_id'], unique=False)
+
+    op.create_table(
+        'mail_style_profiles',
+        sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('profile_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('sample_count', sa.Integer(), nullable=False),
+        sa.Column('edited', sa.Boolean(), nullable=False),
+        sa.Column('learned_at', sa.DateTime(), nullable=True),
+        sa.Column('updated_at', sa.DateTime(), nullable=False),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('owner_id', name='uq_mail_style_owner'),
+    )
+    with op.batch_alter_table('mail_style_profiles', schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f('ix_mail_style_profiles_owner_id'), ['owner_id'], unique=False
+        )
 
 
 def downgrade() -> None:
-    """Downgrade schema — filled in by the mail track (T1)."""
-    pass
+    """Downgrade schema — drop the mail tables, children first."""
+    with op.batch_alter_table('mail_style_profiles', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_mail_style_profiles_owner_id'))
+    op.drop_table('mail_style_profiles')
+
+    with op.batch_alter_table('mail_drafts', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_mail_drafts_owner_id'))
+        batch_op.drop_index(batch_op.f('ix_mail_drafts_in_reply_to_id'))
+        batch_op.drop_index(batch_op.f('ix_mail_drafts_account_id'))
+    op.drop_table('mail_drafts')
+
+    with op.batch_alter_table('mail_messages', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_mail_messages_received_at'))
+        batch_op.drop_index(batch_op.f('ix_mail_messages_owner_id'))
+        batch_op.drop_index(batch_op.f('ix_mail_messages_folder'))
+        batch_op.drop_index(batch_op.f('ix_mail_messages_account_id'))
+    op.drop_table('mail_messages')
+
+    with op.batch_alter_table('mail_accounts', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_mail_accounts_owner_id'))
+    op.drop_table('mail_accounts')
