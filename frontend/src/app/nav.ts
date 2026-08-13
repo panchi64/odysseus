@@ -177,12 +177,22 @@ export const NAV: NavSection[] = [
         connected: true,
         description: "App preferences and configuration",
       },
+      // Two token surfaces pointing opposite ways — the labels have to say which is
+      // which, because "API Tokens" reads as either one.
       {
-        label: "API Tokens",
+        label: "Service Keys",
         href: "/admin/tokens",
         icon: "key",
         description:
-          "Keys for outbound services (model benchmarks, HuggingFace)",
+          "Outbound — keys this system calls third-party services with (model benchmarks, HuggingFace)",
+        connected: true,
+      },
+      {
+        label: "Access Tokens",
+        href: "/admin/access-tokens",
+        icon: "lock",
+        description:
+          "Inbound — scoped tokens your own clients call this API with",
         connected: true,
       },
       {

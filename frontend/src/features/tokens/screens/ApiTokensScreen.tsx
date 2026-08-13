@@ -19,7 +19,8 @@ import type { ServiceCredential } from "../model";
 /** API Tokens — the operator's keys for the outbound services the system calls (the
  *  Cookbook's quality benchmarks + its HuggingFace token). One row per service the
  *  backend declares; the key is write-only (the API reports only whether one is set),
- *  sealed at rest. This is configuration, not inbound auth. */
+ *  sealed at rest. This is configuration, not inbound auth — the tokens clients call
+ *  *this* API with are the Access Tokens screen (`features/access-tokens`). */
 export function ApiTokensScreen(): JSX.Element {
   const credentials = useCredentials();
 
@@ -73,8 +74,8 @@ export function ApiTokensScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="API TOKENS"
-        subtitle="Keys the system uses to reach outbound services. Stored encrypted at rest; never displayed."
+        title="SERVICE KEYS"
+        subtitle="Outbound — keys this system uses to reach third-party services. Stored encrypted at rest; never displayed."
         assetId="ODY-ADM-04.0 EDITION 02"
       />
 
