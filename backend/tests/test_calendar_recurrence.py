@@ -399,6 +399,21 @@ async def test_an_unparseable_rule_is_rejected_at_write_time():
         )
 
 
+async def test_rules_are_stored_canonically():
+    """Canonical on write, so an ICS round-trip is byte-identical rather than merely
+    equivalent — and a stored rule can be compared with `==`."""
+    service = await _service()
+    calendar = await service.create_calendar(OWNER, "Work")
+    event = await service.create_event(
+        OWNER,
+        calendar.id,
+        title="Standup",
+        starts_at=datetime(2026, 6, 1, 9, tzinfo=UTC),
+        rrule="RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=6",
+    )
+    assert event.rrule == "FREQ=WEEKLY;COUNT=6;BYDAY=MO"
+
+
 async def test_changing_the_rule_clears_stale_cancellations():
     service = await _service()
     calendar = await service.create_calendar(OWNER, "Work")

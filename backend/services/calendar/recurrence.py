@@ -34,6 +34,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil.rrule import rrulestr
+from icalendar.prop import vRecur
 
 # The ceiling on how many occurrences one expansion may return. A window is the real
 # bound; this is the backstop against a pathological rule (``FREQ=SECONDLY``) or an
@@ -61,6 +62,23 @@ def as_utc(value: datetime) -> datetime:
     `services/scheduler.py` and `services/approval_grants.py` do), so this is the one
     place that assumption lives for calendar reads."""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def canonical_rrule(rule: str) -> str:
+    """The rule in RFC 5545's own canonical part order, via the same serializer the ICS
+    layer writes with. Stored rules are canonicalized on write so an export→import
+    round-trip comes back **byte-identical** — otherwise ``FREQ=WEEKLY;BYDAY=MO;COUNT=6``
+    returns as ``FREQ=WEEKLY;COUNT=6;BYDAY=MO``, semantically the same rule but a
+    gratuitous difference in every comparison and diff."""
+    text = rule.strip()
+    if text.upper().startswith("RRULE:"):
+        text = text[len("RRULE:") :]
+    try:
+        return vRecur(vRecur.from_ical(text)).to_ical().decode()
+    except (ValueError, TypeError):
+        # Canonicalization is cosmetic; a rule this serializer won't take is left as
+        # written and rejected (or accepted) by the parse check that follows.
+        return text
 
 
 def normalize_rrule(rule: str, zone: ZoneInfo, *, all_day: bool) -> str:

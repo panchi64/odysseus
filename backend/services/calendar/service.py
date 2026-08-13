@@ -35,7 +35,13 @@ from core.db import in_session
 from core.exceptions import NotFoundError
 from core.vault import Vault
 from models.calendar import DEFAULT_TIMEZONE, Calendar, CalendarEvent, new_uid
-from services.calendar.recurrence import as_utc, expand, next_occurrence, parse_zone
+from services.calendar.recurrence import (
+    as_utc,
+    canonical_rrule,
+    expand,
+    next_occurrence,
+    parse_zone,
+)
 
 # How far a "what's next" lookahead searches before giving up (see `upcoming`).
 _UPCOMING_HORIZON_DAYS = 366
@@ -610,9 +616,7 @@ def _validated_rrule(
     an empty calendar on every later read."""
     if not rrule or not rrule.strip():
         return None
-    rule = rrule.strip()
-    if rule.upper().startswith("RRULE:"):
-        rule = rule[len("RRULE:") :]
+    rule = canonical_rrule(rrule)
     # Expanding over a zero-width window exercises the parser without walking the series.
     expand(
         starts_at=start,
