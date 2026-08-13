@@ -24,7 +24,7 @@ from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
-from services.external_tools import ExternalPolicyStore, set_external_runtime
+from services.external_tools import ExternalTools, build_external_tools
 from services.gallery import GalleryService
 from services.host_shell import ShellService
 from services.integrations import IntegrationService
@@ -236,55 +236,32 @@ def calendar(request: Request) -> object | None:
     return getattr(request.app.state, "calendar", None)
 
 
-def mcp(request: Request) -> McpRegistry:
-    """The registry of external MCP tool servers (`MCP-*`), built on first use and cached
-    on ``app.state`` like every other singleton.
+def external(request: Request) -> ExternalTools:
+    """The whole external-tools capability — registered MCP servers (`MCP-*`), configured
+    connectors (`INTEG-*`) and the per-tool trust policy they share (`AE-3.6`).
 
-    It is built here rather than in the app's lifespan because it is a pure engine+vault
-    store with nothing to start or stop, and because building it also publishes it to
-    :mod:`services.external_tools`' runtime handle — the seam the ``external`` toolset
-    reads while composing a run, since its tool catalog is whatever the operator's servers
-    expose rather than a fixed set ``RunDeps`` could carry.
+    One object rather than two capability handles, because the agent sees one `external`
+    category and shouldn't have to know which source a tool came from. The lifespan builds
+    it; the fallback here only covers a test app that skipped the lifespan, and it caches
+    on ``app.state`` so the REST surfaces and the agent share one instance — which is what
+    makes a server registered a moment ago visible to the very next run.
     """
     state = request.app.state
-    registry: McpRegistry | None = getattr(state, "mcp", None)
-    if registry is None:
-        registry = McpRegistry(state.db_engine, state.vault, _external_policy(request))
-        state.mcp = registry
-        set_external_runtime(mcp=registry)
-    return registry
+    handle: ExternalTools | None = getattr(state, "external", None)
+    if handle is None:
+        handle = build_external_tools(state.db_engine, state.vault)
+        state.external = handle
+    return handle
+
+
+def mcp(request: Request) -> McpRegistry:
+    """The registry of external MCP tool servers (`MCP-*`), backing the `/mcp` surface."""
+    return external(request).mcp
 
 
 def integrations(request: Request) -> IntegrationService:
-    """Third-party connectors configured from presets (`INTEG-*`). Built and published
-    on first use, exactly like `mcp` above and for the same reason."""
-    state = request.app.state
-    service: IntegrationService | None = getattr(state, "integrations", None)
-    if service is None:
-        service = IntegrationService(state.db_engine, state.vault, _external_policy(request))
-        state.integrations = service
-        set_external_runtime(integrations=service)
-    return service
-
-
-def external(request: Request) -> object | None:
-    """The agent-facing handle over MCP servers + configured connectors, behind the
-    `AE-3.6` per-tool trust gate — None until track T3 lands. `mcp()` and
-    `integrations()` above back the two REST surfaces; this is the single handle the
-    `external` toolset reaches, so the tool layer doesn't need to know which of the two
-    a given tool came from."""
-    return getattr(request.app.state, "external", None)
-
-
-def _external_policy(request: Request) -> ExternalPolicyStore:
-    """The per-tool enable/trust store both external sources share (`MCP-1`, `AE-3.6`) —
-    one instance, so the MCP registry and the connectors can't drift apart on policy."""
-    state = request.app.state
-    policy: ExternalPolicyStore | None = getattr(state, "external_policy", None)
-    if policy is None:
-        policy = ExternalPolicyStore(state.db_engine)
-        state.external_policy = policy
-    return policy
+    """Third-party connectors configured from presets (`INTEG-*`), backing `/integrations`."""
+    return external(request).integrations
 
 
 def secret_vault(request: Request) -> object | None:

@@ -19,9 +19,9 @@ server only just started exposing is usable but approval-gated, never silently t
 Policy, not content: nothing here is vault-sealed, exactly as ``ApprovalGrant`` isn't, so
 it stays indexable and readable while the vault is locked. Raises domain errors only.
 
-This module also holds the :class:`ExternalRuntime` handle — see its docstring for why the
-external category reaches its services through a process-level handle rather than through
-``RunDeps`` like every other capability.
+This module also holds :class:`ExternalTools` — the one handle carrying both sources and
+this store, which is what the wiring hangs on ``app.state.external`` and what the tool
+layer reads off ``RunDeps``.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from sqlmodel import Session, select
 
 from core.db import in_session
 from core.exceptions import NotFoundError
+from core.vault import Vault
 from models._fields import new_id, utcnow
 from models.external_tool import ExternalToolPolicy
 
@@ -195,50 +196,43 @@ class ExternalPolicyStore:
         await in_session(self._db, work)
 
 
-@dataclass
-class ExternalRuntime:
-    """The two external-tool services, reachable by the toolset that surfaces them.
+@dataclass(frozen=True)
+class ExternalTools:
+    """Both external tool sources and the policy they share, as one handle.
 
-    Every other capability reaches its tools through ``RunDeps`` — the deliberate rule
-    that a tool never uses a module global. The external category is the one place that
-    cannot: its tools are not a fixed catalog but whatever the operator's servers and
-    connectors happen to expose, so the category toolset has to read the registry *while
-    composing a run*, and ``RunDeps`` is assembled by the run's caller before that point.
+    The `external` capability is a *pair* of services — registered MCP servers and
+    configured connectors — that the agent sees as a single category, so it travels as
+    one object rather than two capability fields. The tool layer takes it off
+    ``RunDeps`` like every other capability and never reaches a module global; the two
+    REST surfaces reach the same instance for their own halves, which is what keeps a
+    server the operator just registered visible to the very next run.
 
-    So the two services live behind one process-level handle instead, set once when they
-    are built. It is a single-operator, single-process backend, so this is a wiring seam
-    rather than shared mutable state: the handle is written at construction and read
-    thereafter. Unset ⇒ the external category simply contributes no tools, exactly like
-    any other absent capability.
+    ``policy`` is held here as well as inside each service so the trust gate can read a
+    decision without having to pick which service a tool came from.
     """
 
-    mcp: McpRegistry | None = None
-    integrations: IntegrationService | None = None
+    policy: ExternalPolicyStore
+    mcp: McpRegistry
+    integrations: IntegrationService
 
 
-_runtime = ExternalRuntime()
+def build_external_tools(db_engine: Engine, vault: Vault) -> ExternalTools:
+    """Construct the whole external-tools capability from the two things it needs.
 
+    One factory so the wiring can't compose it two different ways: both services must be
+    handed the *same* policy store, or the operator's per-tool decisions would fork by
+    source and a tool trusted through one path would still gate through the other.
 
-def set_external_runtime(
-    *,
-    mcp: McpRegistry | None = None,
-    integrations: IntegrationService | None = None,
-) -> None:
-    """Publish a service to the external toolset. Each argument is applied only when
-    given, so the MCP registry and the integration service can be wired independently."""
-    if mcp is not None:
-        _runtime.mcp = mcp
-    if integrations is not None:
-        _runtime.integrations = integrations
+    The two services are imported here rather than at module scope because each imports
+    this module for the policy store — the factory is the one place that depends on both
+    directions.
+    """
+    from services.integrations import IntegrationService
+    from services.mcp import McpRegistry
 
-
-def external_runtime() -> ExternalRuntime:
-    """The current handle. Never ``None`` — an unwired field is, which the caller treats
-    as an absent capability."""
-    return _runtime
-
-
-def reset_external_runtime() -> None:
-    """Drop both services — for tests, so one case's registry can't leak into the next."""
-    _runtime.mcp = None
-    _runtime.integrations = None
+    policy = ExternalPolicyStore(db_engine)
+    return ExternalTools(
+        policy=policy,
+        mcp=McpRegistry(db_engine, vault, policy),
+        integrations=IntegrationService(db_engine, vault, policy),
+    )
