@@ -90,6 +90,13 @@ class DocumentStore:
         self._engine = engine
         self._vault = vault
         self._adapter = adapter
+        # The suggestion lifecycle (`DOC-3`) hangs off the same store so every caller that
+        # already resolves `documents` reaches it without new wiring. Imported here rather
+        # than at module scope because that module reads this one's write helpers — a
+        # deliberate one-way dependency broken at the single point where it would loop.
+        from .document_suggestions import DocumentSuggestionStore
+
+        self.suggestions = DocumentSuggestionStore(engine, vault, adapter)
 
     # --- write path -------------------------------------------------------
 
@@ -119,7 +126,7 @@ class DocumentStore:
         def work(session: Session) -> DocumentView:
             session.add(document)
             session.flush()
-            self._snapshot(session, document, origin)
+            snapshot_version(session, document, origin)
             return self._to_view(document, title, body)
 
         view = await in_session(self._engine, work)
@@ -150,12 +157,11 @@ class DocumentStore:
             if title is not None:
                 document.title_enc = self._vault.encrypt_str(title)
             if body is not None:
-                document.body_enc = self._vault.encrypt_str(body)
-                document.doc_type, document.language = detect_type_language(body)
+                write_body(self._vault, document, body)
             document.updated_at = datetime.now(UTC)
             session.add(document)
             session.flush()
-            version = self._snapshot(session, document, origin).version
+            version = snapshot_version(session, document, origin).version
             new_title = title if title is not None else self._vault.decrypt_str(document.title_enc)
             new_body = body if body is not None else self._vault.decrypt_str(document.body_enc)
             return self._to_view(document, new_title, new_body), version
@@ -190,12 +196,11 @@ class DocumentStore:
             assert document is not None
             body = self._vault.decrypt_str(document.body_enc)
             new_body = replace_unique(body, old_text, new_text, error=DocumentSpanError)
-            document.body_enc = self._vault.encrypt_str(new_body)
-            document.doc_type, document.language = detect_type_language(new_body)
+            write_body(self._vault, document, new_body)
             document.updated_at = datetime.now(UTC)
             session.add(document)
             session.flush()
-            snapshot = self._snapshot(session, document, origin)
+            snapshot = snapshot_version(session, document, origin)
             title = self._vault.decrypt_str(document.title_enc)
             view = self._to_view(document, title, new_body)
             return view, new_body, snapshot.version, snapshot.created_at
@@ -242,7 +247,7 @@ class DocumentStore:
             document.updated_at = datetime.now(UTC)
             session.add(document)
             session.flush()
-            self._snapshot(session, document, DocumentVersionOrigin.USER)
+            snapshot_version(session, document, DocumentVersionOrigin.USER)
             title = self._vault.decrypt_str(document.title_enc)
             body = self._vault.decrypt_str(document.body_enc)
             return self._to_view(document, title, body), body
@@ -274,7 +279,8 @@ class DocumentStore:
         return await in_session(self._engine, work)
 
     async def delete(self, owner_id: str, document_id: str) -> None:
-        """Hard-delete a document, its version history, and its corpus chunks."""
+        """Hard-delete a document, its version history, its open suggestions, and its
+        corpus chunks — nothing about it outlives it."""
         await self._require(owner_id, document_id)
 
         def work(session: Session) -> None:
@@ -282,6 +288,7 @@ class DocumentStore:
                 select(DocumentVersion).where(DocumentVersion.document_id == document_id)
             ).all():
                 session.delete(snapshot)
+            self.suggestions.purge_document(session, document_id)
             document = session.get(Document, document_id)
             if document is not None:
                 session.delete(document)
@@ -433,25 +440,6 @@ class DocumentStore:
 
         return await in_session(self._engine, work)
 
-    def _snapshot(
-        self, session: Session, document: Document, origin: str
-    ) -> DocumentVersion:
-        """Append a full sealed snapshot of ``document`` as its next version. Reuses the
-        already-sealed title/body ciphertext on the row — no re-encryption."""
-        next_version = _max_version(session, document.id) + 1
-        snapshot = DocumentVersion(
-            owner_id=document.owner_id,
-            document_id=document.id,
-            version=next_version,
-            title_enc=document.title_enc,
-            body_enc=document.body_enc,
-            doc_type=document.doc_type,
-            language=document.language,
-            origin=origin,
-        )
-        session.add(snapshot)
-        return snapshot
-
     async def _require(self, owner_id: str, document_id: str) -> Document:
         def work(session: Session) -> Document | None:
             document = session.get(Document, document_id)
@@ -483,17 +471,53 @@ class DocumentStore:
 
     @staticmethod
     def _to_view(document: Document, title: str, body: str) -> DocumentView:
-        return DocumentView(
-            id=document.id,
-            title=title,
-            body=body,
-            doc_type=document.doc_type,
-            language=document.language,
-            archived=document.archived,
-            created_at=document.created_at,
-            updated_at=document.updated_at,
-            conversation_id=document.conversation_id,
-        )
+        return document_view(document, title, body)
+
+
+# --- shared write helpers (also used by the suggestion lifecycle) ---------
+
+
+def document_view(document: Document, title: str, body: str) -> DocumentView:
+    """A :class:`DocumentView` over a row plus its already-decrypted title/body."""
+    return DocumentView(
+        id=document.id,
+        title=title,
+        body=body,
+        doc_type=document.doc_type,
+        language=document.language,
+        archived=document.archived,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
+        conversation_id=document.conversation_id,
+    )
+
+
+def write_body(vault: Vault, document: Document, body: str) -> None:
+    """Seal ``body`` onto the row and re-derive its display hints. One place where a body
+    write happens, so every path (edit, targeted replace, an accepted suggestion) seals and
+    re-detects identically. The caller still stamps ``updated_at`` and snapshots."""
+    document.body_enc = vault.encrypt_str(body)
+    document.doc_type, document.language = detect_type_language(body)
+
+
+def snapshot_version(
+    session: Session, document: Document, origin: str
+) -> DocumentVersion:
+    """Append a full sealed snapshot of ``document`` as its next version. Reuses the
+    already-sealed title/body ciphertext on the row — no re-encryption."""
+    next_version = _max_version(session, document.id) + 1
+    snapshot = DocumentVersion(
+        owner_id=document.owner_id,
+        document_id=document.id,
+        version=next_version,
+        title_enc=document.title_enc,
+        body_enc=document.body_enc,
+        doc_type=document.doc_type,
+        language=document.language,
+        origin=origin,
+    )
+    session.add(snapshot)
+    return snapshot
 
 
 # --- list-summary derivation (off the DB hot path) ------------------------
