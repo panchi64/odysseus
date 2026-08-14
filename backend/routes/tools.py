@@ -10,6 +10,10 @@ enabled gate in ``tools/toolsets.py``); this is the half that lets the operator 
   agent actually runs against.
 - ``PUT /tools/{name}`` — flip one tool. An unknown name is a 404 rather than a stored
   setting that disables nothing.
+- ``GET /tools/approval-scopes`` — the subset that can *pause* a run for approval, which
+  is the vocabulary a conversation grant or a scheduled task's pre-authorization may
+  name. Served rather than mirrored because external tools are named from the operator's
+  own registered servers and connectors, so the set is only knowable at runtime.
 
 Offline mode's automatic web suspension is deliberately **not** folded into the
 ``enabled`` flag reported here: this surface reports the operator's own choice, which is
@@ -24,7 +28,7 @@ from pydantic import BaseModel
 
 from routes import deps
 from services.tool_policy import get_disabled_tools, set_tool_enabled
-from tools.catalog import ToolInfo, tool_catalog
+from tools.catalog import ToolInfo, approval_scopes, tool_catalog
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -55,6 +59,25 @@ def _out(info: ToolInfo, disabled: frozenset[str]) -> ToolOut:
 async def list_tools(request: Request) -> list[ToolOut]:
     disabled = await get_disabled_tools(deps.settings_store(request), deps.OPERATOR_ID)
     return [_out(info, disabled) for info in tool_catalog()]
+
+
+class ApprovalScopeOut(BaseModel):
+    """One tool that can pause a run, as the pre-authorization/grant surfaces show it."""
+
+    name: str
+    category: str
+    description: str
+
+
+@router.get("/approval-scopes", response_model=list[ApprovalScopeOut])
+async def list_approval_scopes(request: Request) -> list[ApprovalScopeOut]:
+    """Every tool an operator may pre-authorize or grant. Declared before the ``{name}``
+    route below only for readability — the two never collide, since that one is a PUT."""
+    scopes = await approval_scopes(deps.external(request), deps.OPERATOR_ID)
+    return [
+        ApprovalScopeOut(name=s.name, category=s.category, description=s.description)
+        for s in scopes
+    ]
 
 
 @router.put("/{name}", response_model=ToolOut)

@@ -2,6 +2,7 @@ import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
 import { apiUrl } from "~/lib/config";
 import type {
+  ApprovalScope,
   OutputChannel,
   ScheduledTask,
   TaskKind,
@@ -41,6 +42,22 @@ export function useScheduledTasks(): Resource<ScheduledTask[]> {
 /** Invalidate the list after a mutation. */
 export function refreshTasks(): void {
   setListTick((n) => n + 1);
+}
+
+/* ── Pre-authorization scopes ─────────────────────────────────────────────── */
+
+/** The tools this workspace can pause a run for, as the backend derives them.
+ *
+ *  Fetched, never listed here: the operator's external tools are named from the
+ *  MCP servers and connectors *they* registered, so the set only exists at
+ *  runtime. A hard-coded list would offer scopes that don't apply and silently
+ *  omit every tool added after it was written — which is exactly what the list
+ *  this replaced had done. */
+export function useApprovalScopes(): Resource<ApprovalScope[]> {
+  const [data] = createResource(async () =>
+    api.get<ApprovalScope[]>("/tools/approval-scopes"),
+  );
+  return data;
 }
 
 /* ── Run history (per task, fetched lazily on expand) ─────────────────────── */

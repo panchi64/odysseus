@@ -40,28 +40,9 @@ from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.scheduler import compute_next_run
+from tools.catalog import approval_scopes
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-# The known approval-gated tool names a task's `preAuthorized` may name — the same
-# vocabulary `ApprovalGrant.tool_name` already uses (see `services/approval_grants.py`,
-# `routes/conversations.py`'s conversation-grants routes), mirroring the actual
-# sensitive/gated tools: `tools/code.py`'s `run_host_command`
-# (`requires_approval=True`), `tools/documents.py`'s foreign-doc `edit` and `suggest`, and
-# `tools/recall_gate.py`'s AE-3.8 global-recall gate over `corpus.retrieve`/
-# `memory.recall`/`conversations.search`. No runtime tool-catalog introspection exists
-# to derive this automatically, so it's kept here as a small hand-maintained constant —
-# validated against on write so a task can never carry a scope that doesn't exist.
-_KNOWN_GRANT_SCOPES = frozenset(
-    {
-        "code_run_host_command",
-        "document_edit",
-        "document_suggest",
-        "corpus_retrieve",
-        "memory_recall",
-        "conversations_search",
-    }
-)
 
 _TASK_KINDS = frozenset(k.value for k in TaskKind)
 _TASK_OUTPUTS = frozenset(o.value for o in TaskOutput)
@@ -175,8 +156,20 @@ def _validate_schedule(schedule: TaskSchedule) -> None:
             ) from exc
 
 
-def _validate_pre_authorized(values: list[str]) -> None:
-    unknown = [v for v in values if v not in _KNOWN_GRANT_SCOPES]
+async def _validate_pre_authorized(request: Request, values: list[str]) -> None:
+    """A task may only pre-authorize (`AE-3.5`) a tool that can actually pause a run —
+    the same vocabulary `ApprovalGrant.tool_name` uses, so a task's standing scope and a
+    conversation grant name the same things.
+
+    Derived from the live catalog rather than a constant here, because the operator's
+    external tools are named from their own registered servers and connectors and so are
+    only knowable at runtime (`tools/catalog.py::approval_scopes`). A stored scope that
+    stops existing — a server the operator removed — simply stops matching anything at
+    run time; it is rejected only on write, so an unrelated edit to an old task doesn't
+    fail because of a source that has since gone.
+    """
+    known = {s.name for s in await approval_scopes(deps.external(request), OPERATOR_ID)}
+    unknown = [v for v in values if v not in known]
     if unknown:
         raise HTTPException(
             status_code=422,
@@ -280,7 +273,7 @@ async def create_task(body: TaskCreate, request: Request) -> TaskOut:
     if not body.prompt.strip():
         raise HTTPException(status_code=422, detail="prompt must not be empty")
     _validate_schedule(body.schedule)
-    _validate_pre_authorized(body.pre_authorized)
+    await _validate_pre_authorized(request, body.pre_authorized)
 
     engine = deps.db_engine(request)
     vault = deps.vault(request)
@@ -329,7 +322,7 @@ async def update_task(task_id: str, body: TaskPatch, request: Request) -> TaskOu
     if body.schedule is not None:
         _validate_schedule(body.schedule)
     if body.pre_authorized is not None:
-        _validate_pre_authorized(body.pre_authorized)
+        await _validate_pre_authorized(request, body.pre_authorized)
     effective_schedule_type = (
         body.schedule.type if body.schedule is not None else existing.schedule_type
     )

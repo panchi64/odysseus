@@ -12,8 +12,12 @@ import {
   Textarea,
   toast,
 } from "~/ui";
-import { createTask, updateTask, type TaskInput } from "../data";
-import { PRE_AUTH_SCOPES } from "../model";
+import {
+  createTask,
+  updateTask,
+  useApprovalScopes,
+  type TaskInput,
+} from "../data";
 import type {
   OutputChannel,
   ScheduledTask,
@@ -93,6 +97,9 @@ export function TaskFormModal(props: {
   task: ScheduledTask | null;
 }): JSX.Element {
   const [form, setForm] = createStore<FormState>(blankForm());
+  // Which tools can be pre-authorized is the backend's to decide — it depends on
+  // what the operator has registered, so the form asks rather than assumes.
+  const scopes = useApprovalScopes();
 
   createEffect(() => {
     if (!props.open) return;
@@ -367,20 +374,25 @@ export function TaskFormModal(props: {
               still parks for approval.
             </Text>
             <Stack gap={2}>
-              <For each={PRE_AUTH_SCOPES}>
+              <For each={scopes() ?? []}>
                 {(scope) => (
                   <Stack gap={0}>
                     <Checkbox
-                      label={scope.label}
-                      checked={form.scopes.has(scope.id)}
-                      onChange={(checked) => toggleScope(scope.id, checked)}
+                      label={scope.name}
+                      checked={form.scopes.has(scope.name)}
+                      onChange={(checked) => toggleScope(scope.name, checked)}
                     />
                     <Text variant="micro" tone="dim" class="pl-6">
-                      {scope.hint}
+                      {scope.description}
                     </Text>
                   </Stack>
                 )}
               </For>
+              <Show when={scopes()?.length === 0}>
+                <Text variant="micro" tone="dim">
+                  No tools in this workspace pause for approval.
+                </Text>
+              </Show>
             </Stack>
           </Stack>
         </Show>

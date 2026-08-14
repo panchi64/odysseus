@@ -55,44 +55,16 @@ export interface TaskRun {
   summary?: string;
 }
 
-/** One pre-authorization scope offered as a checkbox in the create/edit form.
- *  These are the SAME tool-name identifiers the approval-grant surface already
- *  uses (`services/approval_grants.py`'s `ApprovalGrant.tool_name`, granted via
- *  the conversation grants routes) — not a parallel vocabulary. They cover every
- *  tool that can pause a run for approval today: the always-gated global-recall
- *  trio (`tools/recall_gate.py`), the foreign-document edit gate
- *  (`tools/documents.py`), and the one `requires_approval=True` tool
- *  (`tools/code.py`'s `run_host_command`). */
-export interface PreAuthScope {
-  id: string;
-  label: string;
-  hint: string;
+/** One tool a task may pre-authorize, exactly as `GET /tools/approval-scopes`
+ *  serves it.
+ *
+ *  These are the SAME tool-name identifiers the approval-grant surface uses
+ *  (`ApprovalGrant.tool_name`) — not a parallel vocabulary. The list is fetched
+ *  rather than declared here because the backend derives it from three sources
+ *  that change independently, one of which (the operator's own MCP servers and
+ *  connectors) doesn't exist until they register it. */
+export interface ApprovalScope {
+  name: string;
+  category: string;
+  description: string;
 }
-
-export const PRE_AUTH_SCOPES: PreAuthScope[] = [
-  {
-    id: "code_run_host_command",
-    label: "Run host commands",
-    hint: "Execute commands directly on the host machine.",
-  },
-  {
-    id: "corpus_retrieve",
-    label: "Broad knowledge-base search",
-    hint: "Search the whole corpus without a specific source.",
-  },
-  {
-    id: "memory_recall",
-    label: "Broad memory recall",
-    hint: "Recall long-term memory without a specific query scope.",
-  },
-  {
-    id: "conversations_search",
-    label: "Search other conversations",
-    hint: "Search across the operator's other conversations.",
-  },
-  {
-    id: "document_edit",
-    label: "Edit other documents",
-    hint: "Edit documents outside this task's own conversation.",
-  },
-];
