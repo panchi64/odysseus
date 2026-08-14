@@ -104,6 +104,7 @@ export const NAV: NavSection[] = [
         href: "/email",
         icon: "mail",
         description: "Read and send email",
+        connected: true,
       },
       {
         label: "Calendar",
