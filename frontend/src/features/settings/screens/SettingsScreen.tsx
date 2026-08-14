@@ -47,6 +47,7 @@ import {
 } from "../data";
 import { BINDABLE_ROLES, type OfflineState } from "../model";
 import { EmbeddingRoleControls } from "../components/EmbeddingRoleControls";
+import { AgentToolsPanel } from "../components/AgentToolsPanel";
 import {
   EndpointForm,
   type EndpointFormValues,
@@ -918,6 +919,8 @@ export function SettingsScreen(): JSX.Element {
       </Panel>
 
       <SearchProvidersPanel />
+
+      <AgentToolsPanel />
 
       {/* Endpoint form */}
       <Modal

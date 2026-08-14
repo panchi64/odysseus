@@ -118,3 +118,19 @@ export interface OfflineState {
   online: boolean;
   effectiveOffline: boolean;
 }
+
+/* ── Agent tools ───────────────────────────────────────────────────────────── */
+
+/** One tool in the agent's catalog, as the backend reports it. The catalog is
+ *  derived from the live toolset registry — the frontend never enumerates tools of
+ *  its own. `name` is the namespaced `category_tool` name the agent is offered;
+ *  `enabled: false` means the operator switched it off, and the backend then withholds
+ *  it from every run (`AE-3.3`). Offline mode can withhold the web tools on top of
+ *  this without changing `enabled` — that's the backend's call, not a second state
+ *  the operator sets. */
+export interface AgentTool {
+  name: string;
+  category: string;
+  description: string;
+  enabled: boolean;
+}

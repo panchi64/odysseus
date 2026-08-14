@@ -54,6 +54,7 @@ from routes import (
     skills,
     tasks,
     tokens,
+    tools,
     uploads,
     views,
 )
@@ -92,6 +93,7 @@ from services.searxng import ManagedSearxng
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
+from services.tool_policy import effective_disabled_tools
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -685,7 +687,12 @@ async def lifespan(app: FastAPI):
             registry=app.state.runs,
             store=conversations,
             uploads=app.state.uploads,
-            disabled_tools=app.state.offline.web_tools_disabled(),
+            # An unattended task's turn honours the operator's disabled set exactly as an
+            # interactive one does — a tool switched off is off everywhere, not just where
+            # someone is watching.
+            disabled_tools=await effective_disabled_tools(
+                app.state.settings_store, app.state.offline, view.owner_id
+            ),
             owner_id=view.owner_id,
         )
         # Registered before the very first `await` below — the newly submitted Run's
@@ -811,6 +818,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search.router)
     app.include_router(api_tokens.router)
     app.include_router(offline.router)
+    app.include_router(tools.router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(research.router)

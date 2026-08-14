@@ -34,6 +34,10 @@ COMPACTION_MIN_TOKENS_KEY = "chat.compaction_min_tokens"
 OFFLINE_MANUAL_KEY = "offline.manual"
 OFFLINE_AUTO_KEY = "offline.auto"
 
+# The operator's disabled-tool set (services/tool_policy.py, AE-3.3), stored as a JSON
+# list of namespaced tool names. Policy, not content — in the clear like the rest.
+DISABLED_TOOLS_KEY = "tools.disabled"
+
 
 class SettingsStore:
     def __init__(self, db_engine: Engine) -> None:
