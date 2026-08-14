@@ -274,16 +274,23 @@ async def test_folder_index_parks_while_vault_locked(tmp_path: Path):
     (tmp_path / "a.txt").write_text("a note about a dog")
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
-    vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")  # never unlocked
+    vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")
     chunk_store = CorpusChunkStore(engine, vault, FakeEmbedder())
     adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
 
+    # Register while unlocked — the source's own host path is sealed now (`XC-SEC-3`), so
+    # registering needs the key. That's not a new constraint in practice: the only caller
+    # is the /corpus route, and the auth gate in front of it implies an unlocked vault.
+    # Then lock, and only then start the worker: the queued crawl is what must park.
+    await vault.setup("pw")
+    source = await adapter.add_folder(OWNER, str(tmp_path))  # sealed row + queued job
+    vault.lock()
+
     await adapter.start()
-    source = await adapter.add_folder(OWNER, str(tmp_path))  # plaintext row + queued job
     await asyncio.sleep(0.05)  # give the worker a chance — it should park, not index
     assert await chunk_store.count(OWNER, source.id) == 0  # nothing sealed while locked
 
-    await vault.setup("pw")  # unlock ⇒ the parked worker resumes
+    assert await vault.unlock("pw")  # unlock ⇒ the parked worker resumes
     await asyncio.wait_for(adapter._worker.join(), timeout=5)
     await adapter.stop()
     assert await chunk_store.count(OWNER, source.id) == 1

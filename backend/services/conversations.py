@@ -25,6 +25,15 @@ index and order. The drainer is a lock-aware :class:`~core.worker.WriteBehindWor
 — it parks while the vault is locked and retries failed writes rather than
 dropping them. Active-leaf moves and deletes ride the same queue so they stay
 ordered behind the message writes that precede them.
+
+The **title** is sealed too, but on the write path rather than in the drainer: it
+is set by a rename or by auto-titling, both of which already run with the vault
+unlocked, and neither rides the queue. It is user content — an auto-generated
+summary of the operator's own first message, the most revealing single line a
+thread has (`XC-SEC-3`). Rows written before it was sealed still carry the legacy
+cleartext ``Conversation.title``; every read goes through ``_open_title``, which
+prefers the ciphertext and falls back, and the startup backfill (``services/sealing``)
+drains the cleartext away once the vault is unlocked.
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ from models._fields import new_id
 from models.conversation import Conversation, Message
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
+from services.sealing import open_sealed
 
 logger = logging.getLogger(__name__)
 
@@ -403,7 +413,11 @@ class ConversationStore:
         self, owner_id: str, title: str | None = None, ephemeral: bool = False
     ) -> str:
         def work(session: Session) -> str:
-            conversation = Conversation(owner_id=owner_id, title=title, ephemeral=ephemeral)
+            conversation = Conversation(
+                owner_id=owner_id,
+                title_enc=self._seal_title(title),
+                ephemeral=ephemeral,
+            )
             session.add(conversation)
             session.flush()
             return conversation.id
@@ -506,7 +520,7 @@ class ConversationStore:
             model = conversation.model
         return ConversationSummaryView(
             id=conversation.id,
-            title=conversation.title,
+            title=self._open_title(conversation),
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
             message_count=count,
@@ -584,13 +598,28 @@ class ConversationStore:
                 view.version_index = siblings.index(view.id) if view.id in siblings else 0
         return views
 
+    def _seal_title(self, title: str | None) -> str | None:
+        """A title on its way to the DB. ``None`` stays ``None`` — an untitled thread has
+        no ciphertext, which is not the same as one whose title is the empty string."""
+        return None if title is None else self._vault.encrypt_str(title)
+
+    def _open_title(self, conversation: Conversation) -> str | None:
+        """A title on its way out — sealed, or the legacy cleartext of a row the startup
+        backfill hasn't reached yet, so a half-migrated DB never renders a garbled or
+        missing thread name."""
+        return open_sealed(self._vault, conversation.title_enc, conversation.title)
+
     async def set_title(self, conversation_id: str, title: str | None) -> None:
         """Rename a conversation (and bump its updated_at)."""
+        title_enc = self._seal_title(title)
 
         def work(session: Session) -> None:
             conversation = session.get(Conversation, conversation_id)
             if conversation is not None:
-                conversation.title = title
+                conversation.title_enc = title_enc
+                # A rename supersedes any legacy cleartext this row still carried, so drop
+                # it here rather than leaving the old name readable until the backfill runs.
+                conversation.title = None
                 conversation.updated_at = datetime.now(UTC)
 
         await in_session(self._engine, work)
@@ -602,11 +631,16 @@ class ConversationStore:
         only announces the title when this returns True. Atomic within one session
         (check-and-set), so it is safe against a concurrent rename."""
 
+        title_enc = self._vault.encrypt_str(title)
+
         def work(session: Session) -> bool:
             conversation = session.get(Conversation, conversation_id)
-            if conversation is None or (conversation.title or "").strip():
+            # "Has a name already" is asked of the *effective* title, so a legacy
+            # cleartext name still blocks an auto-title from clobbering it.
+            if conversation is None or (self._open_title(conversation) or "").strip():
                 return False
-            conversation.title = title
+            conversation.title_enc = title_enc
+            conversation.title = None
             conversation.updated_at = datetime.now(UTC)
             return True
 
