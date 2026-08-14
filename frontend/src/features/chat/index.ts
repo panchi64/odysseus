@@ -8,3 +8,9 @@ export { createChatStream } from "./data";
 export type { ChatStreamOptions } from "./data";
 export { MessageItem } from "./components/MessageItem";
 export type { ChatMessage } from "./model";
+// The View surface, so a compare pane's artifact/preview chips open the same stage the
+// chat viewport does rather than being inert (`CMP-2` — previews are part of full chat
+// fidelity). `ViewportPanel` is fully controlled, so the pane owns the state and mounts
+// it wherever its layout allows.
+export { ViewportPanel } from "./components/ViewportPanel";
+export { collectViewItems, type ViewItem } from "./viewport";

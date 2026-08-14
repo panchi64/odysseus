@@ -12,10 +12,12 @@ import asyncio
 from fastapi import HTTPException, Request
 from sqlalchemy import Engine
 
+from core import auth as core_auth
 from core.auth import AuthManager
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import ConversationBusyError, Run, RunRegistry
+from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.conversation_search import ConversationSearch
@@ -263,10 +265,17 @@ def backup(request: Request) -> object | None:
     return getattr(request.app.state, "backup", None)
 
 
-def api_tokens(request: Request) -> object | None:
-    """Inbound scoped API tokens (`AUTH-4`) — None until track T6 lands.
-    Distinct from `credentials()` above, which holds outbound service keys."""
-    return getattr(request.app.state, "api_tokens", None)
+def api_tokens(request: Request) -> ApiTokenStore:
+    """Inbound scoped API tokens (`AUTH-4`). Distinct from `credentials()` above, which
+    holds the outbound service keys.
+
+    The store is a singleton on `app.state` like every other capability, but the auth gate
+    needs it too and runs before any route reaches this module — so `core.auth` builds it on
+    first use and this hands back that same instance, rather than the two keeping separate
+    verification caches (a revoke through the route must invalidate what the gate trusts)."""
+    store = core_auth.api_token_store(request.app.state)
+    assert isinstance(store, ApiTokenStore)
+    return store
 
 
 # --- End reserved sprint capabilities ----------------------------------------------

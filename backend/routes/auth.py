@@ -10,7 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from core.auth import SESSION_COOKIE, token_from_headers
+from core.auth import SESSION_COOKIE, auth_attempt_limiter, client_key, token_from_headers
+from core.exceptions import RateLimitedError
 from routes import deps
 
 router = APIRouter(tags=["auth"])
@@ -66,6 +67,18 @@ async def login(body: PasswordBody, request: Request, response: Response) -> Tok
     vault = deps.vault(request)
     if not vault.is_initialized:
         raise HTTPException(status_code=409, detail="not set up yet")
+    # Password guessing is rate-bound per caller (`AUTH-1`), through the same limiter the
+    # gate throttles API-token guesses with — one attack, one throttle.
+    limiter = auth_attempt_limiter(request.app.state)
+    key = f"login:{client_key(request.scope.get('client'))}"
+    try:
+        limiter.check(key)
+    except RateLimitedError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(max(1, int(exc.retry_after_s)))},
+        ) from None
     if not await vault.unlock(body.password):
         raise HTTPException(status_code=401, detail="invalid password")
     return _issue_session(request, response)
