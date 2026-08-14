@@ -31,8 +31,11 @@ from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
+from services.external_tools import ExternalTools, build_external_tools
 from services.gallery import GalleryService
 from services.host_shell import ShellService
+from services.integrations import IntegrationService
+from services.mcp import McpRegistry
 from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
@@ -265,23 +268,32 @@ def calendar(request: Request) -> CalendarService:
     return service
 
 
-def mcp(request: Request) -> object | None:
-    """The MCP server registry (`MCP-*`) — None until track T3 lands."""
-    return getattr(request.app.state, "mcp", None)
+def external(request: Request) -> ExternalTools:
+    """The whole external-tools capability — registered MCP servers (`MCP-*`), configured
+    connectors (`INTEG-*`) and the per-tool trust policy they share (`AE-3.6`).
+
+    One object rather than two capability handles, because the agent sees one `external`
+    category and shouldn't have to know which source a tool came from. The lifespan builds
+    it; the fallback here only covers a test app that skipped the lifespan, and it caches
+    on ``app.state`` so the REST surfaces and the agent share one instance — which is what
+    makes a server registered a moment ago visible to the very next run.
+    """
+    state = request.app.state
+    handle: ExternalTools | None = getattr(state, "external", None)
+    if handle is None:
+        handle = build_external_tools(state.db_engine, state.vault)
+        state.external = handle
+    return handle
 
 
-def integrations(request: Request) -> object | None:
-    """Third-party connectors (`INTEG-*`) — None until track T3 lands."""
-    return getattr(request.app.state, "integrations", None)
+def mcp(request: Request) -> McpRegistry:
+    """The registry of external MCP tool servers (`MCP-*`), backing the `/mcp` surface."""
+    return external(request).mcp
 
 
-def external(request: Request) -> object | None:
-    """The agent-facing handle over MCP servers + configured connectors, behind the
-    `AE-3.6` per-tool trust gate — None until track T3 lands. `mcp()` and
-    `integrations()` above back the two REST surfaces; this is the single handle the
-    `external` toolset reaches, so the tool layer doesn't need to know which of the two
-    a given tool came from."""
-    return getattr(request.app.state, "external", None)
+def integrations(request: Request) -> IntegrationService:
+    """Third-party connectors configured from presets (`INTEG-*`), backing `/integrations`."""
+    return external(request).integrations
 
 
 def secret_vault(request: Request) -> SecretVaultService:

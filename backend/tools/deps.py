@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from services.conversation_search import ConversationSearch
     from services.corpus import CorpusIndex
     from services.documents import DocumentStore
+    from services.external_tools import ExternalTools
     from services.memory import MemoryStore
     from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
@@ -84,7 +85,9 @@ class Capabilities:
     # approval-gated (VAULT-2); the service enforces its own lock on top. None ⇒ the vault
     # tools report the capability absent.
     secret_vault: SecretVaultService | None = None
-    external: object | None = None
+    # MCP servers + configured connectors + the per-tool trust policy they share, as one
+    # handle (`MCP-*`, `INTEG-*`, `AE-3.6`). None ⇒ the `external` category is empty.
+    external: ExternalTools | None = None
 
 
 @dataclass
@@ -168,7 +171,9 @@ class RunDeps:
     # which still meet the vault's own lock behind the approval. None ⇒ they report the
     # capability absent.
     secret_vault: SecretVaultService | None = None
-    external: object | None = None
+    # The external-tool capability (see :class:`Capabilities` above). None ⇒ the
+    # `external` category composes to nothing, so no external tool is offered at all.
+    external: ExternalTools | None = None
 
     @property
     def sandbox_key(self) -> str:

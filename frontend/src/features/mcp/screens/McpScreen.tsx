@@ -1,5 +1,4 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
-import { createStore, produce } from "solid-js/store";
 import {
   Button,
   confirm,
@@ -26,11 +25,27 @@ import {
   type Status,
 } from "~/ui";
 import { createListView } from "~/lib/list";
-import { useMcpServers } from "../data";
+import {
+  connectMcpServer,
+  deleteMcpServer,
+  mcpErrorMessage,
+  registerMcpServer,
+  setMcpCredentials,
+  setMcpToolPolicy,
+  useMcpServers,
+} from "../data";
+import type {
+  McpAuthCredentials,
+  McpServer,
+  McpStatus,
+  McpTransport,
+} from "../model";
 
 const TRANSPORT_HINT =
-  "STDIO runs the server as a local subprocess and talks over stdin/stdout — best for tools on this machine. HTTP connects to a server over the network at a URL — use it for remote or shared servers.";
-import type { McpAuthCredentials, McpServer, McpStatus } from "../model";
+  "STDIO runs the server as a local subprocess and talks over stdin/stdout — best for tools on this machine. HTTP connects to a server over the network at a URL — use it for remote or shared servers. SSE is the older network transport, for servers that predate Streamable HTTP.";
+
+const TRUST_HINT =
+  "An external tool's effects aren't knowable to Odysseus, so every call pauses for your approval by default. Trust one you've vetted to let it run without asking — one tool at a time, and revocable at any moment.";
 
 const mcpStatusFlag: Record<McpStatus, Status> = {
   connected: "nominal",
@@ -89,16 +104,10 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
     }
 
     props.onSave(props.server.id, creds);
-    toast.success(`Auth configured for "${props.server.name}".`);
     props.onClose();
   };
 
-  // Reset fields when the drawer opens for a (potentially different) server
-  const existing = () => props.server?.credentials;
   const open = () => props.server !== null;
-
-  // Populate from existing creds when the drawer opens
-  const effectiveMethod = () => existing()?.method ?? "api_key";
 
   return (
     <Drawer
@@ -120,13 +129,14 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
         {(srv) => (
           <Stack gap={4}>
             <Text variant="micro" tone="dim">
-              Credentials are stored encrypted at rest. Server:{" "}
+              Credentials are stored encrypted at rest and never read back —
+              saving replaces what is stored. Server:{" "}
               <span class="text-bright">{srv().name}</span>
             </Text>
 
             <Select
               label="AUTH METHOD"
-              value={effectiveMethod()}
+              value={method()}
               onChange={(v) => setMethod(v as McpAuthCredentials["method"])}
               options={[
                 { value: "api_key", label: "API KEY" },
@@ -135,32 +145,27 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
               ]}
             />
 
-            <Show
-              when={
-                effectiveMethod() === "api_key" ||
-                effectiveMethod() === "bearer"
-              }
-            >
+            <Show when={method() === "api_key" || method() === "bearer"}>
               <Input
-                label={effectiveMethod() === "api_key" ? "API KEY" : "TOKEN"}
+                label={method() === "api_key" ? "API KEY" : "TOKEN"}
                 type="password"
-                value={existing()?.token ?? token()}
+                value={token()}
                 onInput={(e) => setToken(e.currentTarget.value)}
                 placeholder="Paste your key here"
               />
             </Show>
 
-            <Show when={effectiveMethod() === "basic"}>
+            <Show when={method() === "basic"}>
               <Input
                 label="USERNAME"
-                value={existing()?.username ?? username()}
+                value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 placeholder="e.g. admin"
               />
               <Input
                 label="PASSWORD"
                 type="password"
-                value={existing()?.password ?? password()}
+                value={password()}
                 onInput={(e) => setPassword(e.currentTarget.value)}
                 placeholder="••••••••"
               />
@@ -178,13 +183,19 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
 
 function ServerCard(props: {
   server: McpServer;
-  onToggleTool: (serverId: string, toolName: string, enabled: boolean) => void;
-  onRetry: (serverId: string) => void;
+  busy: boolean;
+  onSetToolPolicy: (
+    serverId: string,
+    toolName: string,
+    patch: { enabled?: boolean; trusted?: boolean },
+  ) => void;
+  onRetry: (server: McpServer) => void;
   onConfigureAuth: (server: McpServer) => void;
   onDelete: (server: McpServer) => void;
 }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
   const enabledCount = () => props.server.tools.filter((t) => t.enabled).length;
+  const trustedCount = () => props.server.tools.filter((t) => t.trusted).length;
   const hasTools = () => props.server.tools.length > 0;
 
   const isError = () => props.server.status === "error";
@@ -229,9 +240,10 @@ function ServerCard(props: {
               size="sm"
               variant="ghost"
               leading="refresh"
-              onClick={() => props.onRetry(props.server.id)}
+              disabled={props.busy}
+              onClick={() => props.onRetry(props.server)}
             >
-              RETRY
+              {props.busy ? "CONNECTING…" : "RETRY"}
             </Button>
           </Show>
 
@@ -243,7 +255,7 @@ function ServerCard(props: {
               leading="key"
               onClick={() => props.onConfigureAuth(props.server)}
             >
-              {props.server.credentials ? "UPDATE AUTH" : "CONFIGURE AUTH"}
+              {props.server.hasCredentials ? "UPDATE AUTH" : "CONFIGURE AUTH"}
             </Button>
           </Show>
 
@@ -312,6 +324,16 @@ function ServerCard(props: {
             <Text variant="micro" tone="nominal">
               {enabledCount()} / {props.server.tools.length}
             </Text>
+            <Text variant="micro" tone="dim">
+              ·
+            </Text>
+            <Text variant="micro" tone="dim">
+              TRUSTED
+            </Text>
+            <Text variant="micro" tone="bright">
+              {trustedCount()}
+            </Text>
+            <InfoHint label={TRUST_HINT} size={12} />
           </Row>
 
           {/* Inline error detail for error-state servers */}
@@ -335,7 +357,7 @@ function ServerCard(props: {
               label={tool.name}
               leading="code"
               right={
-                <Row gap={2} align="center">
+                <Row gap={3} align="center">
                   <ExpandableText
                     text={tool.description}
                     limit={120}
@@ -343,12 +365,43 @@ function ServerCard(props: {
                     tone="dim"
                     class="max-w-xs"
                   />
-                  <Toggle
-                    checked={tool.enabled}
-                    onChange={(v) =>
-                      props.onToggleTool(props.server.id, tool.name, v)
-                    }
-                  />
+                  <Tooltip label={TRUST_HINT} side="left">
+                    <Row gap={2} align="center">
+                      <Text
+                        variant="micro"
+                        tone={tool.trusted ? "bright" : "dim"}
+                      >
+                        {tool.trusted ? "TRUSTED" : "ASKS FIRST"}
+                      </Text>
+                      <Toggle
+                        checked={tool.trusted}
+                        disabled={!tool.enabled}
+                        onChange={(v) =>
+                          props.onSetToolPolicy(props.server.id, tool.name, {
+                            trusted: v,
+                          })
+                        }
+                      />
+                    </Row>
+                  </Tooltip>
+                  <Tooltip
+                    label="Whether this tool is offered to the agent at all."
+                    side="left"
+                  >
+                    <Row gap={2} align="center">
+                      <Text variant="micro" tone="dim">
+                        ENABLED
+                      </Text>
+                      <Toggle
+                        checked={tool.enabled}
+                        onChange={(v) =>
+                          props.onSetToolPolicy(props.server.id, tool.name, {
+                            enabled: v,
+                          })
+                        }
+                      />
+                    </Row>
+                  </Tooltip>
                 </Row>
               }
             />
@@ -381,71 +434,64 @@ function ServerCard(props: {
 // ---------------------------------------------------------------------------
 
 export function McpScreen(): JSX.Element {
-  const serverResource = useMcpServers();
-  const [servers, setServers] = createStore<McpServer[]>([]);
-  const [seeded, setSeeded] = createSignal(false);
+  const servers = useMcpServers();
   const [registerOpen, setRegisterOpen] = createSignal(false);
   const [regName, setRegName] = createSignal("");
+  const [regTransport, setRegTransport] = createSignal<McpTransport>("stdio");
   const [regUrl, setRegUrl] = createSignal("");
   const [regCommand, setRegCommand] = createSignal("");
+  const [registering, setRegistering] = createSignal(false);
+  const [connecting, setConnecting] = createSignal<string | null>(null);
   const [authTarget, setAuthTarget] = createSignal<McpServer | null>(null);
 
-  // seed store once from resource
-  const resolvedServers = () => {
-    const data = serverResource();
-    if (data && !seeded()) {
-      setSeeded(true);
-      setServers(
-        data.map((s) => ({ ...s, tools: s.tools.map((t) => ({ ...t })) })),
-      );
+  async function setToolPolicy(
+    serverId: string,
+    toolName: string,
+    patch: { enabled?: boolean; trusted?: boolean },
+  ) {
+    try {
+      await setMcpToolPolicy(serverId, toolName, patch);
+      if (patch.trusted !== undefined) {
+        toast.success(
+          patch.trusted
+            ? `"${toolName}" will run without asking.`
+            : `"${toolName}" will ask for approval again.`,
+        );
+      }
+    } catch (err) {
+      toast.error(mcpErrorMessage(err, `Could not update "${toolName}".`));
     }
-    return data;
-  };
-
-  function toggleTool(serverId: string, toolName: string, enabled: boolean) {
-    setServers(
-      produce((s) => {
-        const srv = s.find((x) => x.id === serverId);
-        const tool = srv?.tools.find((t) => t.name === toolName);
-        if (tool) tool.enabled = enabled;
-      }),
-    );
   }
 
-  function retryConnection(serverId: string) {
-    const srv = servers.find((s) => s.id === serverId);
-    if (!srv) return;
+  async function retryConnection(server: McpServer) {
+    setConnecting(server.id);
+    try {
+      // A refused connection is a 200 carrying the reason, not a thrown error —
+      // so the outcome is read off the server that comes back.
+      const updated = await connectMcpServer(server.id);
+      if (updated.status === "connected") {
+        toast.success(
+          `"${updated.name}" connected — ${updated.tools.length} tools discovered.`,
+        );
+      } else {
+        toast.error(
+          updated.errorMessage ?? `Could not connect to "${updated.name}".`,
+        );
+      }
+    } catch (err) {
+      toast.error(mcpErrorMessage(err, `Could not reach "${server.name}".`));
+    } finally {
+      setConnecting(null);
+    }
+  }
 
-    // Optimistically move to connecting (disconnected) and surface feedback
-    setServers(
-      produce((s) => {
-        const target = s.find((x) => x.id === serverId);
-        if (target) {
-          target.status = "disconnected";
-          target.errorMessage = undefined;
-          target.errorAt = undefined;
-        }
-      }),
-    );
-
-    toast.info(`Retrying connection to "${srv.name}"…`);
-
-    // Simulate async connection attempt — in Phase 2 this calls the API
-    setTimeout(() => {
-      setServers(
-        produce((s) => {
-          const target = s.find((x) => x.id === serverId);
-          if (target) {
-            // Mock: stays in error for servers that were already errored
-            target.status = "error";
-            target.errorMessage =
-              "Connection refused — server not reachable at " + target.url;
-            target.errorAt = new Date().toISOString();
-          }
-        }),
-      );
-      toast.error(`Could not connect to "${srv.name}". Check the server logs.`);
-    }, 2000);
+  async function saveCredentials(serverId: string, creds: McpAuthCredentials) {
+    try {
+      const updated = await setMcpCredentials(serverId, creds);
+      toast.success(`Auth configured for "${updated.name}".`);
+    } catch (err) {
+      toast.error(mcpErrorMessage(err, "Could not save the credentials."));
+    }
   }
 
   async function deleteServer(server: McpServer) {
@@ -457,17 +503,16 @@ export function McpScreen(): JSX.Element {
       tone: "alert",
     });
     if (!ok) return;
-    setServers(
-      produce((s) => {
-        const idx = s.findIndex((x) => x.id === server.id);
-        if (idx !== -1) s.splice(idx, 1);
-      }),
-    );
-    toast.success(`"${server.name}" removed.`);
+    try {
+      await deleteMcpServer(server.id);
+      toast.success(`"${server.name}" removed.`);
+    } catch (err) {
+      toast.error(mcpErrorMessage(err, `Could not remove "${server.name}".`));
+    }
   }
 
   const view = createListView({
-    source: () => servers,
+    source: () => servers() ?? [],
     search: (s) => s.name,
     sorts: {
       name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
@@ -479,57 +524,53 @@ export function McpScreen(): JSX.Element {
     initialSort: "name",
   });
 
-  function saveCredentials(serverId: string, creds: McpAuthCredentials) {
-    setServers(
-      produce((s) => {
-        const target = s.find((x) => x.id === serverId);
-        if (target) target.credentials = creds;
-      }),
-    );
+  /** The command line is typed as one string and split into argv here — a
+   *  presentation convenience only; the backend stores command and args apart. */
+  function commandParts(): { command: string; args: string[] } {
+    const [command = "", ...args] = regCommand().trim().split(/\s+/);
+    return { command, args };
   }
 
-  function registerServer() {
-    if (!regName().trim()) return;
+  const canRegister = () =>
+    regName().trim() !== "" &&
+    (regTransport() === "stdio" ? regCommand().trim() : regUrl().trim()) !== "";
 
+  async function registerServer() {
+    if (!canRegister()) return;
     const name = regName().trim();
-    const newServer: McpServer = {
-      id: `mcp-custom-${Date.now()}`,
-      name,
-      transport: regUrl() ? "http" : "stdio",
-      url: regUrl() || regCommand(),
-      status: "disconnected",
-      tools: [],
-    };
-
-    setServers(produce((s) => s.push(newServer)));
-    setRegName("");
-    setRegUrl("");
-    setRegCommand("");
-    setRegisterOpen(false);
-
-    toast.success(`"${name}" registered. Attempting connection…`);
-
-    // Simulate connection attempt in Phase 1
-    setTimeout(() => {
-      setServers(
-        produce((s) => {
-          const target = s.find((x) => x.id === newServer.id);
-          if (target) {
-            target.status = "error";
-            target.errorMessage =
-              "Could not reach server — verify the command or URL and retry.";
-            target.errorAt = new Date().toISOString();
-          }
-        }),
-      );
-      toast.error(
-        `Could not connect to "${name}". Use RETRY once the server is running.`,
-      );
-    }, 3000);
+    const stdio = regTransport() === "stdio";
+    setRegistering(true);
+    try {
+      const created = await registerMcpServer({
+        name,
+        transport: regTransport(),
+        ...(stdio ? commandParts() : { url: regUrl().trim() }),
+      });
+      setRegName("");
+      setRegUrl("");
+      setRegCommand("");
+      setRegTransport("stdio");
+      setRegisterOpen(false);
+      // Registration dials the server, so the result already says whether it works.
+      if (created.status === "connected") {
+        toast.success(
+          `"${name}" registered — ${created.tools.length} tools discovered.`,
+        );
+      } else {
+        toast.error(
+          created.errorMessage ??
+            `"${name}" registered but did not connect. Use RETRY once it is running.`,
+        );
+      }
+    } catch (err) {
+      toast.error(mcpErrorMessage(err, `Could not register "${name}".`));
+    } finally {
+      setRegistering(false);
+    }
   }
 
   const connectedCount = () =>
-    servers.filter((s) => s.status === "connected").length;
+    (servers() ?? []).filter((s) => s.status === "connected").length;
 
   return (
     <Stack gap={6}>
@@ -555,63 +596,63 @@ export function McpScreen(): JSX.Element {
       />
 
       <Suspense fallback={<LoadingText label="LOADING SERVERS" />}>
-        <Show when={resolvedServers()}>
-          <Show
-            when={servers.length}
-            fallback={
-              <EmptyState
-                icon="plug"
-                message="NO SERVERS"
-                hint="Model Context Protocol (MCP) lets the agent call external tools — file access, search, custom APIs — exposed by a server. Register one to get started."
-                action={
-                  <Button onClick={() => setRegisterOpen(true)} leading="plus">
-                    REGISTER SERVER
-                  </Button>
-                }
-              />
-            }
-          >
-            <Stack gap={4}>
-              <Text variant="micro" tone="dim">
-                MCP servers expose tools the agent can call. Toggle individual
-                tools on a server, or register more below.
-              </Text>
-              <ListToolbar
-                query={view.query()}
-                onQueryChange={view.setQuery}
-                placeholder="Search servers…"
-                sortKey={view.sortKey()}
-                sortOptions={view.sortOptions}
-                onSortChange={view.setSort}
-                dir={view.dir()}
-                onToggleDir={view.toggleDir}
-                count={view.count()}
-                total={view.total()}
-              />
-              <Show
-                when={view.items().length}
-                fallback={
-                  <EmptyState
-                    icon="search"
-                    message="NO MATCHES"
-                    hint="No servers match your search."
+        <Show
+          when={(servers() ?? []).length}
+          fallback={
+            <EmptyState
+              icon="plug"
+              message="NO SERVERS"
+              hint="Model Context Protocol (MCP) lets the agent call external tools — file access, search, custom APIs — exposed by a server. Register one to get started."
+              action={
+                <Button onClick={() => setRegisterOpen(true)} leading="plus">
+                  REGISTER SERVER
+                </Button>
+              }
+            />
+          }
+        >
+          <Stack gap={4}>
+            <Text variant="micro" tone="dim">
+              MCP servers expose tools the agent can call. Every one of them
+              asks for your approval before it runs until you trust it — one
+              tool at a time, never a whole server.
+            </Text>
+            <ListToolbar
+              query={view.query()}
+              onQueryChange={view.setQuery}
+              placeholder="Search servers…"
+              sortKey={view.sortKey()}
+              sortOptions={view.sortOptions}
+              onSortChange={view.setSort}
+              dir={view.dir()}
+              onToggleDir={view.toggleDir}
+              count={view.count()}
+              total={view.total()}
+            />
+            <Show
+              when={view.items().length}
+              fallback={
+                <EmptyState
+                  icon="search"
+                  message="NO MATCHES"
+                  hint="No servers match your search."
+                />
+              }
+            >
+              <For each={view.items()}>
+                {(srv) => (
+                  <ServerCard
+                    server={srv}
+                    busy={connecting() === srv.id}
+                    onSetToolPolicy={setToolPolicy}
+                    onRetry={retryConnection}
+                    onConfigureAuth={(s) => setAuthTarget(s)}
+                    onDelete={deleteServer}
                   />
-                }
-              >
-                <For each={view.items()}>
-                  {(srv) => (
-                    <ServerCard
-                      server={srv}
-                      onToggleTool={toggleTool}
-                      onRetry={retryConnection}
-                      onConfigureAuth={(s) => setAuthTarget(s)}
-                      onDelete={deleteServer}
-                    />
-                  )}
-                </For>
-              </Show>
-            </Stack>
-          </Show>
+                )}
+              </For>
+            </Show>
+          </Stack>
         </Show>
       </Suspense>
 
@@ -628,9 +669,9 @@ export function McpScreen(): JSX.Element {
             <Button
               variant="primary"
               onClick={registerServer}
-              disabled={!regName().trim()}
+              disabled={!canRegister() || registering()}
             >
-              REGISTER
+              {registering() ? "CONNECTING…" : "REGISTER"}
             </Button>
           </Row>
         }
@@ -642,21 +683,39 @@ export function McpScreen(): JSX.Element {
             onInput={(e) => setRegName(e.currentTarget.value)}
             placeholder="e.g. My Custom MCP"
           />
-          <Input
-            label="COMMAND (stdio)"
-            value={regCommand()}
-            onInput={(e) => setRegCommand(e.currentTarget.value)}
-            placeholder="e.g. npx -y @modelcontextprotocol/server-name"
+          <Select
+            label="TRANSPORT"
+            value={regTransport()}
+            onChange={(v) => setRegTransport(v as McpTransport)}
+            options={[
+              { value: "stdio", label: "STDIO (LOCAL SUBPROCESS)" },
+              { value: "http", label: "HTTP (STREAMABLE)" },
+              { value: "sse", label: "SSE" },
+            ]}
           />
-          <Input
-            label="URL (http transport)"
-            value={regUrl()}
-            onInput={(e) => setRegUrl(e.currentTarget.value)}
-            placeholder="e.g. http://localhost:8080/mcp"
-          />
+          <Show
+            when={regTransport() === "stdio"}
+            fallback={
+              <Input
+                label="URL"
+                value={regUrl()}
+                onInput={(e) => setRegUrl(e.currentTarget.value)}
+                placeholder="e.g. http://localhost:8080/mcp"
+              />
+            }
+          >
+            <Input
+              label="COMMAND"
+              value={regCommand()}
+              onInput={(e) => setRegCommand(e.currentTarget.value)}
+              placeholder="e.g. npx -y @modelcontextprotocol/server-name"
+            />
+          </Show>
           <Text variant="micro" tone="dim">
-            After registration the system will attempt to connect automatically.
-            For auth-required servers, use CONFIGURE AUTH on the server card.
+            Registering connects to the server and discovers its tools. Each
+            tool arrives switched on but untrusted, so it will ask before it
+            runs. For auth-required servers, use CONFIGURE AUTH on the server
+            card.
           </Text>
         </Stack>
       </Modal>
