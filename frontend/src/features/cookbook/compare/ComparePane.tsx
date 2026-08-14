@@ -202,6 +202,10 @@ export function ComparePaneView(props: {
             onToggleFullscreen={() => setWide((on) => !on)}
             onClose={() => setOpenKey(null)}
             onSaveDocument={stream().saveDocumentEdit}
+            // Accepting a document suggestion lands over REST, not the run stream, so the
+            // pane has to be told about the version it minted or it keeps showing the old
+            // body. Same controller as chat's, so a compare pane behaves identically.
+            onDocumentVersion={stream().noteDocumentVersion}
           />
         </div>
       </Modal>
