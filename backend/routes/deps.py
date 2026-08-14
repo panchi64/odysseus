@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import HTTPException, Request
+from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
 from sqlalchemy import Engine
 
 from core import auth as core_auth
@@ -20,6 +22,8 @@ from runs import ConversationBusyError, Run, RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
+from services.calendar import CalendarService
+from services.calendar.nl import CalendarNaturalLanguage
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
@@ -230,9 +234,33 @@ def mail(request: Request) -> object | None:
     return getattr(request.app.state, "mail", None)
 
 
-def calendar(request: Request) -> object | None:
-    """The calendar capability (`CAL-*`) — None until track T2 lands."""
-    return getattr(request.app.state, "calendar", None)
+def calendar(request: Request) -> CalendarService:
+    """The calendar capability (`CAL-1..3`), including natural-language entry as `.nl`.
+
+    Built on first use and cached on ``app.state``, rather than constructed in the app's
+    lifespan like the accessors above. The service needs nothing but the engine and the
+    vault — no lifecycle, no background worker, no warm-up — so there is nothing for the
+    lifespan to own, and a capability with no startup cost shouldn't add one to every boot.
+
+    The parser's model resolver closes over the registry and runs **per call**, so a role
+    rebound at runtime takes effect without rebuilding anything — the same seam
+    `services/webfetch/distill.py` uses.
+    """
+    service = getattr(request.app.state, "calendar", None)
+    if service is None:
+        registry = request.app.state.models
+
+        async def resolve() -> tuple[Model, ModelSettings | None]:
+            resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
+            return resolved.model, resolved.reasoning_off
+
+        service = CalendarService(
+            request.app.state.db_engine,
+            request.app.state.vault,
+            nl=CalendarNaturalLanguage(resolve_model=resolve),
+        )
+        request.app.state.calendar = service
+    return service
 
 
 def mcp(request: Request) -> object | None:

@@ -1,0 +1,444 @@
+"""The `/calendar` REST surface (`CAL-1..3`) and the agent's calendar tools."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic_ai import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
+
+from tools import RunDeps
+from tools.calendar import calendar_toolset
+
+from ._helpers import client_app
+
+
+async def _calendar(client, name: str = "Personal", **extra) -> str:
+    resp = await client.post("/calendar/calendars", json={"name": name, **extra})
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+# --- calendars ------------------------------------------------------------
+
+
+async def test_calendar_crud_round_trip():
+    async with client_app() as (client, _app):
+        created = await client.post(
+            "/calendar/calendars", json={"name": "Work", "tone": "info"}
+        )
+        assert created.status_code == 201
+        calendar_id = created.json()["id"]
+        assert created.json()["synced"] is False
+
+        listed = await client.get("/calendar/calendars")
+        assert [row["name"] for row in listed.json()["items"]] == ["Work"]
+
+        patched = await client.patch(
+            f"/calendar/calendars/{calendar_id}", json={"name": "Work (renamed)"}
+        )
+        assert patched.json()["name"] == "Work (renamed)"
+
+        assert (await client.delete(f"/calendar/calendars/{calendar_id}")).status_code == 204
+        assert (await client.get("/calendar/calendars")).json()["items"] == []
+
+
+async def test_an_empty_calendar_name_is_rejected():
+    async with client_app() as (client, _app):
+        resp = await client.post("/calendar/calendars", json={"name": "   "})
+        assert resp.status_code == 422
+
+
+async def test_an_unknown_calendar_is_a_404():
+    async with client_app() as (client, _app):
+        assert (await client.patch("/calendar/calendars/nope", json={})).status_code == 404
+
+
+async def test_binding_a_calendar_to_a_server_never_echoes_the_password():
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/calendar/calendars",
+            json={
+                "name": "Remote",
+                "caldavUrl": "https://dav.example.com/cal/",
+                "caldavUsername": "operator",
+                "caldavPassword": "hunter2",
+            },
+        )
+        body = resp.text
+        assert resp.status_code == 201
+        assert resp.json()["synced"] is True
+        assert resp.json()["syncUrl"] == "https://dav.example.com/cal/"
+        assert "hunter2" not in body and "caldavPassword" not in body
+
+
+async def test_syncing_a_local_calendar_is_a_422():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        resp = await client.post(f"/calendar/calendars/{calendar_id}/sync")
+        assert resp.status_code == 422
+
+
+async def test_syncing_a_private_server_is_refused_as_an_upstream_error():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(
+            client, "LAN", caldavUrl="http://127.0.0.1:8080/dav/", caldavUsername="operator"
+        )
+        resp = await client.post(f"/calendar/calendars/{calendar_id}/sync")
+        assert resp.status_code == 502
+
+
+async def test_syncing_everything_with_nothing_bound_reports_zero_calendars():
+    """`calendars: 0` is a different answer to "no changes" — a caller must be able to say
+    "there is nothing to sync" rather than "everything is up to date"."""
+    async with client_app() as (client, _app):
+        await _calendar(client)  # local-only, so not remote
+        resp = await client.post("/calendar/sync")
+        assert resp.status_code == 200
+        assert resp.json() == {"calendars": 0, "changed": 0, "failed": []}
+
+
+async def test_syncing_everything_reports_a_failed_calendar_without_abandoning_the_rest():
+    """One unreachable server must not stop the others: the whole pass still succeeds and
+    names what failed, so a stale binding can't silently freeze the rest of the schedule."""
+    async with client_app() as (client, _app):
+        await _calendar(client, "Local")
+        await _calendar(
+            client, "LAN", caldavUrl="http://127.0.0.1:8080/dav/", caldavUsername="operator"
+        )
+        resp = await client.post("/calendar/sync")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["calendars"] == 1
+        assert body["changed"] == 0
+        assert body["failed"] == ["LAN"]
+
+
+# --- events + occurrences --------------------------------------------------
+
+
+async def test_event_crud_round_trip():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        created = await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Dentist",
+                "start": "2026-06-09T10:00:00Z",
+                "end": "2026-06-09T11:00:00Z",
+                "location": "Clínica Pérez",
+            },
+        )
+        assert created.status_code == 201, created.text
+        event = created.json()
+        assert event["location"] == "Clínica Pérez"
+        assert event["allDay"] is False
+
+        fetched = await client.get(f"/calendar/events/{event['id']}")
+        assert fetched.json()["title"] == "Dentist"
+
+        patched = await client.patch(
+            f"/calendar/events/{event['id']}", json={"title": "Dentist (moved)"}
+        )
+        assert patched.json()["title"] == "Dentist (moved)"
+        assert patched.json()["start"] == event["start"]
+
+        assert (await client.delete(f"/calendar/events/{event['id']}")).status_code == 204
+        assert (await client.get(f"/calendar/events/{event['id']}")).status_code == 404
+
+
+async def test_occurrences_expand_a_series_and_events_do_not():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client, "Work")
+        await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Standup",
+                "start": "2026-06-01T09:00:00Z",
+                "end": "2026-06-01T09:15:00Z",
+                "rrule": "FREQ=DAILY;COUNT=5",
+            },
+        )
+
+        stored = await client.get("/calendar/events")
+        assert len(stored.json()["items"]) == 1
+
+        expanded = await client.get(
+            "/calendar/occurrences",
+            params={"start": "2026-06-01T00:00:00Z", "end": "2026-06-10T00:00:00Z"},
+        )
+        items = expanded.json()["items"]
+        assert len(items) == 5
+        assert all(item["recurring"] for item in items)
+        assert items[0]["occurrenceId"].startswith(items[0]["eventId"])
+
+
+async def test_cancelling_one_occurrence_leaves_the_series():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client, "Work")
+        event = (
+            await client.post(
+                "/calendar/events",
+                json={
+                    "calendarId": calendar_id,
+                    "title": "Standup",
+                    "start": "2026-06-01T09:00:00Z",
+                    "rrule": "FREQ=DAILY;COUNT=3",
+                },
+            )
+        ).json()
+
+        cancelled = await client.delete(
+            f"/calendar/events/{event['id']}/occurrences",
+            params={"start": "2026-06-02T09:00:00Z"},
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["rrule"] == "FREQ=DAILY;COUNT=3"
+
+        expanded = await client.get(
+            "/calendar/occurrences",
+            params={"start": "2026-06-01T00:00:00Z", "end": "2026-06-10T00:00:00Z"},
+        )
+        assert len(expanded.json()["items"]) == 2
+
+
+async def test_an_over_wide_window_is_refused_rather_than_truncated():
+    async with client_app() as (client, _app):
+        resp = await client.get(
+            "/calendar/occurrences",
+            params={"start": "2020-01-01T00:00:00Z", "end": "2040-01-01T00:00:00Z"},
+        )
+        assert resp.status_code == 422
+
+
+async def test_an_inverted_window_is_refused():
+    async with client_app() as (client, _app):
+        resp = await client.get(
+            "/calendar/occurrences",
+            params={"start": "2026-06-10T00:00:00Z", "end": "2026-06-01T00:00:00Z"},
+        )
+        assert resp.status_code == 422
+
+
+async def test_an_unparseable_rule_is_a_422():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        resp = await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Nonsense",
+                "start": "2026-06-09T10:00:00Z",
+                "rrule": "FREQ=NEVER",
+            },
+        )
+        assert resp.status_code == 422
+
+
+async def test_an_unknown_zone_is_a_422():
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        resp = await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Elsewhere",
+                "start": "2026-06-09T10:00:00Z",
+                "timezone": "Mars/Olympus_Mons",
+            },
+        )
+        assert resp.status_code == 422
+
+
+# --- ICS files -------------------------------------------------------------
+
+
+async def test_export_then_import_round_trips_through_the_surface():
+    async with client_app() as (client, _app):
+        source = await _calendar(client, "Work")
+        await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": source,
+                "title": "Sprint planning",
+                "start": "2026-06-08T14:00:00Z",
+                "end": "2026-06-08T15:30:00Z",
+                "timezone": "Europe/Madrid",
+                "rrule": "FREQ=WEEKLY;BYDAY=MO",
+            },
+        )
+
+        exported = await client.get(f"/calendar/calendars/{source}/export")
+        assert exported.status_code == 200
+        assert exported.headers["content-type"].startswith("text/calendar")
+        assert "BEGIN:VCALENDAR" in exported.text
+
+        target = await _calendar(client, "Imported")
+        imported = await client.post(
+            f"/calendar/calendars/{target}/import",
+            files={"file": ("cal.ics", exported.content, "text/calendar")},
+        )
+        assert imported.json() == {"created": 1, "updated": 0, "skipped": 0}
+
+        events = (await client.get("/calendar/events", params={"calendarId": target})).json()
+        assert events["items"][0]["timezone"] == "Europe/Madrid"
+        assert events["items"][0]["rrule"] == "FREQ=WEEKLY;BYDAY=MO"
+
+
+async def test_importing_into_an_unknown_calendar_is_a_404():
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/calendar/calendars/nope/import",
+            files={"file": ("cal.ics", b"BEGIN:VCALENDAR\nEND:VCALENDAR\n", "text/calendar")},
+        )
+        assert resp.status_code == 404
+
+
+# --- natural language ------------------------------------------------------
+
+
+async def test_parsing_a_phrase_returns_a_draft_and_stores_nothing(monkeypatch):
+    from services.registry import ModelRegistry, ResolvedModel
+
+    async def respond(messages, info):
+        tool = info.output_tools[0].name
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=tool,
+                    args={"title": "Lunch with Ana", "starts_at": "2026-06-12T13:00:00"},
+                )
+            ]
+        )
+
+    async def resolve_detailed(self, role, **kwargs):
+        return ResolvedModel(model=FunctionModel(respond), reasoning_off={})
+
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
+
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/calendar/parse",
+            json={"phrase": "lunch with Ana Friday 1pm", "timezone": "Europe/Madrid"},
+        )
+        assert resp.status_code == 200, resp.text
+        draft = resp.json()
+        assert draft["title"] == "Lunch with Ana"
+        assert draft["start"] == "2026-06-12T11:00:00Z"  # 13:00 Madrid in June
+        # A draft is not an event.
+        assert (await client.get("/calendar/events")).json()["items"] == []
+
+
+async def test_an_empty_phrase_is_a_422():
+    async with client_app() as (client, _app):
+        resp = await client.post("/calendar/parse", json={"phrase": "  "})
+        assert resp.status_code == 422
+
+
+async def test_no_utility_model_degrades_to_503(monkeypatch):
+    from core.exceptions import DegradedCapabilityError
+    from services.registry import ModelRegistry
+
+    async def resolve_detailed(self, role, **kwargs):
+        raise DegradedCapabilityError("no model bound")
+
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
+
+    async with client_app() as (client, _app):
+        resp = await client.post("/calendar/parse", json={"phrase": "lunch Friday"})
+        assert resp.status_code == 503
+
+
+# --- the agent's tools ------------------------------------------------------
+
+
+def _tool(name: str):
+    """One tool from the calendar toolset, by name — the same direct-invocation shape
+    `tests/test_code_tools.py` uses."""
+    return calendar_toolset().tools[name]
+
+
+class _Ctx:
+    """The slice of ``RunContext`` a calendar tool actually touches."""
+
+    def __init__(self, deps: RunDeps) -> None:
+        self.deps = deps
+
+
+async def _service_deps(app):
+    from routes.deps import OPERATOR_ID
+    from services.calendar import CalendarService
+
+    service = CalendarService(app.state.db_engine, app.state.vault)
+    return OPERATOR_ID, service
+
+
+async def test_the_agent_can_read_and_write_the_calendar():
+    async with client_app() as (client, app):
+        owner, service = await _service_deps(app)
+        calendar = await service.create_calendar(owner, "Personal")
+        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+
+        created = await (_tool("create_event")).function(
+            _Ctx(deps), title="Dentist", start="2026-06-09T10:00:00Z"
+        )
+        assert created["calendar_id"] == calendar.id
+
+        found = await (_tool("agenda")).function(
+            _Ctx(deps), start="2026-06-01T00:00:00Z", end="2026-06-30T00:00:00Z"
+        )
+        assert [item["title"] for item in found] == ["Dentist"]
+
+        assert "Deleted" in await (_tool("delete_event")).function(
+            _Ctx(deps), event_id=created["event_id"]
+        )
+        assert await service.list_events(owner) == []
+
+
+async def test_the_agent_falls_back_to_the_first_writable_calendar():
+    async with client_app() as (client, app):
+        owner, service = await _service_deps(app)
+        await service.create_calendar(owner, "Read-only", read_only=True)
+        writable = await service.create_calendar(owner, "Personal")
+        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+
+        created = await (_tool("create_event")).function(
+            _Ctx(deps), title="Coffee", start="2026-06-09T10:00:00Z"
+        )
+        assert created["calendar_id"] == writable.id
+
+
+async def test_a_bad_timestamp_asks_the_model_to_retry():
+    from pydantic_ai import ModelRetry
+
+    async with client_app() as (client, app):
+        owner, service = await _service_deps(app)
+        await service.create_calendar(owner, "Personal")
+        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+
+        with pytest.raises(ModelRetry):
+            await (_tool("create_event")).function(
+                _Ctx(deps), title="Whenever", start="next tuesday-ish"
+            )
+
+
+async def test_the_calendar_tools_degrade_when_the_capability_is_absent():
+    deps = RunDeps(run=None, owner_id="operator", calendar=None)  # type: ignore[arg-type]
+    found = await _tool("agenda").function(_Ctx(deps))
+    assert found == [{"error": "The calendar is unavailable."}]
+
+
+async def test_the_calendar_tools_are_not_approval_gated():
+    """Managing the operator's own schedule is ordinary work, not an `AE-3.1` sensitive
+    action — no calendar tool may ask for approval."""
+    tools = calendar_toolset().tools
+    assert set(tools) == {
+        "agenda",
+        "list_calendars",
+        "create_event",
+        "update_event",
+        "delete_event",
+        "draft_event_from_text",
+    }
+    assert not any(tool.requires_approval for tool in tools.values())

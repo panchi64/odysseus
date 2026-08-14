@@ -109,6 +109,7 @@ export const NAV: NavSection[] = [
         label: "Calendar",
         href: "/calendar",
         icon: "calendar",
+        connected: true,
         description: "View and manage your schedule",
       },
       {

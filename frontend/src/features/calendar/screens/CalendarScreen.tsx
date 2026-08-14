@@ -14,7 +14,6 @@ import {
   Select,
   Stack,
   StatusFlag,
-  Tabs,
   Text,
   confirm,
   toast,
@@ -23,13 +22,31 @@ import { date } from "~/lib/format";
 import {
   useCalendars,
   useCalendarEvents,
-  useLocalEvents,
-  addLocalEvent,
-  removeLocalEvent,
+  createEvent,
+  deleteEvent,
+  parseEventPhrase,
+  syncCalendars,
+  type EventWindow,
 } from "../data";
-import type { CalendarEvent } from "../model";
+import type { CalendarEvent, RecurrenceChoice } from "../model";
 
 const DAYS_OF_WEEK = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+
+/** The repetitions the picker offers. `custom` is absent by construction — it is a rule
+ *  the backend holds that this control can't express, so it can be shown but never chosen. */
+const RECURRENCE_OPTIONS: { value: RecurrenceChoice; label: string }[] = [
+  { value: "none", label: "No recurrence" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "monthly", label: "Monthly" },
+];
+
+/** Narrow the control's plain string back to a choice, via the list that produced it —
+ *  so an unrecognised value falls back to "none" rather than being asserted into the type. */
+function toChoice(value: string): RecurrenceChoice {
+  return RECURRENCE_OPTIONS.find((o) => o.value === value)?.value ?? "none";
+}
 
 const TONE_STATUS = {
   nominal: "nominal",
@@ -94,17 +111,26 @@ const MONTH_NAMES = [
   "DECEMBER",
 ];
 
+/** The span the grid needs loaded: the displayed month, padded a month either side so the
+ *  grid's leading/trailing days and the UPCOMING panel have data without a second fetch. */
+function monthWindow(year: number, month: number): EventWindow {
+  return {
+    start: new Date(Date.UTC(year, month - 1, 1)).toISOString(),
+    end: new Date(Date.UTC(year, month + 2, 1)).toISOString(),
+  };
+}
+
 export function CalendarScreen(): JSX.Element {
   const calendars = useCalendars();
-  // Seed local events from the resource; use local signal as the live list.
-  useCalendarEvents();
-  // useLocalEvents() returns the localEvents signal accessor directly.
-  const events = useLocalEvents();
 
   const today = new Date();
   const [viewYear, setViewYear] = createSignal(today.getUTCFullYear());
   const [viewMonth, setViewMonth] = createSignal(today.getUTCMonth());
-  const [viewMode, setViewMode] = createSignal("month");
+
+  // The backend expands recurrences inside the window it's given, so navigating months
+  // refetches rather than filtering a list the screen holds.
+  const loaded = useCalendarEvents(() => monthWindow(viewYear(), viewMonth()));
+  const events = () => loaded() ?? [];
   const [selectedEvent, setSelectedEvent] = createSignal<CalendarEvent | null>(
     null,
   );
@@ -114,6 +140,7 @@ export function CalendarScreen(): JSX.Element {
 
   // Sync state
   const [syncing, setSyncing] = createSignal(false);
+  const [parsing, setParsing] = createSignal(false);
 
   // New event form state
   const [newTitle, setNewTitle] = createSignal("");
@@ -121,7 +148,8 @@ export function CalendarScreen(): JSX.Element {
   const [newStart, setNewStart] = createSignal("");
   const [newEnd, setNewEnd] = createSignal("");
   const [newLocation, setNewLocation] = createSignal("");
-  const [newRecurrence, setNewRecurrence] = createSignal("none");
+  const [newRecurrence, setNewRecurrence] =
+    createSignal<RecurrenceChoice>("none");
   const [newCalendarId, setNewCalendarId] = createSignal("");
 
   const days = () => getDaysInMonth(viewYear(), viewMonth());
@@ -131,6 +159,20 @@ export function CalendarScreen(): JSX.Element {
 
   const calendarForEvent = (evt: CalendarEvent) =>
     (calendars() ?? []).find((c) => c.id === evt.calendarId);
+
+  // Derived once, read twice (label + tone). "ALL SYNCED" over an empty list would be a
+  // reassuring lie, so no calendars reads as exactly that.
+  const syncStatus = (): {
+    label: string;
+    tone: "info" | "nominal" | "warn";
+  } => {
+    if (syncing()) return { label: "SYNCING…", tone: "info" };
+    const rows = calendars() ?? [];
+    if (rows.length === 0) return { label: "NO CALENDARS", tone: "warn" };
+    return rows.every((c) => c.synced)
+      ? { label: "ALL SYNCED", tone: "nominal" }
+      : { label: "PARTIAL", tone: "warn" };
+  };
 
   const eventsThisMonth = () =>
     events().filter((evt) => {
@@ -168,70 +210,94 @@ export function CalendarScreen(): JSX.Element {
     setEventModalOpen(true);
   }
 
-  // Sync button handler: mock a brief async sync, then confirm success.
+  // Reconcile every calendar bound to a remote server. The backend decides which those
+  // are and reports the aggregate; this only phrases it.
   async function handleSync() {
     setSyncing(true);
-    await new Promise<void>((r) => setTimeout(r, 1200));
-    setSyncing(false);
-    toast.success("SYNC COMPLETE");
+    try {
+      const { calendars: count, changed, failed } = await syncCalendars();
+      if (count === 0) {
+        toast.info("NO REMOTE CALENDARS TO SYNC");
+      } else if (failed.length > 0) {
+        toast.error(`SYNC FAILED FOR ${failed.join(", ").toUpperCase()}`);
+      } else {
+        toast.success(
+          changed > 0
+            ? `SYNC COMPLETE — ${changed} CHANGE${changed === 1 ? "" : "S"}`
+            : "SYNC COMPLETE — ALREADY UP TO DATE",
+        );
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "SYNC FAILED");
+    } finally {
+      setSyncing(false);
+    }
   }
 
-  // Delete event with confirm guard + undo toast.
+  // Delete the clicked entry. For a recurring event this cancels just that occurrence —
+  // the backend keeps the rule — which is why the confirm text differs.
   async function handleDeleteEvent() {
     const evt = selectedEvent();
     if (!evt) return;
+    const repeats = evt.recurring;
     const ok = await confirm({
-      title: `DELETE EVENT: "${evt.title}"?`,
-      detail: "This cannot be undone.",
-      confirmLabel: "DELETE",
-      cancelLabel: "CANCEL",
+      title: repeats
+        ? `CANCEL THIS OCCURRENCE OF "${evt.title}"?`
+        : `DELETE EVENT: "${evt.title}"?`,
+      detail: repeats
+        ? "The rest of the series is left in place. This cannot be undone."
+        : "This cannot be undone.",
+      confirmLabel: repeats ? "CANCEL OCCURRENCE" : "DELETE",
+      cancelLabel: "KEEP",
       tone: "alert",
     });
     if (!ok) return;
-    const snapshot = evt;
-    removeLocalEvent(evt.id);
-    setEventModalOpen(false);
-    setSelectedEvent(null);
-    toast.success("Event deleted", {
-      action: {
-        label: "UNDO",
-        onClick: () => {
-          addLocalEvent(snapshot);
-          toast.info("Event restored");
-        },
-      },
-    });
+    try {
+      await deleteEvent(evt);
+      setEventModalOpen(false);
+      setSelectedEvent(null);
+      toast.success(repeats ? "Occurrence cancelled" : "Event deleted");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "DELETE FAILED");
+    }
   }
 
-  // Create event with validation + local state mutation.
-  function handleCreateEvent() {
+  async function handleCreateEvent() {
     const title = newTitle().trim();
     if (!title) {
       setNewTitleError("TITLE IS REQUIRED");
       return;
     }
+    const calId = resolvedCalendarId();
+    if (!calId) {
+      setNewTitleError("NO CALENDAR TO ADD TO");
+      return;
+    }
     setNewTitleError("");
 
-    const calId = newCalendarId() || calendars()?.[0]?.id || "cal-1";
-    const id = `evt-new-${Date.now()}`;
+    // A `datetime-local` value is wall-clock in the operator's own zone; `new Date(…)`
+    // reads it that way, so the instant sent up is the one they picked.
     const startIso = newStart()
       ? new Date(newStart()).toISOString()
       : new Date().toISOString();
-    const endIso = newEnd()
-      ? new Date(newEnd()).toISOString()
-      : new Date(Date.now() + 3600_000).toISOString();
+    const endIso = newEnd() ? new Date(newEnd()).toISOString() : undefined;
 
-    addLocalEvent({
-      id,
-      calendarId: calId,
-      title,
-      start: startIso,
-      end: endIso,
-      location: newLocation() || undefined,
-      recurrence: newRecurrence() as CalendarEvent["recurrence"],
-    });
+    try {
+      await createEvent({
+        calendarId: calId,
+        title,
+        start: startIso,
+        end: endIso,
+        location: newLocation() || undefined,
+        recurrence: newRecurrence(),
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "COULD NOT CREATE EVENT",
+      );
+      return;
+    }
 
-    // Reset form
     setNewTitle("");
     setNewStart("");
     setNewEnd("");
@@ -240,6 +306,33 @@ export function CalendarScreen(): JSX.Element {
     setNewCalendarId("");
     setNewEventOpen(false);
     toast.success(`Event "${title}" created`);
+  }
+
+  // Quick add: the backend parses the phrase into a draft, which is created straight away.
+  async function handleQuickAdd() {
+    const phrase = quickAdd().trim();
+    if (!phrase) {
+      setNewEventOpen(true);
+      return;
+    }
+    const calId = resolvedCalendarId();
+    if (!calId) {
+      toast.error("NO CALENDAR TO ADD TO");
+      return;
+    }
+    setParsing(true);
+    try {
+      const draft = await parseEventPhrase(phrase);
+      await createEvent({ ...draft, calendarId: calId });
+      setQuickAdd("");
+      toast.success(`Event "${draft.title}" created`);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "COULD NOT READ THAT PHRASE",
+      );
+    } finally {
+      setParsing(false);
+    }
   }
 
   // Initialise newCalendarId when calendars resolve.
@@ -285,16 +378,8 @@ export function CalendarScreen(): JSX.Element {
             { label: "CALENDARS", value: String(calendars()?.length ?? 0) },
             {
               label: "SYNC STATUS",
-              value: syncing()
-                ? "SYNCING…"
-                : (calendars() ?? []).every((c) => c.synced)
-                  ? "ALL SYNCED"
-                  : "PARTIAL",
-              tone: syncing()
-                ? "info"
-                : (calendars() ?? []).every((c) => c.synced)
-                  ? "nominal"
-                  : "warn",
+              value: syncStatus().label,
+              tone: syncStatus().tone,
             },
           ]}
         />
@@ -403,15 +488,9 @@ export function CalendarScreen(): JSX.Element {
                 TODAY
               </Button>
             </Row>
-            <Tabs
-              items={[
-                { value: "month", label: "MONTH" },
-                { value: "week", label: "WEEK" },
-                { value: "day", label: "DAY" },
-              ]}
-              value={viewMode()}
-              onChange={setViewMode}
-            />
+            {/* WEEK and DAY tabs lived here while the screen was mock-backed; they
+                switched nothing. The month grid is the only view that exists, so it
+                isn't offered as a choice until the other two do. */}
           </Row>
 
           {/* Quick-add bar */}
@@ -419,6 +498,9 @@ export function CalendarScreen(): JSX.Element {
             <Input
               value={quickAdd()}
               onInput={(e) => setQuickAdd(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleQuickAdd();
+              }}
               placeholder="Quick add — e.g. 'Team sync Monday 14:00'"
               class="flex-1"
             />
@@ -426,9 +508,10 @@ export function CalendarScreen(): JSX.Element {
               variant="default"
               size="sm"
               leading="plus"
-              onClick={() => setNewEventOpen(true)}
+              disabled={parsing()}
+              onClick={handleQuickAdd}
             >
-              ADD
+              {parsing() ? "READING…" : "ADD"}
             </Button>
           </Row>
 
@@ -574,15 +657,15 @@ export function CalendarScreen(): JSX.Element {
                 >
                   CLOSE
                 </Button>
+                {/* No EDIT here yet: the backend has PATCH /calendar/events/{id}, but
+                    nothing on this screen drives it, and a button that silently does
+                    nothing is worse than an absent one. */}
                 <Button
                   variant="danger"
                   leading="trash"
                   onClick={handleDeleteEvent}
                 >
                   DELETE
-                </Button>
-                <Button variant="primary" leading="edit">
-                  EDIT
                 </Button>
               </Row>
             }
@@ -679,14 +762,8 @@ export function CalendarScreen(): JSX.Element {
           <Select
             label="RECURRENCE"
             value={newRecurrence()}
-            onChange={setNewRecurrence}
-            options={[
-              { value: "none", label: "No recurrence" },
-              { value: "daily", label: "Daily" },
-              { value: "weekly", label: "Weekly" },
-              { value: "weekdays", label: "Weekdays" },
-              { value: "monthly", label: "Monthly" },
-            ]}
+            onChange={(value) => setNewRecurrence(toChoice(value))}
+            options={RECURRENCE_OPTIONS}
           />
           <Select
             label="CALENDAR"
@@ -698,7 +775,8 @@ export function CalendarScreen(): JSX.Element {
             }))}
           />
           <Text variant="micro" tone="dim">
-            TIMEZONE: UTC (server local)
+            TIMEZONE:{" "}
+            {Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"}
           </Text>
         </Stack>
       </Modal>

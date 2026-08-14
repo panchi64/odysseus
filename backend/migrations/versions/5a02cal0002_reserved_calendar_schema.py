@@ -23,10 +23,64 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema — filled in by the calendar track (T2)."""
-    pass
+    """Upgrade schema."""
+    op.create_table('calendars',
+    sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('name_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('tone', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('caldav_url', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('caldav_username_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('caldav_password_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('read_only', sa.Boolean(), nullable=False),
+    sa.Column('last_synced_at', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('calendars', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_calendars_owner_id'), ['owner_id'], unique=False)
+
+    op.create_table('calendar_events',
+    sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('calendar_id', sa.String(), nullable=False),
+    sa.Column('uid', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('title_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('description_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('location_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('starts_at', sa.DateTime(), nullable=False),
+    sa.Column('ends_at', sa.DateTime(), nullable=False),
+    sa.Column('timezone', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('all_day', sa.Boolean(), nullable=False),
+    sa.Column('rrule', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('exdates', sa.JSON(), nullable=False),
+    sa.Column('remote_href', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('remote_etag', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['calendar_id'], ['calendars.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('calendar_events', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_calendar_events_calendar_id'), ['calendar_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_calendar_events_ends_at'), ['ends_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_calendar_events_owner_id'), ['owner_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_calendar_events_starts_at'), ['starts_at'], unique=False)
+        batch_op.create_index(batch_op.f('ix_calendar_events_uid'), ['uid'], unique=False)
 
 
 def downgrade() -> None:
-    """Downgrade schema — filled in by the calendar track (T2)."""
-    pass
+    """Downgrade schema."""
+    with op.batch_alter_table('calendar_events', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_calendar_events_uid'))
+        batch_op.drop_index(batch_op.f('ix_calendar_events_starts_at'))
+        batch_op.drop_index(batch_op.f('ix_calendar_events_owner_id'))
+        batch_op.drop_index(batch_op.f('ix_calendar_events_ends_at'))
+        batch_op.drop_index(batch_op.f('ix_calendar_events_calendar_id'))
+
+    op.drop_table('calendar_events')
+    with op.batch_alter_table('calendars', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_calendars_owner_id'))
+
+    op.drop_table('calendars')

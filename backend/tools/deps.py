@@ -17,6 +17,7 @@ from runs import Run
 if TYPE_CHECKING:
     from services.approval_grants import ApprovalGrantStore
     from services.artifacts import ArtifactStore
+    from services.calendar import CalendarService
     from services.conversation_search import ConversationSearch
     from services.corpus import CorpusIndex
     from services.documents import DocumentStore
@@ -75,7 +76,9 @@ class Capabilities:
     # Typed loosely because the concrete services don't exist yet; each track narrows
     # its own line to the real type when it lands (distinct lines ⇒ no conflicts).
     mail: object | None = None
-    calendar: object | None = None
+    # The calendar (`CAL-1..3`). Natural-language event entry rides on the service as
+    # `.nl`, so the capability stays one handle. None ⇒ the calendar tools say so.
+    calendar: CalendarService | None = None
     secret_vault: object | None = None
     external: object | None = None
 
@@ -154,7 +157,9 @@ class RunDeps:
     # service is unavailable), so its tools degrade with an "unavailable" result rather
     # than failing the turn — the same contract every other capability here follows.
     mail: object | None = None
-    calendar: object | None = None
+    # The calendar (`CAL-1..3`) — the calendar tools read/write the operator's schedule
+    # through it, and reach natural-language entry as `calendar.nl`. None ⇒ they degrade.
+    calendar: CalendarService | None = None
     secret_vault: object | None = None
     external: object | None = None
 
