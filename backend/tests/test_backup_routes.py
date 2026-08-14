@@ -20,7 +20,7 @@ async def test_manifest_is_null_until_the_first_export():
         assert exported.status_code == 200
 
         manifest = (await client.get("/backup/manifest")).json()
-        assert manifest["created_at"] == exported.json()["manifest"]["created_at"]
+        assert manifest["createdAt"] == exported.json()["manifest"]["createdAt"]
 
 
 async def test_contents_reports_the_discovered_groups():

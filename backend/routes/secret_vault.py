@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from core.exceptions import NotFoundError
 from core.vault import VaultLocked
 from routes import deps
+from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.secret_vault import (
     SecretEntryView,
@@ -71,7 +72,7 @@ class EntryPatch(BaseModel):
     password: str | None = None
 
 
-class EntryOut(BaseModel):
+class EntryOut(CamelModel):
     id: str
     name: str
     username: str

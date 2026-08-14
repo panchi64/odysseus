@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from core.vault import VaultLocked
 from routes import deps
+from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.backup import (
     BackupFormatError,
@@ -38,7 +39,7 @@ class ManifestItemOut(BaseModel):
     count: int
 
 
-class ManifestOut(BaseModel):
+class ManifestOut(CamelModel):
     created_at: datetime
     items: list[ManifestItemOut]
 
