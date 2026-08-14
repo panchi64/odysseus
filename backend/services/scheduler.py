@@ -162,6 +162,9 @@ class SchedulerService:
         self._notify = notify
         self._skip_recheck_s = skip_recheck_s
         self._running: dict[str, asyncio.Task] = {}
+        # task id → the `TaskRun` id of a fire whose executor has already returned and
+        # which is now only writing its own bookkeeping. See `_dispatch`.
+        self._settling: dict[str, str] = {}
         self._wake = asyncio.Event()
         self._stopping = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -279,20 +282,39 @@ class SchedulerService:
         task = await in_session(self._engine, work)
         if task is None or not task.enabled:
             return None
-        return await self._dispatch(task, utcnow())
+        return await self._dispatch(task, utcnow(), on_demand=True)
 
     # --- firing / skipping --------------------------------------------------------
 
-    async def _dispatch(self, task: ScheduledTask, now: datetime) -> str:
+    async def _dispatch(
+        self, task: ScheduledTask, now: datetime, *, on_demand: bool = False
+    ) -> str:
         """Fire-or-skip ``task`` right now: a still-live previous execution (tracked in
         `_running`) records a `skipped` `TaskRun` instead of running twice; otherwise
         starts a tracked background execution. Returns the new `TaskRun`'s id either
         way. Synchronous up to the point `_running` is set (no `await` in between) —
         the same atomic check-and-claim discipline `RunRegistry.claim` uses — so the
         tick loop's due-detection and an on-demand `fire_now` can never both slip past
-        the non-overlap check for the same task."""
+        the non-overlap check for the same task.
+
+        **A settling fire is not an overlap.** Between the executor returning and
+        `_fire`'s bookkeeping landing, the task is still claimed *and* still reads as due
+        — its `next_run_at` is exactly what that bookkeeping is about to advance. A tick
+        that lands in that window is re-observing the occurrence that just ran, so
+        recording a `skipped` run for it would invent a second occurrence that never
+        existed. It returns the settling fire's own id instead. The window is normally
+        sub-millisecond and opens wide only when a write retries a locked database, which
+        is precisely when the phantom used to appear.
+
+        ``on_demand`` (a manual `run_now` or an inbound webhook) is the opposite case: it
+        is a real, externally-triggered request to fire *now*, so it still records the
+        `skipped` run that tells the operator their trigger didn't run anything.
+        """
         live = self._running.get(task.id)
         if live is not None and not live.done():
+            settling = self._settling.get(task.id)
+            if settling is not None and not on_demand:
+                return settling
             return await self._skip(task, now)
         run_row_id = new_id()
         self._running[task.id] = asyncio.create_task(
@@ -313,6 +335,12 @@ class SchedulerService:
             except Exception as exc:  # noqa: BLE001 — a bad task must never kill the loop
                 logger.exception("scheduler: task %s execution failed", task.id)
                 result = TaskRunResult(outcome=TaskOutcome.ERROR.value, summary=str(exc))
+            # Everything past here is this fire's own bookkeeping, not the task's work.
+            # Marking the window keeps a concurrent tick from mistaking a not-yet-advanced
+            # `next_run_at` for a second due occurrence — see `_dispatch`. Set on every
+            # path out of the block above, including the failed one, because a failed
+            # execution still has to finalize and advance.
+            self._settling[task.id] = run_row_id
             finished = utcnow()
             if not await self._finalize_parked(
                 run_row_id,
@@ -361,6 +389,7 @@ class SchedulerService:
             # this task's schedule (maybe) changed; on the stopping-while-locked
             # early return it's harmless — the loop is already exiting.
             self._running.pop(task.id, None)
+            self._settling.pop(task.id, None)
             self.wake()
 
     async def _skip(self, task: ScheduledTask, now: datetime) -> str:

@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import NoReturn
 from weakref import WeakKeyDictionary
@@ -210,3 +211,24 @@ async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
             return _run()
 
     return await asyncio.to_thread(_run_guarded)
+
+
+@contextmanager
+def read_session(engine: Engine) -> Iterator[Session]:
+    """A session for a caller that is **not** on the event loop, taken under the same
+    per-engine lock :func:`in_session` uses.
+
+    Opening a bare ``Session(engine)`` beside a running service is safe on a file-backed
+    engine (a connection per thread) and unsafe on an in-memory one (a single shared
+    connection): the second BEGIN on a connection that already has a transaction open
+    fails with "cannot start a transaction within a transaction". This is the same rule
+    as `in_session`, for callers that can't await it — chiefly a test asserting against
+    the database while the service under test is still driving it.
+
+    Nothing is committed on exit; this is for reading.
+    """
+    lock = _CONN_LOCKS.get(engine)
+    with ExitStack() as stack:
+        if lock is not None:
+            stack.enter_context(lock)
+        yield stack.enter_context(Session(engine, expire_on_commit=False))

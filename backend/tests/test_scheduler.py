@@ -13,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 import services.scheduler as scheduler_mod
-from core.db import init_db, make_engine
+from core.db import init_db, make_engine, read_session
 from core.vault import Vault
 from models._fields import utcnow
 from models.task import ScheduledTask, ScheduleType, TaskKind, TaskOutcome, TaskOutput, TaskRun
@@ -77,13 +77,17 @@ def _add_task(
         return task.id
 
 
+# Both readers below are called *while* the scheduler's tick loop is still driving the
+# same in-memory engine, which is a single shared connection — so they take the engine's
+# connection lock like `in_session` does. A bare `Session(engine)` here raced the loop
+# into "cannot start a transaction within a transaction".
 def _get_task(engine, task_id: str) -> ScheduledTask:
-    with Session(engine, expire_on_commit=False) as session:
+    with read_session(engine) as session:
         return session.get(ScheduledTask, task_id)
 
 
 def _list_runs(engine, task_id: str) -> list[TaskRun]:
-    with Session(engine, expire_on_commit=False) as session:
+    with read_session(engine) as session:
         return list(session.exec(select(TaskRun).where(TaskRun.task_id == task_id)).all())
 
 
