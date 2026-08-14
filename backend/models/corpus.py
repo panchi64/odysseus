@@ -16,6 +16,10 @@ Two tables:
   provenance, timestamps) stays in the clear so the DB can segregate stale
   embeddings (`EMB-2`) and dedup on re-index.
 - ``CorpusSource`` — the operator-added **folder** registry (path + crawl status).
+  The path is **sealed** like the chunks it produces: a path into the operator's own
+  filesystem names their projects, clients and habits, so it is user content
+  (`XC-SEC-3`). The crawl status stays in the clear so the ``/rag`` list can order
+  and segregate rows without a key.
 
 The chunk's embedding ``model`` + ``dim`` are recorded (`EMB-2`): when the operator
 changes the embedding model, existing vectors are a different space, so retrieve
@@ -73,8 +77,14 @@ class CorpusSource(SQLModel, table=True):
     # Only "folder" today — the operator-added host path. Surfaces are virtual
     # adapters (not rows): they manage their own content on their own pages.
     kind: str = Field(default="folder")
-    # The host path the crawler walks.
-    path: str
+    # AEAD ciphertext of the host path the crawler walks. A path into the operator's own
+    # filesystem names their projects, clients and habits, so it is user content and is
+    # sealed (XC-SEC-3).
+    path_enc: str | None = None
+    # The pre-encryption cleartext path, kept only for rows written before the path was
+    # sealed — reads fall back to it and the startup backfill drains it to null
+    # (services/sealing.py). Same two-phase shape as `Conversation.title`.
+    path: str | None = None
     # indexed | indexing | stale | error — the crawl state the /rag list renders.
     status: str = Field(default="indexing")
     # A short reason code for the last failure (e.g. "PATH NOT FOUND"), else None.

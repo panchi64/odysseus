@@ -102,12 +102,14 @@ async def add_folder(body: FolderCreate, request: Request) -> CorpusSourceOut:
     if not body.path.strip():
         raise HTTPException(status_code=422, detail="path must not be empty")
     corpus = deps.corpus(request)
-    source = await corpus.add_folder(OPERATOR_ID, body.path.strip())
-    # Reflect the just-created source as the same row shape the list returns.
+    path = body.path.strip()
+    source = await corpus.add_folder(OPERATOR_ID, path)
+    # Reflect the just-created source as the same row shape the list returns. The label is
+    # the path as submitted — the stored column is sealed, and this is the same string.
     return CorpusSourceOut(
         id=source.id,
         kind="folder",
-        label=source.path,
+        label=path,
         icon="archive",
         href=None,
         doc_count=0,

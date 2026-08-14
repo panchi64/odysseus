@@ -41,6 +41,13 @@ class CorpusChunkStore:
         self._vault = vault
         self._embedder = embedder
 
+    @property
+    def vault(self) -> Vault:
+        """The corpus's at-rest key. Exposed so an adapter that seals a column on its own
+        registry table (``FolderAdapter``'s host path) uses the same vault the chunks it
+        produces are sealed with, rather than being handed a second one at construction."""
+        return self._vault
+
     # --- write path -------------------------------------------------------
 
     async def upsert(

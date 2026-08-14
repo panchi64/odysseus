@@ -32,6 +32,16 @@ class Conversation(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
+    # AEAD ciphertext of the thread's title. It is user content — an auto-generated
+    # summary of the operator's own first message, and the most revealing single line a
+    # thread has — so it is sealed like every peer entity's title (XC-SEC-3). Null for an
+    # untitled thread.
+    title_enc: str | None = None
+    # The pre-encryption cleartext title. Kept **only** for rows written before the title
+    # was sealed: reads prefer `title_enc` and fall back here, and the startup backfill
+    # seals each remaining value and nulls this out (services/sealing.py). Nothing writes
+    # it any more, so it is null on every new row and drains to null on every old one — a
+    # migration can't do the sealing itself, because it runs before unlock with no key.
     title: str | None = None
     # Tip of the path the operator is currently viewing. Walking it parent-by-parent
     # to the root is the active history. Null only for an empty conversation; a

@@ -29,6 +29,7 @@ from models.corpus import CorpusSource
 from services.chunking import chunk_text
 from services.corpus.adapter import CorpusHit, SourceAdapter, SourceStatus
 from services.corpus.chunk_store import CorpusChunkStore
+from services.sealing import open_sealed
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,17 @@ class FolderAdapter(SourceAdapter):
     def __init__(self, engine: Engine, chunk_store: CorpusChunkStore, unlocked) -> None:
         self._engine = engine
         self._chunks = chunk_store
+        # The registry's own host path is sealed with the same key its chunks are.
+        self._vault = chunk_store.vault
         self._worker: WriteBehindWorker[IndexJob] = WriteBehindWorker(
             self._index, name="corpus-folder", unlocked=unlocked
         )
+
+    def _path_of(self, source: CorpusSource) -> str:
+        """A source's host path, sealed or (until the backfill reaches it) legacy
+        cleartext. A registry row always has one, so the empty string is unreachable —
+        it just keeps the crawl's type honest."""
+        return open_sealed(self._vault, source.path_enc, source.path) or ""
 
     async def start(self) -> None:
         await self._worker.start()
@@ -73,7 +82,9 @@ class FolderAdapter(SourceAdapter):
 
     async def add_folder(self, owner_id: str, path: str) -> CorpusSource:
         """Register a folder and queue its first crawl (drained while unlocked)."""
-        source = CorpusSource(owner_id=owner_id, path=path, status="indexing")
+        source = CorpusSource(
+            owner_id=owner_id, path_enc=self._vault.encrypt_str(path), status="indexing"
+        )
 
         def work(session: Session) -> CorpusSource:
             session.add(source)
@@ -148,7 +159,7 @@ class FolderAdapter(SourceAdapter):
                 SourceStatus(
                     source_id=source.id,
                     kind="folder",
-                    label=source.path,
+                    label=self._path_of(source),
                     # Item (file) count, not chunk count, so the /rag "DOCS" column means
                     # the same thing across every source.
                     doc_count=await self._chunks.count_items(
@@ -184,7 +195,7 @@ class FolderAdapter(SourceAdapter):
         if source is None:
             return  # removed before the job ran
 
-        path = source.path
+        path = self._path_of(source)
         if not os.path.isdir(path):
             await self._mark(job.source_id, status="error", error_hint="PATH NOT FOUND")
             return

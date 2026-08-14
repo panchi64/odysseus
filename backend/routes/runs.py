@@ -224,9 +224,12 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             external=deps.external(request),
         ),
         store=deps.store(request),
-        # A resumed turn respects the current offline state too — if connectivity
-        # dropped while it was parked, the web tools stay hidden on resume.
-        disabled_tools=deps.offline(request).web_tools_disabled(),
+        # A resumed turn respects the operator's disabled set and the current offline
+        # state — a tool switched off (or a link dropped) while it was parked stays hidden
+        # on resume. This is the only path an approval-gated tool ever actually runs on,
+        # so a gate missing here would be a gate that never applies to the calls that
+        # matter most.
+        disabled_tools=await deps.disabled_tools(request),
     )
     # Record grants *before* resuming: resume only schedules the turn (it doesn't await
     # it), and the resumed turn's inline grant check must see them, or a tool re-called

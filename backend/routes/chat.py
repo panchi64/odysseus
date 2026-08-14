@@ -230,7 +230,7 @@ def compose_turn(
     return ChatCreated(run_id=run.id, conversation_id=conversation_id)
 
 
-def _submit_turn(
+async def _submit_turn(
     request: Request,
     *,
     prompt: str | None,
@@ -241,7 +241,11 @@ def _submit_turn(
     inline_max_tokens: int | None = None,
     compaction: CompactionContext | None = None,
 ) -> ChatCreated:
-    """Gather this route's resources from the `Request` and hand off to `compose_turn`."""
+    """Gather this route's resources from the `Request` and hand off to `compose_turn`.
+
+    Async only because the enabled-tool policy is a persisted read; every other resource
+    here is an `app.state` handle. `compose_turn` itself stays synchronous, so the
+    submit remains a single uninterrupted step after the caller's conversation mutation."""
     return compose_turn(
         prompt=prompt,
         conversation_id=conversation_id,
@@ -271,7 +275,7 @@ def _submit_turn(
         registry=deps.registry(request),
         store=deps.store(request),
         uploads=deps.uploads(request),
-        disabled_tools=deps.offline(request).web_tools_disabled(),
+        disabled_tools=await deps.disabled_tools(request),
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,
         inline_max_tokens=inline_max_tokens,
@@ -357,7 +361,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     deps.claim_conversation(request, conversation_id)
     try:
         cap = await _attachment_inline_cap(request, body.attachment_ids)
-        return _submit_turn(
+        return await _submit_turn(
             request,
             prompt=body.prompt,
             conversation_id=conversation_id,
@@ -390,7 +394,7 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
         models = await _resolve_models(request, body.endpoint_id, body.model)
         if not await store.regenerate_point(body.conversation_id, body.message_id):
             raise HTTPException(status_code=404, detail="message not found")
-        return _submit_turn(
+        return await _submit_turn(
             request,
             prompt=None,
             conversation_id=body.conversation_id,
@@ -420,7 +424,7 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
         if not await store.edit_point(body.conversation_id, body.message_id):
             raise HTTPException(status_code=404, detail="message not found")
         cap = await _attachment_inline_cap(request, body.attachment_ids)
-        return _submit_turn(
+        return await _submit_turn(
             request,
             prompt=body.prompt,
             conversation_id=body.conversation_id,

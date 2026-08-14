@@ -7,6 +7,7 @@ import {
   useEndpoints,
 } from "~/lib/stores/models";
 import type {
+  AgentTool,
   ChatSettings,
   EmbeddingHealth,
   EndpointInput,
@@ -386,4 +387,30 @@ export async function setOfflineManual(value: boolean): Promise<void> {
 /** Turn the auto-detect master switch on/off (does not itself force offline). */
 export async function setOfflineAutoDetect(value: boolean): Promise<void> {
   await putOffline({ auto_detect: value });
+}
+
+/* ── Agent tools ────────────────────────────────────────────────────────────────
+   The catalog is the backend's — derived there from the live toolset registry, never
+   enumerated here — so this is a plain read plus a per-tool flip. `/tools` is a
+   snake_case surface whose field names are all single words, so the DTO and the model
+   shape coincide and no mapper is needed. */
+
+const [toolsTick, setToolsTick] = createSignal(0);
+
+export function useAgentTools(): Resource<AgentTool[]> {
+  const [data] = createResource(toolsTick, () =>
+    api.get<AgentTool[]>("/tools"),
+  );
+  return data;
+}
+
+/** Enable or disable one tool for the agent. The backend re-reads the stored set when
+ *  it composes each turn, so this applies from the next run onward — including the
+ *  resume of a run that is currently parked awaiting approval. */
+export async function setAgentToolEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  await api.put(`/tools/${encodeURIComponent(name)}`, { enabled });
+  setToolsTick((n) => n + 1);
 }

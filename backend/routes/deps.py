@@ -50,6 +50,7 @@ from services.secret_vault import SecretVaultService
 from services.serving import ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
+from services.tool_policy import effective_disabled_tools
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
 from services.workspace_history import WorkspaceHistoryStore
@@ -159,6 +160,17 @@ def searxng(request: Request) -> ManagedSearxng:
 
 def offline(request: Request) -> OfflineModeService:
     return request.app.state.offline
+
+
+async def disabled_tools(request: Request) -> frozenset[str]:
+    """Everything withheld from the agent on this run — the operator's own disabled set
+    (`AE-3.3`) unioned with offline mode's automatic web suspension. Every route that
+    fills ``RunDeps.disabled_tools`` resolves it here, so a run path can't apply one
+    source and drop the other; ``app.py``'s task executor calls the service directly
+    (it has no ``Request``)."""
+    return await effective_disabled_tools(
+        settings_store(request), offline(request), OPERATOR_ID
+    )
 
 
 def artifacts(request: Request) -> ArtifactStore:

@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import Engine
 
 from agent.vision import VisionTranscriber
 from core.auth import AuthManager, AuthMiddleware
@@ -22,6 +23,8 @@ from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.ratelimit import RateLimiter
 from core.vault import Vault
+from models.conversation import Conversation
+from models.corpus import CorpusSource
 from models.task import TaskOutcome, TaskOutput
 from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
@@ -54,6 +57,7 @@ from routes import (
     skills,
     tasks,
     tokens,
+    tools,
     uploads,
     views,
 )
@@ -87,11 +91,13 @@ from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
+from services.sealing import seal_legacy_column
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
+from services.tool_policy import effective_disabled_tools
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
@@ -170,6 +176,32 @@ async def _backfill_embeddings(
             logger.info("corpus: backfilled %d chunk embeddings", count)
     except Exception:
         logger.exception("corpus: embedding backfill failed")
+
+
+async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
+    """Once the vault is unlocked, seal the columns that were stored in the clear before
+    they were sealed — the conversation title and the corpus source's host path — and drop
+    the cleartext behind them (`XC-SEC-3`).
+
+    A migration can't do this: schema upgrades run at startup with the vault locked, so
+    there is no key. This waits for unlock like ``_backfill_embeddings``, is idempotent (a
+    healed row no longer matches), and is best-effort per column — one table failing must
+    not stop the other from being healed, and neither must take the boot down."""
+    await vault.unlocked_event.wait()
+    for model_cls, legacy, sealed in (
+        (Conversation, "title", "title_enc"),
+        (CorpusSource, "path", "path_enc"),
+    ):
+        try:
+            await seal_legacy_column(
+                engine=engine,
+                vault=vault,
+                model_cls=model_cls,
+                legacy_attr=legacy,
+                sealed_attr=sealed,
+            )
+        except Exception:
+            logger.exception("at-rest: sealing legacy %s values failed", legacy)
 
 
 @asynccontextmanager
@@ -470,6 +502,10 @@ async def lifespan(app: FastAPI):
     app.state.embedding_backfill = asyncio.create_task(
         _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault)
     )
+    # Seal the columns that predate their own encryption. Same shape and same reason as
+    # the embedding backfill above: the migration that added the sealed column ran before
+    # unlock with no key, so the healing has to happen here (XC-SEC-3).
+    app.state.sealing_backfill = asyncio.create_task(_backfill_sealed_columns(engine, vault))
     # The View's static versions — the agent captures a sandbox file here, the
     # frontend fetches and renders it on the View canvas. Encrypted at rest like the
     # rest of the operator's data. (The View's live head rides the sandbox + the
@@ -685,7 +721,12 @@ async def lifespan(app: FastAPI):
             registry=app.state.runs,
             store=conversations,
             uploads=app.state.uploads,
-            disabled_tools=app.state.offline.web_tools_disabled(),
+            # An unattended task's turn honours the operator's disabled set exactly as an
+            # interactive one does — a tool switched off is off everywhere, not just where
+            # someone is watching.
+            disabled_tools=await effective_disabled_tools(
+                app.state.settings_store, app.state.offline, view.owner_id
+            ),
             owner_id=view.owner_id,
         )
         # Registered before the very first `await` below — the newly submitted Run's
@@ -743,9 +784,11 @@ async def lifespan(app: FastAPI):
         warmup = app.state.cookbook_warmup
         if not warmup.done():
             warmup.cancel()
-        backfill = app.state.embedding_backfill
-        if not backfill.done():
-            backfill.cancel()
+        # Both unlock-gated backfills: a shutdown while still locked leaves them parked on
+        # `unlocked_event`, which would warn as "destroyed while pending" if not cancelled.
+        for backfill in (app.state.embedding_backfill, app.state.sealing_backfill):
+            if not backfill.done():
+                backfill.cancel()
         # Drain any in-flight run-terminal notify tasks before tearing down the DB
         # engine/vault they read — a run finishing right at shutdown must not leave a
         # task reading a closed engine, and must not warn as "destroyed while pending".
@@ -811,6 +854,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(search.router)
     app.include_router(api_tokens.router)
     app.include_router(offline.router)
+    app.include_router(tools.router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(research.router)

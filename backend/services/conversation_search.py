@@ -33,6 +33,7 @@ from models.conversation import Conversation, Message
 from services import ranking
 from services.conversations import ConversationStore
 from services.embeddings import Embedder, decode_vector, embed_query
+from services.sealing import open_sealed
 
 _SNIPPET_LEN = 240
 
@@ -164,7 +165,9 @@ class ConversationSearch:
             hits.append(
                 ChatSearchHit(
                     conversation_id=conversation_id,
-                    title=conversation.title,
+                    title=open_sealed(
+                        self._vault, conversation.title_enc, conversation.title
+                    ),
                     snippet=self._snippet(text_by_id[message_id], query_tokens),
                     score=score,
                     matched_by=ranking.matched_by(message_id, dense, sparse),
