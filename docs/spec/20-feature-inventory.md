@@ -64,14 +64,13 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **UP-3 (SHOULD).** Fillable PDF forms SHOULD be detected and their fields made editable.
 - **UP-4 (MUST — performance).** Uploads MUST be rate-limited to protect the service.
 
-### Gallery & image editing (`GAL-*`)
+### Gallery (`GAL-*`)
 
-**Purpose:** An image/video library with AI-assisted editing.
+**Purpose:** An image/video library.
 
 - **GAL-1 (MUST).** The user MUST be able to upload, browse, favorite, delete, and export images and videos; capture metadata (dimensions, camera, location, date) SHOULD be retained.
 - **GAL-2 (SHOULD).** The user SHOULD be able to organize media into named albums and to tag items, with manually-added tags kept distinct from automatically-generated ones.
 - **GAL-3 (SHOULD).** Items SHOULD be taggable automatically by the AI, individually or in batches.
-- **GAL-4 (SHOULD).** The user SHOULD be able to apply AI image edits — upscale, remove background, inpaint, sharpen, denoise, enhance faces, and apply a reference style — with results saved back to their own library.
 
 ### Web search (`SEARCH-*`)
 
@@ -143,7 +142,6 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **COOK-2 (SHOULD).** The operator SHOULD be able to simulate other hardware to see what would fit.
 - **COOK-3 (MUST).** The operator MUST be able to download a model with visible progress and have failed downloads retried.
 - **COOK-4 (MUST).** The operator MUST be able to start and stop a model server, on the local host or a remote one, with startup errors surfaced; served models MUST become usable endpoints.
-- **COOK-5 (SHOULD).** The Cookbook SHOULD cover image-generation (diffusion) models as well as language models — recommending ones that fit, serving them, and registering them as usable image endpoints.
 - **Sensitive:** the agent downloading, serving, or stopping a model is approval-gated (`AE-3.1`); the operator manages models directly.
 
 ### Embedding models (`EMB-*`)

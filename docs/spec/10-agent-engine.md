@@ -21,7 +21,7 @@ The agent MUST be able to invoke the following categories of tools. Each is a ca
 |---|---|
 | Code & shell | Run code and shell commands in an **isolated sandbox** (on copies of provided files, never the host — `XC-SEC-7`); run a long task in the background and resume when it completes; run a command **on the host** only via a distinct, explicitly-approved tool (`AE-3.4`) |
 | Filesystem | Read and write files |
-| Web | Search the web; generate images; edit images |
+| Web | Search the web; fetch and read page content |
 | Documents | Create, replace, edit (find/replace), and suggest changes to documents; manage the document library |
 | Memory & history | Store and recall long-term memory; search past conversations |
 | Skills | Create, refine, publish, and search reusable skills |

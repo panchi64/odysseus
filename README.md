@@ -39,15 +39,15 @@ These are all specified in [`docs/spec/`](docs/spec/README.md), and they reuse t
 - **Deep Research** — multi-round runs that plan, search, read, analyze, and write a cited report, bounded by rounds and time, reusing the run substrate.
 - **Documents** — a multi-tab editor where you write and the agent assists with rewrites, targeted edits, reviewable suggestions, and versioning.
 - **Skills** — reusable know-how the agent accumulates and applies to later tasks.
-- **Gallery** — an image and video library with AI editing (upscale, background removal, inpaint, restyle).
-- **Uploads** — files as context, including text extraction from scanned and fillable PDFs.
+- **Gallery** — an image and video library: albums, tagging, favorites, and provenance for everything you've uploaded or attached to a chat.
+- **Uploads** — files as context, including text extraction from scanned PDFs.
 - **Knowledge Base** — point it at a folder of your own documents and retrieve from them by meaning (RAG).
 - **Code Runner** — run Python, JS, and HTML snippets in the browser, never on the host.
 - **Email** — IMAP/SMTP across accounts with AI triage: urgency, tagging, summaries, reply drafts, spam handling.
 - **Calendar** — a local-first calendar with CalDAV sync and `.ics` import/export.
 - **Tasks** — scheduled and event-triggered jobs the agent runs unattended within a pre-authorized scope.
-- **Cookbook** — scans your hardware, recommends models that fit, then downloads and serves them (VRAM-aware; GGUF, FP8, AWQ; vLLM and llama.cpp; diffusion models too).
-- **Compare** — send one prompt to several models, judge them blind, then reveal.
+- **Cookbook** — scans your hardware, recommends models that fit, then downloads and serves them (VRAM-aware; GGUF, FP8, AWQ; llama.cpp and MLX).
+- **Compare** — send one prompt to two models and read their answers side by side, attributed, each a real conversation you can keep going.
 - **MCP** — register external tool servers; their tools are sensitive by default until you trust them.
 - **Integrations** — preset connectors to third-party HTTP services, with encrypted credentials.
 - **API tokens** — scoped tokens and inbound webhooks for programmatic access.
