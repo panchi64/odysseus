@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from core.exceptions import DegradedCapabilityError, NotFoundError, SSRFError
 from routes import deps
+from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.integrations import IntegrationService, IntegrationView
 
@@ -53,7 +54,7 @@ class IntegrationActionPolicyUpdate(BaseModel):
     trusted: bool | None = None
 
 
-class IntegrationActionOut(BaseModel):
+class IntegrationActionOut(CamelModel):
     name: str
     method: str
     path: str
@@ -63,7 +64,7 @@ class IntegrationActionOut(BaseModel):
     trusted: bool
 
 
-class IntegrationPresetOut(BaseModel):
+class IntegrationPresetOut(CamelModel):
     id: str
     name: str
     category: str
@@ -74,7 +75,7 @@ class IntegrationPresetOut(BaseModel):
     actions: list[str]
 
 
-class IntegrationOut(BaseModel):
+class IntegrationOut(CamelModel):
     id: str
     name: str
     slug: str

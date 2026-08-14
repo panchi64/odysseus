@@ -187,6 +187,10 @@ async def test_the_rest_surface_lists_presets_configures_and_gates_an_action():
         assert connector["status"] == "untested"
         # No response shape can hand a credential back out.
         assert "token" not in created.text
+        # The surface speaks camelCase, like every other wired seam — pinned here so a
+        # field can't quietly revert to snake_case and strand the screen reading it.
+        assert connector["credentialRequired"] is True
+        assert connector["lastTestedAt"] is None
 
         gated = await client.patch(
             f"/integrations/{connector['id']}/actions/create_issue", json={"trusted": True}

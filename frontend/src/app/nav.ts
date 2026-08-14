@@ -134,6 +134,7 @@ export const NAV: NavSection[] = [
         label: "MCP",
         href: "/mcp",
         icon: "plug",
+        connected: true,
         description: "Manage Model Context Protocol tool servers",
       },
       {
@@ -156,6 +157,7 @@ export const NAV: NavSection[] = [
         label: "Integrations",
         href: "/integrations",
         icon: "link",
+        connected: true,
         description: "Connect external accounts and services",
       },
       {

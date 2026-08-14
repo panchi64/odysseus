@@ -103,8 +103,12 @@ async def test_the_rest_surface_registers_lists_and_gates_a_tool():
         )
         assert created.status_code == 201, created.text
         server = created.json()
-        assert server["status"] == "connected", server["last_error"]
+        assert server["status"] == "connected", server["lastError"]
         assert sorted(t["name"] for t in server["tools"]) == ["add", "echo"]
+        # The surface speaks camelCase, like every other wired seam — pinned here so a
+        # field can't quietly revert to snake_case and strand the screen reading it.
+        assert server["authRequired"] is False
+        assert server["hasCredentials"] is False
 
         listed = await client.get("/mcp/servers")
         assert [s["id"] for s in listed.json()] == [server["id"]]

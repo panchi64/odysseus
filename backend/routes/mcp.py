@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
+from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from services.mcp import McpServerView
 
@@ -61,14 +62,14 @@ class McpToolPolicyUpdate(BaseModel):
     trusted: bool | None = None
 
 
-class McpToolOut(BaseModel):
+class McpToolOut(CamelModel):
     name: str
     description: str
     enabled: bool
     trusted: bool
 
 
-class McpServerOut(BaseModel):
+class McpServerOut(CamelModel):
     id: str
     name: str
     slug: str
