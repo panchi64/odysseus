@@ -28,7 +28,7 @@ class Capability(BaseModel):
     what counts as nominal/degraded/down. ``critical`` marks a capability the
     workspace cannot function without (drives the overall-status flag)."""
 
-    key: str  # stable id: "main_model" | "embeddings" | "sandbox"
+    key: str  # stable id: "main_model" | "embeddings" | "sandbox" | "email" | "push"
     label: str
     status: str  # "nominal" | "warn" | "alert"
     detail: str
@@ -176,6 +176,22 @@ async def get_overview(request: Request) -> Overview:
             detail=fetch_detail,
         )
     )
+    # Out-of-band notification channels — email and push (`XC-DEG-3`). These are how an
+    # unattended run's approval request and a reminder reach the operator when the app
+    # isn't open (`AE-3.2`, `TASK-6`), so whether they're actually configured is worth
+    # seeing. Each channel decides its own status/detail; this route only maps the shape.
+    # A channel is never critical — losing it degrades to in-app-only, never down.
+    for channel in await deps.notifications(request).channel_health(OPERATOR_ID):
+        capabilities.append(
+            Capability(
+                key=channel.key,
+                label=channel.label,
+                status=channel.status,
+                detail=channel.detail,
+                remediation_href=None if channel.configured else "/settings",
+                remediation_label=None if channel.configured else "CONFIGURE",
+            )
+        )
 
     return Overview(
         version=get_settings().version,

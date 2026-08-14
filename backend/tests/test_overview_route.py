@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from services.notification_channels import default_channels
+from services.settings_store import SettingsStore
+
 from ._helpers import client_app
 
 
@@ -127,3 +130,33 @@ async def test_overview_counts_memories_and_conversations():
 
     assert body["memory_count"] == 2
     assert body["conversation_count"] == 3
+
+
+async def test_overview_omits_notification_channel_rows_when_none_are_wired():
+    """The rows report real channels — a workspace with none simply doesn't grow them
+    (nothing fabricated), and the notification surface itself is unaffected."""
+    async with client_app() as (client, _app):
+        body = (await client.get("/overview")).json()
+    caps = _capabilities(body)
+    assert "email" not in caps
+    assert "push" not in caps
+
+
+async def test_overview_reports_unconfigured_notification_channels_as_degraded():
+    """Email and push are how an unattended approval request and a reminder reach the
+    operator when the app isn't open, so whether they're configured is observable —
+    and neither is critical, since losing one degrades to in-app only."""
+    async with client_app() as (client, app):
+        app.state.notifications._channels = default_channels(
+            lambda: None, SettingsStore(app.state.db_engine), app.state.vault
+        )
+        body = (await client.get("/overview")).json()
+
+    caps = _capabilities(body)
+    assert caps["email"]["status"] == "warn"
+    assert caps["email"]["detail"] == "no mail account — in-app only"
+    assert caps["email"]["critical"] is False
+    assert caps["email"]["remediation_label"] == "CONFIGURE"
+    assert caps["push"]["status"] == "warn"
+    assert caps["push"]["detail"] == "no endpoint — in-app only"
+    assert caps["push"]["critical"] is False

@@ -1,4 +1,5 @@
 import {
+  createEffect,
   createSignal,
   For,
   Show,
@@ -17,7 +18,6 @@ import {
   PageHeader,
   Panel,
   Row,
-  Select,
   Stack,
   StatusFlag,
   Text,
@@ -26,12 +26,17 @@ import {
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import {
+  markMessage,
+  replyToMessage,
+  sendMessage,
   useEmailAccounts,
   useEmailFolders,
+  useEmailMessage,
   useEmailMessages,
+  useEmailSpamCount,
   useReplySuggestions,
 } from "../data";
-import type { EmailAccount, EmailFolder, EmailMessage } from "../model";
+import type { EmailAccount, EmailFolder } from "../model";
 
 const urgencyStatus = {
   low: "idle",
@@ -119,16 +124,32 @@ function AccountFolderRail(props: AccountFolderRailProps): JSX.Element {
 // ─── Email Inbox Screen ───────────────────────────────────────────────────────
 
 export function EmailInboxScreen(): JSX.Element {
-  const accounts = useEmailAccounts();
-  const folders = useEmailFolders();
-  const messages = useEmailMessages();
-  const replySuggestions = useReplySuggestions();
-
-  const [selectedAccountId, setSelectedAccountId] = createSignal("acc-1");
-  const [selectedFolderId, setSelectedFolderId] = createSignal("f-inbox-1");
+  const [selectedAccountId, setSelectedAccountId] = createSignal("");
+  const [selectedFolderId, setSelectedFolderId] = createSignal("");
   const [selectedMessageId, setSelectedMessageId] = createSignal<string | null>(
-    "msg-1",
+    null,
   );
+
+  const accounts = useEmailAccounts();
+  const folders = useEmailFolders(selectedAccountId);
+  const messages = useEmailMessages(selectedAccountId, selectedFolderId);
+  const spamCount = useEmailSpamCount(selectedAccountId);
+  // The listing carries no body — opening a message fetches it (and its EMAIL-4 split).
+  const openMessage = useEmailMessage(selectedMessageId);
+  const replySuggestions = useReplySuggestions(selectedMessageId);
+
+  // Nothing is selected until the backend says what exists. Land on the first account
+  // and its inbox once they arrive, and re-land whenever the account changes.
+  createEffect(() => {
+    const first = accounts()?.[0];
+    if (first && !selectedAccountId()) setSelectedAccountId(first.id);
+  });
+  createEffect(() => {
+    const available = folders() ?? [];
+    if (!available.length) return;
+    if (available.some((f) => f.id === selectedFolderId())) return;
+    setSelectedFolderId(available[0].id);
+  });
 
   // Compose drawer state
   const [composeOpen, setComposeOpen] = createSignal(false);
@@ -136,7 +157,9 @@ export function EmailInboxScreen(): JSX.Element {
   const [composeSubject, setComposeSubject] = createSignal("");
   const [composeBody, setComposeBody] = createSignal("");
   const [toError, setToError] = createSignal("");
-  const [attachedFiles, setAttachedFiles] = createSignal<string[]>([]);
+  // Set when the drawer was opened from a message, so SEND threads the reply instead of
+  // starting a new conversation.
+  const [replyToId, setReplyToId] = createSignal<string | null>(null);
 
   // Draft recovery: show banner when drawer closes with non-empty fields
   const [hasDraft, setHasDraft] = createSignal(false);
@@ -149,12 +172,17 @@ export function EmailInboxScreen(): JSX.Element {
     composeSubject().trim() !== "" ||
     composeBody().trim() !== "";
 
-  function openCompose(to = "", subject = "", body = ""): void {
+  function openCompose(
+    to = "",
+    subject = "",
+    body = "",
+    inReplyTo: string | null = null,
+  ): void {
     setComposeTo(to);
     setComposeSubject(subject);
     setComposeBody(body);
     setToError("");
-    setAttachedFiles([]);
+    setReplyToId(inReplyTo);
     setHasDraft(false);
     setComposeOpen(true);
   }
@@ -166,72 +194,85 @@ export function EmailInboxScreen(): JSX.Element {
     setComposeOpen(false);
   }
 
-  function handleSend(): void {
-    const to = composeTo().trim();
-    if (!to) {
-      setToError("RECIPIENT REQUIRED");
-      return;
-    }
-    if (!EMAIL_RE.test(to)) {
-      setToError("INVALID EMAIL ADDRESS");
-      return;
-    }
-    setToError("");
-    // Phase-1 mock: simulate a successful send
+  const [sending, setSending] = createSignal(false);
+
+  function resetCompose(): void {
     setComposeOpen(false);
     setHasDraft(false);
     setComposeTo("");
     setComposeSubject("");
     setComposeBody("");
-    setAttachedFiles([]);
-    toast.success("MESSAGE SENT");
+    setReplyToId(null);
   }
 
-  // Phase-1 mock: cycle through a set of plausible filenames
-  const MOCK_FILES = [
-    "report-Q2-2026.pdf",
-    "screenshot.png",
-    "notes.txt",
-    "data-export.csv",
-  ];
-
-  function handleAttach(): void {
-    const picked = MOCK_FILES[attachedFiles().length % MOCK_FILES.length];
-    setAttachedFiles((prev) => [...prev, picked]);
+  async function handleSend(): Promise<void> {
+    const to = composeTo().trim();
+    if (!to) {
+      setToError("RECIPIENT REQUIRED");
+      return;
+    }
+    // A shape check for immediate feedback only — the backend re-validates and is the
+    // authority on whether a message can go out.
+    if (!EMAIL_RE.test(to)) {
+      setToError("INVALID EMAIL ADDRESS");
+      return;
+    }
+    setToError("");
+    const accountId = selectedAccountId();
+    if (!accountId) {
+      toast.error("NO ACCOUNT SELECTED");
+      return;
+    }
+    setSending(true);
+    try {
+      const threadOf = replyToId();
+      if (threadOf) {
+        // Replying through the message keeps the provider's threading headers intact.
+        await replyToMessage(threadOf, composeBody());
+      } else {
+        await sendMessage({
+          accountId,
+          to: [to],
+          subject: composeSubject(),
+          body: composeBody(),
+        });
+      }
+      resetCompose();
+      toast.success("MESSAGE SENT");
+    } catch {
+      toast.error("COULD NOT SEND MESSAGE");
+    } finally {
+      setSending(false);
+    }
   }
 
-  function removeAttachment(name: string): void {
-    setAttachedFiles((prev) => prev.filter((f) => f !== name));
-  }
-
-  const filteredMessages = () =>
-    (messages() ?? []).filter(
-      (m) =>
-        m.accountId === selectedAccountId() &&
-        m.folderId === selectedFolderId(),
-    );
-
-  const selectedMessage = (): EmailMessage | undefined =>
-    (messages() ?? []).find((m) => m.id === selectedMessageId());
-
-  const unreadCount = () => filteredMessages().filter((m) => !m.read).length;
+  const unreadCount = () => (messages() ?? []).filter((m) => !m.read).length;
   const highUrgencyCount = () =>
-    filteredMessages().filter((m) => m.urgency === "high").length;
-  const spamCount = () =>
-    (messages() ?? []).filter(
-      (m) => m.accountId === selectedAccountId() && m.spam,
-    ).length;
+    (messages() ?? []).filter((m) => m.urgency === "high").length;
 
   const currentAccountAddress = () =>
     accounts()?.find((a) => a.id === selectedAccountId())?.address ?? "—";
 
   const currentFolderName = () =>
-    selectedFolderId().replace(/f-/, "").replace(/-\d$/, "").toUpperCase();
+    (folders() ?? [])
+      .find((f) => f.id === selectedFolderId())
+      ?.name.toUpperCase() ?? "—";
+
+  function openMessageById(id: string): void {
+    setSelectedMessageId(id);
+    // Opening a message marks it read — the backend writes it through to the provider,
+    // and the listing refreshes from that outcome rather than a local guess.
+    const row = (messages() ?? []).find((m) => m.id === id);
+    if (row && !row.read) {
+      markMessage(id, { read: true }).catch(() =>
+        toast.error("COULD NOT MARK AS READ"),
+      );
+    }
+  }
 
   function handleAccountSelect(acc: EmailAccount): void {
-    const firstFolder = (folders() ?? []).find((f) => f.accountId === acc.id);
     setSelectedAccountId(acc.id);
-    if (firstFolder) setSelectedFolderId(firstFolder.id);
+    setSelectedFolderId("");
     setSelectedMessageId(null);
     setMobileSidebarOpen(false);
     toast.info(`ACCOUNT: ${acc.address}`);
@@ -292,11 +333,7 @@ export function EmailInboxScreen(): JSX.Element {
             variant="ghost"
             size="sm"
             onClick={() => {
-              setHasDraft(false);
-              setComposeTo("");
-              setComposeSubject("");
-              setComposeBody("");
-              setAttachedFiles([]);
+              resetCompose();
             }}
           >
             DISCARD
@@ -319,8 +356,8 @@ export function EmailInboxScreen(): JSX.Element {
             },
             {
               label: "SPAM FLAGGED",
-              value: String(spamCount()),
-              tone: spamCount() > 0 ? "warn" : "dim",
+              value: String(spamCount() ?? 0),
+              tone: (spamCount() ?? 0) > 0 ? "warn" : "dim",
             },
             {
               label: "ACCOUNT",
@@ -376,7 +413,7 @@ export function EmailInboxScreen(): JSX.Element {
                 }
               >
                 <Show
-                  when={filteredMessages().length}
+                  when={(messages() ?? []).length}
                   fallback={
                     <EmptyState
                       icon="mail"
@@ -385,7 +422,7 @@ export function EmailInboxScreen(): JSX.Element {
                     />
                   }
                 >
-                  <For each={filteredMessages()}>
+                  <For each={messages()}>
                     {(msg) => (
                       <button
                         type="button"
@@ -393,7 +430,7 @@ export function EmailInboxScreen(): JSX.Element {
                         classList={{
                           "bg-raised": msg.id === selectedMessageId(),
                         }}
-                        onClick={() => setSelectedMessageId(msg.id)}
+                        onClick={() => openMessageById(msg.id)}
                       >
                         <div class="px-3 py-2">
                           <Row justify="between" align="start" gap={2}>
@@ -450,7 +487,7 @@ export function EmailInboxScreen(): JSX.Element {
         {/* Reading pane */}
         <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
           <Show
-            when={selectedMessage()}
+            when={openMessage()}
             fallback={
               <div class="flex flex-1 items-center justify-center">
                 <EmptyState
@@ -520,6 +557,7 @@ export function EmailInboxScreen(): JSX.Element {
                                 msg().from,
                                 `Re: ${msg().subject}`,
                                 suggestion.body,
+                                msg().id,
                               );
                             }}
                           >
@@ -532,7 +570,12 @@ export function EmailInboxScreen(): JSX.Element {
                         size="sm"
                         leading="edit"
                         onClick={() => {
-                          openCompose(msg().from, `Re: ${msg().subject}`, "");
+                          openCompose(
+                            msg().from,
+                            `Re: ${msg().subject}`,
+                            "",
+                            msg().id,
+                          );
                         }}
                       >
                         COMPOSE REPLY
@@ -557,8 +600,13 @@ export function EmailInboxScreen(): JSX.Element {
             <Button variant="ghost" onClick={closeCompose}>
               CANCEL
             </Button>
-            <Button variant="primary" leading="send" onClick={handleSend}>
-              SEND
+            <Button
+              variant="primary"
+              leading="send"
+              disabled={sending()}
+              onClick={() => void handleSend()}
+            >
+              {sending() ? "SENDING…" : "SEND"}
             </Button>
           </Row>
         }
@@ -581,51 +629,12 @@ export function EmailInboxScreen(): JSX.Element {
             onInput={(e) => setComposeSubject(e.currentTarget.value)}
             placeholder="Subject line"
           />
-          <Select
-            label="SIGNATURE"
-            value="sig-1"
-            onChange={() => {}}
-            options={[
-              { value: "sig-1", label: "Francisco Casiano" },
-              { value: "sig-none", label: "No signature" },
-            ]}
-          />
           <Textarea
             label="BODY"
             rows={12}
             value={composeBody()}
             onInput={(e) => setComposeBody(e.currentTarget.value)}
           />
-          <Stack gap={2}>
-            <Button
-              variant="ghost"
-              leading="upload"
-              size="sm"
-              onClick={handleAttach}
-            >
-              ATTACH FILE
-            </Button>
-            <Show when={attachedFiles().length > 0}>
-              <Stack gap={1}>
-                <For each={attachedFiles()}>
-                  {(file) => (
-                    <Row gap={2} align="center">
-                      <Text variant="micro" tone="dim" class="flex-1 truncate">
-                        {file}
-                      </Text>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeAttachment(file)}
-                      >
-                        REMOVE
-                      </Button>
-                    </Row>
-                  )}
-                </For>
-              </Stack>
-            </Show>
-          </Stack>
         </Stack>
       </Drawer>
     </Stack>
