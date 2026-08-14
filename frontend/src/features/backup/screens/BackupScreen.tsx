@@ -1,11 +1,4 @@
-import {
-  createSignal,
-  For,
-  onCleanup,
-  Show,
-  Suspense,
-  type JSX,
-} from "solid-js";
+import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
 import {
   Button,
   Checkbox,
@@ -14,207 +7,148 @@ import {
   ErrorState,
   InfoHint,
   InstrumentBand,
-  ListRow,
+  Input,
   LoadingText,
   Modal,
   PageHeader,
   Panel,
-  ProgressBar,
   Row,
   Stack,
   StatusFlag,
   Text,
-  confirm,
   toast,
 } from "~/ui";
+import { isApiError } from "~/lib/api";
 import { bytes, timestamp, relativeTime } from "~/lib/format";
-import { useLastBackup } from "../data";
-import type { BackupInclude } from "../model";
+import {
+  exportBackup,
+  importBackup,
+  useBackupContents,
+  useLastBackup,
+} from "../data";
+import type {
+  BackupEnvelope,
+  BackupImportReport,
+  BackupInclude,
+} from "../model";
 
-const ALL_INCLUDES: BackupInclude[] = [
-  "memories",
-  "skills",
-  "presets",
-  "settings",
-  "preferences",
-];
+function errorText(err: unknown, fallback: string): string {
+  return isApiError(err) ? err.detail : fallback;
+}
 
-/** Plain-English description of what each backup category includes. */
-const INCLUDE_DESCRIPTIONS: Record<BackupInclude, string> = {
-  memories:
-    "Persistent facts and preferences the system has learned about you.",
-  skills: "Custom agent skills and their definitions.",
-  presets: "Saved model/agent presets from the Cookbook.",
-  settings:
-    "App configuration: providers, models, integrations, and feature toggles.",
-  preferences: "Personal UI preferences such as theme and layout choices.",
-};
+/** `{memories: 3, skills: 0}` → `MEMORIES 3`, skipping the empty groups. */
+function summarize(counts: Record<string, number>): string {
+  const parts = Object.entries(counts)
+    .filter(([, n]) => n > 0)
+    .map(([name, n]) => `${name.toUpperCase()} ${n}`);
+  return parts.length > 0 ? parts.join(", ") : "nothing";
+}
 
 export function BackupScreen(): JSX.Element {
   const lastBackup = useLastBackup();
+  const contents = useBackupContents();
+
+  /** Every discovered section is selected until the operator deselects one — the
+   *  signal holds only the exclusions, so a section the backend adds later is
+   *  included by default rather than silently dropped. */
+  const [excluded, setExcluded] = createSignal<BackupInclude[]>([]);
+  const sections = (): BackupInclude[] => contents()?.sections ?? [];
+  const includes = (): BackupInclude[] =>
+    sections().filter((s) => !excluded().includes(s));
+  const countOf = (section: string): number | undefined =>
+    contents()?.items.find((i) => i.name === section)?.count;
 
   // Export state
-  const [includes, setIncludes] = createSignal<BackupInclude[]>([
-    ...ALL_INCLUDES,
-  ]);
-  const [exportProgress, setExportProgress] = createSignal<number | null>(null);
-  const [exportDone, setExportDone] = createSignal(false);
+  const [exportSecret, setExportSecret] = createSignal("");
+  const [exporting, setExporting] = createSignal(false);
   const [exportError, setExportError] = createSignal<string | null>(null);
   const [exportBlob, setExportBlob] = createSignal<Blob | null>(null);
-  let exportInterval: ReturnType<typeof setInterval> | null = null;
+  const [exportName, setExportName] = createSignal("odysseus-backup.json");
 
   // Import state
   const [importFile, setImportFile] = createSignal<File | null>(null);
+  const [importSecret, setImportSecret] = createSignal("");
   const [importOpen, setImportOpen] = createSignal(false);
-  const [importProgress, setImportProgress] = createSignal<number | null>(null);
-  const [importDone, setImportDone] = createSignal(false);
+  const [importing, setImporting] = createSignal(false);
   const [importError, setImportError] = createSignal<string | null>(null);
-  let importInterval: ReturnType<typeof setInterval> | null = null;
-
-  const timers: ReturnType<typeof setTimeout>[] = [];
-  onCleanup(() => {
-    timers.forEach(clearTimeout);
-    if (exportInterval) clearInterval(exportInterval);
-    if (importInterval) clearInterval(importInterval);
-  });
+  const [importReport, setImportReport] =
+    createSignal<BackupImportReport | null>(null);
 
   function toggleInclude(item: BackupInclude) {
-    setIncludes((s) =>
+    setExcluded((s) =>
       s.includes(item) ? s.filter((x) => x !== item) : [...s, item],
     );
   }
 
-  async function handleExportClick() {
-    if (includes().length === 0) return;
-
-    const selectedItems = includes();
-    const backupData = lastBackup();
-    const itemSummary = selectedItems
-      .map((key) => {
-        const found = backupData?.items.find((i) => i.name === key);
-        return `${key.toUpperCase()}: ${found ? `${found.count} items` : "all items"}`;
-      })
-      .join(", ");
-
-    const ok = await confirm({
-      title: "CONFIRM EXPORT",
-      detail: `Selected: ${itemSummary}. This will generate a JSON archive of your workspace data.`,
-      confirmLabel: "CONFIRM EXPORT",
-      cancelLabel: "CANCEL",
-    });
-    if (!ok) return;
-
-    runExport();
-  }
-
-  function runExport() {
-    setExportDone(false);
+  async function runExport() {
     setExportError(null);
     setExportBlob(null);
-    setExportProgress(0);
-    const steps = includes().length;
-    let step = 0;
-    exportInterval = setInterval(() => {
-      step++;
-      setExportProgress(Math.round((step / steps) * 100));
-      if (step >= steps) {
-        if (exportInterval) clearInterval(exportInterval);
-        exportInterval = null;
-        const t = setTimeout(() => {
-          setExportProgress(null);
-          setExportDone(true);
-          // Build mock blob for download
-          const mockPayload = {
-            createdAt: new Date().toISOString(),
-            includes: includes(),
-            data: Object.fromEntries(
-              includes().map((key) => [key, { exported: true }]),
-            ),
-          };
-          setExportBlob(
-            new Blob([JSON.stringify(mockPayload, null, 2)], {
-              type: "application/json",
-            }),
-          );
-          toast.success("Export complete — ready to download.");
-        }, 400);
-        timers.push(t);
-      }
-    }, 350);
-  }
-
-  function cancelExport() {
-    if (exportInterval) {
-      clearInterval(exportInterval);
-      exportInterval = null;
+    setExporting(true);
+    try {
+      const { envelope, manifest } = await exportBackup(
+        exportSecret(),
+        includes(),
+      );
+      setExportName(`odysseus-backup-${manifest.createdAt.slice(0, 10)}.json`);
+      setExportBlob(
+        new Blob([JSON.stringify(envelope)], { type: "application/json" }),
+      );
+      setExportSecret("");
+      toast.success("Export complete — ready to download.");
+    } catch (err) {
+      setExportError(errorText(err, "Export failed."));
+    } finally {
+      setExporting(false);
     }
-    setExportProgress(null);
-    setExportDone(false);
-    setExportError(null);
-    setExportBlob(null);
-    toast.info("Export cancelled.");
-  }
-
-  function retryExport() {
-    setExportError(null);
-    runExport();
   }
 
   function downloadBackup() {
     const blob = exportBlob();
     if (!blob) return;
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "odysseus-backup.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = exportName();
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
     toast.success("Download started.");
   }
 
-  function confirmImport() {
+  async function confirmImport() {
+    const file = importFile();
+    if (!file) return;
     setImportOpen(false);
-    setImportDone(false);
     setImportError(null);
-    setImportProgress(0);
-    let pct = 0;
-    importInterval = setInterval(() => {
-      pct += 10;
-      setImportProgress(pct);
-      if (pct >= 100) {
-        if (importInterval) clearInterval(importInterval);
-        importInterval = null;
-        const t = setTimeout(() => {
-          setImportProgress(null);
-          setImportDone(true);
-          setImportFile(null);
-        }, 400);
-        timers.push(t);
+    setImportReport(null);
+    setImporting(true);
+    try {
+      const text = await file.text();
+      let envelope: BackupEnvelope;
+      try {
+        envelope = JSON.parse(text) as BackupEnvelope;
+      } catch {
+        setImportError("That file is not valid JSON.");
+        return;
       }
-    }, 200);
-  }
-
-  function cancelImport() {
-    if (importInterval) {
-      clearInterval(importInterval);
-      importInterval = null;
+      const report = await importBackup(importSecret(), envelope);
+      setImportReport(report);
+      setImportFile(null);
+      setImportSecret("");
+      toast.success(`Restored — ${summarize(report.imported)} merged in.`);
+    } catch (err) {
+      setImportError(errorText(err, "Import failed."));
+    } finally {
+      setImporting(false);
     }
-    setImportProgress(null);
-    setImportDone(false);
-    setImportError(null);
-    toast.info("Import cancelled.");
-  }
-
-  function retryImport() {
-    setImportError(null);
-    confirmImport();
   }
 
   return (
     <Stack gap={6}>
       <PageHeader
         title="BACKUP / RESTORE"
-        subtitle="Export workspace data or restore from a previous backup archive."
+        subtitle="Export an encrypted archive of your workspace, or merge one back in."
         assetId="ODY-ADM-06.0 EDITION 01"
         actions={
           <Suspense fallback={<LoadingText />}>
@@ -236,7 +170,7 @@ export function BackupScreen(): JSX.Element {
           fallback={
             <EmptyState
               message="NO BACKUPS YET"
-              hint="Run your first export to get started. Select the categories below and click EXPORT BACKUP."
+              hint="Run your first export to get started. Choose a recovery passphrase below and click EXPORT BACKUP."
             />
           }
         >
@@ -259,8 +193,9 @@ export function BackupScreen(): JSX.Element {
         <Panel label="EXPORT">
           <Stack gap={4}>
             <Text variant="body" tone="dim">
-              Select what to include in the backup archive. Output is a JSON
-              file.
+              The archive is a single encrypted JSON file, sealed with the
+              recovery passphrase below — not your login password — so it
+              restores on any host.
             </Text>
             <Stack gap={2}>
               <Row align="center" justify="between">
@@ -271,91 +206,97 @@ export function BackupScreen(): JSX.Element {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setIncludes([...ALL_INCLUDES])}
-                    disabled={includes().length === ALL_INCLUDES.length}
+                    onClick={() => setExcluded([])}
+                    disabled={excluded().length === 0}
                   >
                     ALL
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setIncludes([])}
+                    onClick={() => setExcluded([...sections()])}
                     disabled={includes().length === 0}
                   >
                     NONE
                   </Button>
                 </Row>
               </Row>
-              <For each={ALL_INCLUDES}>
-                {(item) => (
-                  <Row gap={2} align="center">
-                    <Checkbox
-                      label={item.toUpperCase()}
-                      checked={includes().includes(item)}
-                      onChange={() => toggleInclude(item)}
-                    />
-                    <InfoHint label={INCLUDE_DESCRIPTIONS[item]} />
-                  </Row>
-                )}
-              </For>
+              <Suspense fallback={<LoadingText />}>
+                <For each={sections()}>
+                  {(item) => (
+                    <Row gap={2} align="center">
+                      <Checkbox
+                        label={item.toUpperCase()}
+                        checked={!excluded().includes(item)}
+                        onChange={() => toggleInclude(item)}
+                      />
+                      <Show when={countOf(item) !== undefined}>
+                        <Text variant="micro" tone="dim">
+                          {countOf(item)}
+                        </Text>
+                      </Show>
+                    </Row>
+                  )}
+                </For>
+              </Suspense>
             </Stack>
             <Divider />
-            <Show when={exportProgress() !== null}>
-              <Stack gap={2}>
-                <ProgressBar
-                  label="EXPORTING…"
-                  value={exportProgress()!}
-                  tone="nominal"
-                  showValue
-                />
-                <Button variant="ghost" size="sm" onClick={cancelExport}>
-                  CANCEL
-                </Button>
-              </Stack>
-            </Show>
+            <Row gap={2} align="center">
+              <Text variant="label" tone="dim">
+                RECOVERY PASSPHRASE
+              </Text>
+              <InfoHint label="Chosen per export and stored nowhere. It is the only thing that opens the file — lose it and the archive is unrecoverable, which is exactly why it is separate from your login password." />
+            </Row>
+            <Input
+              type="password"
+              value={exportSecret()}
+              onInput={(e) => {
+                setExportSecret(e.currentTarget.value);
+                setExportError(null);
+              }}
+              placeholder="••••••••"
+            />
             <Show when={exportError()}>
               {(err) => (
                 <ErrorState
                   message={err()}
-                  hint="Check your connection and try again."
-                  onRetry={retryExport}
+                  hint="Check the passphrase and try again."
+                  onRetry={() => void runExport()}
                   retryLabel="RETRY EXPORT"
                 />
               )}
             </Show>
-            <Show when={exportDone()}>
-              <ListRow
-                label="odysseus-backup.json"
-                leading="download"
-                flush
-                right={
+            <Show when={exportBlob()}>
+              {(blob) => (
+                <Row gap={2} align="center" justify="between">
                   <Row gap={2} align="center">
                     <StatusFlag status="nominal" dot>
                       READY
                     </StatusFlag>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      leading="download"
-                      onClick={downloadBackup}
-                    >
-                      DOWNLOAD
-                    </Button>
+                    <Text variant="micro" tone="dim">
+                      {`${exportName()} · ${bytes(blob().size)}`}
+                    </Text>
                   </Row>
-                }
-              />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leading="download"
+                    onClick={downloadBackup}
+                  >
+                    DOWNLOAD
+                  </Button>
+                </Row>
+              )}
             </Show>
             <Button
               variant="primary"
               leading="download"
-              onClick={handleExportClick}
+              onClick={() => void runExport()}
               disabled={
-                includes().length === 0 ||
-                exportProgress() !== null ||
-                exportError() !== null
+                includes().length === 0 || !exportSecret() || exporting()
               }
             >
-              EXPORT BACKUP
+              {exporting() ? "EXPORTING…" : "EXPORT BACKUP"}
             </Button>
           </Stack>
         </Panel>
@@ -364,11 +305,11 @@ export function BackupScreen(): JSX.Element {
         <Panel label="IMPORT / RESTORE">
           <Stack gap={4}>
             <Text variant="body" tone="dim">
-              Restore from a previously exported backup archive. Existing data
-              will be overwritten for selected sections.
+              Merge a previously exported archive into this workspace. Records
+              you already have are skipped, never overwritten — importing the
+              same file twice changes nothing the second time.
             </Text>
 
-            {/* Drop zone */}
             <div class="flex min-h-24 flex-col items-center justify-center gap-2 border border-dashed border-line bg-raised p-4">
               <Show
                 when={importFile()}
@@ -404,61 +345,74 @@ export function BackupScreen(): JSX.Element {
                 type="file"
                 accept=".json"
                 class="block w-full cursor-pointer border border-line bg-surface px-2 py-1.5 text-label font-mono text-bright file:mr-3 file:border-0 file:bg-raised file:px-2 file:py-1 file:text-label file:font-mono file:text-dim"
-                onChange={(e) =>
-                  setImportFile(e.currentTarget.files?.[0] ?? null)
-                }
+                onChange={(e) => {
+                  setImportFile(e.currentTarget.files?.[0] ?? null);
+                  setImportError(null);
+                  setImportReport(null);
+                }}
               />
             </label>
 
-            <Show when={importProgress() !== null}>
-              <Stack gap={2}>
-                <ProgressBar
-                  label="RESTORING…"
-                  value={importProgress()!}
-                  tone="info"
-                  showValue
-                />
-                <Button variant="ghost" size="sm" onClick={cancelImport}>
-                  CANCEL
-                </Button>
-              </Stack>
-            </Show>
+            <Input
+              label="RECOVERY PASSPHRASE"
+              type="password"
+              value={importSecret()}
+              onInput={(e) => {
+                setImportSecret(e.currentTarget.value);
+                setImportError(null);
+              }}
+              placeholder="••••••••"
+            />
+
             <Show when={importError()}>
               {(err) => (
                 <ErrorState
                   message={err()}
-                  hint="Ensure the file is a valid Odysseus backup archive."
-                  onRetry={retryImport}
+                  hint="Check the passphrase, and that the file is an Odysseus backup archive."
+                  onRetry={() => void confirmImport()}
                   retryLabel="RETRY IMPORT"
                 />
               )}
             </Show>
-            <Show when={importDone()}>
-              <Stack gap={3}>
-                <StatusFlag status="nominal" dot>
-                  RESTORE COMPLETE
-                </StatusFlag>
-                <Button
-                  variant="primary"
-                  onClick={() => window.location.reload()}
-                >
-                  CLOSE &amp; REFRESH
-                </Button>
-              </Stack>
+            <Show when={importReport()}>
+              {(r) => (
+                <Stack gap={3}>
+                  <StatusFlag status="nominal" dot>
+                    RESTORE COMPLETE
+                  </StatusFlag>
+                  <Text variant="micro" tone="dim">
+                    {`MERGED IN: ${summarize(r().imported)}`}
+                  </Text>
+                  <Text variant="micro" tone="dim">
+                    {`ALREADY PRESENT: ${summarize(r().skipped)}`}
+                  </Text>
+                  <Show when={r().unknown.length > 0}>
+                    <Row gap={2} align="center">
+                      <StatusFlag status="warn" dot>
+                        PARTIAL
+                      </StatusFlag>
+                      <Text variant="micro" tone="dim">
+                        {`No place in this build for: ${r().unknown.join(", ")} — the archive is from a newer version.`}
+                      </Text>
+                    </Row>
+                  </Show>
+                  <Button
+                    variant="primary"
+                    onClick={() => window.location.reload()}
+                  >
+                    CLOSE &amp; REFRESH
+                  </Button>
+                </Stack>
+              )}
             </Show>
 
             <Button
               variant="default"
               leading="upload"
               onClick={() => setImportOpen(true)}
-              disabled={
-                !importFile() ||
-                importProgress() !== null ||
-                importDone() ||
-                importError() !== null
-              }
+              disabled={!importFile() || !importSecret() || importing()}
             >
-              IMPORT BACKUP
+              {importing() ? "RESTORING…" : "IMPORT BACKUP"}
             </Button>
           </Stack>
         </Panel>
@@ -474,27 +428,24 @@ export function BackupScreen(): JSX.Element {
             <Button variant="ghost" onClick={() => setImportOpen(false)}>
               CANCEL
             </Button>
-            <Button variant="danger" onClick={confirmImport}>
-              OVERWRITE &amp; RESTORE
+            <Button variant="primary" onClick={() => void confirmImport()}>
+              MERGE &amp; RESTORE
             </Button>
           </>
         }
       >
         <Stack gap={3}>
-          <StatusFlag status="warn" dot>
-            DESTRUCTIVE OPERATION
-          </StatusFlag>
           <Text variant="body" tone="default">
-            Restoring from{" "}
+            Merging{" "}
             <Text as="span" tone="bright">
               {importFile()?.name ?? "backup"}
             </Text>{" "}
-            will overwrite existing data for all sections included in the
-            archive.
+            into this workspace. Records it carries that you already have are
+            skipped; nothing existing is overwritten or removed.
           </Text>
           <Text variant="micro" tone="dim">
-            This cannot be undone. Export a current backup before proceeding if
-            you want to preserve existing data.
+            Imported records become yours on this host. A wrong passphrase is
+            rejected outright — nothing is written.
           </Text>
         </Stack>
       </Modal>

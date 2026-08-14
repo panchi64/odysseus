@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from services.notifications import NotificationService
     from services.sandbox import SandboxSessionManager
     from services.search import SearchService
+    from services.secret_vault import SecretVaultService
     from services.skills import SkillStore
     from services.uploads import UploadStore
     from services.webfetch import BrowserFetcher
@@ -79,7 +80,10 @@ class Capabilities:
     # The calendar (`CAL-1..3`). Natural-language event entry rides on the service as
     # `.nl`, so the capability stays one handle. None ⇒ the calendar tools say so.
     calendar: CalendarService | None = None
-    secret_vault: object | None = None
+    # The operator's secrets manager (VAULT-1). Every tool that reaches it is
+    # approval-gated (VAULT-2); the service enforces its own lock on top. None ⇒ the vault
+    # tools report the capability absent.
+    secret_vault: SecretVaultService | None = None
     external: object | None = None
 
 
@@ -160,7 +164,10 @@ class RunDeps:
     # The calendar (`CAL-1..3`) — the calendar tools read/write the operator's schedule
     # through it, and reach natural-language entry as `calendar.nl`. None ⇒ they degrade.
     calendar: CalendarService | None = None
-    secret_vault: object | None = None
+    # The operator's secrets manager — read by the approval-gated `vault` tools (VAULT-2),
+    # which still meet the vault's own lock behind the approval. None ⇒ they report the
+    # capability absent.
+    secret_vault: SecretVaultService | None = None
     external: object | None = None
 
     @property

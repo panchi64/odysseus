@@ -15,6 +15,7 @@ from datetime import datetime
 from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
+from models._backup import BackupSpec
 from models._fields import new_id, utcnow
 
 
@@ -25,6 +26,9 @@ class SearchProvider(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("owner_id", "name", name="uq_search_provider_owner_name"),
     )
+    # Part of the operator's configuration, so it exports under "settings" (`BACKUP-1`),
+    # merged on that same unique name.
+    __backup__ = BackupSpec(section="settings", natural_key=("name",), order=2)
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)

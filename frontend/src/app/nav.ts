@@ -201,12 +201,14 @@ export const NAV: NavSection[] = [
         href: "/vault",
         icon: "lock",
         description: "Encrypted storage for secrets and keys",
+        connected: true,
       },
       {
         label: "Backup",
         href: "/backup",
         icon: "archive",
         description: "Back up and restore your data",
+        connected: true,
       },
       {
         label: "Code Runner",

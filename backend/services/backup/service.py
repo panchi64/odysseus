@@ -1,0 +1,369 @@
+"""Export and merge-import of the operator's data (`BACKUP-1`, `BACKUP-2`).
+
+**Export** gathers every table that marked itself for backup (``services/backup/manifest``),
+opens each sealed column with the login vault, and re-seals the whole payload under a
+separate operator-supplied backup secret (``services/backup/envelope``). The result is one
+file with no plainly-readable user data that opens on any other host with nothing but that
+secret — the login password is neither needed there nor sufficient here.
+
+**Import** merges. Every incoming record is stamped with the importing operator's
+``owner_id`` (the ownership seam) and then tested twice before it is written: once against
+the primary key, once against the surface's own natural key — a skill's name, a memory's
+text, a preference's key — which is the same identity each surface already enforces in its
+own unique constraints. Anything that matches is skipped, so importing the same file twice
+changes nothing the second time, and importing a file from another host merges rather than
+duplicates.
+
+Ids are **preserved** across an import rather than reissued. That is what keeps a skill's
+files attached to their skill and a role's fallback chain pointing at its endpoints, with no
+id-remapping pass to get subtly wrong.
+
+Note what is deliberately *not* here: the secrets manager (``models/secret``) carries no
+backup marker. Its whole point is a second lock; folding its entries into a file protected by
+one operator-supplied secret would quietly undo that.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import gzip
+import json
+import logging
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import Column, Engine
+from sqlmodel import Session, SQLModel, select
+
+from core.db import in_session
+from core.exceptions import OdysseusError
+from core.vault import Vault
+from services.settings_store import SettingsStore
+
+from .envelope import open_envelope, seal
+from .manifest import BackupEntity, discover_entities, sections
+
+logger = logging.getLogger(__name__)
+
+# Where the last export's manifest is remembered, so the screen can say what the operator
+# last took and when. A preference, not backup machinery — it rides the ordinary settings
+# store rather than earning a table.
+LAST_EXPORT_KEY = "backup.last_export"
+
+
+class BackupPayloadError(OdysseusError):
+    """The file decrypted, but its contents are not a payload this build understands."""
+
+
+@dataclass(frozen=True)
+class BackupManifestItem:
+    """One exported group and how much of it there was."""
+
+    name: str
+    count: int
+
+
+@dataclass(frozen=True)
+class BackupManifest:
+    created_at: datetime
+    items: tuple[BackupManifestItem, ...]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "created_at": self.created_at.isoformat(),
+                "items": [{"name": i.name, "count": i.count} for i in self.items],
+            }
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> BackupManifest | None:
+        try:
+            data = json.loads(raw)
+            return cls(
+                created_at=datetime.fromisoformat(data["created_at"]),
+                items=tuple(
+                    BackupManifestItem(name=i["name"], count=int(i["count"]))
+                    for i in data["items"]
+                ),
+            )
+        except (ValueError, KeyError, TypeError):
+            # A corrupted marker is a missing marker, never a failed page load.
+            logger.warning("backup: stored last-export manifest is unreadable")
+            return None
+
+
+@dataclass
+class BackupImportReport:
+    """What a merge actually did, per group: written, and skipped as already present."""
+
+    imported: dict[str, int] = field(default_factory=dict)
+    skipped: dict[str, int] = field(default_factory=dict)
+    # Groups in the file this build has no table for — a backup from a newer version.
+    unknown: tuple[str, ...] = ()
+
+    def record(self, section: str, *, imported: int, skipped: int) -> None:
+        """Fold one entity's outcome into its section's running totals — several entities
+        can share a section (a skill and its files), so they accumulate."""
+        self.imported[section] = self.imported.get(section, 0) + imported
+        self.skipped[section] = self.skipped.get(section, 0) + skipped
+
+
+def _column_kind(column: Column) -> str:
+    """How a column's value is carried in JSON. Driven by the declared type, not by
+    sniffing values, so the encoding is exact both ways (a JSON column holding a string
+    that *looks* like a timestamp is never re-parsed as one)."""
+    try:
+        python_type = column.type.python_type
+    except NotImplementedError:  # JSON and other structural columns
+        return "json"
+    if python_type is bytes:
+        return "bytes"
+    if python_type is datetime:
+        return "datetime"
+    return "plain"
+
+
+class BackupService:
+    def __init__(self, engine: Engine, vault: Vault, settings: SettingsStore) -> None:
+        self._engine = engine
+        self._vault = vault
+        self._settings = settings
+
+    # --- what's in the box ----------------------------------------------------------
+
+    def sections(self) -> tuple[str, ...]:
+        """The groups an export can actually produce, discovered from the models."""
+        return sections()
+
+    async def counts(self, owner_id: str) -> tuple[BackupManifestItem, ...]:
+        """How many records each group would export right now."""
+        totals: dict[str, int] = {}
+        for entity in discover_entities():
+            rows = await self._rows(entity, owner_id)
+            totals[entity.spec.section] = totals.get(entity.spec.section, 0) + len(rows)
+        return tuple(BackupManifestItem(name, count) for name, count in totals.items())
+
+    async def last_manifest(self, owner_id: str) -> BackupManifest | None:
+        """The manifest of the last export, or None if the operator has never taken one.
+        Absent, never fabricated — the screen shows its own empty state."""
+        raw = await self._settings.get(owner_id, LAST_EXPORT_KEY)
+        return BackupManifest.from_json(raw) if raw else None
+
+    # --- export (`BACKUP-1`) --------------------------------------------------------
+
+    async def export(
+        self, owner_id: str, secret: str, *, include: Sequence[str] | None = None
+    ) -> tuple[dict[str, Any], BackupManifest]:
+        """Build the encrypted envelope plus the manifest describing what went into it.
+
+        ``include`` names the groups to take (None ⇒ everything). A named group with no
+        marked entity behind it contributes nothing and is reported as empty rather than
+        invented.
+        """
+        if not secret:
+            raise ValueError("a backup secret is required")
+        wanted = None if include is None else set(include)
+        payload_sections: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        totals: dict[str, int] = {name: 0 for name in (wanted or set())}
+
+        for entity in discover_entities():
+            section = entity.spec.section
+            if wanted is not None and section not in wanted:
+                continue
+            rows = await self._rows(entity, owner_id)
+            encoded = [self._encode(entity, row) for row in rows]
+            payload_sections.setdefault(section, {})[entity.name] = encoded
+            totals[section] = totals.get(section, 0) + len(encoded)
+
+        created_at = datetime.now(UTC)
+        raw = gzip.compress(
+            json.dumps(
+                {"created_at": created_at.isoformat(), "sections": payload_sections}
+            ).encode()
+        )
+        # Argon2id is deliberately expensive; keep it off the event loop.
+        envelope = await asyncio.to_thread(seal, secret, raw, created_at=created_at)
+
+        manifest = BackupManifest(
+            created_at=created_at,
+            items=tuple(BackupManifestItem(name, count) for name, count in sorted(totals.items())),
+        )
+        await self._settings.set(owner_id, LAST_EXPORT_KEY, manifest.to_json())
+        return envelope, manifest
+
+    # --- import (`BACKUP-2`) --------------------------------------------------------
+
+    async def import_backup(
+        self,
+        owner_id: str,
+        secret: str,
+        envelope: Mapping[str, Any],
+        *,
+        include: Sequence[str] | None = None,
+    ) -> BackupImportReport:
+        """Merge a backup file into this host's data. Idempotent: the same file imported
+        twice writes nothing the second time."""
+        raw = await asyncio.to_thread(open_envelope, secret, envelope)
+        try:
+            payload = json.loads(gzip.decompress(raw))
+            file_sections = payload["sections"]
+            if not isinstance(file_sections, dict):
+                raise TypeError
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise BackupPayloadError("the backup's contents could not be read") from exc
+
+        wanted = None if include is None else set(include)
+        report = BackupImportReport()
+        known: set[str] = set()
+
+        # Walk the *entities* in import order, not the file's key order, so a parent
+        # (a skill, an endpoint) is always written before the rows that point at it.
+        for entity in discover_entities():
+            section = entity.spec.section
+            if wanted is not None and section not in wanted:
+                continue
+            known.add(entity.name)
+            rows = (file_sections.get(section) or {}).get(entity.name)
+            if not rows:
+                report.record(section, imported=0, skipped=0)
+                continue
+            imported, skipped = await self._merge(entity, owner_id, rows)
+            report.record(section, imported=imported, skipped=skipped)
+
+        in_file = {
+            name
+            for group in file_sections.values()
+            if isinstance(group, dict)
+            for name in group
+        }
+        report.unknown = tuple(sorted(in_file - known))
+        return report
+
+    # --- internals ------------------------------------------------------------------
+
+    async def _rows(self, entity: BackupEntity, owner_id: str) -> list[SQLModel]:
+        model = entity.model
+
+        def work(session: Session) -> list[SQLModel]:
+            return list(session.exec(select(model).where(model.owner_id == owner_id)).all())
+
+        return await in_session(self._engine, work)
+
+    async def _merge(
+        self, entity: BackupEntity, owner_id: str, rows: Iterable[Mapping[str, Any]]
+    ) -> tuple[int, int]:
+        existing = await self._rows(entity, owner_id)
+        seen_ids = {row.id for row in existing}  # type: ignore[attr-defined]
+        seen_keys = {self._natural_key(entity, self._plain(entity, row)) for row in existing}
+        seen_keys.discard(None)
+
+        fresh: list[SQLModel] = []
+        skipped = 0
+        for incoming in rows:
+            values = dict(incoming)
+            # The ownership seam: an imported record belongs to whoever imported it.
+            values["owner_id"] = owner_id
+            key = self._natural_key(entity, values)
+            if values.get("id") in seen_ids or (key is not None and key in seen_keys):
+                skipped += 1
+                continue
+            try:
+                instance = self._decode(entity, values)
+            except (KeyError, ValueError, TypeError):
+                logger.warning("backup: dropped an unreadable %s row", entity.name)
+                skipped += 1
+                continue
+            fresh.append(instance)
+            seen_ids.add(values.get("id"))
+            if key is not None:
+                seen_keys.add(key)
+
+        if fresh:
+
+            def work(session: Session) -> None:
+                for instance in fresh:
+                    session.add(instance)
+                session.flush()
+
+            await in_session(self._engine, work)
+        return len(fresh), skipped
+
+    def _natural_key(
+        self, entity: BackupEntity, values: Mapping[str, Any]
+    ) -> tuple[Any, ...] | None:
+        """The identity two hosts would agree on, read off already-plaintext values. None
+        when the entity declared no natural key — then only the primary key dedupes."""
+        columns = entity.spec.natural_key
+        if not columns:
+            return None
+        return tuple(values.get(column) for column in columns)
+
+    def _plain(self, entity: BackupEntity, row: SQLModel) -> dict[str, Any]:
+        """A DB row's values with its sealed columns opened — the shape an incoming row is
+        already in, so the two can be compared without either side guessing."""
+        values: dict[str, Any] = {}
+        for column in entity.model.__table__.columns:  # type: ignore[attr-defined]
+            value = getattr(row, column.name)
+            if column.name.endswith("_enc") and value is not None:
+                value = self._unseal(value)
+            values[column.name] = value
+        return values
+
+    def _encode(self, entity: BackupEntity, row: SQLModel) -> dict[str, Any]:
+        """One row, JSON-ready: the opened values from :meth:`_plain` (the envelope re-seals
+        the whole payload under the backup secret) with bytes/timestamps made portable."""
+        plain = self._plain(entity, row)
+        return {
+            column.name: _to_json(plain[column.name], _column_kind(column))
+            for column in entity.model.__table__.columns  # type: ignore[attr-defined]
+        }
+
+    def _decode(self, entity: BackupEntity, values: Mapping[str, Any]) -> SQLModel:
+        """The reverse: JSON back to column values, re-sealed under *this* host's DEK."""
+        built: dict[str, Any] = {}
+        for column in entity.model.__table__.columns:  # type: ignore[attr-defined]
+            if column.name not in values:
+                continue
+            value = _from_json(values[column.name], _column_kind(column))
+            if column.name.endswith("_enc") and value is not None:
+                value = self._seal(value)
+            built[column.name] = value
+        return entity.model(**built)
+
+    def _unseal(self, value: str | bytes) -> str | bytes:
+        return (
+            self._vault.decrypt_bytes(value)
+            if isinstance(value, bytes)
+            else self._vault.decrypt_str(value)
+        )
+
+    def _seal(self, value: str | bytes) -> str | bytes:
+        return (
+            self._vault.encrypt_bytes(value)
+            if isinstance(value, bytes)
+            else self._vault.encrypt_str(value)
+        )
+
+
+def _to_json(value: Any, kind: str) -> Any:
+    if value is None:
+        return None
+    if kind == "bytes":
+        return base64.b64encode(value).decode()
+    if kind == "datetime":
+        return value.isoformat()
+    return value
+
+
+def _from_json(value: Any, kind: str) -> Any:
+    if value is None:
+        return None
+    if kind == "bytes":
+        return base64.b64decode(value)
+    if kind == "datetime":
+        return datetime.fromisoformat(value)
+    return value
