@@ -442,3 +442,77 @@ async def test_the_calendar_tools_are_not_approval_gated():
         "draft_event_from_text",
     }
     assert not any(tool.requires_approval for tool in tools.values())
+
+
+async def test_editing_a_series_can_drop_its_repeat():
+    """`CAL-1`'s edit over a recurring event. Turning a series back into a single event
+    needs `clearRrule`, because a partial patch reads an omitted `rrule` as "leave it
+    alone" — so there would otherwise be no way to express it, and the calendar screen's
+    "No recurrence" choice would silently do nothing."""
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        created = await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Standup",
+                "start": "2026-06-08T09:00:00Z",
+                "end": "2026-06-08T09:15:00Z",
+                "rrule": "FREQ=DAILY",
+            },
+        )
+        event = created.json()
+        assert event["rrule"] == "FREQ=DAILY"
+
+        # A plain edit leaves the rule intact — this is the case `clearRrule` has to be
+        # distinguishable from.
+        kept = await client.patch(
+            f"/calendar/events/{event['id']}", json={"title": "Standup (async)"}
+        )
+        assert kept.json()["rrule"] == "FREQ=DAILY"
+
+        dropped = await client.patch(
+            f"/calendar/events/{event['id']}", json={"clearRrule": True}
+        )
+        assert dropped.json()["rrule"] is None
+
+        # And the window now yields one event rather than a run of occurrences.
+        window = await client.get(
+            "/calendar/occurrences"
+            "?start=2026-06-01T00:00:00Z&end=2026-06-30T00:00:00Z"
+        )
+        assert len(window.json()["items"]) == 1
+
+
+async def test_editing_an_event_moves_it_and_keeps_its_zone():
+    """The screen sends a wall-clock time plus the browser's zone, so a moved event has
+    to land at the instant the operator picked — not shifted by their offset."""
+    async with client_app() as (client, _app):
+        calendar_id = await _calendar(client)
+        created = await client.post(
+            "/calendar/events",
+            json={
+                "calendarId": calendar_id,
+                "title": "Review",
+                "start": "2026-06-09T10:00:00Z",
+                "end": "2026-06-09T11:00:00Z",
+                "timezone": "Europe/Madrid",
+            },
+        )
+        event = created.json()
+
+        moved = await client.patch(
+            f"/calendar/events/{event['id']}",
+            json={
+                "start": "2026-06-10T14:00:00Z",
+                "end": "2026-06-10T15:00:00Z",
+                "timezone": "Europe/Madrid",
+                "location": "Room 2",
+            },
+        )
+        assert moved.status_code == 200, moved.text
+        body = moved.json()
+        assert body["start"].startswith("2026-06-10T14:00")
+        assert body["location"] == "Room 2"
+        assert body["timezone"] == "Europe/Madrid"
+        assert body["title"] == "Review"  # an omitted field is left alone

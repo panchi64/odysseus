@@ -204,6 +204,37 @@ export async function createEvent(input: NewEvent): Promise<void> {
 }
 
 /**
+ * Amend a stored event (`CAL-1`). The id may be an occurrence id, so it is split back to
+ * the underlying event — a series is edited as a series, which is what the backend's
+ * `PATCH /calendar/events/{id}` acts on. There is no per-occurrence edit: the schema has
+ * no override row, and faking one here would write the whole series while claiming
+ * otherwise.
+ *
+ * `recurrence: "none"` is sent as an explicit `clearRrule` rather than an omitted field,
+ * because omitting means "leave unchanged" — dropping a repeat has to be expressible.
+ */
+export async function updateEvent(
+  event: CalendarEvent,
+  patch: Omit<NewEvent, "calendarId"> & { calendarId?: string },
+): Promise<void> {
+  const { eventId } = splitOccurrenceId(event.id);
+  const dropsRepeat = patch.recurrence === "none";
+  await api.patch(`/calendar/events/${eventId}`, {
+    calendarId: patch.calendarId,
+    title: patch.title,
+    start: patch.start,
+    end: patch.end,
+    timezone: browserZone(),
+    allDay: patch.allDay,
+    location: patch.location ?? "",
+    description: patch.description,
+    rrule: dropsRepeat ? undefined : toRrule(patch.recurrence),
+    clearRrule: dropsRepeat,
+  });
+  refreshCalendarEvents();
+}
+
+/**
  * Remove what the operator clicked. One instance of a series is *cancelled* (the rule
  * survives, so the rest of the series stays); a non-recurring event is deleted outright.
  * Which one applies is decided from the event itself, not guessed by the screen.

@@ -23,6 +23,7 @@ import {
   useCalendars,
   useCalendarEvents,
   createEvent,
+  updateEvent,
   deleteEvent,
   parseEventPhrase,
   syncCalendars,
@@ -88,6 +89,18 @@ function getDaysInMonth(year: number, month: number): Date[] {
   return days;
 }
 
+/** An ISO instant as the wall-clock string a `datetime-local` input wants. Built from the
+ *  local getters rather than by slicing the ISO string, which would show UTC and shift the
+ *  event by the operator's offset the moment they saved it back. */
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
 function sameDay(a: Date, b: Date): boolean {
   return (
     a.getUTCFullYear() === b.getUTCFullYear() &&
@@ -142,7 +155,10 @@ export function CalendarScreen(): JSX.Element {
   const [syncing, setSyncing] = createSignal(false);
   const [parsing, setParsing] = createSignal(false);
 
-  // New event form state
+  // One form for both create and edit — the two differ only in what seeds the fields and
+  // where the save goes, so a second modal would be the same inputs drifting apart.
+  // `editing` holds the event being amended, or null when composing a new one.
+  const [editing, setEditing] = createSignal<CalendarEvent | null>(null);
   const [newTitle, setNewTitle] = createSignal("");
   const [newTitleError, setNewTitleError] = createSignal("");
   const [newStart, setNewStart] = createSignal("");
@@ -262,7 +278,43 @@ export function CalendarScreen(): JSX.Element {
     }
   }
 
-  async function handleCreateEvent() {
+  function resetEventForm() {
+    setEditing(null);
+    setNewTitle("");
+    setNewTitleError("");
+    setNewStart("");
+    setNewEnd("");
+    setNewLocation("");
+    setNewRecurrence("none");
+    setNewCalendarId("");
+  }
+
+  function openCreateEvent() {
+    resetEventForm();
+    setNewEventOpen(true);
+  }
+
+  /** Amend the selected event. A rule the picker can't express (`custom` — an imported or
+   *  CalDAV-synced series) seeds as `none`, so saving would silently flatten the series;
+   *  the editor refuses instead of quietly rewriting what it can't represent. */
+  function openEditEvent(evt: CalendarEvent) {
+    if (evt.recurrence === "custom") {
+      toast.error("THIS SERIES' REPEAT RULE CAN'T BE EDITED HERE");
+      return;
+    }
+    setEditing(evt);
+    setNewTitle(evt.title);
+    setNewTitleError("");
+    setNewStart(toLocalInput(evt.start));
+    setNewEnd(evt.end ? toLocalInput(evt.end) : "");
+    setNewLocation(evt.location ?? "");
+    setNewRecurrence(toChoice(evt.recurrence ?? "none"));
+    setNewCalendarId(evt.calendarId);
+    setEventModalOpen(false);
+    setNewEventOpen(true);
+  }
+
+  async function handleSaveEvent() {
     const title = newTitle().trim();
     if (!title) {
       setNewTitleError("TITLE IS REQUIRED");
@@ -281,38 +333,43 @@ export function CalendarScreen(): JSX.Element {
       ? new Date(newStart()).toISOString()
       : new Date().toISOString();
     const endIso = newEnd() ? new Date(newEnd()).toISOString() : undefined;
+    const fields = {
+      title,
+      start: startIso,
+      end: endIso,
+      location: newLocation() || undefined,
+      recurrence: newRecurrence(),
+    };
+    const target = editing();
 
     try {
-      await createEvent({
-        calendarId: calId,
-        title,
-        start: startIso,
-        end: endIso,
-        location: newLocation() || undefined,
-        recurrence: newRecurrence(),
-      });
+      if (target) {
+        await updateEvent(target, { ...fields, calendarId: calId });
+      } else {
+        await createEvent({ ...fields, calendarId: calId });
+      }
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "COULD NOT CREATE EVENT",
+        err instanceof Error
+          ? err.message
+          : target
+            ? "COULD NOT SAVE EVENT"
+            : "COULD NOT CREATE EVENT",
       );
       return;
     }
 
-    setNewTitle("");
-    setNewStart("");
-    setNewEnd("");
-    setNewLocation("");
-    setNewRecurrence("none");
-    setNewCalendarId("");
     setNewEventOpen(false);
-    toast.success(`Event "${title}" created`);
+    setSelectedEvent(null);
+    toast.success(`Event "${title}" ${target ? "updated" : "created"}`);
+    resetEventForm();
   }
 
   // Quick add: the backend parses the phrase into a draft, which is created straight away.
   async function handleQuickAdd() {
     const phrase = quickAdd().trim();
     if (!phrase) {
-      setNewEventOpen(true);
+      openCreateEvent();
       return;
     }
     const calId = resolvedCalendarId();
@@ -356,11 +413,7 @@ export function CalendarScreen(): JSX.Element {
             >
               {syncing() ? "SYNCING…" : "SYNC"}
             </Button>
-            <Button
-              variant="primary"
-              leading="plus"
-              onClick={() => setNewEventOpen(true)}
-            >
+            <Button variant="primary" leading="plus" onClick={openCreateEvent}>
               NEW EVENT
             </Button>
           </Row>
@@ -657,9 +710,13 @@ export function CalendarScreen(): JSX.Element {
                 >
                   CLOSE
                 </Button>
-                {/* No EDIT here yet: the backend has PATCH /calendar/events/{id}, but
-                    nothing on this screen drives it, and a button that silently does
-                    nothing is worse than an absent one. */}
+                <Button
+                  variant="primary"
+                  leading="edit"
+                  onClick={() => openEditEvent(evt())}
+                >
+                  EDIT
+                </Button>
                 <Button
                   variant="danger"
                   leading="trash"
@@ -709,27 +766,43 @@ export function CalendarScreen(): JSX.Element {
         )}
       </Show>
 
-      {/* New event modal */}
+      {/* Event editor — one form for both new and existing (`CAL-1`) */}
       <Modal
         open={newEventOpen()}
-        onClose={() => setNewEventOpen(false)}
-        title="NEW EVENT"
+        onClose={() => {
+          setNewEventOpen(false);
+          resetEventForm();
+        }}
+        title={editing() ? "EDIT EVENT" : "NEW EVENT"}
         footer={
           <Row gap={2}>
-            <Button variant="ghost" onClick={() => setNewEventOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setNewEventOpen(false);
+                resetEventForm();
+              }}
+            >
               CANCEL
             </Button>
             <Button
               variant="primary"
-              leading="plus"
-              onClick={handleCreateEvent}
+              leading={editing() ? "check" : "plus"}
+              onClick={handleSaveEvent}
             >
-              CREATE
+              {editing() ? "SAVE" : "CREATE"}
             </Button>
           </Row>
         }
       >
         <Stack gap={4}>
+          {/* The backend edits the series, not the instance — there is no per-occurrence
+              override in the schema, so say so rather than let the operator assume. */}
+          <Show when={editing()?.recurring}>
+            <Text variant="micro" tone="warn">
+              THIS EDITS THE WHOLE SERIES, NOT JUST THIS OCCURRENCE.
+            </Text>
+          </Show>
           <Input
             label="TITLE"
             value={newTitle()}
