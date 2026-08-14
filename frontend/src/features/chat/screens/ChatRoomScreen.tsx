@@ -612,6 +612,7 @@ export function ChatRoomScreen(): JSX.Element {
       onClose={onClose}
       onKeeper={toggleKeeper}
       onSaveDocument={stream.saveDocumentEdit}
+      onDocumentVersion={stream.noteDocumentVersion}
       pendingNav={pendingNav() !== null}
       onDiscardEdits={discardEdits}
       onKeepEditing={keepEditing}

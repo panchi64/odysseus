@@ -7,6 +7,7 @@ import {
 } from "solid-js";
 import { Button, Markdown, markdownBlocks, Textarea, toast } from "~/ui";
 import { lineDiff, type DiffResult } from "~/features/documents/diff";
+import { SuggestionReview } from "~/features/documents";
 import type { ViewDocumentRef } from "../model";
 import { documentKey } from "../viewport";
 import {
@@ -79,6 +80,14 @@ export function ViewDocumentContent(props: {
    *  resolve the passage-anchor's diff base (the version immediately before the
    *  one on stage). */
   priorVersions?: ViewDocumentRef[];
+  /** Fold in the version an accepted suggestion minted, so the View reflects it right
+   *  away — accepting goes through the documents surface, not the run's event stream, so
+   *  nothing else tells the viewport about it. */
+  onDocumentVersion?: (
+    documentId: string,
+    body: string,
+    version: number | null,
+  ) => void;
 }): JSX.Element {
   const [editing, setEditing] = createSignal(false);
   const [draft, setDraft] = createSignal("");
@@ -219,7 +228,28 @@ export function ViewDocumentContent(props: {
       >
         <Show
           when={editing()}
-          fallback={<Markdown streamStable>{props.document.body}</Markdown>}
+          fallback={
+            <>
+              {/* What the AI has proposed for this document but not applied (`DOC-3`) —
+                  reviewed change by change right where the document is read. Only on the
+                  newest committed version, since that's what a suggestion anchors to. */}
+              <Show when={props.editable}>
+                <div class="mb-3">
+                  <SuggestionReview
+                    documentId={props.document.documentId}
+                    onApplied={(outcome) =>
+                      props.onDocumentVersion?.(
+                        props.document.documentId,
+                        outcome.body,
+                        outcome.version,
+                      )
+                    }
+                  />
+                </div>
+              </Show>
+              <Markdown streamStable>{props.document.body}</Markdown>
+            </>
+          }
         >
           <Textarea
             rows={24}

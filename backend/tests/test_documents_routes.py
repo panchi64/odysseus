@@ -64,3 +64,143 @@ async def test_documents_surface_is_real_not_a_stub():
         assert row["kind"] == "surface"
         assert row["status"] == "indexed"
         assert row["href"] == "/documents"
+
+
+# --- suggestion review (`DOC-3`) --------------------------------------------
+
+
+async def _propose(app, doc_id: str, changes, summary: str = ""):
+    """Seed a suggestion set through the store — the agent's `document_suggest` is the
+    only producer, so the REST surface is review-only and has no create route."""
+    from services.document_suggestions import ProposedChange
+
+    return await app.state.documents.suggestions.propose(
+        "operator",
+        doc_id,
+        [ProposedChange(*c) for c in changes],
+        summary=summary,
+    )
+
+
+async def test_suggestions_are_reviewable_change_by_change():
+    async with client_app() as (client, app):
+        doc_id = (
+            await client.post("/documents", json={"title": "Notes", "body": "alpha\nbeta\n"})
+        ).json()["id"]
+        proposed = await _propose(
+            app,
+            doc_id,
+            [("alpha", "ALPHA", "louder"), ("beta", "BETA", "")],
+            summary="shout it",
+        )
+
+        listed = (await client.get(f"/documents/{doc_id}/suggestions")).json()
+        assert len(listed) == 1
+        assert listed[0]["summary"] == "shout it" and listed[0]["pending"] == 2
+        assert listed[0]["changes"][0]["oldText"] == "alpha"  # camelCase out
+        assert listed[0]["changes"][0]["explanation"] == "louder"
+        assert listed[0]["changes"][0]["status"] == "pending"
+
+        # Accepting one applies exactly that change and mints one version.
+        accept = await client.post(
+            f"/documents/{doc_id}/suggestion-changes/{proposed.changes[0].id}/accept"
+        )
+        assert accept.status_code == 200
+        applied = accept.json()
+        assert applied["version"] == 2
+        assert applied["document"]["body"] == "ALPHA\nbeta\n"
+        assert applied["accepted"] == [proposed.changes[0].id] and applied["skipped"] == []
+
+        # Rejecting the other writes no version at all.
+        reject = await client.post(
+            f"/documents/{doc_id}/suggestion-changes/{proposed.changes[1].id}/reject"
+        )
+        assert reject.status_code == 204
+        assert (await client.get(f"/documents/{doc_id}")).json()["body"] == "ALPHA\nbeta\n"
+        versions = (await client.get(f"/documents/{doc_id}/versions")).json()
+        assert [v["version"] for v in versions] == [2, 1]
+
+        # A fully reviewed set drops out of the pending list but stays inspectable.
+        assert (await client.get(f"/documents/{doc_id}/suggestions")).json() == []
+        resolved = (
+            await client.get(
+                f"/documents/{doc_id}/suggestions", params={"include_resolved": True}
+            )
+        ).json()
+        assert [c["status"] for c in resolved[0]["changes"]] == ["accepted", "rejected"]
+        assert resolved[0]["changes"][0]["version"] == 2
+        assert resolved[0]["changes"][1]["version"] is None
+
+
+async def test_accept_all_applies_a_whole_set_as_one_version():
+    async with client_app() as (client, app):
+        doc_id = (
+            await client.post("/documents", json={"title": "Notes", "body": "one two three"})
+        ).json()["id"]
+        proposed = await _propose(
+            app, doc_id, [("one", "1"), ("two", "2"), ("three", "3")]
+        )
+
+        applied = (
+            await client.post(f"/documents/{doc_id}/suggestions/{proposed.id}/accept-all")
+        ).json()
+
+        assert applied["document"]["body"] == "1 2 3"
+        assert applied["version"] == 2 and len(applied["accepted"]) == 3
+        versions = (await client.get(f"/documents/{doc_id}/versions")).json()
+        assert [v["version"] for v in versions] == [2, 1]
+        assert (await client.get(f"/documents/{doc_id}/suggestions")).json() == []
+
+
+async def test_accepting_a_stale_suggestion_is_a_conflict_not_a_corruption():
+    async with client_app() as (client, app):
+        doc_id = (
+            await client.post("/documents", json={"title": "Notes", "body": "alpha\nbeta\n"})
+        ).json()["id"]
+        proposed = await _propose(app, doc_id, [("alpha", "ALPHA")])
+
+        # The operator rewrites the span the suggestion was anchored to.
+        await client.patch(f"/documents/{doc_id}", json={"body": "rewritten\nbeta\n"})
+
+        conflict = await client.post(
+            f"/documents/{doc_id}/suggestion-changes/{proposed.changes[0].id}/accept"
+        )
+        assert conflict.status_code == 409
+        assert (await client.get(f"/documents/{doc_id}")).json()["body"] == "rewritten\nbeta\n"
+        # Refusing is not deciding — the change is still there to review.
+        assert (await client.get(f"/documents/{doc_id}/suggestions")).json()[0]["pending"] == 1
+
+
+async def test_suggestion_review_not_found_paths():
+    async with client_app() as (client, app):
+        doc_id = (
+            await client.post("/documents", json={"title": "Notes", "body": "alpha"})
+        ).json()["id"]
+        other_id = (
+            await client.post("/documents", json={"title": "Other", "body": "alpha"})
+        ).json()["id"]
+        proposed = await _propose(app, doc_id, [("alpha", "ALPHA")])
+        change_id = proposed.changes[0].id
+
+        assert (await client.get("/documents/nope/suggestions")).status_code == 404
+        assert (
+            await client.post(f"/documents/{doc_id}/suggestion-changes/nope/accept")
+        ).status_code == 404
+        assert (
+            await client.post(f"/documents/{doc_id}/suggestions/nope/accept-all")
+        ).status_code == 404
+        # The nested path is honest: a change reached through the wrong document is a 404.
+        assert (
+            await client.post(f"/documents/{other_id}/suggestion-changes/{change_id}/accept")
+        ).status_code == 404
+        assert (
+            await client.post(f"/documents/{other_id}/suggestions/{proposed.id}/accept-all")
+        ).status_code == 404
+
+        # Deciding twice is never a second decision.
+        assert (
+            await client.post(f"/documents/{doc_id}/suggestion-changes/{change_id}/reject")
+        ).status_code == 204
+        assert (
+            await client.post(f"/documents/{doc_id}/suggestion-changes/{change_id}/accept")
+        ).status_code == 404

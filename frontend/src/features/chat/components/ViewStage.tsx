@@ -41,6 +41,11 @@ export function ViewStage(props: {
   priorDocuments: ViewDocumentRef[];
   /** Relays an inline document edit to the backend (SAVE mints a new version). */
   onSaveDocument: (documentId: string, body: string) => Promise<void>;
+  onDocumentVersion: (
+    documentId: string,
+    body: string,
+    version: number | null,
+  ) => void;
   /** Operator font-size step (-2..+2) and soft-wrap preference, persisted by the
    *  panel and threaded down to whichever content/code view is on stage. */
   fontStep?: number;
@@ -71,6 +76,7 @@ export function ViewStage(props: {
                     Boolean(props.entry.documentIsLatest) && doc().version >= 1
                   }
                   onSave={props.onSaveDocument}
+                  onDocumentVersion={props.onDocumentVersion}
                   fontStep={props.fontStep}
                   softWrap={props.softWrap}
                 />

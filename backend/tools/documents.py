@@ -1,17 +1,26 @@
-"""Document tools — the agent writes and revises a document live in the chat View.
+"""Document tools — the agent writes, revises, and *proposes changes to* a document live
+in the chat View.
 
 A document is a piece of the operator's own writing (`DOC-1`/`DOC-2`), versioned and
-encrypted at rest by ``services/documents``. These tools let the agent *create* one and
-make *targeted* edits to it; each write streams into the conversation's View as a new
-version (``document.created`` / ``document.delta`` / ``document.committed``), so the
-operator watches the document take shape beside the chat and can edit it back inline.
+encrypted at rest by ``services/documents``. These tools give the agent the three ways
+`DOC-3` asks for: *create* one (a full rewrite is a create or a whole-body edit), make a
+*targeted* edit, or **suggest** changes without applying any of them. Each streams into
+the conversation's View (``document.created`` / ``document.delta`` /
+``document.committed``), so the operator watches the document take shape beside the chat
+and can edit it back inline.
+
+**The first two apply; the third does not.** ``suggest`` records a pending set of anchored
+changes and leaves the document byte-identical — the operator accepts or rejects them one
+by one from the review surface, and only an accepted change ever mints a version.
 
 Provenance decides approval, not a blanket gate: a document the agent created **in this
-conversation** is its own scratch surface and edits run freely; editing a document it did
+conversation** is its own scratch surface and edits run freely; touching a document it did
 *not* create here — one from the operator's library or another thread — **pauses for
-approval** on the first edit (the same ``ApprovalRequired`` defer the recall gate uses),
+approval** on the first write (the same ``ApprovalRequired`` defer the recall gate uses),
 so the agent can't silently rewrite the operator's existing writing. The operator can
-approve once or for the whole conversation.
+approve once or for the whole conversation. Suggesting is gated on the same terms as
+editing: it writes nothing to the document, but it does put a decision in front of the
+operator about *their* writing, and the same one-time grant then covers both.
 
 Like every tool here this is a thin adapter: the versioning, encryption, and corpus
 re-indexing live in ``DocumentStore``; a missing store degrades to an "unavailable"
@@ -20,14 +29,31 @@ message rather than failing the turn.
 
 from __future__ import annotations
 
+from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
 from core.exceptions import DocumentSpanError, NotFoundError
 from runs import DocumentCommitted, DocumentCreated, DocumentDelta
+from services.document_suggestions import ProposedChange, stream_preview
 from services.documents import DocumentVersionOrigin
 
 from .deps import RunDeps
+
+
+class ProposedEdit(BaseModel):
+    """One change the agent proposes but does not apply."""
+
+    old_text: str = Field(
+        description="The exact span to replace, copied verbatim from the current document "
+        "(including whitespace). Must match exactly one place."
+    )
+    new_text: str = Field(description="What that span should say instead.")
+    explanation: str = Field(
+        default="",
+        description="A short plain-language note on why, shown beside this change in the "
+        "operator's review.",
+    )
 
 
 def document_toolset() -> FunctionToolset[RunDeps]:
@@ -88,26 +114,8 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         store = ctx.deps.documents
         if store is None:
             return "Documents are unavailable right now."
-        try:
-            doc = await store.get(ctx.deps.owner_id, document_id)
-        except NotFoundError as exc:
-            raise ModelRetry(
-                f"No document with id {document_id!r} — it may have been deleted. "
-                "Check the id or create a new document instead."
-            ) from exc
-
-        # Provenance gate: a document born in *this* conversation is the agent's own surface
-        # (ungated); anything else — a library doc (no conversation) or one from another
-        # thread — pauses for approval on the first edit. Keyed off positive provenance (a
-        # real matching conversation), so a run with no conversation can't slip an ungated
-        # edit through on the None == None coincidence. `tool_call_approved` is set on the
-        # re-invocation after the operator approves, so this raises at most once.
-        born_here = (
-            ctx.deps.conversation_id is not None
-            and doc.conversation_id == ctx.deps.conversation_id
-        )
-        if not born_here and not ctx.tool_call_approved:
-            raise ApprovalRequired()
+        doc = await _load(store, ctx, document_id)
+        _gate_foreign_document(ctx, doc)
 
         # The find/replace + uniqueness check is the store's job (a domain edit reusable by
         # non-agent callers); the tool only maps its span error to a model-facing retry.
@@ -120,15 +128,7 @@ def document_toolset() -> FunctionToolset[RunDeps]:
                 origin=DocumentVersionOrigin.AI,
             )
         except DocumentSpanError as exc:
-            if exc.occurrences == 0:
-                raise ModelRetry(
-                    "old_text was not found in the document — copy it verbatim from the "
-                    "current body (including whitespace)."
-                ) from exc
-            raise ModelRetry(
-                f"old_text matches {exc.occurrences} places — include more surrounding text "
-                "so it identifies exactly one span."
-            ) from exc
+            raise _span_retry(exc) from exc
         ctx.deps.run.emit(DocumentDelta(document_id=document_id, text=_view.body))
         ctx.deps.run.emit(
             DocumentCommitted(
@@ -137,4 +137,116 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         )
         return f"Edited {doc.title!r} (now version {version})."
 
+    @toolset.tool
+    async def suggest(
+        ctx: RunContext[RunDeps],
+        document_id: str,
+        changes: list[ProposedEdit],
+        summary: str = "",
+    ) -> str:
+        """Propose changes to a document **without applying any of them**.
+
+        Use this instead of ``document_edit`` whenever the operator should decide — a pass
+        over their own writing, anything stylistic or opinionated, or a set of changes worth
+        weighing one at a time. Each entry in ``changes`` is an independent proposal: the
+        operator reviews them change by change and accepts or rejects each one (or accepts
+        them all at once). The document does not change until they accept, and rejecting
+        leaves no trace.
+
+        Every ``old_text`` must match **exactly one** span of the current document — copy it
+        verbatim, whitespace included, and include more surrounding text if a short span
+        would be ambiguous. If any single change fails that test the whole set is refused,
+        so fix it and call again. ``summary`` is a one-line description of the pass as a
+        whole ("tightened the intro and fixed the dates").
+
+        Prefer this over rewriting a document that isn't yours to rewrite; use
+        ``document_edit`` when the operator has already asked for the change directly."""
+        store = ctx.deps.documents
+        if store is None:
+            return "Documents are unavailable right now."
+        if not changes:
+            raise ModelRetry(
+                "changes was empty — pass at least one proposed change, or use "
+                "document_edit if you meant to apply an edit directly."
+            )
+        doc = await _load(store, ctx, document_id)
+        _gate_foreign_document(ctx, doc)
+
+        try:
+            proposed = await store.suggestions.propose(
+                ctx.deps.owner_id,
+                document_id,
+                [
+                    ProposedChange(c.old_text, c.new_text, c.explanation)
+                    for c in changes
+                ],
+                summary=summary,
+                conversation_id=ctx.deps.conversation_id,
+            )
+        except DocumentSpanError as exc:
+            raise _span_retry(exc) from exc
+
+        # Stream the proposal into the View *as it is produced* (`DOC-3`), reusing the
+        # document delta rather than inventing an event: each step shows what the document
+        # would say once one more change lands. The last delta deliberately restores the
+        # **current, unchanged** body — the View settles back on what the document actually
+        # says, because nothing has been applied. The pending changes themselves are the
+        # review surface, and no `document.committed` follows: a version exists only once
+        # the operator accepts.
+        for preview in stream_preview(
+            doc.body, [(c.old_text, c.new_text) for c in changes]
+        ):
+            ctx.deps.run.emit(DocumentDelta(document_id=document_id, text=preview))
+        ctx.deps.run.emit(DocumentDelta(document_id=document_id, text=doc.body))
+
+        count = len(proposed.changes)
+        return (
+            f"Proposed {count} change{'' if count == 1 else 's'} to {doc.title!r} for the "
+            "operator to review. Nothing has been applied — they accept or reject each "
+            "change themselves, so don't re-apply these with document_edit."
+        )
+
     return toolset
+
+
+# --- shared tool-layer concerns ------------------------------------------
+
+
+async def _load(store, ctx: RunContext[RunDeps], document_id: str):
+    """The document, or a model-facing retry when the id is stale."""
+    try:
+        return await store.get(ctx.deps.owner_id, document_id)
+    except NotFoundError as exc:
+        raise ModelRetry(
+            f"No document with id {document_id!r} — it may have been deleted. "
+            "Check the id or create a new document instead."
+        ) from exc
+
+
+def _gate_foreign_document(ctx: RunContext[RunDeps], doc) -> None:
+    """Provenance gate: a document born in *this* conversation is the agent's own surface
+    (ungated); anything else — a library doc (no conversation) or one from another thread —
+    pauses for approval on the first write. Keyed off positive provenance (a real matching
+    conversation), so a run with no conversation can't slip an ungated write through on the
+    ``None == None`` coincidence. ``tool_call_approved`` is set on the re-invocation after
+    the operator approves, so this raises at most once — and one grant covers editing and
+    suggesting alike."""
+    born_here = (
+        ctx.deps.conversation_id is not None
+        and doc.conversation_id == ctx.deps.conversation_id
+    )
+    if not born_here and not ctx.tool_call_approved:
+        raise ApprovalRequired()
+
+
+def _span_retry(exc: DocumentSpanError) -> ModelRetry:
+    """Turn a failed anchor into the phrasing that tells the model how to fix it."""
+    if exc.occurrences == 0:
+        return ModelRetry(
+            "old_text was not found in the document — copy it verbatim from the "
+            "current body (including whitespace)."
+        )
+    return ModelRetry(
+        f"old_text matches {exc.occurrences} places — include more surrounding text "
+        "so it identifies exactly one span."
+    )
