@@ -103,6 +103,12 @@ class NotificationChannel(Protocol):
         returns without delivering when the channel simply isn't configured."""
         ...
 
+    async def close(self) -> None:
+        """Release anything this channel opened for itself (a pooled HTTP client, a
+        connection). Called once at shutdown; a channel that borrows every resource it
+        uses implements this as a no-op."""
+        ...
+
 
 class EmailChannel:
     """Delivers through the operator's own mail account (`EMAIL-1`).
@@ -195,6 +201,10 @@ class EmailChannel:
             )
         if account_id is not None:
             await self._settings.set(owner_id, EMAIL_ACCOUNT_KEY, account_id)
+
+    async def close(self) -> None:
+        """Nothing to release — this channel borrows the mail service, which owns (and
+        closes) its own transports."""
 
 
 class PushChannel:

@@ -34,7 +34,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.api_scopes import unknown_scopes
-from core.auth import TokenIdentity, register_api_token_store
+from core.auth import TokenIdentity
 from core.crypto import hash_password, verify_password
 from core.db import in_session
 from core.exceptions import NotFoundError
@@ -233,10 +233,3 @@ class ApiTokenStore:
                 session.add(row)
 
         await in_session(self._engine, work)
-
-
-# The gate lives in `core`, which must not import `services`. So the seam runs the other
-# way: `core.auth` declares the protocol and holds a factory slot, and this module — pulled
-# in by `routes/tokens.py` when the app assembles its routers — fills it. The gate then
-# builds the store on first use from the engine already on `app.state`.
-register_api_token_store(ApiTokenStore)

@@ -10,11 +10,8 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import HTTPException, Request
-from pydantic_ai.models import Model
-from pydantic_ai.settings import ModelSettings
 from sqlalchemy import Engine
 
-from core import auth as core_auth
 from core.auth import AuthManager
 from core.ratelimit import RateLimiter
 from core.vault import Vault
@@ -24,14 +21,13 @@ from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.calendar import CalendarService
-from services.calendar.nl import CalendarNaturalLanguage
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
-from services.external_tools import ExternalTools, build_external_tools
+from services.external_tools import ExternalTools
 from services.gallery import GalleryService
 from services.host_shell import ShellService
 from services.integrations import IntegrationService
@@ -238,65 +234,15 @@ def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:
     return request.app.state.research_run_waiters
 
 
-# --- Reserved sprint capabilities -------------------------------------------------
-# Accessors registered up front so the parallel feature tracks each wire only their own
-# service and never contend for this module. Each reads through `getattr` and returns
-# ``None`` until its track hangs the singleton on ``app.state``, so importing or calling
-# one before its track lands is safe rather than an AttributeError. When a track lands it
-# replaces its own accessor with the ordinary `request.app.state.<x>` form and a concrete
-# return type, exactly like the accessors above.
-
-
 def mail(request: Request) -> MailService:
-    """The mail capability (`EMAIL-1..5`).
-
-    Built on first use rather than in the app lifespan, and memoized on ``app.state`` so
-    every later call gets the same instance (its cached transports and freshness windows
-    live on it). Its background sync worker is started with it; the process exit tears the
-    task down, since nothing else holds it.
-    """
-    existing = getattr(request.app.state, "mail", None)
-    if existing is not None:
-        return existing
-    service = MailService(
-        db_engine(request),
-        vault(request),
-        credentials(request),
-        models(request),
-        notifications=notifications(request),
-    )
-    request.app.state.mail = service
-    request.app.state.mail_sync_task = asyncio.create_task(service.start(), name="mail-start")
-    return service
+    """The mail capability (`EMAIL-1..5`) — accounts, the sync loop, the inbox cache,
+    triage and drafts. Its background worker is started and stopped with the app."""
+    return request.app.state.mail
 
 
 def calendar(request: Request) -> CalendarService:
-    """The calendar capability (`CAL-1..3`), including natural-language entry as `.nl`.
-
-    Built on first use and cached on ``app.state``, rather than constructed in the app's
-    lifespan like the accessors above. The service needs nothing but the engine and the
-    vault — no lifecycle, no background worker, no warm-up — so there is nothing for the
-    lifespan to own, and a capability with no startup cost shouldn't add one to every boot.
-
-    The parser's model resolver closes over the registry and runs **per call**, so a role
-    rebound at runtime takes effect without rebuilding anything — the same seam
-    `services/webfetch/distill.py` uses.
-    """
-    service = getattr(request.app.state, "calendar", None)
-    if service is None:
-        registry = request.app.state.models
-
-        async def resolve() -> tuple[Model, ModelSettings | None]:
-            resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
-            return resolved.model, resolved.reasoning_off
-
-        service = CalendarService(
-            request.app.state.db_engine,
-            request.app.state.vault,
-            nl=CalendarNaturalLanguage(resolve_model=resolve),
-        )
-        request.app.state.calendar = service
-    return service
+    """The calendar capability (`CAL-1..3`), including natural-language entry as `.nl`."""
+    return request.app.state.calendar
 
 
 def external(request: Request) -> ExternalTools:
@@ -304,17 +250,11 @@ def external(request: Request) -> ExternalTools:
     connectors (`INTEG-*`) and the per-tool trust policy they share (`AE-3.6`).
 
     One object rather than two capability handles, because the agent sees one `external`
-    category and shouldn't have to know which source a tool came from. The lifespan builds
-    it; the fallback here only covers a test app that skipped the lifespan, and it caches
-    on ``app.state`` so the REST surfaces and the agent share one instance — which is what
-    makes a server registered a moment ago visible to the very next run.
+    category and shouldn't have to know which source a tool came from. One instance for
+    both the REST surfaces and the agent, which is what makes a server registered a moment
+    ago visible to the very next run.
     """
-    state = request.app.state
-    handle: ExternalTools | None = getattr(state, "external", None)
-    if handle is None:
-        handle = build_external_tools(state.db_engine, state.vault)
-        state.external = handle
-    return handle
+    return request.app.state.external
 
 
 def mcp(request: Request) -> McpRegistry:
@@ -329,49 +269,25 @@ def integrations(request: Request) -> IntegrationService:
 
 def secret_vault(request: Request) -> SecretVaultService:
     """The operator's secrets manager (`VAULT-*`). Distinct from `vault()` above, which is
-    the at-rest key custody.
-
-    Built on first use and cached on ``app.state``, so every caller shares one instance —
-    its whole point is holding a single in-memory unlock state, which a per-request instance
-    would throw away. Construction is pure (an engine handle plus the vault; no I/O, no
-    ``await``), so there is no suspension point for a concurrent request to race a duplicate
-    in. The lazy form exists only because ``app.py`` is shared with five parallel tracks this
-    sprint; it collapses into an ordinary lifespan-wired singleton at integration."""
-    service = getattr(request.app.state, "secret_vault", None)
-    if service is None:
-        service = SecretVaultService(request.app.state.db_engine, request.app.state.vault)
-        request.app.state.secret_vault = service
-    return service
+    the at-rest key custody. One instance per process — its whole point is holding a single
+    in-memory unlock state, which a per-request instance would throw away."""
+    return request.app.state.secret_vault
 
 
 def backup(request: Request) -> BackupService:
-    """Encrypted export/import (`BACKUP-*`). Built on first use and cached on
-    ``app.state``, like `secret_vault()` above and for the same sprint-scoped reason."""
-    service = getattr(request.app.state, "backup", None)
-    if service is None:
-        service = BackupService(
-            request.app.state.db_engine,
-            request.app.state.vault,
-            request.app.state.settings_store,
-        )
-        request.app.state.backup = service
-    return service
+    """Encrypted export/import (`BACKUP-*`)."""
+    return request.app.state.backup
 
 
 def api_tokens(request: Request) -> ApiTokenStore:
     """Inbound scoped API tokens (`AUTH-4`). Distinct from `credentials()` above, which
     holds the outbound service keys.
 
-    The store is a singleton on `app.state` like every other capability, but the auth gate
-    needs it too and runs before any route reaches this module — so `core.auth` builds it on
-    first use and this hands back that same instance, rather than the two keeping separate
-    verification caches (a revoke through the route must invalidate what the gate trusts)."""
-    store = core_auth.api_token_store(request.app.state)
-    assert isinstance(store, ApiTokenStore)
-    return store
-
-
-# --- End reserved sprint capabilities ----------------------------------------------
+    The auth gate in `core.auth` reads this same instance straight off ``app.state`` —
+    it has to, since it runs before any route reaches this module — so a revoke through
+    the route invalidates exactly what the gate trusts, rather than the two keeping
+    separate verification caches."""
+    return request.app.state.api_tokens
 
 
 def run_terminal_tasks(request: Request) -> set[asyncio.Task[None]]:

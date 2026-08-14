@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from services.notification_channels import default_channels
-from services.settings_store import SettingsStore
-
 from ._helpers import client_app
 
 
@@ -133,9 +130,11 @@ async def test_overview_counts_memories_and_conversations():
 
 
 async def test_overview_omits_notification_channel_rows_when_none_are_wired():
-    """The rows report real channels — a workspace with none simply doesn't grow them
-    (nothing fabricated), and the notification surface itself is unaffected."""
-    async with client_app() as (client, _app):
+    """The rows are derived from the channels that actually exist, never fabricated. The
+    app wires both by default, so this drops them to prove the rows follow the channels
+    rather than being hard-coded into the aggregate."""
+    async with client_app() as (client, app):
+        app.state.notifications._channels = []
         body = (await client.get("/overview")).json()
     caps = _capabilities(body)
     assert "email" not in caps
@@ -145,11 +144,9 @@ async def test_overview_omits_notification_channel_rows_when_none_are_wired():
 async def test_overview_reports_unconfigured_notification_channels_as_degraded():
     """Email and push are how an unattended approval request and a reminder reach the
     operator when the app isn't open, so whether they're configured is observable —
-    and neither is critical, since losing one degrades to in-app only."""
-    async with client_app() as (client, app):
-        app.state.notifications._channels = default_channels(
-            lambda: None, SettingsStore(app.state.db_engine), app.state.vault
-        )
+    and neither is critical, since losing one degrades to in-app only. Both are wired by
+    the app itself; a fresh workspace simply has no mailbox and no endpoint yet."""
+    async with client_app() as (client, _app):
         body = (await client.get("/overview")).json()
 
     caps = _capabilities(body)

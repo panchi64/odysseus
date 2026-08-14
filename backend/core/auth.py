@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -79,27 +78,15 @@ class ApiTokenAuthenticator(Protocol):
     async def touch(self, token_id: str) -> None: ...
 
 
-# `core` must not import `services`, so the token store registers itself here instead
-# (`services/api_token_store.py`, pulled in when the app assembles its routers) and the gate
-# builds it on first use from the engine on `app.state`. Until then there is no second
-# authentication method and only the operator session is accepted.
-_store_factory: Callable[[Any], ApiTokenAuthenticator] | None = None
-
-
-def register_api_token_store(factory: Callable[[Any], ApiTokenAuthenticator]) -> None:
-    global _store_factory
-    _store_factory = factory
-
-
 def api_token_store(state: Any) -> ApiTokenAuthenticator | None:
-    """The shared token store, built on first use. ``None`` when none is registered."""
-    store = getattr(state, "api_tokens", None)
-    if store is None and _store_factory is not None:
-        # No await between the read and the write, so concurrent first requests on the
-        # event loop can't each build one.
-        store = _store_factory(state.db_engine)
-        state.api_tokens = store
-    return store
+    """The shared token store the app wired at startup, or ``None`` when there is none.
+
+    `core` must not import `services`, so the gate never *builds* the store — it only
+    knows the protocol above and reads whatever the app hung on ``app.state``. ``None``
+    (a test app assembled without the lifespan) simply means there is no second
+    authentication method and only the operator session is accepted.
+    """
+    return getattr(state, "api_tokens", None)
 
 
 def auth_attempt_limiter(state: Any) -> RateLimiter:

@@ -183,6 +183,15 @@ class NotificationService:
                 await self._rehydrate_task
         await self._deliveries.stop()
         await self._worker.stop()
+        # Channels last: the delivery drainer above may still have been using one. A
+        # channel that owns an outbound client (push) closes it here; one that borrows
+        # everything (email) is a no-op. Failing to close must not abort a shutdown that
+        # still has stores to flush below it.
+        for channel in self._channels:
+            try:
+                await channel.close()
+            except Exception:
+                logger.exception("notifications: closing the %s channel failed", channel.key)
 
     @property
     def last_seq(self) -> int:

@@ -64,8 +64,12 @@ from routes import (
 from routes.chat import compose_turn, resolve_turn_models
 from routes.deps import OPERATOR_ID
 from runs import Run, RunRegistry, RunStatus
+from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
+from services.backup import BackupService
+from services.calendar import CalendarService
+from services.calendar.nl import CalendarNaturalLanguage
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
@@ -82,9 +86,12 @@ from services.corpus.uploads import UploadsAdapter
 from services.credential_store import CredentialStore
 from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
+from services.external_tools import build_external_tools
 from services.gallery import GalleryService
 from services.host_shell import ShellService
+from services.mail import MailService
 from services.memory import MemoryStore
+from services.notification_channels import default_channels
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
@@ -94,6 +101,7 @@ from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResul
 from services.sealing import seal_legacy_column
 from services.search import SearchService
 from services.searxng import ManagedSearxng
+from services.secret_vault import SecretVaultService
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
@@ -214,6 +222,12 @@ async def lifespan(app: FastAPI):
     """
     settings: Settings = app.state.settings
     app.state.auth_manager = AuthManager()
+    # Inbound scoped API tokens (`AUTH-4`). Wired below with the engine, but named here
+    # because the auth gate runs on every request — including ones that arrive before the
+    # lifespan finishes — and reads it straight off `app.state`. Absent would mean "no
+    # second authentication method"; an explicit None says the same thing without the
+    # gate having to distinguish "not wired yet" from "deliberately not offered".
+    app.state.api_tokens = None
 
     # Tracks each terminal-transition notify task while it's in flight — lets shutdown
     # drain them cleanly (rather than tearing down the DB engine/vault out from under
@@ -347,6 +361,10 @@ async def lifespan(app: FastAPI):
     engine = make_engine(url)
     init_db(engine)
     app.state.db_engine = engine
+    # The one instance both the auth gate and the `/tokens` routes use — a token revoked
+    # through the route has to invalidate exactly what the gate trusts, which two stores
+    # with two verification caches wouldn't do.
+    app.state.api_tokens = ApiTokenStore(engine)
 
     # The at-rest encryption vault. A passphrase (auth-disabled path) sets it up
     # or unlocks it at boot; otherwise it stays locked until the operator unlocks
@@ -401,12 +419,63 @@ async def lifespan(app: FastAPI):
     # Outbound service credentials — the operator's API keys for third-party services,
     # sealed with the vault.
     app.state.credentials = CredentialStore(engine, vault)
+    # Owner-scoped app preferences. Built here — earlier than the capabilities that read
+    # it below — because the notification channels resolve their own configuration from
+    # it, and they are composed with the attention surface a few lines down.
+    app.state.settings_store = SettingsStore(engine)
     # The attention surface — a durable notification record + its own live stream,
     # separate from the frozen per-run event stream. Just the substrate here (record +
     # stream); the emit policy (which run outcomes are noteworthy) wires in where those
     # events happen (approval parking, run terminal transitions, approve/deny routes).
-    app.state.notifications = NotificationService(engine, vault)
+    #
+    # Its out-of-band channels (`AE-3.2`, `TASK-6`) are composed in here. The email
+    # channel takes the mail service as a *callable* rather than a value because the
+    # dependency runs both ways — mail raises triage alerts through this surface, and this
+    # surface sends through mail. Resolving late is what breaks the cycle; the channel is
+    # only ever called long after both exist.
+    app.state.notifications = NotificationService(
+        engine,
+        vault,
+        channels=default_channels(
+            lambda: app.state.mail, app.state.settings_store, vault
+        ),
+    )
     await app.state.notifications.start()
+    # Email (`EMAIL-1..5`) — accounts, the sync loop, the inbox cache, triage and drafts.
+    # Built immediately after the attention surface (the other half of the cycle above) so
+    # a triage alert has somewhere to land. Its sync worker seals message content, so it
+    # parks while the vault is locked rather than failing.
+    app.state.mail = MailService(
+        engine,
+        vault,
+        app.state.credentials,
+        registry,
+        notifications=app.state.notifications,
+    )
+    await app.state.mail.start()
+    # The calendar (`CAL-1..3`). Nothing to start or stop: no worker, no held connections
+    # — CalDAV sync runs per request. Its natural-language parser resolves the background
+    # model per call (the `services/webfetch/distill.py` seam), so a role rebound at
+    # runtime takes effect without rebuilding anything.
+    async def _resolve_calendar_model():
+        resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
+        return resolved.model, resolved.reasoning_off
+
+    app.state.calendar = CalendarService(
+        engine, vault, nl=CalendarNaturalLanguage(resolve_model=_resolve_calendar_model)
+    )
+    # External tools — registered MCP servers (`MCP-*`), configured connectors
+    # (`INTEG-*`) and the per-tool trust policy they share (`AE-3.6`), as one handle. The
+    # factory is the only way to build it, so both sources are guaranteed the *same*
+    # policy store. MCP connections are opened per run, not held here.
+    app.state.external = build_external_tools(engine, vault)
+    # The operator's secrets manager (`VAULT-*`) — distinct from `vault` above, which is
+    # at-rest key custody. Constructing it *is* registering its lock hook (it calls
+    # `vault.register_on_lock` itself), so an app lock ends every secret session too and
+    # there is deliberately nothing more to wire here.
+    app.state.secret_vault = SecretVaultService(engine, vault)
+    # Encrypted export/import (`BACKUP-*`), under its own operator secret and its own KDF.
+    app.state.backup = BackupService(engine, vault, app.state.settings_store)
     # The Cookbook — host hardware detection. The probe is warmed in the background so a
     # slow `system_profiler` never blocks boot; the first request falls back to
     # lazy-detect if the warm-up hasn't finished.
@@ -437,7 +506,6 @@ async def lifespan(app: FastAPI):
     # the corpus via the reindexer (built just above). Engines from a prior process can't
     # be adopted across a restart, so reconcile clean-slates any mid-flight rows
     # (best-effort, never blocks startup); shutdown stops them gracefully in `finally`.
-    app.state.settings_store = SettingsStore(engine)
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)
     app.state.serving = ServingService(
         engine,
@@ -710,13 +778,14 @@ async def lifespan(app: FastAPI):
                 documents=app.state.documents,
                 skills=app.state.skills,
                 notifications=app.state.notifications,
-                # Reserved sprint capabilities — read defensively so a scheduled task's
-                # run sees a track's service the moment it hangs one on `app.state`,
-                # without this file changing again.
-                mail=getattr(app.state, "mail", None),
-                calendar=getattr(app.state, "calendar", None),
-                secret_vault=getattr(app.state, "secret_vault", None),
-                external=getattr(app.state, "external", None),
+                # An unattended task reaches the same capabilities an interactive turn
+                # does. These four are the approval-gated ones, so a handle missing here
+                # wouldn't fail loudly — the tool would simply report itself unavailable
+                # and the task would quietly do less than it was asked to.
+                mail=app.state.mail,
+                calendar=app.state.calendar,
+                secret_vault=app.state.secret_vault,
+                external=app.state.external,
             ),
             registry=app.state.runs,
             store=conversations,
@@ -812,6 +881,9 @@ async def lifespan(app: FastAPI):
         await uploads_adapter.stop()
         await app.state.uploads.stop()
         await app.state.conversations.stop()
+        # Mail before the attention surface it notifies through: the sync loop can raise a
+        # triage alert on its way down, and a channel delivery may still be draining.
+        await app.state.mail.stop()
         await app.state.notifications.stop()
 
 
