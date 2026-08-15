@@ -22,32 +22,13 @@ from alembic import context
 from sqlalchemy import Engine, create_engine
 from sqlmodel import SQLModel
 
-# Import every model module so its tables register on SQLModel.metadata.
-import models.api_token  # noqa: F401  (reserved — sprint track T6)
-import models.app_setting  # noqa: F401
-import models.approval_grant  # noqa: F401
-import models.artifact  # noqa: F401
-import models.calendar  # noqa: F401  (reserved — sprint track T2)
-import models.conversation  # noqa: F401
-import models.corpus  # noqa: F401
-import models.document  # noqa: F401
-import models.document_suggestion  # noqa: F401  (reserved — sprint track T5)
-import models.external_tool  # noqa: F401  (reserved — sprint track T3)
-import models.gallery  # noqa: F401
-import models.mail  # noqa: F401  (reserved — sprint track T1)
-import models.memory  # noqa: F401
-import models.notification  # noqa: F401
-import models.registry  # noqa: F401
-import models.research  # noqa: F401
-import models.search  # noqa: F401
-import models.secret  # noqa: F401  (reserved — sprint track T4)
-import models.service_credential  # noqa: F401
-import models.serving  # noqa: F401
-import models.skill  # noqa: F401
-import models.task  # noqa: F401
-import models.upload  # noqa: F401
-import models.workspace_history  # noqa: F401
 from core.exceptions import SchemaMigrationError
+
+# Import every model module so its tables register on SQLModel.metadata — walked
+# from the package, so a new entity registers by existing, never by being listed.
+from models._discovery import import_all_models
+
+import_all_models()
 
 config = context.config
 target_metadata = SQLModel.metadata

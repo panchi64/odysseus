@@ -12,14 +12,12 @@ a class the process never imported has no mapper, and would silently vanish from
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 from dataclasses import dataclass
 
 from sqlmodel import SQLModel
 
-import models
 from models._backup import BackupSpec
+from models._discovery import import_all_models
 
 
 @dataclass(frozen=True)
@@ -36,16 +34,10 @@ class BackupEntity:
         return self.model.__name__
 
 
-def _import_all_models() -> None:
-    for info in pkgutil.iter_modules(models.__path__):
-        if not info.name.startswith("_"):
-            importlib.import_module(f"{models.__name__}.{info.name}")
-
-
 def discover_entities() -> list[BackupEntity]:
     """Every table that marked itself for backup, in import order: section, then the
     marker's ``order`` (parents before children), then name for a stable tie-break."""
-    _import_all_models()
+    import_all_models()
     found: dict[str, BackupEntity] = {}
     for mapper in SQLModel._sa_registry.mappers:
         cls = mapper.class_
