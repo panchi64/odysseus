@@ -16,7 +16,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
-from agent.vision import VisionTranscriber
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
@@ -35,26 +34,18 @@ from routes import (
     calendar,
     chat,
     conversations,
-    cookbook,
-    corpus,
-    documents,
-    gallery,
     health,
     integrations,
     mail,
     mcp,
-    memory,
     models,
     notifications,
     overview,
     runs,
     secret_vault,
-    serving,
     shell,
-    skills,
     tokens,
     tools,
-    uploads,
 )
 from routes.deps import OPERATOR_ID
 from runs import Run, RunRegistry, RunStatus
@@ -63,98 +54,21 @@ from services.approval_grants import ApprovalGrantStore
 from services.backup import BackupService
 from services.calendar import CalendarService
 from services.calendar.nl import CalendarNaturalLanguage
-from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
-from services.cookbook import CookbookService
-from services.corpus import (
-    ConversationAdapter,
-    CorpusChunkStore,
-    CorpusIndex,
-    FolderAdapter,
-    MemoryAdapter,
-    default_surface_stubs,
-)
-from services.corpus.documents import DocumentsAdapter
-from services.corpus.uploads import UploadsAdapter
 from services.credential_store import CredentialStore
-from services.documents import DocumentStore
 from services.embeddings import RegistryEmbedder
 from services.external_tools import build_external_tools
-from services.gallery import GalleryService
 from services.host_shell import ShellService
 from services.mail import MailService
-from services.memory import MemoryStore
 from services.notification_channels import default_channels
 from services.notifications import NotificationService
 from services.registry import ModelRegistry
-from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.sealing import seal_legacy_column
 from services.secret_vault import SecretVaultService
-from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
-from services.skills import SkillStore
-from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
-from services.upload_mineru import MinerUExtractor
-from services.uploads import UploadStore
 
 logger = logging.getLogger(__name__)
-
-
-def _build_upload_extractor(
-    registry: ModelRegistry, settings: Settings
-) -> UploadExtractor:
-    """Pick the upload extraction engine. The built-in (pypdfium2 text + vision OCR) is
-    always available; when MinerU is pinned or detected on the host it goes in front,
-    with the built-in as the fallback so a missing/broken/out-of-resources MinerU
-    degrades to a working extraction instead of an error. The original bytes are kept
-    sealed regardless, so a built-in extraction can be re-run through MinerU later."""
-    basic = BasicExtractor(
-        VisionTranscriber(registry, timeout_s=settings.upload_ocr_timeout_s),
-        max_pages=settings.upload_extract_max_pages,
-    )
-    if settings.upload_extractor == "basic":
-        return basic
-    if settings.upload_extractor == "mineru" or MinerUExtractor.is_available():
-        logger.info("uploads: MinerU extraction enabled (high-fidelity, degrades to built-in)")
-        return FallbackExtractor(
-            MinerUExtractor(timeout_s=settings.upload_mineru_timeout_s), basic
-        )
-    logger.info("uploads: built-in extraction (MinerU not detected on host)")
-    return basic
-
-
-async def _backfill_embeddings(
-    conversations: ConversationStore,
-    memory: MemoryStore,
-    chunk_store: CorpusChunkStore,
-    vault: Vault,
-) -> None:
-    """Best-effort: once the vault is unlocked, embed any conversation messages,
-    memories, AND corpus chunks that have no vector yet (e.g. persisted before an
-    embedding endpoint existed) so semantic recall covers the backlog, not just new
-    content. Runs in the background, waits for unlock so it never touches sealed data,
-    and degrades to a no-op when no embedder is configured. Every store is lifted
-    symmetrically."""
-    await vault.unlocked_event.wait()
-    try:
-        count = await conversations.backfill_embeddings(OPERATOR_ID)
-        if count:
-            logger.info("conversation search: backfilled %d message embeddings", count)
-    except Exception:
-        logger.exception("conversation search: embedding backfill failed")
-    try:
-        count = await memory.reembed(OPERATOR_ID)
-        if count:
-            logger.info("memory: backfilled %d memory embeddings", count)
-    except Exception:
-        logger.exception("memory: embedding backfill failed")
-    try:
-        count = await chunk_store.reembed(OPERATOR_ID)
-        if count:
-            logger.info("corpus: backfilled %d chunk embeddings", count)
-    except Exception:
-        logger.exception("corpus: embedding backfill failed")
 
 
 async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
@@ -332,11 +246,6 @@ async def lifespan(app: FastAPI):
         start=app.state.conversations.start,
         stop=app.state.conversations.stop,
     )
-    # Cross-chat search — hybrid recall over the operator's other conversations plus
-    # a transcript read, reusing the store's active-path projection.
-    app.state.conversation_search = ConversationSearch(
-        engine, vault, embedder, app.state.conversations
-    )
     # Outbound service credentials — the operator's API keys for third-party services,
     # sealed with the vault.
     app.state.credentials = CredentialStore(engine, vault)
@@ -404,115 +313,12 @@ async def lifespan(app: FastAPI):
     app.state.secret_vault = SecretVaultService(engine, vault)
     # Encrypted export/import (`BACKUP-*`), under its own operator secret and its own KDF.
     app.state.backup = BackupService(engine, vault, app.state.settings_store)
-    # The Cookbook — host hardware detection. The probe is warmed in the background so a
-    # slow `system_profiler` never blocks boot; the first request falls back to
-    # lazy-detect if the warm-up hasn't finished.
-    app.state.cookbook = CookbookService()
-    logger.info("cookbook: hardware detection (warming in background)")
-    lifecycle.track("cookbook-warmup", app.state.cookbook.warmup())
-    # Long-term memory — embeds via the shared embedder; degrades to keyword recall
-    # when no embedding endpoint is configured.
-    app.state.memory = MemoryStore(engine, vault, embedder)
-    # The knowledge corpus — one retrieval index fed by many source adapters. The
-    # rich stores (memory, cross-chat search) plug in untouched; chunked content
-    # (folders now) lands in the generic chunk store. The folder adapter's indexer is
-    # lock-aware (parks while the vault is locked). Surfaces not yet built enroll as
-    # stub adapters so the /rag list shows every planned source from day one. Built
-    # before the reindexer so the corpus shares the EMB-2 heal path below.
-    chunk_store = CorpusChunkStore(engine, vault, embedder)
-    app.state.corpus_chunk_store = chunk_store
-    # Heals semantic recall after the operator changes the embedding model: EMB-2
-    # segregates vectors by model, so a swap strands every existing vector until it's
-    # re-embedded. This coordinator runs that reindex in the background (memory, the
-    # cross-chat index, and the corpus chunk store) and exposes its progress.
-    app.state.embedding_reindexer = EmbeddingReindexer(
-        registry, app.state.memory, app.state.conversations, chunk_store
-    )
-    # Local model serving — download a HuggingFace model and supervise an inference
-    # engine (llama.cpp universal baseline; MLX on Apple Silicon) as a subprocess that
-    # registers as a 127.0.0.1 endpoint. Binding a freshly-served embedding model heals
-    # the corpus via the reindexer (built just above). Engines from a prior process can't
-    # be adopted across a restart, so reconcile clean-slates any mid-flight rows
-    # (best-effort, never blocks startup); shutdown stops them gracefully in `finally`.
+    # Conversation-scoped tool auto-approval grants — part of the approval posture,
+    # so it stays core beside the run substrate the approvals park on.
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)
-    app.state.serving = ServingService(
-        engine,
-        vault,
-        registry,
-        app.state.cookbook,
-        ServingPaths(settings.data_dir),
-        reindexer=app.state.embedding_reindexer,
-        settings=app.state.settings_store,
-        credentials=app.state.credentials,
-    )
-    await lifecycle.start(
-        "serving",
-        start=app.state.serving.reconcile_on_startup,
-        stop=app.state.serving.shutdown,
-    )
-    # Registered after serving so it stops first: an engine going down during shutdown
-    # must not be able to kick off a doomed reindex.
-    lifecycle.on_stop("embedding-reindexer", app.state.embedding_reindexer.shutdown)
-    folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
-    # The documents surface: an in-app source whose bodies are chunked into the same
-    # corpus_chunk store as folders. The DocumentStore owns the rows and calls the
-    # adapter to (re)index after each write; the adapter owns chunking/sealing/embedding
-    # on its own lock-aware worker.
-    documents_adapter = DocumentsAdapter(engine, chunk_store, vault.unlocked_event)
-    app.state.documents = DocumentStore(engine, vault, documents_adapter)
-    # The skills surface: Agent Skills bundles, sealed at rest. Deliberately *not* a corpus
-    # source — a skill is guidance to apply, not knowledge to retrieve, and it reaches the
-    # model through the per-turn catalog + `skills_open` instead (D32).
-    app.state.skills = SkillStore(engine, vault)
-    # The uploads surface: a file's bytes are stored sealed; its extracted text (native
-    # PDF text + vision OCR for scanned pages) is chunked into the same corpus_chunk
-    # store. The UploadStore owns the rows and drains extraction off the request path on
-    # its own lock-aware worker; the adapter indexes the extracted text after each run.
-    # Vision OCR runs a model, so it lives in the engine layer (VisionTranscriber) and is
-    # injected into the services-layer extractor through a narrow seam.
-    uploads_adapter = UploadsAdapter(engine, chunk_store, vault.unlocked_event)
-    upload_extractor = _build_upload_extractor(registry, settings)
-    app.state.uploads = UploadStore(engine, vault, uploads_adapter, upload_extractor)
-    app.state.upload_rate_limiter = RateLimiter(
-        rate_per_second=settings.upload_rate_per_minute / 60.0,
-        burst=settings.upload_rate_burst,
-    )
-    # The gallery — a presentation lens over the image uploads plus the operator's custom
-    # albums. Owns no image bytes: it reads the uploads store (for the images) and the
-    # conversation store (for chat-vs-imported provenance), and curates albums of its own.
-    app.state.gallery = GalleryService(
-        engine, vault, app.state.conversations, app.state.uploads
-    )
-    corpus_index = CorpusIndex(embedder, registry, chunk_store, folder_adapter)
-    corpus_index.register(folder_adapter)
-    corpus_index.register(MemoryAdapter(app.state.memory))
-    corpus_index.register(ConversationAdapter(app.state.conversation_search))
-    corpus_index.register(documents_adapter)
-    corpus_index.register(uploads_adapter)
-    for stub in default_surface_stubs():
-        corpus_index.register(stub)
-    app.state.corpus = corpus_index
-    app.state.corpus_folder = folder_adapter
-    app.state.corpus_documents = documents_adapter
-    app.state.corpus_uploads = uploads_adapter
-    await lifecycle.start("corpus-folder", start=folder_adapter.start, stop=folder_adapter.stop)
-    await lifecycle.start(
-        "corpus-documents", start=documents_adapter.start, stop=documents_adapter.stop
-    )
-    await lifecycle.start(
-        "corpus-uploads", start=uploads_adapter.start, stop=uploads_adapter.stop
-    )
-    await lifecycle.start("uploads", start=app.state.uploads.start, stop=app.state.uploads.stop)
-    # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
-    # semantic index once unlocked — off the critical path; new content is already
-    # embedded as it persists.
-    lifecycle.track(
-        "embedding-backfill",
-        _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault),
-    )
-    # Seal the columns that predate their own encryption. Same shape and same reason as
-    # the embedding backfill above: the migration that added the sealed column ran before
-    # unlock with no key, so the healing has to happen here (XC-SEC-3).
+    # Seal the columns that predate their own encryption: the migration that added
+    # the sealed column ran before unlock with no key, so the healing happens here
+    # once unlocked (XC-SEC-3).
     lifecycle.track("sealing-backfill", _backfill_sealed_columns(engine, vault))
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
@@ -552,8 +358,8 @@ async def lifespan(app: FastAPI):
     for handle in (
         app.state.runs,
         app.state.models,
+        embedder,
         app.state.conversations,
-        app.state.conversation_search,
         app.state.credentials,
         app.state.settings_store,
         app.state.notifications,
@@ -562,17 +368,7 @@ async def lifespan(app: FastAPI):
         app.state.external,
         app.state.secret_vault,
         app.state.backup,
-        app.state.cookbook,
-        app.state.memory,
-        app.state.corpus_chunk_store,
-        app.state.embedding_reindexer,
         app.state.approval_grants,
-        app.state.serving,
-        app.state.corpus,
-        app.state.documents,
-        app.state.skills,
-        app.state.uploads,
-        app.state.gallery,
         app.state.api_tokens,
     ):
         container.add(handle)
@@ -636,14 +432,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(conversations.router)
     app.include_router(overview.router)
     app.include_router(models.router)
-    app.include_router(cookbook.router)
-    app.include_router(serving.router)
-    app.include_router(memory.router)
-    app.include_router(documents.router)
-    app.include_router(skills.router)
-    app.include_router(uploads.router)
-    app.include_router(gallery.router)
-    app.include_router(corpus.router)
     app.include_router(api_tokens.router)
     app.include_router(tools.router)
     app.include_router(notifications.router)

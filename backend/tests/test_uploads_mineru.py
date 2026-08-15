@@ -115,8 +115,8 @@ def _registry():
 
 
 def test_selection_basic_pin(monkeypatch):
-    from app import _build_upload_extractor
     from core.config import Settings
+    from harness.manifests.uploads import _build_extractor as _build_upload_extractor
 
     monkeypatch.setattr(
         MinerUExtractor, "is_available", staticmethod(lambda binary="mineru": True)
@@ -126,8 +126,8 @@ def test_selection_basic_pin(monkeypatch):
 
 
 def test_selection_auto_follows_availability(monkeypatch):
-    from app import _build_upload_extractor
     from core.config import Settings
+    from harness.manifests.uploads import _build_extractor as _build_upload_extractor
 
     def _avail(value):
         monkeypatch.setattr(

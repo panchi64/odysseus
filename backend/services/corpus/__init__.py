@@ -18,7 +18,6 @@ from services.corpus.wrappers import (
     ConversationAdapter,
     MemoryAdapter,
     StubSurfaceAdapter,
-    default_surface_stubs,
 )
 
 __all__ = [
@@ -32,5 +31,4 @@ __all__ = [
     "SourceAdapter",
     "SourceStatus",
     "StubSurfaceAdapter",
-    "default_surface_stubs",
 ]

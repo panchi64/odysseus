@@ -162,11 +162,3 @@ class StubSurfaceAdapter(SourceAdapter):
             last_indexed_at=None,
             href=self._href,
         )
-
-
-def default_surface_stubs() -> list[StubSurfaceAdapter]:
-    """The planned content surfaces, each a stub until its pipeline is built. (Gallery is
-    not here — its images are uploads, already indexed under ``surf-uploads``.)"""
-    return [
-        StubSurfaceAdapter("surf-research", "Research", "research", "/research"),
-    ]

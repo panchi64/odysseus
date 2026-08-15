@@ -16,6 +16,7 @@ from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import research as research_routes
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus
+from services.corpus import CorpusIndex, StubSurfaceAdapter
 from services.notifications import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
     notifications = ctx.services.get(NotificationService)
+    # Research is a planned corpus surface: a stub row until its extraction
+    # pipeline lands, so the /rag list shows the whole picture from day one.
+    ctx.services.get(CorpusIndex).register(
+        StubSurfaceAdapter("surf-research", "Research", "research", "/research")
+    )
 
     # Keyed by run id — `routes/research.py`'s `start` route registers one per
     # research Run it submits, and its own background finalize task awaits it to
@@ -85,6 +91,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
 MANIFEST = FeatureManifest(
     name="research",
+    after=("corpus",),
     routers=(research_routes.router,),
     build=_build,
 )
