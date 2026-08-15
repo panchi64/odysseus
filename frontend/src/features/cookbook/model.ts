@@ -1,4 +1,8 @@
-/** Model Cookbook feature data contracts. */
+/** Model Cookbook feature data contracts. The wire-level unions
+ *  (`EngineKind`/`Workload`/`ServeState`) live in `~/lib/api/models-types`. */
+
+import type { EngineKind, ServeState, Workload } from "~/lib/api/models-types";
+import type { ModelProvider } from "~/lib/stores/models";
 
 export interface RuntimeInfo {
   /** Serving runtime name (e.g. "ollama", "llama.cpp", "mlx-lm"). */
@@ -18,46 +22,17 @@ export interface HardwareInfo {
   runtimes: RuntimeInfo[];
 }
 
-/** A curated provider preset for the guided setup — display-only presentation
- *  config (no secrets, no policy). Prefills the endpoint form and carries a
- *  non-authoritative model hint the connect flow prefers discovery over. */
-export interface ProviderPreset {
-  id: string;
-  name: string;
-  /** OpenAI-compatible base URL prefilled into the form (operator-overridable). */
-  baseUrl: string;
-  /** Whether this provider needs an API key — drives the "needs a key" badge. */
-  requiresKey: boolean;
-  /** Where the operator gets a key (or, for local, sets the server up). */
-  docsUrl: string;
-  /** Capability defaults seeded into the new endpoint (operator-overridable). */
-  nativeTools: boolean;
-  vision: boolean;
-  thinking: boolean;
-  /** A conservative starting-model hint — only a fallback; the connect flow
-   *  prefers the provider's real discovered list so stale names self-heal. */
-  suggestedModel?: string;
-}
-
-/** What the guided "Connect & use this" button captures: the chosen preset and
- *  the (optional) key the operator pasted. Everything else comes from the preset. */
+/** What the guided "Connect & use this" button captures: the chosen provider
+ *  preset (served by `GET /models/providers`), the base URL (the preset's default,
+ *  or typed when the provider has none), and the (optional) pasted key. */
 export interface GuidedConnectInput {
-  preset: ProviderPreset;
-  /** The pasted key — empty when the preset needs none (e.g. a local server). */
+  provider: ModelProvider;
+  baseUrl: string;
+  /** The pasted key — empty when the provider needs none (e.g. a local server). */
   apiKey: string;
 }
 
 // --- Local model serving (LOCAL MODELS tab) --------------------------------
-
-/** A local inference engine Odysseus can serve models with. */
-export type EngineKind = "llama.cpp" | "mlx";
-
-/** What a model is served for. */
-export type Workload = "chat" | "embedding" | "vision";
-
-/** Lifecycle state of a managed (downloaded/served) model. */
-export type ServeState =
-  "stopped" | "downloading" | "starting" | "running" | "error";
 
 /** A ranked engine recommendation for the current host. */
 export interface EngineRecommendation {

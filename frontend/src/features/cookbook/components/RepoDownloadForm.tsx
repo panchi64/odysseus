@@ -1,6 +1,6 @@
 import { createSignal, Show, type JSX } from "solid-js";
 import { Button, Input, Row, Text } from "~/ui";
-import type { EngineKind } from "../model";
+import type { EngineKind } from "~/lib/api/models-types";
 import { QuantSelect } from "./QuantSelect";
 
 /** The "download by HF repo" row: a repo id + a repo-introspected quant, run on the given

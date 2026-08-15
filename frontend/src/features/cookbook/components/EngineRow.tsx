@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from "solid-js";
 import { Chip, cx, Row, Stack, StatusFlag, Text } from "~/ui";
-import type { EngineKind, EngineRecommendation } from "../model";
+import type { EngineKind } from "~/lib/api/models-types";
+import type { EngineRecommendation } from "../model";
 import { EngineInstallHint } from "./EngineInstallHint";
 
 /** One selectable engine option in the picker: name, RECOMMENDED + availability flags,

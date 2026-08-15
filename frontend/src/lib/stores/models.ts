@@ -1,7 +1,9 @@
-/** Global model state — the endpoint catalog, runtime model discovery, and the
- *  chat (`main`) model selection. One place owns all of it so the app shell's
- *  top-bar picker, the overview launchpad, chat, and Settings share a single
- *  source of truth (and a single `/models/endpoints` fetch).
+/** Global model state — the endpoint catalog, the provider presets, runtime
+ *  model discovery, and the role bindings (including the chat `main` selection).
+ *  One place owns all of it so the app shell's top-bar picker, the overview
+ *  launchpad, chat, the Cookbook, and Settings share a single source of truth
+ *  (one `/models/endpoints` fetch, one `/models/roles` fetch) — and every role
+ *  write goes through the store's actions, never a feature-local PUT.
  *
  *  An *endpoint* is a provider connection; its models are discovered at runtime
  *  from the provider (`GET /models/endpoints/{id}/models`). The chat model *is* the
@@ -23,6 +25,15 @@ import {
   type Resource,
 } from "solid-js";
 import { api } from "~/lib/api";
+import type {
+  EndpointModelsDTO,
+  EndpointStatus,
+  EndpointErrorCategory,
+  EndpointTestDTO,
+  EndpointViewDTO,
+  ProviderViewDTO,
+  RoleViewDTO,
+} from "~/lib/api/models-types";
 import { useSession } from "~/lib/stores/session";
 
 /** A specific model on a specific endpoint — the unit of selection. */
@@ -31,22 +42,13 @@ export interface ModelSelection {
   model: string;
 }
 
-/** The verdict of the last reachability probe (null until first tested). The
- *  backend owns these tokens; the frontend renders them, never re-categorizes. */
-export type EndpointStatus = "ok" | "error" | "untested";
-export type EndpointErrorCategory =
-  | "ok"
-  | "auth"
-  | "rate_limited"
-  | "timeout"
-  | "unreachable"
-  | "bad_response"
-  | "server_error";
-
 /** The operator's view of a configured endpoint (the shared read shape). */
 export interface ModelEndpoint {
   id: string;
   name: string;
+  /** The provider adapter typing this endpoint (e.g. "openai-compatible",
+   *  "anthropic", "google", "local"). */
+  provider: string;
   baseUrl: string;
   /** Default/fallback model. Null when models are discovered dynamically and no
    *  default was set. */
@@ -60,6 +62,11 @@ export interface ModelEndpoint {
   /** Whether this endpoint is active — disabled endpoints are hidden from the
    *  picker and skipped in fallback chains (the backend enforces both). */
   enabled: boolean;
+  /** A serving-managed local engine — the Cookbook owns its lifecycle. */
+  managed: boolean;
+  /** Process liveness of a managed engine ("running"/"stopped"); null for
+   *  external endpoints. Liveness renders from this, never from `enabled`. */
+  liveStatus: string | null;
   /** The last probe verdict (null until first tested). */
   lastStatus: EndpointStatus | null;
   lastErrorCategory: EndpointErrorCategory | null;
@@ -120,59 +127,48 @@ function decodeValue(value: string): ModelSelection | null {
   return endpointId && model ? { endpointId, model } : null;
 }
 
-/* ── The `main` binding (the backend source of truth) ──────────────────────── */
+/* ── Role bindings (the backend source of truth) ───────────────────────────── */
 
-interface RoleViewDTO {
-  endpoint_ids: string[];
+/** A role binding: the ordered endpoint chain (a fallback chain, first = primary)
+ *  plus an optional pinned model (`null` ⇒ the endpoint's own default). */
+export interface RoleBinding {
+  endpointIds: string[];
   model: string | null;
+}
+
+/** role → its binding. */
+export type RoleBindings = Record<string, RoleBinding>;
+
+async function fetchRoles(): Promise<RoleBindings> {
+  const dto = await api.get<Record<string, RoleViewDTO>>("/models/roles");
+  const out: RoleBindings = {};
+  for (const [role, v] of Object.entries(dto)) {
+    out[role] = { endpointIds: v.endpoint_ids, model: v.model };
+  }
+  return out;
 }
 
 /** The chat model = the backend `main` role binding's head endpoint + pinned
  *  model. `main` is single-endpoint (the picker overwrites the whole binding), so
  *  the head is the only endpoint; a binding with no pinned model or no endpoint is
  *  not yet a concrete pick (null) — the picker then displays the first available. */
-async function fetchMainSelection(): Promise<ModelSelection | null> {
-  const roles = await api.get<Record<string, RoleViewDTO>>("/models/roles");
-  const main = roles.main;
-  const endpointId = main?.endpoint_ids?.[0];
-  return endpointId && main.model ? { endpointId, model: main.model } : null;
+function mainSelectionOf(
+  roles: RoleBindings | undefined,
+): ModelSelection | null {
+  const main = roles?.main;
+  const endpointId = main?.endpointIds?.[0];
+  return endpointId && main?.model ? { endpointId, model: main.model } : null;
 }
 
-/* ── Backend DTOs + mappers ────────────────────────────────────────────────── */
-
-interface EndpointView {
-  id: string;
-  name: string;
-  base_url: string;
-  model: string | null;
-  has_api_key: boolean;
-  context_window: number | null;
-  native_tools: boolean;
-  vision: boolean;
-  thinking: boolean;
-  enabled: boolean;
-  last_status: EndpointStatus | null;
-  last_error_category: EndpointErrorCategory | null;
-  last_error_detail: string | null;
-  last_checked_at: string | null;
-}
-interface EndpointTestDTO {
-  status: "ok" | "error";
-  error_category: EndpointErrorCategory;
-  error_detail: string;
-  checked_at: string;
-}
-interface EndpointModelsDTO {
-  models: string[];
-  supported: boolean;
-}
+/* ── Backend DTO mappers ───────────────────────────────────────────────────── */
 
 /** The single snake_case→camel mapper for an endpoint row, shared by the picker
  *  and Settings so a backend rename is fixed in one place. */
-export function toEndpoint(dto: EndpointView): ModelEndpoint {
+function toEndpoint(dto: EndpointViewDTO): ModelEndpoint {
   return {
     id: dto.id,
     name: dto.name,
+    provider: dto.provider,
     baseUrl: dto.base_url,
     model: dto.model,
     hasApiKey: dto.has_api_key,
@@ -181,6 +177,8 @@ export function toEndpoint(dto: EndpointView): ModelEndpoint {
     vision: dto.vision,
     thinking: dto.thinking,
     enabled: dto.enabled,
+    managed: dto.managed,
+    liveStatus: dto.live_status,
     lastStatus: dto.last_status,
     lastErrorCategory: dto.last_error_category,
     lastErrorDetail: dto.last_error_detail,
@@ -201,8 +199,41 @@ interface EndpointResult {
 const DISCOVERY_TIMEOUT_MS = 3000;
 
 async function fetchEndpoints(): Promise<ModelEndpoint[]> {
-  const rows = await api.get<EndpointView[]>("/models/endpoints");
+  const rows = await api.get<EndpointViewDTO[]>("/models/endpoints");
   return rows.map(toEndpoint);
+}
+
+/* ── Provider presets (`GET /models/providers`) ────────────────────────────── */
+
+/** One provider adapter's preset — what the endpoint editor / guided setup
+ *  prefills from. Served by the backend; the frontend hardcodes no lab details. */
+export interface ModelProvider {
+  id: string;
+  displayName: string;
+  requiresKey: boolean;
+  defaultBaseUrl: string | null;
+  keyHint: string | null;
+  docsUrl: string | null;
+  nativeTools: boolean;
+  vision: boolean;
+}
+
+function toProvider(dto: ProviderViewDTO): ModelProvider {
+  return {
+    id: dto.id,
+    displayName: dto.display_name,
+    requiresKey: dto.requires_key,
+    defaultBaseUrl: dto.default_base_url,
+    keyHint: dto.key_hint,
+    docsUrl: dto.docs_url,
+    nativeTools: dto.native_tools,
+    vision: dto.vision,
+  };
+}
+
+async function fetchProviders(): Promise<ModelProvider[]> {
+  const rows = await api.get<ProviderViewDTO[]>("/models/providers");
+  return rows.map(toProvider);
 }
 
 /** Discover the models one endpoint's provider serves (`GET …/{id}/models`).
@@ -257,21 +288,32 @@ function statusOf(r: EndpointResult): DiscoveryStatus {
 const store = createRoot(() => {
   const session = useSession();
 
+  // The role bindings — one shared `/models/roles` fetch for the picker (which
+  // derives the `main` selection from it), Settings' ROLE BINDINGS panel, and the
+  // Cookbook's embedding tab. Every role write (`setRoleBinding`) ticks it, so all
+  // three surfaces reconcile from the same re-read.
+  const [rolesTick, setRolesTick] = createSignal(1);
+  const [roles] = createResource(
+    () => (session.isAuthenticated ? rolesTick() : false),
+    fetchRoles,
+  );
+
   // The chat model is the backend `main` role binding — the single source of
   // truth. `selection` is the local echo: seeded/reconciled from the binding and
   // moved optimistically by a pick (which writes the binding back).
   const [selection, setSelection] = createSignal<ModelSelection | null>(null);
-  const [rolesTick, setRolesTick] = createSignal(1);
-  const [mainBinding] = createResource(
-    () => (session.isAuthenticated ? rolesTick() : false),
-    fetchMainSelection,
-  );
   // Reconcile the echo with the backend binding whenever it (re)loads — on first
   // unlock, after our own optimistic write, and after a Settings edit refreshes it.
   // Only on `ready` (not mid-refetch), so an in-flight optimistic pick isn't clobbered.
   createComputed(() => {
-    if (mainBinding.state === "ready") setSelection(mainBinding.latest ?? null);
+    if (roles.state === "ready") setSelection(mainSelectionOf(roles.latest));
   });
+
+  // The provider presets — a static catalog; fetched once per unlock.
+  const [providers] = createResource(
+    () => session.isAuthenticated,
+    fetchProviders,
+  );
 
   // The endpoint catalog — gated on unlock (a pre-auth call would 401); the tick
   // lets a write (create/update/delete) force a re-read, which cascades to
@@ -377,7 +419,9 @@ const store = createRoot(() => {
   return {
     selection,
     setSelection,
+    roles,
     refreshRoles: () => setRolesTick((t) => t + 1),
+    providers,
     endpoints,
     setEndpointsTick,
     groups,
@@ -394,6 +438,47 @@ const store = createRoot(() => {
  *  `effectiveValue()` for display and `effectiveSelection()` for sending. */
 export const selectedModel = store.selection;
 
+/** The single `PUT /models/roles/{role}` — every role write in the app funnels
+ *  through here (no seam issues its own fetch). */
+async function putRoleBinding(
+  role: string,
+  endpointIds: string[],
+  model: string | null,
+): Promise<void> {
+  await api.put(`/models/roles/${role}`, {
+    endpoint_ids: endpointIds,
+    model,
+  });
+}
+
+/** The role bindings resource — shared by Settings' ROLE BINDINGS panel and the
+ *  Cookbook's embedding tab (the picker derives the `main` selection from it). */
+export function useRoles(): Resource<RoleBindings> {
+  return store.roles;
+}
+
+/** Re-read the role bindings (cascades to the top-bar picker's `main` echo). */
+export function refreshRoles(): void {
+  store.refreshRoles();
+}
+
+/** Bind a role to an ordered endpoint chain (plus an optional pinned model), then
+ *  re-read the shared bindings so every surface — including the top-bar picker
+ *  when `main` moved — reconciles. Errors are intentionally *not* swallowed: the
+ *  backend rejects an invalid bind with a 422 whose plain-language detail the
+ *  caller surfaces verbatim. */
+export async function setRoleBinding(
+  role: string,
+  endpointIds: string[],
+  model: string | null = null,
+): Promise<void> {
+  try {
+    await putRoleBinding(role, endpointIds, model);
+  } finally {
+    store.refreshRoles();
+  }
+}
+
 /** Persist the chat model by writing the backend `main` binding (single endpoint +
  *  pinned model), moving the local echo optimistically and reconciling from the
  *  backend after — rolling the echo back if the write fails. `main` is
@@ -406,10 +491,7 @@ export async function setSelectedModel(
   const previous = store.selection();
   store.setSelection(sel); // optimistic
   try {
-    await api.put("/models/roles/main", {
-      endpoint_ids: [sel.endpointId],
-      model: sel.model,
-    });
+    await putRoleBinding("main", [sel.endpointId], sel.model);
     store.refreshRoles(); // reconcile with the persisted binding
   } catch (e) {
     store.setSelection(previous); // rollback
@@ -424,12 +506,6 @@ export function selectModelByValue(value: string): void {
   void setSelectedModel(decodeValue(value)).catch((e) =>
     console.error("failed to persist model selection", e),
   );
-}
-
-/** Re-read the backend `main` binding into the picker — call after another surface
- *  (Settings ROLE BINDINGS) writes `main`, so the top-bar picker reflects it live. */
-export function refreshMainSelection(): void {
-  store.refreshRoles();
 }
 
 /** Encode a structured selection into the composite string the picker uses as a
@@ -448,6 +524,12 @@ export function decodeModelValue(value: string): ModelSelection | null {
 /** The endpoint catalog resource — shared by the picker and Settings. */
 export function useEndpoints(): Resource<ModelEndpoint[]> {
   return store.endpoints;
+}
+
+/** The provider presets (`GET /models/providers`) — what the endpoint editor and
+ *  the guided setup prefill from. */
+export function useProviders(): Resource<ModelProvider[]> {
+  return store.providers;
 }
 
 /** Re-read the catalog (after a create/update/delete); cascades to discovery. */

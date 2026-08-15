@@ -7,7 +7,7 @@ import {
   type JSX,
 } from "solid-js";
 import { Select } from "~/ui";
-import type { EngineKind } from "../model";
+import type { EngineKind } from "~/lib/api/models-types";
 import { fetchRepoQuants } from "../serving";
 
 const DEBOUNCE_MS = 450;

@@ -1,6 +1,6 @@
 import { type JSX } from "solid-js";
 import { StatusFlag, type Status } from "~/ui";
-import type { ServeState } from "../model";
+import type { ServeState } from "~/lib/api/models-types";
 
 /** Lifecycle state → status accent. One place for the mapping so every surface
  *  that shows a managed model reads the same colors. */

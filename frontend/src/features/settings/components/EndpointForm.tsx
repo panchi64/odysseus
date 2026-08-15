@@ -1,5 +1,15 @@
 import { Show, type JSX } from "solid-js";
-import { Field, Input, Row, StatusFlag, Stack, Text, Toggle } from "~/ui";
+import {
+  Field,
+  Input,
+  Row,
+  Select,
+  type SelectOption,
+  StatusFlag,
+  Stack,
+  Text,
+  Toggle,
+} from "~/ui";
 
 /** The endpoint form's field state — the single shape both the Settings modal
  *  (advanced) and the guided cookbook tab (simple) drive. Held by the parent so
@@ -8,6 +18,8 @@ import { Field, Input, Row, StatusFlag, Stack, Text, Toggle } from "~/ui";
 export interface EndpointFormValues {
   name: string;
   baseUrl: string;
+  /** The provider adapter id (from `GET /models/providers`). */
+  provider: string;
   model: string;
   apiKey: string;
   contextWindow: string;
@@ -31,6 +43,14 @@ export interface EndpointFormProps {
   /** Simple mode only: whether the chosen preset needs a key — drives the badge
    *  and the key field's optionality copy. */
   requiresKey?: boolean;
+  /** Simple mode only: whether the base URL is operator-typed (the chosen
+   *  provider carries no default) rather than shown as a read-only summary. */
+  baseUrlEditable?: boolean;
+  /** Advanced mode only: the provider choices (from `GET /models/providers`).
+   *  Omitted ⇒ no provider select is rendered. */
+  providerOptions?: SelectOption[];
+  /** The chosen provider's key hint (e.g. "sk-ant-…"), shown on the key field. */
+  keyHint?: string;
 }
 
 /** The shared create/edit endpoint form body. ONE form, two variants — so the
@@ -52,8 +72,9 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
           />
         }
       >
-        {/* Simple mode: name + base URL come from the preset — show them as a
-            read-only summary so the operator sees what they're connecting to. */}
+        {/* Simple mode: name comes from the provider preset — show it as a
+            read-only summary so the operator sees what they're connecting to.
+            The base URL is the preset's when it carries one, typed otherwise. */}
         <Stack gap={1}>
           <Row gap={2} align="center">
             <Text variant="label" tone="bright">
@@ -63,19 +84,36 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
               {props.requiresKey ? "NEEDS A KEY" : "NO KEY NEEDED"}
             </StatusFlag>
           </Row>
-          <Text variant="micro" tone="dim" class="truncate">
-            {v().baseUrl}
-          </Text>
+          <Show when={!props.baseUrlEditable}>
+            <Text variant="micro" tone="dim" class="truncate">
+              {v().baseUrl}
+            </Text>
+          </Show>
         </Stack>
       </Show>
 
-      <Show when={!simple()}>
+      <Show when={!simple() && props.providerOptions}>
+        {(options) => (
+          <Select
+            label="PROVIDER"
+            value={v().provider}
+            options={options()}
+            onChange={(id) => props.onChange("provider", id)}
+            hint="How Odysseus talks to this endpoint. Presets prefill the base URL."
+          />
+        )}
+      </Show>
+
+      <Show when={!simple() || props.baseUrlEditable}>
         <Input
           label="BASE URL"
           value={v().baseUrl}
           onInput={(e) => props.onChange("baseUrl", e.currentTarget.value)}
           placeholder="http://localhost:11434/v1"
         />
+      </Show>
+
+      <Show when={!simple()}>
         <Input
           label="DEFAULT MODEL (optional)"
           value={v().model}
@@ -99,7 +137,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
           type="password"
           value={v().apiKey}
           onInput={(e) => props.onChange("apiKey", e.currentTarget.value)}
-          placeholder="••••••••"
+          placeholder={props.keyHint ?? "••••••••"}
         />
       </Show>
 

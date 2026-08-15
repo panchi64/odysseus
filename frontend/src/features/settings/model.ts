@@ -9,11 +9,16 @@
  * search-provider shapes (which only Settings reads — the agent reaches search
  * through its tool, not the frontend). */
 
+import type { ReindexState } from "~/lib/api/models-types";
+
 /** Form values for creating/updating an endpoint. `apiKey` omitted = unchanged,
  *  `apiKey: ""` clears the key; `model: ""` clears the default model. */
 export interface EndpointInput {
   name: string;
   baseUrl: string;
+  /** The provider adapter id (from `GET /models/providers`); omitted on create ⇒
+   *  the backend's default ("openai-compatible"). */
+  provider?: string;
   model?: string;
   apiKey?: string;
   contextWindow: number | null;
@@ -25,30 +30,16 @@ export interface EndpointInput {
   enabled?: boolean;
 }
 
-/** The named roles the agent resolves through ordered endpoint chains. `main`
- *  (chat) is chosen from the top-bar model picker, not bound here. */
-export const MODEL_ROLES = ["main", "utility", "embedding"] as const;
-export type ModelRole = (typeof MODEL_ROLES)[number];
-
-/** Roles still bound in Settings — `main` is driven by the top-bar picker. */
+/** Roles bound as ordered chains in Settings — `main` is single-endpoint and
+ *  driven by the top-bar picker. The binding shape (`RoleBinding`/`RoleBindings`)
+ *  is owned by `~/lib/stores/models`, shared with the picker. */
 export const BINDABLE_ROLES = ["utility", "embedding"] as const;
-
-/** A role binding: the ordered endpoint chain (a FallbackModel chain) plus an
- *  optional pinned model. `model` is used by `embedding` (no per-conversation
- *  picker like `main`); `null` ⇒ the endpoint's own default model. */
-export interface RoleBinding {
-  endpointIds: string[];
-  model: string | null;
-}
-
-/** role → its binding. */
-export type RoleBindings = Record<string, RoleBinding>;
 
 /** Progress of a background re-embed (after the embedding model changes). The
  *  vectors of every memory + chat message are re-embedded into the new model's
  *  space; until it finishes, semantic recall is partially degraded. */
 export interface ReindexStatus {
-  state: "idle" | "running" | "done" | "degraded" | "error";
+  state: ReindexState;
   memories: number;
   messages: number;
   detail: string | null;

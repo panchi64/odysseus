@@ -1,6 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { ExternalLink, Row, Stack, Text } from "~/ui";
-import type { EngineKind, Workload } from "../model";
+import type { EngineKind, Workload } from "~/lib/api/models-types";
 
 /** Guidance for the free-text repo flow: what to paste and where to find it. The backend
  *  serves any Hugging Face repo, so rather than curate a (quickly-stale) model list, this

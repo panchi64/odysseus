@@ -1,5 +1,6 @@
 import { createMemo, For, type JSX } from "solid-js";
-import type { EngineKind, EngineRecommendation } from "../model";
+import type { EngineKind } from "~/lib/api/models-types";
+import type { EngineRecommendation } from "../model";
 import { EngineRow } from "./EngineRow";
 
 /** The engine chooser: every engine ranked for this host shown as a selectable card,

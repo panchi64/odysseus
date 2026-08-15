@@ -43,6 +43,7 @@ import {
   useChatSettings,
   useEndpoints,
   useOfflineState,
+  useProviders,
   useRoles,
 } from "../data";
 import { BINDABLE_ROLES, type OfflineState } from "../model";
@@ -62,12 +63,13 @@ import {
   type EndpointDiscovery,
   modelGroups,
   type ModelEndpoint,
-  refreshMainSelection,
+  type ModelProvider,
 } from "~/lib/stores/models";
 
 export function SettingsScreen(): JSX.Element {
   const endpoints = useEndpoints();
   const roles = useRoles();
+  const providers = useProviders();
 
   /* ── Chat settings (attachment inline token cap) ────────────────────────────
      A simple operator preference: how much of an attached file's text rides inline
@@ -175,9 +177,12 @@ export function SettingsScreen(): JSX.Element {
      One form, shared with the guided cookbook tab via <EndpointForm/>; this
      screen drives it in `advanced` mode (all fields). The field values are held
      as a single record so the form stays a pure presentation control. */
+  // "openai-compatible" is the wire default the backend applies when no provider
+  // is chosen — not a frontend-invented preset.
   const BLANK_FORM: EndpointFormValues = {
     name: "",
     baseUrl: "",
+    provider: "openai-compatible",
     model: "",
     apiKey: "",
     contextWindow: "",
@@ -194,6 +199,32 @@ export function SettingsScreen(): JSX.Element {
   ) => setForm((f) => ({ ...f, [key]: value }));
   const [saving, setSaving] = createSignal(false);
 
+  // The provider presets back the form's PROVIDER select and its prefills —
+  // served by the backend, never hardcoded here.
+  const providerById = (id: string): ModelProvider | undefined =>
+    (providers.latest ?? []).find((p) => p.id === id);
+  const providerOptions = createMemo<SelectOption[]>(() =>
+    (providers.latest ?? []).map((p) => ({
+      value: p.id,
+      label: p.displayName,
+    })),
+  );
+  // Picking a provider prefills the base URL from its preset when the field is
+  // still untouched (blank, or exactly the prior preset's default) — a typed URL
+  // is never clobbered. Prefill only applies while creating.
+  const changeProvider = (id: string) => {
+    const prior = providerById(form().provider);
+    setField("provider", id);
+    const next = providerById(id);
+    const url = form().baseUrl.trim();
+    if (
+      !editing() &&
+      next?.defaultBaseUrl &&
+      (url === "" || url === prior?.defaultBaseUrl)
+    )
+      setField("baseUrl", next.defaultBaseUrl);
+  };
+
   const openCreate = () => {
     setEditing(null);
     setForm(BLANK_FORM);
@@ -204,6 +235,7 @@ export function SettingsScreen(): JSX.Element {
     setForm({
       name: ep.name,
       baseUrl: ep.baseUrl,
+      provider: ep.provider,
       model: ep.model ?? "",
       apiKey: "",
       contextWindow: ep.contextWindow != null ? String(ep.contextWindow) : "",
@@ -226,6 +258,7 @@ export function SettingsScreen(): JSX.Element {
     const fields = {
       name: f.name.trim(),
       baseUrl: f.baseUrl.trim(),
+      provider: f.provider,
       contextWindow: cw ? Number(cw) : null,
       nativeTools: f.nativeTools,
       vision: f.vision,
@@ -251,8 +284,10 @@ export function SettingsScreen(): JSX.Element {
         toast.success("Endpoint added");
       }
       setFormOpen(false);
-    } catch {
-      toast.error("Unable to save the endpoint.");
+    } catch (e) {
+      // A 422 (e.g. a key-requiring provider without a key) carries a
+      // plain-language detail from the backend — render it verbatim.
+      toast.error(isApiError(e) ? e.detail : "Unable to save the endpoint.");
     } finally {
       setSaving(false);
     }
@@ -361,8 +396,9 @@ export function SettingsScreen(): JSX.Element {
   ];
 
   // Re-bind preserves the role's pinned model unless a new one is given; a backend
-  // rejection (e.g. a non-embeddings model) surfaces its detail to the operator. A
-  // `main` write also refreshes the top-bar picker — both read the one binding.
+  // rejection (e.g. a non-embeddings model) surfaces its detail to the operator.
+  // The store's role write re-reads the shared bindings, so a `main` write already
+  // refreshes the top-bar picker — both read the one binding.
   const applyChain = async (
     role: string,
     next: string[],
@@ -372,7 +408,6 @@ export function SettingsScreen(): JSX.Element {
       const reindexStarted = await setRoleBinding(role, next, model);
       if (reindexStarted)
         toast.info("Re-embedding memories and chats for the new model…");
-      if (role === "main") refreshMainSelection();
     } catch (e) {
       toast.error(
         isApiError(e) ? e.detail : `Unable to update the ${role} role.`,
@@ -681,6 +716,19 @@ export function SettingsScreen(): JSX.Element {
                           {ep.name}
                         </Text>
                         <EndpointHealthFlag status={ep.lastStatus} />
+                        {/* A managed engine's liveness is its process state
+                            (live_status), never inferred from `enabled`. */}
+                        <Show when={ep.managed}>
+                          <StatusFlag
+                            status={
+                              ep.liveStatus === "running" ? "nominal" : "warn"
+                            }
+                          >
+                            {ep.liveStatus === "running"
+                              ? "RUNNING"
+                              : "STOPPED"}
+                          </StatusFlag>
+                        </Show>
                         <Show when={!ep.enabled}>
                           <StatusFlag status="warn">DISABLED</StatusFlag>
                         </Show>
@@ -702,7 +750,13 @@ export function SettingsScreen(): JSX.Element {
                         </Show>
                       </Row>
                       <Text variant="micro" tone="dim" class="truncate">
-                        {ep.model ? `${ep.model} · ${ep.baseUrl}` : ep.baseUrl}
+                        {[
+                          providerById(ep.provider)?.displayName ?? ep.provider,
+                          ep.model,
+                          ep.baseUrl,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </Text>
                       {/* Backend-authored failure sentence — rendered verbatim. */}
                       <Show
@@ -934,7 +988,12 @@ export function SettingsScreen(): JSX.Element {
             variant="advanced"
             editing={!!editing()}
             values={form()}
-            onChange={setField}
+            providerOptions={providerOptions()}
+            keyHint={providerById(form().provider)?.keyHint ?? undefined}
+            onChange={(key, value) => {
+              if (key === "provider") changeProvider(value as string);
+              else setField(key, value);
+            }}
           />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setFormOpen(false)}>

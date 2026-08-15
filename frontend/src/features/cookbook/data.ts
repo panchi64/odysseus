@@ -1,5 +1,5 @@
 import { createResource, type Resource } from "solid-js";
-import { api } from "~/lib/api";
+import { api, isApiError } from "~/lib/api";
 import { bytes } from "~/lib/format";
 import {
   fetchEndpointModels,
@@ -16,7 +16,7 @@ import {
   createEndpoint as createEndpointWrite,
   updateEndpoint as updateEndpointWrite,
 } from "~/features/settings/data";
-import { presetToEndpointInput } from "./presets";
+import type { EndpointInput } from "~/features/settings/model";
 import type { GuidedConnectInput, HardwareInfo } from "./model";
 
 // --- backend DTOs (snake_case) — mapped to model.ts types below ------------
@@ -91,26 +91,37 @@ export function useRemoteEndpoints(): Resource<ModelEndpoint[]> {
   return useEndpoints();
 }
 
-/** The guided "Connect & use this" flow: create the endpoint from a preset +
- *  pasted key, then **prove it works** (the backend test verdict — never the
- *  201-create), then auto-select a sensible default model so the operator never
- *  has to pick. On failure the endpoint is left created so they can fix the key
- *  and retest from Settings. Returns true on a working connection.
+/** The guided "Connect & use this" flow: create the endpoint from a backend
+ *  provider preset + pasted key, then **prove it works** (the backend test verdict
+ *  — never the 201-create), then auto-select a sensible default model so the
+ *  operator never has to pick. On failure the endpoint is left created so they can
+ *  fix the key and retest from Settings. Returns true on a working connection.
  *
  *  This composes presentation-layer seams only; the backend re-resolves the
  *  selection at send time — the model pick here is an optimistic echo. */
 export async function connectAndSelectEndpoint(
   input: GuidedConnectInput,
 ): Promise<boolean> {
-  const { preset, apiKey } = input;
-  const body = presetToEndpointInput(preset, apiKey);
+  const { provider, baseUrl, apiKey } = input;
+  // The single preset→endpoint field mapping: the provider's preset seeds the
+  // capability defaults; the backend owns everything it doesn't say.
+  const body: EndpointInput = {
+    name: provider.displayName,
+    baseUrl,
+    provider: provider.id,
+    apiKey: apiKey || undefined,
+    contextWindow: null,
+    nativeTools: provider.nativeTools,
+    vision: provider.vision,
+    thinking: false,
+  };
 
   // The backend enforces a unique (owner_id, name); the flow always uses the
-  // preset's name. So reuse an existing same-named endpoint (a prior attempt that
-  // tested badly, or a pre-existing one) by UPDATING it instead of re-POSTing the
-  // same name — that would 500. Retry-after-bad-key then just works.
+  // provider's display name. So reuse an existing same-named endpoint (a prior
+  // attempt that tested badly, or a pre-existing one) by UPDATING it instead of
+  // re-POSTing the same name — that would 500. Retry-after-bad-key then just works.
   const existing = (useEndpoints().latest ?? []).find(
-    (e) => e.name === preset.name,
+    (e) => e.name === provider.displayName,
   );
   let endpointId: string;
   try {
@@ -120,8 +131,10 @@ export async function connectAndSelectEndpoint(
     } else {
       endpointId = await createEndpointWrite(body);
     }
-  } catch {
-    toast.error("Unable to create the connection.");
+  } catch (e) {
+    // A 422 (e.g. a key-requiring provider without a key) carries a
+    // plain-language detail from the backend — render it verbatim.
+    toast.error(isApiError(e) ? e.detail : "Unable to create the connection.");
     return false;
   }
 
@@ -133,7 +146,9 @@ export async function connectAndSelectEndpoint(
     // The endpoint exists but the probe never landed — refresh so it appears in
     // the Connected Providers list (the operator retests it from there/Settings).
     refreshEndpoints();
-    toast.error(`Created "${preset.name}", but the connection test failed.`);
+    toast.error(
+      `Created "${provider.displayName}", but the connection test failed.`,
+    );
     return false;
   }
 
@@ -145,30 +160,23 @@ export async function connectAndSelectEndpoint(
     return false;
   }
 
-  // Pick a default model without making the operator choose: prefer the
-  // provider's live discovered list (so a stale preset hint self-heals), and only
-  // fall back to the preset hint / configured default when discovery is empty.
+  // Pick a default model without making the operator choose: the provider's
+  // live discovered list leads (the backend presets carry no model hints).
   const discovered = await fetchEndpointModels(endpointId);
-  const model =
-    discovered.models.length > 0
-      ? preset.suggestedModel &&
-        discovered.models.includes(preset.suggestedModel)
-        ? preset.suggestedModel
-        : discovered.models[0]
-      : preset.suggestedModel;
+  const model = discovered.models[0];
 
   if (model) {
     void setSelectedModel({ endpointId, model });
-    toast.success(`Connected "${preset.name}" — using ${model}.`);
+    toast.success(`Connected "${provider.displayName}" — using ${model}.`);
   } else {
-    // Connected, but nothing is selectable: the provider advertised no models and
-    // the preset gave no hint — so don't point the operator at an empty top bar.
-    // `supported` tells whether the model list could even be read.
+    // Connected, but nothing is selectable: the provider advertised no models —
+    // so don't point the operator at an empty top bar. `supported` tells whether
+    // the model list could even be read.
     const note = discovered.supported
       ? ""
       : " (its model list couldn't be read)";
     toast.success(
-      `Connected "${preset.name}", but it isn't serving any models yet${note} — ` +
+      `Connected "${provider.displayName}", but it isn't serving any models yet${note} — ` +
         `start one on the provider, or set a model in Settings.`,
     );
   }

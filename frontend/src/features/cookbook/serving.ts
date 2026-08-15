@@ -8,13 +8,11 @@ import {
   type Setter,
 } from "solid-js";
 import { api } from "~/lib/api";
+import type { EngineKind, ServeState, Workload } from "~/lib/api/models-types";
 import type {
   DownloadProgress,
-  EngineKind,
   EngineRecommendation,
   ManagedModel,
-  ServeState,
-  Workload,
 } from "./model";
 
 // --- backend DTOs (snake_case) — mapped to model.ts types below ------------

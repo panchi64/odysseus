@@ -1,6 +1,6 @@
 import { type JSX } from "solid-js";
 import { StatusFlag } from "~/ui";
-import type { EndpointStatus } from "~/lib/stores/models";
+import type { EndpointStatus } from "~/lib/api/models-types";
 
 /** The backend owns the verdict; this maps its `last_status` token to one of the
  *  design system's status accents for the health dot. No re-categorization — a

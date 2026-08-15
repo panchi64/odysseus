@@ -11,7 +11,7 @@ import {
   useManagedModelActions,
   type ManagedModelActions,
 } from "../serving-actions";
-import type { EngineKind, Workload } from "../model";
+import type { EngineKind, Workload } from "~/lib/api/models-types";
 import { ManagedModelRow } from "./ManagedModelRow";
 import { EnginePicker } from "./EnginePicker";
 import { EngineSwitchNote } from "./EngineSwitchNote";

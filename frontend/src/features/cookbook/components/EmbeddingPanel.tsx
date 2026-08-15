@@ -24,7 +24,7 @@ import {
   useEmbeddingRole,
   useReindexStatus,
 } from "../embedding/data";
-import type { ReindexState } from "../embedding/model";
+import type { ReindexState } from "~/lib/api/models-types";
 import type { ManagedModel } from "../model";
 
 const STATE_STATUS: Record<

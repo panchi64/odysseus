@@ -1,10 +1,14 @@
 import { createResource, createSignal, type Resource } from "solid-js";
 import { api } from "~/lib/api";
+import type { ReindexStatusDTO } from "~/lib/api/models-types";
 import {
   refreshEndpoints,
   setEndpointEnabled,
+  setRoleBinding as bindRole,
   testEndpoint,
   useEndpoints,
+  useProviders,
+  useRoles,
 } from "~/lib/stores/models";
 import type {
   AgentTool,
@@ -13,17 +17,22 @@ import type {
   EndpointInput,
   OfflineState,
   ReindexStatus,
-  RoleBindings,
   SearchProvider,
   SearchProviderInput,
 } from "./model";
 
-// The endpoint catalog (read) is owned by the shared models store so the chat
-// picker and Settings share one fetch and one type; this module owns the writes
-// (CRUD + role bindings) and the role read. Health probe + enable/disable are
-// also store-owned (they cascade to the shared picker) and re-exported here so
-// the screen reaches everything through this one seam.
-export { useEndpoints, testEndpoint, setEndpointEnabled };
+// The endpoint catalog, the provider presets, and the role bindings (reads AND
+// the role write) are owned by the shared models store so the chat picker,
+// the Cookbook, and Settings share one fetch and one type each; this module owns
+// the endpoint CRUD writes. Store-owned actions are re-exported here so the
+// screen reaches everything through this one seam.
+export {
+  useEndpoints,
+  useProviders,
+  useRoles,
+  testEndpoint,
+  setEndpointEnabled,
+};
 
 /** Map form values to the backend's snake_case body. `apiKey` undefined is
  *  omitted (leave unchanged); "" clears it. */
@@ -31,6 +40,7 @@ function toBody(input: Partial<EndpointInput>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (input.name !== undefined) body.name = input.name;
   if (input.baseUrl !== undefined) body.base_url = input.baseUrl;
+  if (input.provider !== undefined) body.provider = input.provider;
   if (input.model !== undefined) body.model = input.model;
   if (input.apiKey !== undefined) body.api_key = input.apiKey;
   if (input.contextWindow !== undefined)
@@ -70,30 +80,10 @@ export async function deleteEndpoint(id: string): Promise<void> {
 
 /* ── Role bindings ────────────────────────────────────────────────────────── */
 
-const [rolesTick, setRolesTick] = createSignal(0);
-
-interface RoleViewDTO {
-  endpoint_ids: string[];
-  model: string | null;
-}
-
-async function fetchRoles(): Promise<RoleBindings> {
-  const dto = await api.get<Record<string, RoleViewDTO>>("/models/roles");
-  const out: RoleBindings = {};
-  for (const [role, v] of Object.entries(dto)) {
-    out[role] = { endpointIds: v.endpoint_ids, model: v.model };
-  }
-  return out;
-}
-
-export function useRoles(): Resource<RoleBindings> {
-  const [data] = createResource(rolesTick, fetchRoles);
-  return data;
-}
-
-/** Bind a role to an ordered chain (and, for `embedding`, a pinned model).
- *  Errors are intentionally *not* swallowed — the backend rejects a non-embeddings
- *  model with a 422, and the caller surfaces that detail to the operator.
+/** Bind a role to an ordered chain (and, for `embedding`, a pinned model) via
+ *  the store's single role-write action, then refresh this screen's embedding
+ *  readouts. Errors are intentionally *not* swallowed — the backend rejects a
+ *  non-embeddings model with a 422, and the caller surfaces that detail.
  *
  *  Returns whether the bind kicked off a background re-embed — only possible for
  *  the `embedding` role, and only when the endpoint/model actually changed — so
@@ -103,11 +93,7 @@ export async function setRoleBinding(
   endpointIds: string[],
   model: string | null = null,
 ): Promise<boolean> {
-  await api.put(`/models/roles/${role}`, {
-    endpoint_ids: endpointIds,
-    model,
-  });
-  setRolesTick((n) => n + 1);
+  await bindRole(role, endpointIds, model);
   void refreshEmbeddingHealth(); // a bind can flip recall health
   // A changed embedding endpoint/model strands existing vectors, so the backend
   // heals them with a background re-embed. Pull the just-started status so the
@@ -155,17 +141,9 @@ export async function refreshEmbeddingHealth(): Promise<void> {
   }
 }
 
-interface ReindexStatusDTO {
-  state: string;
-  memories: number;
-  messages: number;
-  detail: string | null;
-  completed_at: string | null;
-}
-
 function toReindexStatus(d: ReindexStatusDTO): ReindexStatus {
   return {
-    state: d.state as ReindexStatus["state"],
+    state: d.state,
     memories: d.memories,
     messages: d.messages,
     detail: d.detail,

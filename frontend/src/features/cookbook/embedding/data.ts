@@ -1,19 +1,8 @@
 import { createResource, onCleanup, type Resource } from "solid-js";
 import { api } from "~/lib/api";
-import type { EmbeddingRole, ReindexState, ReindexStatus } from "./model";
-
-interface RoleViewDTO {
-  endpoint_ids: string[];
-  model: string | null;
-}
-
-interface ReindexStatusDTO {
-  state: ReindexState;
-  memories: number;
-  messages: number;
-  detail: string | null;
-  completed_at: string | null;
-}
+import type { ReindexStatusDTO, RoleViewDTO } from "~/lib/api/models-types";
+import { setRoleBinding } from "~/lib/stores/models";
+import type { EmbeddingRole, ReindexStatus } from "./model";
 
 function toReindexStatus(dto: ReindexStatusDTO): ReindexStatus {
   return {
@@ -44,17 +33,15 @@ export function useEmbeddingRole(): Resource<EmbeddingRole> & {
   };
 }
 
-/** Bind the `embedding` role to a served model's endpoint — the backend heals
- *  existing vectors into the new space automatically (a changed embedding
+/** Bind the `embedding` role to a served model's endpoint — through the store's
+ *  single role-write action, so Settings and the picker reconcile too. The backend
+ *  heals existing vectors into the new space automatically (a changed embedding
  *  endpoint/model triggers a reindex server-side). */
 export async function setEmbeddingRole(
   endpointId: string,
   model: string | null,
 ): Promise<void> {
-  await api.put(`/models/roles/embedding`, {
-    endpoint_ids: [endpointId],
-    model,
-  });
+  await setRoleBinding("embedding", [endpointId], model);
 }
 
 const REINDEX_POLL_MS = 1500;
