@@ -258,12 +258,14 @@ class ServingService:
         row immediately (state ``downloading``); the UI polls ``status`` for progress."""
         row = await self._store.get_or_create(owner_id, engine, repo, workload, quant)
         # Re-downloading must not overwrite an artifact a live engine has memory-mapped:
-        # tear down any in-flight serve/engine for this model and disable its endpoint
-        # first, then reset the row to a clean downloading state.
+        # tear down any in-flight serve/engine for this model and mark its endpoint
+        # not-running first, then reset the row to a clean downloading state.
         await self._halt(owner_id, row.id)
         if row.endpoint_id:
             with suppress(NotFoundError):
-                await self._registry.update_endpoint(owner_id, row.endpoint_id, enabled=False)
+                await self._registry.update_endpoint(
+                    owner_id, row.endpoint_id, live_status="stopped"
+                )
         await self._store.update(
             row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
         )
@@ -515,7 +517,11 @@ class ServingService:
         await self._halt(owner_id, managed_id)
         if row.endpoint_id:
             with suppress(NotFoundError):
-                await self._registry.update_endpoint(owner_id, row.endpoint_id, enabled=False)
+                # Liveness only — the operator's own `enabled` switch is never
+                # touched by the serving lifecycle.
+                await self._registry.update_endpoint(
+                    owner_id, row.endpoint_id, live_status="stopped"
+                )
         await self._store.update(managed_id, state=ServeState.stopped, port=None, pid=None)
         refreshed = await self._store.get(managed_id)
         return self._store.to_view(refreshed or row)
@@ -543,7 +549,7 @@ class ServingService:
             if row and row.endpoint_id:
                 with suppress(NotFoundError):
                     await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, enabled=False
+                        row.owner_id, row.endpoint_id, live_status="stopped"
                     )
 
         return on_crash
@@ -565,7 +571,7 @@ class ServingService:
                     row.endpoint_id,
                     base_url=base_url,
                     model=model_id,
-                    enabled=True,
+                    live_status="running",
                     native_tools=adapter.native_tools_default,
                 )
                 return await self._registry.get_endpoint(owner_id, row.endpoint_id)
@@ -577,6 +583,9 @@ class ServingService:
         return await self._registry.create_endpoint(
             owner_id,
             name=f"Local · {row.hf_repo}",
+            provider="local",
+            managed=True,
+            live_status="running",
             base_url=base_url,
             model=model_id,
             native_tools=adapter.native_tools_default,
@@ -607,9 +616,10 @@ class ServingService:
         """Clean up after a prior process: any model left mid-flight (running / starting
         / downloading) is clean-slated. We can't adopt an orphan engine — its process
         handle didn't survive the restart — so we best-effort terminate the recorded pid,
-        mark the row ``stopped`` (clearing port/pid), and disable its endpoint so resolve
-        skips the dead port while the role binding survives. Re-serving then allocates a
-        fresh port. Fully best-effort: a reconcile failure must never block startup."""
+        mark the row ``stopped`` (clearing port/pid), and mark its endpoint not-running
+        so resolve skips the dead port while the role binding (and the operator's own
+        `enabled` choice) survives. Re-serving then allocates a fresh port. Fully
+        best-effort: a reconcile failure must never block startup."""
         try:
             rows = await self._store.active_rows()
         except Exception:
@@ -623,7 +633,7 @@ class ServingService:
             if row.endpoint_id:
                 with suppress(Exception):
                     await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, enabled=False
+                        row.owner_id, row.endpoint_id, live_status="stopped"
                     )
         if rows:
             logger.info("serving: reconciled %d managed model(s) to stopped", len(rows))

@@ -162,10 +162,13 @@ async def test_stop_disables_endpoint_and_keeps_the_row(tmp_path: Path):
         stopped = await service.stop(OWNER, view.id)
         assert stopped.state == ServeState.stopped and stopped.port is None
 
-        # Endpoint kept but disabled, so resolution skips the dead port while the role
-        # binding survives a stop/start cycle.
+        # Endpoint kept but marked not-running, so resolution skips the dead port while
+        # the role binding (and the operator's own `enabled` switch) survives a
+        # stop/start cycle.
         endpoint = await registry.get_endpoint(OWNER, view.endpoint_id)
-        assert endpoint.enabled is False
+        assert endpoint.live_status == "stopped"
+        assert endpoint.enabled is True
+        assert endpoint.managed is True and endpoint.provider == "local"
         assert await registry.get_role(OWNER, "main") == [view.endpoint_id]
         assert (await service.status(OWNER))[0].state == ServeState.stopped
     finally:

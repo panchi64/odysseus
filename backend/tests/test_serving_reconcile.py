@@ -49,10 +49,13 @@ async def _service(tmp_path: Path) -> tuple[ServingService, ModelRegistry]:
 
 async def test_reconcile_clean_slates_running_rows_and_kills_orphans(tmp_path: Path):
     service, registry = await _service(tmp_path)
-    # A leftover endpoint from the "prior process": enabled and role-bound.
+    # A leftover endpoint from the "prior process": running and role-bound.
     endpoint = await registry.create_endpoint(
         OWNER,
         name="Local · acme/m",
+        provider="local",
+        managed=True,
+        live_status="running",
         base_url="http://127.0.0.1:9/v1",
         model="acme/m",
         native_tools=True,
@@ -82,8 +85,11 @@ async def test_reconcile_clean_slates_running_rows_and_kills_orphans(tmp_path: P
     assert reconciled.state == ServeState.stopped.value
     assert reconciled.port is None and reconciled.pid is None
 
-    # … the endpoint disabled while the role binding survives …
-    assert (await registry.get_endpoint(OWNER, endpoint.id)).enabled is False
+    # … the endpoint marked not-running (the operator's switch untouched) while the
+    # role binding survives …
+    reconciled_endpoint = await registry.get_endpoint(OWNER, endpoint.id)
+    assert reconciled_endpoint.live_status == "stopped"
+    assert reconciled_endpoint.enabled is True
     assert await registry.get_role(OWNER, "main") == [endpoint.id]
 
     # … and the orphan process was terminated.

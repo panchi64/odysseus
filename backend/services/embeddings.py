@@ -66,7 +66,9 @@ class RegistryEmbedder:
     async def embed(self, owner_id: str, texts: list[str]) -> EmbeddingBatch:
         # Raises DegradedCapabilityError when unconfigured — the caller degrades.
         spec = await self._registry.resolve_embedding_spec(owner_id)
-        client = AsyncOpenAI(base_url=spec.base_url, api_key=spec.api_key or "not-needed")
+        # The OpenAI client refuses a None key; a keyless local server gets a
+        # placeholder header it ignores (same adapter-boundary quirk as the chat path).
+        client = AsyncOpenAI(base_url=spec.base_url, api_key=spec.api_key or "unused")
         response = await client.embeddings.create(model=spec.model, input=texts)
         vectors = [item.embedding for item in response.data]
         dim = len(vectors[0]) if vectors else 0
@@ -159,7 +161,7 @@ async def probe_embedding(spec: llm.EndpointSpec) -> int:
     embeddings model). The two cases carry distinct messages so the operator can tell
     a wrong model from a down server."""
     async with AsyncOpenAI(
-        base_url=spec.base_url, api_key=spec.api_key or llm.NO_API_KEY
+        base_url=spec.base_url, api_key=spec.api_key or "unused"
     ) as client:
         try:
             response = await client.embeddings.create(model=spec.model, input=["probe"])

@@ -18,6 +18,7 @@ from models.registry import ModelEndpoint
 from routes import deps
 from routes.deps import OPERATOR_ID
 from services import llm
+from services.providers import DEFAULT_PROVIDER_ID, all_providers
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/models", tags=["models"])
 class EndpointCreate(BaseModel):
     name: str
     base_url: str
+    provider: str = DEFAULT_PROVIDER_ID
     model: str | None = None
     api_key: str | None = None
     context_window: int | None = None
@@ -37,6 +39,7 @@ class EndpointCreate(BaseModel):
 class EndpointUpdate(BaseModel):
     name: str | None = None
     base_url: str | None = None
+    provider: str | None = None
     model: str | None = None
     api_key: str | None = None  # "" clears the key; omitted leaves it unchanged
     context_window: int | None = None
@@ -49,6 +52,7 @@ class EndpointUpdate(BaseModel):
 class EndpointView(BaseModel):
     id: str
     name: str
+    provider: str
     base_url: str
     model: str | None
     has_api_key: bool
@@ -60,6 +64,10 @@ class EndpointView(BaseModel):
     # backend's verdict verbatim so the catalog list shows at-a-glance status without
     # a probe per row; they are null until the endpoint has been tested.
     enabled: bool
+    # A serving-managed local engine: the Cookbook owns its lifecycle; `live_status`
+    # is its process liveness ("running"/"stopped"; null for external endpoints).
+    managed: bool
+    live_status: str | None
     last_status: str | None
     last_error_category: str | None
     last_error_detail: str | None
@@ -70,6 +78,7 @@ def _view(endpoint: ModelEndpoint) -> EndpointView:
     return EndpointView(
         id=endpoint.id,
         name=endpoint.name,
+        provider=endpoint.provider,
         base_url=endpoint.base_url,
         model=endpoint.model,
         has_api_key=endpoint.api_key_enc is not None,
@@ -78,11 +87,44 @@ def _view(endpoint: ModelEndpoint) -> EndpointView:
         vision=endpoint.vision,
         thinking=endpoint.thinking,
         enabled=endpoint.enabled,
+        managed=endpoint.managed,
+        live_status=endpoint.live_status,
         last_status=endpoint.last_status,
         last_error_category=endpoint.last_error_category,
         last_error_detail=endpoint.last_error_detail,
         last_checked_at=endpoint.last_checked_at,
     )
+
+
+class ProviderView(BaseModel):
+    """One provider adapter, as the endpoint editor offers it — the preset is what
+    the form prefills, so the frontend never hardcodes a lab's details."""
+
+    id: str
+    display_name: str
+    requires_key: bool
+    default_base_url: str | None
+    key_hint: str | None
+    docs_url: str | None
+    native_tools: bool
+    vision: bool
+
+
+@router.get("/providers", response_model=list[ProviderView])
+async def list_providers() -> list[ProviderView]:
+    return [
+        ProviderView(
+            id=p.id,
+            display_name=p.display_name,
+            requires_key=p.requires_key,
+            default_base_url=p.preset.default_base_url,
+            key_hint=p.preset.key_hint,
+            docs_url=p.preset.docs_url,
+            native_tools=p.preset.native_tools,
+            vision=p.preset.vision,
+        )
+        for p in all_providers()
+    ]
 
 
 @router.get("/endpoints", response_model=list[EndpointView])
@@ -93,7 +135,10 @@ async def list_endpoints(request: Request) -> list[EndpointView]:
 
 @router.post("/endpoints", status_code=201, response_model=EndpointView)
 async def create_endpoint(body: EndpointCreate, request: Request) -> EndpointView:
-    endpoint = await deps.models(request).create_endpoint(OPERATOR_ID, **body.model_dump())
+    try:
+        endpoint = await deps.models(request).create_endpoint(OPERATOR_ID, **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return _view(endpoint)
 
 
@@ -156,6 +201,8 @@ async def update_endpoint(endpoint_id: str, body: EndpointUpdate, request: Reque
         endpoint = await deps.models(request).update_endpoint(OPERATOR_ID, endpoint_id, **changes)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="endpoint not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     return _view(endpoint)
 
 

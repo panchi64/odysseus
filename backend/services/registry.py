@@ -31,6 +31,7 @@ from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
 from services import embeddings, llm, reasoning
+from services.providers import DEFAULT_PROVIDER_ID, get_provider
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,7 @@ class ModelRegistry:
         *,
         name: str,
         base_url: str,
+        provider: str = DEFAULT_PROVIDER_ID,
         model: str | None = None,
         api_key: str | None = None,
         context_window: int | None = None,
@@ -111,10 +113,14 @@ class ModelRegistry:
         vision: bool = False,
         thinking: bool = False,
         enabled: bool = True,
+        managed: bool = False,
+        live_status: str | None = None,
     ) -> ModelEndpoint:
+        self._validate_provider(provider, has_key=bool(api_key))
         endpoint = ModelEndpoint(
             owner_id=owner_id,
             name=name,
+            provider=provider,
             base_url=base_url,
             model=model,
             api_key_enc=self._vault.encrypt_str(api_key) if api_key else None,
@@ -123,6 +129,8 @@ class ModelRegistry:
             vision=vision,
             thinking=thinking,
             enabled=enabled,
+            managed=managed,
+            live_status=live_status,
         )
 
         def work(session: Session) -> ModelEndpoint:
@@ -139,7 +147,16 @@ class ModelRegistry:
         """Apply field changes. ``api_key`` (plaintext, or "" to clear) is sealed
         before storage; ``model`` accepts "" to clear the default back to null;
         every other key maps straight onto the column."""
-        await self.get_endpoint(owner_id, endpoint_id)  # ownership check
+        current = await self.get_endpoint(owner_id, endpoint_id)  # ownership check
+        # The provider/key pairing is validated against the *effective* state after
+        # the change — switching to a key-requiring provider without a stored key, or
+        # clearing the key out from under one, is rejected the same as at create.
+        effective_provider = str(changes.get("provider") or current.provider)
+        if "api_key" in changes:
+            effective_has_key = bool(changes["api_key"])
+        else:
+            effective_has_key = current.api_key_enc is not None
+        self._validate_provider(effective_provider, has_key=effective_has_key)
 
         def work(session: Session) -> ModelEndpoint:
             endpoint = session.get(ModelEndpoint, endpoint_id)
@@ -329,12 +346,17 @@ class ModelRegistry:
 
         if override_endpoint_id is not None and role == "main":
             endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
-            # A disabled endpoint is skipped by resolution everywhere — including a
+            # An unavailable endpoint is skipped by resolution everywhere — including a
             # per-conversation override (e.g. regenerating an old turn whose endpoint was
-            # since benched). The picker hides it, but the backend is the authority, so
-            # reject it here rather than silently running a disabled endpoint.
+            # since benched or whose local engine was stopped). The picker hides it, but
+            # the backend is the authority, so reject it here rather than silently
+            # resolving to a dead or benched endpoint.
             if not endpoint.enabled:
                 raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is disabled")
+            if not _available(endpoint):
+                raise DegradedCapabilityError(
+                    f"endpoint {endpoint.name!r} is not running"
+                )
             return [self._to_spec(endpoint, role, model_override=override_model)]
 
         chain_ids, pinned_model = await self.get_role_binding(owner_id, role)
@@ -342,12 +364,13 @@ class ModelRegistry:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
         endpoints = [await self.get_endpoint(owner_id, eid) for eid in chain_ids]
-        # Skip disabled endpoints so a benched (flaky) provider falls through to the
-        # next in the chain — the pre-emptive side of the runtime FallbackModel failover.
-        live = [e for e in endpoints if e.enabled]
+        # Skip unavailable endpoints — operator-benched (`enabled` off) or a managed
+        # local engine that isn't running — so the chain falls through to the next:
+        # the pre-emptive side of the runtime FallbackModel failover.
+        live = [e for e in endpoints if _available(e)]
         if not live:
             raise DegradedCapabilityError(
-                f"all endpoints bound to role {role!r} are disabled"
+                f"all endpoints bound to role {role!r} are disabled or not running"
             )
         # Pin applies to the head only; the tail falls back on each endpoint's default.
         return [
@@ -399,7 +422,10 @@ class ModelRegistry:
             override_model=override_model,
         )
         primary = specs[0]
-        reasoning_off = reasoning.disable_thinking(
+        # The provider adapter owns the "turn thinking off" shape for its own models;
+        # the openai-compatible/local adapters fall back to the model-name heuristics
+        # in `services/reasoning` because a generic gateway can front any family.
+        reasoning_off = get_provider(primary.provider).reasoning_off(
             reasoning.ModelDescriptor(
                 model_id=primary.model,
                 base_url=primary.base_url,
@@ -480,11 +506,13 @@ class ModelRegistry:
         if not chain_ids:
             raise DegradedCapabilityError("no embedding endpoint configured")
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
-        # A disabled endpoint is skipped everywhere, exactly as chat resolution skips it
-        # (a stopped/crashed locally-served model disables its endpoint but keeps the role
-        # binding). Degrade to keyword recall rather than resolving to the dead port.
-        if not endpoint.enabled:
-            raise DegradedCapabilityError(f"embedding endpoint {endpoint.name!r} is disabled")
+        # An unavailable endpoint is skipped everywhere, exactly as chat resolution skips
+        # it (a stopped/crashed locally-served model keeps the role binding but reports
+        # itself not running). Degrade to keyword recall rather than resolve a dead port.
+        if not _available(endpoint):
+            raise DegradedCapabilityError(
+                f"embedding endpoint {endpoint.name!r} is disabled or not running"
+            )
         return self._to_spec(endpoint, "embedding", model_override=model)
 
     async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:
@@ -494,7 +522,7 @@ class ModelRegistry:
         no models API — the caller falls back to the endpoint's configured model."""
         endpoint = await self.get_endpoint(owner_id, endpoint_id)
         api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
-        return await llm.discover_models(
+        return await get_provider(endpoint.provider).discover(
             endpoint.base_url, api_key, client=self._http_client
         )
 
@@ -507,16 +535,13 @@ class ModelRegistry:
         returns them. Raises ``NotFoundError`` for an unknown endpoint."""
         endpoint = await self.get_endpoint(owner_id, endpoint_id)
         api_key = (
-            self._vault.decrypt_str(endpoint.api_key_enc)
-            if endpoint.api_key_enc
-            else llm.NO_API_KEY
+            self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
         )
-        # A probe only needs base_url + key — GET /models ignores the model name — so an
-        # endpoint whose model is discovered at pick-time can still be tested.
-        spec = llm.EndpointSpec(
-            base_url=endpoint.base_url, model=endpoint.model or "probe", api_key=api_key
+        # A probe only needs base_url + key — the models listing ignores the model
+        # name — so an endpoint whose model is discovered at pick-time is testable.
+        category, detail = await self._categorize_probe(
+            endpoint.provider, endpoint.base_url, api_key
         )
-        category, detail = await self._categorize_probe(spec)
         status = "ok" if category == "ok" else "error"
         checked_at = datetime.now(UTC)
         await self._save_health(
@@ -556,12 +581,14 @@ class ModelRegistry:
 
         await in_session(self._engine, work)
 
-    async def _categorize_probe(self, spec: llm.EndpointSpec) -> tuple[str, str]:
+    async def _categorize_probe(
+        self, provider: str, base_url: str, api_key: str | None
+    ) -> tuple[str, str]:
         """Run the connection probe and translate its outcome into a stable
         ``(category, plain-language detail)`` pair. Detail strings never interpolate
         anything that could carry the key."""
         try:
-            await llm.probe_endpoint(spec, client=self._http_client)
+            await get_provider(provider).probe(base_url, api_key, client=self._http_client)
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if code in (401, 403):
@@ -605,16 +632,37 @@ class ModelRegistry:
                 f"endpoint {endpoint.name!r} has no model configured and none was selected"
             )
         api_key = (
-            self._vault.decrypt_str(endpoint.api_key_enc)
-            if endpoint.api_key_enc
-            else llm.NO_API_KEY
+            self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
         )
         return llm.EndpointSpec(
             base_url=endpoint.base_url,
             model=model,
+            provider=endpoint.provider,
             api_key=api_key,
             context_window=endpoint.context_window,
             native_tools=endpoint.native_tools,
             vision=endpoint.vision,
             thinking=endpoint.thinking,
         )
+
+    def _validate_provider(self, provider: str, *, has_key: bool) -> None:
+        """The save-time half of the provider contract: the id must name a registered
+        adapter, and one that requires a key must actually have one."""
+        try:
+            impl = get_provider(provider)
+        except LookupError as exc:
+            raise ValueError(str(exc)) from exc
+        if impl.requires_key and not has_key:
+            raise ValueError(
+                f"provider {impl.display_name!r} requires an API key"
+            )
+
+
+def _available(endpoint: ModelEndpoint) -> bool:
+    """Whether resolution may use this endpoint: the operator's switch is on, and —
+    for a serving-managed local engine — its process is actually running."""
+    if not endpoint.enabled:
+        return False
+    if endpoint.managed and endpoint.live_status != "running":
+        return False
+    return True

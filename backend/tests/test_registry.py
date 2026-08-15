@@ -446,12 +446,12 @@ async def test_test_endpoint_categorizes_probe_failures(monkeypatch):
         (418, "bad_response"),
     ]:
 
-        async def _probe(spec, *, client=None, _code=code):
+        async def _probe(base_url, api_key=None, *, client=None, _code=code):
             raise httpx.HTTPStatusError(
                 "e", request=req, response=httpx.Response(_code, request=req)
             )
 
-        monkeypatch.setattr(llm, "probe_endpoint", _probe)
+        monkeypatch.setattr(llm, "probe_openai_endpoint", _probe)
         health = await reg.test_endpoint(OWNER, ep.id)
         assert health.error_category == category, code
         assert health.status == ("ok" if category == "ok" else "error")
@@ -466,10 +466,10 @@ async def test_test_endpoint_categorizes_probe_failures(monkeypatch):
         (ValueError("not json"), "bad_response"),
     ]:
 
-        async def _probe_exc(spec, *, client=None, _exc=exc):
+        async def _probe_exc(base_url, api_key=None, *, client=None, _exc=exc):
             raise _exc
 
-        monkeypatch.setattr(llm, "probe_endpoint", _probe_exc)
+        monkeypatch.setattr(llm, "probe_openai_endpoint", _probe_exc)
         health = await reg.test_endpoint(OWNER, ep.id)
         assert health.error_category == category
         assert health.status == "error"
@@ -480,10 +480,10 @@ async def test_test_endpoint_records_ok_and_persists(monkeypatch):
     reg = await _registry()
     ep = await reg.create_endpoint(OWNER, name="p", base_url="http://x/v1", model="m")
 
-    async def _ok(spec, *, client=None):
+    async def _ok(base_url, api_key=None, *, client=None):
         return None
 
-    monkeypatch.setattr(llm, "probe_endpoint", _ok)
+    monkeypatch.setattr(llm, "probe_openai_endpoint", _ok)
     health = await reg.test_endpoint(OWNER, ep.id)
     assert health.status == "ok" and health.error_category == "ok"
     # Persisted on the row so the catalog list shows health without re-probing per row.
@@ -535,10 +535,10 @@ async def test_all_disabled_chain_is_degraded():
 
 
 async def test_endpoint_test_route_returns_verdict_and_reflects_on_list(monkeypatch):
-    async def _ok(spec, *, client=None):
+    async def _ok(base_url, api_key=None, *, client=None):
         return None
 
-    monkeypatch.setattr(llm, "probe_endpoint", _ok)
+    monkeypatch.setattr(llm, "probe_openai_endpoint", _ok)
     async with client_app() as (client, _app):
         ep = (
             await client.post(

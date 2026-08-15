@@ -5,10 +5,12 @@ binds to an **ordered fallback chain** of endpoints. The chain is wrapped in
 Pydantic AI's ``FallbackModel`` at resolution time, so a dead endpoint falls
 through to the next.
 
-An **endpoint** is a provider-agnostic OpenAI-compatible spec: a ``base_url`` +
-``model`` name + optional key, plus the metadata the engine consumes — the
-``context_window`` (feeds context reduction) and capability flags (native
-tool-calling is required for the tool-driving roles, plus vision/thinking).
+An **endpoint** is one connection to a model API: a ``provider`` (which adapter in
+``services/providers`` speaks its wire protocol — OpenAI-compatible, Anthropic,
+Google, or a serving-managed local engine), a ``base_url`` + ``model`` name +
+optional key, plus the metadata the engine consumes — the ``context_window``
+(feeds context reduction) and capability flags (native tool-calling is required
+for the tool-driving roles, plus vision/thinking).
 
 The **API key is the only sensitive field**: it is stored application-layer
 encrypted (the chosen at-rest posture — whole-DB SQLCipher has no portable
@@ -39,6 +41,10 @@ class ModelEndpoint(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
     name: str
+    # Which adapter (`services/providers`) speaks this endpoint's wire protocol.
+    # "openai-compatible" is the universal default; "anthropic"/"google" are native;
+    # "local" marks a serving-managed engine.
+    provider: str = "openai-compatible"
     base_url: str
     # The endpoint is a provider connection; ``model`` is the default/fallback used
     # when the chat picker doesn't override it and the provider's models API isn't
@@ -55,7 +61,16 @@ class ModelEndpoint(SQLModel, table=True):
     # Disable-without-delete: a benched endpoint keeps its config (key, capability
     # flags, role memberships) but is skipped by resolution and hidden from the
     # picker — so a flaky provider can be parked, then restored, without re-setup.
+    # This is the **operator's switch only** — process liveness is `live_status`.
     enabled: bool = True
+    # True ⇒ this endpoint is owned by the serving layer (a Cookbook-served local
+    # engine): its lifecycle, base_url, and liveness are written by `services/serving`,
+    # and the operator manages it from the Cookbook rather than the endpoints editor.
+    managed: bool = False
+    # Process liveness for a managed endpoint ("running" | "stopped"); None for an
+    # external endpoint (nothing to be live). Kept apart from `enabled` so stopping
+    # an engine can never overwrite the operator's own choice.
+    live_status: str | None = None
     # Last connection-test outcome — operator-facing health, all **cleartext**
     # structural metadata (never the key). ``last_status`` is ``"untested"`` until
     # the first probe; ``last_error_category`` is a stable machine token the UI maps

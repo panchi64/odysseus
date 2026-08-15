@@ -4,9 +4,12 @@ Roles the engine consumes: ``main`` (chat/agent), ``utility`` (cheap background
 work), ``embedding`` (recall). Resolution of a *role* to a model is the
 **registry's** job (:mod:`services.registry`, the single source of truth — manual
 config today, the automatic-setup/Cookbook write path later). This module owns
-the layer below it: building one OpenAI-compatible model from a spec, and
+the layer below it: dispatching one spec to its **provider adapter**
+(:mod:`services.providers` — OpenAI-compatible, Anthropic, Google, local) and
 wrapping an ordered chain in ``FallbackModel``. Both registry-sourced and
-Cookbook-sourced endpoints flow through these builders.
+Cookbook-sourced endpoints flow through these builders. The OpenAI-wire discovery
+and probe helpers live here too — they are what the openai-compatible and local
+adapters delegate to.
 
 **The AE-5.3 rule — "don't switch endpoints once answer text has streamed" — is
 ours, not the library's.** ``FallbackModel`` only ever falls back while *opening*
@@ -26,16 +29,12 @@ from dataclasses import dataclass
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
 
 from core.exceptions import DegradedCapabilityError
 
 ROLES = frozenset({"main", "utility", "embedding"})
 # Roles that drive the agent loop must support native tool-calling (AE-8.1).
 TOOL_CALLING_ROLES = frozenset({"main", "utility"})
-# Placeholder key for local servers that ignore auth — never sent as a header.
-NO_API_KEY = "not-needed"
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,11 @@ class EndpointSpec:
 
     base_url: str
     model: str
-    api_key: str = NO_API_KEY  # local servers ignore it
+    # Which adapter builds the model (`services/providers`). Every pre-provider
+    # endpoint is OpenAI-compatible, hence the default.
+    provider: str = "openai-compatible"
+    # None ⇒ the server doesn't authenticate (a local engine). Never a sentinel.
+    api_key: str | None = None
     context_window: int | None = None
     native_tools: bool = True
     vision: bool = False
@@ -52,9 +55,12 @@ class EndpointSpec:
 
 
 def build_model(spec: EndpointSpec) -> Model:
-    """Build one Pydantic AI model from an endpoint spec."""
-    provider = OpenAIProvider(base_url=spec.base_url, api_key=spec.api_key or NO_API_KEY)
-    return OpenAIChatModel(spec.model, provider=provider)
+    """Build one Pydantic AI model from an endpoint spec, via its provider adapter."""
+    # Deferred import: the adapters type against EndpointSpec, so the registry loads
+    # on first build rather than at module import.
+    from services.providers import get_provider
+
+    return get_provider(spec.provider).build_model(spec)
 
 
 def build_chain(specs: Sequence[EndpointSpec]) -> Model:
@@ -72,27 +78,27 @@ def build_chain(specs: Sequence[EndpointSpec]) -> Model:
     return FallbackModel(*models)
 
 
-async def discover_models(
+async def discover_openai_models(
     base_url: str,
     api_key: str | None = None,
     *,
     client: httpx.AsyncClient | None = None,
 ) -> list[str]:
-    """Discover the model ids a provider advertises.
+    """Discover the model ids an OpenAI-wire server advertises.
 
     Hits the OpenAI-style ``GET {base_url}/models`` — the de-facto standard most
     OpenAI-compatible servers (Ollama, vLLM, LM Studio, …) expose — and dispatches
-    the body through per-provider adapters, so providers that instead return a
+    the body through per-shape adapters, so servers that instead return a
     ``models`` array (or a bare list) still resolve. Reuses the caller's pooled
     ``client`` when given (one per app, connection-reused), else a transient one.
 
     Returns the ids de-duplicated and sorted — possibly **empty** when the
-    provider has a models API that lists nothing. Raises ``DegradedCapabilityError``
-    only when the provider can't be reached or returns an unrecognized payload, so
+    server has a models API that lists nothing. Raises ``DegradedCapabilityError``
+    only when the server can't be reached or returns an unrecognized payload, so
     the caller distinguishes "supported but empty" from "no models API".
     """
     url = base_url.rstrip("/") + "/models"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key and api_key != NO_API_KEY else {}
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     # Short connect timeout so an unreachable host fails fast; the read budget is
     # larger for slow-but-alive providers.
     timeout = httpx.Timeout(8.0, connect=3.0)
@@ -112,12 +118,15 @@ async def discover_models(
     return ids
 
 
-async def probe_endpoint(
-    spec: EndpointSpec, *, client: httpx.AsyncClient | None = None
+async def probe_openai_endpoint(
+    base_url: str,
+    api_key: str | None = None,
+    *,
+    client: httpx.AsyncClient | None = None,
 ) -> None:
-    """Check an endpoint's reachability + auth with one lightweight request.
+    """Check an OpenAI-wire endpoint's reachability + auth with one lightweight request.
 
-    Unlike :func:`discover_models` — which collapses every failure into
+    Unlike :func:`discover_openai_models` — which collapses every failure into
     ``DegradedCapabilityError`` — this lets the **typed** httpx error propagate so the
     caller (the registry's connection test) can tell auth from rate-limit from timeout
     from unreachable. Probes the same ``GET {base_url}/models`` discovery uses. Returns
@@ -125,12 +134,8 @@ async def probe_endpoint(
     (non-2xx), ``httpx.TimeoutException``, ``httpx.ConnectError`` / other
     ``httpx.TransportError``, or ``ValueError`` (a body that isn't JSON).
     """
-    url = spec.base_url.rstrip("/") + "/models"
-    headers = (
-        {"Authorization": f"Bearer {spec.api_key}"}
-        if spec.api_key and spec.api_key != NO_API_KEY
-        else {}
-    )
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     timeout = httpx.Timeout(8.0, connect=3.0)
     http = client or httpx.AsyncClient(follow_redirects=True)
     try:

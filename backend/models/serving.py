@@ -30,9 +30,16 @@ class ManagedModel(SQLModel, table=True):
     # The endpoint carrying base_url=http://127.0.0.1:PORT/v1, set when the model is
     # first served. None until then — a model is downloaded before any endpoint exists
     # (SQLite's unique index treats NULLs as distinct, so many un-served rows coexist).
-    # One managed model ⇄ one endpoint; deletion prunes both together in the service
-    # (no DB cascade — symmetric with how the registry prunes role chains by hand).
-    endpoint_id: str | None = Field(default=None, index=True, unique=True)
+    # One managed model ⇄ one endpoint. A real FK: deleting the endpoint from the
+    # registry side nulls this reference instead of stranding a dangling id; the
+    # service still prunes both together on its own delete path.
+    endpoint_id: str | None = Field(
+        default=None,
+        index=True,
+        unique=True,
+        foreign_key="model_endpoints.id",
+        ondelete="SET NULL",
+    )
     engine: str  # EngineKind value: "llama.cpp" | "mlx"
     workload: str  # Workload value: "chat" | "embedding" | "vision"
     hf_repo: str  # the HuggingFace repo id the operator pointed at
