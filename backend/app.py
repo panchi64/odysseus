@@ -19,7 +19,6 @@ from sqlalchemy import Engine
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
-from core.ratelimit import RateLimiter
 from core.vault import Vault
 from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
@@ -30,42 +29,24 @@ from models.corpus import CorpusSource
 from routes import (
     api_tokens,
     auth,
-    backup,
-    calendar,
     chat,
     conversations,
     health,
-    integrations,
-    mail,
-    mcp,
     models,
-    notifications,
     overview,
     runs,
-    secret_vault,
-    shell,
     tokens,
     tools,
 )
-from routes.deps import OPERATOR_ID
-from runs import Run, RunRegistry, RunStatus
+from runs import RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
-from services.backup import BackupService
-from services.calendar import CalendarService
-from services.calendar.nl import CalendarNaturalLanguage
 from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
-from services.external_tools import build_external_tools
-from services.host_shell import ShellService
-from services.mail import MailService
-from services.notification_channels import default_channels
-from services.notifications import NotificationService
 from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.sealing import seal_legacy_column
-from services.secret_vault import SecretVaultService
 from services.settings_store import SettingsStore
 
 logger = logging.getLogger(__name__)
@@ -131,53 +112,6 @@ async def lifespan(app: FastAPI):
     run_terminal = RunTerminalDispatcher()
     app.state.run_terminal_tasks = run_terminal.tasks
 
-    async def _resolve_dangling_approvals(run: Run, watched: bool) -> None:
-        """The backstop: a cancel-while-parked never reaches the approve route, and
-        even a normal completion may still carry a dangling approval_needed if the
-        operator never decided it. `app.state.notifications` is read lazily — a run
-        can't reach terminal before it exists, so the forward reference is safe
-        despite the registry being built before that singleton."""
-        try:
-            await app.state.notifications.resolve_for_run(OPERATOR_ID, run.id)
-        except Exception:
-            logger.exception("notifications: failed to resolve run %s at terminal", run.id)
-
-    async def _notify_conversation_terminal(run: Run, watched: bool) -> None:
-        """Only conversation-linked runs notify (a stateless/detached run — research
-        included — has no thread to deep-link to); cancelled and blocked outcomes
-        stay silent — the operator asked for the cancel, and a bound/limit stop
-        isn't a noteworthy failure."""
-        if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
-            return
-        notifications = app.state.notifications
-        try:
-            summary = await app.state.conversations.get_summary(run.conversation_id, OPERATOR_ID)
-            title = summary.title if summary is not None and summary.title else "this conversation"
-            if run.status is RunStatus.error:
-                await notifications.notify(
-                    OPERATOR_ID,
-                    "run_failed",
-                    f'"{title}" hit an error',
-                    body=run.error,
-                    conversation_id=run.conversation_id,
-                    run_id=run.id,
-                )
-            elif run.status is RunStatus.done and not watched:
-                # Only notify a plain completion when nobody was watching — a
-                # subscriber attached to the run's own stream already saw it finish.
-                await notifications.notify(
-                    OPERATOR_ID,
-                    "run_completed",
-                    f'"{title}" finished',
-                    conversation_id=run.conversation_id,
-                    run_id=run.id,
-                )
-        except Exception:
-            logger.exception("notifications: failed to notify run %s at terminal", run.id)
-
-    run_terminal.add(_resolve_dangling_approvals)
-    run_terminal.add(_notify_conversation_terminal)
-
     app.state.runs = RunRegistry(
         max_concurrency=settings.run_max_concurrency,
         wall_clock_timeout_s=settings.run_wall_clock_timeout_s,
@@ -206,26 +140,6 @@ async def lifespan(app: FastAPI):
         else:
             await vault.setup(settings.unlock_passphrase)
 
-    # The Operator Shell — a host PTY streamed to the browser, agent-unreachable by
-    # construction (`services/host_shell.py`). Its own rate limiter throttles
-    # password attempts against the host-mode grant endpoint like uploads throttle
-    # theirs; killing every live session the instant the vault locks is wired via
-    # the vault's on-lock callback registry rather than the auth route knowing the
-    # shell exists. `shell_enabled` is the kill-switch: when off, its router isn't
-    # even registered (see `create_app`), so nothing here needs to exist either.
-    if settings.shell_enabled:
-        app.state.shell_auth_rate_limiter = RateLimiter(
-            rate_per_second=settings.shell_auth_rate_per_minute / 60.0,
-            burst=settings.shell_auth_rate_burst,
-        )
-        app.state.shell = ShellService(
-            settings=settings, vault=vault, auth_manager=app.state.auth_manager
-        )
-        vault.register_on_lock(app.state.shell.kill_all)
-        lifecycle.on_stop("shell", app.state.shell.stop)
-    else:
-        app.state.shell = None
-
     # Pooled outbound client for provider model discovery (the chat model picker).
     # Connection-reused across endpoints; follows redirects (some providers 30x).
     discovery_client = httpx.AsyncClient(follow_redirects=True)
@@ -253,66 +167,6 @@ async def lifespan(app: FastAPI):
     # it below — because the notification channels resolve their own configuration from
     # it, and they are composed with the attention surface a few lines down.
     app.state.settings_store = SettingsStore(engine)
-    # The attention surface — a durable notification record + its own live stream,
-    # separate from the frozen per-run event stream. Just the substrate here (record +
-    # stream); the emit policy (which run outcomes are noteworthy) wires in where those
-    # events happen (approval parking, run terminal transitions, approve/deny routes).
-    #
-    # Its out-of-band channels (`AE-3.2`, `TASK-6`) are composed in here. The email
-    # channel takes the mail service as a *callable* rather than a value because the
-    # dependency runs both ways — mail raises triage alerts through this surface, and this
-    # surface sends through mail. Resolving late is what breaks the cycle; the channel is
-    # only ever called long after both exist.
-    app.state.notifications = NotificationService(
-        engine,
-        vault,
-        channels=default_channels(
-            lambda: app.state.mail, app.state.settings_store, vault
-        ),
-    )
-    await lifecycle.start(
-        "notifications",
-        start=app.state.notifications.start,
-        stop=app.state.notifications.stop,
-    )
-    # Email (`EMAIL-1..5`) — accounts, the sync loop, the inbox cache, triage and drafts.
-    # Built immediately after the attention surface (the other half of the cycle above) so
-    # a triage alert has somewhere to land. Its sync worker seals message content, so it
-    # parks while the vault is locked rather than failing.
-    app.state.mail = MailService(
-        engine,
-        vault,
-        app.state.credentials,
-        registry,
-        notifications=app.state.notifications,
-    )
-    # Mail stops before the attention surface it notifies through (registered after ⇒
-    # stops earlier): the sync loop can raise a triage alert on its way down, and a
-    # channel delivery may still be draining.
-    await lifecycle.start("mail", start=app.state.mail.start, stop=app.state.mail.stop)
-    # The calendar (`CAL-1..3`). Nothing to start or stop: no worker, no held connections
-    # — CalDAV sync runs per request. Its natural-language parser resolves the background
-    # model per call (the `services/webfetch/distill.py` seam), so a role rebound at
-    # runtime takes effect without rebuilding anything.
-    async def _resolve_calendar_model():
-        resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
-        return resolved.model, resolved.reasoning_off
-
-    app.state.calendar = CalendarService(
-        engine, vault, nl=CalendarNaturalLanguage(resolve_model=_resolve_calendar_model)
-    )
-    # External tools — registered MCP servers (`MCP-*`), configured connectors
-    # (`INTEG-*`) and the per-tool trust policy they share (`AE-3.6`), as one handle. The
-    # factory is the only way to build it, so both sources are guaranteed the *same*
-    # policy store. MCP connections are opened per run, not held here.
-    app.state.external = build_external_tools(engine, vault)
-    # The operator's secrets manager (`VAULT-*`) — distinct from `vault` above, which is
-    # at-rest key custody. Constructing it *is* registering its lock hook (it calls
-    # `vault.register_on_lock` itself), so an app lock ends every secret session too and
-    # there is deliberately nothing more to wire here.
-    app.state.secret_vault = SecretVaultService(engine, vault)
-    # Encrypted export/import (`BACKUP-*`), under its own operator secret and its own KDF.
-    app.state.backup = BackupService(engine, vault, app.state.settings_store)
     # Conversation-scoped tool auto-approval grants — part of the approval posture,
     # so it stays core beside the run substrate the approvals park on.
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)
@@ -348,26 +202,18 @@ async def lifespan(app: FastAPI):
         logger.info("sandbox: code execution disabled (no container runtime)")
         logger.info("preview: disabled (no container runtime)")
 
-    # Drain in-flight run-terminal tasks before the stores they read (notifications,
-    # conversations) stop. Registered late so it runs early.
-    lifecycle.on_stop("run-terminal-notifies", run_terminal.drain)
-
     # Transitional: capabilities still hand-wired above register on the container so
     # converted manifests can resolve them. Each of these lines moves into its own
     # feature's manifest (its `services` return) as that feature converts.
     for handle in (
+        app.state.auth_manager,
+        run_terminal,
         app.state.runs,
         app.state.models,
         embedder,
         app.state.conversations,
         app.state.credentials,
         app.state.settings_store,
-        app.state.notifications,
-        app.state.mail,
-        app.state.calendar,
-        app.state.external,
-        app.state.secret_vault,
-        app.state.backup,
         app.state.approval_grants,
         app.state.api_tokens,
     ):
@@ -434,22 +280,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models.router)
     app.include_router(api_tokens.router)
     app.include_router(tools.router)
-    app.include_router(notifications.router)
-    # Reserved sprint surfaces — registered here up front so the parallel feature
-    # tracks each fill in only their own `routes/` module and never contend for this
-    # block. Each is an empty router until its track lands.
-    app.include_router(mail.router)
-    app.include_router(calendar.router)
-    app.include_router(mcp.router)
-    app.include_router(integrations.router)
-    app.include_router(secret_vault.router)
-    app.include_router(backup.router)
     app.include_router(tokens.router)
-    # `shell_enabled` is the on/off switch (`core/config.py`): disabled ⇒ the
-    # router is never registered at all, so `/shell/host-mode` and `/shell/ws`
-    # are simply 404 — the natural kill-switch.
-    if settings.shell_enabled:
-        app.include_router(shell.router)
+    # Every feature surface registers through its manifest; a manifest whose
+    # `enabled` gate is off contributes nothing — its routes are simply 404.
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
             continue

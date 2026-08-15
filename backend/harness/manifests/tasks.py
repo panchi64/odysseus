@@ -209,7 +209,20 @@ MANIFEST = FeatureManifest(
     name="tasks",
     # The executor composes the full interactive capability set, so the features
     # providing it must have built (and their services registered) first.
-    after=("corpus", "documents", "memory", "skills", "uploads", "views", "web"),
+    after=(
+        "calendar",
+        "corpus",
+        "documents",
+        "external",
+        "mail",
+        "memory",
+        "notifications",
+        "secret-vault",
+        "skills",
+        "uploads",
+        "views",
+        "web",
+    ),
     routers=(tasks_routes.router,),
     build=_build,
 )

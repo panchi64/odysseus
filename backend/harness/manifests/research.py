@@ -91,7 +91,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
 MANIFEST = FeatureManifest(
     name="research",
-    after=("corpus",),
+    after=("corpus", "notifications"),
     routers=(research_routes.router,),
     build=_build,
 )
