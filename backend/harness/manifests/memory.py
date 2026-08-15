@@ -15,7 +15,7 @@ from services.memory import MemoryStore
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
     memory = MemoryStore(ctx.engine, ctx.vault, ctx.services.get(RegistryEmbedder))
-    return FeatureRuntime(services=(memory,), state={"memory": memory})
+    return FeatureRuntime(services=(memory,), capabilities=(memory,), state={"memory": memory})
 
 
 MANIFEST = FeatureManifest(

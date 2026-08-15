@@ -12,11 +12,12 @@ from pydantic_ai.models.test import TestModel
 from sqlmodel import Session, select
 
 from agent import build_chat_orchestrator, stream_agent_run
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from models.approval_grant import ApprovalGrant
 from runs import Run, RunRegistry, RunStatus, RunStream
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
-from tools import Capabilities, RunDeps, build_agent_toolsets
+from tools import RunDeps, build_agent_toolsets
 from tools.conversations import conversations_toolset
 from tools.corpus import corpus_toolset
 from tools.memory import memory_toolset
@@ -94,7 +95,7 @@ def _danger_orchestrator(store: ApprovalGrantStore):
         "delete the thing",
         model=TestModel(custom_output_text="done"),
         categories=_danger_categories(),
-        capabilities=Capabilities(grants=store),
+        capabilities=ServiceContainer.of(store),
         conversation_id=CONV,
     )
 
@@ -143,7 +144,7 @@ async def test_granted_runaway_tool_still_trips_the_turn_guard():
         "go",
         model=FunctionModel(stream_function=always_calls),
         categories=_danger_categories(),
-        capabilities=Capabilities(grants=store),
+        capabilities=ServiceContainer.of(store),
         conversation_id=CONV,
     )
     run = reg.submit(kind="chat", owner_id=OWNER, orchestrator=orch, conversation_id=CONV)

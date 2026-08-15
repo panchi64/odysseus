@@ -21,8 +21,8 @@ from typing import Literal
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
-from services.search import SearchResults
-from services.webfetch import FetchedPage
+from services.search import SearchResults, SearchService
+from services.webfetch import BrowserFetcher, FetchedPage
 
 from .deps import RunDeps
 
@@ -43,7 +43,7 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         time-sensitive; `published` on a result is its publication date when the engine
         knew it. No results means the search ran but found nothing — conclude from
         that rather than retrying the same query."""
-        svc = ctx.deps.search
+        svc = ctx.deps.caps.get_optional(SearchService)
         if svc is None:
             return "Web search is unavailable."
         try:
@@ -64,7 +64,7 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         `fetch` again with the same `url` and the `offset` the notice gives to continue
         reading (dynamic pages may shift slightly between calls). If a URL can't be
         fetched you will be told why — pick a different source."""
-        svc = ctx.deps.fetcher
+        svc = ctx.deps.caps.get_optional(BrowserFetcher)
         if svc is None:
             return "Web fetch is unavailable."
         try:

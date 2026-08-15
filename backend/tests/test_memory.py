@@ -243,8 +243,8 @@ async def test_agent_memory_tool_reaches_the_store():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.memory import memory_toolset
 
     from ._helpers import granting_store
@@ -257,7 +257,7 @@ async def test_agent_memory_tool_reaches_the_store():
         "note something",
         model=TestModel(custom_output_text="done"),
         categories={"memory": memory_toolset()},
-        capabilities=Capabilities(memory=store, grants=grants),
+        capabilities=ServiceContainer.of(store, grants),
         conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)

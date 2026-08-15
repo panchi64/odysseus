@@ -23,7 +23,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     calendar = CalendarService(
         ctx.engine, ctx.vault, nl=CalendarNaturalLanguage(resolve_model=_resolve_model)
     )
-    return FeatureRuntime(services=(calendar,), state={"calendar": calendar})
+    return FeatureRuntime(
+        services=(calendar,), capabilities=(calendar,), state={"calendar": calendar}
+    )
 
 
 MANIFEST = FeatureManifest(

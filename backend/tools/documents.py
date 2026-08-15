@@ -36,7 +36,7 @@ from pydantic_ai.exceptions import ApprovalRequired
 from core.exceptions import DocumentSpanError, NotFoundError
 from runs import DocumentCommitted, DocumentCreated, DocumentDelta
 from services.document_suggestions import ProposedChange, stream_preview
-from services.documents import DocumentVersionOrigin
+from services.documents import DocumentStore, DocumentVersionOrigin
 
 from .deps import RunDeps
 
@@ -68,7 +68,7 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         summary, notes — not to store scratch data or code you run. ``content`` is the full
         initial body (Markdown). Returns the document's id; pass it to ``document_edit`` to
         revise the document rather than creating a new one each time."""
-        store = ctx.deps.documents
+        store = ctx.deps.caps.get_optional(DocumentStore)
         if store is None:
             return "Documents are unavailable right now."
         view = await store.create(
@@ -111,7 +111,7 @@ def document_toolset() -> FunctionToolset[RunDeps]:
         edit — set ``explanation`` to a plain-language note of what you're changing and why,
         which is shown on the approval prompt. For a document you created here, no approval
         is needed and ``explanation`` is ignored."""
-        store = ctx.deps.documents
+        store = ctx.deps.caps.get_optional(DocumentStore)
         if store is None:
             return "Documents are unavailable right now."
         doc = await _load(store, ctx, document_id)
@@ -161,7 +161,7 @@ def document_toolset() -> FunctionToolset[RunDeps]:
 
         Prefer this over rewriting a document that isn't yours to rewrite; use
         ``document_edit`` when the operator has already asked for the change directly."""
-        store = ctx.deps.documents
+        store = ctx.deps.caps.get_optional(DocumentStore)
         if store is None:
             return "Documents are unavailable right now."
         if not changes:

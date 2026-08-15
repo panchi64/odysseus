@@ -16,7 +16,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         ctx.services.get(RegistryEmbedder),
         ctx.services.get(ConversationStore),
     )
-    return FeatureRuntime(services=(search,), state={"conversation_search": search})
+    return FeatureRuntime(
+        services=(search,), capabilities=(search,), state={"conversation_search": search}
+    )
 
 
 MANIFEST = FeatureManifest(

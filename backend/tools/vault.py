@@ -20,7 +20,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, RunContext
 
 from core.exceptions import NotFoundError
-from services.secret_vault import SecretEntryView, SecretVaultLocked
+from services.secret_vault import SecretEntryView, SecretVaultLocked, SecretVaultService
 
 from .deps import RunDeps
 
@@ -50,7 +50,7 @@ def vault_toolset() -> FunctionToolset[RunDeps]:
         ``reason`` MUST be a plain-language statement of why you need to see the vault's
         contents; it is shown to the operator for approval.
         """
-        service = ctx.deps.secret_vault
+        service = ctx.deps.caps.get_optional(SecretVaultService)
         if service is None:
             return {"ok": False, "error": _UNAVAILABLE}
         try:
@@ -67,7 +67,7 @@ def vault_toolset() -> FunctionToolset[RunDeps]:
         plain-language statement of what you will do with the credential; it is shown to the
         operator for approval. Find an entry's id with ``vault_list_entries`` first.
         """
-        service = ctx.deps.secret_vault
+        service = ctx.deps.caps.get_optional(SecretVaultService)
         if service is None:
             return {"ok": False, "error": _UNAVAILABLE}
         try:

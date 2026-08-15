@@ -26,8 +26,9 @@ from typing import TYPE_CHECKING
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from runs import ViewLive, ViewLiveStopped, ViewSnapshot
-from services.sandbox import SandboxError
-from services.workspace_history import SnapshotView, format_show_result
+from services.artifacts import ArtifactStore
+from services.sandbox import SandboxError, SandboxSessionManager
+from services.workspace_history import SnapshotView, WorkspaceHistoryStore, format_show_result
 
 from .deps import RunDeps
 
@@ -48,7 +49,7 @@ async def _capture_version(
     """Capture the sandbox workspace as a new View version stamped with its preview,
     and emit the ``view.snapshot`` event. The caller has already guarded that the
     version store is wired."""
-    history = ctx.deps.workspace_history
+    history = ctx.deps.caps.get_optional(WorkspaceHistoryStore)
     assert history is not None  # guarded by the caller
     files = await asyncio.to_thread(session.collect_text_files)
     snapshot = await history.capture(
@@ -78,9 +79,10 @@ async def _capture_version(
 async def _show_file(ctx: RunContext[RunDeps], file: str, title: str | None) -> str:
     """Mint a new View version whose preview is a file the agent produced: capture the
     file's bytes (the rendered preview) and the workspace tree (the version's code)."""
-    sessions = ctx.deps.sandbox_sessions
-    store = ctx.deps.artifacts
-    if sessions is None or store is None or ctx.deps.workspace_history is None:
+    sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
+    store = ctx.deps.caps.get_optional(ArtifactStore)
+    history = ctx.deps.caps.get_optional(WorkspaceHistoryStore)
+    if sessions is None or store is None or history is None:
         return "The view is unavailable."
     try:
         session = await sessions.acquire(ctx.deps.sandbox_key)
@@ -118,7 +120,7 @@ async def _show_live(
 ) -> str:
     """Run a server as the View's live, interactive head — overlaying a fresh version
     of the workspace, so the head's code is recorded and comparable like any other."""
-    sessions = ctx.deps.sandbox_sessions
+    sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
     if sessions is None:
         return "The live view is unavailable — your computer isn't available right now."
     if port is None:
@@ -145,7 +147,7 @@ async def _show_live(
     # it. Best-effort and *after* the live event: a capture failure must never orphan
     # the already-running server or hide it from the operator. The live head carries no
     # static preview, so it folds no separate version chip — the LIVE chip represents it.
-    if ctx.deps.workspace_history is not None:
+    if ctx.deps.caps.get_optional(WorkspaceHistoryStore) is not None:
         try:
             session = await sessions.acquire(ctx.deps.sandbox_key)
             await _capture_version(
@@ -198,7 +200,7 @@ def view_toolset() -> FunctionToolset[RunDeps]:
     async def close(ctx: RunContext[RunDeps]) -> str:
         """Stop the live head of this conversation's View, if one is running. The
         saved versions stay; this only tears down the running server."""
-        sessions = ctx.deps.sandbox_sessions
+        sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
         if sessions is None:
             return "The live view is unavailable — your computer isn't available right now."
         await sessions.stop_preview(ctx.deps.sandbox_key)

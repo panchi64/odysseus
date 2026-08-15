@@ -263,8 +263,8 @@ async def test_agent_search_tool_reaches_the_service():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.search import web_toolset
 
     seen = {}
@@ -284,7 +284,7 @@ async def test_agent_search_tool_reaches_the_service():
         # (web_fetch would need a real, resolvable URL).
         model=TestModel(call_tools=["web_search"]),
         categories={"web": web_toolset()},
-        capabilities=Capabilities(search=svc),
+        capabilities=ServiceContainer.of(svc),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
@@ -297,8 +297,8 @@ async def test_agent_search_emits_a_citation_per_result():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.search import web_toolset
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -320,7 +320,7 @@ async def test_agent_search_emits_a_citation_per_result():
         "look it up",
         model=TestModel(call_tools=["web_search"]),
         categories={"web": web_toolset()},
-        capabilities=Capabilities(search=svc),
+        capabilities=ServiceContainer.of(svc),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
@@ -337,8 +337,8 @@ async def test_web_tools_degrade_when_capability_absent():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.search import web_toolset
 
     # No search capability wired: both tools must answer "unavailable", not crash.
@@ -346,7 +346,7 @@ async def test_web_tools_degrade_when_capability_absent():
         "search and read",
         model=TestModel(call_tools=["web_search", "web_fetch"]),
         categories={"web": web_toolset()},
-        capabilities=Capabilities(search=None),
+        capabilities=ServiceContainer(),
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()

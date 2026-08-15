@@ -12,7 +12,11 @@ from services.secret_vault import SecretVaultService
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
     secret_vault = SecretVaultService(ctx.engine, ctx.vault)
-    return FeatureRuntime(services=(secret_vault,), state={"secret_vault": secret_vault})
+    return FeatureRuntime(
+        services=(secret_vault,),
+        capabilities=(secret_vault,),
+        state={"secret_vault": secret_vault},
+    )
 
 
 MANIFEST = FeatureManifest(

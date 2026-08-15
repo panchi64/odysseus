@@ -24,7 +24,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         notifications=ctx.services.get(NotificationService),
     )
     await ctx.lifecycle.start("mail", start=mail.start, stop=mail.stop)
-    return FeatureRuntime(services=(mail,), state={"mail": mail})
+    return FeatureRuntime(services=(mail,), capabilities=(mail,), state={"mail": mail})
 
 
 MANIFEST = FeatureManifest(

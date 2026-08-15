@@ -97,6 +97,12 @@ async def lifespan(app: FastAPI):
     # manifest's build resolves its cross-feature dependencies here and adds what
     # it hands back — never by importing another feature's wiring.
     container = ServiceContainer()
+    # The agent-facing capability bag (`RunDeps.caps`): the curated subset of
+    # services the agent's tools may reach, assembled from each manifest's
+    # `capabilities` export (plus the core-owned handles below). Every run path
+    # hands this same bag to the engine.
+    agent_capabilities = ServiceContainer()
+    app.state.capabilities = agent_capabilities
     app.state.auth_manager = AuthManager()
     # Inbound scoped API tokens (`AUTH-4`). Wired below with the engine, but named here
     # because the auth gate runs on every request — including ones that arrive before the
@@ -221,6 +227,11 @@ async def lifespan(app: FastAPI):
         container.add(handle)
     if sandbox_manager is not None:
         container.add(sandbox_manager)
+        agent_capabilities.add(sandbox_manager)
+    # The core-owned agent-facing handles: the engine consults grants at the deferred
+    # split, and the sandbox backs code execution. Everything else reaches the bag
+    # through its own manifest's `capabilities` export.
+    agent_capabilities.add(app.state.approval_grants)
 
     # Feature manifests build last, in dependency (`after`) order — everything
     # hand-wired above is the core they resolve from the container. What a build
@@ -228,7 +239,12 @@ async def lifespan(app: FastAPI):
     # tools), transitional `app.state` names for `routes/deps.py`, and run-terminal
     # hooks. Their routers were registered at app assembly (`create_app`).
     ctx = HarnessContext(
-        settings=settings, engine=engine, vault=vault, lifecycle=lifecycle, services=container
+        settings=settings,
+        engine=engine,
+        vault=vault,
+        lifecycle=lifecycle,
+        services=container,
+        capabilities=agent_capabilities,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -238,6 +254,8 @@ async def lifespan(app: FastAPI):
         runtime = await manifest.build(ctx)
         for service in runtime.services:
             container.add(service)
+        for capability in runtime.capabilities:
+            agent_capabilities.add(capability)
         for name, value in runtime.state.items():
             setattr(app.state, name, value)
         for sync_hook in runtime.run_terminal_sync:

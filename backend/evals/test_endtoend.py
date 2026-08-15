@@ -5,7 +5,7 @@ corpus into a live-embedder store, then run every question through a real agent
 turn twice:
 
 - **capability-on** — ``build_chat_orchestrator(q, model=chat, categories={the
-  consumer's toolset}, capabilities=Capabilities(...))``,
+  consumer's toolset}, capabilities=ServiceContainer.of(...))``,
 - **capability-off** — the same turn with the consumer omitted (the baseline).
 
 Each turn is submitted via ``RunRegistry().submit(...)`` + ``await run.wait()``;
@@ -34,6 +34,7 @@ from pydantic_ai.models import Model
 
 from agent import build_chat_orchestrator
 from agent.meta import make_utility_agent
+from core.container import ServiceContainer
 from evals.dataset import (
     Corpus,
     EndToEndQuestion,
@@ -42,7 +43,6 @@ from evals.dataset import (
 )
 from runs import RunRegistry, RunStatus
 from runs.events import AnswerDelta, ToolStarted
-from tools import Capabilities
 from tools.conversations import conversations_toolset
 from tools.memory import memory_toolset
 
@@ -68,7 +68,7 @@ async def _run_turn(
     *,
     model: Model,
     categories: dict | None,
-    capabilities: Capabilities,
+    capabilities: ServiceContainer,
 ) -> TurnResult:
     """One real agent turn; reads the event stream for tool firings + answer text."""
     orch = build_chat_orchestrator(
@@ -166,7 +166,7 @@ async def score_consumer(
     retrieval_tool: str,
     model: Model,
     categories: dict,
-    capabilities_on: Capabilities,
+    capabilities_on: ServiceContainer,
     questions: list[EndToEndQuestion],
 ) -> ConsumerScores:
     """Run every question on/off and tally trigger + grounding for one consumer."""
@@ -177,7 +177,7 @@ async def score_consumer(
         )
         # capability-off: omit the consumer's category + capability entirely.
         off = await _run_turn(
-            q.question, model=model, categories={}, capabilities=Capabilities()
+            q.question, model=model, categories={}, capabilities=ServiceContainer()
         )
 
         fired = on.fired(retrieval_tool)
@@ -253,7 +253,7 @@ async def test_memory_end_to_end_benefit(chat_model, memory_store):
         retrieval_tool=MEMORY_RETRIEVAL_TOOL,
         model=chat_model,
         categories={"memory": memory_toolset()},
-        capabilities_on=Capabilities(memory=memory_store),
+        capabilities_on=ServiceContainer.of(memory_store),
         questions=corpus.questions,
     )
     _assert_agent_benefits(scores)
@@ -268,7 +268,7 @@ async def test_conversation_end_to_end_benefit(chat_model, conversation_search):
         retrieval_tool=CONVERSATION_RETRIEVAL_TOOL,
         model=chat_model,
         categories={"conversations": conversations_toolset()},
-        capabilities_on=Capabilities(conversation_search=search),
+        capabilities_on=ServiceContainer.of(search),
         questions=corpus.questions,
     )
     _assert_agent_benefits(scores)

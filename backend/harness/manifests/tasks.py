@@ -18,29 +18,14 @@ from routes import tasks as tasks_routes
 from routes.chat import compose_turn, resolve_turn_models
 from runs import Run, RunRegistry, RunStatus
 from services.approval_grants import ApprovalGrantStore
-from services.artifacts import ArtifactStore
-from services.calendar import CalendarService
-from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
-from services.corpus import CorpusIndex
-from services.documents import DocumentStore
-from services.external_tools import ExternalTools
-from services.mail import MailService
-from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
-from services.sandbox import SandboxSessionManager
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
-from services.search import SearchService
-from services.secret_vault import SecretVaultService
 from services.settings_store import SettingsStore
-from services.skills import SkillStore
 from services.tool_policy import effective_disabled_tools
 from services.uploads import UploadStore
-from services.webfetch import BrowserFetcher
-from services.workspace_history import WorkspaceHistoryStore
-from tools import Capabilities
 
 # A scheduled task's outcome summary is a short factual line, not a transcript —
 # just enough for the operator to judge at a glance whether to open the conversation.
@@ -117,29 +102,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             prompt=view.prompt,
             conversation_id=conversation_id,
             models=models,
-            capabilities=Capabilities(
-                memory=services.get(MemoryStore),
-                sandbox_sessions=services.get_optional(SandboxSessionManager),
-                artifacts=services.get(ArtifactStore),
-                search=services.get(SearchService),
-                fetcher=services.get(BrowserFetcher),
-                conversation_search=services.get(ConversationSearch),
-                corpus=services.get(CorpusIndex),
-                uploads=services.get(UploadStore),
-                grants=grants,
-                workspace_history=services.get(WorkspaceHistoryStore),
-                documents=services.get(DocumentStore),
-                skills=services.get(SkillStore),
-                notifications=notifications,
-                # An unattended task reaches the same capabilities an interactive turn
-                # does. These four are the approval-gated ones, so a handle missing here
-                # wouldn't fail loudly — the tool would simply report itself unavailable
-                # and the task would quietly do less than it was asked to.
-                mail=services.get(MailService),
-                calendar=services.get(CalendarService),
-                secret_vault=services.get(SecretVaultService),
-                external=services.get(ExternalTools),
-            ),
+            # An unattended task reaches the same capabilities an interactive turn
+            # does — the app's one agent-facing bag, so the two can never diverge.
+            capabilities=ctx.capabilities,
             registry=runs,
             store=conversations,
             uploads=services.get(UploadStore),

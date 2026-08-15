@@ -8,8 +8,9 @@ from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator, stream_agent_run
 from core.config import Settings
+from core.container import ServiceContainer
 from runs import Run, RunRegistry, RunStatus, RunStream
-from services.sandbox import SandboxError, SandboxResult, SandboxSpec
+from services.sandbox import SandboxError, SandboxResult, SandboxSessionManager, SandboxSpec
 from tools import RunDeps, build_agent_toolsets
 from tools import code as code_module
 from tools.code import code_toolset
@@ -77,9 +78,11 @@ async def _run_one_tool(tool: str, *, sessions=None) -> Run:
         output_type=[str, DeferredToolRequests],
     )
     run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
-    deps = RunDeps(
-        run=run, owner_id="operator", sandbox_sessions=sessions, conversation_id="conv-1"
-    )
+    caps = ServiceContainer()
+    if sessions is not None:
+        # The fake manager registers under the class the code tools resolve.
+        caps.add(sessions, as_type=SandboxSessionManager)
+    deps = RunDeps(run=run, owner_id="operator", caps=caps, conversation_id="conv-1")
     async with agent.iter("go", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
     return run

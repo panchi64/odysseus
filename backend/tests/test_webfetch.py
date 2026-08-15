@@ -792,8 +792,9 @@ async def test_web_fetch_tool_reaches_the_fetcher():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
+    from services.webfetch import BrowserFetcher
     from tools.search import web_toolset
 
     seen: dict[str, str] = {}
@@ -805,11 +806,13 @@ async def test_web_fetch_tool_reaches_the_fetcher():
             seen["url"] = url
             return FetchedPage(url=url, title="t", content="body")
 
+    caps = ServiceContainer()
+    caps.add(_StubFetcher(), as_type=BrowserFetcher)
     orch = build_chat_orchestrator(
         "read it",
         model=TestModel(call_tools=["web_fetch"]),
         categories={"web": web_toolset()},
-        capabilities=Capabilities(fetcher=_StubFetcher()),
+        capabilities=caps,
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()

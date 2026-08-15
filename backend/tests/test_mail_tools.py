@@ -11,6 +11,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from agent import build_chat_orchestrator
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import RunRegistry, RunStatus
@@ -54,7 +55,7 @@ async def wired(tmp_path):
 
 
 def _deps(service, run=None) -> RunDeps:
-    return RunDeps(run=run or _StubRun(), owner_id="operator", mail=service)
+    return RunDeps(run=run or _StubRun(), owner_id="operator", caps=ServiceContainer.of(service))
 
 
 class _StubRun:

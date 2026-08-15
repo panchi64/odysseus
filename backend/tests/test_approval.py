@@ -6,11 +6,12 @@ from pydantic_ai import FunctionToolset, ToolApproved, ToolDenied
 from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import RunRegistry, RunStatus
 from services.notifications import NotificationService
-from tools import Capabilities, RunDeps
+from tools import RunDeps
 
 
 def _danger_categories():
@@ -121,7 +122,7 @@ async def test_park_notifies_approval_needed(tmp_path):
         "delete the thing",
         model=TestModel(custom_output_text="done"),
         categories=_danger_categories(),
-        capabilities=Capabilities(notifications=service),
+        capabilities=ServiceContainer.of(service),
         conversation_id="c1",
     )
     run = reg.submit(
@@ -160,7 +161,7 @@ async def test_grant_short_circuit_resolves_a_dangling_notification(tmp_path):
         "delete the thing",
         model=TestModel(custom_output_text="done"),
         categories=_danger_categories(),
-        capabilities=Capabilities(grants=grants, notifications=service),
+        capabilities=ServiceContainer.of(grants, service),
         conversation_id="c1",
     )
     run = reg.submit(

@@ -9,9 +9,10 @@ import pytest
 from pydantic_ai import ModelRetry
 
 from agent.engine import _skill_catalog_block
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
-from services.sandbox import SandboxError
+from services.sandbox import SandboxError, SandboxSessionManager
 from services.skills import SkillStore
 from services.skills.store import SkillCatalogEntry
 from tools.deps import RunDeps
@@ -74,8 +75,14 @@ def _ctx(deps: RunDeps):
     return ctx
 
 
-def _deps(**overrides) -> RunDeps:
-    base = {"run": FakeRun(), "owner_id": OWNER, "conversation_id": "conv-1"}
+def _deps(skills: SkillStore | None = None, sandbox_sessions=None, **overrides) -> RunDeps:
+    # The bag keys by concrete type; fakes register under the class the tools resolve.
+    caps = ServiceContainer()
+    if skills is not None:
+        caps.add(skills, as_type=SkillStore)
+    if sandbox_sessions is not None:
+        caps.add(sandbox_sessions, as_type=SandboxSessionManager)
+    base = {"run": FakeRun(), "owner_id": OWNER, "conversation_id": "conv-1", "caps": caps}
     base.update(overrides)
     return RunDeps(**base)
 

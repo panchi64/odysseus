@@ -24,7 +24,7 @@ from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from models.calendar import DEFAULT_TIMEZONE
-from services.calendar import EventView, OccurrenceView
+from services.calendar import CalendarService, EventView, OccurrenceView
 
 from .deps import RunDeps
 
@@ -47,7 +47,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         `start` and `end` are ISO-8601 timestamps (UTC unless they carry an offset).
         Defaults to now through two weeks ahead.
         """
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return [{"error": _UNAVAILABLE}]
         window_start = _moment(start) if start else datetime.now(UTC)
@@ -64,7 +64,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
     @toolset.tool
     async def list_calendars(ctx: RunContext[RunDeps]) -> list[dict]:
         """List the operator's calendars — needed to know where to put a new event."""
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return [{"error": _UNAVAILABLE}]
         return [
@@ -93,7 +93,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         rule such as `FREQ=WEEKLY;BYDAY=MO`. Omitting `calendar_id` uses the operator's
         first writable calendar.
         """
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return {"error": _UNAVAILABLE}
         target = calendar_id or await _default_calendar(ctx)
@@ -132,7 +132,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
     ) -> dict:
         """Change an existing event. Only the fields you pass are altered; for a recurring
         event this changes the whole series."""
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return {"error": _UNAVAILABLE}
         try:
@@ -160,7 +160,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         """Delete an event. Pass `occurrence_start` (the ISO start of one instance) to
         cancel just that instance of a recurring event and leave the rest of the series in
         place; omit it to delete the event outright."""
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return _UNAVAILABLE
         try:
@@ -182,7 +182,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
     ) -> dict:
         """Turn a phrase like "lunch with Ana Friday 1pm" into a structured event draft
         (`CAL-3`). This only drafts — pass the result to `create_event` to store it."""
-        service = ctx.deps.calendar
+        service = ctx.deps.caps.get_optional(CalendarService)
         parser = service.nl if service is not None else None
         if parser is None:
             return {"error": "Natural-language event entry is unavailable."}
@@ -210,7 +210,7 @@ async def _default_calendar(ctx: RunContext[RunDeps]) -> str | None:
     """The calendar a new event lands on when the model named none — the operator's first
     writable one. Chosen here rather than in the service: "where does this go by default"
     is a convenience for the *agent*, not a rule of the capability."""
-    service = ctx.deps.calendar
+    service = ctx.deps.caps.get_optional(CalendarService)
     assert service is not None
     calendars = await service.list_calendars(ctx.deps.owner_id)
     writable = next((row for row in calendars if not row.read_only), None)

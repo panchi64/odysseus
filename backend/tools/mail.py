@@ -47,7 +47,7 @@ _LIST_MAX = 50
 def _service(ctx: RunContext[RunDeps]) -> MailService | None:
     """The mail capability for this run, or ``None`` when no account is connected (or the
     service isn't wired) — in which case every tool here degrades instead of raising."""
-    return ctx.deps.mail
+    return ctx.deps.caps.get_optional(MailService)
 
 
 def _summarize(view: MessageView) -> str:

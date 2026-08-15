@@ -72,8 +72,8 @@ async def test_agent_corpus_tool_retrieves_indexed_folder_content():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.corpus import corpus_toolset
 
     from ._helpers import granting_store
@@ -92,7 +92,7 @@ async def test_agent_corpus_tool_retrieves_indexed_folder_content():
                 "look something up",
                 model=TestModel(custom_output_text="done"),
                 categories={"corpus": corpus_toolset()},
-                capabilities=Capabilities(corpus=app.state.corpus, grants=grants),
+                capabilities=ServiceContainer.of(app.state.corpus, grants),
                 conversation_id="c",
             )
             run = RunRegistry().submit(kind="chat", owner_id="operator", orchestrator=orch)

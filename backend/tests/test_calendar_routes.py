@@ -6,6 +6,7 @@ import pytest
 from pydantic_ai import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
+from core.container import ServiceContainer
 from tools import RunDeps
 from tools.calendar import calendar_toolset
 
@@ -378,7 +379,7 @@ async def test_the_agent_can_read_and_write_the_calendar():
     async with client_app() as (client, app):
         owner, service = await _service_deps(app)
         calendar = await service.create_calendar(owner, "Personal")
-        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+        deps = RunDeps(run=None, owner_id=owner, caps=ServiceContainer.of(service))  # type: ignore[arg-type]
 
         created = await (_tool("create_event")).function(
             _Ctx(deps), title="Dentist", start="2026-06-09T10:00:00Z"
@@ -401,7 +402,7 @@ async def test_the_agent_falls_back_to_the_first_writable_calendar():
         owner, service = await _service_deps(app)
         await service.create_calendar(owner, "Read-only", read_only=True)
         writable = await service.create_calendar(owner, "Personal")
-        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+        deps = RunDeps(run=None, owner_id=owner, caps=ServiceContainer.of(service))  # type: ignore[arg-type]
 
         created = await (_tool("create_event")).function(
             _Ctx(deps), title="Coffee", start="2026-06-09T10:00:00Z"
@@ -415,7 +416,7 @@ async def test_a_bad_timestamp_asks_the_model_to_retry():
     async with client_app() as (client, app):
         owner, service = await _service_deps(app)
         await service.create_calendar(owner, "Personal")
-        deps = RunDeps(run=None, owner_id=owner, calendar=service)  # type: ignore[arg-type]
+        deps = RunDeps(run=None, owner_id=owner, caps=ServiceContainer.of(service))  # type: ignore[arg-type]
 
         with pytest.raises(ModelRetry):
             await (_tool("create_event")).function(
@@ -424,7 +425,7 @@ async def test_a_bad_timestamp_asks_the_model_to_retry():
 
 
 async def test_the_calendar_tools_degrade_when_the_capability_is_absent():
-    deps = RunDeps(run=None, owner_id="operator", calendar=None)  # type: ignore[arg-type]
+    deps = RunDeps(run=None, owner_id="operator")  # type: ignore[arg-type]
     found = await _tool("agenda").function(_Ctx(deps))
     assert found == [{"error": "The calendar is unavailable."}]
 

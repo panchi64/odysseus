@@ -25,7 +25,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError, SkillSpanError, SkillValidationError
-from services.sandbox import SandboxError
+from services.sandbox import SandboxError, SandboxSessionManager
 from services.skills import BUNDLE_MAX_BYTES, SKILL_FILE, SkillStore, render_skill_md
 from services.skills.store import SkillView
 
@@ -81,7 +81,7 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
 
         ``allowed_tools``, when present, is the skill author's advisory note about which
         tools it expects to use — it does not restrict you, and it grants you nothing."""
-        store = ctx.deps.skills
+        store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return {"ok": False, "error": _UNAVAILABLE}
         try:
@@ -102,7 +102,7 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         if skill.allowed_tools:
             result["allowed_tools"] = skill.allowed_tools
 
-        sessions = ctx.deps.sandbox_sessions
+        sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
         if sessions is None:
             result["note"] = (
                 "Your computer is unavailable, so this skill's bundled files were not "
@@ -142,7 +142,7 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         The skill is saved as a **draft**: the operator reviews and publishes it, and only
         published skills are surfaced. Say that you saved it, rather than implying it is
         already in use."""
-        store = ctx.deps.skills
+        store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return {"ok": False, "error": _UNAVAILABLE}
         try:
@@ -170,7 +170,7 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         ``old_text`` must appear **exactly once** in the skill's text; include enough
         surrounding context to make it unique. To append rather than replace, use the last
         line of the skill as ``old_text`` and return it followed by your new text."""
-        store = ctx.deps.skills
+        store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return {"ok": False, "error": _UNAVAILABLE}
         try:

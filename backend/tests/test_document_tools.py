@@ -13,6 +13,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from agent import stream_agent_run
 from agent.engine import _build_agent, _document_context_blocks
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import Run, RunStream
@@ -67,7 +68,12 @@ async def _drive(store: DocumentStore, conversation_id: str | None, tool_name: s
         output_type=[str, DeferredToolRequests],
     )
     run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
-    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=conversation_id, documents=store)
+    deps = RunDeps(
+        run=run,
+        owner_id=OWNER,
+        conversation_id=conversation_id,
+        caps=ServiceContainer.of(store),
+    )
     async with agent.iter("go", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
         return run, agent_run.result.output
@@ -305,7 +311,7 @@ async def test_document_state_reaches_the_model_as_a_dynamic_instruction():
 
     agent = _build_agent(FunctionModel(stream_function=capture))
     run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
-    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, documents=store)
+    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, caps=ServiceContainer.of(store))
     async with agent.iter("hello", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
 

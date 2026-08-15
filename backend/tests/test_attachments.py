@@ -27,6 +27,7 @@ from sqlmodel import Session, select
 
 from agent import build_chat_orchestrator
 from agent.attachments import resolve_attachments
+from core.container import ServiceContainer
 from core.db import in_session, init_db, make_engine
 from core.vault import Vault
 from models.corpus import CorpusChunk
@@ -37,7 +38,7 @@ from services.corpus.chunk_store import CorpusChunkStore
 from services.corpus.index import CorpusIndex
 from services.corpus.uploads import UploadsAdapter
 from services.registry import ModelRegistry
-from services.sandbox import SandboxError
+from services.sandbox import SandboxError, SandboxSessionManager
 from services.upload_extraction import BasicExtractor
 from services.uploads import UploadStore
 from tools import RunDeps, build_agent_toolsets
@@ -330,11 +331,16 @@ async def _run_provision(uid: str, *, uploads, sessions):
         output_type=[str, DeferredToolRequests],
     )
     run = Run(id="t", kind="chat", owner_id=OWNER, stream=RunStream())
+    caps = ServiceContainer()
+    if uploads is not None:
+        caps.add(uploads)
+    if sessions is not None:
+        # The fake sandbox manager registers under the class the tools resolve.
+        caps.add(sessions, as_type=SandboxSessionManager)
     deps = RunDeps(
         run=run,
         owner_id=OWNER,
-        uploads=uploads,
-        sandbox_sessions=sessions,
+        caps=caps,
         conversation_id="conv-1",
     )
     result = await agent.run("go", deps=deps)

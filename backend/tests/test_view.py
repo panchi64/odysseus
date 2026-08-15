@@ -18,11 +18,12 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from agent import stream_agent_run
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import Run, RunStream
 from services.artifacts import ArtifactStore
-from services.sandbox import PreviewHandle, SandboxError
+from services.sandbox import PreviewHandle, SandboxError, SandboxSessionManager
 from services.workspace_history import (
     SnapshotView,
     WorkspaceHistoryStore,
@@ -132,12 +133,18 @@ def _run(stream_fn, *, manager, store=None, history=None, conversation_id="conv-
         output_type=[str, DeferredToolRequests],
     )
     run = Run(id="r1", kind="chat", owner_id="operator", stream=RunStream())
+    caps = ServiceContainer()
+    if manager is not None:
+        # The fake manager registers under the class the view tools resolve.
+        caps.add(manager, as_type=SandboxSessionManager)
+    if store is not None:
+        caps.add(store)
+    if history is not None:
+        caps.add(history)
     deps = RunDeps(
         run=run,
         owner_id="operator",
-        sandbox_sessions=manager,
-        artifacts=store,
-        workspace_history=history,
+        caps=caps,
         conversation_id=conversation_id,
     )
     return agent, run, deps

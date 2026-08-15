@@ -132,6 +132,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     await ctx.lifecycle.start("offline", start=offline.start, stop=offline.stop)
     return FeatureRuntime(
         services=(searxng, search, browser, fetcher, offline),
+        capabilities=(search, fetcher),
         state={
             "searxng": searxng,
             "web_client": web_client,

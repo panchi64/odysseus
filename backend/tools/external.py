@@ -36,7 +36,7 @@ from pydantic_ai.toolsets import ToolsetTool
 
 from core.exceptions import DegradedCapabilityError, NotFoundError, SSRFError
 from core.untrusted import wrap_untrusted
-from services.external_tools import SourceKind
+from services.external_tools import ExternalTools, SourceKind
 from services.integrations import IntegrationService, IntegrationView
 
 from .deps import RunDeps
@@ -135,7 +135,7 @@ class ExternalCategoryToolset(AbstractToolset[RunDeps]):
         """
         if ctx.tool_call_approved:
             return
-        handle = ctx.deps.external
+        handle = ctx.deps.caps.get_optional(ExternalTools)
         if handle is None:  # pragma: no cover - a route implies a live handle
             raise ApprovalRequired()
         decision = await handle.policy.get(
@@ -153,7 +153,7 @@ class ExternalCategoryToolset(AbstractToolset[RunDeps]):
     async def _compose(self, ctx: RunContext[RunDeps]) -> CombinedToolset[RunDeps]:
         if self._inner is not None:
             return self._inner
-        handle = ctx.deps.external
+        handle = ctx.deps.caps.get_optional(ExternalTools)
         children: list[AbstractToolset[RunDeps]] = []
         routes: dict[str, _Route] = {}
         disabled: set[str] = set()

@@ -14,7 +14,7 @@ from services.skills import SkillStore
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
     skills = SkillStore(ctx.engine, ctx.vault)
-    return FeatureRuntime(services=(skills,), state={"skills": skills})
+    return FeatureRuntime(services=(skills,), capabilities=(skills,), state={"skills": skills})
 
 
 MANIFEST = FeatureManifest(

@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy import Engine
 
 from core.auth import AuthManager
+from core.container import ServiceContainer
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from runs import ConversationBusyError, Run, RunRegistry
@@ -58,6 +59,14 @@ OPERATOR_ID = "operator"
 
 def registry(request: Request) -> RunRegistry:
     return request.app.state.runs
+
+
+def capabilities(request: Request) -> ServiceContainer:
+    """The app's one agent-facing capability bag (`RunDeps.caps`) — assembled at
+    startup from every feature manifest's `capabilities` export. Every run path
+    (live chat, approval resume, the scheduler's executor) hands this same bag to
+    the engine, so the capability set can never diverge between them."""
+    return request.app.state.capabilities
 
 
 _CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"

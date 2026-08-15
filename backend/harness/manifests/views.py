@@ -34,6 +34,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     ctx.lifecycle.on_stop("preview-client", preview_client.aclose)
     return FeatureRuntime(
         services=(artifacts, workspace_history),
+        capabilities=(artifacts, workspace_history),
         state={
             "artifacts": artifacts,
             "workspace_history": workspace_history,

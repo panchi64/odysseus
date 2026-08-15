@@ -42,6 +42,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.config import get_settings
+from core.container import ServiceContainer
 from core.exceptions import ModelLoadError
 from prompts.agent import (
     CURRENT_DATE,
@@ -60,13 +61,13 @@ from runs import (
     RunMetrics,
     RunStatus,
 )
-from services.approval_grants import covered_by_grant
+from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.documents import DocumentStore
 from services.notifications import NotificationService
-from services.skills import SkillCatalogEntry
+from services.skills import SkillCatalogEntry, SkillStore
 from services.uploads import UploadStore
-from tools import Capabilities, CompactionContext, RunDeps, build_agent_toolsets
+from tools import CompactionContext, RunDeps, build_agent_toolsets
 
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
@@ -76,8 +77,9 @@ from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
 
-# A shared empty bundle for the no-capabilities default (frozen ⇒ safe to share).
-_NO_CAPS = Capabilities()
+# A shared empty bag for the no-capabilities default — every capability-backed tool
+# degrades uniformly. Never mutated (only construction sites add), so safe to share.
+_NO_CAPS = ServiceContainer()
 
 # Persistent stop markers for the cancel/unhandled-error flush paths (mirrors the
 # bound-hit details above them — a plain sentence, not internal jargon — stamped via
@@ -181,7 +183,7 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
         latest state) and, unlike an appended prompt, never accumulates in history: Pydantic
         AI sends only the current run's instructions, so there's exactly one copy in context,
         no compounding. Empty (no-op) when there's no such document or no store/conversation."""
-        store = ctx.deps.documents
+        store = ctx.deps.caps.get_optional(DocumentStore)
         conversation_id = ctx.deps.conversation_id
         if store is None or conversation_id is None:
             return ""
@@ -197,7 +199,7 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
         what procedures exist without paying for any of their instructions. A dynamic
         instruction like the document state above, so it is always current and lives outside
         history. Empty (no-op) when there's no skill store or nothing is published."""
-        store = ctx.deps.skills
+        store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return ""
         return _skill_catalog_block(await store.catalog(ctx.deps.owner_id))
@@ -434,7 +436,7 @@ async def _drive_turn(
     message_history: list[ModelMessage] | None = None,
     deferred_results: DeferredToolResults | None = None,
     announced: set[str],
-    caps: Capabilities = _NO_CAPS,
+    caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
@@ -449,25 +451,11 @@ async def _drive_turn(
     deps = RunDeps(
         run=run,
         owner_id=run.owner_id,
+        # The whole agent-facing capability bag rides in as one handle — a tool
+        # resolves what it needs by type and degrades when it's absent.
+        caps=caps,
         disabled_tools=disabled_tools,
-        memory=caps.memory,
-        sandbox_sessions=caps.sandbox_sessions,
         conversation_id=conversation_id,
-        artifacts=caps.artifacts,
-        search=caps.search,
-        fetcher=caps.fetcher,
-        conversation_search=caps.conversation_search,
-        corpus=caps.corpus,
-        uploads=caps.uploads,
-        workspace_history=caps.workspace_history,
-        documents=caps.documents,
-        skills=caps.skills,
-        # Reserved sprint capabilities — forwarded unconditionally so a track only has to
-        # hang its service on `app.state`; None until then, and its tools degrade.
-        mail=caps.mail,
-        calendar=caps.calendar,
-        secret_vault=caps.secret_vault,
-        external=caps.external,
         # The turn's resolved compaction context (config + persistence boundary + handle map),
         # built once by the orchestrator and shared across the turn's segments (the grant-resume
         # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior
@@ -589,8 +577,9 @@ async def _drive_turn(
         # prompt; the rest still park for a decision. Grants are conversation-scoped,
         # so a stateless (no-conversation) turn always asks.
         granted: set[str] = set()
-        if caps.grants is not None and conversation_id is not None:
-            granted = await caps.grants.active(run.owner_id, conversation_id)
+        grants = caps.get_optional(ApprovalGrantStore)
+        if grants is not None and conversation_id is not None:
+            granted = await grants.active(run.owner_id, conversation_id)
         pre_approved = {
             call.tool_call_id: ToolApproved()
             for call in output.approvals
@@ -605,7 +594,7 @@ async def _drive_turn(
                 output,
                 announced,
                 pre_approved=pre_approved,
-                notifications=caps.notifications,
+                notifications=caps.get_optional(NotificationService),
                 store=store,
                 conversation_id=conversation_id,
             )
@@ -616,9 +605,10 @@ async def _drive_turn(
         # resolve any approval_needed notification still pending for this run — normally
         # a no-op (this branch only runs when nothing this hop parked), but idempotent
         # against whatever multi-hop history led here, so nothing is ever left dangling.
-        if caps.notifications is not None:
+        notifications = caps.get_optional(NotificationService)
+        if notifications is not None:
             with suppress(Exception):
-                await caps.notifications.resolve_for_run(run.owner_id, run.id)
+                await notifications.resolve_for_run(run.owner_id, run.id)
         prompt = None
         message_history = messages
         deferred_results = DeferredToolResults(approvals=pre_approved)
@@ -639,7 +629,7 @@ async def _verify_and_correct(
     turn: _TurnResult,
     announced: set[str],
     judge: Judge,
-    caps: Capabilities = _NO_CAPS,
+    caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     compaction: CompactionContext | None = None,
@@ -939,7 +929,7 @@ def build_chat_orchestrator(
     utility_settings: ModelSettings | None = None,
     title_model: Model | None = None,
     title_settings: ModelSettings | None = None,
-    capabilities: Capabilities = _NO_CAPS,
+    capabilities: ServiceContainer = _NO_CAPS,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
     context_window: int | None = None,
@@ -1230,7 +1220,7 @@ def build_resume_orchestrator(
     parked: ParkedTurn,
     decisions: dict[str, Any],
     *,
-    capabilities: Capabilities = _NO_CAPS,
+    capabilities: ServiceContainer = _NO_CAPS,
     store: ConversationStore | None = None,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:

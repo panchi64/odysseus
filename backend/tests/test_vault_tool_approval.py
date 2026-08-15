@@ -6,11 +6,11 @@ from pydantic_ai import ToolApproved, ToolDenied
 from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import RunRegistry, RunStatus
 from services.secret_vault import SecretVaultService
-from tools import Capabilities
 from tools.vault import vault_toolset
 
 OWNER = "operator"
@@ -33,7 +33,7 @@ async def _run_tool(reg: RunRegistry, service, tool: str):
         "look up the database credential",
         model=TestModel(custom_output_text="done", call_tools=[f"vault_{tool}"]),
         categories={"vault": vault_toolset()},
-        capabilities=Capabilities(secret_vault=service),
+        capabilities=ServiceContainer.of(service) if service is not None else ServiceContainer(),
     )
     run = reg.submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
@@ -50,7 +50,9 @@ async def _resume(reg: RunRegistry, run, service, decision):
         build_resume_orchestrator(
             parked,
             {call_id: decision},
-            capabilities=Capabilities(secret_vault=service),
+            capabilities=ServiceContainer.of(service)
+            if service is not None
+            else ServiceContainer(),
         ),
     )
     await run.wait()

@@ -66,6 +66,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     )
     return FeatureRuntime(
         services=(uploads, adapter),
+        capabilities=(uploads,),
         state={
             "uploads": uploads,
             "corpus_uploads": adapter,

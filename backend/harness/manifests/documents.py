@@ -24,6 +24,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     await ctx.lifecycle.start("corpus-documents", start=adapter.start, stop=adapter.stop)
     return FeatureRuntime(
         services=(documents, adapter),
+        capabilities=(documents,),
         state={"documents": documents, "corpus_documents": adapter},
     )
 

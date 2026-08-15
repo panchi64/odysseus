@@ -27,6 +27,7 @@ from pydantic_ai.settings import ModelSettings
 from agent import build_chat_orchestrator
 from agent.compaction import build_compaction_context
 from core.config import get_settings
+from core.container import ServiceContainer
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
@@ -42,7 +43,7 @@ from services.settings_store import (
     set_compaction,
 )
 from services.uploads import UploadStore
-from tools import Capabilities, CompactionContext
+from tools import CompactionContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -171,7 +172,7 @@ def compose_turn(
     prompt: str | None,
     conversation_id: str,
     models: tuple[Model, Model, ModelSettings | None, int | None, bool],
-    capabilities: Capabilities,
+    capabilities: ServiceContainer,
     registry: RunRegistry,
     store: ConversationStore,
     uploads: UploadStore,
@@ -250,28 +251,9 @@ async def _submit_turn(
         prompt=prompt,
         conversation_id=conversation_id,
         models=models,
-        capabilities=Capabilities(
-            memory=deps.memory(request),
-            sandbox_sessions=deps.sandbox_sessions(request),
-            artifacts=deps.artifacts(request),
-            search=deps.search(request),
-            fetcher=deps.fetcher(request),
-            conversation_search=deps.conversation_search(request),
-            corpus=deps.corpus(request),
-            uploads=deps.uploads(request),
-            grants=deps.approval_grants(request),
-            workspace_history=deps.workspace_history(request),
-            documents=deps.documents(request),
-            skills=deps.skills(request),
-            notifications=deps.notifications(request),
-            # Reserved sprint capabilities — each accessor reads through `getattr` and
-            # returns None until its track hangs the service on `app.state`, so these
-            # are wired once here rather than by every track that lands one.
-            mail=deps.mail(request),
-            calendar=deps.calendar(request),
-            secret_vault=deps.secret_vault(request),
-            external=deps.external(request),
-        ),
+        # The app's one agent-facing capability bag — assembled at startup from every
+        # feature manifest's `capabilities` export, so a turn never enumerates handles.
+        capabilities=deps.capabilities(request),
         registry=deps.registry(request),
         store=deps.store(request),
         uploads=deps.uploads(request),

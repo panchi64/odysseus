@@ -23,6 +23,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from evals.dataset import conversation_corpus, memory_corpus
@@ -45,7 +46,6 @@ from evals.test_retrieval import (
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.memory import MemoryStore
-from tools import Capabilities
 from tools.conversations import conversations_toolset
 from tools.memory import memory_toolset
 
@@ -79,7 +79,7 @@ async def _memory_run(embedder: EnvEmbedder, chat) -> tuple[dict, ConsumerScores
         retrieval_tool=MEMORY_RETRIEVAL_TOOL,
         model=chat,
         categories={"memory": memory_toolset()},
-        capabilities_on=Capabilities(memory=e2e_store),
+        capabilities_on=ServiceContainer.of(e2e_store),
         questions=corpus.questions,
     )
     return ablation, scores
@@ -113,7 +113,7 @@ async def _conversation_run(embedder: EnvEmbedder, chat) -> tuple[dict, Consumer
             retrieval_tool=CONVERSATION_RETRIEVAL_TOOL,
             model=chat,
             categories={"conversations": conversations_toolset()},
-            capabilities_on=Capabilities(conversation_search=e2e_search),
+            capabilities_on=ServiceContainer.of(e2e_search),
             questions=corpus.questions,
         )
     finally:

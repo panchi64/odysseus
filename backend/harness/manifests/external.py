@@ -15,7 +15,9 @@ from services.external_tools import build_external_tools
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
     external = build_external_tools(ctx.engine, ctx.vault)
-    return FeatureRuntime(services=(external,), state={"external": external})
+    return FeatureRuntime(
+        services=(external,), capabilities=(external,), state={"external": external}
+    )
 
 
 MANIFEST = FeatureManifest(

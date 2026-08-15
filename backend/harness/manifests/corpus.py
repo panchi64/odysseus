@@ -38,6 +38,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     )
     return FeatureRuntime(
         services=(chunk_store, index, folder_adapter),
+        capabilities=(index,),
         state={
             "corpus": index,
             "corpus_folder": folder_adapter,

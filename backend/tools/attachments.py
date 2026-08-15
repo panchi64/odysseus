@@ -21,7 +21,8 @@ from pathlib import PurePosixPath
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError
-from services.sandbox import SandboxError
+from services.sandbox import SandboxError, SandboxSessionManager
+from services.uploads import UploadStore
 
 from .deps import RunDeps
 
@@ -93,10 +94,10 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
         The result has ``ok`` and, on success, ``path``/``filename``/``mime``/
         ``size_bytes`` (plus ``renamed``/``note`` when the name was disambiguated); on
         failure an ``error`` you can act on (e.g. a bad id)."""
-        uploads = ctx.deps.uploads
+        uploads = ctx.deps.caps.get_optional(UploadStore)
         if uploads is None:
             return {"ok": False, "error": "Attachments are unavailable right now."}
-        sessions = ctx.deps.sandbox_sessions
+        sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
         if sessions is None:
             return {
                 "ok": False,

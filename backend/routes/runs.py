@@ -19,7 +19,6 @@ from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import covered_by_grant
 from services.conversations import ConversationStore
-from tools import Capabilities
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -198,31 +197,10 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     orchestrator = build_resume_orchestrator(
         parked,
         decisions,
-        capabilities=Capabilities(
-            memory=deps.memory(request),
-            sandbox_sessions=deps.sandbox_sessions(request),
-            artifacts=deps.artifacts(request),
-            search=deps.search(request),
-            fetcher=deps.fetcher(request),
-            conversation_search=deps.conversation_search(request),
-            corpus=deps.corpus(request),
-            uploads=deps.uploads(request),
-            grants=grants,
-            workspace_history=deps.workspace_history(request),
-            # A resumed turn re-runs the approved tool call, so it needs the same capability
-            # set the original turn had — a handle missing here degrades the very tool the
-            # operator just approved.
-            documents=deps.documents(request),
-            skills=deps.skills(request),
-            notifications=deps.notifications(request),
-            # The reserved sprint handles belong here for exactly the reason above, and
-            # more sharply: mail-send, vault-read and untrusted external tools are the
-            # approval-gated ones, so this resume path is the *only* way they ever run.
-            mail=deps.mail(request),
-            calendar=deps.calendar(request),
-            secret_vault=deps.secret_vault(request),
-            external=deps.external(request),
-        ),
+        # The same app-wide agent-facing bag the original turn ran with — a resumed
+        # turn re-runs the approved tool call, and mail-send/vault-read/external are
+        # the approval-gated ones, so this resume path is the *only* way they ever run.
+        capabilities=deps.capabilities(request),
         store=deps.store(request),
         # A resumed turn respects the operator's disabled set and the current offline
         # state — a tool switched off (or a link dropped) while it was parked stays hidden

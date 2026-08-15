@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from core.container import ServiceContainer
+
 if TYPE_CHECKING:
     from fastapi import APIRouter
     from sqlalchemy import Engine
@@ -26,37 +28,12 @@ if TYPE_CHECKING:
     from harness.lifecycle import LifecycleRegistry
     from harness.run_terminal import RunTerminalHook, SyncRunTerminalHook
 
-
-class ServiceContainer:
-    """Typed service handles, keyed by concrete class.
-
-    The one place a built capability is looked up by another — a feature's build
-    resolves its cross-feature dependencies here instead of importing another
-    feature's wiring. Missing means a wiring bug (a manifest forgot an ``after``
-    edge or an export), so ``get`` raises rather than degrades; optionality is the
-    *caller's* semantic and spelled ``get_optional``.
-    """
-
-    def __init__(self) -> None:
-        self._services: dict[type, object] = {}
-
-    def add(self, instance: object, *, as_type: type | None = None) -> None:
-        key = as_type if as_type is not None else type(instance)
-        if key in self._services:
-            raise LookupError(f"service already registered for {key.__name__}")
-        self._services[key] = instance
-
-    def get[T](self, service_type: type[T]) -> T:
-        try:
-            return self._services[service_type]  # type: ignore[return-value]
-        except KeyError:
-            raise LookupError(
-                f"no service registered for {service_type.__name__} — "
-                "a manifest is missing an `after` edge or an export"
-            ) from None
-
-    def get_optional[T](self, service_type: type[T]) -> T | None:
-        return self._services.get(service_type)  # type: ignore[return-value]
+__all__ = [
+    "FeatureManifest",
+    "FeatureRuntime",
+    "HarnessContext",
+    "ServiceContainer",
+]
 
 
 @dataclass(frozen=True)
@@ -69,15 +46,22 @@ class HarnessContext:
     vault: Vault
     lifecycle: LifecycleRegistry
     services: ServiceContainer
+    # The agent-facing capability bag (`RunDeps.caps`) as assembled so far — what a
+    # feature composing agent runs (the task scheduler) hands to the engine.
+    capabilities: ServiceContainer
 
 
 @dataclass(frozen=True)
 class FeatureRuntime:
     """What a feature's ``build`` hands back for the harness to wire in."""
 
-    # Capability instances other features (and, later, the agent's tools) resolve
-    # from the container — keyed by each instance's concrete type.
+    # Capability instances other features resolve from the container — keyed by
+    # each instance's concrete type.
     services: tuple[object, ...] = ()
+    # The subset of those instances the *agent's tools* may reach through
+    # ``RunDeps.caps`` — the curated agent-facing boundary. A service not exported
+    # here is invisible to every tool (the shell exports nothing, by design).
+    capabilities: tuple[object, ...] = ()
     # Names hung on ``app.state`` — the transitional seam ``routes/deps.py``'s
     # accessors read; shrinks as those accessors move onto the container.
     state: Mapping[str, object] = field(default_factory=dict)

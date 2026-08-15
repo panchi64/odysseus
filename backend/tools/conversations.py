@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pydantic_ai import FunctionToolset, RunContext
 
+from services.conversation_search import ConversationSearch
+
 from .deps import RunDeps
 from .recall_gate import gate_global_recall
 
@@ -35,7 +37,7 @@ def conversations_toolset() -> FunctionToolset[RunDeps]:
         # ``read`` below is an explicit-id read of one already-surfaced thread, so it
         # passes through ungated.
         gate_global_recall(ctx)
-        svc = ctx.deps.conversation_search
+        svc = ctx.deps.caps.get_optional(ConversationSearch)
         if svc is None:
             return [{"error": "Conversation search is unavailable."}]
         hits = await svc.search(
@@ -60,7 +62,7 @@ def conversations_toolset() -> FunctionToolset[RunDeps]:
     async def read(ctx: RunContext[RunDeps], conversation_id: str) -> str:
         """Read the full transcript of one of the operator's conversations by id
         (get the id from a ``conversations_search`` result)."""
-        svc = ctx.deps.conversation_search
+        svc = ctx.deps.caps.get_optional(ConversationSearch)
         if svc is None:
             return "Conversation search is unavailable."
         transcript = await svc.read(ctx.deps.owner_id, conversation_id)

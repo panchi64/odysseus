@@ -17,6 +17,7 @@ from __future__ import annotations
 from pydantic_ai import FunctionToolset, RunContext
 
 from core.untrusted import wrap_untrusted
+from services.corpus import CorpusIndex
 
 from .deps import RunDeps
 from .recall_gate import gate_global_recall
@@ -46,7 +47,7 @@ def corpus_toolset() -> FunctionToolset[RunDeps]:
         # which line 53 also collapses to a global recall.
         if not source_ids:
             gate_global_recall(ctx)
-        index = ctx.deps.corpus
+        index = ctx.deps.caps.get_optional(CorpusIndex)
         if index is None:
             return [{"error": "The knowledge corpus is unavailable."}]
         hits = await index.retrieve(

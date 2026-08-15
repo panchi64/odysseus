@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pydantic_ai import FunctionToolset, RunContext
 
+from services.memory import MemoryStore
+
 from .deps import RunDeps
 from .recall_gate import gate_global_recall
 
@@ -23,7 +25,7 @@ def memory_toolset() -> FunctionToolset[RunDeps]:
     @toolset.tool
     async def remember(ctx: RunContext[RunDeps], content: str) -> str:
         """Save a fact or preference to long-term memory for future recall."""
-        store = ctx.deps.memory
+        store = ctx.deps.caps.get_optional(MemoryStore)
         if store is None:
             return "Memory is unavailable."
         view = await store.remember(ctx.deps.owner_id, content)
@@ -36,7 +38,7 @@ def memory_toolset() -> FunctionToolset[RunDeps]:
         # is approval-gated (AE-3.8) just like the corpus read — otherwise it would be an
         # ungated path to the same content the corpus gate protects.
         gate_global_recall(ctx)
-        store = ctx.deps.memory
+        store = ctx.deps.caps.get_optional(MemoryStore)
         if store is None:
             return [{"error": "Memory is unavailable."}]
         hits = await store.recall(ctx.deps.owner_id, query, limit=limit)

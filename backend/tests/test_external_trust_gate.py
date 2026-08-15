@@ -17,6 +17,7 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from agent import stream_agent_run
+from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import Run, RunStream
@@ -58,7 +59,8 @@ def _agent(stream_fn) -> Agent:
 
 async def _run(agent: Agent, external: ExternalTools | None, run_id: str):
     run = Run(id=run_id, kind="chat", owner_id=OWNER, stream=RunStream())
-    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, external=external)
+    caps = ServiceContainer.of(external) if external is not None else ServiceContainer()
+    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, caps=caps)
     async with agent.iter("go", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run)
         return agent_run.result.output, run

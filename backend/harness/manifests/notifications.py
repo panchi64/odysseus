@@ -95,6 +95,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
     return FeatureRuntime(
         services=(notifications,),
+        # Agent-facing so the engine's park path can notify — the engine resolves it
+        # from the bag rather than carrying a dedicated notifier parameter.
+        capabilities=(notifications,),
         state={"notifications": notifications},
         run_terminal=(_resolve_dangling_approvals, _notify_conversation_terminal),
     )

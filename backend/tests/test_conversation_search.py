@@ -292,8 +292,8 @@ async def test_agent_conversation_tools_reach_the_service():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.conversations import conversations_toolset
 
     from ._helpers import granting_store
@@ -308,7 +308,7 @@ async def test_agent_conversation_tools_reach_the_service():
         "look across my chats",
         model=TestModel(custom_output_text="done"),
         categories={"conversations": conversations_toolset()},
-        capabilities=Capabilities(conversation_search=search, grants=grants),
+        capabilities=ServiceContainer.of(search, grants),
         conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
@@ -322,8 +322,8 @@ async def test_conversation_tools_degrade_when_unwired():
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
+    from core.container import ServiceContainer
     from runs import RunRegistry, RunStatus
-    from tools import Capabilities
     from tools.conversations import conversations_toolset
 
     from ._helpers import granting_store
@@ -335,7 +335,7 @@ async def test_conversation_tools_degrade_when_unwired():
         "look across my chats",
         model=TestModel(custom_output_text="done"),
         categories={"conversations": conversations_toolset()},
-        capabilities=Capabilities(grants=grants),
+        capabilities=ServiceContainer.of(grants),
         conversation_id="c",
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
