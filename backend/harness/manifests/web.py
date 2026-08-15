@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import httpx
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import offline as offline_routes
@@ -145,5 +146,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="web",
     routers=(search_routes.router, offline_routes.router),
+    api_scopes=(
+        ScopeClaim("search", ("/search",)),
+        ScopeClaim("status", ("/offline",)),
+    ),
     build=_build,
 )

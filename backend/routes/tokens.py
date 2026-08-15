@@ -16,7 +16,6 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.api_scopes import API_SCOPES
 from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
@@ -65,11 +64,12 @@ def _view(info: ApiTokenInfo) -> TokenView:
 
 
 @router.get("/scopes", response_model=list[ScopeView])
-async def list_scopes() -> list[ScopeView]:
-    """The catalog a token's scopes are chosen from."""
+async def list_scopes(request: Request) -> list[ScopeView]:
+    """The catalog a token's scopes are chosen from — the app's assembled table, so
+    a scope is only offered when something actually claims a surface into it."""
     return [
         ScopeView(id=scope.id, label=scope.label, description=scope.description)
-        for scope in API_SCOPES
+        for scope in request.app.state.api_scope_table.scopes
     ]
 
 

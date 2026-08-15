@@ -9,6 +9,7 @@ lock-aware (parks while the vault is locked).
 
 from __future__ import annotations
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import corpus as corpus_routes
 from services.conversation_search import ConversationSearch
@@ -49,5 +50,6 @@ MANIFEST = FeatureManifest(
     name="corpus",
     after=("memory", "conversation-search"),
     routers=(corpus_routes.router,),
+    api_scopes=(ScopeClaim("knowledge", ("/corpus",)),),
     build=_build,
 )

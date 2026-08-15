@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from harness.run_terminal import RunTerminalDispatcher
 from routes import notifications as notifications_routes
@@ -102,5 +103,6 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="notifications",
     routers=(notifications_routes.router,),
+    api_scopes=(ScopeClaim("tasks", ("/notifications",)),),
     build=_build,
 )

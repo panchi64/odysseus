@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from fastapi import APIRouter
     from sqlalchemy import Engine
 
-    from core.api_scopes import ApiScope
+    from core.api_scopes import ScopeClaim
     from core.config import Settings
     from core.vault import Vault
     from harness.lifecycle import LifecycleRegistry
@@ -97,9 +97,9 @@ class FeatureManifest:
     after: tuple[str, ...] = ()
     # Routers registered at app assembly (before the lifespan runs).
     routers: tuple[APIRouter, ...] = ()
-    # Inbound-token scope groups this feature's surfaces belong to (`AUTH-4`).
-    # A surface no manifest (and no core scope) claims stays token-unreachable.
-    api_scopes: tuple[ApiScope, ...] = ()
+    # Inbound-token scope claims for this feature's surfaces (`AUTH-4`). A surface
+    # no manifest (and no core claim) covers stays token-unreachable.
+    api_scopes: tuple[ScopeClaim, ...] = ()
     # Path prefixes exempt from the auth gate — for surfaces whose unguessable
     # path token *is* the credential. Claiming one is a deliberate, visible act.
     public_prefixes: tuple[str, ...] = ()

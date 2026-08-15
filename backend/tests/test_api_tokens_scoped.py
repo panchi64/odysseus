@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
-from core.api_scopes import scope_for_path
 from core.db import in_session
 from models.api_token import ApiToken
 
@@ -64,12 +63,15 @@ async def test_issue_rejects_an_unknown_or_empty_scope_set():
 
 async def test_scopes_catalog_never_covers_credential_or_host_surfaces():
     # Deny-by-default is the guarantee: no token can mint another token, read the
-    # operator's secrets, or reach the host shell.
-    for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup", "/shell/ws"):
-        assert scope_for_path(path) is None
-    # Longest prefix wins, so serving is grantable apart from the rest of /models.
-    assert scope_for_path("/models/roles") == "models"
-    assert scope_for_path("/models/serving/start") == "serving"
+    # operator's secrets, or reach the host shell. The table is per-app, assembled
+    # from core claims + every enabled manifest's — so this asserts the real one.
+    async with client_app() as (_client, app):
+        table = app.state.api_scope_table
+        for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup", "/shell/ws"):
+            assert table.scope_for_path(path) is None
+        # Longest prefix wins, so serving is grantable apart from the rest of /models.
+        assert table.scope_for_path("/models/roles") == "models"
+        assert table.scope_for_path("/models/serving/start") == "serving"
 
 
 async def test_token_authenticates_in_scope_and_is_refused_out_of_scope():

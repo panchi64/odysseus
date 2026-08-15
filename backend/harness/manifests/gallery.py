@@ -4,6 +4,7 @@ the conversation store (for chat-vs-imported provenance), and curates albums."""
 
 from __future__ import annotations
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import gallery as gallery_routes
 from services.conversations import ConversationStore
@@ -25,5 +26,6 @@ MANIFEST = FeatureManifest(
     name="gallery",
     after=("uploads",),
     routers=(gallery_routes.router,),
+    api_scopes=(ScopeClaim("knowledge", ("/gallery",)),),
     build=_build,
 )

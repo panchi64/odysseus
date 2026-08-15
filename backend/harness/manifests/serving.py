@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 
+from core.api_scopes import ScopeClaim
 from core.vault import Vault
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import cookbook as cookbook_routes
@@ -119,5 +120,6 @@ MANIFEST = FeatureManifest(
     name="serving",
     after=("corpus", "memory"),
     routers=(serving_routes.router, cookbook_routes.router),
+    api_scopes=(ScopeClaim("serving", ("/models/serving",)),),
     build=_build,
 )

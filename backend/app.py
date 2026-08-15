@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
+from core.api_scopes import CORE_CLAIMS, ScopeTable
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
@@ -127,7 +128,7 @@ async def lifespan(app: FastAPI):
     # The one instance both the auth gate and the `/tokens` routes use — a token revoked
     # through the route has to invalidate exactly what the gate trusts, which two stores
     # with two verification caches wouldn't do.
-    app.state.api_tokens = ApiTokenStore(engine)
+    app.state.api_tokens = ApiTokenStore(engine, app.state.api_scope_table)
 
     # The at-rest encryption vault. A passphrase (auth-disabled path) sets it up
     # or unlocks it at boot; otherwise it stays locked until the operator unlocks
@@ -256,10 +257,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Discovered once per app: routers register below (before the lifespan runs);
     # the lifespan runs each enabled manifest's build in the same order.
     app.state.feature_manifests = discover_manifests()
+    enabled_manifests = [
+        m
+        for m in app.state.feature_manifests
+        if m.enabled is None or m.enabled(settings)
+    ]
+
+    # The inbound-token scope table: core's own claims plus every enabled feature's.
+    # A surface nothing claims stays token-unreachable (deny-by-default), and the
+    # auth-exempt prefixes are likewise the core set plus each feature's declared own.
+    scope_table = ScopeTable(
+        [*CORE_CLAIMS, *(claim for m in enabled_manifests for claim in m.api_scopes)]
+    )
+    app.state.api_scope_table = scope_table
+    public_prefixes = tuple(
+        prefix for m in enabled_manifests for prefix in m.public_prefixes
+    )
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.
-    app.add_middleware(AuthMiddleware)
+    app.add_middleware(
+        AuthMiddleware, scope_table=scope_table, extra_public_prefixes=public_prefixes
+    )
 
     # Origin-agnostic API: the backend makes no assumption about who serves the
     # frontend. CORS is configurable; bearer auth works same- or split-origin.
@@ -283,9 +302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(tokens.router)
     # Every feature surface registers through its manifest; a manifest whose
     # `enabled` gate is off contributes nothing — its routes are simply 404.
-    for manifest in app.state.feature_manifests:
-        if manifest.enabled is not None and not manifest.enabled(settings):
-            continue
+    for manifest in enabled_manifests:
         for router in manifest.routers:
             app.include_router(router)
     return app

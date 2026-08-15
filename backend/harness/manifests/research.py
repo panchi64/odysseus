@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import research as research_routes
 from routes.deps import OPERATOR_ID
@@ -93,5 +94,6 @@ MANIFEST = FeatureManifest(
     name="research",
     after=("corpus", "notifications"),
     routers=(research_routes.router,),
+    api_scopes=(ScopeClaim("research", ("/research",)),),
     build=_build,
 )

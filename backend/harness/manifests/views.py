@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import httpx
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import previews as previews_routes
 from routes import views as views_routes
@@ -44,5 +45,11 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="views",
     routers=(views_routes.router, previews_routes.router),
+    # A View's versions ride the chat scope — they are part of reading a thread.
+    api_scopes=(ScopeClaim("chat", ("/views",)),),
+    # The live-head proxy is auth-exempt: the unguessable token in the path is the
+    # credential (a sandboxed, opaque-origin iframe loads it without the operator
+    # cookie), and it only ever proxies to a loopback preview container.
+    public_prefixes=("/previews",),
     build=_build,
 )

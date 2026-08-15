@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 from agent.vision import VisionTranscriber
+from core.api_scopes import ScopeClaim
 from core.ratelimit import RateLimiter
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import uploads as uploads_routes
@@ -77,5 +78,6 @@ MANIFEST = FeatureManifest(
     name="uploads",
     after=("corpus",),
     routers=(uploads_routes.router,),
+    api_scopes=(ScopeClaim("knowledge", ("/uploads",)),),
     build=_build,
 )

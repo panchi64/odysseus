@@ -7,6 +7,7 @@ adapter owns chunking/sealing/embedding on its own lock-aware worker.
 
 from __future__ import annotations
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import documents as documents_routes
 from services.corpus import CorpusChunkStore, CorpusIndex
@@ -31,5 +32,6 @@ MANIFEST = FeatureManifest(
     name="documents",
     after=("corpus",),
     routers=(documents_routes.router,),
+    api_scopes=(ScopeClaim("knowledge", ("/documents",)),),
     build=_build,
 )

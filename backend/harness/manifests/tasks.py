@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from models.task import TaskOutcome, TaskOutput
 from routes import tasks as tasks_routes
@@ -224,5 +225,10 @@ MANIFEST = FeatureManifest(
         "web",
     ),
     routers=(tasks_routes.router,),
+    api_scopes=(ScopeClaim("tasks", ("/tasks",)),),
+    # The inbound webhook trigger is auth-exempt: the per-task unguessable token in
+    # the path is the credential, so an external caller can fire a task without the
+    # operator's session. Every other `/tasks` route stays behind the gate.
+    public_prefixes=("/tasks/hooks",),
     build=_build,
 )

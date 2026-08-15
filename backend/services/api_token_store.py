@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from core.api_scopes import unknown_scopes
+from core.api_scopes import ScopeTable
 from core.auth import TokenIdentity
 from core.crypto import hash_password, verify_password
 from core.db import in_session
@@ -103,8 +103,11 @@ def _digest(presented: str) -> str:
 
 
 class ApiTokenStore:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, scope_table: ScopeTable) -> None:
         self._engine = engine
+        # The same table the auth gate resolves against, so a scope this store lets
+        # onto a token is exactly a scope the gate can honor.
+        self._scope_table = scope_table
         # digest(presented token) → identity, for tokens already verified this process.
         self._verified: dict[str, TokenIdentity] = {}
         # token id → monotonic time of its last `last_used_at` write.
@@ -117,7 +120,7 @@ class ApiTokenStore:
         label = label.strip()
         if not label:
             raise ValueError("a token needs a label")
-        unknown = unknown_scopes(scopes)
+        unknown = self._scope_table.unknown_scopes(scopes)
         if unknown:
             raise ValueError(f"unknown scope(s): {', '.join(unknown)}")
         if not scopes:

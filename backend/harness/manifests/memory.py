@@ -6,6 +6,7 @@ embedding endpoint is configured.
 
 from __future__ import annotations
 
+from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import memory as memory_routes
 from services.embeddings import RegistryEmbedder
@@ -20,5 +21,6 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="memory",
     routers=(memory_routes.router,),
+    api_scopes=(ScopeClaim("memory", ("/memory",)),),
     build=_build,
 )

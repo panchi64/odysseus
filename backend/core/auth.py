@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from core.api_scopes import scope_for_path
+from core.api_scopes import ScopeTable
 from core.exceptions import RateLimitedError
 from core.ratelimit import RateLimiter
 
@@ -47,16 +47,12 @@ _AUTH_ATTEMPT_BURST = 10
 # /auth/logout — stays behind the gate, so an unauthenticated caller can't lock
 # the vault or revoke sessions.
 _PUBLIC_PATHS = frozenset({"/auth/status", "/auth/login", "/setup", "/openapi.json"})
-# Prefixes whose sub-paths are also public (liveness probes, the docs UIs).
-# `/previews` is a token-gated subtree: the unguessable token in the path is the
-# credential (so a sandboxed, opaque-origin iframe can load assets without the
-# operator's cookie), and the route only ever proxies to a loopback preview
-# container — never to operator data.
-# `/tasks/hooks` is the same pattern for the task scheduler's inbound webhook
-# trigger (`POST /tasks/hooks/{token}`): the per-task unguessable token in the path
-# is the credential, so an external caller can fire a task without the operator's
-# session. Every other `/tasks` route stays behind the gate.
-_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/previews", "/tasks/hooks")
+# Prefixes whose sub-paths are also public (liveness probes, the docs UIs) — the
+# core set. A feature whose unguessable path token *is* the credential (the preview
+# proxy's `/previews`, the task webhook's `/tasks/hooks`) declares its own prefix on
+# its manifest (`public_prefixes`); the assembly passes the combined tuple in, so
+# claiming an auth exemption stays a deliberate, reviewable act on the feature.
+_PUBLIC_PREFIXES = ("/health", "/docs", "/redoc")
 
 
 @dataclass(frozen=True)
@@ -120,10 +116,12 @@ class AuthManager:
         self._tokens.clear()
 
 
-def _is_public(path: str) -> bool:
+def _is_public(path: str, extra_prefixes: tuple[str, ...]) -> bool:
     if path in _PUBLIC_PATHS:
         return True
-    return any(path == p or path.startswith(p + "/") for p in _PUBLIC_PREFIXES)
+    return any(
+        path == p or path.startswith(p + "/") for p in (*_PUBLIC_PREFIXES, *extra_prefixes)
+    )
 
 
 def token_from_headers(authorization: str | None, cookie_token: str | None) -> str | None:
@@ -170,7 +168,7 @@ _UNAUTHENTICATED: _Rejection = (401, "authentication required", [])
 
 
 async def _authenticate_api_token(
-    state: Any, scope: Scope, presented: str | None
+    state: Any, scope: Scope, presented: str | None, scope_table: ScopeTable
 ) -> _Rejection | None:
     """Try the presented credential as a scoped API token. ``None`` = authenticated.
 
@@ -194,7 +192,7 @@ async def _authenticate_api_token(
         if identity is None:
             return _UNAUTHENTICATED
 
-    required = scope_for_path(scope["path"])
+    required = scope_table.scope_for_path(scope["path"])
     if required is None or required not in identity.scopes:
         # Deny-by-default: an unclaimed path (`/tokens`, `/vault`, `/shell`) is out of
         # reach for every token, whatever it carries.
@@ -205,11 +203,23 @@ async def _authenticate_api_token(
 
 
 class AuthMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        scope_table: ScopeTable,
+        extra_public_prefixes: tuple[str, ...] = (),
+    ) -> None:
         self.app = app
+        self._scope_table = scope_table
+        self._extra_public_prefixes = extra_public_prefixes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["method"] == "OPTIONS" or _is_public(scope["path"]):
+        if (
+            scope["type"] != "http"
+            or scope["method"] == "OPTIONS"
+            or _is_public(scope["path"], self._extra_public_prefixes)
+        ):
             return await self.app(scope, receive, send)
 
         state = scope["app"].state
@@ -218,7 +228,9 @@ class AuthMiddleware:
             # The operator session comes first: an in-memory set membership test, so the
             # browser's every request stays free of the token path entirely.
             if not state.auth_manager.verify(presented):
-                rejection = await _authenticate_api_token(state, scope, presented)
+                rejection = await _authenticate_api_token(
+                    state, scope, presented, self._scope_table
+                )
                 if rejection is not None:
                     return await _reject(send, *rejection)
         if not state.vault.is_unlocked:
