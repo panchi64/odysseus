@@ -25,7 +25,7 @@ import pytest
 from tools.deps import Capabilities
 
 # Every module that builds the capability set handed to an orchestrator.
-_CONSTRUCTION_SITES = ("app.py", "routes/chat.py", "routes/runs.py")
+_CONSTRUCTION_SITES = ("harness/manifests/tasks.py", "routes/chat.py", "routes/runs.py")
 
 
 def _keywords_at_each_call(path: Path) -> list[set[str]]:

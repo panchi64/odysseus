@@ -1,0 +1,212 @@
+"""The scheduled-tasks feature (`TASK-1..6`) — the scheduler and how a task fires.
+
+An agent task executes as an ordinary Run in a fresh conversation, reusing the chat
+turn's own composition so there is no forked run-submission path; a reminder task
+fires its prompt verbatim as a notification. The executor learns a Run's outcome
+through a waiter future resolved synchronously at the terminal transition — the
+same dispatch everything else observes a run's outcome through.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
+from models.task import TaskOutcome, TaskOutput
+from routes import tasks as tasks_routes
+from routes.chat import compose_turn, resolve_turn_models
+from runs import Run, RunRegistry, RunStatus
+from services.approval_grants import ApprovalGrantStore
+from services.artifacts import ArtifactStore
+from services.calendar import CalendarService
+from services.conversation_search import ConversationSearch
+from services.conversations import ConversationStore
+from services.corpus import CorpusIndex
+from services.documents import DocumentStore
+from services.external_tools import ExternalTools
+from services.mail import MailService
+from services.memory import MemoryStore
+from services.notifications import NotificationService
+from services.offline import OfflineModeService
+from services.registry import ModelRegistry
+from services.sandbox import SandboxSessionManager
+from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
+from services.search import SearchService
+from services.secret_vault import SecretVaultService
+from services.settings_store import SettingsStore
+from services.skills import SkillStore
+from services.tool_policy import effective_disabled_tools
+from services.uploads import UploadStore
+from services.webfetch import BrowserFetcher
+from services.workspace_history import WorkspaceHistoryStore
+from tools import Capabilities
+
+# A scheduled task's outcome summary is a short factual line, not a transcript —
+# just enough for the operator to judge at a glance whether to open the conversation.
+_TASK_SUMMARY_MAX_CHARS = 280
+
+# `TaskRun.outcome` from the Run status it settled at — the three failure-shaped
+# statuses map onto the matching `TaskOutcome` verbatim; `cancelled` covers both an
+# operator-cancelled run and one still parked (never approved/denied) at shutdown.
+_TASK_OUTCOME_BY_RUN_STATUS = {
+    RunStatus.done: TaskOutcome.OK.value,
+    RunStatus.error: TaskOutcome.ERROR.value,
+    RunStatus.blocked: TaskOutcome.BLOCKED.value,
+    RunStatus.cancelled: TaskOutcome.CANCELLED.value,
+}
+
+
+async def _build(ctx: HarnessContext) -> FeatureRuntime:
+    services = ctx.services
+    conversations = services.get(ConversationStore)
+    registry = services.get(ModelRegistry)
+    runs = services.get(RunRegistry)
+    grants = services.get(ApprovalGrantStore)
+    notifications = services.get(NotificationService)
+    settings_store = services.get(SettingsStore)
+    offline = services.get(OfflineModeService)
+
+    # Keyed by run id — the executor awaits one of these futures to learn when its
+    # Run reaches a genuinely terminal state, which may be long after an approval
+    # park + operator resume round-trip (`AE-3.2`/`AE-3.5`). Resolved synchronously
+    # at the terminal transition, so a task execution's eventual settle is observed
+    # the same way anything else observes a run's outcome — no polling loop.
+    run_waiters: dict[str, asyncio.Future[Run]] = {}
+
+    def _resolve_waiter(run: Run) -> None:
+        waiter = run_waiters.pop(run.id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(run)
+
+    async def _task_run_summary(run: Run, conversation_id: str) -> str | None:
+        """A short, plain factual line about how the run settled — no extra model
+        call. An error/blocked/cancelled run already carries its own operator-legible
+        reason; a `done` run's summary is the start of its final answer."""
+        if run.status is RunStatus.error:
+            return run.error
+        if run.status is RunStatus.blocked:
+            return run.detail
+        if run.status is RunStatus.cancelled:
+            return run.detail or "cancelled"
+        if run.status is RunStatus.done:
+            turns = await conversations.messages_view(conversation_id)
+            for turn in reversed(turns):
+                if turn.role == "assistant" and turn.content:
+                    return turn.content[:_TASK_SUMMARY_MAX_CHARS]
+            return None
+        return None
+
+    async def _task_executor(view: ScheduledTaskView) -> TaskRunResult:
+        """An agent task's fire — an ordinary Run in a fresh conversation (titled from
+        the task), seeded with the task's own pre-authorization as a conversation
+        grant (`AE-3.5`) so its unattended sensitive actions within that scope don't
+        pause; anything outside it still parks + notifies exactly like an
+        interactive run. Reuses `routes.chat`'s own turn composition
+        (`resolve_turn_models`/`compose_turn`) so a task's run is submitted through
+        the identical path a live chat turn is — no forked run-submission logic."""
+        models = await resolve_turn_models(registry, None, None, owner_id=view.owner_id)
+        conversation_id = await conversations.create_conversation(
+            view.owner_id, title=view.title
+        )
+        for tool_name in view.pre_authorized:
+            await grants.grant(view.owner_id, conversation_id, tool_name)
+
+        waiter: asyncio.Future[Run] = asyncio.get_running_loop().create_future()
+        created = compose_turn(
+            prompt=view.prompt,
+            conversation_id=conversation_id,
+            models=models,
+            capabilities=Capabilities(
+                memory=services.get(MemoryStore),
+                sandbox_sessions=services.get_optional(SandboxSessionManager),
+                artifacts=services.get(ArtifactStore),
+                search=services.get(SearchService),
+                fetcher=services.get(BrowserFetcher),
+                conversation_search=services.get(ConversationSearch),
+                corpus=services.get(CorpusIndex),
+                uploads=services.get(UploadStore),
+                grants=grants,
+                workspace_history=services.get(WorkspaceHistoryStore),
+                documents=services.get(DocumentStore),
+                skills=services.get(SkillStore),
+                notifications=notifications,
+                # An unattended task reaches the same capabilities an interactive turn
+                # does. These four are the approval-gated ones, so a handle missing here
+                # wouldn't fail loudly — the tool would simply report itself unavailable
+                # and the task would quietly do less than it was asked to.
+                mail=services.get(MailService),
+                calendar=services.get(CalendarService),
+                secret_vault=services.get(SecretVaultService),
+                external=services.get(ExternalTools),
+            ),
+            registry=runs,
+            store=conversations,
+            uploads=services.get(UploadStore),
+            # An unattended task's turn honours the operator's disabled set exactly as an
+            # interactive one does — a tool switched off is off everywhere, not just where
+            # someone is watching.
+            disabled_tools=await effective_disabled_tools(
+                settings_store, offline, view.owner_id
+            ),
+            owner_id=view.owner_id,
+        )
+        # Registered before the very first `await` below — the newly submitted Run's
+        # task hasn't had a chance to run yet (`RunRegistry.submit` only schedules
+        # it), so there is no window for it to reach terminal and fire the terminal
+        # dispatch before this waiter exists.
+        run_waiters[created.run_id] = waiter
+        run = await waiter
+
+        outcome = _TASK_OUTCOME_BY_RUN_STATUS.get(run.status, TaskOutcome.ERROR.value)
+        summary = await _task_run_summary(run, conversation_id)
+        if view.output == TaskOutput.NOTIFICATION.value:
+            await notifications.notify(
+                view.owner_id,
+                "task_outcome",
+                view.title,
+                body=summary,
+                conversation_id=conversation_id,
+                task_id=view.id,
+            )
+        return TaskRunResult(
+            outcome=outcome,
+            run_id=run.id,
+            conversation_id=conversation_id,
+            summary=summary,
+        )
+
+    async def _task_notify(view: ScheduledTaskView) -> None:
+        """A reminder task's fire — its prompt delivered verbatim as the notification
+        body (no AI phrasing in v1); title = the task's own title."""
+        await notifications.notify(
+            view.owner_id,
+            "reminder",
+            view.title,
+            body=view.prompt,
+            task_id=view.id,
+        )
+
+    # Single-instance, in-process. Lock-aware like the write-behind drainers (task
+    # prompts are encrypted): it parks its tick loop while the vault is locked and
+    # resumes on unlock. This manifest builds after everything the executor reaches,
+    # so the scheduler also stops before all of it — nothing may submit new runs
+    # into a tearing-down process.
+    scheduler = SchedulerService(
+        ctx.engine,
+        ctx.vault,
+        executor=_task_executor,
+        notify=_task_notify,
+    )
+    await ctx.lifecycle.start("scheduler", start=scheduler.start, stop=scheduler.stop)
+    return FeatureRuntime(
+        services=(scheduler,),
+        state={"scheduler": scheduler, "task_run_waiters": run_waiters},
+        run_terminal_sync=(_resolve_waiter,),
+    )
+
+
+MANIFEST = FeatureManifest(
+    name="tasks",
+    routers=(tasks_routes.router,),
+    build=_build,
+)

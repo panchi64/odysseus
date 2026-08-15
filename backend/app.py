@@ -8,7 +8,6 @@ this is the chassis — see ``docs/architecture/README.md``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -29,7 +28,6 @@ from harness.manifest import HarnessContext, ServiceContainer
 from harness.run_terminal import RunTerminalDispatcher
 from models.conversation import Conversation
 from models.corpus import CorpusSource
-from models.task import TaskOutcome, TaskOutput
 from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
     api_tokens,
@@ -52,20 +50,17 @@ from routes import (
     offline,
     overview,
     previews,
-    research,
     runs,
     search,
     secret_vault,
     serving,
     shell,
     skills,
-    tasks,
     tokens,
     tools,
     uploads,
     views,
 )
-from routes.chat import compose_turn, resolve_turn_models
 from routes.deps import OPERATOR_ID
 from runs import Run, RunRegistry, RunStatus
 from services.api_token_store import ApiTokenStore
@@ -101,7 +96,6 @@ from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
-from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
 from services.sealing import seal_legacy_column
 from services.search import SearchService
 from services.searxng import ManagedSearxng
@@ -109,29 +103,13 @@ from services.secret_vault import SecretVaultService
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
-from services.tool_policy import effective_disabled_tools
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser, WebDistiller
 from services.workspace_history import WorkspaceHistoryStore
-from tools import Capabilities
 
 logger = logging.getLogger(__name__)
-
-# A scheduled task's outcome summary is a short factual line, not a transcript —
-# just enough for the operator to judge at a glance whether to open the conversation.
-_TASK_SUMMARY_MAX_CHARS = 280
-
-# `TaskRun.outcome` from the Run status it settled at — the three failure-shaped
-# statuses map onto the matching `TaskOutcome` verbatim; `cancelled` covers both an
-# operator-cancelled run and one still parked (never approved/denied) at shutdown.
-_TASK_OUTCOME_BY_RUN_STATUS = {
-    RunStatus.done: TaskOutcome.OK.value,
-    RunStatus.error: TaskOutcome.ERROR.value,
-    RunStatus.blocked: TaskOutcome.BLOCKED.value,
-    RunStatus.cancelled: TaskOutcome.CANCELLED.value,
-}
 
 
 def _build_upload_extractor(
@@ -250,35 +228,6 @@ async def lifespan(app: FastAPI):
     run_terminal = RunTerminalDispatcher()
     app.state.run_terminal_tasks = run_terminal.tasks
 
-    # Keyed by run id — the scheduler's agent-task executor (below) awaits one of
-    # these futures to learn when its Run reaches a genuinely terminal state, which
-    # may be long after an approval park + operator resume round-trip (`AE-3.2`/
-    # `AE-3.5`). Resolved synchronously at the terminal transition, the same
-    # dispatch the attention surface's own notify composes over — so a task
-    # execution's eventual settle is observed the same way anything else observes a
-    # run's outcome, with no separate polling loop.
-    app.state.task_run_waiters: dict[str, asyncio.Future[Run]] = {}
-
-    # Same shape as the above, kept separate: `routes/research.py`'s `start` route
-    # registers one of these per research Run it submits, and its own background
-    # finalize task awaits it to learn the outcome to persist (report/stats/status) —
-    # independent bookkeeping from the scheduler's so the two features never collide
-    # on a run id.
-    app.state.research_run_waiters: dict[str, asyncio.Future[Run]] = {}
-
-    def _resolve_task_waiter(run: Run) -> None:
-        waiter = app.state.task_run_waiters.pop(run.id, None)
-        if waiter is not None and not waiter.done():
-            waiter.set_result(run)
-
-    def _resolve_research_waiter(run: Run) -> None:
-        waiter = app.state.research_run_waiters.pop(run.id, None)
-        if waiter is not None and not waiter.done():
-            waiter.set_result(run)
-
-    run_terminal.add_sync(_resolve_task_waiter)
-    run_terminal.add_sync(_resolve_research_waiter)
-
     async def _resolve_dangling_approvals(run: Run, watched: bool) -> None:
         """The backstop: a cancel-while-parked never reaches the approve route, and
         even a normal completion may still carry a dangling approval_needed if the
@@ -289,48 +238,6 @@ async def lifespan(app: FastAPI):
             await app.state.notifications.resolve_for_run(OPERATOR_ID, run.id)
         except Exception:
             logger.exception("notifications: failed to resolve run %s at terminal", run.id)
-
-    async def _notify_research_terminal(run: Run, watched: bool) -> None:
-        """Research runs are conversation-less (no thread to deep-link to) but are
-        their own noteworthy surface: unlike a chat turn, finishing is worth a
-        notification even if the operator's tab was open and watching the live
-        progress the whole time (they may well have navigated away for the several
-        minutes a run takes). Cancelled stays silent (the operator asked for it);
-        blocked never happens here (the pipeline never calls `run.block()`) but
-        would fall through to silence too."""
-        if run.kind != "research":
-            return
-        if run.status not in (RunStatus.done, RunStatus.error):
-            return
-        notifications = app.state.notifications
-        try:
-            research_row = await research.find_by_run(app.state.db_engine, run.id)
-        except Exception:
-            logger.exception(
-                "notifications: failed to resolve research run %s at terminal", run.id
-            )
-            return
-        if research_row is None:
-            return
-        question = app.state.vault.decrypt_str(research_row.question_enc)
-        title = question if len(question) <= 80 else question[:79] + "…"
-        if run.status is RunStatus.error:
-            await notifications.notify(
-                OPERATOR_ID,
-                "run_failed",
-                f'Research on "{title}" failed',
-                body=run.error,
-                run_id=run.id,
-                research_id=research_row.id,
-            )
-        else:
-            await notifications.notify(
-                OPERATOR_ID,
-                "run_completed",
-                f'Research on "{title}" is ready',
-                run_id=run.id,
-                research_id=research_row.id,
-            )
 
     async def _notify_conversation_terminal(run: Run, watched: bool) -> None:
         """Only conversation-linked runs notify (a stateless/detached run — research
@@ -366,7 +273,6 @@ async def lifespan(app: FastAPI):
             logger.exception("notifications: failed to notify run %s at terminal", run.id)
 
     run_terminal.add(_resolve_dangling_approvals)
-    run_terminal.add(_notify_research_terminal)
     run_terminal.add(_notify_conversation_terminal)
 
     app.state.runs = RunRegistry(
@@ -775,134 +681,48 @@ async def lifespan(app: FastAPI):
     app.state.preview_client = preview_client
     lifecycle.on_stop("preview-client", preview_client.aclose)
 
-    async def _task_run_summary(run: Run, conversation_id: str) -> str | None:
-        """A short, plain factual line about how the run settled — no extra model
-        call. An error/blocked/cancelled run already carries its own operator-legible
-        reason; a `done` run's summary is the start of its final answer."""
-        if run.status is RunStatus.error:
-            return run.error
-        if run.status is RunStatus.blocked:
-            return run.detail
-        if run.status is RunStatus.cancelled:
-            return run.detail or "cancelled"
-        if run.status is RunStatus.done:
-            turns = await app.state.conversations.messages_view(conversation_id)
-            for turn in reversed(turns):
-                if turn.role == "assistant" and turn.content:
-                    return turn.content[:_TASK_SUMMARY_MAX_CHARS]
-            return None
-        return None
-
-    async def _task_executor(view: ScheduledTaskView) -> TaskRunResult:
-        """An agent task's fire — an ordinary Run in a fresh conversation (titled from
-        the task), seeded with the task's own pre-authorization as a conversation
-        grant (`AE-3.5`) so its unattended sensitive actions within that scope don't
-        pause; anything outside it still parks + notifies exactly like an
-        interactive run. Reuses `routes.chat`'s own turn composition
-        (`resolve_turn_models`/`compose_turn`) so a task's run is submitted through
-        the identical path a live chat turn is — no forked run-submission logic."""
-        conversations = app.state.conversations
-        models = await resolve_turn_models(
-            app.state.models, None, None, owner_id=view.owner_id
-        )
-        conversation_id = await conversations.create_conversation(
-            view.owner_id, title=view.title
-        )
-        for tool_name in view.pre_authorized:
-            await app.state.approval_grants.grant(view.owner_id, conversation_id, tool_name)
-
-        waiter: asyncio.Future[Run] = asyncio.get_running_loop().create_future()
-        created = compose_turn(
-            prompt=view.prompt,
-            conversation_id=conversation_id,
-            models=models,
-            capabilities=Capabilities(
-                memory=app.state.memory,
-                sandbox_sessions=app.state.sandbox,
-                artifacts=app.state.artifacts,
-                search=app.state.search,
-                fetcher=app.state.fetcher,
-                conversation_search=app.state.conversation_search,
-                corpus=app.state.corpus,
-                uploads=app.state.uploads,
-                grants=app.state.approval_grants,
-                workspace_history=app.state.workspace_history,
-                documents=app.state.documents,
-                skills=app.state.skills,
-                notifications=app.state.notifications,
-                # An unattended task reaches the same capabilities an interactive turn
-                # does. These four are the approval-gated ones, so a handle missing here
-                # wouldn't fail loudly — the tool would simply report itself unavailable
-                # and the task would quietly do less than it was asked to.
-                mail=app.state.mail,
-                calendar=app.state.calendar,
-                secret_vault=app.state.secret_vault,
-                external=app.state.external,
-            ),
-            registry=app.state.runs,
-            store=conversations,
-            uploads=app.state.uploads,
-            # An unattended task's turn honours the operator's disabled set exactly as an
-            # interactive one does — a tool switched off is off everywhere, not just where
-            # someone is watching.
-            disabled_tools=await effective_disabled_tools(
-                app.state.settings_store, app.state.offline, view.owner_id
-            ),
-            owner_id=view.owner_id,
-        )
-        # Registered before the very first `await` below — the newly submitted Run's
-        # task hasn't had a chance to run yet (`RunRegistry.submit` only schedules
-        # it), so there is no window for it to reach terminal and fire
-        # `_on_run_terminal` before this waiter exists.
-        app.state.task_run_waiters[created.run_id] = waiter
-        run = await waiter
-
-        outcome = _TASK_OUTCOME_BY_RUN_STATUS.get(run.status, TaskOutcome.ERROR.value)
-        summary = await _task_run_summary(run, conversation_id)
-        if view.output == TaskOutput.NOTIFICATION.value:
-            await app.state.notifications.notify(
-                view.owner_id,
-                "task_outcome",
-                view.title,
-                body=summary,
-                conversation_id=conversation_id,
-                task_id=view.id,
-            )
-        return TaskRunResult(
-            outcome=outcome,
-            run_id=run.id,
-            conversation_id=conversation_id,
-            summary=summary,
-        )
-
-    async def _task_notify(view: ScheduledTaskView) -> None:
-        """A reminder task's fire — its prompt delivered verbatim as the notification
-        body (no AI phrasing in v1); title = the task's own title."""
-        await app.state.notifications.notify(
-            view.owner_id,
-            "reminder",
-            view.title,
-            body=view.prompt,
-            task_id=view.id,
-        )
-
     # Drain in-flight run-terminal tasks before the stores they read (notifications,
     # conversations) stop. Registered late so it runs early.
     lifecycle.on_stop("run-terminal-notifies", run_terminal.drain)
 
-    # The task scheduler — single-instance, in-process. Lock-aware like the
-    # write-behind drainers above (task prompts are encrypted): it parks its tick
-    # loop while the vault is locked and resumes on unlock. Registered last so it
-    # stops first — nothing may submit new runs into a tearing-down process.
-    app.state.scheduler = SchedulerService(
-        engine,
-        vault,
-        executor=_task_executor,
-        notify=_task_notify,
-    )
-    await lifecycle.start(
-        "scheduler", start=app.state.scheduler.start, stop=app.state.scheduler.stop
-    )
+    # Transitional: capabilities still hand-wired above register on the container so
+    # converted manifests can resolve them. Each of these lines moves into its own
+    # feature's manifest (its `services` return) as that feature converts.
+    for handle in (
+        app.state.runs,
+        app.state.models,
+        app.state.conversations,
+        app.state.conversation_search,
+        app.state.credentials,
+        app.state.settings_store,
+        app.state.notifications,
+        app.state.mail,
+        app.state.calendar,
+        app.state.external,
+        app.state.secret_vault,
+        app.state.backup,
+        app.state.cookbook,
+        app.state.memory,
+        app.state.corpus_chunk_store,
+        app.state.embedding_reindexer,
+        app.state.approval_grants,
+        app.state.serving,
+        app.state.corpus,
+        app.state.documents,
+        app.state.skills,
+        app.state.uploads,
+        app.state.gallery,
+        app.state.artifacts,
+        app.state.workspace_history,
+        app.state.search,
+        app.state.fetcher,
+        app.state.offline,
+        app.state.api_tokens,
+    ):
+        container.add(handle)
+    if sandbox_manager is not None:
+        container.add(sandbox_manager)
+
     # Feature manifests build last, in dependency (`after`) order — everything
     # hand-wired above is the core they resolve from the container. What a build
     # hands back wires in here: services for later manifests (and the agent's
@@ -975,8 +795,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(offline.router)
     app.include_router(tools.router)
     app.include_router(notifications.router)
-    app.include_router(tasks.router)
-    app.include_router(research.router)
     # Reserved sprint surfaces — registered here up front so the parallel feature
     # tracks each fill in only their own `routes/` module and never contend for this
     # block. Each is an empty router until its track lands.
