@@ -28,7 +28,6 @@ from harness.manifest import HarnessContext, ServiceContainer
 from harness.run_terminal import RunTerminalDispatcher
 from models.conversation import Conversation
 from models.corpus import CorpusSource
-from prompts.utility import DISTILL_INSTRUCTIONS
 from routes import (
     api_tokens,
     auth,
@@ -47,11 +46,8 @@ from routes import (
     memory,
     models,
     notifications,
-    offline,
     overview,
-    previews,
     runs,
-    search,
     secret_vault,
     serving,
     shell,
@@ -59,13 +55,11 @@ from routes import (
     tokens,
     tools,
     uploads,
-    views,
 )
 from routes.deps import OPERATOR_ID
 from runs import Run, RunRegistry, RunStatus
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
-from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.calendar import CalendarService
 from services.calendar.nl import CalendarNaturalLanguage
@@ -92,13 +86,10 @@ from services.mail import MailService
 from services.memory import MemoryStore
 from services.notification_channels import default_channels
 from services.notifications import NotificationService
-from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.sealing import seal_legacy_column
-from services.search import SearchService
-from services.searxng import ManagedSearxng
 from services.secret_vault import SecretVaultService
 from services.serving import ServingPaths, ServingService
 from services.settings_store import SettingsStore
@@ -106,8 +97,6 @@ from services.skills import SkillStore
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
-from services.webfetch import BrowserFetcher, ManagedBrowser, WebDistiller
-from services.workspace_history import WorkspaceHistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -525,129 +514,6 @@ async def lifespan(app: FastAPI):
     # the embedding backfill above: the migration that added the sealed column ran before
     # unlock with no key, so the healing has to happen here (XC-SEC-3).
     lifecycle.track("sealing-backfill", _backfill_sealed_columns(engine, vault))
-    # The View's static versions — the agent captures a sandbox file here, the
-    # frontend fetches and renders it on the View canvas. Encrypted at rest like the
-    # rest of the operator's data. (The View's live head rides the sandbox + the
-    # /previews proxy; this store is the snapshot/version history.)
-    app.state.artifacts = ArtifactStore(engine, vault)
-    # The View's git-style history — after a file-changing turn the sandbox
-    # workspace is captured as a content-addressed, encrypted snapshot; the frontend
-    # browses each version's code and diffs it against the previous one.
-    app.state.workspace_history = WorkspaceHistoryStore(engine, vault)
-    # Managed web search — the backend runs its own SearXNG (same container runtime
-    # as the sandbox) so search works with zero operator setup. Bring-up is
-    # best-effort in the background; until it's ready (or if no runtime exists) the
-    # search service degrades. An operator-configured provider overrides it.
-    searxng = ManagedSearxng(
-        enabled=settings.searxng_enabled,
-        image=settings.searxng_image,
-        data_dir=settings.data_dir,
-        startup_timeout_s=settings.searxng_startup_timeout_s,
-        external_base_url=settings.searxng_base_url,
-        runtime_pref=settings.sandbox_runtime,
-    )
-    app.state.searxng = searxng
-    # The container is not started here: the offline-mode service (built below, once
-    # the browser exists too) owns bringing both web containers up — probe-first, so a
-    # host that boots offline never launches them. Its stop registers now, before the
-    # offline monitor's, so the monitor stops first and never fights the teardown.
-    lifecycle.on_stop("searxng", searxng.stop)
-    # Web search — query the managed SearXNG (or an operator-configured provider). Its own
-    # outbound client does NOT follow redirects: an unguarded redirect off the JSON API
-    # would be an SSRF hole, so the search path simply refuses to follow one.
-    web_client = httpx.AsyncClient(follow_redirects=False)
-    app.state.web_client = web_client
-    lifecycle.on_stop("web-client", web_client.aclose)
-    app.state.search = SearchService(
-        engine,
-        vault,
-        http_client=web_client,
-        managed_url=lambda: searxng.base_url,
-        timeout_s=settings.web_search_timeout_s,
-        result_limit=settings.web_search_result_limit,
-    )
-    # Web fetch — a containerized headless Chromium (same runtime as the sandbox/SearXNG)
-    # + the render-and-extract fetcher. The open web is treated as always-dynamic, so every
-    # fetch loads the page in the browser (its JS runs) and extracts the rendered DOM to
-    # Markdown. Bring-up is best-effort in the background: no runtime / a failed pull leaves
-    # the browser unavailable and web fetch degrades, like managed search.
-    browser = ManagedBrowser(
-        enabled=settings.web_fetch_enabled,
-        image=settings.web_fetch_image,
-        startup_timeout_s=settings.web_fetch_startup_timeout_s,
-        concurrency=settings.web_fetch_concurrency,
-        user_agent=settings.web_fetch_user_agent,
-        locale=settings.web_fetch_locale,
-        timezone_id=settings.web_fetch_timezone,
-        cookie_ttl_s=settings.web_fetch_cookie_ttl_s,
-        cookie_max=settings.web_fetch_cookie_max,
-        proxy_image=settings.web_fetch_proxy_image,
-        runtime_pref=settings.sandbox_runtime,
-    )
-    app.state.browser = browser
-    lifecycle.on_stop("browser", browser.stop)
-    # Goal-aware distillation of oversized pages: a closure resolves the utility model
-    # (the background-work rule — utility, degrade to main, reasoning off) fresh per call,
-    # so it respects registry changes and keeps the engine layer out of services/webfetch.
-    distiller: WebDistiller | None = None
-    if settings.web_fetch_distill_enabled:
-
-        async def _resolve_distill_model():
-            resolved = await registry.resolve_background(owner_id=OPERATOR_ID)
-            return resolved.model, resolved.reasoning_off
-
-        distiller = WebDistiller(
-            resolve_model=_resolve_distill_model,
-            instructions=DISTILL_INSTRUCTIONS,
-            window_tokens=settings.web_fetch_distill_window_tokens,
-            max_windows=settings.web_fetch_distill_max_windows,
-            timeout_s=settings.web_fetch_distill_timeout_s,
-        )
-    # Like SearXNG above, the browser is started by the offline-mode service, not here.
-    app.state.fetcher = BrowserFetcher(
-        browser=browser,
-        timeout_s=settings.web_fetch_timeout_s,
-        wait_until=settings.web_fetch_wait_until,
-        render_wait_ms=settings.web_fetch_render_wait_ms,
-        max_bytes=settings.web_fetch_max_bytes,
-        min_chars=settings.web_fetch_min_chars,
-        min_interval_s=settings.web_fetch_min_interval_s,
-        challenge_waits=settings.web_fetch_challenge_waits,
-        challenge_wait_ms=settings.web_fetch_challenge_wait_ms,
-        output_max_tokens=settings.web_fetch_output_max_tokens,
-        pdf_max_bytes=settings.web_fetch_pdf_max_bytes,
-        pdf_max_pages=settings.web_fetch_pdf_max_pages,
-        http_client=web_client,
-        settle_checks=settings.web_fetch_settle_checks,
-        settle_wait_ms=settings.web_fetch_settle_wait_ms,
-        settle_min_chars=settings.web_fetch_settle_min_chars,
-        distiller=distiller,
-    )
-    # Offline mode — owns both web containers' lifecycle. Probe-first at boot: it runs
-    # one connectivity check and only brings SearXNG + the browser up if the host is
-    # online (a host that boots offline never spins up the heavy browser), then watches
-    # the link and suspends/resumes them as connectivity comes and goes. The operator
-    # can also force offline manually; both switches persist via the settings store.
-    async def _assume_online() -> bool:
-        return True
-
-    app.state.offline = OfflineModeService(
-        searxng=searxng,
-        browser=browser,
-        settings_store=app.state.settings_store,
-        owner_id=OPERATOR_ID,
-        anchors=settings.offline_anchors,
-        interval_s=settings.offline_check_interval_s,
-        timeout_s=settings.offline_check_timeout_s,
-        fail_threshold=settings.offline_fail_threshold,
-        recover_threshold=settings.offline_recover_threshold,
-        auto_default=settings.offline_auto_default,
-        # Probing off ⇒ assume online (no network); only the manual switch acts.
-        probe=None if settings.offline_check_enabled else _assume_online,
-    )
-    await lifecycle.start(
-        "offline", start=app.state.offline.start, stop=app.state.offline.stop
-    )
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
     # Present ⇒ wrap it in a per-conversation session manager that keeps a
@@ -675,11 +541,6 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("sandbox: code execution disabled (no container runtime)")
         logger.info("preview: disabled (no container runtime)")
-    # Reused by the preview reverse proxy to forward HTTP to a sandbox server. No
-    # redirect following — the proxy rewrites Location and returns it to the browser.
-    preview_client = httpx.AsyncClient(follow_redirects=False)
-    app.state.preview_client = preview_client
-    lifecycle.on_stop("preview-client", preview_client.aclose)
 
     # Drain in-flight run-terminal tasks before the stores they read (notifications,
     # conversations) stop. Registered late so it runs early.
@@ -712,11 +573,6 @@ async def lifespan(app: FastAPI):
         app.state.skills,
         app.state.uploads,
         app.state.gallery,
-        app.state.artifacts,
-        app.state.workspace_history,
-        app.state.search,
-        app.state.fetcher,
-        app.state.offline,
         app.state.api_tokens,
     ):
         container.add(handle)
@@ -788,11 +644,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(gallery.router)
     app.include_router(corpus.router)
-    app.include_router(views.router)
-    app.include_router(previews.router)
-    app.include_router(search.router)
     app.include_router(api_tokens.router)
-    app.include_router(offline.router)
     app.include_router(tools.router)
     app.include_router(notifications.router)
     # Reserved sprint surfaces — registered here up front so the parallel feature

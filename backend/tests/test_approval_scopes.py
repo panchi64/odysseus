@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import json
 
-from sqlmodel import Session
-
+from core.db import in_session
 from models.external_tool import McpServer
 
 from ._helpers import client_app
@@ -70,8 +69,13 @@ async def test_external_tools_appear_as_scopes_and_validate():
     `external_{slug}_{tool}` names that no list written ahead of time could contain — and
     a task must be able to pre-authorize one."""
     async with client_app() as (client, app):
-        with Session(app.state.db_engine) as session:
-            session.add(
+        # Through `in_session`, never a raw `Session(engine)`: the in-memory test
+        # engine shares one connection, and only `in_session` takes the per-engine
+        # lock that keeps this write from interleaving with a background drainer's
+        # (a raw session's BEGIN can land inside another thread's open transaction).
+        await in_session(
+            app.state.db_engine,
+            lambda session: session.add(
                 McpServer(
                     owner_id="operator",
                     name="Ticket Desk",
@@ -83,8 +87,8 @@ async def test_external_tools_appear_as_scopes_and_validate():
                         [{"name": "close_ticket", "description": "Close a ticket."}]
                     ),
                 )
-            )
-            session.commit()
+            ),
+        )
 
         names = _names((await client.get("/tools/approval-scopes")).json())
         assert "external_ticket_desk_close_ticket" in names
