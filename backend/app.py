@@ -24,6 +24,9 @@ from core.db import init_db, make_engine
 from core.ratelimit import RateLimiter
 from core.vault import Vault
 from harness import LifecycleRegistry
+from harness.discovery import discover_manifests
+from harness.manifest import HarnessContext, ServiceContainer
+from harness.run_terminal import RunTerminalDispatcher
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.task import TaskOutcome, TaskOutput
@@ -227,6 +230,10 @@ async def lifespan(app: FastAPI):
     # is one call, not a hand-maintained mirror of this sequence. Something that must
     # stop *earlier* than its construction position implies simply registers later.
     lifecycle = LifecycleRegistry()
+    # Typed capability handles. Core wiring adds what it builds; each feature
+    # manifest's build resolves its cross-feature dependencies here and adds what
+    # it hands back — never by importing another feature's wiring.
+    container = ServiceContainer()
     app.state.auth_manager = AuthManager()
     # Inbound scoped API tokens (`AUTH-4`). Wired below with the engine, but named here
     # because the auth gate runs on every request — including ones that arrive before the
@@ -235,18 +242,21 @@ async def lifespan(app: FastAPI):
     # gate having to distinguish "not wired yet" from "deliberately not offered".
     app.state.api_tokens = None
 
-    # Tracks each terminal-transition notify task while it's in flight — lets shutdown
-    # drain them cleanly (rather than tearing down the DB engine/vault out from under
-    # one) and lets a test await "every pending notify has settled" deterministically.
-    app.state.run_terminal_tasks: set[asyncio.Task[None]] = set()
+    # The registry's injected terminal-transition point — features contribute hooks
+    # (waiter resolution, notification policy) without `runs/` importing `services/`
+    # (it only knows it holds an optional callback). The in-flight terminal tasks
+    # stay reachable as `app.state.run_terminal_tasks` so shutdown drains them and a
+    # test can await "every pending notify has settled" deterministically.
+    run_terminal = RunTerminalDispatcher()
+    app.state.run_terminal_tasks = run_terminal.tasks
 
     # Keyed by run id — the scheduler's agent-task executor (below) awaits one of
     # these futures to learn when its Run reaches a genuinely terminal state, which
     # may be long after an approval park + operator resume round-trip (`AE-3.2`/
-    # `AE-3.5`). Resolved synchronously inside `_on_run_terminal`, the same one-shot
-    # hook the attention surface's own notify composes over — so a task execution's
-    # eventual settle is observed the same way anything else observes a run's
-    # outcome, with no separate polling loop.
+    # `AE-3.5`). Resolved synchronously at the terminal transition, the same
+    # dispatch the attention surface's own notify composes over — so a task
+    # execution's eventual settle is observed the same way anything else observes a
+    # run's outcome, with no separate polling loop.
     app.state.task_run_waiters: dict[str, asyncio.Future[Run]] = {}
 
     # Same shape as the above, kept separate: `routes/research.py`'s `start` route
@@ -256,80 +266,80 @@ async def lifespan(app: FastAPI):
     # on a run id.
     app.state.research_run_waiters: dict[str, asyncio.Future[Run]] = {}
 
-    def _on_run_terminal(run: Run) -> None:
-        """The registry's injected terminal-transition hook — composes the attention
-        surface's emit policy over the run substrate without `runs/` importing
-        `services/` (it only knows it holds an optional callback). The subscriber
-        count is captured *here*, synchronously, before the registry closes the
-        stream (see `RunStream.subscriber_count`'s docstring for why reading it later,
-        from the scheduled task below, would race the stream's own subscriber
-        cleanup). `app.state.notifications`/`app.state.conversations` are read lazily
-        inside the scheduled task, not here — a run can't reach terminal before both
-        exist, so the forward reference is safe despite the registry being built
-        before either singleton below."""
+    def _resolve_task_waiter(run: Run) -> None:
         waiter = app.state.task_run_waiters.pop(run.id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(run)
-        research_waiter = app.state.research_run_waiters.pop(run.id, None)
-        if research_waiter is not None and not research_waiter.done():
-            research_waiter.set_result(run)
-        watched = run.stream.subscriber_count > 0
-        task = asyncio.create_task(_notify_run_terminal(run, watched=watched))
-        app.state.run_terminal_tasks.add(task)
-        task.add_done_callback(app.state.run_terminal_tasks.discard)
 
-    async def _notify_run_terminal(run: Run, *, watched: bool) -> None:
-        notifications = app.state.notifications
+    def _resolve_research_waiter(run: Run) -> None:
+        waiter = app.state.research_run_waiters.pop(run.id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(run)
+
+    run_terminal.add_sync(_resolve_task_waiter)
+    run_terminal.add_sync(_resolve_research_waiter)
+
+    async def _resolve_dangling_approvals(run: Run, watched: bool) -> None:
+        """The backstop: a cancel-while-parked never reaches the approve route, and
+        even a normal completion may still carry a dangling approval_needed if the
+        operator never decided it. `app.state.notifications` is read lazily — a run
+        can't reach terminal before it exists, so the forward reference is safe
+        despite the registry being built before that singleton."""
         try:
-            # Always resolve first: a cancel-while-parked never reaches the approve
-            # route, and even a normal completion may still carry a dangling
-            # approval_needed if the operator never decided it — this is the backstop.
-            await notifications.resolve_for_run(OPERATOR_ID, run.id)
+            await app.state.notifications.resolve_for_run(OPERATOR_ID, run.id)
         except Exception:
             logger.exception("notifications: failed to resolve run %s at terminal", run.id)
-        # Research runs are conversation-less (no thread to deep-link to) but are their
-        # own noteworthy surface: unlike a chat turn, finishing is worth a notification
-        # even if the operator's tab was open and watching the live progress the whole
-        # time (they may well have navigated away for the several minutes a run takes).
-        # Cancelled stays silent (the operator asked for it); blocked never happens here
-        # (the pipeline never calls `run.block()`) but would fall through to silence too.
-        if run.kind == "research":
-            if run.status not in (RunStatus.done, RunStatus.error):
-                return
-            try:
-                research_row = await research.find_by_run(app.state.db_engine, run.id)
-            except Exception:
-                logger.exception(
-                    "notifications: failed to resolve research run %s at terminal", run.id
-                )
-                return
-            if research_row is None:
-                return
-            question = app.state.vault.decrypt_str(research_row.question_enc)
-            title = question if len(question) <= 80 else question[:79] + "…"
-            if run.status is RunStatus.error:
-                await notifications.notify(
-                    OPERATOR_ID,
-                    "run_failed",
-                    f'Research on "{title}" failed',
-                    body=run.error,
-                    run_id=run.id,
-                    research_id=research_row.id,
-                )
-            else:
-                await notifications.notify(
-                    OPERATOR_ID,
-                    "run_completed",
-                    f'Research on "{title}" is ready',
-                    run_id=run.id,
-                    research_id=research_row.id,
-                )
+
+    async def _notify_research_terminal(run: Run, watched: bool) -> None:
+        """Research runs are conversation-less (no thread to deep-link to) but are
+        their own noteworthy surface: unlike a chat turn, finishing is worth a
+        notification even if the operator's tab was open and watching the live
+        progress the whole time (they may well have navigated away for the several
+        minutes a run takes). Cancelled stays silent (the operator asked for it);
+        blocked never happens here (the pipeline never calls `run.block()`) but
+        would fall through to silence too."""
+        if run.kind != "research":
             return
-        # Only conversation-linked runs notify (a stateless/detached run has no thread
-        # to deep-link to); cancelled and blocked outcomes stay silent — the operator
-        # asked for the cancel, and a bound/limit stop isn't a noteworthy failure.
+        if run.status not in (RunStatus.done, RunStatus.error):
+            return
+        notifications = app.state.notifications
+        try:
+            research_row = await research.find_by_run(app.state.db_engine, run.id)
+        except Exception:
+            logger.exception(
+                "notifications: failed to resolve research run %s at terminal", run.id
+            )
+            return
+        if research_row is None:
+            return
+        question = app.state.vault.decrypt_str(research_row.question_enc)
+        title = question if len(question) <= 80 else question[:79] + "…"
+        if run.status is RunStatus.error:
+            await notifications.notify(
+                OPERATOR_ID,
+                "run_failed",
+                f'Research on "{title}" failed',
+                body=run.error,
+                run_id=run.id,
+                research_id=research_row.id,
+            )
+        else:
+            await notifications.notify(
+                OPERATOR_ID,
+                "run_completed",
+                f'Research on "{title}" is ready',
+                run_id=run.id,
+                research_id=research_row.id,
+            )
+
+    async def _notify_conversation_terminal(run: Run, watched: bool) -> None:
+        """Only conversation-linked runs notify (a stateless/detached run — research
+        included — has no thread to deep-link to); cancelled and blocked outcomes
+        stay silent — the operator asked for the cancel, and a bound/limit stop
+        isn't a noteworthy failure."""
         if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
             return
+        notifications = app.state.notifications
         try:
             summary = await app.state.conversations.get_summary(run.conversation_id, OPERATOR_ID)
             title = summary.title if summary is not None and summary.title else "this conversation"
@@ -355,11 +365,15 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("notifications: failed to notify run %s at terminal", run.id)
 
+    run_terminal.add(_resolve_dangling_approvals)
+    run_terminal.add(_notify_research_terminal)
+    run_terminal.add(_notify_conversation_terminal)
+
     app.state.runs = RunRegistry(
         max_concurrency=settings.run_max_concurrency,
         wall_clock_timeout_s=settings.run_wall_clock_timeout_s,
         inactivity_timeout_s=settings.run_inactivity_timeout_s,
-        on_terminal=_on_run_terminal,
+        on_terminal=run_terminal,
     )
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -872,18 +886,9 @@ async def lifespan(app: FastAPI):
             task_id=view.id,
         )
 
-    async def _drain_run_terminal_notifies() -> None:
-        """Drain any in-flight run-terminal notify tasks before the stores they read
-        (notifications, conversations) stop — a run finishing right at shutdown must
-        not leave a task reading a closed store, and must not warn as
-        "destroyed while pending". Registered late so it runs early."""
-        pending = list(app.state.run_terminal_tasks)
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-
-    lifecycle.on_stop("run-terminal-notifies", _drain_run_terminal_notifies)
+    # Drain in-flight run-terminal tasks before the stores they read (notifications,
+    # conversations) stop. Registered late so it runs early.
+    lifecycle.on_stop("run-terminal-notifies", run_terminal.drain)
 
     # The task scheduler — single-instance, in-process. Lock-aware like the
     # write-behind drainers above (task prompts are encrypted): it parks its tick
@@ -898,6 +903,28 @@ async def lifespan(app: FastAPI):
     await lifecycle.start(
         "scheduler", start=app.state.scheduler.start, stop=app.state.scheduler.stop
     )
+    # Feature manifests build last, in dependency (`after`) order — everything
+    # hand-wired above is the core they resolve from the container. What a build
+    # hands back wires in here: services for later manifests (and the agent's
+    # tools), transitional `app.state` names for `routes/deps.py`, and run-terminal
+    # hooks. Their routers were registered at app assembly (`create_app`).
+    ctx = HarnessContext(
+        settings=settings, engine=engine, vault=vault, lifecycle=lifecycle, services=container
+    )
+    for manifest in app.state.feature_manifests:
+        if manifest.enabled is not None and not manifest.enabled(settings):
+            continue
+        if manifest.build is None:
+            continue
+        runtime = await manifest.build(ctx)
+        for service in runtime.services:
+            container.add(service)
+        for name, value in runtime.state.items():
+            setattr(app.state, name, value)
+        for sync_hook in runtime.run_terminal_sync:
+            run_terminal.add_sync(sync_hook)
+        for hook in runtime.run_terminal:
+            run_terminal.add(hook)
     try:
         yield
     finally:
@@ -908,6 +935,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="Odysseus", version=settings.version, lifespan=lifespan)
     app.state.settings = settings  # the lifespan reads this (tests inject it)
+    # Discovered once per app: routers register below (before the lifespan runs);
+    # the lifespan runs each enabled manifest's build in the same order.
+    app.state.feature_manifests = discover_manifests()
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.
@@ -962,6 +992,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # are simply 404 — the natural kill-switch.
     if settings.shell_enabled:
         app.include_router(shell.router)
+    for manifest in app.state.feature_manifests:
+        if manifest.enabled is not None and not manifest.enabled(settings):
+            continue
+        for router in manifest.routers:
+            app.include_router(router)
     return app
 
 
