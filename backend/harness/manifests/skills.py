@@ -10,6 +10,7 @@ from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import skills as skills_routes
 from services.skills import SkillStore
+from tools.skills import skill_catalog_instructions, skills_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -21,5 +22,8 @@ MANIFEST = FeatureManifest(
     name="skills",
     routers=(skills_routes.router,),
     api_scopes=(ScopeClaim("knowledge", ("/skills",)),),
+    toolsets=(("skills", skills_toolset),),
+    # Every turn surfaces the published-skill catalog (names + descriptions only).
+    instructions=(skill_catalog_instructions,),
     build=_build,
 )

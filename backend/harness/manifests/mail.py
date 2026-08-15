@@ -13,6 +13,7 @@ from services.credential_store import CredentialStore
 from services.mail import MailService
 from services.notifications import NotificationService
 from services.registry import ModelRegistry
+from tools.mail import mail_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -31,5 +32,6 @@ MANIFEST = FeatureManifest(
     name="mail",
     after=("notifications",),
     routers=(mail_routes.router,),
+    toolsets=(("mail", mail_toolset),),
     build=_build,
 )

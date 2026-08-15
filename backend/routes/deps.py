@@ -69,6 +69,23 @@ def capabilities(request: Request) -> ServiceContainer:
     return request.app.state.capabilities
 
 
+def tool_categories(request: Request):
+    """The assembled tool-category mapping (core + every enabled manifest's
+    `toolsets` export) — what the agent runs against and the catalog routes list."""
+    return request.app.state.tool_categories
+
+
+def gated_tools(request: Request) -> frozenset[str]:
+    """The union of the manifests' conditionally-gated tool names — the call-time
+    `ApprovalRequired` raisers the approval-scope vocabulary must carry."""
+    return request.app.state.gated_tools
+
+
+def instruction_providers(request: Request):
+    """The manifests' dynamic instruction providers, registered on every agent."""
+    return request.app.state.instruction_providers
+
+
 _CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
 
 

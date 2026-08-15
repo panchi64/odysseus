@@ -16,6 +16,7 @@ from routes import previews as previews_routes
 from routes import views as views_routes
 from services.artifacts import ArtifactStore
 from services.workspace_history import WorkspaceHistoryStore
+from tools.view import view_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -48,6 +49,7 @@ MANIFEST = FeatureManifest(
     routers=(views_routes.router, previews_routes.router),
     # A View's versions ride the chat scope — they are part of reading a thread.
     api_scopes=(ScopeClaim("chat", ("/views",)),),
+    toolsets=(("view", view_toolset),),
     # The live-head proxy is auth-exempt: the unguessable token in the path is the
     # credential (a sandboxed, opaque-origin iframe loads it without the operator
     # cookie), and it only ever proxies to a loopback preview container.

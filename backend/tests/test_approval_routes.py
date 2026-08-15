@@ -7,15 +7,26 @@ import asyncio
 from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
-import tools.toolsets as toolsets
 from services.registry import ModelRegistry, ResolvedModel
 from tools import RunDeps
 
-from ._helpers import client_app, collect_sse_events
+from ._helpers import client_app, collect_sse_events, swap_tool_catalog
+
+
+def danger_categories():
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True)
+    def delete_thing(name: str) -> str:
+        return f"deleted {name}"
+
+    return {"danger": toolset}
 
 
 def _install_sensitive_tool(monkeypatch):
-    """Point the model at a TestModel and give it one approval-required tool."""
+    """Point the model at a TestModel; pair with ``swap_tool_catalog(app,
+    danger_categories())`` after boot so the catalog is exactly the one
+    approval-required tool."""
 
     async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
         return TestModel(custom_output_text="done")
@@ -25,18 +36,8 @@ def _install_sensitive_tool(monkeypatch):
         # completes; a plain text model names the thread without tool calls.
         return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
 
-    def danger_categories():
-        toolset: FunctionToolset[RunDeps] = FunctionToolset()
-
-        @toolset.tool_plain(requires_approval=True)
-        def delete_thing(name: str) -> str:
-            return f"deleted {name}"
-
-        return {"danger": toolset}
-
     monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
-    monkeypatch.setattr(toolsets, "default_categories", danger_categories)
 
 
 async def _await_parked(app, run_id):
@@ -54,6 +55,7 @@ async def _await_parked(app, run_id):
 async def test_approve_flow_resumes_and_completes(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
 
@@ -94,6 +96,7 @@ async def test_approve_rejects_unknown_and_unparked(monkeypatch):
 async def test_approve_with_conversation_scope_records_grant(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
         approval = run.parked_payload.requests.approvals[0]
@@ -125,6 +128,7 @@ async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
     # but a resume that can't be accepted must leave no standing auto-approval behind.
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
         approval = run.parked_payload.requests.approvals[0]
@@ -154,6 +158,7 @@ async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
 async def test_approve_rejects_decision_mismatch(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         await _await_parked(app, run_id)
         resp = await client.post(
@@ -184,6 +189,7 @@ async def _drain_terminal_notify_tasks(app):
 async def test_park_creates_approval_needed_and_approve_resolves_it(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
 
@@ -206,6 +212,7 @@ async def test_park_creates_approval_needed_and_approve_resolves_it(monkeypatch)
 async def test_deny_resolves_the_approval_needed_notification(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
         call_id = run.parked_payload.requests.approvals[0].tool_call_id
@@ -223,6 +230,7 @@ async def test_deny_resolves_the_approval_needed_notification(monkeypatch):
 async def test_cancel_while_parked_resolves_the_approval_needed_notification(monkeypatch):
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         await _await_parked(app, run_id)
 

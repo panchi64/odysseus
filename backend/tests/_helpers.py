@@ -51,6 +51,29 @@ async def granting_store(owner: str, conv: str, *tool_names: str, ttl_s: float =
     return store
 
 
+def swap_tool_catalog(app, categories) -> None:
+    """Replace the booted app's assembled tool catalog **in place**. The mapping is one
+    shared object — the chat route, the approval-resume path, and the scheduler's
+    executor all hold the same dict the app assembled — so mutating its contents (not
+    rebinding `app.state.tool_categories`) is what reaches every path."""
+    app.state.tool_categories.clear()
+    app.state.tool_categories.update(categories)
+
+
+def full_tool_categories():
+    """The complete category mapping a real app assembles — core plus every manifest's
+    `toolsets` export, via the same discovery the app uses — for tests that measure
+    the whole catalog without booting an app."""
+    from harness.discovery import discover_manifests
+    from tools.toolsets import core_categories
+
+    categories = core_categories()
+    for manifest in discover_manifests():
+        for name, factory in manifest.toolsets:
+            categories[name] = factory()
+    return categories
+
+
 @asynccontextmanager
 async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "test-passphrase"):
     """A booted app + async client, backed by a throwaway in-memory DB.

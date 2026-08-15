@@ -8,6 +8,7 @@ from __future__ import annotations
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import secret_vault as secret_vault_routes
 from services.secret_vault import SecretVaultService
+from tools.vault import vault_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -22,5 +23,6 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="secret-vault",
     routers=(secret_vault_routes.router,),
+    toolsets=(("vault", vault_toolset),),
     build=_build,
 )

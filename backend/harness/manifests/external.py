@@ -11,6 +11,7 @@ from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import integrations as integrations_routes
 from routes import mcp as mcp_routes
 from services.external_tools import build_external_tools
+from tools.external import external_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -23,5 +24,6 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="external",
     routers=(mcp_routes.router, integrations_routes.router),
+    toolsets=(("external", external_toolset),),
     build=_build,
 )

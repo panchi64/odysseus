@@ -13,6 +13,7 @@ from routes import documents as documents_routes
 from services.corpus import CorpusChunkStore, CorpusIndex
 from services.corpus.documents import DocumentsAdapter
 from services.documents import DocumentStore
+from tools.documents import document_state_instructions, document_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -34,5 +35,12 @@ MANIFEST = FeatureManifest(
     after=("corpus",),
     routers=(documents_routes.router,),
     api_scopes=(ScopeClaim("knowledge", ("/documents",)),),
+    toolsets=(("document", document_toolset),),
+    # Editing/suggesting against a document from *another* conversation gates at call
+    # time (provenance, not the operation, decides), so the names are declared here.
+    gated_tools=frozenset({"document_edit", "document_suggest"}),
+    # Every turn sees the current text of any document the operator edited since the
+    # agent's last write.
+    instructions=(document_state_instructions,),
     build=_build,
 )

@@ -22,6 +22,7 @@ from services.registry import ModelRegistry
 from services.upload_extraction import BasicExtractor, FallbackExtractor, UploadExtractor
 from services.upload_mineru import MinerUExtractor
 from services.uploads import UploadStore
+from tools.attachments import attachments_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -80,5 +81,6 @@ MANIFEST = FeatureManifest(
     after=("corpus",),
     routers=(uploads_routes.router,),
     api_scopes=(ScopeClaim("knowledge", ("/uploads",)),),
+    toolsets=(("attachments", attachments_toolset),),
     build=_build,
 )

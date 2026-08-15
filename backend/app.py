@@ -49,6 +49,7 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
+from tools import InstructionProvider, core_categories
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,8 @@ async def lifespan(app: FastAPI):
         lifecycle=lifecycle,
         services=container,
         capabilities=agent_capabilities,
+        tool_categories=app.state.tool_categories,
+        instruction_providers=app.state.instruction_providers,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -291,6 +294,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     public_prefixes = tuple(
         prefix for m in enabled_manifests for prefix in m.public_prefixes
     )
+
+    # The agent's tool catalog: the core categories plus every enabled manifest's
+    # `toolsets` export, plus the union of their conditionally-gated names and their
+    # dynamic instruction providers. Assembled once — chat turns, scheduled tasks,
+    # and the operator-facing catalog routes all read these same objects, so the
+    # listing and the agent's own stack cannot diverge.
+    tool_categories = core_categories()
+    gated_tools: set[str] = set()
+    instruction_providers: list[InstructionProvider] = []
+    for manifest in enabled_manifests:
+        for category, factory in manifest.toolsets:
+            if category in tool_categories:
+                raise RuntimeError(
+                    f"tool category {category!r} declared twice "
+                    f"(second claim by manifest {manifest.name!r})"
+                )
+            tool_categories[category] = factory()
+        gated_tools |= manifest.gated_tools
+        instruction_providers.extend(manifest.instructions)
+    app.state.tool_categories = tool_categories
+    app.state.gated_tools = frozenset(gated_tools)
+    app.state.instruction_providers = tuple(instruction_providers)
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.

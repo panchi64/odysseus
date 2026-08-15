@@ -17,8 +17,11 @@ on its own manifest, never a new field here or a new argument at any call site.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic_ai import RunContext
 
 from core.container import ServiceContainer
 from runs import Run
@@ -67,3 +70,11 @@ class RunDeps:
         conversation when there is one, else the run (a stateless turn). Defined
         once so the code and preview tools can never key them differently."""
         return self.conversation_id or self.run.id
+
+
+# A feature-contributed dynamic instruction (a manifest's `instructions` export): the
+# engine registers each on the agent, it re-resolves fresh every turn, reaches its
+# capability through the run's bag, and returns "" to no-op when the capability is
+# absent. Part of the deps contract for the same reason `RunDeps` is — both the engine
+# and the feature layer must name the shape without a cycle.
+type InstructionProvider = Callable[[RunContext[RunDeps]], Awaitable[str]]

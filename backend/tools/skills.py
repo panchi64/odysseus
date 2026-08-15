@@ -22,11 +22,20 @@ Thin like every tool here: the format rules, sealing, and validation live in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError, SkillSpanError, SkillValidationError
+from prompts.agent import SKILL_CATALOG, SKILL_CATALOG_BUDGET_CHARS
 from services.sandbox import SandboxError, SandboxSessionManager
-from services.skills import BUNDLE_MAX_BYTES, SKILL_FILE, SkillStore, render_skill_md
+from services.skills import (
+    BUNDLE_MAX_BYTES,
+    SKILL_FILE,
+    SkillCatalogEntry,
+    SkillStore,
+    render_skill_md,
+)
 from services.skills.store import SkillView
 
 from .deps import RunDeps
@@ -198,3 +207,36 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         return {"ok": True, "name": skill.name, "note": "Skill updated."}
 
     return toolset
+
+
+def _skill_catalog_block(entries: Sequence[SkillCatalogEntry]) -> str:
+    """Render the published-skill catalog under its character budget (`SKILL-2`).
+
+    Entries arrive newest-first, so a library larger than the budget keeps the skills the
+    operator most recently touched and reports how many were left out — the model is told the
+    list is partial rather than being handed a silently truncated one."""
+    if not entries:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for index, entry in enumerate(entries):
+        line = f"- {entry.name}: {entry.description}"
+        if used + len(line) > SKILL_CATALOG_BUDGET_CHARS and lines:
+            lines.append(f"- …and {len(entries) - index} more (open by name if you know it)")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return SKILL_CATALOG.format(entries="\n".join(lines))
+
+
+async def skill_catalog_instructions(ctx: RunContext[RunDeps]) -> str:
+    """Surface the operator's published skills to the agent automatically (`SKILL-2`) —
+    the standard's level-one disclosure: names and descriptions only, so the model knows
+    what procedures exist without paying for any of their instructions. A dynamic
+    instruction (registered via the skills feature manifest), so it is always current and
+    lives outside history. Empty (no-op) when there's no skill store or nothing is
+    published."""
+    store = ctx.deps.caps.get_optional(SkillStore)
+    if store is None:
+        return ""
+    return _skill_catalog_block(await store.catalog(ctx.deps.owner_id))

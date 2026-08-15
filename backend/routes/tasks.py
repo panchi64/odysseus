@@ -168,7 +168,15 @@ async def _validate_pre_authorized(request: Request, values: list[str]) -> None:
     run time; it is rejected only on write, so an unrelated edit to an old task doesn't
     fail because of a source that has since gone.
     """
-    known = {s.name for s in await approval_scopes(deps.external(request), OPERATOR_ID)}
+    known = {
+        s.name
+        for s in await approval_scopes(
+            deps.external(request),
+            OPERATOR_ID,
+            deps.tool_categories(request),
+            deps.gated_tools(request),
+        )
+    }
     unknown = [v for v in values if v not in known]
     if unknown:
         raise HTTPException(

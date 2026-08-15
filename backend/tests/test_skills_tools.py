@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from pydantic_ai import ModelRetry
 
-from agent.engine import _skill_catalog_block
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
@@ -16,7 +15,7 @@ from services.sandbox import SandboxError, SandboxSessionManager
 from services.skills import SkillStore
 from services.skills.store import SkillCatalogEntry
 from tools.deps import RunDeps
-from tools.skills import skills_toolset
+from tools.skills import _skill_catalog_block, skills_toolset
 
 from .test_skills_bundle import SKILL_MD, _zip
 

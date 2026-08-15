@@ -250,3 +250,27 @@ def _span_retry(exc: DocumentSpanError) -> ModelRetry:
         f"old_text matches {exc.occurrences} places — include more surrounding text "
         "so it identifies exactly one span."
     )
+
+
+async def document_state_instructions(ctx: RunContext[RunDeps]) -> str:
+    """Give the agent the current text of any document the operator edited since its last
+    write — as a **dynamic instruction** (registered via the documents feature manifest),
+    so it's re-resolved fresh each turn (always the latest state) and, unlike an appended
+    prompt, never accumulates in history: Pydantic AI sends only the current run's
+    instructions, so there's exactly one copy in context, no compounding. Empty (no-op)
+    when there's no such document or no store/conversation.
+
+    Only documents whose *latest* version the operator authored qualify — the agent works
+    from what the operator actually has now, not the copy it last produced (`DOC-*`); a
+    document whose latest version is the agent's own is skipped (the model already knows
+    that text). This is the operator's own content, so it is *not* wrapped as untrusted."""
+    store = ctx.deps.caps.get_optional(DocumentStore)
+    conversation_id = ctx.deps.conversation_id
+    if store is None or conversation_id is None:
+        return ""
+    docs = await store.list_user_edited(ctx.deps.owner_id, conversation_id)
+    return "\n\n".join(
+        f'[Current state of the document "{doc.title}" — the operator may have edited it '
+        f"since your last change]\n\n{doc.body}"
+        for doc in docs
+    )

@@ -12,13 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from pydantic_ai import FunctionToolset, RunContext
+from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 import routes.chat as chat_routes
 import routes.runs as runs_routes
-import tools.toolsets as toolsets
 from core.db import init_db, make_engine
 from runs import Run, RunStream
 from services.registry import ModelRegistry, ResolvedModel
@@ -31,7 +30,13 @@ from services.tool_policy import (
 from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
 
-from ._helpers import client_app, patch_model_resolution
+from ._helpers import (
+    client_app,
+    full_tool_categories,
+    patch_model_resolution,
+    swap_tool_catalog,
+)
+from .test_approval_routes import danger_categories as _approval_danger_categories
 
 OWNER = "operator"
 
@@ -49,7 +54,7 @@ async def _agent_visible(disabled: frozenset[str]) -> set[str]:
     run = Run(id="t", kind="chat", owner_id=OWNER, stream=RunStream())
     deps = RunDeps(run=run, owner_id=OWNER, disabled_tools=disabled)
     ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
-    return set(await build_agent_toolsets()[0].get_tools(ctx))
+    return set(await build_agent_toolsets(full_tool_categories())[0].get_tools(ctx))
 
 
 # --- the catalog is the agent's own, not a hand-maintained list ----------------------
@@ -59,11 +64,75 @@ async def test_catalog_matches_the_names_the_agent_is_offered():
     # Pins the namespacing convention (`category_tool`) against what Pydantic AI's
     # prefixing actually produces: if the library ever changed it, every toggle in the
     # settings screen would quietly stop matching, and this fails instead.
-    assert {t.name for t in tool_catalog()} == await _agent_visible(frozenset())
+    assert {t.name for t in tool_catalog(full_tool_categories())} == await _agent_visible(
+        frozenset()
+    )
+
+
+# The full catalog, frozen. The registry is now assembled from the manifests'
+# `toolsets` exports, so a manifest that silently drops (or double-claims) a category
+# shrinks the agent's world without any other test noticing — this literal set is the
+# tripwire. A deliberate tool addition/removal updates this list in the same change.
+_PINNED_CATALOG = {
+    "attachments_provision",
+    "builtin_expand_tool_result",
+    "builtin_now",
+    "calendar_agenda",
+    "calendar_create_event",
+    "calendar_delete_event",
+    "calendar_draft_event_from_text",
+    "calendar_list_calendars",
+    "calendar_update_event",
+    "code_execute",
+    "code_run_host_command",
+    "conversations_read",
+    "conversations_search",
+    "corpus_retrieve",
+    "document_create",
+    "document_edit",
+    "document_suggest",
+    "mail_draft_reply",
+    "mail_list_accounts",
+    "mail_list_messages",
+    "mail_mark",
+    "mail_read",
+    "mail_reply",
+    "mail_send",
+    "memory_recall",
+    "memory_remember",
+    "skills_create",
+    "skills_edit",
+    "skills_open",
+    "vault_get_entry",
+    "vault_list_entries",
+    "view_close",
+    "view_show",
+    "web_fetch",
+    "web_search",
+}
+
+
+async def test_assembled_catalog_is_pinned():
+    assert {t.name for t in tool_catalog(full_tool_categories())} == _PINNED_CATALOG
+
+
+async def test_booted_app_assembles_the_same_catalog():
+    # The discovery-based helper above and the real app must assemble identically —
+    # otherwise the pin guards a mapping no run actually uses.
+    async with client_app() as (_, app):
+        assert {t.name for t in tool_catalog(app.state.tool_categories)} == _PINNED_CATALOG
+        # The conditionally-gated vocabulary, likewise assembled from the manifests.
+        assert app.state.gated_tools == {
+            "corpus_retrieve",
+            "memory_recall",
+            "conversations_search",
+            "document_edit",
+            "document_suggest",
+        }
 
 
 async def test_catalog_carries_category_and_description():
-    now = next(t for t in tool_catalog() if t.name == "builtin_now")
+    now = next(t for t in tool_catalog(full_tool_categories()) if t.name == "builtin_now")
     assert now.category == "builtin"
     assert "UTC" in now.description
 
@@ -137,9 +206,10 @@ def _force_offline(monkeypatch, app, *names: str) -> None:
 
 
 async def test_route_lists_the_catalog_with_enabled_state():
-    async with client_app() as (client, _app):
+    async with client_app() as (client, app):
         rows = (await client.get("/tools")).json()
-        assert {r["name"] for r in rows} == {t.name for t in tool_catalog()}
+        expected = tool_catalog(app.state.tool_categories)
+        assert {r["name"] for r in rows} == {t.name for t in expected}
         assert all(r["enabled"] for r in rows)
 
         resp = await client.put("/tools/builtin_now", json={"enabled": False})
@@ -181,7 +251,8 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
 
 def _install_sensitive_tool(monkeypatch):
     """A TestModel plus one approval-required tool, so a turn parks — the only state from
-    which the resume path runs. Mirrors ``test_approval_routes``' own fixture."""
+    which the resume path runs. Mirrors ``test_approval_routes``' own fixture; pair with
+    ``swap_tool_catalog(app, _danger_categories())`` after boot."""
 
     async def fake_resolve(self, role, **kwargs):
         return TestModel(custom_output_text="done")
@@ -189,22 +260,20 @@ def _install_sensitive_tool(monkeypatch):
     async def fake_resolve_detailed(self, role, **kwargs):
         return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
 
-    def danger_categories():
-        toolset: FunctionToolset[RunDeps] = FunctionToolset()
-
-        @toolset.tool_plain(requires_approval=True)
-        def delete_thing(name: str) -> str:
-            return f"deleted {name}"
-
-        @toolset.tool_plain
-        def safe_thing() -> str:
-            return "safe"
-
-        return {"danger": toolset}
-
     monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
-    monkeypatch.setattr(toolsets, "default_categories", danger_categories)
+
+
+def _danger_categories():
+    """The approval fixture's catalog plus one ungated tool, so the resume test can flip
+    a tool off *while parked* and watch the current policy reach the resumed deps."""
+    categories = _approval_danger_categories()
+
+    @categories["danger"].tool_plain
+    def safe_thing() -> str:
+        return "safe"
+
+    return categories
 
 
 async def _await_parked(app, run_id):
@@ -222,6 +291,7 @@ async def test_resume_applies_the_operator_set_and_the_offline_set(monkeypatch):
     turn's deps, including a tool the operator switched off *while it was parked*."""
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, _danger_categories())
         run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
         run = await _await_parked(app, run_id)
 

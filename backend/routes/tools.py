@@ -58,7 +58,7 @@ def _out(info: ToolInfo, disabled: frozenset[str]) -> ToolOut:
 @router.get("", response_model=list[ToolOut])
 async def list_tools(request: Request) -> list[ToolOut]:
     disabled = await get_disabled_tools(deps.settings_store(request), deps.OPERATOR_ID)
-    return [_out(info, disabled) for info in tool_catalog()]
+    return [_out(info, disabled) for info in tool_catalog(deps.tool_categories(request))]
 
 
 class ApprovalScopeOut(BaseModel):
@@ -73,7 +73,12 @@ class ApprovalScopeOut(BaseModel):
 async def list_approval_scopes(request: Request) -> list[ApprovalScopeOut]:
     """Every tool an operator may pre-authorize or grant. Declared before the ``{name}``
     route below only for readability — the two never collide, since that one is a PUT."""
-    scopes = await approval_scopes(deps.external(request), deps.OPERATOR_ID)
+    scopes = await approval_scopes(
+        deps.external(request),
+        deps.OPERATOR_ID,
+        deps.tool_categories(request),
+        deps.gated_tools(request),
+    )
     return [
         ApprovalScopeOut(name=s.name, category=s.category, description=s.description)
         for s in scopes
@@ -82,7 +87,8 @@ async def list_approval_scopes(request: Request) -> list[ApprovalScopeOut]:
 
 @router.put("/{name}", response_model=ToolOut)
 async def update_tool(name: str, body: ToolUpdate, request: Request) -> ToolOut:
-    info = next((t for t in tool_catalog() if t.name == name), None)
+    catalog = tool_catalog(deps.tool_categories(request))
+    info = next((t for t in catalog if t.name == name), None)
     if info is None:
         raise HTTPException(status_code=404, detail=f"tool {name!r} not found")
     disabled = await set_tool_enabled(

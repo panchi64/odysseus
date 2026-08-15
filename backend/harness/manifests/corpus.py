@@ -23,6 +23,7 @@ from services.corpus import (
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
+from tools.corpus import corpus_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -52,5 +53,9 @@ MANIFEST = FeatureManifest(
     after=("memory", "conversation-search"),
     routers=(corpus_routes.router,),
     api_scopes=(ScopeClaim("knowledge", ("/corpus",)),),
+    toolsets=(("corpus", corpus_toolset),),
+    # Retrieval with no explicit source ids is a global recall — approval-gated at
+    # call time (the recall gate), so the scope vocabulary carries the name.
+    gated_tools=frozenset({"corpus_retrieve"}),
     build=_build,
 )

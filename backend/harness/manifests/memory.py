@@ -11,6 +11,7 @@ from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import memory as memory_routes
 from services.embeddings import RegistryEmbedder
 from services.memory import MemoryStore
+from tools.memory import memory_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -22,5 +23,9 @@ MANIFEST = FeatureManifest(
     name="memory",
     routers=(memory_routes.router,),
     api_scopes=(ScopeClaim("memory", ("/memory",)),),
+    toolsets=(("memory", memory_toolset),),
+    # Global relevance-ranked recall is approval-gated at call time (the recall gate),
+    # so the scope vocabulary must carry the name explicitly.
+    gated_tools=frozenset({"memory_recall"}),
     build=_build,
 )

@@ -7,6 +7,7 @@ from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.embeddings import RegistryEmbedder
+from tools.conversations import conversations_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -23,5 +24,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
 MANIFEST = FeatureManifest(
     name="conversation-search",
+    toolsets=(("conversations", conversations_toolset),),
+    # Global relevance-ranked search is approval-gated at call time (the recall gate),
+    # so the scope vocabulary must carry the name explicitly.
+    gated_tools=frozenset({"conversations_search"}),
     build=_build,
 )

@@ -15,8 +15,8 @@ from pydantic_ai.models.function import FunctionModel
 from routes.deps import OPERATOR_ID
 from services.registry import ModelRegistry, ResolvedModel
 
-from ._helpers import client_app, patch_model_resolution
-from .test_approval_routes import _await_parked, _install_sensitive_tool
+from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
+from .test_approval_routes import _await_parked, _install_sensitive_tool, danger_categories
 
 
 def _patch_hanging_model(monkeypatch, hang: asyncio.Event, started: asyncio.Event) -> None:
@@ -389,6 +389,7 @@ async def test_awaiting_input_run_blocks_a_new_chat_submission(monkeypatch):
     # so it must block a new submission exactly like a running one.
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         first = await client.post("/chat", json={"prompt": "delete it"})
         conv_id = first.json()["conversation_id"]
         run = await _await_parked(app, first.json()["run_id"])

@@ -29,7 +29,6 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelResponse,
-    RunContext,
     RunUsage,
     ToolApproved,
     ToolCallPart,
@@ -47,8 +46,6 @@ from core.exceptions import ModelLoadError
 from prompts.agent import (
     CURRENT_DATE,
     INSTRUCTIONS,
-    SKILL_CATALOG,
-    SKILL_CATALOG_BUDGET_CHARS,
     SYSTEM_PROMPT,
     VERIFIER_NUDGE,
 )
@@ -63,11 +60,9 @@ from runs import (
 )
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.conversations import ConversationStore, context_footprint
-from services.documents import DocumentStore
 from services.notifications import NotificationService
-from services.skills import SkillCatalogEntry, SkillStore
 from services.uploads import UploadStore
-from tools import CompactionContext, RunDeps, build_agent_toolsets
+from tools import CompactionContext, InstructionProvider, RunDeps, build_agent_toolsets
 
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
@@ -150,7 +145,12 @@ class _TurnResult:
     blocked_reason: str | None = None
 
 
-def _build_agent(model: Model, *, categories: Any = None) -> Agent:
+def _build_agent(
+    model: Model,
+    *,
+    categories: Any = None,
+    instruction_providers: Sequence[InstructionProvider] = (),
+) -> Agent:
     # Two prompt seams by durability: SYSTEM_PROMPT (identity/voice) is anchored in
     # history; INSTRUCTIONS (autonomy, tool posture, the treat-external-content-as-
     # data guardrail) are rebuilt fresh from the agent every turn, so a poisoned or
@@ -176,33 +176,13 @@ def _build_agent(model: Model, *, categories: Any = None) -> Agent:
         ],
     )
 
-    @agent.instructions
-    async def _document_state(ctx: RunContext[RunDeps]) -> str:
-        """Give the agent the current text of any document the operator edited since its last
-        write — as a **dynamic instruction**, so it's re-resolved fresh each turn (always the
-        latest state) and, unlike an appended prompt, never accumulates in history: Pydantic
-        AI sends only the current run's instructions, so there's exactly one copy in context,
-        no compounding. Empty (no-op) when there's no such document or no store/conversation."""
-        store = ctx.deps.caps.get_optional(DocumentStore)
-        conversation_id = ctx.deps.conversation_id
-        if store is None or conversation_id is None:
-            return ""
-        blocks = await _document_context_blocks(
-            store, ctx.deps.owner_id, conversation_id
-        )
-        return "\n\n".join(blocks)
-
-    @agent.instructions
-    async def _skill_catalog(ctx: RunContext[RunDeps]) -> str:
-        """Surface the operator's published skills to the agent automatically (`SKILL-2`) —
-        the standard's level-one disclosure: names and descriptions only, so the model knows
-        what procedures exist without paying for any of their instructions. A dynamic
-        instruction like the document state above, so it is always current and lives outside
-        history. Empty (no-op) when there's no skill store or nothing is published."""
-        store = ctx.deps.caps.get_optional(SkillStore)
-        if store is None:
-            return ""
-        return _skill_catalog_block(await store.catalog(ctx.deps.owner_id))
+    # Feature-contributed dynamic instructions (each manifest's `instructions` export —
+    # the document state, the skill catalog): re-resolved fresh each turn, so they're
+    # always current and, unlike an appended prompt, never accumulate in history. Each
+    # resolves its own capability from the run's bag and no-ops (returns "") when the
+    # capability isn't wired, so registration is unconditional.
+    for provider in instruction_providers:
+        agent.instructions(provider)
 
     @agent.instructions
     def _current_date() -> str:
@@ -882,48 +862,12 @@ async def _discard_title(task: asyncio.Task[str | None] | None) -> None:
         await task
 
 
-async def _document_context_blocks(
-    store: DocumentStore, owner_id: str, conversation_id: str
-) -> list[str]:
-    """Current text of the conversation's documents whose *latest* version the operator
-    authored — i.e. they edited it since the agent's last write. Each becomes a labeled
-    context block the agent is given (as a fresh instruction each turn) so it works from what
-    the operator actually has now, not the copy it last produced (`DOC-*`). A document whose
-    latest version is the agent's own (``ai``) is skipped — the model already knows that text.
-    This is the operator's own content, so it is *not* wrapped as untrusted."""
-    docs = await store.list_user_edited(owner_id, conversation_id)
-    return [
-        f'[Current state of the document "{doc.title}" — the operator may have edited it '
-        f"since your last change]\n\n{doc.body}"
-        for doc in docs
-    ]
-
-
-def _skill_catalog_block(entries: Sequence[SkillCatalogEntry]) -> str:
-    """Render the published-skill catalog under its character budget (`SKILL-2`).
-
-    Entries arrive newest-first, so a library larger than the budget keeps the skills the
-    operator most recently touched and reports how many were left out — the model is told the
-    list is partial rather than being handed a silently truncated one."""
-    if not entries:
-        return ""
-    lines: list[str] = []
-    used = 0
-    for index, entry in enumerate(entries):
-        line = f"- {entry.name}: {entry.description}"
-        if used + len(line) > SKILL_CATALOG_BUDGET_CHARS and lines:
-            lines.append(f"- …and {len(entries) - index} more (open by name if you know it)")
-            break
-        lines.append(line)
-        used += len(line) + 1
-    return SKILL_CATALOG.format(entries="\n".join(lines))
-
-
 def build_chat_orchestrator(
     prompt: str | None,
     *,
     model: Model,
     categories: Any = None,
+    instruction_providers: Sequence[InstructionProvider] = (),
     judge: Judge | None = None,
     utility_model: Model | None = None,
     utility_settings: ModelSettings | None = None,
@@ -972,7 +916,9 @@ def build_chat_orchestrator(
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         run.context_window = context_window
-        agent = _build_agent(model, categories=categories)
+        agent = _build_agent(
+            model, categories=categories, instruction_providers=instruction_providers
+        )
         announced: set[str] = set()
         history = (
             await store.history(conversation_id)

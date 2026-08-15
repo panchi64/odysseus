@@ -102,9 +102,12 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             prompt=view.prompt,
             conversation_id=conversation_id,
             models=models,
-            # An unattended task reaches the same capabilities an interactive turn
-            # does — the app's one agent-facing bag, so the two can never diverge.
+            # An unattended task reaches the same capabilities, tool catalog, and
+            # dynamic instructions an interactive turn does — the app's one assembled
+            # set of each, so the two can never diverge.
             capabilities=ctx.capabilities,
+            categories=ctx.tool_categories,
+            instruction_providers=ctx.instruction_providers,
             registry=runs,
             store=conversations,
             uploads=services.get(UploadStore),

@@ -24,6 +24,7 @@ from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.settings_store import SettingsStore
 from services.webfetch import BrowserFetcher, ManagedBrowser, WebDistiller
+from tools.search import web_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -151,5 +152,6 @@ MANIFEST = FeatureManifest(
         ScopeClaim("search", ("/search",)),
         ScopeClaim("status", ("/offline",)),
     ),
+    toolsets=(("web", web_toolset),),
     build=_build,
 )

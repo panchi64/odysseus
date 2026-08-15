@@ -19,6 +19,9 @@ run-submission path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.models import Model
@@ -43,7 +46,7 @@ from services.settings_store import (
     set_compaction,
 )
 from services.uploads import UploadStore
-from tools import CompactionContext
+from tools import CompactionContext, InstructionProvider
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -176,6 +179,8 @@ def compose_turn(
     registry: RunRegistry,
     store: ConversationStore,
     uploads: UploadStore,
+    categories: Mapping[str, Any] | None = None,
+    instruction_providers: Sequence[InstructionProvider] = (),
     disabled_tools: frozenset[str] = frozenset(),
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
@@ -199,6 +204,8 @@ def compose_turn(
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
+        categories=categories,
+        instruction_providers=instruction_providers,
         utility_model=utility_model,
         utility_settings=background_settings,
         title_model=None if ephemeral else utility_model,
@@ -257,6 +264,10 @@ async def _submit_turn(
         registry=deps.registry(request),
         store=deps.store(request),
         uploads=deps.uploads(request),
+        # The assembled tool catalog + the manifests' dynamic instructions — read per
+        # request so the turn always runs against what the app assembled.
+        categories=deps.tool_categories(request),
+        instruction_providers=deps.instruction_providers(request),
         disabled_tools=await deps.disabled_tools(request),
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,

@@ -12,14 +12,14 @@ from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 from agent import stream_agent_run
-from agent.engine import _build_agent, _document_context_blocks
+from agent.engine import _build_agent
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs import Run, RunStream
 from services.documents import DocumentStore
 from tools import RunDeps, build_agent_toolsets
-from tools.documents import document_toolset
+from tools.documents import document_state_instructions, document_toolset
 
 OWNER = "operator"
 CONV = "conv-1"
@@ -275,15 +275,33 @@ async def test_suggest_refuses_the_whole_set_when_one_span_is_ambiguous():
 # --- next-turn context injection --------------------------------------------
 
 
+class _Ctx:
+    """The slice of RunContext the instruction provider reads: just `.deps`."""
+
+    def __init__(self, deps: RunDeps) -> None:
+        self.deps = deps
+
+
+def _instruction_ctx(store: DocumentStore, conversation_id: str | None = CONV) -> _Ctx:
+    run = Run(id="r-instr", kind="chat", owner_id=OWNER, stream=RunStream())
+    return _Ctx(
+        RunDeps(
+            run=run,
+            owner_id=OWNER,
+            conversation_id=conversation_id,
+            caps=ServiceContainer.of(store),
+        )
+    )
+
+
 async def test_operator_edited_document_is_injected_next_turn():
     store = await _store()
     doc = await store.create(OWNER, "Draft", "v1 body", conversation_id=CONV, origin="ai")
     # The operator edits it (a user-origin version) — so it should be fed back to the model.
     await store.edit(OWNER, doc.id, body="operator's text", origin="user")
 
-    blocks = await _document_context_blocks(store, OWNER, CONV)
-    assert len(blocks) == 1
-    assert "Draft" in blocks[0] and "operator's text" in blocks[0]
+    text = await document_state_instructions(_instruction_ctx(store))
+    assert "Draft" in text and "operator's text" in text
 
 
 async def test_agent_authored_document_is_not_reinjected():
@@ -291,8 +309,7 @@ async def test_agent_authored_document_is_not_reinjected():
     # Latest version is the agent's own work (no operator edit) ⇒ the model already knows it.
     await store.create(OWNER, "Draft", "the agent wrote this", conversation_id=CONV, origin="ai")
 
-    blocks = await _document_context_blocks(store, OWNER, CONV)
-    assert blocks == []
+    assert await document_state_instructions(_instruction_ctx(store)) == ""
 
 
 async def test_document_state_reaches_the_model_as_a_dynamic_instruction():
@@ -309,7 +326,12 @@ async def test_document_state_reaches_the_model_as_a_dynamic_instruction():
         seen["instructions"] = messages[-1].instructions
         yield "ok"
 
-    agent = _build_agent(FunctionModel(stream_function=capture))
+    # The provider arrives from the documents manifest in production; register it the
+    # same way here.
+    agent = _build_agent(
+        FunctionModel(stream_function=capture),
+        instruction_providers=(document_state_instructions,),
+    )
     run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
     deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, caps=ServiceContainer.of(store))
     async with agent.iter("hello", deps=deps) as agent_run:
@@ -325,5 +347,4 @@ async def test_injection_ignores_other_conversations_and_archived_docs():
     await store.archive(OWNER, archived.id)
     assert other  # created in another thread — must not leak into CONV's context
 
-    blocks = await _document_context_blocks(store, OWNER, CONV)
-    assert blocks == []
+    assert await document_state_instructions(_instruction_ctx(store)) == ""

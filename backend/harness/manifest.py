@@ -20,6 +20,7 @@ from core.container import ServiceContainer
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
+    from pydantic_ai import AbstractToolset
     from sqlalchemy import Engine
 
     from core.api_scopes import ScopeClaim
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from core.vault import Vault
     from harness.lifecycle import LifecycleRegistry
     from harness.run_terminal import RunTerminalHook, SyncRunTerminalHook
+    from tools import InstructionProvider, RunDeps
 
 __all__ = [
     "FeatureManifest",
@@ -49,6 +51,11 @@ class HarnessContext:
     # The agent-facing capability bag (`RunDeps.caps`) as assembled so far — what a
     # feature composing agent runs (the task scheduler) hands to the engine.
     capabilities: ServiceContainer
+    # The assembled tool-category mapping and instruction providers (core + every
+    # enabled manifest's declarations, complete before any build runs) — so a feature
+    # composing agent runs hands the engine exactly what an interactive turn gets.
+    tool_categories: Mapping[str, AbstractToolset[RunDeps]] = field(default_factory=dict)
+    instruction_providers: tuple[InstructionProvider, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,5 +97,17 @@ class FeatureManifest:
     # Feature kill-switch: when it returns False the routers are never registered
     # and the build never runs.
     enabled: Callable[[Settings], bool] | None = None
+    # The tool categories this feature contributes to the agent's catalog, as
+    # (category, factory) pairs — declared as factories so importing a manifest
+    # builds nothing. Assembled with the core categories at app startup; a duplicate
+    # category name fails the boot loudly.
+    toolsets: tuple[tuple[str, Callable[[], AbstractToolset[RunDeps]]], ...] = ()
+    # Namespaced tool names whose approval gate is runtime-conditional (they raise
+    # ``ApprovalRequired`` from inside the call, so inspection can't find them) —
+    # this feature's contribution to the approval-scope vocabulary.
+    gated_tools: frozenset[str] = frozenset()
+    # Dynamic instruction providers the engine registers on every agent it builds —
+    # each resolves its capability from the run's bag and returns "" to no-op.
+    instructions: tuple[InstructionProvider, ...] = ()
     # Constructs the feature's services at lifespan time. None ⇒ routes-only.
     build: Callable[[HarnessContext], Awaitable[FeatureRuntime]] | None = None

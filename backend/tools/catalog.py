@@ -1,10 +1,11 @@
 """The operator-facing tool catalog — every tool, named exactly as the agent sees it.
 
 `AE-3.3` lets the operator disable individual tools, which means the settings surface has
-to *list* them. That list is **derived from the same registry the agent runs against**
-(:func:`tools.toolsets.default_categories`), never hand-maintained: a tool that lands in
-a category appears here the day it lands, and one that is renamed or removed cannot leave
-a stale row behind that disables nothing.
+to *list* them. That list is **derived from the same assembled category mapping the agent
+runs against** (core categories + every feature manifest's ``toolsets`` export, assembled
+at app startup), never hand-maintained: a tool that lands in a category appears here the
+day it lands, and one that is renamed or removed cannot leave a stale row behind that
+disables nothing. Callers pass that mapping in — this module holds no registry of its own.
 
 Names are namespaced the way :meth:`AbstractToolset.prefixed` namespaces them —
 ``f"{category}_{tool}"`` — because that is the name the enabled gate matches on and the
@@ -27,29 +28,7 @@ from pydantic_ai import AbstractToolset
 
 from services.external_tools import ExternalTools
 
-from . import toolsets
 from .deps import RunDeps
-
-# Tools whose approval gate is **runtime-conditional**: they raise ``ApprovalRequired``
-# from inside the call rather than carrying ``requires_approval=True``, so — unlike the
-# statically marked ones below — the marking cannot be read off the tool definition.
-#
-# `tools/recall_gate.py` gates every global, relevance-ranked recall (`AE-3.8`);
-# `tools/documents.py` gates an edit or a suggestion against a document from *another*
-# conversation, because provenance rather than the operation decides (`DOC-3`). Both
-# gates can fire on any call, so both names belong in the vocabulary.
-#
-# External tools are conditional too, but they are neither static nor enumerable here —
-# see `approval_scopes`.
-_CONDITIONALLY_GATED = frozenset(
-    {
-        "corpus_retrieve",
-        "memory_recall",
-        "conversations_search",
-        "document_edit",
-        "document_suggest",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -74,17 +53,13 @@ def _flatten(text: str) -> str:
 
 
 def tool_catalog(
-    categories: Mapping[str, AbstractToolset[RunDeps]] | None = None,
+    categories: Mapping[str, AbstractToolset[RunDeps]],
 ) -> list[ToolInfo]:
     """Every registered tool, category-then-name ordered for a stable listing.
 
-    ``categories`` overrides the live registry for tests; production passes nothing and
-    gets exactly what :func:`tools.toolsets.build_agent_toolsets` composes.
+    ``categories`` is the assembled mapping the agent itself runs against (the routes
+    read it off ``app.state``), so the listing and the agent's stack cannot diverge.
     """
-    # Reached through the module, not a from-import, so the registry stays the single
-    # live source: a test (or a future dynamic registration) that replaces
-    # ``default_categories`` is reflected here exactly as it is in the agent's own stack.
-    cats = dict(categories) if categories is not None else toolsets.default_categories()
     catalog = [
         ToolInfo(
             name=f"{category}_{tool_name}",
@@ -93,7 +68,7 @@ def tool_catalog(
         )
         # A non-function toolset exposes no static tool registry; it contributes nothing
         # rather than breaking the listing (see the module docstring).
-        for category, toolset in cats.items()
+        for category, toolset in categories.items()
         for tool_name, tool in sorted(getattr(toolset, "tools", {}).items())
     ]
     return sorted(catalog, key=lambda t: (t.category, t.name))
@@ -102,7 +77,8 @@ def tool_catalog(
 async def approval_scopes(
     external: ExternalTools | None,
     owner_id: str,
-    categories: Mapping[str, AbstractToolset[RunDeps]] | None = None,
+    categories: Mapping[str, AbstractToolset[RunDeps]],
+    gated_tools: frozenset[str],
 ) -> list[ToolInfo]:
     """Every tool that can pause a run for approval — the vocabulary a conversation grant
     (`AE-3.7`) or a scheduled task's pre-authorization (`AE-3.5`) may name.
@@ -117,9 +93,11 @@ async def approval_scopes(
     Three sources, one list:
 
     - **statically marked** — ``requires_approval=True`` on the tool itself, read off the
-      live registry the agent runs against, so a new one is covered the day it lands;
-    - **conditionally gated** — :data:`_CONDITIONALLY_GATED`, which raise at call time and
-      therefore can't be discovered by inspection;
+      assembled mapping the agent runs against, so a new one is covered the day it lands;
+    - **conditionally gated** — ``gated_tools``: tools that raise ``ApprovalRequired``
+      from inside the call (the recall gate, the foreign-document provenance gate) and
+      therefore can't be discovered by inspection. Each feature manifest declares its
+      own (``gated_tools``); the app assembles the union alongside the categories;
     - **external** — read from the operator's own sources.
 
     The external half reads the cached catalog (both services list from the database), so
@@ -131,11 +109,12 @@ async def approval_scopes(
     scopes = [
         t
         for t in tool_catalog(categories)
-        if _is_statically_gated(t, categories) or t.name in _CONDITIONALLY_GATED
+        if _is_statically_gated(t, categories) or t.name in gated_tools
     ]
     # A conditionally-gated name that no longer matches a registered tool is a stale
-    # constant, not a scope — surfacing it would offer the operator a checkbox that grants
-    # nothing. The set is small and pinned by a test, so this is a guard, not a filter.
+    # declaration, not a scope — surfacing it would offer the operator a checkbox that
+    # grants nothing. The set is small and pinned by a test, so this is a guard, not a
+    # filter.
     scopes = [t for t in scopes if t.name in static]
     if external is not None:
         scopes.extend(await _external_scopes(external, owner_id))
@@ -143,11 +122,10 @@ async def approval_scopes(
 
 
 def _is_statically_gated(
-    info: ToolInfo, categories: Mapping[str, AbstractToolset[RunDeps]] | None
+    info: ToolInfo, categories: Mapping[str, AbstractToolset[RunDeps]]
 ) -> bool:
     """Whether the tool behind ``info`` carries ``requires_approval=True``."""
-    cats = dict(categories) if categories is not None else toolsets.default_categories()
-    toolset = cats.get(info.category)
+    toolset = categories.get(info.category)
     tool = getattr(toolset, "tools", {}).get(info.name.removeprefix(f"{info.category}_"))
     return bool(getattr(tool, "requires_approval", False))
 

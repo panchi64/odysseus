@@ -12,7 +12,8 @@ from core.db import in_session
 from models.task import TaskRun
 from services.scheduler import TaskRunResult
 
-from ._helpers import client_app, patch_model_resolution
+from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
+from .test_approval_routes import danger_categories
 
 _FAR_FUTURE = "2999-01-01T00:00:00Z"
 
@@ -441,13 +442,11 @@ async def test_hooks_route_is_auth_exempt_but_rest_of_tasks_is_not():
 async def _install_sensitive_tool(monkeypatch):
     """Mirrors `test_approval_routes.py`'s own helper: a TestModel that always calls
     one approval-required tool, so a task's unattended run parks exactly like an
-    interactive one when the action falls outside its pre-authorization."""
-    from pydantic_ai import FunctionToolset
+    interactive one when the action falls outside its pre-authorization. Pair with
+    ``swap_tool_catalog(app, danger_categories())`` after boot."""
     from pydantic_ai.models.test import TestModel
 
-    import tools.toolsets as toolsets
     from services.registry import ModelRegistry, ResolvedModel
-    from tools import RunDeps
 
     async def fake_resolve_detailed(self, role, **kwargs):
         return ResolvedModel(
@@ -455,17 +454,7 @@ async def _install_sensitive_tool(monkeypatch):
             reasoning_off={},
         )
 
-    def danger_categories():
-        toolset: FunctionToolset[RunDeps] = FunctionToolset()
-
-        @toolset.tool_plain(requires_approval=True)
-        def delete_thing(name: str) -> str:
-            return f"deleted {name}"
-
-        return {"danger": toolset}
-
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
-    monkeypatch.setattr(toolsets, "default_categories", danger_categories)
 
 
 async def _await_parked_task_run(app, *, timeout: float = 2.0):
@@ -484,6 +473,7 @@ async def _await_parked_task_run(app, *, timeout: float = 2.0):
 async def test_task_run_hitting_sensitive_tool_outside_grants_parks_and_notifies(monkeypatch):
     await _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
         created = await _create_task(client, pre_authorized=[])  # no standing grant
         task_id = created["id"]
 

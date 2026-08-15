@@ -11,6 +11,7 @@ from routes.deps import OPERATOR_ID
 from services.calendar import CalendarService
 from services.calendar.nl import CalendarNaturalLanguage
 from services.registry import ModelRegistry
+from tools.calendar import calendar_toolset
 
 
 async def _build(ctx: HarnessContext) -> FeatureRuntime:
@@ -31,5 +32,6 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 MANIFEST = FeatureManifest(
     name="calendar",
     routers=(calendar_routes.router,),
+    toolsets=(("calendar", calendar_toolset),),
     build=_build,
 )
