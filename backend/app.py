@@ -23,6 +23,7 @@ from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.ratelimit import RateLimiter
 from core.vault import Vault
+from harness import LifecycleRegistry
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.task import TaskOutcome, TaskOutput
@@ -221,6 +222,11 @@ async def lifespan(app: FastAPI):
     (``services/``) wire in here as they land.
     """
     settings: Settings = app.state.settings
+    # Owns every background start/stop below: a unit registers at its construction
+    # point and shutdown unwinds in reverse registration order — the `finally` block
+    # is one call, not a hand-maintained mirror of this sequence. Something that must
+    # stop *earlier* than its construction position implies simply registers later.
+    lifecycle = LifecycleRegistry()
     app.state.auth_manager = AuthManager()
     # Inbound scoped API tokens (`AUTH-4`). Wired below with the engine, but named here
     # because the auth gate runs on every request — including ones that arrive before the
@@ -393,6 +399,7 @@ async def lifespan(app: FastAPI):
             settings=settings, vault=vault, auth_manager=app.state.auth_manager
         )
         vault.register_on_lock(app.state.shell.kill_all)
+        lifecycle.on_stop("shell", app.state.shell.stop)
     else:
         app.state.shell = None
 
@@ -400,6 +407,7 @@ async def lifespan(app: FastAPI):
     # Connection-reused across endpoints; follows redirects (some providers 30x).
     discovery_client = httpx.AsyncClient(follow_redirects=True)
     app.state.discovery_client = discovery_client
+    lifecycle.on_stop("discovery-client", discovery_client.aclose)
     # The model registry — role→endpoint resolution + the endpoint catalog.
     registry = ModelRegistry(engine, vault, http_client=discovery_client)
     app.state.models = registry
@@ -410,7 +418,11 @@ async def lifespan(app: FastAPI):
     # embeds each persisted turn (best-effort) so conversations are semantically
     # searchable across chats. Built after the registry so it can share the embedder.
     app.state.conversations = ConversationStore(engine, vault, embedder)
-    await app.state.conversations.start()
+    await lifecycle.start(
+        "conversations",
+        start=app.state.conversations.start,
+        stop=app.state.conversations.stop,
+    )
     # Cross-chat search — hybrid recall over the operator's other conversations plus
     # a transcript read, reusing the store's active-path projection.
     app.state.conversation_search = ConversationSearch(
@@ -440,7 +452,11 @@ async def lifespan(app: FastAPI):
             lambda: app.state.mail, app.state.settings_store, vault
         ),
     )
-    await app.state.notifications.start()
+    await lifecycle.start(
+        "notifications",
+        start=app.state.notifications.start,
+        stop=app.state.notifications.stop,
+    )
     # Email (`EMAIL-1..5`) — accounts, the sync loop, the inbox cache, triage and drafts.
     # Built immediately after the attention surface (the other half of the cycle above) so
     # a triage alert has somewhere to land. Its sync worker seals message content, so it
@@ -452,7 +468,10 @@ async def lifespan(app: FastAPI):
         registry,
         notifications=app.state.notifications,
     )
-    await app.state.mail.start()
+    # Mail stops before the attention surface it notifies through (registered after ⇒
+    # stops earlier): the sync loop can raise a triage alert on its way down, and a
+    # channel delivery may still be draining.
+    await lifecycle.start("mail", start=app.state.mail.start, stop=app.state.mail.stop)
     # The calendar (`CAL-1..3`). Nothing to start or stop: no worker, no held connections
     # — CalDAV sync runs per request. Its natural-language parser resolves the background
     # model per call (the `services/webfetch/distill.py` seam), so a role rebound at
@@ -481,7 +500,7 @@ async def lifespan(app: FastAPI):
     # lazy-detect if the warm-up hasn't finished.
     app.state.cookbook = CookbookService()
     logger.info("cookbook: hardware detection (warming in background)")
-    app.state.cookbook_warmup = asyncio.create_task(app.state.cookbook.warmup())
+    lifecycle.track("cookbook-warmup", app.state.cookbook.warmup())
     # Long-term memory — embeds via the shared embedder; degrades to keyword recall
     # when no embedding endpoint is configured.
     app.state.memory = MemoryStore(engine, vault, embedder)
@@ -517,7 +536,14 @@ async def lifespan(app: FastAPI):
         settings=app.state.settings_store,
         credentials=app.state.credentials,
     )
-    await app.state.serving.reconcile_on_startup()
+    await lifecycle.start(
+        "serving",
+        start=app.state.serving.reconcile_on_startup,
+        stop=app.state.serving.shutdown,
+    )
+    # Registered after serving so it stops first: an engine going down during shutdown
+    # must not be able to kick off a doomed reindex.
+    lifecycle.on_stop("embedding-reindexer", app.state.embedding_reindexer.shutdown)
     folder_adapter = FolderAdapter(engine, chunk_store, vault.unlocked_event)
     # The documents surface: an in-app source whose bodies are chunked into the same
     # corpus_chunk store as folders. The DocumentStore owns the rows and calls the
@@ -560,20 +586,25 @@ async def lifespan(app: FastAPI):
     app.state.corpus_folder = folder_adapter
     app.state.corpus_documents = documents_adapter
     app.state.corpus_uploads = uploads_adapter
-    await folder_adapter.start()
-    await documents_adapter.start()
-    await uploads_adapter.start()
-    await app.state.uploads.start()
+    await lifecycle.start("corpus-folder", start=folder_adapter.start, stop=folder_adapter.stop)
+    await lifecycle.start(
+        "corpus-documents", start=documents_adapter.start, stop=documents_adapter.stop
+    )
+    await lifecycle.start(
+        "corpus-uploads", start=uploads_adapter.start, stop=uploads_adapter.stop
+    )
+    await lifecycle.start("uploads", start=app.state.uploads.start, stop=app.state.uploads.stop)
     # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
     # semantic index once unlocked — off the critical path; new content is already
     # embedded as it persists.
-    app.state.embedding_backfill = asyncio.create_task(
-        _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault)
+    lifecycle.track(
+        "embedding-backfill",
+        _backfill_embeddings(app.state.conversations, app.state.memory, chunk_store, vault),
     )
     # Seal the columns that predate their own encryption. Same shape and same reason as
     # the embedding backfill above: the migration that added the sealed column ran before
     # unlock with no key, so the healing has to happen here (XC-SEC-3).
-    app.state.sealing_backfill = asyncio.create_task(_backfill_sealed_columns(engine, vault))
+    lifecycle.track("sealing-backfill", _backfill_sealed_columns(engine, vault))
     # The View's static versions — the agent captures a sandbox file here, the
     # frontend fetches and renders it on the View canvas. Encrypted at rest like the
     # rest of the operator's data. (The View's live head rides the sandbox + the
@@ -598,12 +629,15 @@ async def lifespan(app: FastAPI):
     app.state.searxng = searxng
     # The container is not started here: the offline-mode service (built below, once
     # the browser exists too) owns bringing both web containers up — probe-first, so a
-    # host that boots offline never launches them.
+    # host that boots offline never launches them. Its stop registers now, before the
+    # offline monitor's, so the monitor stops first and never fights the teardown.
+    lifecycle.on_stop("searxng", searxng.stop)
     # Web search — query the managed SearXNG (or an operator-configured provider). Its own
     # outbound client does NOT follow redirects: an unguarded redirect off the JSON API
     # would be an SSRF hole, so the search path simply refuses to follow one.
     web_client = httpx.AsyncClient(follow_redirects=False)
     app.state.web_client = web_client
+    lifecycle.on_stop("web-client", web_client.aclose)
     app.state.search = SearchService(
         engine,
         vault,
@@ -631,6 +665,7 @@ async def lifespan(app: FastAPI):
         runtime_pref=settings.sandbox_runtime,
     )
     app.state.browser = browser
+    lifecycle.on_stop("browser", browser.stop)
     # Goal-aware distillation of oversized pages: a closure resolves the utility model
     # (the background-work rule — utility, degrade to main, reasoning off) fresh per call,
     # so it respects registry changes and keeps the engine layer out of services/webfetch.
@@ -690,7 +725,9 @@ async def lifespan(app: FastAPI):
         # Probing off ⇒ assume online (no network); only the manual switch acts.
         probe=None if settings.offline_check_enabled else _assume_online,
     )
-    await app.state.offline.start()
+    await lifecycle.start(
+        "offline", start=app.state.offline.start, stop=app.state.offline.stop
+    )
     # The execution sandbox — detected once at boot. None ⇒ no runtime, so the
     # code-execution capability is disabled (it never falls back to the host).
     # Present ⇒ wrap it in a per-conversation session manager that keeps a
@@ -714,7 +751,7 @@ async def lifespan(app: FastAPI):
     app.state.sandbox = sandbox_manager
     if sandbox_manager is not None:
         # Logs its own code-execution + preview boot status and warms the image.
-        await sandbox_manager.start()
+        await lifecycle.start("sandbox", start=sandbox_manager.start, stop=sandbox_manager.stop)
     else:
         logger.info("sandbox: code execution disabled (no container runtime)")
         logger.info("preview: disabled (no container runtime)")
@@ -722,6 +759,7 @@ async def lifespan(app: FastAPI):
     # redirect following — the proxy rewrites Location and returns it to the browser.
     preview_client = httpx.AsyncClient(follow_redirects=False)
     app.state.preview_client = preview_client
+    lifecycle.on_stop("preview-client", preview_client.aclose)
 
     async def _task_run_summary(run: Run, conversation_id: str) -> str | None:
         """A short, plain factual line about how the run settled — no extra model
@@ -834,57 +872,36 @@ async def lifespan(app: FastAPI):
             task_id=view.id,
         )
 
+    async def _drain_run_terminal_notifies() -> None:
+        """Drain any in-flight run-terminal notify tasks before the stores they read
+        (notifications, conversations) stop — a run finishing right at shutdown must
+        not leave a task reading a closed store, and must not warn as
+        "destroyed while pending". Registered late so it runs early."""
+        pending = list(app.state.run_terminal_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    lifecycle.on_stop("run-terminal-notifies", _drain_run_terminal_notifies)
+
     # The task scheduler — single-instance, in-process. Lock-aware like the
     # write-behind drainers above (task prompts are encrypted): it parks its tick
-    # loop while the vault is locked and resumes on unlock.
+    # loop while the vault is locked and resumes on unlock. Registered last so it
+    # stops first — nothing may submit new runs into a tearing-down process.
     app.state.scheduler = SchedulerService(
         engine,
         vault,
         executor=_task_executor,
         notify=_task_notify,
     )
-    await app.state.scheduler.start()
+    await lifecycle.start(
+        "scheduler", start=app.state.scheduler.start, stop=app.state.scheduler.stop
+    )
     try:
         yield
     finally:
-        await app.state.scheduler.stop()
-        if app.state.shell is not None:
-            await app.state.shell.stop()
-        warmup = app.state.cookbook_warmup
-        if not warmup.done():
-            warmup.cancel()
-        # Both unlock-gated backfills: a shutdown while still locked leaves them parked on
-        # `unlocked_event`, which would warn as "destroyed while pending" if not cancelled.
-        for backfill in (app.state.embedding_backfill, app.state.sealing_backfill):
-            if not backfill.done():
-                backfill.cancel()
-        # Drain any in-flight run-terminal notify tasks before tearing down the DB
-        # engine/vault they read — a run finishing right at shutdown must not leave a
-        # task reading a closed engine, and must not warn as "destroyed while pending".
-        pending_notifies = list(app.state.run_terminal_tasks)
-        for task in pending_notifies:
-            task.cancel()
-        if pending_notifies:
-            await asyncio.gather(*pending_notifies, return_exceptions=True)
-        app.state.embedding_reindexer.shutdown()
-        await app.state.serving.shutdown()
-        await preview_client.aclose()
-        await discovery_client.aclose()
-        await web_client.aclose()
-        await app.state.offline.stop()  # stop the monitor before tearing the containers down
-        await browser.stop()
-        await searxng.stop()
-        if sandbox_manager is not None:
-            await sandbox_manager.stop()
-        await folder_adapter.stop()
-        await documents_adapter.stop()
-        await uploads_adapter.stop()
-        await app.state.uploads.stop()
-        await app.state.conversations.stop()
-        # Mail before the attention surface it notifies through: the sync loop can raise a
-        # triage alert on its way down, and a channel delivery may still be draining.
-        await app.state.mail.stop()
-        await app.state.notifications.stop()
+        await lifecycle.stop_all()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

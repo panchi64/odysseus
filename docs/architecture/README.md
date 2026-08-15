@@ -109,6 +109,8 @@ Backend lives under `backend/`, parallel to `frontend/`. ⟦OPEN: D10 package gr
 ```
 backend/
   app.py            # FastAPI assembly: middleware, auth, router registration, run registry on app state
+  harness/          # app-assembly substrate: the lifecycle registry (start/stop order for all background
+                    #   work — D33); feature manifests + discovery land here as they arrive
   pyproject.toml    # uv-managed
   core/             # foundation: config, db engine + schema/migrations, auth, security/crypto, exceptions
   models/           # ORM entities + Pydantic schemas (the data contracts)
