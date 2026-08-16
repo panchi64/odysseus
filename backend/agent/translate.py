@@ -138,6 +138,7 @@ async def stream_agent_run(
     announced: set[str] | None = None,
     loop_breaker: LoopBreaker | None = None,
     on_step: Callable[[list[ModelMessage]], None] | None = None,
+    on_request_node: Callable[[Any], None] | None = None,
 ) -> None:
     """Iterate the AgentRun's graph nodes, emitting our events as they happen.
 
@@ -147,10 +148,16 @@ async def stream_agent_run(
     given, raises :class:`LoopDetected` to abort a no-progress turn. ``on_step``,
     if given, is called with the accumulated history after each model response —
     the engine uses it to emit a live context/usage frame as the turn progresses.
+    ``on_request_node``, if given, is called with each yielded ``ModelRequestNode``
+    *before* it streams — the request isn't in flight yet and hasn't been appended
+    to the history, so the callback may still amend ``node.request.parts`` (the
+    engine injects mid-run operator messages here).
     """
     step = 0
     async for node in agent_run:
         if Agent.is_model_request_node(node):
+            if on_request_node is not None:
+                on_request_node(node)
             step += 1
             run.emit(StepStarted(index=step))
             async with node.stream(agent_run.ctx) as stream:

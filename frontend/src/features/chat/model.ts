@@ -275,6 +275,17 @@ export interface ChatMessage {
    *  turn is neither actively updating nor over, so it needs its own re-attach
    *  affordance rather than silently looking finished or frozen. */
   detached?: boolean;
+  /** User turns only: this message was sent while a run was still executing and
+   *  is queued on that run, waiting to be handed to the model at its next
+   *  boundary (mid-run steering). Rendered as a pending "QUEUED" bubble with a
+   *  withdraw affordance; cleared when `message.injected` promotes it to a
+   *  normal user turn. Distinct from the assistant-side `queued` (concurrency
+   *  semaphore wait). */
+  queuedPending?: boolean;
+  /** User turns only: the backend id of the queued message (`message.queued` /
+   *  the send response's `queued_message_id`) — the handle `withdrawQueued`
+   *  addresses. Kept after injection for event idempotency. */
+  queuedMessageId?: string;
   createdAt: string;
   /** Model/endpoint that produced an assistant message. */
   model?: string;

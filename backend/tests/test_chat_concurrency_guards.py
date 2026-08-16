@@ -1,9 +1,11 @@
 """Backend guards against a live run racing a second submission or a branch-tree
 mutation on the same conversation (chat-03, chat-04, resume-02 backend half).
 
-A live (queued/running/awaiting_input) run on a conversation must block a second
-``/chat``/``/chat/regenerate``/``/chat/edit`` submission and every leaf-moving branch
-op, with a clear 409 raised **before** any store mutation.
+A live (queued/running/awaiting_input) run on a conversation must block every
+leaf-moving branch op and a second ``/chat/regenerate``/``/chat/edit`` submission
+with a clear 409 raised **before** any store mutation. A second plain-text
+``/chat`` POST is the exception: it queues into the live run (mid-run steering)
+instead of being rejected — only an attachment-carrying send still 409s.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ async def _complete_first_turn(client, prompt: str = "hello") -> tuple[str, dict
     return conv_id, assistant
 
 
-async def test_second_chat_post_rejected_while_run_live(monkeypatch):
+async def test_second_chat_post_queues_into_live_run(monkeypatch):
     hang, started = asyncio.Event(), asyncio.Event()
     _patch_hanging_model(monkeypatch, hang, started)
 
@@ -73,15 +75,50 @@ async def test_second_chat_post_rejected_while_run_live(monkeypatch):
         second = await client.post(
             "/chat", json={"prompt": "again", "conversation_id": conv_id}
         )
+        # Steering: the send is accepted into the live run — same run id, a queued
+        # message id, and no second Run object ever created for the conversation.
+        assert second.status_code == 202
+        assert second.json()["run_id"] == first.json()["run_id"]
+        assert second.json()["queued_message_id"]
+
+        # No store mutation until the run itself persists the turn (the live run's
+        # `last_seq` does advance — queueing emits `message.queued` on its stream).
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json()["messages"] == after.json()["messages"]
+        assert app.state.runs.active_run_for(conv_id, OPERATOR_ID).id == first.json()["run_id"]
+
+        hang.set()
+        await app.state.runs.get(first.json()["run_id"]).wait()
+
+
+async def test_attachment_send_still_rejected_while_run_live(monkeypatch):
+    # Steering is text-only: a send carrying attachments can't ride an existing
+    # run's request, so the busy conversation still answers 409 for it.
+    hang, started = asyncio.Event(), asyncio.Event()
+    _patch_hanging_model(monkeypatch, hang, started)
+
+    async with client_app() as (client, app):
+        upload = await client.post(
+            "/uploads", files={"file": ("note.txt", b"look at this", "text/plain")}
+        )
+        upload_id = upload.json()["id"]
+
+        first = await client.post("/chat", json={"prompt": "hello"})
+        conv_id = first.json()["conversation_id"]
+        await started.wait()
+
+        second = await client.post(
+            "/chat",
+            json={
+                "prompt": "again",
+                "conversation_id": conv_id,
+                "attachment_ids": [upload_id],
+            },
+        )
         assert second.status_code == 409
         assert "already in progress" in second.json()["detail"]
-
-        # No store mutation from the rejected request.
-        after = await client.get(f"/conversations/{conv_id}")
-        assert before.json() == after.json()
-        # Still exactly the first run driving this conversation — no second Run object
-        # was ever created for it.
-        assert app.state.runs.active_run_for(conv_id, OPERATOR_ID).id == first.json()["run_id"]
+        # Nothing was queued into the run either.
+        assert app.state.runs.get(first.json()["run_id"]).pending_messages == []
 
         hang.set()
         await app.state.runs.get(first.json()["run_id"]).wait()
@@ -96,18 +133,22 @@ async def test_guard_releases_once_run_reaches_terminal(monkeypatch):
         conv_id = first.json()["conversation_id"]
         await started.wait()
 
-        blocked = await client.post(
+        queued = await client.post(
             "/chat", json={"prompt": "again", "conversation_id": conv_id}
         )
-        assert blocked.status_code == 409
+        assert queued.status_code == 202
+        assert queued.json()["queued_message_id"]
 
         hang.set()
         await app.state.runs.get(first.json()["run_id"]).wait()
 
+        # Once the run is terminal a new send starts a fresh run (no queueing).
         accepted = await client.post(
             "/chat", json={"prompt": "now", "conversation_id": conv_id}
         )
         assert accepted.status_code == 202
+        assert accepted.json()["run_id"] != first.json()["run_id"]
+        assert accepted.json()["queued_message_id"] is None
         await app.state.runs.get(accepted.json()["run_id"]).wait()
 
 
@@ -384,9 +425,10 @@ async def test_delete_message_purge_claims_against_a_concurrent_chat_submission(
         await app.state.runs.get(accepted.json()["run_id"]).wait()
 
 
-async def test_awaiting_input_run_blocks_a_new_chat_submission(monkeypatch):
-    # A parked (awaiting_input) run is not terminal — `active_run_for` still reports it,
-    # so it must block a new submission exactly like a running one.
+async def test_awaiting_input_run_queues_a_new_chat_submission(monkeypatch):
+    # A parked (awaiting_input) run is not terminal — `active_run_for` still reports
+    # it, so a new plain-text send queues into it (injected on resume) rather than
+    # starting a second run; the run itself stays parked.
     _install_sensitive_tool(monkeypatch)
     async with client_app() as (client, app):
         swap_tool_catalog(app, danger_categories())
@@ -395,8 +437,11 @@ async def test_awaiting_input_run_blocks_a_new_chat_submission(monkeypatch):
         run = await _await_parked(app, first.json()["run_id"])
         assert run.status == "awaiting_input"
 
-        blocked = await client.post(
+        queued = await client.post(
             "/chat", json={"prompt": "again", "conversation_id": conv_id}
         )
-        assert blocked.status_code == 409
-        assert "already in progress" in blocked.json()["detail"]
+        assert queued.status_code == 202
+        assert queued.json()["run_id"] == first.json()["run_id"]
+        assert queued.json()["queued_message_id"]
+        assert run.status == "awaiting_input"
+        assert [m.text for m in run.pending_messages] == ["again"]

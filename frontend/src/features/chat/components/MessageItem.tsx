@@ -33,6 +33,8 @@ export interface MessageItemProps {
   onSwitchVersion?: (id: string, index: number) => void;
   /** Pin/unpin this turn (backend-owned flag). */
   onTogglePin?: () => void;
+  /** Withdraw this still-queued steering message before the run consumes it. */
+  onWithdraw?: () => void;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
   /** Re-attach to this turn's run after its transport detached (reconnect
@@ -78,6 +80,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
         onDelete={props.onDelete}
         onSwitchVersion={props.onSwitchVersion}
         onTogglePin={props.onTogglePin}
+        onWithdraw={props.onWithdraw}
       />
     </Show>
   );
@@ -138,6 +141,7 @@ function UserTurn(props: {
   onDelete?: () => void;
   onSwitchVersion?: (id: string, index: number) => void;
   onTogglePin?: () => void;
+  onWithdraw?: () => void;
 }): JSX.Element {
   const m = () => props.message;
   const [editing, setEditing] = createSignal(false);
@@ -157,7 +161,9 @@ function UserTurn(props: {
       <div class="flex w-full items-center justify-between gap-2">
         {/* Left: actions reveal on hover. Right: identity + metadata. */}
         <div class="flex items-center gap-2">
-          <Show when={!editing()}>
+          {/* A queued (not-yet-delivered) steering message isn't a real turn yet:
+              no edit/delete/pin — only the withdraw affordance on the right. */}
+          <Show when={!editing() && !m().queuedPending}>
             <MessageActions
               message={m()}
               onEdit={startEdit}
@@ -167,6 +173,20 @@ function UserTurn(props: {
           </Show>
         </div>
         <div class="flex items-center gap-2">
+          <Show when={m().queuedPending}>
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="close"
+              aria-label="Withdraw queued message"
+              onClick={() => props.onWithdraw?.()}
+            >
+              WITHDRAW
+            </Button>
+            <Text variant="label" tone="warn">
+              QUEUED
+            </Text>
+          </Show>
           <PinMarker message={m()} />
           <VersionCycler
             message={m()}

@@ -829,6 +829,9 @@ export async function setCompactionOverride(
 interface ChatCreatedDTO {
   run_id: string;
   conversation_id: string;
+  /** Set when the send was queued into the conversation's already-live run
+   *  (mid-run steering) instead of starting a new one. */
+  queued_message_id?: string | null;
 }
 
 let counter = 0;
@@ -919,10 +922,22 @@ export function createChatStream(
   // True while a reattach (replay from a known run) is folding in — drives the
   // "RESYNCING…" affordance, distinct from a fresh turn's `sending`.
   const [reattaching, setReattaching] = createSignal(false);
+  // Text of steering messages that were still queued when their run reached
+  // terminal (cancel/error/timeout) — never delivered to the model. The screen
+  // hands it back to the composer as a prefill so the operator's words aren't
+  // lost; cleared once consumed.
+  const [undeliveredDraft, setUndeliveredDraft] = createSignal<string | null>(
+    null,
+  );
   let controller: AbortController | null = null;
   // The run currently streaming, if any — needed to cancel it on the backend
   // (aborting the SSE alone leaves the run executing server-side).
   let activeRunId: string | null = null;
+  // The assistant message events currently fold onto. Normally the placeholder
+  // `driveRun` was started with, but a `message.injected` boundary closes that
+  // bubble and retargets to a fresh one — mirroring how the persisted tree
+  // splits a steered turn into segments around the injected user message.
+  let foldTarget: string | null = null;
   // The highest event `seq` folded for the current run. Two purposes: (1) the
   // resume point a reattach replays *after* (avoids re-applying the head), and
   // (2) an idempotency guard in `foldEvent` so an overlapping old+new reader can
@@ -979,6 +994,7 @@ export function createChatStream(
     // bookkeeping so its seqs don't suppress the next run's events.
     maxFoldedSeq = 0;
     activeRunId = null;
+    foldTarget = null;
     // Forget which run we've already reattached-to: leaving this thread (still
     // detached/mid-stream) and returning later must let the cold-reattach effect
     // fire again for the same run id, rather than permanently ignoring a run it
@@ -1052,12 +1068,15 @@ export function createChatStream(
       });
   }
 
-  function foldEvent(assistantId: string, ev: RunEvent): void {
+  function foldEvent(anchorId: string, ev: RunEvent): void {
     // Idempotency: `seq` is monotonic per run, so an event at or below the high-
     // water mark was already folded (a reattach replay overlapping a still-live
     // reader). Skipping it stops a re-applied `answer.delta` from doubling text.
     if (ev.seq <= maxFoldedSeq) return;
     maxFoldedSeq = ev.seq;
+    // Events land on the current fold target: the drive's placeholder until a
+    // `message.injected` boundary retargets to a fresh assistant bubble.
+    const assistantId = foldTarget ?? anchorId;
     switch (ev.type) {
       case "thinking.delta":
         patchById(assistantId, (m) => appendDelta(m, "thinking", ev.text));
@@ -1331,6 +1350,82 @@ export function createChatStream(
         });
         break;
       }
+      case "message.queued":
+        // A steering message the backend accepted into this run. Usually it tags
+        // the optimistic bubble `send` already pushed (matched by text, first
+        // untagged wins so duplicate texts pair off in order); on a reattach
+        // replay there is no optimistic bubble, so rebuild it from the event.
+        setMessages(
+          produce((list) => {
+            if (list.some((m) => m.queuedMessageId === ev.message_id)) return;
+            const untagged = list.find(
+              (m) =>
+                m.queuedPending && !m.queuedMessageId && m.content === ev.text,
+            );
+            if (untagged) untagged.queuedMessageId = ev.message_id;
+            else
+              list.push({
+                id: nextId("u"),
+                role: "user",
+                content: ev.text,
+                queuedPending: true,
+                queuedMessageId: ev.message_id,
+                createdAt: ev.ts,
+              });
+          }),
+        );
+        break;
+      case "message.withdrawn":
+        // Only a still-pending bubble is removable — an already-injected message
+        // is part of the turn and must never vanish from the transcript.
+        setMessages(
+          produce((list) => {
+            const i = list.findIndex(
+              (m) => m.queuedMessageId === ev.message_id && m.queuedPending,
+            );
+            if (i >= 0) list.splice(i, 1);
+          }),
+        );
+        break;
+      case "message.injected":
+        // The queued message reached the model: promote its bubble to a normal
+        // user turn and split the assistant flow around it, mirroring how the
+        // backend persists the steered turn (…assistant segment, user message,
+        // next assistant segment…) so the live transcript and a reload agree.
+        setMessages(
+          produce((list) => {
+            const qi = list.findIndex(
+              (m) => m.queuedMessageId === ev.message_id && m.queuedPending,
+            );
+            if (qi < 0) return;
+            const [bubble] = list.splice(qi, 1);
+            bubble.queuedPending = false;
+            const target = list.find((m) => m.id === assistantId);
+            const targetIsFresh =
+              target && !target.blocks?.length && !target.content;
+            if (targetIsFresh && list[list.length - 1] === target) {
+              // A batch of injections at one boundary shares one fresh segment:
+              // slot this message before the placeholder a prior injection opened.
+              list.splice(list.length - 1, 0, bubble);
+            } else {
+              if (target) target.streaming = false;
+              list.push(bubble);
+              const fresh: ChatMessage = {
+                id: nextId("a"),
+                role: "assistant",
+                model: target?.model,
+                content: "",
+                blocks: [],
+                streaming: true,
+                runId: activeRunId ?? undefined,
+                createdAt: new Date().toISOString(),
+              };
+              list.push(fresh);
+              foldTarget = fresh.id;
+            }
+          }),
+        );
+        break;
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
         // rather than folding onto the assistant message. The throbber clears in the
@@ -1379,6 +1474,20 @@ export function createChatStream(
     }
   }
 
+  /** Drop any still-pending steering bubbles and hand their text back to the
+   *  composer (`undeliveredDraft`). Idempotent — a no-op when nothing is
+   *  pending — so the drive teardown and `cancel` can both call it safely. */
+  function restoreUndelivered(): void {
+    const leftovers = messages.filter((m) => m.queuedPending);
+    if (leftovers.length === 0) return;
+    setMessages(reconcile(messages.filter((m) => !m.queuedPending)));
+    const text = leftovers.map((m) => m.content).join("\n");
+    setUndeliveredDraft((prev) => (prev ? `${prev}\n${text}` : text));
+    toast.warn(
+      "Your queued message wasn't delivered — it's back in the input.",
+    );
+  }
+
   /** Drive a started run to completion: open the SSE, fold every event onto the
    *  given assistant message, and on end clear streaming/sending, fire the
    *  lifecycle callbacks, and refresh the session list. Shared by `send` and the
@@ -1403,6 +1512,9 @@ export function createChatStream(
     // blank until the counter catches up (or never, if this turn is shorter). A
     // reattach passes `fromSeq` = the last seq it folded, replaying only the gap.
     maxFoldedSeq = fromSeq ?? 0;
+    // Events start folding onto the placeholder; a `message.injected` boundary
+    // retargets this as the run's segments split.
+    foldTarget = assistantId;
     patchById(assistantId, (m) => {
       m.runId = runId;
       m.detached = false; // a fresh drive/reattach supersedes any prior detach
@@ -1440,7 +1552,7 @@ export function createChatStream(
         // an in-flight run to reattach to.
         detachedNow = true;
         setDetached(true);
-        patchById(assistantId, (m) => {
+        patchById(foldTarget ?? assistantId, (m) => {
           m.streaming = false;
           m.queued = false;
           m.detached = true;
@@ -1462,11 +1574,15 @@ export function createChatStream(
       // cancelled, or superseded.
       if (myGen === driveGen && !detachedNow) {
         activeRunId = null;
-        patchById(assistantId, (m) => {
+        patchById(foldTarget ?? assistantId, (m) => {
           m.streaming = false;
           m.detached = false; // the turn is genuinely over — clear any stale banner
           m.queued = false; // defensive: covers a resolve with no frames ever folded
         });
+        // Steering messages the run never consumed (it was cancelled/errored/
+        // timed out before their boundary): hand the text back to the composer
+        // rather than silently dropping the operator's words.
+        restoreUndelivered();
         setSending(false);
         setTitlePending(false); // turn ended — clear even if no title landed
         if (wasNew && activeConversationId) {
@@ -1499,7 +1615,9 @@ export function createChatStream(
     // (its drive is superseded by the generation bump inside the next driveRun).
     controller?.abort();
     controller = null;
-    let assistantId = messages.find(
+    // The *last* matching turn: a steered run splits into several assistant
+    // segments sharing one runId, and only the newest is the live one.
+    let assistantId = messages.findLast(
       (m) => m.runId === runId && m.role === "assistant",
     )?.id;
     const seeded = assistantId === undefined;
@@ -1654,12 +1772,96 @@ export function createChatStream(
     }
   }
 
+  /** Send while a run is live: the backend queues the message into that run
+   *  (injected at its next boundary) — or, if the run ended in the meantime,
+   *  starts a fresh turn; the response tells us which, so this client never
+   *  picks. The optimistic bubble renders QUEUED until `message.injected`
+   *  promotes it (or a withdraw/terminal removes it). */
+  async function sendWhileStreaming(text: string): Promise<void> {
+    if (activeConversationId === null) {
+      // The first turn's POST hasn't resolved yet, so there's no conversation to
+      // queue against. The composer already cleared itself — hand the text back
+      // rather than dropping it.
+      setUndeliveredDraft((prev) => (prev ? `${prev}\n${text}` : text));
+      return;
+    }
+    const userMsg: ChatMessage = {
+      id: nextId("u"),
+      role: "user",
+      content: text.trim(),
+      createdAt: new Date().toISOString(),
+      queuedPending: true,
+    };
+    setMessages(produce((m) => m.push(userMsg)));
+    let created: ChatCreatedDTO;
+    try {
+      created = await api.post<ChatCreatedDTO>("/chat", {
+        prompt: text.trim(),
+        conversation_id: activeConversationId,
+      });
+    } catch (err) {
+      // Not accepted (a regenerate/edit holds the claim, or transport failed):
+      // roll the bubble back so the transcript only shows what the backend has.
+      setMessages(reconcile(messages.filter((m) => m.id !== userMsg.id)));
+      toast.error(
+        isApiError(err) && err.status === 409
+          ? "Can't queue this message right now — try again in a moment."
+          : ((err as { detail?: string })?.detail ??
+              "Unable to reach the assistant."),
+      );
+      return;
+    }
+    if (created.queued_message_id) {
+      // Queued into the live run. The `message.queued` fold may have already
+      // tagged the bubble via the open stream; this is the fallback tag.
+      patchById(userMsg.id, (m) => {
+        if (!m.queuedMessageId) m.queuedMessageId = created.queued_message_id!;
+      });
+      return;
+    }
+    // The run went terminal just before the POST landed: the backend started a
+    // fresh run for this message instead. Promote the bubble to a normal turn
+    // and drive the new run like any other send.
+    patchById(userMsg.id, (m) => (m.queuedPending = false));
+    const assistantId = nextId("a");
+    setMessages(
+      produce((m) =>
+        m.push({
+          id: assistantId,
+          role: "assistant",
+          model: (options.selection?.() ?? effectiveSelection())?.model,
+          content: "",
+          blocks: [],
+          streaming: true,
+          queued: true,
+          createdAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    setSending(true);
+    activeConversationId = created.conversation_id;
+    await driveRun(created.run_id, assistantId, false);
+  }
+
   async function send(
     text: string,
     attachmentIds: string[] = [],
   ): Promise<void> {
     // A turn needs either prompt text or at least one attachment to send.
-    if ((!text.trim() && attachmentIds.length === 0) || sending()) return;
+    if (!text.trim() && attachmentIds.length === 0) return;
+    if (sending()) {
+      // Mid-run steering is text-only — an attachment can't ride an existing
+      // run's request (and the composer disables attach while streaming).
+      if (attachmentIds.length > 0) {
+        toast.error(
+          "Attachments can't be added while a response is in progress.",
+        );
+        return;
+      }
+      if (!text.trim()) return;
+      await sendWhileStreaming(text);
+      return;
+    }
     setSending(true);
 
     const wasNew = activeConversationId === null;
@@ -1768,6 +1970,40 @@ export function createChatStream(
     );
     setSending(false);
     setDetached(false);
+    // A cancel with steering messages still queued: they'll never be injected
+    // now, so restore them to the composer. (The drive's own teardown also calls
+    // this; it's idempotent, and this covers the detached case it skips.)
+    restoreUndelivered();
+  }
+
+  /** Withdraw a steering message that's still queued on the live run. No
+   *  optimistic removal: a 404 means the run consumed it in the meantime — the
+   *  message is part of the turn and its bubble must stay. On success the
+   *  bubble drops here and the `message.withdrawn` fold is a no-op. */
+  async function withdrawQueued(queuedMessageId: string): Promise<void> {
+    const runId = activeRunId;
+    if (!runId) return;
+    try {
+      await api.del(`/runs/${runId}/messages/${queuedMessageId}`);
+      setMessages(
+        reconcile(
+          messages.filter(
+            (m) => !(m.queuedMessageId === queuedMessageId && m.queuedPending),
+          ),
+        ),
+      );
+    } catch (err) {
+      if (isApiError(err) && err.status === 404) {
+        toast.warn(
+          "Too late to withdraw — the message already reached the model.",
+        );
+      } else {
+        toast.error(
+          (err as { detail?: string })?.detail ??
+            "Unable to withdraw the message.",
+        );
+      }
+    }
   }
 
   /** POST a batch of approval decisions for a message's run, then apply an
@@ -2200,6 +2436,12 @@ export function createChatStream(
     lastSeq: () => maxFoldedSeq,
     send,
     cancel,
+    /** Withdraw a queued (not-yet-injected) steering message from the live run. */
+    withdrawQueued,
+    /** Text of queued messages the run never consumed (restored on terminal) —
+     *  the screen prefills the composer with it, then clears it. */
+    undeliveredDraft,
+    clearUndeliveredDraft: () => setUndeliveredDraft(null),
     reattachRun,
     resolveApproval,
     resolveHostCommands,

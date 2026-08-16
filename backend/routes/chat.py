@@ -92,6 +92,10 @@ class EditCreate(BaseModel):
 class ChatCreated(BaseModel):
     run_id: str
     conversation_id: str
+    # Set when the conversation already had a live run and this message was queued
+    # into it (to be injected at the run's next model-request boundary) instead of
+    # starting a new run. Additive — a plain send never carries it.
+    queued_message_id: str | None = None
 
 
 class ChatSettings(BaseModel):
@@ -325,6 +329,28 @@ async def _resolve_compaction(
     )
 
 
+def _enqueue_steering(
+    registry: RunRegistry, conversation_id: str, body: ChatCreate
+) -> ChatCreated | None:
+    """Queue a mid-run message into the conversation's live chat run, or None when
+    the busy conversation can't take one (the claim is held by a regenerate/edit
+    with no run registered yet, the run isn't a chat turn, or the send carries
+    attachments — steering is text-only). Synchronous end to end: no ``await``
+    between finding the run and enqueueing, so the run can't reach terminal (or
+    drain) in between."""
+    if body.attachment_ids:
+        return None
+    run = registry.active_run_for(conversation_id, OPERATOR_ID)
+    if run is None or run.kind != "chat":
+        return None
+    message = run.enqueue_message(body.prompt)
+    return ChatCreated(
+        run_id=run.id,
+        conversation_id=conversation_id,
+        queued_message_id=message.id,
+    )
+
+
 @router.post("", status_code=202, response_model=ChatCreated)
 async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     # A turn needs *something* to act on: text, or at least one attached file ("here,
@@ -354,7 +380,21 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     # gap a concurrent regenerate/edit/delete could occupy without ever registering a
     # run for `active_run_for` to see. A brand-new conversation's id is unknown to
     # anyone else yet, so this always succeeds for it.
-    deps.claim_conversation(request, conversation_id)
+    #
+    # A busy conversation is not always a rejection: when the claim is held by a live
+    # *chat* run (not a regenerate/edit claim) and the send is plain text, the message
+    # queues into that run for injection at its next model-request boundary. The
+    # check-and-enqueue is synchronous, so the run can't go terminal in between; and a
+    # run that went terminal just before the POST simply lets the claim succeed — the
+    # client never has to pick between "queue" and "new turn".
+    registry = deps.registry(request)
+    try:
+        registry.claim(conversation_id, OPERATOR_ID)
+    except ConversationBusyError:
+        queued = _enqueue_steering(registry, conversation_id, body)
+        if queued is not None:
+            return queued
+        raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from None
     try:
         cap = await _attachment_inline_cap(request, body.attachment_ids)
         return await _submit_turn(

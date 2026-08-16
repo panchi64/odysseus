@@ -117,6 +117,19 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     return {"status": "cancelling"}
 
 
+@router.delete("/{run_id}/messages/{message_id}", status_code=200)
+async def withdraw_queued_message(
+    run_id: str, message_id: str, request: Request
+) -> dict[str, str]:
+    """Withdraw an operator message queued into a live run before the run consumes
+    it. 404 covers every way the message can no longer be withdrawn: unknown id,
+    already injected, already withdrawn, or the run is gone/terminal."""
+    run = _require_run(request, run_id)
+    if run.is_terminal or not run.withdraw_message(message_id):
+        raise HTTPException(status_code=404, detail="queued message not found")
+    return {"status": "withdrawn"}
+
+
 class ApprovalDecision(BaseModel):
     tool_call_id: str
     approved: bool

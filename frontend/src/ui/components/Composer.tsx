@@ -60,11 +60,21 @@ export interface ComposerProps {
   /** Receives the trimmed text and the ids of every ready attachment. */
   onSend: (text: string, attachmentIds: string[]) => void;
   disabled?: boolean;
-  /** A run is generating: the SEND button becomes a STOP button wired to
-   *  `onStop`, so the interrupt control sits where the user's focus already is. */
+  /** A run is generating: a STOP button wired to `onStop` joins the action row,
+   *  so the interrupt control sits where the user's focus already is. When the
+   *  field itself stays enabled (`disabled` false), SEND remains beside it —
+   *  the caller queues the message into the live run (mid-run steering); a
+   *  disabled field shows STOP alone. Attaching is unavailable while streaming
+   *  either way. */
   streaming?: boolean;
   /** Invoked when STOP is pressed mid-stream (see `streaming`). */
   onStop?: () => void;
+  /** Text to insert into the field programmatically (e.g. an undelivered queued
+   *  message restored after a cancel). Applied whenever it becomes non-empty —
+   *  appended below any current draft — then acknowledged via
+   *  `onPrefillConsumed` so the caller can clear it. */
+  prefill?: string | null;
+  onPrefillConsumed?: () => void;
   placeholder?: string;
   /** `md` = docked input bar (default); `lg` = centered hero field. */
   size?: "md" | "lg";
@@ -146,6 +156,16 @@ export function Composer(props: ComposerProps): JSX.Element {
     wasDisabled = disabled;
   });
 
+  // Apply a caller-provided prefill (restored undelivered text): append below
+  // any current draft, hand focus back, and acknowledge so the caller clears it.
+  createEffect(() => {
+    const incoming = props.prefill;
+    if (!incoming) return;
+    setText((current) => (current ? `${current}\n${incoming}` : incoming));
+    props.onPrefillConsumed?.();
+    field?.focus();
+  });
+
   const canSend = () =>
     !props.disabled && (Boolean(text().trim()) || hasReady());
 
@@ -222,7 +242,7 @@ export function Composer(props: ComposerProps): JSX.Element {
         leading="upload"
         iconSize={lg() ? 28 : 22}
         aria-label="Attach files"
-        disabled={props.disabled}
+        disabled={props.disabled || props.streaming}
         onClick={drop.openPicker}
       />
       <input
@@ -256,25 +276,32 @@ export function Composer(props: ComposerProps): JSX.Element {
     </Show>
   );
 
-  // While a run streams, the primary action interrupts rather than sends — the
-  // STOP button stays clickable even though the field is disabled mid-stream.
-  const actionBtn = (
-    <Show
-      when={props.streaming}
-      fallback={
-        <Button
-          variant="primary"
-          trailing="send"
-          disabled={!canSend()}
-          onClick={submit}
-        >
-          SEND
-        </Button>
-      }
+  // While a run streams, STOP joins the row so the interrupt sits where the
+  // user's focus already is. A caller that keeps the field enabled mid-stream
+  // keeps SEND beside it (Enter/SEND then queues into the live run — steering);
+  // one that disables the field shows STOP alone, as before.
+  const sendBtn = () => (
+    <Button
+      variant="primary"
+      trailing="send"
+      disabled={!canSend()}
+      onClick={submit}
     >
-      <Button variant="default" leading="stop" onClick={() => props.onStop?.()}>
-        STOP
-      </Button>
+      SEND
+    </Button>
+  );
+  const actionBtn = (
+    <Show when={props.streaming} fallback={sendBtn()}>
+      <span class="flex items-center gap-2">
+        <Show when={!props.disabled}>{sendBtn()}</Show>
+        <Button
+          variant="default"
+          leading="stop"
+          onClick={() => props.onStop?.()}
+        >
+          STOP
+        </Button>
+      </span>
     </Show>
   );
 

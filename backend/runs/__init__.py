@@ -29,6 +29,9 @@ from .events import (
     Event,
     EventBody,
     LimitNotice,
+    MessageInjected,
+    MessageQueued,
+    MessageWithdrawn,
     RunEnded,
     RunError,
     RunMetrics,
@@ -45,7 +48,7 @@ from .events import (
     ViewSnapshot,
 )
 from .registry import ConversationBusyError, RunRegistry, RunTimeout
-from .run import Orchestrator, Run, RunStatus
+from .run import Orchestrator, QueuedMessage, Run, RunStatus
 from .stream import RunStream
 from .transport import parse_last_event_id, sse_response
 
@@ -59,6 +62,7 @@ __all__ = [
     "ConversationBusyError",
     "Run",
     "RunStatus",
+    "QueuedMessage",
     "Orchestrator",
     "RunStream",
     "sse_response",
@@ -86,5 +90,8 @@ __all__ = [
     "ViewSnapshot",
     "ConversationTitled",
     "ApprovalRequired",
+    "MessageQueued",
+    "MessageWithdrawn",
+    "MessageInjected",
     "LimitNotice",
 ]

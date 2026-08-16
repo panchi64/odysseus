@@ -780,6 +780,10 @@ export function ChatRoomScreen(): JSX.Element {
                       void stream.switchVersion(id, i)
                     }
                     onTogglePin={() => void stream.toggleMessagePin(message.id)}
+                    onWithdraw={() => {
+                      if (message.queuedMessageId)
+                        void stream.withdrawQueued(message.queuedMessageId);
+                    }}
                     onOpenInView={openViewTo}
                     viewItems={viewItems}
                     seenKey={() => state().seenKey}
@@ -826,12 +830,13 @@ export function ChatRoomScreen(): JSX.Element {
         <div class="sticky bottom-0 -mx-1">
           <Composer
             autofocus
-            disabled={stream.sending()}
             streaming={stream.sending()}
             onStop={() => void stopRun()}
             onSend={(text, ids) => void stream.send(text, ids)}
             attachments={attachments}
             storageKey={composerKey()}
+            prefill={stream.undeliveredDraft()}
+            onPrefillConsumed={stream.clearUndeliveredDraft}
           />
         </div>
       </section>

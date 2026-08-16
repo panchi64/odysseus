@@ -14,10 +14,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .events import Event, RunMetrics, now_utc
+from .events import Event, MessageInjected, MessageQueued, MessageWithdrawn, RunMetrics, now_utc
 from .stream import RunStream
 
 
@@ -37,6 +38,16 @@ TERMINAL_STATUSES = {
     RunStatus.error,
     RunStatus.cancelled,
 }
+
+
+@dataclass(frozen=True)
+class QueuedMessage:
+    """An operator message sent while the run was still executing, waiting to be
+    handed to the model at the next model-request boundary."""
+
+    id: str
+    text: str
+    queued_at: datetime
 
 
 @dataclass
@@ -71,6 +82,12 @@ class Run:
     # Opaque continuation payload for a parked run (set by the orchestrator
     # layer when awaiting approval). The substrate never interprets it.
     parked_payload: object | None = None
+    # Operator messages sent while this run was still executing, waiting for the
+    # orchestrator to drain them at its next model-request boundary. Lives on the
+    # Run (like `parked_payload`) so it survives a park/resume cycle; anything
+    # still here at terminal is dropped — the client rebuilds undelivered text
+    # from the event replay (`message.queued` with no matching `injected`).
+    pending_messages: list[QueuedMessage] = field(default_factory=list)
     # Opaque hook the orchestrator may set to flush whatever partial state it holds
     # before the registry force-cancels this run's task for a wall-clock/inactivity
     # bound — called synchronously with the bound's operator-legible message, from
@@ -118,6 +135,34 @@ class Run:
         """
         self.status = RunStatus.awaiting_input
         self.parked_payload = payload
+
+    def enqueue_message(self, text: str) -> QueuedMessage:
+        """Queue an operator message for injection at the next model-request
+        boundary. Synchronous (no ``await`` between append and emit), so under
+        single-threaded asyncio it can never interleave with a concurrent
+        ``drain_messages`` and lose the message."""
+        message = QueuedMessage(id=uuid4().hex, text=text, queued_at=now_utc())
+        self.pending_messages.append(message)
+        self.emit(MessageQueued(message_id=message.id, text=message.text))
+        return message
+
+    def withdraw_message(self, message_id: str) -> bool:
+        """Remove a queued message before the run consumes it. False when the
+        id is unknown — already injected, already withdrawn, or never queued."""
+        for i, message in enumerate(self.pending_messages):
+            if message.id == message_id:
+                del self.pending_messages[i]
+                self.emit(MessageWithdrawn(message_id=message_id))
+                return True
+        return False
+
+    def drain_messages(self) -> list[QueuedMessage]:
+        """Take every pending message (in queue order), emitting ``message.injected``
+        for each — the caller is committing to hand them to the model."""
+        drained, self.pending_messages = self.pending_messages, []
+        for message in drained:
+            self.emit(MessageInjected(message_id=message.id))
+        return drained
 
     def set_metrics(self, metrics: RunMetrics) -> None:
         """Stash final metrics; the registry emits them at terminal."""

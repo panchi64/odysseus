@@ -30,9 +30,11 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     RunUsage,
     ToolApproved,
     ToolCallPart,
+    ToolReturnPart,
     UsageLimitExceeded,
     UsageLimits,
     UserPromptPart,
@@ -508,6 +510,17 @@ async def _drive_turn(
     def _partial_history() -> list[ModelMessage]:
         return list(agent_run.ctx.state.message_history) if agent_run is not None else []
 
+    def _inject_queued(node: Any) -> None:
+        # Mid-run steering: hand any operator messages queued since the last model
+        # request to the model *now*, by amending the not-yet-sent request. The node
+        # is yielded before it streams (its request isn't in history yet), so this
+        # never touches an in-flight model stream; a request mixing tool returns
+        # with these user parts is split back into separate messages on persist
+        # (`_split_injected_requests`), which replays wire-identically because the
+        # library re-merges consecutive requests at wire-prep.
+        for queued in run.drain_messages():
+            node.request.parts.append(UserPromptPart(queued.text))
+
     if partial_history_ref is not None:
         # Let the caller reach this turn's current partial state at any point — even
         # before the first step lands — so an external timeout mid-turn can still flush
@@ -536,6 +549,7 @@ async def _drive_turn(
                     announced=announced,
                     loop_breaker=loop_breaker,
                     on_step=report_progress,
+                    on_request_node=_inject_queued,
                 )
                 result = agent_run.result
         except UsageLimitExceeded as exc:
@@ -584,6 +598,20 @@ async def _drive_turn(
         # ``base`` already holds earlier segments' totals.
         run.set_metrics(_turn_metrics(base, usage, run, messages))
         if not (isinstance(output, DeferredToolRequests) and output.approvals):
+            # The model finished, but the operator queued more while it was working:
+            # instead of ending the run, continue it with the queued text as the next
+            # user request(s) — same run id, same stream, same usage/loop budget (so
+            # a steady drip of messages still trips the turn's bounds rather than
+            # extending them). `prompt=None` + a history ending in a user request is
+            # the same continuation shape a regenerate uses.
+            pending = run.drain_messages()
+            if pending:
+                message_history = messages + [
+                    ModelRequest(parts=[UserPromptPart(m.text)]) for m in pending
+                ]
+                prompt = None
+                deferred_results = None
+                continue
             answer = output if isinstance(output, str) else None
             return _TurnResult(answer=answer, messages=messages)
 
@@ -695,6 +723,32 @@ async def _verify_and_correct(
     return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
+def _split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Give each mid-run injected operator message its own persisted request.
+
+    Mid-run steering appends ``UserPromptPart``s onto the tool-return request the
+    model was about to receive (`_drive_turn`'s ``_inject_queued``). Persisting that
+    merged request as-is would bury the operator's message inside a tool exchange —
+    no tree node of its own, so no user bubble, no edit/regenerate anchor. Split it:
+    the tool returns keep their request, and each injected part becomes its own
+    ``ModelRequest`` right after. Replay stays wire-identical — the library re-merges
+    consecutive requests (tool returns first) when preparing the model's input."""
+    out: list[ModelMessage] = []
+    for message in messages:
+        if not isinstance(message, ModelRequest):
+            out.append(message)
+            continue
+        user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
+        tool_parts = [p for p in message.parts if isinstance(p, ToolReturnPart | RetryPromptPart)]
+        if not user_parts or not tool_parts:
+            out.append(message)
+            continue
+        rest = [p for p in message.parts if not isinstance(p, UserPromptPart)]
+        out.append(replace(message, parts=rest))
+        out.extend(ModelRequest(parts=[part]) for part in user_parts)
+    return out
+
+
 def _finalize(
     run: Run,
     turn: _TurnResult,
@@ -741,7 +795,7 @@ def _finalize(
         # empty slice, e.g. a bound hit before any new message accumulated).
         store.record(
             conversation_id,
-            messages[start:],
+            _split_injected_requests(messages[start:]),
             attachment_ids=attachment_ids or [],
             persisted=persisted,
             blocked_reason=turn.blocked_reason,

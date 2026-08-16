@@ -19,6 +19,7 @@ Requirements for the rest of the system. Each feature lists its **purpose** and 
 - **CHAT-5 (MUST).** The user MUST be able to stop an in-progress reply, and a reply interrupted by a disconnect MUST be resumable.
 - **CHAT-6 (SHOULD).** The user SHOULD be able to ask the AI to rewrite or rephrase an existing message in the conversation.
 - **CHAT-7 (SHOULD).** During a conversation the agent SHOULD be able to search the operator's *other* conversations by meaning (with a keyword fallback when semantic search is unavailable) and read a found conversation in full, so it can draw on what was discussed elsewhere. The current conversation and scratch (compare) threads are excluded; this is a read-only capability and is not approval-gated.
+- **CHAT-8 (MUST — mid-run steering).** The user MUST be able to send a further text message in the same conversation while a reply is still being generated. The message is **queued** and handed to the model at the next boundary between model requests — never interrupting an in-flight response stream — and if the run finishes with messages still queued, the system continues the turn with them rather than dropping them. A queued message MUST be visible as pending, withdrawable until it is consumed, and once consumed MUST persist as an ordinary user message in the conversation. Steering is text-only: a message with attachments still requires the run to finish first. A message left queued when a run is cancelled or fails MUST be returned to the user (e.g. restored to the input), never silently discarded.
 
 ---
 

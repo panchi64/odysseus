@@ -259,6 +259,34 @@ class ApprovalRequired(_Body):
     explanation: str | None = None
 
 
+class MessageQueued(_Body):
+    """The operator sent a message while this run was still executing; it is
+    queued for injection at the run's next model-request boundary. ``text`` rides
+    inline so a reattaching client can rebuild the pending bubble purely from
+    replay. Additive to v1; no bump."""
+
+    type: Literal["message.queued"] = "message.queued"
+    message_id: str
+    text: str
+
+
+class MessageWithdrawn(_Body):
+    """The operator withdrew a queued message before the run consumed it.
+    Additive to v1; no bump."""
+
+    type: Literal["message.withdrawn"] = "message.withdrawn"
+    message_id: str
+
+
+class MessageInjected(_Body):
+    """A queued message was handed to the model (emitted in drain order). From
+    here on the message is part of the turn and will persist as a normal user
+    message. Additive to v1; no bump."""
+
+    type: Literal["message.injected"] = "message.injected"
+    message_id: str
+
+
 class LimitNotice(_Body):
     type: Literal["limit.notice"] = "limit.notice"
     # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context" | "search"
@@ -290,6 +318,9 @@ EventBody = Annotated[
     | ViewSnapshot
     | ConversationTitled
     | ApprovalRequired
+    | MessageQueued
+    | MessageWithdrawn
+    | MessageInjected
     | LimitNotice,
     Field(discriminator="type"),
 ]

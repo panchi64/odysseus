@@ -70,6 +70,40 @@ async def test_cancel_terminal_run_conflicts():
         assert resp.status_code == 409
 
 
+async def test_withdraw_queued_message_matrix():
+    async with client_app() as (client, app):
+        gate = asyncio.Event()
+
+        async def orch(run):
+            await gate.wait()
+
+        run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await asyncio.sleep(0)
+        message = run.enqueue_message("wait, also")
+
+        # Withdraw while live and pending → 200, inbox emptied.
+        resp = await client.delete(f"/runs/{run.id}/messages/{message.id}")
+        assert resp.status_code == 200
+        assert run.pending_messages == []
+
+        # Same id again (already withdrawn) and an unknown id → 404.
+        assert (await client.delete(f"/runs/{run.id}/messages/{message.id}")).status_code == 404
+        assert (await client.delete(f"/runs/{run.id}/messages/nope")).status_code == 404
+        # Unknown run → 404.
+        assert (await client.delete("/runs/nope/messages/x")).status_code == 404
+
+        # A message still queued when the run ends can't be withdrawn either.
+        stranded = run.enqueue_message("too late")
+        gate.set()
+        await run.wait()
+        assert (await client.delete(f"/runs/{run.id}/messages/{stranded.id}")).status_code == 404
+
+        types = [e.body.type for e in run.stream.replay()]
+        assert types.count("message.queued") == 2
+        assert types.count("message.withdrawn") == 1
+        assert types.count("message.injected") == 0
+
+
 async def test_list_runs_active_only_by_default():
     async with client_app() as (client, app):
 

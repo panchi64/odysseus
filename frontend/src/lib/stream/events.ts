@@ -181,6 +181,25 @@ export interface ApprovalRequired extends Base {
   summary: string;
   explanation: string | null;
 }
+/** The operator sent a message while the run was still executing; it is queued
+ *  for injection at the run's next model-request boundary. `text` rides inline
+ *  so a reattaching client rebuilds the pending bubble purely from replay. */
+export interface MessageQueued extends Base {
+  type: "message.queued";
+  message_id: string;
+  text: string;
+}
+/** The operator withdrew a queued message before the run consumed it. */
+export interface MessageWithdrawn extends Base {
+  type: "message.withdrawn";
+  message_id: string;
+}
+/** A queued message was handed to the model (emitted in drain order); from here
+ *  on it is part of the turn and persists as a normal user message. */
+export interface MessageInjected extends Base {
+  type: "message.injected";
+  message_id: string;
+}
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
@@ -220,6 +239,9 @@ export type RunEvent =
   | ConversationTitled
   | CitationAdded
   | ApprovalRequired
+  | MessageQueued
+  | MessageWithdrawn
+  | MessageInjected
   | LimitNotice;
 
 /** A run is over after one of these — the stream reader stops. */
