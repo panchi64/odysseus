@@ -220,3 +220,56 @@ async def test_inbox_enqueue_withdraw_drain_events():
 
     types = [e.body.type for e in run.stream.replay()]
     assert types == ["message.queued", "message.queued", "message.withdrawn", "message.injected"]
+
+
+async def test_inbox_edit_rewrites_in_place():
+    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
+    first = run.enqueue_message("first draft")
+    second = run.enqueue_message("second")
+
+    # Edit keeps the message's id and its place in the queue.
+    assert run.edit_message(first.id, "final wording")
+    assert [(m.id, m.text) for m in run.pending_messages] == [
+        (first.id, "final wording"),
+        (second.id, "second"),
+    ]
+
+    # A withdrawn, drained, or unknown message can no longer be edited.
+    assert run.withdraw_message(second.id)
+    assert not run.edit_message(second.id, "too late")
+    drained = run.drain_messages()
+    assert [m.text for m in drained] == ["final wording"]
+    assert not run.edit_message(first.id, "too late")
+    assert not run.edit_message("nope", "never was")
+
+    bodies = [e.body for e in run.stream.replay()]
+    edited = [b for b in bodies if b.type == "message.edited"]
+    assert [(b.message_id, b.text) for b in edited] == [(first.id, "final wording")]
+
+
+async def test_edited_message_is_injected_with_new_text():
+    # Enqueue then edit inside the tool window — the next model request must
+    # carry the edited wording, not the original.
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool
+    async def poke(ctx: RunContext[RunDeps]) -> str:
+        message = ctx.deps.run.enqueue_message("rough draft")
+        assert ctx.deps.run.edit_message(message.id, "polished ask")
+        return "poked"
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "hello",
+        model=FunctionModel(stream_function=_call_then_report()),
+        categories={"t": toolset},
+    )
+    run = reg.submit(kind="chat", owner_id=OWNER, orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    answer = "".join(b.text for b in _bodies(run) if b.type == "answer.delta")
+    assert answer == "saw: polished ask"
+    types = _types(run)
+    queued, edited = types.index("message.queued"), types.index("message.edited")
+    assert queued < edited < types.index("message.injected")

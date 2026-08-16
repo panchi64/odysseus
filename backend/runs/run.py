@@ -18,7 +18,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .events import Event, MessageInjected, MessageQueued, MessageWithdrawn, RunMetrics, now_utc
+from .events import (
+    Event,
+    MessageEdited,
+    MessageInjected,
+    MessageQueued,
+    MessageWithdrawn,
+    RunMetrics,
+    now_utc,
+)
 from .stream import RunStream
 
 
@@ -145,6 +153,20 @@ class Run:
         self.pending_messages.append(message)
         self.emit(MessageQueued(message_id=message.id, text=message.text))
         return message
+
+    def edit_message(self, message_id: str, text: str) -> bool:
+        """Rewrite a queued message's text before the run consumes it, keeping its
+        id and place in the queue. False when the id is unknown — already injected,
+        already withdrawn, or never queued. Synchronous for the same reason as
+        ``enqueue_message``: it can never interleave with a concurrent drain."""
+        for i, message in enumerate(self.pending_messages):
+            if message.id == message_id:
+                self.pending_messages[i] = QueuedMessage(
+                    id=message.id, text=text, queued_at=message.queued_at
+                )
+                self.emit(MessageEdited(message_id=message_id, text=text))
+                return True
+        return False
 
     def withdraw_message(self, message_id: str) -> bool:
         """Remove a queued message before the run consumes it. False when the

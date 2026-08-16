@@ -35,6 +35,9 @@ export interface MessageItemProps {
   onTogglePin?: () => void;
   /** Withdraw this still-queued steering message before the run consumes it. */
   onWithdraw?: () => void;
+  /** Rewrite this still-queued steering message in place (it keeps its spot in
+   *  the queue) — the queued counterpart of `onEditMessage`. */
+  onEditQueued?: (text: string) => void;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
   /** Re-attach to this turn's run after its transport detached (reconnect
@@ -81,6 +84,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
         onSwitchVersion={props.onSwitchVersion}
         onTogglePin={props.onTogglePin}
         onWithdraw={props.onWithdraw}
+        onEditQueued={props.onEditQueued}
       />
     </Show>
   );
@@ -142,6 +146,7 @@ function UserTurn(props: {
   onSwitchVersion?: (id: string, index: number) => void;
   onTogglePin?: () => void;
   onWithdraw?: () => void;
+  onEditQueued?: (text: string) => void;
 }): JSX.Element {
   const m = () => props.message;
   const [editing, setEditing] = createSignal(false);
@@ -152,7 +157,13 @@ function UserTurn(props: {
   };
   const save = () => {
     const text = draft().trim();
-    if (text) props.onEditMessage?.(m().id, text);
+    // Route by the bubble's state *at save time*: a still-queued message edits
+    // in place on the live run; a delivered one re-asks as a new version (so a
+    // bubble injected mid-edit falls through to the normal edit path).
+    if (text) {
+      if (m().queuedPending) props.onEditQueued?.(text);
+      else props.onEditMessage?.(m().id, text);
+    }
     setEditing(false);
   };
 
@@ -162,7 +173,8 @@ function UserTurn(props: {
         {/* Left: actions reveal on hover. Right: identity + metadata. */}
         <div class="flex items-center gap-2">
           {/* A queued (not-yet-delivered) steering message isn't a real turn yet:
-              no edit/delete/pin — only the withdraw affordance on the right. */}
+              no delete/pin/version actions — only the edit + withdraw
+              affordances on the right. */}
           <Show when={!editing() && !m().queuedPending}>
             <MessageActions
               message={m()}
@@ -173,7 +185,16 @@ function UserTurn(props: {
           </Show>
         </div>
         <div class="flex items-center gap-2">
-          <Show when={m().queuedPending}>
+          <Show when={m().queuedPending && !editing()}>
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="pen"
+              aria-label="Edit queued message"
+              onClick={startEdit}
+            >
+              EDIT
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -183,6 +204,8 @@ function UserTurn(props: {
             >
               WITHDRAW
             </Button>
+          </Show>
+          <Show when={m().queuedPending}>
             <Text variant="label" tone="warn">
               QUEUED
             </Text>

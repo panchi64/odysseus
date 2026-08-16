@@ -270,6 +270,17 @@ class MessageQueued(_Body):
     text: str
 
 
+class MessageEdited(_Body):
+    """The operator rewrote a queued message's text before the run consumed it.
+    ``text`` is the full replacement (not a delta), inline for the same reason as
+    ``message.queued``'s: a reattaching client rebuilds the pending bubble purely
+    from replay. Additive to v1; no bump."""
+
+    type: Literal["message.edited"] = "message.edited"
+    message_id: str
+    text: str
+
+
 class MessageWithdrawn(_Body):
     """The operator withdrew a queued message before the run consumed it.
     Additive to v1; no bump."""
@@ -319,6 +330,7 @@ EventBody = Annotated[
     | ConversationTitled
     | ApprovalRequired
     | MessageQueued
+    | MessageEdited
     | MessageWithdrawn
     | MessageInjected
     | LimitNotice,

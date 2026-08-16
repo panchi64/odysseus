@@ -784,6 +784,10 @@ export function ChatRoomScreen(): JSX.Element {
                       if (message.queuedMessageId)
                         void stream.withdrawQueued(message.queuedMessageId);
                     }}
+                    onEditQueued={(text) => {
+                      if (message.queuedMessageId)
+                        void stream.editQueued(message.queuedMessageId, text);
+                    }}
                     onOpenInView={openViewTo}
                     viewItems={viewItems}
                     seenKey={() => state().seenKey}

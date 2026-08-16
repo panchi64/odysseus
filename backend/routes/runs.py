@@ -117,6 +117,26 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     return {"status": "cancelling"}
 
 
+class QueuedMessageEdit(BaseModel):
+    text: str
+
+
+@router.patch("/{run_id}/messages/{message_id}", status_code=200)
+async def edit_queued_message(
+    run_id: str, message_id: str, body: QueuedMessageEdit, request: Request
+) -> dict[str, str]:
+    """Rewrite an operator message queued into a live run before the run consumes
+    it (the message keeps its id and place in the queue). Same 404 envelope as
+    withdraw: unknown id, already injected, already withdrawn, or the run is
+    gone/terminal — the message can no longer be edited."""
+    if not body.text.strip():
+        raise HTTPException(status_code=422, detail="text must not be empty")
+    run = _require_run(request, run_id)
+    if run.is_terminal or not run.edit_message(message_id, body.text):
+        raise HTTPException(status_code=404, detail="queued message not found")
+    return {"status": "edited"}
+
+
 @router.delete("/{run_id}/messages/{message_id}", status_code=200)
 async def withdraw_queued_message(
     run_id: str, message_id: str, request: Request

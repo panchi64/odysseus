@@ -104,6 +104,61 @@ async def test_withdraw_queued_message_matrix():
         assert types.count("message.injected") == 0
 
 
+async def test_edit_queued_message_matrix():
+    async with client_app() as (client, app):
+        gate = asyncio.Event()
+
+        async def orch(run):
+            await gate.wait()
+
+        run = app.state.runs.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await asyncio.sleep(0)
+        message = run.enqueue_message("first draft")
+
+        # Edit while live and pending → 200, text rewritten in place (same id).
+        resp = await client.patch(
+            f"/runs/{run.id}/messages/{message.id}", json={"text": "final wording"}
+        )
+        assert resp.status_code == 200
+        assert [(m.id, m.text) for m in run.pending_messages] == [
+            (message.id, "final wording")
+        ]
+
+        # Blank text is rejected without touching the queue.
+        resp = await client.patch(
+            f"/runs/{run.id}/messages/{message.id}", json={"text": "   "}
+        )
+        assert resp.status_code == 422
+        assert run.pending_messages[0].text == "final wording"
+
+        # A withdrawn message, an unknown id, and an unknown run → 404.
+        assert run.withdraw_message(message.id)
+        assert (
+            await client.patch(
+                f"/runs/{run.id}/messages/{message.id}", json={"text": "x"}
+            )
+        ).status_code == 404
+        assert (
+            await client.patch(f"/runs/{run.id}/messages/nope", json={"text": "x"})
+        ).status_code == 404
+        assert (
+            await client.patch("/runs/nope/messages/x", json={"text": "x"})
+        ).status_code == 404
+
+        # A message still queued when the run ends can't be edited either.
+        stranded = run.enqueue_message("too late")
+        gate.set()
+        await run.wait()
+        assert (
+            await client.patch(
+                f"/runs/{run.id}/messages/{stranded.id}", json={"text": "x"}
+            )
+        ).status_code == 404
+
+        types = [e.body.type for e in run.stream.replay()]
+        assert types.count("message.edited") == 1
+
+
 async def test_list_runs_active_only_by_default():
     async with client_app() as (client, app):
 

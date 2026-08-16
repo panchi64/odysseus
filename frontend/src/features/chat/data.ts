@@ -1375,6 +1375,20 @@ export function createChatStream(
           }),
         );
         break;
+      case "message.edited":
+        // The operator rewrote a still-pending bubble. Usually `editQueued`
+        // already applied the text optimistically-on-success; this fold makes a
+        // reattach replay (and any second tab) converge on the same content. An
+        // already-injected message is part of the turn and never changes.
+        setMessages(
+          produce((list) => {
+            const bubble = list.find(
+              (m) => m.queuedMessageId === ev.message_id && m.queuedPending,
+            );
+            if (bubble) bubble.content = ev.text;
+          }),
+        );
+        break;
       case "message.withdrawn":
         // Only a still-pending bubble is removable — an already-injected message
         // is part of the turn and must never vanish from the transcript.
@@ -2006,6 +2020,38 @@ export function createChatStream(
     }
   }
 
+  /** Rewrite a steering message that's still queued on the live run (it keeps
+   *  its id and place in the queue). No optimistic update: the bubble changes
+   *  only once the backend accepts, and a 404 means the run consumed the
+   *  message in the meantime — the original text is what the model saw, so the
+   *  bubble must keep it. */
+  async function editQueued(
+    queuedMessageId: string,
+    text: string,
+  ): Promise<void> {
+    const runId = activeRunId;
+    if (!runId) return;
+    try {
+      await api.patch(`/runs/${runId}/messages/${queuedMessageId}`, { text });
+      setMessages(
+        produce((list) => {
+          const bubble = list.find(
+            (m) => m.queuedMessageId === queuedMessageId && m.queuedPending,
+          );
+          if (bubble) bubble.content = text;
+        }),
+      );
+    } catch (err) {
+      if (isApiError(err) && err.status === 404) {
+        toast.warn("Too late to edit — the message already reached the model.");
+      } else {
+        toast.error(
+          (err as { detail?: string })?.detail ?? "Unable to edit the message.",
+        );
+      }
+    }
+  }
+
   /** POST a batch of approval decisions for a message's run, then apply an
    *  optimistic patch. The open run stream resumes with the results — the parked
    *  run requires a decision covering *every* pending call, which is why each
@@ -2438,6 +2484,8 @@ export function createChatStream(
     cancel,
     /** Withdraw a queued (not-yet-injected) steering message from the live run. */
     withdrawQueued,
+    /** Rewrite a queued (not-yet-injected) steering message in place. */
+    editQueued,
     /** Text of queued messages the run never consumed (restored on terminal) —
      *  the screen prefills the composer with it, then clears it. */
     undeliveredDraft,

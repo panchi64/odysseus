@@ -189,6 +189,14 @@ export interface MessageQueued extends Base {
   message_id: string;
   text: string;
 }
+/** The operator rewrote a queued message's text before the run consumed it.
+ *  `text` is the full replacement (not a delta), inline so a reattaching client
+ *  rebuilds the pending bubble purely from replay. */
+export interface MessageEdited extends Base {
+  type: "message.edited";
+  message_id: string;
+  text: string;
+}
 /** The operator withdrew a queued message before the run consumed it. */
 export interface MessageWithdrawn extends Base {
   type: "message.withdrawn";
@@ -240,6 +248,7 @@ export type RunEvent =
   | CitationAdded
   | ApprovalRequired
   | MessageQueued
+  | MessageEdited
   | MessageWithdrawn
   | MessageInjected
   | LimitNotice;
