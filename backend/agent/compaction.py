@@ -24,8 +24,10 @@ which would push the original attempt's tool returns onto the "prior" side and p
 unrecoverable digests. Anchoring to the persistence index keeps the protected set and the
 persisted set identical.
 
-No context-window/budget math: the trigger is a fixed rolling recency window (keep the K most
-recent *prior-turn* results full) plus a size floor (don't bother digesting small results).
+No context-window/budget math: the trigger is a recency window with hysteresis (keep between K
+and 2K−1 of the most recent *prior-turn* results full, digesting in K-sized batches so the
+already-digested region stays byte-stable across turns — see ``_recent_full_ids``) plus a size
+floor (don't bother digesting small results).
 Hitting the real context ceiling is a separate, explicit stop — never a job compaction silently
 absorbs.
 """
@@ -116,8 +118,16 @@ def compact_tool_returns(
 
 
 def _recent_full_ids(prior: list[ModelMessage], keep_recent: int) -> set[str]:
-    """The tool_call_ids of the ``keep_recent`` most recent tool results among the *prior-turn*
-    messages — those always stay full (the rolling window)."""
+    """The tool_call_ids of the recent *prior-turn* tool results that stay full.
+
+    The window has hysteresis: rather than keeping exactly the ``keep_recent`` newest
+    (a boundary that would advance on every new result, rewriting a mid-history byte
+    each turn and invalidating the inference engine's prefix cache from that point),
+    the digest frontier advances in ``keep_recent``-sized jumps. A result stays full
+    until a whole batch of newer ones has accumulated, then the batch digests at once —
+    so between ``keep_recent`` and ``2×keep_recent − 1`` recent results are full at any
+    time, and the already-digested region renders byte-identically for ~``keep_recent``
+    consecutive turns."""
     if keep_recent <= 0:
         return set()
     ids = [
@@ -126,7 +136,11 @@ def _recent_full_ids(prior: list[ModelMessage], keep_recent: int) -> set[str]:
         for part in message.parts
         if isinstance(part, ToolReturnPart)
     ]
-    return set(ids[-keep_recent:])
+    excess = len(ids) - keep_recent
+    if excess <= 0:
+        return set(ids)
+    frontier = (excess // keep_recent) * keep_recent
+    return set(ids[frontier:])
 
 
 def _content_size(content: Any) -> int | None:

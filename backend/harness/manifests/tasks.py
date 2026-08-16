@@ -108,6 +108,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             capabilities=ctx.capabilities,
             categories=ctx.tool_categories,
             instruction_providers=ctx.instruction_providers,
+            prompt_context_providers=ctx.prompt_context_providers,
             registry=runs,
             store=conversations,
             uploads=services.get(UploadStore),

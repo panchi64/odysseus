@@ -41,6 +41,23 @@ def test_discovered_manifests_are_valid_and_ordered():
         seen.add(manifest.name)
 
 
+def test_provider_assembly_order_is_deterministic_and_doc_state_is_prompt_context():
+    """The assembled instruction/prompt-context provider order is pinned by discovery
+    (topo + name-sorted ties) — instructions render at the head of every request, so a
+    provider order that varied between boots would silently invalidate the inference
+    engine's cached prompt prefix. And the volatile document state must ride as tail
+    prompt-context, never as a head-of-request instruction."""
+    first = discover_manifests()
+    second = discover_manifests()
+    assert [m.name for m in first] == [m.name for m in second]
+    assert [m.instructions for m in first] == [m.instructions for m in second]
+
+    by_name = {m.name: m for m in first}
+    documents = by_name["documents"]
+    assert documents.instructions == ()
+    assert len(documents.prompt_context) == 1
+
+
 class _Memory:
     pass
 

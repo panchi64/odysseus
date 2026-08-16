@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from core.vault import Vault
     from harness.lifecycle import LifecycleRegistry
     from harness.run_terminal import RunTerminalHook, SyncRunTerminalHook
-    from tools import InstructionProvider, RunDeps
+    from tools import InstructionProvider, PromptContextProvider, RunDeps
 
 __all__ = [
     "FeatureManifest",
@@ -56,6 +56,7 @@ class HarnessContext:
     # composing agent runs hands the engine exactly what an interactive turn gets.
     tool_categories: Mapping[str, AbstractToolset[RunDeps]] = field(default_factory=dict)
     instruction_providers: tuple[InstructionProvider, ...] = ()
+    prompt_context_providers: tuple[PromptContextProvider, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,15 @@ class FeatureManifest:
     # this feature's contribution to the approval-scope vocabulary.
     gated_tools: frozenset[str] = frozenset()
     # Dynamic instruction providers the engine registers on every agent it builds —
-    # each resolves its capability from the run's bag and returns "" to no-op.
+    # each resolves its capability from the run's bag and returns "" to no-op. These
+    # render at the *head* of every request, so they should stay small and low-churn:
+    # any byte change here invalidates the inference engine's prompt-prefix cache for
+    # the entire history behind it.
     instructions: tuple[InstructionProvider, ...] = ()
+    # Per-turn prompt-context providers — like `instructions` re-resolved fresh each
+    # turn and never persisted, but delivered at the *tail* of the current turn's user
+    # prompt, where volatile or large content leaves the request prefix (and so the
+    # engine's prompt cache) intact.
+    prompt_context: tuple[PromptContextProvider, ...] = ()
     # Constructs the feature's services at lifespan time. None ⇒ routes-only.
     build: Callable[[HarnessContext], Awaitable[FeatureRuntime]] | None = None

@@ -86,6 +86,12 @@ def instruction_providers(request: Request):
     return request.app.state.instruction_providers
 
 
+def prompt_context_providers(request: Request):
+    """The manifests' per-turn prompt-context providers, appended to the tail of every
+    turn's user prompt (never persisted) — the cache-friendly home for volatile context."""
+    return request.app.state.prompt_context_providers
+
+
 _CONVERSATION_BUSY_DETAIL = "A response is already in progress in this conversation"
 
 

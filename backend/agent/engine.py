@@ -28,12 +28,14 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     RunUsage,
     ToolApproved,
     ToolCallPart,
     UsageLimitExceeded,
     UsageLimits,
+    UserPromptPart,
 )
 from pydantic_ai.capabilities import ProcessHistory, ReinjectSystemPrompt
 from pydantic_ai.exceptions import ModelHTTPError
@@ -62,7 +64,13 @@ from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.notifications import NotificationService
 from services.uploads import UploadStore
-from tools import CompactionContext, InstructionProvider, RunDeps, build_agent_toolsets
+from tools import (
+    CompactionContext,
+    InstructionProvider,
+    PromptContextProvider,
+    RunDeps,
+    build_agent_toolsets,
+)
 
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
@@ -177,10 +185,13 @@ def _build_agent(
     )
 
     # Feature-contributed dynamic instructions (each manifest's `instructions` export —
-    # the document state, the skill catalog): re-resolved fresh each turn, so they're
-    # always current and, unlike an appended prompt, never accumulate in history. Each
-    # resolves its own capability from the run's bag and no-ops (returns "") when the
-    # capability isn't wired, so registration is unconditional.
+    # the skill catalog): re-resolved fresh each turn, so they're always current and,
+    # unlike an appended prompt, never accumulate in history. Each resolves its own
+    # capability from the run's bag and no-ops (returns "") when the capability isn't
+    # wired, so registration is unconditional. Instructions render at the *head* of
+    # every request — keep them small and low-churn, or they invalidate the inference
+    # engine's prompt-prefix cache for the whole history behind them (volatile context
+    # belongs in a manifest's `prompt_context` export instead, delivered at the tail).
     for provider in instruction_providers:
         agent.instructions(provider)
 
@@ -406,6 +417,29 @@ def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage
     if kept:
         return [*messages[:-1], replace(last, parts=kept)]
     return messages[:-1]
+
+
+def _with_tail_context(
+    messages: list[ModelMessage], texts: list[str]
+) -> list[ModelMessage]:
+    """Append per-turn context to the trailing user request — the *model's view only*.
+
+    The regenerate path re-runs a history that already ends in the user request, so
+    there is no fresh ``user_prompt`` to carry the prompt-context providers' output;
+    instead it rides on that trailing request here. Rebuilds via ``replace`` (never
+    mutates — the store's in-memory tree shares these objects), and since the caller
+    persists only ``messages[start:]``, a message replaced *before* ``start`` never
+    reaches the durable history. No trailing user request (defensive) ⇒ unchanged."""
+    if not messages or not isinstance(messages[-1], ModelRequest):
+        return messages
+    last = messages[-1]
+    for index, part in enumerate(last.parts):
+        if isinstance(part, UserPromptPart):
+            content = part.content if isinstance(part.content, list) else [part.content]
+            parts = list(last.parts)
+            parts[index] = replace(part, content=[*content, *texts])
+            return [*messages[:-1], replace(last, parts=parts)]
+    return messages
 
 
 async def _drive_turn(
@@ -868,6 +902,7 @@ def build_chat_orchestrator(
     model: Model,
     categories: Any = None,
     instruction_providers: Sequence[InstructionProvider] = (),
+    prompt_context_providers: Sequence[PromptContextProvider] = (),
     judge: Judge | None = None,
     utility_model: Model | None = None,
     utility_settings: ModelSettings | None = None,
@@ -935,6 +970,9 @@ def build_chat_orchestrator(
             history = _drop_dangling_tool_calls(history)
         start = len(history) if history else 0
         is_first_turn = start == 0
+        # What the model replays — `history` plus, on a regenerate, the per-turn prompt
+        # context appended below. `history` itself stays the persistence baseline.
+        model_history = history
 
         # Resolve the turn's compaction context once and anchor its boundary to the persistence
         # index: everything from `start` on is this (to-be-persisted) turn and stays full, so a
@@ -984,6 +1022,30 @@ def build_chat_orchestrator(
                 user_prompt = [prompt, *resolved.content]
             persisted = resolved.persisted or None
             stamp_ids = resolved.ids
+
+        # Per-turn prompt context (each manifest's `prompt_context` export — the
+        # document state): appended at the *tail* of the current turn's user prompt,
+        # never persisted, so it's re-resolved fresh each turn with exactly one copy
+        # in context — and, unlike an instruction, its churn never touches the head
+        # of the request, keeping the whole history a byte-stable cacheable prefix.
+        context_texts = [
+            text
+            for provider in prompt_context_providers
+            if (text := await provider(capabilities, run.owner_id, conversation_id))
+        ]
+        if context_texts:
+            if prompt is not None:
+                base = user_prompt if isinstance(user_prompt, list) else [user_prompt]
+                user_prompt = [*base, *context_texts]
+                # An empty (non-None) persisted set still strips the live payload back
+                # to the typed prompt on record — the tail context must not persist.
+                persisted = persisted if persisted is not None else []
+            elif history:
+                # A regenerate has no fresh prompt — the context rides on the trailing
+                # user request in the *model's* view only (`history` itself stays
+                # pristine for the verifier's `last_user_text`, and everything before
+                # `start` is never re-persisted).
+                model_history = _with_tail_context(history, context_texts)
 
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
@@ -1043,7 +1105,7 @@ def build_chat_orchestrator(
                 run,
                 agent,
                 prompt=user_prompt,
-                message_history=history,
+                message_history=model_history,
                 announced=announced,
                 caps=capabilities,
                 conversation_id=conversation_id,

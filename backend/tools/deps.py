@@ -78,3 +78,15 @@ class RunDeps:
 # absent. Part of the deps contract for the same reason `RunDeps` is — both the engine
 # and the feature layer must name the shape without a cycle.
 type InstructionProvider = Callable[[RunContext[RunDeps]], Awaitable[str]]
+
+# A feature-contributed per-turn context block (a manifest's `prompt_context` export):
+# like an InstructionProvider it re-resolves fresh each turn and is never persisted, but
+# the engine delivers it at the *tail* of the current turn's user prompt instead of the
+# instructions block at the head of the request — volatile content at the head would
+# invalidate the inference engine's prompt-prefix cache from byte 0 on every change,
+# while a tail part leaves the whole history byte-stable. Called outside a live run
+# (before the agent starts), so it takes the raw handles rather than a RunContext:
+# (caps, owner_id, conversation_id) → text, "" to no-op.
+type PromptContextProvider = Callable[
+    [ServiceContainer, str, str | None], Awaitable[str]
+]

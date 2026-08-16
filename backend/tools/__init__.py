@@ -11,12 +11,13 @@ See docs/architecture/README.md (Pillar III, §2.2).
 from __future__ import annotations
 
 from .builtin import builtin_toolset
-from .deps import CompactionContext, InstructionProvider, RunDeps
+from .deps import CompactionContext, InstructionProvider, PromptContextProvider, RunDeps
 from .toolsets import build_agent_toolsets, core_categories
 
 __all__ = [
     "CompactionContext",
     "InstructionProvider",
+    "PromptContextProvider",
     "RunDeps",
     "builtin_toolset",
     "build_agent_toolsets",

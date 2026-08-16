@@ -46,7 +46,7 @@ from services.settings_store import (
     set_compaction,
 )
 from services.uploads import UploadStore
-from tools import CompactionContext, InstructionProvider
+from tools import CompactionContext, InstructionProvider, PromptContextProvider
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -181,6 +181,7 @@ def compose_turn(
     uploads: UploadStore,
     categories: Mapping[str, Any] | None = None,
     instruction_providers: Sequence[InstructionProvider] = (),
+    prompt_context_providers: Sequence[PromptContextProvider] = (),
     disabled_tools: frozenset[str] = frozenset(),
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
@@ -206,6 +207,7 @@ def compose_turn(
         model=resolved,
         categories=categories,
         instruction_providers=instruction_providers,
+        prompt_context_providers=prompt_context_providers,
         utility_model=utility_model,
         utility_settings=background_settings,
         title_model=None if ephemeral else utility_model,
@@ -268,6 +270,7 @@ async def _submit_turn(
         # request so the turn always runs against what the app assembled.
         categories=deps.tool_categories(request),
         instruction_providers=deps.instruction_providers(request),
+        prompt_context_providers=deps.prompt_context_providers(request),
         disabled_tools=await deps.disabled_tools(request),
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,

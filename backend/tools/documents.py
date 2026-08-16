@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
+from core.container import ServiceContainer
 from core.exceptions import DocumentSpanError, NotFoundError
 from runs import DocumentCommitted, DocumentCreated, DocumentDelta
 from services.document_suggestions import ProposedChange, stream_preview
@@ -252,23 +253,27 @@ def _span_retry(exc: DocumentSpanError) -> ModelRetry:
     )
 
 
-async def document_state_instructions(ctx: RunContext[RunDeps]) -> str:
+async def document_state_context(
+    caps: ServiceContainer, owner_id: str, conversation_id: str | None
+) -> str:
     """Give the agent the current text of any document the operator edited since its last
-    write — as a **dynamic instruction** (registered via the documents feature manifest),
-    so it's re-resolved fresh each turn (always the latest state) and, unlike an appended
-    prompt, never accumulates in history: Pydantic AI sends only the current run's
-    instructions, so there's exactly one copy in context, no compounding. Empty (no-op)
-    when there's no such document or no store/conversation.
+    write — as **per-turn prompt context** (the documents manifest's ``prompt_context``
+    export), re-resolved fresh each turn (always the latest state) and never persisted,
+    so there's exactly one copy in context, no compounding. The engine appends it at the
+    *tail* of the current turn's user prompt rather than the instructions block: the
+    instructions render at the head of every request, so this volatile (and potentially
+    large) text there would invalidate the inference engine's prompt-prefix cache from
+    byte 0 on every operator edit — at the tail, the whole replayed history stays
+    byte-stable. Empty (no-op) when there's no such document or no store/conversation.
 
     Only documents whose *latest* version the operator authored qualify — the agent works
     from what the operator actually has now, not the copy it last produced (`DOC-*`); a
     document whose latest version is the agent's own is skipped (the model already knows
     that text). This is the operator's own content, so it is *not* wrapped as untrusted."""
-    store = ctx.deps.caps.get_optional(DocumentStore)
-    conversation_id = ctx.deps.conversation_id
+    store = caps.get_optional(DocumentStore)
     if store is None or conversation_id is None:
         return ""
-    docs = await store.list_user_edited(ctx.deps.owner_id, conversation_id)
+    docs = await store.list_user_edited(owner_id, conversation_id)
     return "\n\n".join(
         f'[Current state of the document "{doc.title}" — the operator may have edited it '
         f"since your last change]\n\n{doc.body}"

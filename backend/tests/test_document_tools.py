@@ -8,18 +8,20 @@ import json
 import tempfile
 from pathlib import Path
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
-from agent import stream_agent_run
-from agent.engine import _build_agent
+from agent import build_chat_orchestrator, stream_agent_run
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
 from core.vault import Vault
-from runs import Run, RunStream
+from runs import Run, RunRegistry, RunStatus, RunStream
+from services.conversations import ConversationStore
 from services.documents import DocumentStore
 from tools import RunDeps, build_agent_toolsets
-from tools.documents import document_state_instructions, document_toolset
+from tools.documents import document_state_context, document_toolset
+
+from .test_memory import FakeEmbedder
 
 OWNER = "operator"
 CONV = "conv-1"
@@ -275,32 +277,13 @@ async def test_suggest_refuses_the_whole_set_when_one_span_is_ambiguous():
 # --- next-turn context injection --------------------------------------------
 
 
-class _Ctx:
-    """The slice of RunContext the instruction provider reads: just `.deps`."""
-
-    def __init__(self, deps: RunDeps) -> None:
-        self.deps = deps
-
-
-def _instruction_ctx(store: DocumentStore, conversation_id: str | None = CONV) -> _Ctx:
-    run = Run(id="r-instr", kind="chat", owner_id=OWNER, stream=RunStream())
-    return _Ctx(
-        RunDeps(
-            run=run,
-            owner_id=OWNER,
-            conversation_id=conversation_id,
-            caps=ServiceContainer.of(store),
-        )
-    )
-
-
 async def test_operator_edited_document_is_injected_next_turn():
     store = await _store()
     doc = await store.create(OWNER, "Draft", "v1 body", conversation_id=CONV, origin="ai")
     # The operator edits it (a user-origin version) — so it should be fed back to the model.
     await store.edit(OWNER, doc.id, body="operator's text", origin="user")
 
-    text = await document_state_instructions(_instruction_ctx(store))
+    text = await document_state_context(ServiceContainer.of(store), OWNER, CONV)
     assert "Draft" in text and "operator's text" in text
 
 
@@ -309,35 +292,83 @@ async def test_agent_authored_document_is_not_reinjected():
     # Latest version is the agent's own work (no operator edit) ⇒ the model already knows it.
     await store.create(OWNER, "Draft", "the agent wrote this", conversation_id=CONV, origin="ai")
 
-    assert await document_state_instructions(_instruction_ctx(store)) == ""
+    assert await document_state_context(ServiceContainer.of(store), OWNER, CONV) == ""
 
 
-async def test_document_state_reaches_the_model_as_a_dynamic_instruction():
-    # End-to-end: the operator's current doc is delivered to the model as an *instruction*
-    # (re-resolved each run, never persisted), not appended to the user prompt — so it can't
-    # compound in history. Assert the current body lands in the request's instructions.
-    store = await _store()
-    doc = await store.create(OWNER, "Draft", "v1", conversation_id=CONV, origin="ai")
+async def test_document_state_reaches_the_model_as_a_tail_prompt_part():
+    # End-to-end through the real orchestrator: the operator's current doc is appended at
+    # the *tail* of the current turn's user prompt — NOT the instructions block at the
+    # head of the request, where its churn would invalidate the inference engine's cached
+    # prompt prefix for the entire history — and the persisted history carries only the
+    # typed prompt (re-resolved fresh each turn, exactly one copy in context).
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")
+    await vault.setup("pw")
+    store = DocumentStore(engine, vault, _RecordingAdapter())
+    conv = ConversationStore(engine, vault, FakeEmbedder())
+    await conv.start()
+    cid = await conv.create_conversation(OWNER)
+
+    doc = await store.create(OWNER, "Draft", "v1", conversation_id=cid, origin="ai")
     await store.edit(OWNER, doc.id, body="operator's latest text", origin="user")
 
-    seen: dict[str, str | None] = {}
+    seen: dict[str, object] = {}
 
     async def capture(messages, info: AgentInfo):
+        user = next(p for p in messages[-1].parts if isinstance(p, UserPromptPart))
+        seen["content"] = user.content
         seen["instructions"] = messages[-1].instructions
         yield "ok"
 
-    # The provider arrives from the documents manifest in production; register it the
-    # same way here.
-    agent = _build_agent(
-        FunctionModel(stream_function=capture),
-        instruction_providers=(document_state_instructions,),
+    orch = build_chat_orchestrator(
+        "hello",
+        model=FunctionModel(stream_function=capture),
+        capabilities=ServiceContainer.of(store),
+        prompt_context_providers=(document_state_context,),
+        store=conv,
+        conversation_id=cid,
     )
-    run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
-    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, caps=ServiceContainer.of(store))
-    async with agent.iter("hello", deps=deps) as agent_run:
-        await stream_agent_run(agent_run, run)
+    run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
+    await run.wait()
+    assert run.status is RunStatus.done
 
-    assert "operator's latest text" in (seen["instructions"] or "")
+    # The model saw the doc at the tail of the user prompt — never in the instructions.
+    content = seen["content"]
+    assert isinstance(content, list) and content[0] == "hello"
+    assert "operator's latest text" in content[-1]
+    assert "operator's latest text" not in (seen["instructions"] or "")
+
+    # The persisted history carries only the typed prompt — the context never compounds,
+    # and the durable history stays a byte-stable prefix for the next request.
+    history = await conv.history(cid)
+    user = next(p for p in history[0].parts if isinstance(p, UserPromptPart))
+    assert user.content == "hello"
+    await conv.stop()
+
+
+def test_with_tail_context_rewrites_only_the_trailing_request_and_never_mutates():
+    # The regenerate path: no fresh prompt, so the doc context rides on the trailing user
+    # request — in the model's view only. The originals are shared with the store's
+    # in-memory tree, so the helper must rebuild, never mutate.
+    from pydantic_ai import ModelRequest, ModelResponse, TextPart
+
+    from agent.engine import _with_tail_context
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="earlier")]),
+        ModelResponse(parts=[TextPart("answer")]),
+        ModelRequest(parts=[UserPromptPart(content="redo this")]),
+    ]
+    out = _with_tail_context(history, ["[doc context]"])
+
+    assert out[-1].parts[0].content == ["redo this", "[doc context]"]
+    assert history[-1].parts[0].content == "redo this"  # shared original untouched
+    assert out[:-1] == history[:-1]  # everything before the tail is the same objects
+
+    # A history ending in a model response (defensive) passes through unchanged.
+    trailing_response = history[:2]
+    assert _with_tail_context(trailing_response, ["ctx"]) == trailing_response
 
 
 async def test_injection_ignores_other_conversations_and_archived_docs():
@@ -347,4 +378,4 @@ async def test_injection_ignores_other_conversations_and_archived_docs():
     await store.archive(OWNER, archived.id)
     assert other  # created in another thread — must not leak into CONV's context
 
-    assert await document_state_instructions(_instruction_ctx(store)) == ""
+    assert await document_state_context(ServiceContainer.of(store), OWNER, CONV) == ""

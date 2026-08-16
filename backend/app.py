@@ -49,7 +49,7 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
-from tools import InstructionProvider, core_categories
+from tools import InstructionProvider, PromptContextProvider, core_categories
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +248,7 @@ async def lifespan(app: FastAPI):
         capabilities=agent_capabilities,
         tool_categories=app.state.tool_categories,
         instruction_providers=app.state.instruction_providers,
+        prompt_context_providers=app.state.prompt_context_providers,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -303,6 +304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tool_categories = core_categories()
     gated_tools: set[str] = set()
     instruction_providers: list[InstructionProvider] = []
+    prompt_context_providers: list[PromptContextProvider] = []
     for manifest in enabled_manifests:
         for category, factory in manifest.toolsets:
             if category in tool_categories:
@@ -313,9 +315,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tool_categories[category] = factory()
         gated_tools |= manifest.gated_tools
         instruction_providers.extend(manifest.instructions)
+        prompt_context_providers.extend(manifest.prompt_context)
     app.state.tool_categories = tool_categories
     app.state.gated_tools = frozenset(gated_tools)
     app.state.instruction_providers = tuple(instruction_providers)
+    app.state.prompt_context_providers = tuple(prompt_context_providers)
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.

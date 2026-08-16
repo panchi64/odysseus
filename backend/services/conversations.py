@@ -321,7 +321,7 @@ def _prompt_text(content: object) -> str:
     return ""
 
 
-def install_persisted_attachments(message: ModelMessage, persisted: list) -> None:
+def install_persisted_attachments(message: ModelMessage, persisted: list | None) -> None:
     """Replace a user request's *live* attachment content with the durable ``persisted``
     parts (the engine's capped set: images + under-cap text inline, larger text cut to a
     pointer, a closing id marker), keeping the operator's typed prompt — so replayed
@@ -329,8 +329,11 @@ def install_persisted_attachments(message: ModelMessage, persisted: list) -> Non
     single string when nothing binary survives (a text-only turn persists exactly like a
     plain string), else keeps the multimodal list (a retained image stays inline). Owned
     by the store because *what gets persisted* is the store's concern; ``record`` applies
-    it as it serializes. A no-op without persisted parts or on a non-request message."""
-    if not persisted or not isinstance(message, ModelRequest):
+    it as it serializes. ``None`` (no seam) and a non-request message are no-ops; an
+    **empty list is deliberate** — it strips the request back to the typed prompt alone,
+    which is how the engine keeps its per-turn appended prompt context (the document
+    state) out of the durable history on a turn with no attachments."""
+    if persisted is None or not isinstance(message, ModelRequest):
         return
     for part in message.parts:
         if isinstance(part, UserPromptPart):
@@ -721,7 +724,7 @@ class ConversationStore:
             if not stamped and getattr(node.message, "kind", "") == "request":
                 if attachment_ids:
                     node.attachment_ids = list(attachment_ids)
-                install_persisted_attachments(node.message, persisted or [])
+                install_persisted_attachments(node.message, persisted)
                 stamped = True
             if not blocked_stamped and blocked_reason and isinstance(node.message, ModelResponse):
                 node.blocked_reason = blocked_reason

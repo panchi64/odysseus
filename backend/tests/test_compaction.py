@@ -185,6 +185,51 @@ async def test_digest_points_at_the_namespaced_expand_tool():
     assert f'{EXPAND_TOOL}("old")' in digest  # the model can call the name verbatim
 
 
+# --- the window has hysteresis: the frontier advances in K-sized batches ----
+
+
+async def test_hysteresis_holds_off_until_a_full_batch_accumulates():
+    """With K=2 and 3 prior results, the excess (1) is under a full batch — nothing digests
+    yet. (The old every-turn window would already have digested t1, moving the boundary —
+    and rewriting mid-history bytes — on every single turn.)"""
+    cc = CompactionContext(enabled=True, keep_recent=2, min_tokens=0)
+    _seen, result = await _run(cc, _prior_returns("t1", "t2", "t3"))
+
+    returns = _returns_by_tool(result.all_messages())
+    assert all(returns[t] == _HUGE for t in ("t1", "t2", "t3"))
+    assert cc.full_by_id == {}
+
+
+async def test_hysteresis_digests_a_whole_batch_at_once():
+    cc = CompactionContext(enabled=True, keep_recent=2, min_tokens=0)
+    _seen, result = await _run(cc, _prior_returns("t1", "t2", "t3", "t4"))
+
+    returns = _returns_by_tool(result.all_messages())
+    assert "compacted" in returns["t1"] and "compacted" in returns["t2"]
+    assert returns["t3"] == _HUGE and returns["t4"] == _HUGE
+
+
+async def test_hysteresis_keeps_the_digested_region_byte_stable_across_turns():
+    """The prompt-cache property this exists for: one more result arriving must NOT move
+    the frontier, so the already-digested region (and everything before it) renders
+    byte-identically on consecutive requests and the inference engine's prefix cache
+    holds — until a whole new batch lands and the frontier jumps once."""
+
+    def digested(seen) -> dict[str, str]:
+        return {t: text for t, text in _returns_by_tool(seen[0]).items() if "compacted" in text}
+
+    views = {}
+    for n in (4, 5, 6):
+        cc = CompactionContext(enabled=True, keep_recent=2, min_tokens=0)
+        seen, _ = await _run(cc, _prior_returns(*(f"t{i}" for i in range(1, n + 1))))
+        views[n] = digested(seen)
+
+    # n=4 → n=5: the frontier (and each digest's exact bytes) is unchanged.
+    assert views[4] == views[5] and set(views[4]) == {"t1", "t2"}
+    # n=6: a full batch accumulated — the frontier jumps once, by a whole batch.
+    assert set(views[6]) == {"t1", "t2", "t3", "t4"}
+
+
 # --- the boundary is the persistence index, not the last user prompt --------
 
 
