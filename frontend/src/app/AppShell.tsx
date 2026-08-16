@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, Show, type JSX } from "solid-js";
+import { createEffect, onCleanup, Show, Suspense, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
   Button,
@@ -90,7 +90,11 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
 
         <RegistrationFrame class="min-h-0 flex-1">
           <div class="relative h-full">
-            <main class="h-full overflow-y-auto p-6">{props.children}</main>
+            {/* Scopes a suspending screen to the content region; without it the
+                root boundary blanks the shell too, dropping the rail's scroll. */}
+            <main class="h-full overflow-y-auto p-6">
+              <Suspense>{props.children}</Suspense>
+            </main>
             <Show when={!connected()}>
               <NotConnectedOverlay />
             </Show>

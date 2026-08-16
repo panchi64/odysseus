@@ -24,8 +24,10 @@ export function ConversationGrants(props: {
     }),
   );
 
+  // `.latest`, not the resource — reading it while pending would suspend the
+  // content region on every thread switch.
   const current = () => {
-    const g = grants();
+    const g = grants.latest;
     return g && g.id === props.conversationId() ? g : undefined;
   };
   const items = (): ApprovalGrant[] => current()?.items ?? [];

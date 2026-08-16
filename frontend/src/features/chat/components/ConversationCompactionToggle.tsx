@@ -19,8 +19,10 @@ export function ConversationCompactionToggle(props: {
     () => props.conversationId(),
     async (id) => ({ id, ...(await fetchCompactionOverride(id)) }),
   );
+  // `.latest`, not the resource — reading it while pending would suspend the
+  // content region on every thread switch.
   const current = () => {
-    const s = state();
+    const s = state.latest;
     return s && s.id === props.conversationId() ? s : undefined;
   };
 
