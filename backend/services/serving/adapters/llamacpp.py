@@ -8,7 +8,8 @@ separate process with ``--embeddings`` (one process per model, by design).
 
 The prebuilt-binary fetch is best-effort: on an unsupported platform or a failed
 download it raises a ``ServingError`` pointing the operator at a one-line install (e.g.
-``brew install llama.cpp``). The located-binary path is the common, reliable case.
+``brew install llama.cpp``). The located-binary path is the common, reliable case, and
+an operator who wants CUDA/ROCm specifically builds or installs it and is found on PATH.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ import logging
 import platform
 import shutil
 import stat
+import tarfile
 import zipfile
+from ctypes.util import find_library
 from pathlib import Path
 
 import httpx
@@ -36,14 +39,23 @@ logger = logging.getLogger(__name__)
 
 _BINARY = "llama-server"
 _RELEASES_LATEST = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
-# (system, machine) → the substring identifying that host's release asset.
-_ASSET_SUBSTR: dict[tuple[str, str], str] = {
-    ("Darwin", "arm64"): "macos-arm64",
-    ("Darwin", "x86_64"): "macos-x64",
-    ("Linux", "x86_64"): "ubuntu-x64",
-    ("Linux", "aarch64"): "ubuntu-arm64",
-    ("Linux", "arm64"): "ubuntu-arm64",
+# (system, machine) → that host's release build variants, best first. Assets are named
+# ``llama-<tag>-bin-<variant>.<ext>``, so a variant is matched as an exact name suffix,
+# never a substring: "ubuntu-x64" also *appears* in "ubuntu-openvino-2026.2.1-x64".
+#
+# macOS builds carry Metal, so one variant covers Apple Silicon. Linux has no CUDA or
+# ROCm prebuilt (those ship for Windows only) — the Vulkan build is the sole
+# GPU-accelerated option there, and the plain build runs on CPU. Vulkan is preferred
+# where it can link; see ``_host_variants``.
+_ASSET_VARIANTS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("Darwin", "arm64"): ("macos-arm64",),
+    ("Darwin", "x86_64"): ("macos-x64",),
+    ("Linux", "x86_64"): ("ubuntu-vulkan-x64", "ubuntu-x64"),
+    ("Linux", "aarch64"): ("ubuntu-vulkan-arm64", "ubuntu-arm64"),
+    ("Linux", "arm64"): ("ubuntu-vulkan-arm64", "ubuntu-arm64"),
 }
+# Release archive extensions, in match order: Linux/macOS ship tarballs, Windows zips.
+_ARCHIVE_EXTS = (".tar.gz", ".zip")
 _INSTALL_HINT = "Install llama.cpp (e.g. `brew install llama.cpp` on macOS) and retry."
 
 
@@ -59,9 +71,13 @@ class LlamaCppAdapter(EngineAdapter):
         self._binary: str | None = None
 
     async def is_available(self) -> bool:
-        # The universal baseline: the binary is locatable or fetchable on every target
-        # platform. ensure_engine surfaces the rare case where it can't be obtained.
-        return True
+        # The universal baseline: a prebuilt release exists for every target platform, so
+        # the binary is fetchable without an operator step. Off that list (an exotic arch)
+        # it's available only if one is already present — an honest False otherwise, since
+        # ensure_engine could not obtain it.
+        if _host_variants():
+            return True
+        return await self.is_installed()
 
     async def is_installed(self) -> bool:
         # Already cached, overridden, or on PATH — serving won't fetch a release binary.
@@ -145,45 +161,81 @@ class LlamaCppAdapter(EngineAdapter):
         return shutil.which(_BINARY)
 
     async def _fetch(self) -> str:
-        key = (platform.system(), platform.machine())
-        substr = _ASSET_SUBSTR.get(key)
-        if substr is None:
+        variants = _host_variants()
+        if not variants:
+            key = (platform.system(), platform.machine())
             raise ServingError(
                 f"no prebuilt llama.cpp binary for {key[0]}/{key[1]}. {_INSTALL_HINT}"
             )
         engine_dir = self._paths.engine_dir(self.kind.value)
         engine_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = engine_dir / "llama.zip"
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 meta = await client.get(_RELEASES_LATEST)
                 meta.raise_for_status()
-                assets = meta.json().get("assets", [])
-                asset = next(
-                    (a for a in assets if substr in a["name"] and a["name"].endswith(".zip")),
-                    None,
-                )
+                asset = _pick_asset(meta.json().get("assets", []), variants)
                 if asset is None:
-                    raise ServingError(f"no llama.cpp release asset matched {substr!r}")
+                    raise ServingError(
+                        f"no llama.cpp release asset matched any of {list(variants)}"
+                    )
+                # The asset name is remote input — keep only its basename so it can't
+                # write outside the engine dir.
+                name = Path(asset["name"]).name
+                logger.info("serving: fetching llama.cpp prebuilt %s", name)
+                archive_path = engine_dir / name
                 async with client.stream("GET", asset["browser_download_url"]) as resp:
                     resp.raise_for_status()
-                    with open(zip_path, "wb") as fh:
+                    with open(archive_path, "wb") as fh:
                         async for chunk in resp.aiter_bytes():
                             fh.write(chunk)
         except (httpx.HTTPError, KeyError, OSError) as exc:
             raise ServingError(
                 f"could not download a llama.cpp binary: {exc}. {_INSTALL_HINT}"
             ) from exc
-        binary = await asyncio.to_thread(_extract_server, zip_path, engine_dir)
+        binary = await asyncio.to_thread(_extract_server, archive_path, engine_dir)
         if binary is None:
             raise ServingError("the downloaded llama.cpp archive had no llama-server binary")
         return str(binary)
 
 
-def _extract_server(zip_path: Path, dest: Path) -> Path | None:
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(dest)
-    zip_path.unlink(missing_ok=True)
+def _host_variants() -> tuple[str, ...]:
+    """The release variants to try for this host, best first.
+
+    Vulkan builds are dropped when the host has no Vulkan loader: that binary links
+    against ``libvulkan``, so without it llama-server fails to start at all — strictly
+    worse than the CPU build it would have displaced. With the loader present the Vulkan
+    build still runs on CPU when it finds no device, so it is safe to prefer.
+    """
+    variants = _ASSET_VARIANTS.get((platform.system(), platform.machine()), ())
+    if find_library("vulkan") is None:
+        return tuple(v for v in variants if "vulkan" not in v)
+    return variants
+
+
+def _pick_asset(assets: list[dict], variants: tuple[str, ...]) -> dict | None:
+    """The release asset for the best variant this host supports, or ``None``."""
+    for variant in variants:
+        suffixes = tuple(f"-bin-{variant}{ext}" for ext in _ARCHIVE_EXTS)
+        for asset in assets:
+            if str(asset.get("name", "")).endswith(suffixes) and asset.get(
+                "browser_download_url"
+            ):
+                return asset
+    return None
+
+
+def _extract_server(archive_path: Path, dest: Path) -> Path | None:
+    """Unpack a release archive and return the ``llama-server`` inside it. Linux and
+    macOS assets are tarballs, Windows ones zips."""
+    if archive_path.name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(dest)
+    else:
+        with tarfile.open(archive_path) as archive:
+            # `data` rejects absolute paths and links escaping dest (it is the 3.14
+            # default; named here so the guarantee is explicit rather than inherited).
+            archive.extractall(dest, filter="data")
+    archive_path.unlink(missing_ok=True)
     for candidate in dest.rglob(_BINARY):
         if candidate.is_file():
             candidate.chmod(

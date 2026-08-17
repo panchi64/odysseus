@@ -42,8 +42,11 @@ def _is_apple_silicon(profile: HardwareProfile) -> bool:
 
 
 _BACKEND_REASON: dict[ComputeBackend, str] = {
-    ComputeBackend.cuda: "Cross-platform baseline; runs on your NVIDIA GPU (CUDA).",
-    ComputeBackend.rocm: "Cross-platform baseline; runs on your AMD GPU (ROCm).",
+    # Deliberately no API name: the prebuilt Linux binary is GPU-accelerated via Vulkan,
+    # while an operator-installed build may be CUDA/ROCm. Both "run on your GPU"; naming
+    # one would be wrong half the time.
+    ComputeBackend.cuda: "Cross-platform baseline; runs on your NVIDIA GPU.",
+    ComputeBackend.rocm: "Cross-platform baseline; runs on your AMD GPU.",
     ComputeBackend.metal: (
         "Cross-platform baseline; serves embeddings and is the dependable fallback "
         "(Metal-accelerated here)."
