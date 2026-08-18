@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from ..download import DownloadSpec
-from ..models import EngineKind, Workload
+from ..models import EngineKind, LaunchOptions, Workload
 from ..supervisor import ServeSpec
 
 
@@ -72,9 +72,27 @@ class EngineAdapter(ABC):
 
     @abstractmethod
     def serve_spec(
-        self, artifact: Path, port: int, workload: Workload, model_id: str
+        self,
+        artifact: Path,
+        port: int,
+        workload: Workload,
+        model_id: str,
+        options: LaunchOptions | None = None,
     ) -> ServeSpec:
-        """How to launch the OpenAI-compatible server for ``artifact`` on ``port``."""
+        """How to launch the OpenAI-compatible server for ``artifact`` on ``port``.
+
+        ``options`` carries the operator's per-model launch overrides. It is optional so
+        an adapter that has no use for them can ignore the parameter entirely; an adapter
+        that does honour them must treat an unset field as "emit no flag", never as a
+        value to invent."""
+
+    async def probe_context_window(self, port: int) -> int | None:
+        """The context window the running server actually settled on, asked of the server
+        itself rather than inferred from the launch flags — the two differ whenever the
+        engine splits a total context across parallel slots. Best-effort: ``None`` when
+        the engine can't report it, so the endpoint falls back to
+        :attr:`context_window_hint`."""
+        return None
 
     @abstractmethod
     def resolved_model_id(self, repo: str, artifact: Path) -> str:

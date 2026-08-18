@@ -17,8 +17,10 @@ from routes.deps import OPERATOR_ID
 from services.serving import (
     EngineKind,
     EngineRecommendation,
+    LaunchOptions,
     ManagedModelView,
     Workload,
+    validate_options,
 )
 
 router = APIRouter(prefix="/models/serving", tags=["serving"])
@@ -37,6 +39,9 @@ class ServeRequest(BaseModel):
     role: str | None = None  # bind this role (main/utility/embedding) to the served model
     workload: Workload = Workload.chat
     quant: str | None = None
+    # Per-model engine launch overrides. Omitted ⇒ keep whatever the model was last
+    # served with, so a plain re-serve doesn't silently reset the operator's tuning.
+    options: LaunchOptions | None = None
 
 
 class ModelsDirBody(BaseModel):
@@ -89,6 +94,13 @@ async def download_model(request: Request, body: DownloadRequest) -> ManagedMode
 
 @router.post("/serve", response_model=ManagedModelView)
 async def serve_model(request: Request, body: ServeRequest) -> ManagedModelView:
+    # A bad flag (or one aimed at an engine that can't use it) is the operator's mistake,
+    # not an engine fault — reject it as a 400 the form can show, rather than letting it
+    # become a failed spawn minutes later or tuning that is stored but never applied.
+    try:
+        validate_options(body.engine, body.options)
+    except ServingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     try:
         return await deps.serving(request).serve(
             OPERATOR_ID,
@@ -97,6 +109,7 @@ async def serve_model(request: Request, body: ServeRequest) -> ManagedModelView:
             role=body.role,
             workload=body.workload,
             quant=body.quant,
+            options=body.options,
         )
     except ServingUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None

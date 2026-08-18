@@ -1,5 +1,5 @@
 import { Show, createEffect, createSignal, type JSX } from "solid-js";
-import { Caret, Frames, Icon, Text, cx } from "~/ui";
+import { Caret, Disclosure, Frames, Text, cx } from "~/ui";
 
 /** Collapsible reasoning/thinking passage, rendered apart from the answer and
  *  dimmer than it (the answer is the bright value). Collapsed by default. The
@@ -43,45 +43,35 @@ export function ReasoningBlock(props: {
     // The left rail is owned by the enclosing TurnBlocks Rail — this block just
     // carries the collapsible header + body.
     <div onClick={handleClick} class="cursor-pointer">
-      <button
-        type="button"
-        onClick={(e) => {
-          // The container handler owns toggling; keep the button's keyboard
-          // activation working without double-firing on pointer clicks.
-          e.stopPropagation();
-          toggle();
-        }}
-        class="flex items-center gap-1 text-left text-dim transition-colors hover:text-text"
+      {/* Controlled: the local signal above is the state, so the container's own
+          click handler and the trigger stay in agreement. */}
+      <Disclosure
+        label={props.active ? "THINKING" : "REASONING"}
+        open={open()}
+        onToggle={toggle}
+        trailing={
+          <Show when={props.active && props.streaming}>
+            <Frames class="text-info" />
+          </Show>
+        }
+        // While active, peek the latest tokens: cap the height and pin to the
+        // bottom (col-reverse) so the newest reasoning stays in view.
+        class={cx(
+          "mt-1",
+          props.active && "flex max-h-32 flex-col-reverse overflow-hidden",
+        )}
       >
-        <Icon name={open() ? "chevron-down" : "chevron-right"} size={12} />
-        <Text variant="label" tone="dim">
-          {props.active ? "THINKING" : "REASONING"}
-        </Text>
-        <Show when={props.active && props.streaming}>
-          <Frames class="text-info" />
-        </Show>
-      </button>
-      <Show when={open()}>
-        {/* While active, peek the latest tokens: cap the height and pin to the
-            bottom (col-reverse) so the newest reasoning stays in view. */}
-        <div
-          class={cx(
-            "mt-1",
-            props.active && "flex max-h-32 flex-col-reverse overflow-hidden",
-          )}
+        <Text
+          variant="body"
+          tone="dim"
+          class="block cursor-text whitespace-pre-wrap"
         >
-          <Text
-            variant="body"
-            tone="dim"
-            class="block cursor-text whitespace-pre-wrap"
-          >
-            {props.reasoning}
-            <Show when={props.active && props.streaming}>
-              <Caret />
-            </Show>
-          </Text>
-        </div>
-      </Show>
+          {props.reasoning}
+          <Show when={props.active && props.streaming}>
+            <Caret />
+          </Show>
+        </Text>
+      </Disclosure>
     </div>
   );
 }

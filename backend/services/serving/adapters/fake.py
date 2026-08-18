@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from ..download import DownloadSpec
-from ..models import EngineKind, Workload
+from ..models import EngineKind, LaunchOptions, Workload
 from ..supervisor import ServeSpec
 from .base import EngineAdapter
 
@@ -93,7 +93,12 @@ class FakeAdapter(EngineAdapter):
         return DownloadSpec(argv=[sys.executable, "-c", _STUB_DOWNLOAD, str(dest)])
 
     def serve_spec(
-        self, artifact: Path, port: int, workload: Workload, model_id: str
+        self,
+        artifact: Path,
+        port: int,
+        workload: Workload,
+        model_id: str,
+        options: LaunchOptions | None = None,
     ) -> ServeSpec:
         return ServeSpec(argv=[sys.executable, "-c", _STUB_SERVER, "127.0.0.1", str(port)])
 

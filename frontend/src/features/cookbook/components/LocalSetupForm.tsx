@@ -22,6 +22,11 @@ import {
   useManagedModels,
   useRecommendations,
 } from "../serving";
+import {
+  AdvancedServeOptions,
+  EMPTY_OPTIONS,
+  hasAnyOption,
+} from "./AdvancedServeOptions";
 import { DownloadProgress } from "./DownloadProgress";
 import { EnginePicker } from "./EnginePicker";
 import { EngineSwitchNote } from "./EngineSwitchNote";
@@ -45,6 +50,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
   const [selected, setSelected] = useEngineSelection(recommendations);
   const [repo, setRepo] = createSignal("");
   const [quant, setQuant] = createSignal("");
+  const [options, setOptions] = createSignal(EMPTY_OPTIONS);
   const [servedId, setServedId] = createSignal<string | null>(null);
   const [submitting, setSubmitting] = createSignal(false);
 
@@ -77,6 +83,14 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
         role: "main",
         workload: "chat",
         quant: (engine === "llama.cpp" && quant().trim()) || undefined,
+        // Sent only when the advanced section was actually filled in, and only for the
+        // engine that has these flags: an untouched section must omit the field so a
+        // re-serve keeps the model's existing tuning instead of clearing it, and MLX
+        // would store llama.cpp overrides it never applies.
+        options:
+          engine === "llama.cpp" && hasAnyOption(options())
+            ? options()
+            : undefined,
       });
       setServedId(model.id);
       toast.success(`Serving ${model.hfRepo} as your main model`);
@@ -144,6 +158,11 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                 />
               </Row>
               <HfTokenNotice />
+              <AdvancedServeOptions
+                engine={selected()}
+                value={options()}
+                onChange={setOptions}
+              />
               <Row gap={3} align="end" justify="between" wrap>
                 <div class="min-w-0">
                   <RepoFinderHint engine={selected()} workload="chat" />

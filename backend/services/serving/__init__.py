@@ -12,9 +12,13 @@ from .models import (
     DownloadProgress,
     EngineKind,
     EngineRecommendation,
+    KvCacheType,
+    LaunchOptions,
     ManagedModelView,
     ServeState,
     Workload,
+    validate_extra_args,
+    validate_options,
 )
 from .paths import ServingPaths
 from .service import ServingService
@@ -23,9 +27,13 @@ __all__ = [
     "DownloadProgress",
     "EngineKind",
     "EngineRecommendation",
+    "KvCacheType",
+    "LaunchOptions",
     "ManagedModelView",
     "ServeState",
     "ServingPaths",
     "ServingService",
     "Workload",
+    "validate_extra_args",
+    "validate_options",
 ]

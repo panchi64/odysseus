@@ -12,6 +12,8 @@ import type { EngineKind, ServeState, Workload } from "~/lib/api/models-types";
 import type {
   DownloadProgress,
   EngineRecommendation,
+  KvCacheType,
+  LaunchOptions,
   ManagedModel,
 } from "./model";
 
@@ -33,6 +35,13 @@ interface DownloadProgressDTO {
   file: string | null;
 }
 
+interface LaunchOptionsDTO {
+  context_size: number | null;
+  kv_cache_type: string | null;
+  cache_reuse: number | null;
+  extra_args: string[];
+}
+
 interface ManagedModelViewDTO {
   id: string;
   engine: string;
@@ -45,6 +54,7 @@ interface ManagedModelViewDTO {
   port: number | null;
   last_error: string | null;
   progress: DownloadProgressDTO | null;
+  options: LaunchOptionsDTO;
 }
 
 // --- mappers (presentation only — no domain logic) -------------------------
@@ -70,6 +80,15 @@ function mapProgress(d: DownloadProgressDTO | null): DownloadProgress | null {
   };
 }
 
+function mapOptions(d: LaunchOptionsDTO | null | undefined): LaunchOptions {
+  return {
+    contextSize: d?.context_size ?? null,
+    kvCacheType: (d?.kv_cache_type as KvCacheType | null) ?? null,
+    cacheReuse: d?.cache_reuse ?? null,
+    extraArgs: d?.extra_args ?? [],
+  };
+}
+
 function mapManagedModel(d: ManagedModelViewDTO): ManagedModel {
   return {
     id: d.id,
@@ -83,6 +102,7 @@ function mapManagedModel(d: ManagedModelViewDTO): ManagedModel {
     port: d.port,
     lastError: d.last_error,
     progress: mapProgress(d.progress),
+    options: mapOptions(d.options),
   };
 }
 
@@ -147,6 +167,7 @@ export async function serveModel(input: {
   role?: string;
   workload?: Workload;
   quant?: string | null;
+  options?: LaunchOptions | null;
 }): Promise<ManagedModel> {
   const body: Record<string, unknown> = {
     engine: input.engine,
@@ -155,6 +176,16 @@ export async function serveModel(input: {
   if (input.role != null) body.role = input.role;
   if (input.workload != null) body.workload = input.workload;
   if (input.quant != null) body.quant = input.quant;
+  // Omitted entirely when absent, so a serve with no advanced section touched keeps
+  // whatever the model was last tuned with instead of resetting it.
+  if (input.options != null) {
+    body.options = {
+      context_size: input.options.contextSize,
+      kv_cache_type: input.options.kvCacheType,
+      cache_reuse: input.options.cacheReuse,
+      extra_args: input.options.extraArgs,
+    };
+  }
   const dto = await api.post<ManagedModelViewDTO>(
     "/models/serving/serve",
     body,

@@ -20,6 +20,19 @@ export function ManagedModelRow(props: {
   const state = () => props.model.state;
   const inFlight = () => state() === "downloading" || state() === "starting";
 
+  // Only the overrides the operator actually set — a row on engine defaults says nothing
+  // rather than listing a column of "auto".
+  const tuning = () => {
+    const o = props.model.options;
+    const parts: string[] = [];
+    if (o.contextSize != null)
+      parts.push(`ctx ${o.contextSize.toLocaleString()}`);
+    if (o.kvCacheType != null) parts.push(`kv ${o.kvCacheType}`);
+    if (o.cacheReuse != null) parts.push(`reuse ${o.cacheReuse}`);
+    if (o.extraArgs.length > 0) parts.push(o.extraArgs.join(" "));
+    return parts.join(" · ");
+  };
+
   // Each action runs at most once at a time; the busy flag disables the row's
   // buttons until the request settles (the poll then lands the new state).
   const run = (fn: () => Promise<void>) => async () => {
@@ -52,6 +65,11 @@ export function ManagedModelRow(props: {
           <ServeStateFlag state={state()} />
         </Row>
       </Row>
+      <Show when={tuning()}>
+        <Text variant="micro" tone="dim" class="truncate">
+          {tuning()}
+        </Text>
+      </Show>
       <Show when={state() === "downloading" && props.model.progress}>
         <DownloadProgress progress={props.model.progress!} />
       </Show>

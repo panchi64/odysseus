@@ -115,3 +115,65 @@ async def test_stop_unknown_model_returns_404():
     async with client_app() as (client, _app):
         resp = await client.post("/models/serving/does-not-exist/stop")
         assert resp.status_code == 404
+
+
+async def test_serve_rejects_an_extra_arg_the_platform_owns():
+    # The operator's typo is a 400 the form can render, not a spawn that fails minutes
+    # later — and --host in particular would move the server off loopback. Validation
+    # runs before anything is downloaded or spawned, so no engine work happens here.
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/serve",
+            json={
+                "engine": "llama.cpp",
+                "repo": "acme/model-GGUF",
+                "options": {"extra_args": ["--host", "0.0.0.0"]},
+            },
+        )
+        assert resp.status_code == 400
+        assert "--host" in resp.json()["detail"]
+
+
+async def test_serve_rejects_options_for_an_engine_that_ignores_them(monkeypatch):
+    # MLX's adapter discards LaunchOptions; accepting them would persist tuning that
+    # never reaches a process while the UI shows it as applied.
+    async def unavailable(self) -> bool:
+        return False
+
+    monkeypatch.setattr(MlxAdapter, "is_available", unavailable)
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/serve",
+            json={
+                "engine": "mlx",
+                "repo": "mlx-community/whatever",
+                "options": {"context_size": 4096},
+            },
+        )
+        # 400, not the 409 an unavailable engine earns — validation runs first.
+        assert resp.status_code == 400
+        assert "no tunable launch options" in resp.json()["detail"]
+
+
+async def test_serve_options_persist_onto_the_managed_model(monkeypatch):
+    def fake_spec(self, repo, quant, dest, token=None):
+        return DownloadSpec(argv=[sys.executable, "-c", "pass"])
+
+    monkeypatch.setattr(LlamaCppAdapter, "download_spec", fake_spec)
+
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/serve",
+            json={
+                "engine": "llama.cpp",
+                "repo": "acme/model-GGUF",
+                "options": {"context_size": 16384, "kv_cache_type": "q8_0"},
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["options"]["context_size"] == 16384
+
+        # And they survive into the status listing, so the form can show what was set.
+        listing = (await client.get("/models/serving/models")).json()
+        row = next(m for m in listing if m["hf_repo"] == "acme/model-GGUF")
+        assert row["options"]["kv_cache_type"] == "q8_0"

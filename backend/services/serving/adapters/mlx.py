@@ -23,7 +23,7 @@ from core.exceptions import ServingError
 
 from .. import hf
 from ..download import DownloadSpec, worker_spec
-from ..models import EngineKind, Workload
+from ..models import EngineKind, LaunchOptions, Workload
 from ..paths import ServingPaths
 from ..supervisor import ServeSpec
 from .base import EngineAdapter
@@ -92,8 +92,16 @@ class MlxAdapter(EngineAdapter):
         return hf.snapshot_size(repo, token=token)
 
     def serve_spec(
-        self, artifact: Path, port: int, workload: Workload, model_id: str
+        self,
+        artifact: Path,
+        port: int,
+        workload: Workload,
+        model_id: str,
+        options: LaunchOptions | None = None,
     ) -> ServeSpec:
+        # `options` is accepted but unused: the curated fields are llama.cpp's flag
+        # vocabulary, and mlx_lm has no equivalent for them. Honouring extra_args here
+        # would hand the operator llama.cpp flags that mlx_lm rejects at startup.
         if self._script is None:
             raise ServingError("MLX is not initialized (call ensure_engine first)")
         argv = [

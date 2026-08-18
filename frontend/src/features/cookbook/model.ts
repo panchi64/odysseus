@@ -64,6 +64,21 @@ export interface DownloadProgress {
   file: string | null;
 }
 
+/** KV cache dtypes the engine offers. `f16` is the engine default. */
+export type KvCacheType = "f16" | "q8_0" | "q4_0";
+
+/** Per-model engine launch overrides. Every field unset means the engine's own
+ *  default stands — the engine already auto-sizes slots, GPU layers and batching,
+ *  so an unset field must stay unset rather than being filled with a guess. */
+export interface LaunchOptions {
+  /** Total context across the server's slots, or null for the model's own. */
+  contextSize: number | null;
+  kvCacheType: KvCacheType | null;
+  cacheReuse: number | null;
+  /** Passed to the engine verbatim. Unsupported by design. */
+  extraArgs: string[];
+}
+
 /** A model Odysseus is managing (downloaded and/or served). */
 export interface ManagedModel {
   id: string;
@@ -81,4 +96,6 @@ export interface ManagedModel {
   lastError: string | null;
   /** Live download progress, present while `state === "downloading"`. */
   progress: DownloadProgress | null;
+  /** The launch overrides this model is served with. */
+  options: LaunchOptions;
 }

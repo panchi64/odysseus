@@ -32,12 +32,13 @@ from .download import DownloadManager
 from .models import (
     EngineKind,
     EngineRecommendation,
+    LaunchOptions,
     ManagedModelView,
     ServeState,
     Workload,
 )
 from .paths import ServingPaths, _safe, dir_size
-from .store import ManagedModelStore
+from .store import ManagedModelStore, launch_options
 from .supervisor import EngineExitedDuringStartup, ProcessSupervisor
 
 logger = logging.getLogger(__name__)
@@ -315,6 +316,7 @@ class ServingService:
         role: str | None = None,
         workload: Workload = Workload.chat,
         quant: str | None = None,
+        options: LaunchOptions | None = None,
     ) -> ManagedModelView:
         """Make a model usable: download (if needed) → launch the engine → register it
         as an endpoint → bind ``role`` (when given). **Non-blocking** — returns the row
@@ -335,7 +337,9 @@ class ServingService:
             # check against a stale resident set and then oversubscribe memory. The check
             # runs before the row is created, so a refused serve leaves no trace.
             await self._check_headroom(owner_id, repo, usable, need)
-            row = await self._store.get_or_create(owner_id, engine, repo, workload, quant)
+            row = await self._store.get_or_create(
+                owner_id, engine, repo, workload, quant, options
+            )
             # Cancel any prior in-flight serve for this model so it can't finish and
             # resurrect it; the new background job stops any engine still running for this
             # id before it re-spawns (supervisor.spawn clears the prior process first).
@@ -383,10 +387,19 @@ class ServingService:
 
             await self._store.update(managed_id, state=ServeState.starting, last_error=None)
             model_id = adapter.resolved_model_id(repo, artifact)
+            # The overrides live on the row, written by `serve`, so a re-serve reuses what
+            # the operator last set without the caller having to thread them through.
             proc, port, base_url = await self._spawn_engine(
-                managed_id, adapter, artifact, Workload(row.workload), model_id
+                managed_id,
+                adapter,
+                artifact,
+                Workload(row.workload),
+                model_id,
+                launch_options(row),
             )
-            endpoint = await self._ensure_endpoint(owner_id, row, base_url, model_id, adapter)
+            endpoint = await self._ensure_endpoint(
+                owner_id, row, base_url, model_id, adapter, port
+            )
             # Bind the role before declaring "running", so that state means fully usable
             # (a rejected bind surfaces as last_error but leaves the engine up).
             bind_error = (
@@ -421,13 +434,14 @@ class ServingService:
         artifact: Path,
         workload: Workload,
         model_id: str,
+        options: LaunchOptions | None = None,
     ):
         """Allocate a port, build the engine argv, and spawn it — retrying on a fresh port
         when the engine exits before it binds (the bind-to-0 → spawn race, or a port taken
         out from under us). A startup *timeout* (a slow-loading model) is not retried."""
         for attempt in range(_SPAWN_ATTEMPTS):
             port = self._supervisor.allocate_port()
-            spec = adapter.serve_spec(artifact, port, workload, model_id)
+            spec = adapter.serve_spec(artifact, port, workload, model_id, options)
             base_url = adapter.health_url(port)
             try:
                 proc = await self._supervisor.spawn(
@@ -561,9 +575,21 @@ class ServingService:
         base_url: str,
         model_id: str,
         adapter: EngineAdapter,
+        port: int,
     ):
         """Register (or refresh) the registry endpoint for a served model. Re-serving
         reuses the same endpoint so its role bindings survive a stop/start cycle."""
+        # Ask the running server what context it settled on, falling back to the engine's
+        # generic hint. Refreshed on every serve, not just creation: a re-serve with a new
+        # context size would otherwise leave the endpoint advertising the old window.
+        #
+        # This deliberately overwrites a hand-edited window on a *managed* endpoint. For
+        # a remote endpoint the operator's number is the only source of truth, but here
+        # the server itself can be asked, and a hand-set value that disagrees with the
+        # running process is simply wrong — it would drive context reduction against a
+        # window the model doesn't have. A failed probe yields None, which
+        # `update_endpoint` skips, so an unreachable server leaves the old value intact.
+        context_window = await adapter.probe_context_window(port) or adapter.context_window_hint
         if row.endpoint_id:
             try:
                 await self._registry.update_endpoint(
@@ -573,13 +599,11 @@ class ServingService:
                     model=model_id,
                     live_status="running",
                     native_tools=adapter.native_tools_default,
+                    context_window=context_window,
                 )
                 return await self._registry.get_endpoint(owner_id, row.endpoint_id)
             except NotFoundError:
                 pass  # endpoint deleted out from under us — recreate below
-        # The endpoint carries the engine's generic context-window hint; the operator can
-        # refine it on the endpoint if a specific repo supports more.
-        context_window = adapter.context_window_hint
         return await self._registry.create_endpoint(
             owner_id,
             name=f"Local · {row.hf_repo}",

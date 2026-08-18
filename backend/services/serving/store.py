@@ -7,6 +7,9 @@ table) is separate from the serve/download lifecycle. Every method runs its work
 
 from __future__ import annotations
 
+import logging
+
+from pydantic import ValidationError
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
@@ -15,13 +18,26 @@ from core.exceptions import NotFoundError
 from models._fields import utcnow
 from models.serving import ManagedModel
 
-from .models import EngineKind, ManagedModelView, ServeState, Workload
+from .models import EngineKind, LaunchOptions, ManagedModelView, ServeState, Workload
 
 # States that imply a live process or in-flight job — what a restart must clean up, since
 # the supervisor's process table didn't survive the prior process.
 ACTIVE_STATES = frozenset(
     {ServeState.running.value, ServeState.starting.value, ServeState.downloading.value}
 )
+
+logger = logging.getLogger(__name__)
+
+
+def launch_options(row: ManagedModel) -> LaunchOptions:
+    """The row's launch overrides. Degrade, don't crash: a blob this build can no longer
+    parse (an option removed across versions, a hand-edited row) reads as "no overrides"
+    so the model still serves on engine defaults instead of the status list erroring."""
+    try:
+        return LaunchOptions.model_validate(row.launch_options or {})
+    except ValidationError:
+        logger.warning("serving: unreadable launch_options on %s — using defaults", row.id)
+        return LaunchOptions()
 
 
 class ManagedModelStore:
@@ -80,8 +96,14 @@ class ManagedModelStore:
         repo: str,
         workload: Workload,
         quant: str | None,
+        options: LaunchOptions | None = None,
     ) -> ManagedModel:
-        """One row per (owner, engine, repo) — re-downloading reuses it."""
+        """One row per (owner, engine, repo) — re-downloading reuses it.
+
+        ``options`` is only written when supplied, unlike ``workload``/``quant``: the
+        download path carries no launch overrides, and letting it through as ``None``
+        would wipe the ones the operator set on the last serve.
+        """
 
         def work(session: Session) -> ManagedModel:
             existing = session.exec(
@@ -94,6 +116,8 @@ class ManagedModelStore:
             if existing is not None:
                 existing.workload = workload.value
                 existing.quant = quant
+                if options is not None:
+                    existing.launch_options = options.model_dump(mode="json")
                 existing.updated_at = utcnow()
                 session.add(existing)
                 session.flush()
@@ -106,6 +130,7 @@ class ManagedModelStore:
                 hf_repo=repo,
                 quant=quant,
                 state=ServeState.downloading.value,
+                launch_options=(options or LaunchOptions()).model_dump(mode="json"),
             )
             session.add(row)
             session.flush()
@@ -138,4 +163,5 @@ class ManagedModelStore:
             endpoint_id=row.endpoint_id,
             port=row.port,
             last_error=row.last_error,
+            options=launch_options(row),
         )

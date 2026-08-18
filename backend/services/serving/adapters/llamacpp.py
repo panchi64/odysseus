@@ -30,7 +30,7 @@ from core.exceptions import ServingError
 
 from .. import hf
 from ..download import DownloadSpec, worker_spec
-from ..models import EngineKind, Workload
+from ..models import EngineKind, LaunchOptions, Workload
 from ..paths import ServingPaths
 from ..supervisor import ServeSpec
 from .base import EngineAdapter
@@ -123,12 +123,21 @@ class LlamaCppAdapter(EngineAdapter):
         return hf.list_gguf_quants(repo, token)
 
     def serve_spec(
-        self, artifact: Path, port: int, workload: Workload, model_id: str
+        self,
+        artifact: Path,
+        port: int,
+        workload: Workload,
+        model_id: str,
+        options: LaunchOptions | None = None,
     ) -> ServeSpec:
         if self._binary is None:
             raise ServingError("llama.cpp is not initialized (call ensure_engine first)")
-        argv = [
-            self._binary,
+        opts = options or LaunchOptions()
+        # The operator's opaque arguments go first, so the flags below — which define the
+        # served model's identity and pin it to loopback — always win a conflict. Request
+        # -time validation already rejects those flags; this is the belt to that braces.
+        argv = [self._binary, *opts.extra_args]
+        argv += [
             "-m", str(artifact),
             "--host", "127.0.0.1",
             "--port", str(port),
@@ -141,7 +150,45 @@ class LlamaCppAdapter(EngineAdapter):
             # into the model's GGUF metadata (e.g. CLS for BGE, mean for Nomic);
             # overriding it here would silently mis-pool models that aren't mean-pooled.
             argv += ["--embeddings"]
+        # Everything below is emitted only when the operator set it. llama-server already
+        # auto-sizes slots, GPU layers, flash attention, continuous batching and prompt
+        # caching; naming those here would replace its sizing with a guess.
+        if opts.context_size is not None:
+            argv += ["-c", str(opts.context_size)]
+        if opts.kv_cache_type is not None:
+            # Both halves of the cache together — quantizing K alone is rarely what an
+            # operator means. -ctv wants flash attention, which defaults to auto; if the
+            # pair is refused, the supervisor captures the startup log into last_error.
+            argv += ["-ctk", opts.kv_cache_type.value, "-ctv", opts.kv_cache_type.value]
+        if opts.cache_reuse is not None:
+            argv += ["--cache-reuse", str(opts.cache_reuse)]
         return ServeSpec(argv=argv, cwd=Path(self._binary).parent)
+
+    async def probe_context_window(self, port: int) -> int | None:
+        """The per-slot context of the running server, read from ``/props``. This is the
+        honest number: ``--ctx-size`` is the total across slots and the slot count is
+        auto-sized, so the launch flag alone can't tell us what one request may use.
+
+        The per-slot number lives under ``default_generation_settings`` (llama-server
+        renders slot 0's settings there); a top-level ``n_ctx`` is only present on some
+        builds, so it is the fallback rather than the primary read."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"http://127.0.0.1:{port}/props")
+                resp.raise_for_status()
+                props = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("serving: could not read /props on port %s: %s", port, exc)
+            return None
+        if not isinstance(props, dict):
+            return None
+        slot = props.get("default_generation_settings")
+        n_ctx = slot.get("n_ctx") if isinstance(slot, dict) else None
+        if n_ctx is None:
+            n_ctx = props.get("n_ctx")
+        if not isinstance(n_ctx, int) or isinstance(n_ctx, bool):
+            return None
+        return n_ctx if n_ctx > 0 else None
 
     def resolved_model_id(self, repo: str, artifact: Path) -> str:
         # The server is launched with --alias = this id, so request `model` and the

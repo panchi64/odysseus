@@ -9,7 +9,7 @@ import {
   on,
   type JSX,
 } from "solid-js";
-import { Caret, Icon, Markdown, Text, cx } from "~/ui";
+import { Caret, Disclosure, Markdown, Text, cx } from "~/ui";
 import type {
   ApprovalBlock,
   ApprovalDecision,
@@ -310,44 +310,40 @@ function WorkLogAccordion(
 
   return (
     <div class={fullWidthTop(props.top)}>
-      <button
-        type="button"
-        onClick={() => props.onToggle()}
-        class="flex w-full items-center gap-2 text-left text-dim transition-colors hover:text-text"
+      <Disclosure
+        label={`WORK LOG · ${props.groups.length} ${
+          props.groups.length === 1 ? "STEP" : "STEPS"
+        }`}
+        open={props.open}
+        onToggle={() => props.onToggle()}
+        triggerClass="w-full gap-2"
+        trailing={
+          <Show when={!props.open && peek()}>
+            {(p) => (
+              <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
+                {p().name}
+                {p().rationale ? ` — ${p().rationale}` : ""}
+              </Text>
+            )}
+          </Show>
+        }
       >
-        <Icon name={props.open ? "chevron-down" : "chevron-right"} size={12} />
-        <Text variant="label" tone="dim">
-          WORK LOG · {props.groups.length}{" "}
-          {props.groups.length === 1 ? "STEP" : "STEPS"}
-        </Text>
-        <Show when={!props.open && peek()}>
-          {(p) => (
-            <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
-              {p().name}
-              {p().rationale ? ` — ${p().rationale}` : ""}
-            </Text>
-          )}
-        </Show>
-      </button>
-      <Show when={props.open}>
         {/* Folded groups are mostly rail blocks (they connect into one line); a
             View chip in the run renders full-width between them. */}
-        <div class="mt-2">
-          <For each={props.groups}>
-            {(group, i) => (
-              <BlockRow
-                group={group}
-                top={i() === 0 ? "none" : "connect"}
-                forceOpen={props.forceOpen}
-                onResolveApproval={props.onResolveApproval}
-                onResolveHostCommands={props.onResolveHostCommands}
-                chipLookup={props.chipLookup}
-                seenIndex={props.seenIndex}
-              />
-            )}
-          </For>
-        </div>
-      </Show>
+        <For each={props.groups}>
+          {(group, i) => (
+            <BlockRow
+              group={group}
+              top={i() === 0 ? "none" : "connect"}
+              forceOpen={props.forceOpen}
+              onResolveApproval={props.onResolveApproval}
+              onResolveHostCommands={props.onResolveHostCommands}
+              chipLookup={props.chipLookup}
+              seenIndex={props.seenIndex}
+            />
+          )}
+        </For>
+      </Disclosure>
     </div>
   );
 }

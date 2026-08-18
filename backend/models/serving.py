@@ -16,7 +16,9 @@ in the clear like the rest of the registry's structural metadata.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
 from models._fields import new_id, utcnow
@@ -51,5 +53,12 @@ class ManagedModel(SQLModel, table=True):
     port: int | None = None  # allocated host port while running
     pid: int | None = None  # OS pid while running (for orphan reconciliation)
     last_error: str | None = None  # plain-language failure detail (never a secret)
+    # A serialized services.serving.LaunchOptions — the engine launch overrides this model
+    # is served with, kept here so a stop/start cycle reuses them. An empty dict means
+    # "every engine default stands", which is the shape a row created before this column
+    # existed also lands on.
+    launch_options: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict)
+    )
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
