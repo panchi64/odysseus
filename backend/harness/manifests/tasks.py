@@ -23,7 +23,7 @@ from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
-from services.settings_store import SettingsStore
+from services.settings_store import SettingsStore, get_agent_request_limit
 from services.tool_policy import effective_disabled_tools
 from services.uploads import UploadStore
 
@@ -118,6 +118,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             disabled_tools=await effective_disabled_tools(
                 settings_store, offline, view.owner_id
             ),
+            # Same reasoning for the per-turn model-request ceiling: an unattended task
+            # runs under the operator's own setting, not a separate default.
+            request_limit=await get_agent_request_limit(settings_store, view.owner_id),
             owner_id=view.owner_id,
         )
         # Registered before the very first `await` below — the newly submitted Run's

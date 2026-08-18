@@ -28,6 +28,11 @@ COMPACTION_ENABLED_KEY = "chat.compaction_enabled"
 COMPACTION_KEEP_RECENT_KEY = "chat.compaction_keep_recent"
 COMPACTION_MIN_TOKENS_KEY = "chat.compaction_min_tokens"
 
+# The agent's per-turn model-request ceiling (agent/engine.py's `UsageLimits`): the
+# operator's runtime override of `agent_request_limit`. Every model round-trip spends
+# one, so this is what a tool-heavy turn actually runs out of.
+AGENT_REQUEST_LIMIT_KEY = "chat.agent_request_limit"
+
 # Offline mode (services/offline.py) persists the operator's two switches here as
 # "true"/"false" strings: the manual force-offline toggle and the auto-detect master
 # switch. Policy, not a secret — stored in the clear like every other app preference.
@@ -106,6 +111,23 @@ async def set_attachment_inline_max_tokens(
     return value
 
 
+async def get_agent_request_limit(store: SettingsStore, owner_id: str) -> int:
+    """The operator's per-turn model-request ceiling — the runtime override if set (and
+    valid), else the config default. Unlike the token caps this one is floored at 1, not
+    0: a turn allowed zero model requests could never answer at all, so a stored 0 (or a
+    corrupted value) falls back to the default rather than bricking every turn."""
+    raw = await store.get(owner_id, AGENT_REQUEST_LIMIT_KEY)
+    return _positive_int_or(raw, get_settings().agent_request_limit)
+
+
+async def set_agent_request_limit(store: SettingsStore, owner_id: str, value: int) -> int:
+    """Persist the operator's per-turn model-request ceiling. Returns the stored value.
+    The ``ge=1`` body field at the route is what rejects a nonsensical one; a stray
+    sub-1 value stored here would simply be ignored by the getter."""
+    await store.set(owner_id, AGENT_REQUEST_LIMIT_KEY, str(value))
+    return value
+
+
 @dataclass(frozen=True)
 class CompactionSettings:
     """The operator's effective tool-result compaction preferences."""
@@ -125,6 +147,13 @@ def _int_or(raw: str | None, default: int) -> int:
     except ValueError:
         return default
     return value if value >= 0 else default
+
+
+def _positive_int_or(raw: str | None, default: int) -> int:
+    """:func:`_int_or` for a setting where 0 is meaningless rather than merely minimal —
+    the floor is 1, so a stored 0 falls back to the default like any other bad value."""
+    value = _int_or(raw, default)
+    return value if value >= 1 else default
 
 
 def _bool_or(raw: str | None, default: bool) -> bool:

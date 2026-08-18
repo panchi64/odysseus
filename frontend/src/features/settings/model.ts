@@ -87,12 +87,15 @@ export interface SearchProviderInput {
  *  tool pointer (images are always retained, regardless). The `compaction*` fields tune
  *  tool-result compaction — digesting oversized prior-turn tool outputs for the model
  *  (the operator always keeps the full output): whether it's on, how many of the newest
- *  results stay full, and the token floor below which a result is left untouched. */
+ *  results stay full, and the token floor below which a result is left untouched.
+ *  `agentRequestLimit` is how many model round-trips a single turn may spend before it
+ *  stops — the ceiling a long tool-using turn actually runs out of. */
 export interface ChatSettings {
   attachmentInlineMaxTokens: number;
   compactionEnabled: boolean;
   compactionKeepRecent: number;
   compactionMinTokens: number;
+  agentRequestLimit: number;
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────── */

@@ -257,10 +257,13 @@ async def test_titling_skipped_when_disabled_in_settings(tmp_path, monkeypatch):
     await store.stop()
 
 
-async def test_parked_first_turn_is_titled_on_resume(tmp_path):
-    # A first turn whose opening message triggers an approval-gated tool parks,
-    # then resumes to completion — it must still be named (titling lives at the
-    # shared finalize point, carried across the park on the parked turn).
+async def test_parked_first_turn_is_titled_exactly_once(tmp_path):
+    # A first turn whose opening message triggers an approval-gated tool parks, then
+    # resumes to completion — it must be named exactly once across the two halves. The
+    # concurrent namer usually gets there first (a thread waiting on an approval shows
+    # its name rather than sitting "Untitled" while the operator decides); when the park
+    # beats it, the resume names it from history instead. Either way: one announcement,
+    # never two, and never a name persisted without one.
     store = await _fresh_store(tmp_path)
     conv = await store.create_conversation("operator")
 
@@ -295,9 +298,12 @@ async def test_parked_first_turn_is_titled_on_resume(tmp_path):
     run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
     await run.wait()
 
-    # Parked before reaching the finalize point — titling hasn't run yet.
     assert run.status is RunStatus.awaiting_input
-    assert not any(b.type == "conversation.titled" for b in _bodies(run))
+    # Whichever half named it, the announcement and the stored name agree — a name in
+    # the database with no event on the stream is the failure this guards.
+    parked_titles = [b for b in _bodies(run) if b.type == "conversation.titled"]
+    summary = await store.get_summary(conv, "operator")
+    assert (summary.title == "Deleting The Thing") == bool(parked_titles)
 
     parked = run.parked_payload
     call_id = parked.requests.approvals[0].tool_call_id
@@ -307,7 +313,8 @@ async def test_parked_first_turn_is_titled_on_resume(tmp_path):
     await run.wait()
     assert run.status is RunStatus.done
 
-    # Resumed to completion → the opening exchange is named on the same stream.
+    # Named on the same stream, exactly once across both halves — `set_title_if_absent`
+    # is the guard that stops the resume re-announcing what the concurrent namer already did.
     titled = [b for b in _bodies(run) if b.type == "conversation.titled"]
     assert len(titled) == 1 and titled[0].title == "Deleting The Thing"
     summary = await store.get_summary(conv, "operator")
@@ -350,6 +357,54 @@ async def test_titling_runs_concurrently_with_the_answer(tmp_path):
     assert len(titled) == 1 and titled[0].title == "Concurrent Title"
     types = [b.type for b in _bodies(run)]
     assert types.index("conversation.titled") < types.index("run.ended")
+    await store.stop()
+
+
+async def test_title_is_announced_while_the_answer_is_still_streaming(tmp_path):
+    # Generating concurrently isn't enough: the name must also be *announced* the moment
+    # it lands, not held until the turn finishes. Otherwise a long tool-using turn leaves
+    # the thread visibly unnamed for its whole duration even though the name was ready in
+    # the first second. Proven structurally — the answer can't finish until the title has
+    # been persisted+emitted, which deadlocks if the announcement waits on the answer.
+    store = await _fresh_store(tmp_path)
+    conv = await store.create_conversation("operator")
+    reg = RunRegistry()
+
+    announced = asyncio.Event()
+    set_title = store.set_title_if_absent
+
+    async def hooked(conversation_id, name):
+        stored = await set_title(conversation_id, name)
+        announced.set()
+        return stored
+
+    store.set_title_if_absent = hooked
+
+    def title_fn(messages, info):
+        return ModelResponse(parts=[TextPart("Named Mid Answer")])
+
+    async def answer_stream(messages, info):
+        yield "still "
+        await asyncio.wait_for(announced.wait(), timeout=2)
+        yield "writing"
+
+    orch = build_chat_orchestrator(
+        "name me",
+        model=FunctionModel(stream_function=answer_stream),
+        title_model=FunctionModel(function=title_fn),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    types = [b.type for b in _bodies(run)]
+    # The name landed before the answer's last token, not after the whole turn.
+    assert types.index("conversation.titled") < len(types) - 1 - types[::-1].index(
+        "answer.delta"
+    )
     await store.stop()
 
 

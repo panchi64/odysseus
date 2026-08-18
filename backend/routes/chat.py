@@ -39,9 +39,11 @@ from services.conversations import ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
     CompactionSettings,
+    get_agent_request_limit,
     get_attachment_inline_max_tokens,
     get_compaction,
     resolve_compaction_enabled,
+    set_agent_request_limit,
     set_attachment_inline_max_tokens,
     set_compaction,
 )
@@ -102,9 +104,10 @@ class ChatSettings(BaseModel):
     """Operator-tunable chat preferences. ``attachment_inline_max_tokens`` is the token
     budget an attached file's text is retained inline for before it's cut off with a tool
     pointer (images are always retained, regardless). The ``compaction*`` fields tune
-    tool-result compaction (digest oversized prior-turn tool outputs for the model). They're
-    optional on a PUT — an omitted one is left unchanged — and always populated on a GET.
-    snake_case out, matching the rest of the ``/chat`` surface."""
+    tool-result compaction (digest oversized prior-turn tool outputs for the model).
+    ``agent_request_limit`` is how many model round-trips one turn may spend before it
+    stops. They're optional on a PUT — an omitted one is left unchanged — and always
+    populated on a GET. snake_case out, matching the rest of the ``/chat`` surface."""
 
     # `extra="forbid"` so a mistyped/unknown field is a 422, not a silent no-op: with every
     # field optional (omitted ⇒ unchanged), a typo'd key would otherwise be dropped and the PUT
@@ -117,6 +120,9 @@ class ChatSettings(BaseModel):
     compaction_enabled: bool | None = None
     compaction_keep_recent: int | None = Field(default=None, ge=0)
     compaction_min_tokens: int | None = Field(default=None, ge=0)
+    # ``ge=1``, not ``ge=0``: a turn allowed zero model requests could never produce an
+    # answer, so 0 is a nonsensical value to accept rather than merely a minimal one.
+    agent_request_limit: int | None = Field(default=None, ge=1)
 
 
 async def resolve_turn_models(
@@ -192,6 +198,7 @@ def compose_turn(
     ephemeral: bool = False,
     inline_max_tokens: int | None = None,
     compaction: CompactionContext | None = None,
+    request_limit: int | None = None,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -225,6 +232,8 @@ def compose_turn(
         vision=vision,
         inline_max_tokens=inline_max_tokens,
         compaction=compaction,
+        # The operator's per-turn model-request ceiling; absent ⇒ the config default.
+        request_limit=request_limit,
         # While offline mode is active the web containers are down, so hide the web
         # tools from the agent rather than let it discover they're unavailable.
         disabled_tools=disabled_tools,
@@ -280,6 +289,12 @@ async def _submit_turn(
         ephemeral=ephemeral,
         inline_max_tokens=inline_max_tokens,
         compaction=compaction,
+        # Resolved here rather than at each caller so every interactive turn — send,
+        # regenerate, edit — runs under the operator's ceiling without threading it
+        # through three call sites.
+        request_limit=await get_agent_request_limit(
+            deps.settings_store(request), OPERATOR_ID
+        ),
     )
 
 
@@ -473,12 +488,13 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
         deps.release_conversation(request, body.conversation_id)
 
 
-def _settings_response(cap: int, comp: CompactionSettings) -> ChatSettings:
+def _settings_response(cap: int, comp: CompactionSettings, steps: int) -> ChatSettings:
     return ChatSettings(
         attachment_inline_max_tokens=cap,
         compaction_enabled=comp.enabled,
         compaction_keep_recent=comp.keep_recent,
         compaction_min_tokens=comp.min_tokens,
+        agent_request_limit=steps,
     )
 
 
@@ -488,14 +504,16 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     store = deps.settings_store(request)
     cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
     comp = await get_compaction(store, OPERATOR_ID)
-    return _settings_response(cap, comp)
+    steps = await get_agent_request_limit(store, OPERATOR_ID)
+    return _settings_response(cap, comp, steps)
 
 
 @router.put("/settings", response_model=ChatSettings)
 async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSettings:
-    """Persist the operator's chat preferences. ``ge=0`` on the body rejects a bad value
-    before it reaches the store. Omitted ``compaction*`` fields are left unchanged (merged
-    over the current values), so a client tuning only one preference can't reset the rest."""
+    """Persist the operator's chat preferences. The body's ``ge=`` bounds reject a bad
+    value before it reaches the store. Omitted ``compaction*`` fields are left unchanged
+    (merged over the current values), so a client tuning only one preference can't reset
+    the rest."""
     store = deps.settings_store(request)
     if body.attachment_inline_max_tokens is not None:
         cap = await set_attachment_inline_max_tokens(
@@ -503,13 +521,17 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         )
     else:
         cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
+    if body.agent_request_limit is not None:
+        steps = await set_agent_request_limit(store, OPERATOR_ID, body.agent_request_limit)
+    else:
+        steps = await get_agent_request_limit(store, OPERATOR_ID)
     current = await get_compaction(store, OPERATOR_ID)
     has_compaction = any(
         v is not None
         for v in (body.compaction_enabled, body.compaction_keep_recent, body.compaction_min_tokens)
     )
     if not has_compaction:
-        return _settings_response(cap, current)
+        return _settings_response(cap, current, steps)
     comp = await set_compaction(
         store,
         OPERATOR_ID,
@@ -523,4 +545,4 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
             else body.compaction_min_tokens,
         ),
     )
-    return _settings_response(cap, comp)
+    return _settings_response(cap, comp, steps)

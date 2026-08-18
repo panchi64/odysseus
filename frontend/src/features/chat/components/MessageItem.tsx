@@ -239,6 +239,17 @@ function UserTurn(props: {
             <Show when={m().attachmentIds?.length}>
               <MessageAttachments ids={m().attachmentIds!} />
             </Show>
+            {/* Sets the expectation the QUEUED badge alone doesn't: the run hands
+                this to the model at its next model call, so a reply already being
+                written finishes first and this lands after it — not woven into the
+                text mid-sentence. Without saying so, an answer that streams on
+                past the message reads as the steering having been ignored. */}
+            <Show when={m().queuedPending}>
+              <Text variant="micro" tone="dim" class="max-w-[80%] text-right">
+                Goes to the model at its next step — after the current reply if
+                it finishes first.
+              </Text>
+            </Show>
           </>
         }
       >

@@ -71,10 +71,12 @@ export function SettingsScreen(): JSX.Element {
   const roles = useRoles();
   const providers = useProviders();
 
-  /* ── Chat settings (attachment inline token cap) ────────────────────────────
-     A simple operator preference: how much of an attached file's text rides inline
-     in replayed history before it's cut off and reached via the agent's tools. The
-     editable value seeds from the backend resource and saves back to it. */
+  /* ── Chat settings ──────────────────────────────────────────────────────────
+     Operator preferences for how a turn runs: how much of an attached file's text
+     rides inline in replayed history before it's cut off and reached via the agent's
+     tools, how many model round-trips one turn may spend, and how older tool results
+     are condensed. Each editable value seeds from the backend resource and saves
+     back to it. */
   const chatSettings = useChatSettings();
   const [cap, setCap] = createSignal("");
   const [savingCap, setSavingCap] = createSignal(false);
@@ -84,6 +86,10 @@ export function SettingsScreen(): JSX.Element {
   const [keepRecent, setKeepRecent] = createSignal("");
   const [minTokens, setMinTokens] = createSignal("");
   const [savingCompaction, setSavingCompaction] = createSignal(false);
+  // How many model round-trips one turn may spend. Every tool call costs one, so this is
+  // the ceiling a long tool-using turn actually stops at.
+  const [stepLimit, setStepLimit] = createSignal("");
+  const [savingSteps, setSavingSteps] = createSignal(false);
   createEffect(() => {
     const s = chatSettings();
     if (!s) return;
@@ -91,6 +97,7 @@ export function SettingsScreen(): JSX.Element {
     setCompactEnabled(s.compactionEnabled);
     setKeepRecent(String(s.compactionKeepRecent));
     setMinTokens(String(s.compactionMinTokens));
+    setStepLimit(String(s.agentRequestLimit));
   });
   const saveCap = async () => {
     const raw = cap().trim();
@@ -145,6 +152,26 @@ export function SettingsScreen(): JSX.Element {
       toast.error("Unable to update compaction settings.");
     } finally {
       setSavingCompaction(false);
+    }
+  };
+  const saveSteps = async () => {
+    const raw = stepLimit().trim();
+    const n = Number(raw);
+    // Floored at 1, not 0 (unlike the token caps): a turn allowed zero model requests
+    // could never answer at all.
+    if (raw === "" || !Number.isInteger(n) || n < 1) {
+      toast.error("Enter a whole number of steps (1 or more).");
+      return;
+    }
+    setSavingSteps(true);
+    try {
+      const saved = await saveChatSettings({ agentRequestLimit: n });
+      setStepLimit(String(saved.agentRequestLimit));
+      toast.success("Step limit updated");
+    } catch {
+      toast.error("Unable to update the step limit.");
+    } finally {
+      setSavingSteps(false);
     }
   };
 
@@ -536,6 +563,40 @@ export function SettingsScreen(): JSX.Element {
                 onClick={() => void saveCap()}
               >
                 {savingCap() ? "SAVING…" : "SAVE"}
+              </Button>
+            </Row>
+
+            <div class="border-line border-t" />
+
+            <Stack gap={1}>
+              <Text variant="label" tone="default">
+                STEP LIMIT PER TURN
+              </Text>
+              <Text variant="micro" tone="dim">
+                How many times the model may be called within a single turn.
+                Every tool call spends one, so a long research or multi-step
+                turn is what runs this out — raise it for work that needs many
+                steps, lower it to stop a runaway turn sooner. Mid-run messages
+                you send continue the same turn and share its budget.
+              </Text>
+            </Stack>
+            <Row gap={2} align="center">
+              <div class="w-48">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  value={stepLimit()}
+                  onInput={(e) => setStepLimit(e.currentTarget.value)}
+                  placeholder="25"
+                />
+              </div>
+              <Button
+                variant="primary"
+                disabled={savingSteps()}
+                onClick={() => void saveSteps()}
+              >
+                {savingSteps() ? "SAVING…" : "SAVE"}
               </Button>
             </Row>
 

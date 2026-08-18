@@ -262,6 +262,7 @@ interface ChatSettingsDTO {
   compaction_enabled: boolean;
   compaction_keep_recent: number;
   compaction_min_tokens: number;
+  agent_request_limit: number;
 }
 
 /** The single snake_case→camel mapper for the stored chat preferences. */
@@ -271,6 +272,7 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     compactionEnabled: dto.compaction_enabled,
     compactionKeepRecent: dto.compaction_keep_recent,
     compactionMinTokens: dto.compaction_min_tokens,
+    agentRequestLimit: dto.agent_request_limit,
   };
 }
 
@@ -288,6 +290,8 @@ function toChatSettingsBody(
     body.compaction_keep_recent = patch.compactionKeepRecent;
   if (patch.compactionMinTokens !== undefined)
     body.compaction_min_tokens = patch.compactionMinTokens;
+  if (patch.agentRequestLimit !== undefined)
+    body.agent_request_limit = patch.agentRequestLimit;
   return body;
 }
 

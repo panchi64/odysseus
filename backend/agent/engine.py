@@ -138,6 +138,10 @@ class ParkedTurn:
     # The turn's resolved compaction context (config + handle map), carried so the resume
     # condenses prior turns the same way — and can still expand a result digested before the park.
     compaction: CompactionContext | None = None
+    # The turn's model-request budget (the operator's setting, else the config default),
+    # carried so the resume continues under the same ceiling the original turn ran with
+    # rather than silently reverting to the default. None ⇒ resolve from config.
+    request_limit: int | None = None
 
 
 @dataclass
@@ -269,6 +273,7 @@ async def _park_for_approval(
     notifications: NotificationService | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
+    request_limit: int | None = None,
 ) -> None:
     # Only the calls still awaiting the operator are announced; any pre-approved by an
     # active grant ride silently on the parked payload and merge into the resume.
@@ -314,7 +319,16 @@ async def _park_for_approval(
             logger.warning(
                 "approval_needed notification failed for run %s", run.id, exc_info=True
             )
-    run.park(ParkedTurn(agent, messages, requests, announced, pre_approved=pre_approved))
+    run.park(
+        ParkedTurn(
+            agent,
+            messages,
+            requests,
+            announced,
+            pre_approved=pre_approved,
+            request_limit=request_limit,
+        )
+    )
 
 
 # On-demand inference servers (LM Studio, llama.cpp, …) reject a request for a
@@ -389,15 +403,22 @@ def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
 def _usage_limit_message(exc: UsageLimitExceeded) -> str:
     """An operator-legible sentence for a usage-limit stop, mirroring the treatment
     ``_timeout_message`` (``runs/registry.py``) gives wall-clock/inactivity bounds:
-    this reaches the operator verbatim, as the toast (``LimitNotice.message``), so it
-    must read as a plain sentence — never ``str(exc)``'s raw internal phrasing (e.g.
-    pydantic_ai's own ``{tool_calls=}`` repr syntax)."""
+    this reaches the operator verbatim, both as the toast (``LimitNotice.message``) and
+    as the turn's persisted stop marker, so it must read as a plain sentence — never
+    ``str(exc)``'s raw internal phrasing (e.g. pydantic_ai's own ``{tool_calls=}`` repr).
+
+    Each names the *local* budget that tripped and where to raise it. These are this
+    chassis's own per-turn ceilings, nothing to do with a provider's rate limit — so the
+    wording must never leave the operator hunting for an account-level quota."""
     kind = _usage_limit_kind(exc)
     if kind == "tool_calls":
-        return "this run made too many tool calls and stopped"
+        return "this run hit its tool-call limit for a single turn and stopped"
     if kind == "tokens":
-        return "this run generated too many tokens and stopped"
-    return "this run took too many steps and stopped"
+        return "this run hit its token budget for a single turn and stopped"
+    return (
+        "this run hit its step limit for a single turn and stopped — raise the "
+        "model request limit in Settings to let a turn run longer"
+    )
 
 
 def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
@@ -458,10 +479,16 @@ async def _drive_turn(
     compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
+    request_limit: int | None = None,
 ) -> _TurnResult:
     settings = get_settings()
+    # ``request_limit`` is the operator's runtime setting when the caller resolved one;
+    # absent (a stateless/eval turn, or an older parked payload) it falls back to the
+    # config default. It bounds *model round-trips*, so every tool call spends one.
     limits = UsageLimits(
-        request_limit=settings.agent_request_limit,
+        request_limit=(
+            settings.agent_request_limit if request_limit is None else request_limit
+        ),
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
     deps = RunDeps(
@@ -553,9 +580,13 @@ async def _drive_turn(
                 )
                 result = agent_run.result
         except UsageLimitExceeded as exc:
-            # Hit a usage bound — stop and report state, don't error.
-            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=_usage_limit_message(exc)))
-            detail = "usage limit reached"
+            # Hit a usage bound — stop and report state, don't error. The *same* sentence
+            # is both the toast and the persisted stop marker: a bare "usage limit reached"
+            # reads as a provider rate limit (the operator's first guess, and the wrong
+            # one), where this names the bound that actually tripped — one of this run's
+            # own local budgets.
+            detail = _usage_limit_message(exc)
+            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=detail))
             run.block(detail)
             return _TurnResult(
                 answer=None,
@@ -639,6 +670,7 @@ async def _drive_turn(
                 notifications=caps.get_optional(NotificationService),
                 store=store,
                 conversation_id=conversation_id,
+                request_limit=request_limit,
             )
             return _TurnResult(answer=None, messages=messages)
         # Every deferred call is grant-covered — continue the SAME turn inline (no
@@ -677,6 +709,7 @@ async def _verify_and_correct(
     compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
+    request_limit: int | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -711,6 +744,7 @@ async def _verify_and_correct(
         compaction=compaction,
         partial_history_ref=partial_history_ref,
         store=store,
+        request_limit=request_limit,
     )
     if run.status is RunStatus.awaiting_input:
         # The correction needs approval: carry the drop range on the parked turn
@@ -895,59 +929,98 @@ async def _announce_title(
         run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
 
 
+@dataclass(frozen=True)
+class _Namer:
+    """The concurrent auto-namer: its task, plus the point past which cancelling would
+    do damage. ``announcing`` is set the instant generation yields a name, immediately
+    before the persist+emit — so an abandoning caller can tell "still waiting on the
+    title model" (cancel freely) from "committing the name" (let it finish)."""
+
+    task: asyncio.Task[None]
+    announcing: asyncio.Event
+
+
 def _start_title(
-    title: TitleContext | None, prompt: str | None
-) -> asyncio.Task[str | None] | None:
-    """Begin generating a thread title concurrently with the turn's answer.
-
-    Titling needs only the operator's opening message, which a first turn already
-    has in ``prompt`` — so there's no need to wait for the answer (or persistence)
-    first. Overlapping it with the (longer) answer means it adds no post-answer
-    latency, while the result is still emitted before ``run.ended``. Returns ``None``
-    when titling is off or there is nothing to name from. The call stays bounded by
-    ``title_timeout_s``."""
-    if title is None or not prompt:
-        return None
-    return asyncio.create_task(
-        generate_title(
-            title.model,
-            prompt,
-            reasoning_off=title.settings,
-            timeout_s=get_settings().title_timeout_s,
-            max_tokens=get_settings().title_max_tokens,
-        )
-    )
-
-
-async def _emit_title(
-    run: Run,
-    task: asyncio.Task[str | None] | None,
+    title: TitleContext | None,
+    prompt: str | None,
     *,
+    run: Run,
     store: ConversationStore | None,
     conversation_id: str | None,
-) -> None:
-    """Await the concurrently-started title and announce it. Emitted before the
-    orchestrator returns (``run.ended``) so the open stream carries it. Best-effort:
-    any failure leaves the thread untitled without disturbing the turn."""
-    if task is None:
-        return
-    try:
-        await _announce_title(
-            run, await task, store=store, conversation_id=conversation_id
-        )
-    except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
-        logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
+) -> _Namer | None:
+    """Begin naming the thread concurrently with the turn's answer, announcing the
+    name the moment it lands.
+
+    Titling needs only the operator's opening message, which a first turn already has
+    in ``prompt`` — so there's no need to wait for the answer (or persistence) first.
+    The task persists and emits ``conversation.titled`` **itself**, rather than handing
+    a name back for the orchestrator to announce after the turn: the utility call
+    typically resolves in a second or two, and deferring the announcement to the end of
+    a long tool-using turn would leave the operator staring at an unnamed thread for the
+    whole run even though the name was ready almost immediately. :func:`_settle_title`
+    only waits for this task to finish before ``run.ended``, so the open stream still
+    carries the event.
+
+    Returns ``None`` when titling is off or there is nothing to name from. The call stays
+    bounded by ``title_timeout_s``, and is best-effort throughout: any failure leaves the
+    thread untitled without disturbing the turn."""
+    if title is None or not prompt:
+        return None
+    announcing = asyncio.Event()
+
+    async def _name() -> None:
+        try:
+            name = await generate_title(
+                title.model,
+                prompt,
+                reasoning_off=title.settings,
+                timeout_s=get_settings().title_timeout_s,
+                max_tokens=get_settings().title_max_tokens,
+            )
+            # Set synchronously with the announce that follows — no await between, so an
+            # abandoning caller either sees this before the persist begins (safe to
+            # cancel) or waits the announce out. Torn in half instead — cancelled between
+            # `set_title_if_absent` committing and the emit — the thread would be named in
+            # the database but never announced on the stream, and the resume's own namer
+            # would then find the name already there, return False, and emit nothing
+            # either: a thread that stays "Untitled" until a reload.
+            announcing.set()
+            await _announce_title(
+                run, name, store=store, conversation_id=conversation_id
+            )
+        except asyncio.CancelledError:
+            raise  # a park/cancel abandoning the name (see `_discard_title`)
+        except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
+            logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
+
+    return _Namer(task=asyncio.create_task(_name()), announcing=announcing)
 
 
-async def _discard_title(task: asyncio.Task[str | None] | None) -> None:
-    """Abandon a concurrently-started title (the turn parked, raised, or was
-    cancelled): cancel it and drain the cancellation so the title-model call does
-    not outlive the run."""
-    if task is None or task.done():
+async def _settle_title(namer: _Namer | None) -> None:
+    """Wait for the concurrent namer to finish before the orchestrator returns, so a
+    name that lands in the last moments of the turn still rides the open stream (the
+    task announces it itself — see :func:`_start_title`). Usually already done by the
+    time the answer is; swallows the task's own failure, which it has already logged."""
+    if namer is None:
         return
-    task.cancel()
+    with suppress(Exception):
+        await namer.task
+
+
+async def _discard_title(namer: _Namer | None) -> None:
+    """Abandon a concurrently-started title (the turn parked, raised, or was cancelled):
+    cancel it and drain the cancellation so the title-model *call* does not outlive the
+    run. Past ``announcing`` there is no model call left to abandon — only a local write
+    and an emit — so that one is waited out instead: cancelling there is precisely what
+    would strand a persisted name with no event to announce it."""
+    if namer is None or namer.task.done():
+        return
+    if namer.announcing.is_set():
+        await _settle_title(namer)
+        return
+    namer.task.cancel()
     with suppress(asyncio.CancelledError):
-        await task
+        await namer.task
 
 
 def build_chat_orchestrator(
@@ -972,6 +1045,7 @@ def build_chat_orchestrator(
     inline_max_tokens: int | None = None,
     compaction: CompactionContext | None = None,
     disabled_tools: frozenset[str] = frozenset(),
+    request_limit: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -1001,6 +1075,11 @@ def build_chat_orchestrator(
     ``title_model`` (and ``title_enabled`` in settings) the *first* completed turn
     of a fresh thread is auto-named; ``title_settings`` carries the model's
     reasoning-off settings so the namer runs fast.
+
+    ``request_limit`` is the turn's model-round-trip ceiling — the operator's setting
+    when the caller resolved one, else the config default. It bounds the *whole* turn,
+    grant-resume and mid-run-steering continuations included, so a steady drip of
+    steering messages can't extend it.
     """
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
@@ -1047,7 +1126,13 @@ def build_chat_orchestrator(
             if title_model is not None and settings.title_enabled
             else None
         )
-        title_task = _start_title(title_ctx if is_first_turn else None, prompt)
+        title_namer = _start_title(
+            title_ctx if is_first_turn else None,
+            prompt,
+            run=run,
+            store=store,
+            conversation_id=conversation_id,
+        )
 
         # Hand any attached files to the model in full for *this* turn — pixels for a
         # vision model, extracted text otherwise — appended after the operator's prompt.
@@ -1167,6 +1252,7 @@ def build_chat_orchestrator(
                 compaction=active_compaction,
                 partial_history_ref=partial_history_ref,
                 store=store,
+                request_limit=request_limit,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -1199,6 +1285,7 @@ def build_chat_orchestrator(
                         compaction=active_compaction,
                         partial_history_ref=partial_history_ref,
                         store=store,
+                        request_limit=request_limit,
                     )
 
             _finalize(
@@ -1227,19 +1314,23 @@ def build_chat_orchestrator(
                 # `_persist_parked_cancel`'s docstring for why this can't wait until
                 # after `_discard_title`'s own await below).
                 run.on_park_cancel = lambda: _persist_parked_cancel(run, store=store)
-                # Parked for approval before producing an answer: abandon the
-                # concurrent title and carry the context forward so the resume names
-                # the thread once it completes (the resume titles from history).
-                await _discard_title(title_task)
+                # Parked for approval before producing an answer: abandon the concurrent
+                # namer so its *model call* doesn't outlive the run, and carry the context
+                # forward so the resume names the thread if this cancel got there first
+                # (the resume titles from history). A namer far enough along to have begun
+                # announcing finishes regardless — a thread waiting on an approval shows
+                # its name rather than sitting "Untitled" for however long the operator
+                # takes to decide — and the resume's `set_title_if_absent` then finds the
+                # name in place, returns False, and emits nothing a second time.
+                await _discard_title(title_namer)
                 if isinstance(run.parked_payload, ParkedTurn):
                     run.parked_payload.title = title_ctx
             else:
-                # Announce the title started up-front — a cosmetic follow-on that, run
-                # concurrently with the answer, doesn't gate it. Emitted before the
-                # orchestrator returns (run.ended), so the open stream carries it.
-                await _emit_title(
-                    run, title_task, store=store, conversation_id=conversation_id
-                )
+                # The namer started up-front announces itself the moment the name lands
+                # (typically well before the answer does); this only waits for a still-
+                # running one so the event is emitted before the orchestrator returns
+                # (run.ended) and the open stream carries it.
+                await _settle_title(title_namer)
         except Exception:
             # Anything else that escapes `_drive_turn` (a provider error its specific
             # catches don't cover, a tool/dependency raising, …) must still not silently
@@ -1272,8 +1363,15 @@ def build_chat_orchestrator(
         finally:
             # Safety net: if the turn raised or was cancelled before the title was
             # consumed above, don't let the detached title-model call outlive the run.
-            if title_task is not None and not title_task.done():
-                title_task.cancel()
+            # A bare cancel (this path is unwinding — it can't safely await), so it holds
+            # off past `announcing` for `_discard_title`'s reason: there's no model call
+            # left to abandon there, only the write and emit that must not be split.
+            if (
+                title_namer is not None
+                and not title_namer.task.done()
+                and not title_namer.announcing.is_set()
+            ):
+                title_namer.task.cancel()
 
     return orchestrate
 
@@ -1354,6 +1452,9 @@ def build_resume_orchestrator(
                 compaction=parked.compaction,
                 partial_history_ref=partial_history_ref,
                 store=store,
+                # The ceiling the parked turn was running under — a resume continues
+                # under the same one rather than reverting to the config default.
+                request_limit=parked.request_limit,
             )
             _finalize(
                 run,

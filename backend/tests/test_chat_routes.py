@@ -122,6 +122,44 @@ async def test_compaction_settings_round_trip():
         assert again["compaction_enabled"] is False and again["compaction_keep_recent"] == 3
 
 
+async def test_agent_request_limit_round_trip():
+    # The per-turn model-request ceiling is an operator setting: GET reports the config
+    # default until set, PUT overrides it, and the override persists.
+    async with client_app() as (client, _app):
+        got = (await client.get("/chat/settings")).json()
+        assert got["agent_request_limit"] == get_settings().agent_request_limit
+
+        put = await client.put("/chat/settings", json={"agent_request_limit": 60})
+        assert put.status_code == 200
+        assert put.json()["agent_request_limit"] == 60
+
+        again = (await client.get("/chat/settings")).json()
+        assert again["agent_request_limit"] == 60
+
+
+async def test_agent_request_limit_rejects_zero_and_negative():
+    # Floored at 1, unlike the token caps: a turn allowed zero model requests could
+    # never produce an answer, so 0 is nonsensical rather than merely minimal.
+    async with client_app() as (client, _app):
+        for bad in (0, -1):
+            resp = await client.put("/chat/settings", json={"agent_request_limit": bad})
+            assert resp.status_code == 422
+
+
+async def test_agent_request_limit_partial_update_leaves_others_unchanged():
+    # Tuning the step limit alone must not reset the compaction or attachment overrides.
+    async with client_app() as (client, _app):
+        await client.put(
+            "/chat/settings",
+            json={"attachment_inline_max_tokens": 100, "compaction_keep_recent": 9},
+        )
+        await client.put("/chat/settings", json={"agent_request_limit": 40})
+        again = (await client.get("/chat/settings")).json()
+        assert again["agent_request_limit"] == 40
+        assert again["compaction_keep_recent"] == 9
+        assert again["attachment_inline_max_tokens"] == 100
+
+
 async def test_compaction_settings_partial_update_leaves_others_unchanged():
     # Tuning only the attachment cap must not reset compaction overrides set earlier.
     async with client_app() as (client, _app):

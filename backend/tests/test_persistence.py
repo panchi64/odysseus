@@ -170,14 +170,18 @@ async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
     views = await store.messages_view(conv)
     assert views[0].role == "user"
     assert views[-1].role == "assistant"
-    assert views[-1].blocked_reason == "usage limit reached"
+    # The marker names the bound that tripped — one of this run's own per-turn budgets.
+    # A bare "usage limit reached" would read as a provider rate limit and send the
+    # operator looking for an account quota that has nothing to do with the stop.
+    reason = "this run hit its tool-call limit for a single turn and stopped"
+    assert views[-1].blocked_reason == reason
 
     # Reload parity: a cold store rehydrates the same marker from the DB.
     await store.stop()
     cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
     await cold.start()
     cold_views = await cold.messages_view(conv)
-    assert cold_views[-1].blocked_reason == "usage limit reached"
+    assert cold_views[-1].blocked_reason == reason
     await cold.stop()
 
 

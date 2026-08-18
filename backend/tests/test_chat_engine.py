@@ -80,8 +80,45 @@ async def test_usage_limit_blocks_the_turn(monkeypatch):
     # internal phrasing (e.g. its `{tool_calls=}` repr syntax) — mirrors the
     # legibility treatment `RunTimeout` gets in `runs/registry.py`.
     assert "request_limit" not in notice.message
-    assert notice.message == "this run took too many steps and stopped"
+    assert notice.message.startswith("this run hit its step limit for a single turn")
     assert _bodies(run)[-1].outcome == "blocked"
+
+
+async def test_usage_limit_stop_marker_matches_the_toast(monkeypatch):
+    # The persisted stop marker is the *same* legible sentence as the toast. A bare
+    # "usage limit reached" reads as a provider rate limit — the wrong thing to send
+    # the operator looking for, since this is one of the run's own local budgets.
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=0, agent_tool_calls_limit=None)
+    )
+    reg = RunRegistry()
+    orch = build_chat_orchestrator("hello", model=TestModel(custom_output_text="never"))
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    notice = next(b for b in _bodies(run) if b.type == "limit.notice")
+    assert run.detail == notice.message
+    assert "usage limit" not in run.detail
+
+
+async def test_explicit_request_limit_overrides_the_config_default(monkeypatch):
+    # The operator's setting is what bounds the turn — the config default is only the
+    # fallback for a caller that resolved none. A default of 25 with an override of 0
+    # must stop on the first model request.
+    monkeypatch.setattr(
+        engine,
+        "get_settings",
+        lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=None),
+    )
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "hello", model=TestModel(custom_output_text="never"), request_limit=0
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    assert next(b for b in _bodies(run) if b.type == "limit.notice").limit == "steps"
 
 
 def test_drop_dangling_tool_calls_trims_unanswered_trailing_call():
@@ -134,13 +171,26 @@ def test_usage_limit_message_is_operator_legible_for_every_kind():
     from agent.engine import _usage_limit_message
 
     steps = UsageLimitExceeded("The next request would exceed the request_limit of 25")
-    assert _usage_limit_message(steps) == "this run took too many steps and stopped"
+    assert _usage_limit_message(steps).startswith(
+        "this run hit its step limit for a single turn and stopped"
+    )
 
     tool_calls = UsageLimitExceeded(
         "The next tool call(s) would exceed the tool_calls_limit of 0 (tool_calls=1)."
     )
     assert "{tool_calls=}" not in _usage_limit_message(tool_calls)
-    assert _usage_limit_message(tool_calls) == "this run made too many tool calls and stopped"
+    assert (
+        _usage_limit_message(tool_calls)
+        == "this run hit its tool-call limit for a single turn and stopped"
+    )
 
     tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
-    assert _usage_limit_message(tokens) == "this run generated too many tokens and stopped"
+    assert (
+        _usage_limit_message(tokens)
+        == "this run hit its token budget for a single turn and stopped"
+    )
+
+    # Every one of them names a *per-turn* bound. None may read as an account-level
+    # provider quota, which is what sent the operator hunting for a rate limit before.
+    for exc in (steps, tool_calls, tokens):
+        assert "for a single turn" in _usage_limit_message(exc)
