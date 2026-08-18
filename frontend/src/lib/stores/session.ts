@@ -3,6 +3,7 @@ import {
   api,
   clearToken,
   getToken,
+  isApiError,
   setExpireHandler,
   setToken,
 } from "~/lib/api";
@@ -41,18 +42,63 @@ function classify(s: AuthStatus): SessionStatus {
   return getToken() ? "unlocked" : "locked";
 }
 
-/** Probe the backend for the current vault state. Called on boot. */
-export async function refresh(): Promise<SessionStatus> {
+/** How long one probe may hang before we abandon it. A backend that has bound its
+ *  listening socket but hasn't finished starting — exactly what uvicorn's reloader
+ *  does, and what the dev server races on a cold boot — *accepts* the connection
+ *  and never answers, so a probe with no deadline never settles. That, not a
+ *  refused connection, is what used to strand the app on "ESTABLISHING LINK…"
+ *  until the operator reloaded the page by hand. */
+const PROBE_TIMEOUT_MS = 2000;
+
+/** Backoff between boot re-probes, one entry per retry. Bounded: once it runs out
+ *  we settle on `locked`, so a genuinely dead backend lands on the login screen
+ *  (which can retry on submit) rather than a splash that never resolves. */
+const PROBE_BACKOFF_MS = [250, 500, 1000, 2000];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** One probe attempt. Returns the classified status, or null when the backend
+ *  never answered — a transport failure, the only case worth waiting out. An HTTP
+ *  error means it *did* answer (it's up, just unhappy), so that settles instead. */
+async function probe(): Promise<SessionStatus | null> {
   try {
-    const next = classify(await api.get<AuthStatus>("/auth/status"));
-    if (next !== "unlocked") clearToken(); // a stale token can't unlock us
-    setStatus(next);
-    return next;
-  } catch {
-    // Backend unreachable — present as locked so the login screen can retry.
-    setStatus("locked");
-    return "locked";
+    return classify(
+      await api.get<AuthStatus>("/auth/status", {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      }),
+    );
+  } catch (err) {
+    return isApiError(err) ? "locked" : null;
   }
+}
+
+function apply(next: SessionStatus): SessionStatus {
+  if (next !== "unlocked") clearToken(); // a stale token can't unlock us
+  setStatus(next);
+  return next;
+}
+
+/** Probe the backend for the current vault state. */
+export async function refresh(): Promise<SessionStatus> {
+  // Backend unreachable — present as locked so the login screen can retry.
+  return apply((await probe()) ?? "locked");
+}
+
+/** The boot probe. The page is routinely up before the backend is, so a single
+ *  attempt is a coin flip: retry on a bounded backoff and only then fall back to
+ *  `refresh()`'s unreachable handling. The status stays `loading` across the
+ *  retries — flashing the login screen at a backend that's merely still starting
+ *  would be a worse lie than the splash. */
+async function boot(): Promise<void> {
+  for (const delay of PROBE_BACKOFF_MS) {
+    const next = await probe();
+    if (next !== null) {
+      apply(next);
+      return;
+    }
+    await sleep(delay);
+  }
+  await refresh();
 }
 
 /** First-run: choose the operator password and unlock. */
@@ -94,8 +140,8 @@ export async function lock(): Promise<void> {
 // A rejected token (expired session / re-locked vault) returns us to locked.
 setExpireHandler(() => setStatus("locked"));
 
-// Probe vault state once, on load (client-only SPA).
-void refresh();
+// Probe vault state on load (client-only SPA), retrying while the backend comes up.
+void boot();
 
 export function useSession() {
   return {
