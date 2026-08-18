@@ -50,7 +50,7 @@ from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.untrusted import wrap_untrusted
 from core.vault import Vault
-from models._fields import utcnow
+from models._fields import new_id, utcnow
 from models.research import ResearchRun, ResearchStatus
 from research import ResearchDeps, ResearchPlan, ResearchResult, run_research
 from routes import deps
@@ -347,18 +347,35 @@ async def _mark_running(engine, research_id: str, *, run_id: str, started_at: da
         row = session.get(ResearchRun, research_id)
         if row is None:
             return
-        # Guarded, not unconditional: a fast enough Run can already reach terminal —
-        # and have `_finalize_research` persist that outcome — before this write's own
-        # threadpool commit lands (the two are independent awaits with no ordering
-        # guarantee between them). Only stamp run_id/started_at when no launch has
-        # been recorded yet (never clobber an already-recorded run), and only promote
-        # draft -> running; never regress an already-finalized status
-        # (done/error/cancelled) back to "running".
+        # Guarded, not unconditional. `start` now commits this *before* submitting, so
+        # the run can no longer reach terminal ahead of it — but the guard still earns
+        # its place against a second `start` on a row that has already launched: only
+        # stamp run_id/started_at when no launch has been recorded yet (never clobber an
+        # already-recorded run), and only promote draft -> running; never regress an
+        # already-finalized status (done/error/cancelled) back to "running".
         if row.run_id is None:
             row.run_id = run_id
             row.started_at = started_at
         if row.status == ResearchStatus.DRAFT.value:
             row.status = ResearchStatus.RUNNING.value
+        session.add(row)
+
+    await in_session(engine, work)
+
+
+async def _revert_launch(engine, research_id: str, *, run_id: str) -> None:
+    """Undo a `_mark_running` whose run never got submitted, returning the row to
+    `draft` so the operator can retry. Scoped to the run id this call staged, so a
+    row that has since been legitimately relaunched is left alone."""
+
+    def work(session: Session) -> None:
+        row = session.get(ResearchRun, research_id)
+        if row is None or row.run_id != run_id:
+            return
+        row.run_id = None
+        row.started_at = None
+        if row.status == ResearchStatus.RUNNING.value:
+            row.status = ResearchStatus.DRAFT.value
         session.add(row)
 
     await in_session(engine, work)
@@ -597,21 +614,20 @@ async def _start_claimed(research_id: str, request: Request) -> ResearchOut:
             with suppress(asyncio.CancelledError):
                 await heartbeat
 
-    run = deps.registry(request).submit(
-        kind="research",
-        owner_id=OPERATOR_ID,
-        orchestrator=orchestrate,
-        # The operator-configurable research time limit is the outer bound this
-        # Run's own wall-clock backstop must honor — not the global chat default
-        # (`Settings.run_wall_clock_timeout_s`), which would silently override it.
-        wall_clock_timeout_s=settings.research_time_limit_s + _WALL_CLOCK_BUFFER_S,
-    )
+    # The run id is minted here rather than by `submit`, so the row can record it
+    # *before* the run exists to reach terminal. The terminal hooks resolve their
+    # research row by run id (`find_by_run`); a run that settles instantly — a fast
+    # failure like an immediately-raising pipeline, not just a test fake — would
+    # otherwise find no row yet and drop its notification silently.
+    run_id = new_id()
+    started_at = utcnow()
+    await _mark_running(engine, research_id, run_id=run_id, started_at=started_at)
 
-    # Registered before the very first `await` below — `submit` only schedules the
-    # run's task, so there is no window for it to reach terminal before this waiter
-    # exists (mirrors the scheduler's agent-task executor in `app.py`).
+    # Both registered before submit, so there is no window in which the run could
+    # reach terminal without a waiter to resolve (mirrors the scheduler's agent-task
+    # executor in `app.py`).
     waiter: asyncio.Future[Run] = asyncio.get_running_loop().create_future()
-    deps.research_run_waiters(request)[run.id] = waiter
+    deps.research_run_waiters(request)[run_id] = waiter
     finalize_task = asyncio.create_task(
         _finalize_research(engine, vault, research_id, waiter, outcome)
     )
@@ -619,19 +635,35 @@ async def _start_claimed(research_id: str, request: Request) -> ResearchOut:
     terminal_tasks.add(finalize_task)
     finalize_task.add_done_callback(terminal_tasks.discard)
 
-    # A fast enough Run — realistically only a test fake, since a real pipeline call
-    # always spends real wall-clock time on network/model round trips — can already
-    # reach terminal (and have `_finalize_research` persist that outcome) before this
-    # write's own commit lands, let alone before a *second*, separate re-read of the
-    # row would run. Rather than re-querying (and risking this response racing ahead
-    # to report a later state), mirror the exact values this write just persisted onto
-    # the row already in hand: this response always reports "just started", which is
-    # what actually happened here, regardless of how far the background run has since
-    # progressed — its own current state is always available via `GET /research/{id}`
-    # or the run's own event stream.
-    started_at = utcnow()
-    await _mark_running(engine, research_id, run_id=run.id, started_at=started_at)
-    row.run_id = run.id
+    try:
+        deps.registry(request).submit(
+            kind="research",
+            owner_id=OPERATOR_ID,
+            orchestrator=orchestrate,
+            run_id=run_id,
+            # The operator-configurable research time limit is the outer bound this
+            # Run's own wall-clock backstop must honor — not the global chat default
+            # (`Settings.run_wall_clock_timeout_s`), which would silently override it.
+            wall_clock_timeout_s=settings.research_time_limit_s + _WALL_CLOCK_BUFFER_S,
+        )
+    except Exception:
+        # Everything above was staged for a run that now will never exist. Without this
+        # the row would sit at `running` forever, pointing at a run id nothing answers
+        # to, while `finalize_task` awaited a future no terminal hook can resolve.
+        # Unwind to `draft` so the operator can simply press start again.
+        deps.research_run_waiters(request).pop(run_id, None)
+        finalize_task.cancel()
+        await _revert_launch(engine, research_id, run_id=run_id)
+        raise
+
+    # A fast enough Run can already have reached terminal (and had `_finalize_research`
+    # persist that outcome) by the time we return. Rather than re-querying (and risking
+    # this response racing ahead to report a later state), mirror the exact values the
+    # write above persisted onto the row already in hand: this response always reports
+    # "just started", which is what actually happened here, regardless of how far the
+    # background run has since progressed — its own current state is always available
+    # via `GET /research/{id}` or the run's own event stream.
+    row.run_id = run_id
     row.started_at = started_at
     row.status = ResearchStatus.RUNNING.value
     return _research_out(row, vault)

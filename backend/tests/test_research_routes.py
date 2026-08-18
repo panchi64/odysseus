@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from core.config import get_settings
 from research import ResearchPlan, ResearchResult, SearchUnavailableError
 from routes.deps import OPERATOR_ID
@@ -400,14 +402,60 @@ async def test_done_and_error_runs_both_notify_with_research_id(monkeypatch):
         await _await_status(client, app, error_entry["id"], "error")
 
         items, _ = await app.state.notifications.list_notifications(OPERATOR_ID, limit=100)
+        # Defaulted, deliberately: a bare `next()` that finds nothing raises StopIteration,
+        # which inside a coroutine surfaces as "RuntimeError: coroutine raised
+        # StopIteration" — hiding *which* notification went missing behind an unrelated
+        # error. The default turns that back into a readable assertion.
+        kinds = [(n.kind, n.research_id) for n in items]
         completed = next(
-            n for n in items if n.kind == "run_completed" and n.research_id == done_entry["id"]
+            (n for n in items if n.kind == "run_completed" and n.research_id == done_entry["id"]),
+            None,
         )
-        assert completed.research_id == done_entry["id"]
+        assert completed is not None, f"no run_completed for the done research; got {kinds}"
         failed = next(
-            n for n in items if n.kind == "run_failed" and n.research_id == error_entry["id"]
+            (n for n in items if n.kind == "run_failed" and n.research_id == error_entry["id"]),
+            None,
         )
+        assert failed is not None, f"no run_failed for the errored research; got {kinds}"
         assert failed.body == "kaboom"
+
+
+async def test_a_run_that_fails_to_submit_reverts_the_row_to_draft(monkeypatch):
+    # `start` stamps run_id/started_at before submitting, so the terminal hooks can
+    # resolve the row for an instantly-settling run. If the submit itself then fails,
+    # that staging has to come back off — otherwise the row sits at `running` forever
+    # pointing at a run nothing answers to, and can never be started again.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+
+        def boom(self, **kwargs):
+            raise RuntimeError("registry refused the run")
+
+        monkeypatch.setattr("runs.registry.RunRegistry.submit", boom)
+        # The app under test re-raises rather than rendering a 500, so the failure
+        # surfaces here; what matters is the state it leaves behind.
+        with pytest.raises(RuntimeError, match="registry refused the run"):
+            await client.post(f"/research/{created['id']}/start")
+
+        body = (await client.get(f"/research/{created['id']}")).json()
+        assert body["status"] == "draft"
+        assert body["runId"] is None
+        assert not app.state.research_run_waiters
+
+        # And the entry is genuinely startable again once the cause clears.
+        monkeypatch.undo()
+        patch_model_resolution(monkeypatch)
+        _install_clear_plan(monkeypatch)
+
+        async def ok(plan, question, deps, emit):
+            return ResearchResult(
+                report="ok", rounds=1, sources=0, queries=0, duration_s=0.1, model="m"
+            )
+
+        monkeypatch.setattr("routes.research.run_research", ok)
+        assert (await client.post(f"/research/{created['id']}/start")).status_code == 200
+        await _await_status(client, app, created["id"], "done")
 
 
 # --- continue in chat: seeds + idempotent ----------------------------------------------
