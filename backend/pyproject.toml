@@ -34,7 +34,7 @@ dependencies = [
     # Already resolved transitively (via pydantic-ai's hf extra); pinned direct since the
     # serving download manager calls snapshot_download / hf_hub_download / HfApi directly.
     # The inference engines themselves are NOT Python deps — llama.cpp is a fetched/detected
-    # binary and mlx-openai-server installs into an adapter-owned isolated env.
+    # binary and mlx-vlm installs into an adapter-owned isolated env.
     "huggingface-hub>=1.18",
     "croniter>=6.2.4",
     # Agent Skills bundles (services/skills): SKILL.md frontmatter is YAML, and the format is

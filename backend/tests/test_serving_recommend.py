@@ -55,7 +55,7 @@ def test_apple_silicon_recommends_mlx_first_llamacpp_baseline():
     assert [r.rank for r in recs] == sorted(r.rank for r in recs)  # rank-ordered
     top = recs[0]
     assert top.engine == EngineKind.mlx and top.rank == 1 and top.available
-    assert top.workloads == [Workload.chat]
+    assert top.workloads == [Workload.chat, Workload.vision]
     llama = next(r for r in recs if r.engine == EngineKind.llama_cpp)
     assert llama.available and llama.rank == 2
     assert Workload.embedding in llama.workloads

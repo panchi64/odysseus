@@ -2,12 +2,14 @@
 
 No I/O, fully testable with crafted profiles. The strategy mirrors the engine
 decision: **llama.cpp is the universal baseline** (chat + embeddings, every
-platform), and **MLX is an Apple-Silicon chat speed upgrade** layered on top.
+platform), and **MLX is an Apple-Silicon chat + vision speed upgrade** layered on top
+(it serves through mlx-vlm, a VLM server first).
 
-``available`` is computed from the profile here (MLX needs arm64 macOS; llama.cpp
-runs everywhere). The service overlays each adapter's real ``is_installed()`` onto
-the result so the UI can distinguish a ready runtime from one that will be fetched
-on first serve.
+The per-engine workload lists here mirror each adapter's declared ``workloads`` —
+keep the two in step when an adapter's coverage changes. ``available`` is computed from
+the profile here (MLX needs arm64 macOS; llama.cpp runs everywhere). The service
+overlays each adapter's real ``is_installed()`` onto the result so the UI can
+distinguish a ready runtime from one that will be fetched on first serve.
 """
 
 from __future__ import annotations
@@ -57,18 +59,18 @@ _BACKEND_REASON: dict[ComputeBackend, str] = {
 
 def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
     """Rank the engines for this host. llama.cpp is always available; MLX leads for
-    chat on Apple Silicon and is listed as known-but-unavailable elsewhere."""
+    chat and vision on Apple Silicon and is listed as known-but-unavailable elsewhere."""
     apple = _is_apple_silicon(profile)
 
     recs: list[EngineRecommendation] = []
 
     if apple:
-        # MLX leads for chat; llama.cpp is the embeddings + fallback baseline.
+        # MLX leads for chat and vision; llama.cpp is the embeddings + fallback baseline.
         recs.append(
             EngineRecommendation(
                 engine=EngineKind.mlx, rank=1, available=True,
-                reason="Fastest on Apple Silicon for chat (Metal-native MLX).",
-                workloads=[Workload.chat],
+                reason="Fastest on Apple Silicon for chat and vision (Metal-native MLX).",
+                workloads=[Workload.chat, Workload.vision],
             )
         )
         llama_rank = 2
@@ -92,7 +94,7 @@ def recommend(profile: HardwareProfile) -> list[EngineRecommendation]:
             EngineRecommendation(
                 engine=EngineKind.mlx, rank=llama_rank + 1, available=False,
                 reason="Apple Silicon only — not available on this host.",
-                workloads=[Workload.chat],
+                workloads=[Workload.chat, Workload.vision],
             )
         )
 
