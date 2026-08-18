@@ -55,6 +55,7 @@ export function SessionList(props: SessionListProps): JSX.Element {
               selected={s.id === props.currentId}
               pinned={isPinned(s.id)}
               reveal={titleReveals[s.id]}
+              activity={s.activity}
               onOpen={() => props.onSelect(s.id)}
               onTogglePin={() => togglePin(s.id)}
             />

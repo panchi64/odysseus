@@ -1,8 +1,13 @@
-import { type JSX } from "solid-js";
+import { createEffect, createMemo, onCleanup, type JSX } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { Button, Text } from "~/ui";
-import { mainChat, useChatSessions } from "../data";
+import { mainChat, refreshSessions, useChatSessions } from "../data";
 import { SessionList } from "./SessionList";
+
+/** How often to re-read the list while a thread is working. A run in a thread the
+ *  operator navigated away from ends server-side with nothing to tell this client,
+ *  so the activity edges would otherwise stay lit until the next turn. */
+const ACTIVITY_POLL_MS = 3000;
 
 /** RECENTS — the conversation list, hoisted out of the chat page and into the
  *  app's nav rail so the chat body is free for the conversation plus a viewport
@@ -16,6 +21,19 @@ export function RecentsRail(): JSX.Element {
   const { currentId, setCurrentId } = mainChat();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Poll only while something is actually running — an idle rail makes no
+  // requests, and the poll stops on its own once the last edge clears. Gated on a
+  // memoized boolean, not the list itself, so a refetch that changes nothing about
+  // activity doesn't tear the timer down and rebuild it.
+  const anyActive = createMemo(
+    () => sessions()?.some((s) => s.activity) ?? false,
+  );
+  createEffect(() => {
+    if (!anyActive()) return;
+    const timer = setInterval(refreshSessions, ACTIVITY_POLL_MS);
+    onCleanup(() => clearInterval(timer));
+  });
 
   const toChat = () => {
     if (location.pathname !== "/chat") navigate("/chat");

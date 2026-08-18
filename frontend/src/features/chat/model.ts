@@ -329,6 +329,12 @@ export interface ChatSession {
   documents: ViewDocumentRef[];
 }
 
+/** The backend's status for the run driving a thread, when one is live. The
+ *  server derives it from the run registry; the frontend only renders it —
+ *  `awaiting_input` is a run parked on the operator's approval decision, the rest
+ *  are plain in-flight work. */
+export type ChatActivity = "queued" | "running" | "awaiting_input";
+
 export interface ChatSummary {
   id: string;
   title: string;
@@ -338,6 +344,8 @@ export interface ChatSummary {
   preview?: string;
   /** The model the conversation last ran on (its most recent answer's model). */
   model?: string;
+  /** Set while a run drives this thread; absent when it's idle. */
+  activity?: ChatActivity;
 }
 
 /** One decision in an approval response (mirrors the backend's shape). */

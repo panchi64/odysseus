@@ -124,6 +124,67 @@ async def test_detail_reports_an_in_flight_run(monkeypatch):
         assert after["active_run"] is None
 
 
+async def test_list_reports_which_threads_are_working(monkeypatch):
+    """Each row carries the status of the run driving it, so the thread list can mark
+    a working conversation without opening it. Registry-derived: a turn isn't
+    persisted until it finishes, so the stored summary alone can't tell."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+
+        # The completed turn left no live run — the row is at rest.
+        assert (await client.get("/conversations")).json()[0]["activity"] is None
+
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def orch(run):
+            started.set()
+            await release.wait()
+
+        run = app.state.runs.submit(
+            kind="chat",
+            owner_id="operator",
+            orchestrator=orch,
+            conversation_id=conversation_id,
+        )
+        await started.wait()
+
+        assert (await client.get("/conversations")).json()[0]["activity"] == "running"
+
+        release.set()
+        await run.wait()
+
+        # Terminal again → the row goes back to rest.
+        assert (await client.get("/conversations")).json()[0]["activity"] is None
+
+
+async def test_list_distinguishes_a_parked_run_from_a_streaming_one(monkeypatch):
+    """A run parked on the operator's approval decision reports its own
+    ``awaiting_input`` status rather than folding into plain activity — it's a
+    "needs YOU" signal, and the list tones it differently."""
+    patch_model_resolution(monkeypatch, output_text="hello there")
+    async with client_app() as (client, app):
+        conversation_id = await _start_conversation(client)
+
+        async def orch(run):
+            run.park(None)
+
+        run = app.state.runs.submit(
+            kind="chat",
+            owner_id="operator",
+            orchestrator=orch,
+            conversation_id=conversation_id,
+        )
+        await run.wait()
+
+        rows = (await client.get("/conversations")).json()
+        assert rows[0]["activity"] == "awaiting_input"
+
+        # Parking is non-terminal; decide it out of band so the app tears down clean.
+        assert await app.state.runs.cancel(run.id) is True
+        assert (await client.get("/conversations")).json()[0]["activity"] is None
+
+
 async def test_rename_conversation(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="hello there")
     async with client_app() as (client, _app):

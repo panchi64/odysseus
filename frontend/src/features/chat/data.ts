@@ -4,6 +4,7 @@ import {
   createResource,
   createRoot,
   createSignal,
+  on,
   onCleanup,
   type Accessor,
   type Resource,
@@ -30,6 +31,7 @@ import type {
   ApprovalDecision,
   ApprovalGrant,
   AssistantBlock,
+  ChatActivity,
   ChatMessage,
   ChatSession,
   ChatSummary,
@@ -189,6 +191,10 @@ interface ConversationSummaryDTO {
   message_count: number;
   preview: string | null;
   model: string | null;
+  /** The live run's status for this thread (`running`, `queued`,
+   *  `awaiting_input`), or null when idle. Registry-derived server-side — the
+   *  thread list renders it without opening each conversation. */
+  activity?: ChatActivity | null;
 }
 
 interface ToolCallDTO {
@@ -304,6 +310,7 @@ function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     messageCount: dto.message_count,
     preview: dto.preview ?? undefined,
     model: dto.model ?? undefined,
+    activity: dto.activity ?? undefined,
   };
 }
 
@@ -2647,6 +2654,18 @@ export function mainChat(): MainChat {
     // so the Chat item shows a live indicator while a turn runs — even from another
     // section. Only the main room drives it (compare panes are ephemeral).
     createEffect(() => setChatBusy(stream.sending()));
+    // A turn *starting* changes the list as much as one finishing: each row's
+    // activity edge is server-derived, so the list has to be re-read for the
+    // running thread to light up. `onTurnComplete` above covers the other edge.
+    createEffect(
+      on(
+        () => stream.sending(),
+        (sending) => {
+          if (sending) refreshSessions();
+        },
+        { defer: true },
+      ),
+    );
     // Same main-room-only mirror for the last-run-error echo, so the favicon can flag a
     // failed run from any screen.
     createEffect(() => setRunErrored(stream.errored()));

@@ -46,6 +46,13 @@ class ConversationSummary(BaseModel):
     message_count: int
     preview: str | None = None
     model: str | None = None  # the model the conversation last ran on
+    # The live run driving this thread, as its `RunStatus` value (`running`,
+    # `queued`, `awaiting_input`); None when nothing is in flight. Derived from the
+    # run registry rather than persisted — it lets the thread list mark which
+    # conversations are working without opening each one, and keeps the
+    # busy-vs-needs-you distinction the nav rail already draws (an `awaiting_input`
+    # run is parked on the operator's approval decision, not merely streaming).
+    activity: str | None = None
 
 
 class ToolCallOut(BaseModel):
@@ -180,7 +187,21 @@ class PinUpdate(BaseModel):
     pinned: bool
 
 
-def _summary(view: ConversationSummaryView) -> ConversationSummary:
+def _activity(request: Request, conversation_id: str) -> str | None:
+    """The status of the live run driving ``conversation_id``, or None when idle.
+
+    Reuses `RunRegistry.active_run_for` so the "which run drives this conversation"
+    rule (non-terminal, most recent) lives in exactly one place. Registry-derived,
+    not persisted: an in-flight turn isn't written to the store until it finishes,
+    so the conversation read alone can't tell a working thread from an idle one.
+    """
+    run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
+    return run.status.value if run is not None else None
+
+
+def _summary(
+    view: ConversationSummaryView, activity: str | None = None
+) -> ConversationSummary:
     return ConversationSummary(
         id=view.id,
         title=view.title,
@@ -189,6 +210,7 @@ def _summary(view: ConversationSummaryView) -> ConversationSummary:
         message_count=view.message_count,
         preview=view.preview,
         model=view.model,
+        activity=activity,
     )
 
 
@@ -292,7 +314,7 @@ async def _detail(
         for doc, versions in zip(doc_views, doc_versions, strict=True)
     ]
     return ConversationDetail(
-        **_summary(summary).model_dump(),
+        **_summary(summary, activity=active_run.status if active_run else None).model_dump(),
         messages=[_message(m, by_id) for m in messages],
         snapshots=[
             ViewSnapshotRefOut(
@@ -316,7 +338,7 @@ async def _detail(
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(request: Request) -> list[ConversationSummary]:
     views = await deps.store(request).list_conversations(OPERATOR_ID)
-    return [_summary(v) for v in views]
+    return [_summary(v, activity=_activity(request, v.id)) for v in views]
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)
@@ -338,7 +360,7 @@ async def rename_conversation(
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:  # pragma: no cover — just confirmed it exists
         raise HTTPException(status_code=404, detail="conversation not found")
-    return _summary(summary)
+    return _summary(summary, activity=_activity(request, conversation_id))
 
 
 @router.post("/{conversation_id}/retitle", response_model=ConversationSummary)
@@ -389,7 +411,7 @@ async def retitle_conversation(
     summary = await store.get_summary(conversation_id, OPERATOR_ID)
     if summary is None:  # pragma: no cover — just confirmed it exists
         raise HTTPException(status_code=404, detail="conversation not found")
-    return _summary(summary)
+    return _summary(summary, activity=_activity(request, conversation_id))
 
 
 class OrphanImageAttachments(BaseModel):
