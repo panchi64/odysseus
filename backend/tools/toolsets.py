@@ -27,6 +27,8 @@ from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefini
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .deps import RunDeps
+from .files import files_toolset
+from .plan import plan_toolset
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
@@ -39,6 +41,8 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
     return {
         "builtin": builtin_toolset(),
         "code": code_toolset(),
+        "files": files_toolset(),
+        "plan": plan_toolset(),
     }
 
 

@@ -8,11 +8,22 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-    "pydantic-ai>=0.2",
+    "pydantic-ai>=2.31",
+    # The Pydantic team's own capability library: the sandbox file tools (`FileSystem`)
+    # and the agent's task list (`Planning`) are theirs to maintain, not ours.
+    "pydantic-ai-harness>=0.22",
+    # Filesystem/network confinement for the approved host-command escape hatch —
+    # seatbelt on macOS, bubblewrap on Linux, no container.
+    "sandbox-runtime>=0.2",
     "sqlmodel>=0.0.22",
     "cryptography>=44",
     "argon2-cffi>=23",
     "alembic>=1.18.4",
+    # Imported directly by our own modules rather than relied on transitively.
+    "sqlalchemy>=2.0",
+    "starlette>=1.3",
+    "lxml>=5",
+    "anyio>=4",
     "numpy>=2.4.6",
     "openai>=2.41.0",
     "websockets>=16.0",
@@ -26,7 +37,7 @@ dependencies = [
     # extractor — run here over the rendered HTML string (not as a fetcher), emitting
     # Markdown natively (output_format="markdown"). Pulls lxml transitively.
     "playwright>=1.49",
-    "trafilatura>=2.0",
+    "trafilatura>=2.2",
     "langdetect>=1.0.9",
     "pypdfium2>=5.10.1",
     "pillow>=12.2.0",

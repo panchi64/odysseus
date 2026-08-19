@@ -27,14 +27,35 @@ from services.webfetch.throttle import DomainThrottle
 
 OWNER = "operator"
 
+# A page shaped like a real one — main content wrapped in the boilerplate (nav, cookie
+# banner, sidebar ad, footer) every site carries. Deliberately not a bare <article>: the
+# extractor's job is both to *keep* the structure below and to *drop* the chrome around
+# it, and a fixture with nothing to prune tests only half of that. It also has to clear
+# the size at which trafilatura falls back to plain text recovery — under that, no
+# extractor emits Markdown and the assertions below would pass or fail for the wrong
+# reason.
 _ARTICLE = (
-    "<html><head><title>Edible Plants</title></head><body><article>"
+    "<html><head><title>Edible Plants</title></head><body>"
+    '<div class="cookie-banner">We use cookies to improve your experience.</div>'
+    '<nav><a href="/">Home</a><a href="/pricing">Pricing</a></nav>'
+    "<article>"
     "<h1>Foraging Guide</h1>"
     "<p>The dandelion is entirely edible, from root to flower, and grows almost "
-    "everywhere people live, which makes it a reliable first plant to learn.</p>"
-    "<p>Always positively identify a plant before eating any part of it in the wild.</p>"
-    "<table><tr><td>root</td><td>edible</td></tr></table>"
-    "</article></body></html>"
+    "everywhere people live, which makes it a reliable first plant to learn. Its "
+    "leaves are best picked young, before the plant flowers and bitterness sets in.</p>"
+    "<h2>Identification</h2>"
+    "<p>Look for the <b>basal rosette</b> of toothed leaves and a single hollow stem "
+    "carrying one flower head. A milky sap runs from any broken part of the plant.</p>"
+    "<ul><li>Leaves: deeply toothed</li><li>Stem: hollow</li><li>Sap: milky</li></ul>"
+    "<p>Identify with <code>field_guide.check(plant)</code> before eating anything.</p>"
+    "<table><tr><th>Part</th><th>Use</th></tr><tr><td>root</td><td>roasted</td></tr>"
+    "<tr><td>leaf</td><td>salad</td></tr></table>"
+    "<p>Always positively identify a plant before eating any part of it in the wild. "
+    'See the <a href="https://example.org/guide">full guide</a>.</p>'
+    "</article>"
+    '<aside class="ad">Sponsored: buy our thing today.</aside>'
+    "<footer>Copyright 2026 Forage Co.</footer>"
+    "</body></html>"
 )
 
 
@@ -44,10 +65,27 @@ _ARTICLE = (
 def test_extract_article_to_markdown_with_table():
     title, body = extract(_ARTICLE, url="https://forage.example/g", rendered_text="x", min_chars=50)
     assert body is not None
-    assert "Foraging Guide" in body  # heading survived → markdown extraction ran
     assert "dandelion" in body
-    assert "|" in body  # the table is preserved as Markdown
     assert title == "Edible Plants" or "Foraging" in (title or "")
+    # Every structure the extractor promises to preserve, pinned individually — asserting
+    # only one of them lets a silent formatting regression through while the test passes.
+    assert "# Foraging Guide" in body  # headings, as Markdown rather than bare text
+    assert "**basal rosette**" in body  # inline formatting
+    assert "- Leaves: deeply toothed" in body  # list items
+    assert "`field_guide.check(plant)`" in body  # inline code
+    assert "| root | roasted |" in body  # table rows
+    assert "](https://example.org/guide)" in body  # links keep their destination
+
+
+def test_extract_prunes_boilerplate_around_the_article():
+    # The other half of extraction: the chrome every real page carries must not survive
+    # into what the model reads.
+    _title, body = extract(
+        _ARTICLE, url="https://forage.example/g", rendered_text="x", min_chars=50
+    )
+    assert body is not None
+    for chrome in ("cookie", "Sponsored", "Copyright", "Pricing"):
+        assert chrome.lower() not in body.lower()
 
 
 def test_extract_falls_back_to_innertext_when_thin():

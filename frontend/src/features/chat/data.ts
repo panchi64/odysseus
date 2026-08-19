@@ -23,6 +23,7 @@ import {
   StreamDetachedError,
   streamRun,
   type ContextWindow,
+  type PlanItem,
   type RunEvent,
 } from "~/lib/stream";
 import { toast } from "~/ui";
@@ -800,6 +801,16 @@ export async function fetchGrants(
   return rows.map((r) => ({ toolName: r.tool_name }));
 }
 
+/** The agent's task list for a thread.
+ *
+ *  The list also arrives live on `plan.updated`, but a client opening or reloading a
+ *  conversation has no stream to replay — this is how the panel starts from the truth
+ *  instead of staying empty until the next mutation.
+ */
+export async function fetchPlan(conversationId: string): Promise<PlanItem[]> {
+  return api.get<PlanItem[]>(`/conversations/${conversationId}/plan`);
+}
+
 /** Revoke a conversation auto-approval — the next call to that tool asks again. */
 export async function revokeGrant(
   conversationId: string,
@@ -950,6 +961,14 @@ export function createChatStream(
   // The latest run's token counts (`run.metrics.input_tokens`/`output_tokens`),
   // shown beside the context gauge. Null until a run reports usage.
   const [tokenUsage, setTokenUsage] = createSignal<TokenUsage | null>(null);
+  // The agent's task list for this thread. Conversation-level rather than a message
+  // block: one list belongs to the thread and is rewritten in place as work proceeds,
+  // so pinning it to the turn that happened to create it would strand it. `plan.updated`
+  // carries the whole list, so applying an event is a replace, never a merge.
+  const [plan, setPlan] = createSignal<PlanItem[]>([]);
+  // Bumped on every `plan.updated`. Plain counter, not a signal: its only job is to let
+  // an in-flight REST backfill notice the stream overtook it.
+  let planRevision = 0;
   // True while a reattach (replay from a known run) is folding in — drives the
   // "RESYNCING…" affordance, distinct from a fresh turn's `sending`.
   const [reattaching, setReattaching] = createSignal(false);
@@ -1049,6 +1068,28 @@ export function createChatStream(
     // Same for the conversation-level document history; the live `document.*` events
     // upsert into it from here.
     setDocuments(k === null ? [] : (options.initialDocuments?.() ?? []));
+    // The plan is owned by the backend and survives reloads, so a thread switch clears
+    // the old one and refetches rather than carrying the previous thread's list over.
+    setPlan([]);
+    if (k !== null) {
+      const requested = k;
+      // Snapshot the live-update counter: opening a thread whose run is mid-turn races
+      // the backfill against `plan.updated`, and the fetch answers with pre-mutation
+      // state. Without this the slower fetch wins and the panel goes stale until the
+      // next mutation — which may never come.
+      const seenAtRequest = planRevision;
+      void fetchPlan(requested)
+        .then((items) => {
+          // Drop it if the operator has since left the thread, or the stream already
+          // said something newer.
+          if (key() === requested && planRevision === seenAtRequest)
+            setPlan(items);
+        })
+        .catch(() => {
+          // The panel is an aid, not the transcript — a failed backfill leaves it
+          // empty and the next `plan.updated` fills it in.
+        });
+    }
   });
 
   function patchById(id: string, fn: (m: ChatMessage) => void): void {
@@ -1196,6 +1237,12 @@ export function createChatStream(
             b.tool.progress = undefined; // the run is over — drop the spin-up note
           }
         });
+        break;
+      case "plan.updated":
+        // Whole-list replace, not a merge: the event is full state, which is what makes
+        // it idempotent when the stream is replayed from an earlier seq on reconnect.
+        planRevision += 1;
+        setPlan(ev.items);
         break;
       case "approval.required":
         if (ev.name === HOST_COMMAND_TOOL) {
@@ -2548,6 +2595,7 @@ export function createChatStream(
     reattaching,
     usage,
     tokenUsage,
+    plan,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => activeRunId,
     /** Highest event seq folded so far — the resume point for a reattach. */

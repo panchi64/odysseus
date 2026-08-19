@@ -37,6 +37,7 @@ from services.mcp import McpRegistry
 from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
+from services.plans import ConversationPlans
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -140,6 +141,10 @@ def memory(request: Request) -> MemoryStore:
 
 def notifications(request: Request) -> NotificationService:
     return request.app.state.notifications
+
+
+def conversation_plans(request: Request) -> ConversationPlans:
+    return request.app.state.conversation_plans
 
 
 def approval_grants(request: Request) -> ApprovalGrantStore:

@@ -27,7 +27,13 @@ from .container import (
     run_subprocess,
 )
 from .detect import detect_sandbox
-from .host import HostExecutionError, run_on_host
+from .host import (
+    HostConfinement,
+    HostExecutionError,
+    resolve_confinement,
+    run_on_host,
+    shutdown_confinement,
+)
 from .preview import PreviewHandle
 from .session import SandboxSession, SandboxSessionManager
 
@@ -49,6 +55,9 @@ __all__ = [
     "PreviewHandle",
     "SandboxSession",
     "SandboxSessionManager",
+    "HostConfinement",
     "HostExecutionError",
+    "resolve_confinement",
     "run_on_host",
+    "shutdown_confinement",
 ]

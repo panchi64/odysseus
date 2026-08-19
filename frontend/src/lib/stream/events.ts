@@ -230,6 +230,22 @@ export interface MessageInjected extends Base {
   type: "message.injected";
   message_id: string;
 }
+/** One task on the agent's plan for this conversation. `blocked` only occurs when the
+ *  backend enables subtasks/dependencies; it is carried here so a future flip of that
+ *  switch is a rendering choice rather than a crash. */
+export interface PlanItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled" | "blocked";
+  /** Present-tense label for the task while it runs ("Reading the config"). */
+  active_form?: string | null;
+}
+/** The agent's task list changed. Carries the whole list rather than a delta, so
+ *  applying it is idempotent on replay and needs no ordering rules. */
+export interface PlanUpdated extends Base {
+  type: "plan.updated";
+  items: PlanItem[];
+}
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
@@ -274,6 +290,7 @@ export type RunEvent =
   | MessageEdited
   | MessageWithdrawn
   | MessageInjected
+  | PlanUpdated
   | LimitNotice;
 
 /** A run is over after one of these — the stream reader stops. */

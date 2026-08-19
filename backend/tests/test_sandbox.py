@@ -13,6 +13,7 @@ import services.sandbox.container as container_mod
 from core.config import Settings
 from services.sandbox import (
     ContainerSandbox,
+    HostConfinement,
     SandboxError,
     SandboxFile,
     SandboxResult,
@@ -27,6 +28,7 @@ from services.sandbox.container import (
     runtime_fault_line,
     workspace_env_defaults,
 )
+from services.sandbox.host import _configure
 
 
 def _runtime_ready() -> bool:
@@ -244,6 +246,33 @@ async def test_host_timeout_kills_the_whole_process_group(tmp_path):
     assert result.timed_out and result.exit_code == 124
     await asyncio.sleep(2.5)  # past when an orphaned child would have written
     assert not marker.exists()  # the whole group was killed — no survivor
+
+
+async def test_confinement_is_off_when_the_operator_disables_it():
+    settings = Settings(host_command_sandbox_enabled=False)
+    confinement = await _configure(settings)
+    assert not confinement.active and "disabled" in confinement.reason
+
+
+async def test_a_disabled_confinement_still_runs_the_command():
+    # The inverse of the sandbox rule, on purpose: the operator approved *this* command,
+    # so a missing (or switched-off) fence means it runs unconfined and says so — not
+    # that an approved command silently refuses.
+    result = await run_on_host("echo ran", confinement=HostConfinement(False, "disabled"))
+    assert result.ok and "ran" in result.stdout
+
+
+async def test_confinement_denies_reading_the_data_directory(tmp_path):
+    # The one path whose exposure would undo at-rest encryption wholesale: the vault,
+    # the sealed workspaces and the database all live under it.
+    settings = Settings(data_dir=tmp_path)
+    confinement = await _configure(settings)
+    if not confinement.active:
+        pytest.skip(f"no host sandbox primitive here: {confinement.reason}")
+    secret = tmp_path / "keyfile.json"
+    secret.write_text("SEALEDKEYMATERIAL")
+    result = await run_on_host(f"cat {secret}", confinement=confinement)
+    assert "SEALEDKEYMATERIAL" not in result.stdout
 
 
 # --- container integration (only when a real runtime is present) -------------

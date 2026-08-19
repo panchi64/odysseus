@@ -2,6 +2,7 @@ export {
   isTerminal,
   PROTOCOL_VERSION,
   type ContextWindow,
+  type PlanItem,
   type RunEvent,
 } from "./events";
 export {

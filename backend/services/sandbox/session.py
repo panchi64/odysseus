@@ -428,6 +428,18 @@ class SandboxSession:
                 files[rel] = data
         return files
 
+    def ensure_workspace(self) -> Path:
+        """The workspace directory, materialized and ready to read or write, **without
+        starting a container** — restoring it from the sealed archive first if the session
+        was reaped. This is the seam the file tools bind to: browsing, reading and editing
+        files costs no container start, only a cold session's tar restore.
+
+        Counts as activity (``touch``), so a session being worked on purely through file
+        tools is not reaped out from under the run that is using it."""
+        self._ensure_workspace()
+        self.touch()
+        return self.workspace
+
     def _ensure_workspace(self) -> None:
         if not self.workspace.exists():
             if self.sealed.exists():

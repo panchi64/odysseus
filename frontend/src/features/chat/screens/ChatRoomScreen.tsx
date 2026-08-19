@@ -66,6 +66,7 @@ import {
 import { registerKeymap } from "~/lib/keymap";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
+import { PlanPanel } from "../components/PlanPanel";
 import { ConversationCompactionToggle } from "../components/ConversationCompactionToggle";
 import { MessageItem } from "../components/MessageItem";
 
@@ -772,6 +773,11 @@ export function ChatRoomScreen(): JSX.Element {
           conversationId={currentId}
           revalidate={conversationGrantsRevision}
         />
+
+        {/* Above the transcript rather than inside it: the plan belongs to the thread,
+            not to the turn that last touched it, and it stays put while the messages
+            below scroll. */}
+        <PlanPanel items={stream.plan} />
 
         <div class="relative flex min-h-0 flex-1 flex-col">
           <div

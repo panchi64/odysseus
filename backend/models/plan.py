@@ -1,0 +1,36 @@
+"""The agent's task list for a conversation — one row per thread.
+
+The model keeps its own plan while it works (`Planning`, `pydantic_ai_harness`), and the
+operator watches it in chat. That list has to outlive the run that produced it: a browser
+reload mid-turn, a run parked on an approval, a resumed stream, and the next turn in the
+same thread all expect the same plan to still be there. So it is persisted rather than
+held for the life of one run, keyed the way the sandbox workspace is keyed — by
+conversation.
+
+**One row, not one per task.** The whole list is read and rewritten together on every
+mutation (the store's contract is list-shaped), it is small, and it is sealed as a unit —
+a row per task would buy nothing and cost a join plus per-row sealing. The items are a
+sealed JSON array: a plan is a verbatim description of what the operator asked for, which
+is content, not policy (`XC-SEC-3`).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlmodel import Field, SQLModel
+
+from models._fields import new_id, utcnow
+
+
+class ConversationPlan(SQLModel, table=True):
+    __tablename__ = "conversation_plans"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str = Field(index=True)
+    # Unique: a conversation has exactly one plan, and the store upserts against it.
+    conversation_id: str = Field(index=True, unique=True)
+    # AEAD ciphertext of the JSON array of plan items (id, content, status, active_form,
+    # parent_id, depends_on).
+    items_enc: str
+    updated_at: datetime = Field(default_factory=utcnow, index=True)

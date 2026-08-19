@@ -322,6 +322,17 @@ class MessageInjected(_Body):
     message_id: str
 
 
+class PlanUpdated(_Body):
+    """The agent's task list changed. Carries the **whole** list, not a delta: the stream
+    is replayable from any seq, so full state is idempotent on replay and needs no ordering
+    rules, and the list is small enough that the bytes don't matter. Each item is
+    ``{id, content, status, active_form}`` with status one of pending/in_progress/
+    completed/cancelled. Additive to v1; no bump."""
+
+    type: Literal["plan.updated"] = "plan.updated"
+    items: list[dict]
+
+
 class LimitNotice(_Body):
     type: Literal["limit.notice"] = "limit.notice"
     # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context" | "search"
@@ -358,6 +369,7 @@ EventBody = Annotated[
     | MessageEdited
     | MessageWithdrawn
     | MessageInjected
+    | PlanUpdated
     | LimitNotice,
     Field(discriminator="type"),
 ]

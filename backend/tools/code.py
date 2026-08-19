@@ -27,6 +27,7 @@ from services.sandbox import (
     SandboxError,
     SandboxSessionManager,
     SandboxSpec,
+    resolve_confinement,
     run_on_host,
 )
 
@@ -207,6 +208,15 @@ def _execute_description(settings: Settings) -> str:
         "`/tmp` is small and temporary — keep anything that matters in your working "
         "directory. After a long stretch of inactivity the machine is reclaimed: your "
         "files are kept and restored, but installed packages may need reinstalling.\n\n"
+        "**Use this tool to *run* things, not to manage files.** The `files_*` tools "
+        "act on this same working directory and are the better way to work with it: "
+        "`files_read_file` to read (a slice at a time, with line numbers), "
+        "`files_write_file` to create, `files_edit_file` to change an exact span, "
+        "`files_search_files` to grep, `files_find_files` to glob, and "
+        "`files_list_directory` to see what is there. Reach for those instead of "
+        "`cat`, `ls`, `grep`, `sed`, or a heredoc — they are direct, they do not "
+        "spend a container start, and they will not mangle your quoting. Come back "
+        "here to execute the result.\n\n"
         "There is no internet unless you set the `network=True` argument on the "
         "tool call — do so to fetch packages or data. `network` is an argument of "
         "this tool, not a shell flag: writing it inside the command string does "
@@ -307,11 +317,26 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         plain-language description of what the command does and its effect on the
         host — it is shown to the operator for approval. Prefer ``code_execute``
         for anything that does not need the real host.
+
+        Even once approved, the command is normally confined: it cannot read the
+        operator's credentials or this application's own data directory, and it has
+        no network unless a domain was allowlisted. The result says whether the fence
+        was actually applied (``confined``), so a permission error on one of those
+        paths is the fence doing its job rather than something to work around.
         """
+        confinement = await resolve_confinement(settings)
         try:
-            result = await run_on_host(command, timeout_s=timeout_s)
+            result = await run_on_host(command, timeout_s=timeout_s, confinement=confinement)
         except HostExecutionError as exc:
             return {"ok": False, "error": f"The host command could not be launched: {exc}"}
-        return _exec_result(result, settings, sandboxed=False)
+        payload = _exec_result(result, settings, sandboxed=False)
+        # State the fence plainly: the operator approved the command, and whether it ran
+        # confined changes what that approval actually permitted.
+        payload["confined"] = confinement.active
+        if not confinement.active:
+            payload["confinement_note"] = (
+                f"This ran unconfined on the host ({confinement.reason})."
+            )
+        return payload
 
     return toolset

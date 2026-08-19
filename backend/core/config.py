@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # output budget: an over-cap stream is truncated in the middle (head + tail kept,
     # since errors/final state usually live at the tail).
     sandbox_output_max_chars: int = 24_000
+    # How much of a file one `files_read_file` call returns. Paging exists (the tool takes
+    # an offset), so this bounds a single call rather than what the agent can ultimately
+    # read — set to keep one oversized file from crowding out the rest of the turn.
+    sandbox_files_max_read_lines: int = 2_000
     # Per-conversation live sandbox: a container lazily spun up on the first code
     # execution and kept warm so the agent can iterate (fix an error, reuse an
     # installed dependency) without rebuilding. Idle sessions are reaped to free
@@ -113,6 +117,28 @@ class Settings(BaseSettings):
         "node_modules", ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache",
         ".cache", "dist", "build", "*.pyc", "*.pyo", "*.egg-info",
     )
+
+    # The approved host-command escape hatch, confined. Approval is consent to the
+    # command the operator read, not to whatever it might reach afterwards, so the
+    # process is additionally fenced at the OS level (seatbelt on macOS, bubblewrap on
+    # Linux). Unlike the sandbox proper this degrades rather than fails closed: the
+    # operator explicitly approved *this* command, and refusing to run it because a
+    # platform primitive is missing would break the one case the tool exists for.
+    host_command_sandbox_enabled: bool = True
+    # Egress allowlist for those commands. Empty means no network at all — widen it
+    # deliberately, per domain, rather than reaching for the disable switch above.
+    host_command_allowed_domains: tuple[str, ...] = ()
+    # Read-denied even under approval. The data directory is added to this at runtime
+    # because it holds the vault, the sealed workspaces and the database: the agent must
+    # never read its own encrypted store from the host, whatever it was approved to do.
+    host_command_deny_read: tuple[str, ...] = ("~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh")
+    # Writes are **deny-by-default** under the confinement, so this list is what makes the
+    # tool usable at all — an approved "change my host" command that cannot write anything
+    # would fail confusingly rather than safely. Kept broad on purpose (the operator read
+    # and approved this specific command); the fence's value is in the read denials and the
+    # egress allowlist, which are the exfiltration paths. The credential paths above are
+    # additionally write-denied, so a confined command can neither read nor clobber them.
+    host_command_allow_write: tuple[str, ...] = ("~", "/tmp", "/var/tmp")
 
     # Meta-loop. The no-progress guard trips after this many identical tool
     # calls in a turn. The verifier (a post-turn judge + one bounded corrective

@@ -33,6 +33,7 @@ from .events import (
     MessageInjected,
     MessageQueued,
     MessageWithdrawn,
+    PlanUpdated,
     RunEnded,
     RunError,
     RunMetrics,
@@ -95,5 +96,6 @@ __all__ = [
     "MessageQueued",
     "MessageWithdrawn",
     "MessageInjected",
+    "PlanUpdated",
     "LimitNotice",
 ]

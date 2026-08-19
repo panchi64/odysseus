@@ -47,11 +47,13 @@ from services.approval_grants import ApprovalGrantStore
 from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
+from services.plans import ConversationPlans
 from services.registry import ModelRegistry
-from services.sandbox import SandboxSessionManager, detect_sandbox
+from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_confinement
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
 from tools import InstructionProvider, PromptContextProvider, core_categories
+from tools.plan import plan_context
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +164,10 @@ async def lifespan(app: FastAPI):
     discovery_client = httpx.AsyncClient(follow_redirects=True)
     app.state.discovery_client = discovery_client
     lifecycle.on_stop("discovery-client", discovery_client.aclose)
+    # Host-command confinement configures itself lazily on the first approved host command
+    # and starts proxy listeners doing so. Registered here so they stop with the app —
+    # under the reloading dev server they would otherwise accumulate per restart.
+    lifecycle.on_stop("host-confinement", shutdown_confinement)
     # The model registry — role→endpoint resolution + the endpoint catalog.
     registry = ModelRegistry(engine, vault, http_client=discovery_client)
     app.state.models = registry
@@ -242,6 +248,11 @@ async def lifespan(app: FastAPI):
     # split, and the sandbox backs code execution. Everything else reaches the bag
     # through its own manifest's `capabilities` export.
     agent_capabilities.add(app.state.approval_grants)
+    # The agent's task list: core-owned like the sandbox, because the `plan` category is a
+    # core category rather than a feature manifest's.
+    app.state.conversation_plans = ConversationPlans(engine, vault)
+    container.add(app.state.conversation_plans)
+    agent_capabilities.add(app.state.conversation_plans)
 
     # Feature manifests build last, in dependency (`after`) order — everything
     # hand-wired above is the core they resolve from the container. What a build
@@ -313,7 +324,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     tool_categories = core_categories()
     gated_tools: set[str] = set()
     instruction_providers: list[InstructionProvider] = []
-    prompt_context_providers: list[PromptContextProvider] = []
+    # The plan reminder is core, not a manifest's: the `plan` category ships with the
+    # harness core categories, so its tail context has to be seeded here alongside them.
+    prompt_context_providers: list[PromptContextProvider] = [plan_context]
     for manifest in enabled_manifests:
         for category, factory in manifest.toolsets:
             if category in tool_categories:

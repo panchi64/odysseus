@@ -26,6 +26,7 @@ from routes.deps import OPERATOR_ID
 from runs import ContextWindow
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView, context_footprint
+from services.plans import plan_payload
 from services.settings_store import (
     get_auto_compact,
     get_compaction,
@@ -497,6 +498,9 @@ async def delete_conversation(
     # Drop the conversation's View history (snapshots + any blob no other snapshot
     # needs), so the work doesn't linger encrypted on disk after the thread is gone.
     await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
+    # Same reasoning for the agent's task list: it restates what was asked for, so it must
+    # not outlive the thread.
+    await deps.conversation_plans(request).delete_for_conversation(OPERATOR_ID, conversation_id)
     # Delete the conversation's sandbox too (its workspace + sealed archive),
     # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
     # delete above is the authoritative action, so a purge failure must not fail it.
@@ -609,6 +613,26 @@ async def list_grants(conversation_id: str, request: Request) -> list[ApprovalGr
     await _require_owned(request, conversation_id)
     grants = await deps.approval_grants(request).list(OPERATOR_ID, conversation_id)
     return [ApprovalGrantOut(tool_name=g.tool_name, expires_at=g.expires_at) for g in grants]
+
+
+class PlanItemOut(BaseModel):
+    id: str
+    content: str
+    status: str
+    active_form: str | None = None
+
+
+@router.get("/{conversation_id}/plan", response_model=list[PlanItemOut])
+async def read_plan(conversation_id: str, request: Request) -> list[PlanItemOut]:
+    """The agent's current task list for this thread.
+
+    The list is streamed as it changes (``plan.updated``), but a client that opens or
+    reloads a conversation has no stream to replay — this is how it starts from the
+    truth rather than from an empty panel that only fills on the next mutation.
+    """
+    await _require_owned(request, conversation_id)
+    items = await deps.conversation_plans(request).items(OPERATOR_ID, conversation_id)
+    return [PlanItemOut(**row) for row in plan_payload(items)]
 
 
 @router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)

@@ -144,7 +144,7 @@ async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
     # marker the live stream rendered rather than a turn that silently never happened.
     toolset = FunctionToolset()
 
-    @toolset.tool
+    @toolset.tool_plain
     def noop(x: int) -> int:
         return x
 
@@ -195,7 +195,7 @@ async def test_wall_clock_timeout_persists_the_partial_turn(tmp_path):
     toolset = FunctionToolset()
     hang = asyncio.Event()
 
-    @toolset.tool
+    @toolset.tool_plain
     async def slow(x: int) -> int:
         await asyncio.wait_for(hang.wait(), timeout=2.0)
         return x
@@ -242,7 +242,7 @@ async def test_cancel_persists_the_partial_turn(tmp_path):
     started = asyncio.Event()
     hang = asyncio.Event()
 
-    @toolset.tool
+    @toolset.tool_plain
     async def slow(x: int) -> int:
         started.set()
         await hang.wait()  # never set — cancelled before it would return
@@ -293,7 +293,7 @@ async def test_double_cancel_does_not_duplicate_the_persisted_turn(tmp_path):
     started = asyncio.Event()
     hang = asyncio.Event()
 
-    @toolset.tool
+    @toolset.tool_plain
     async def slow(x: int) -> int:
         started.set()
         await hang.wait()  # never set — cancelled before it would return
@@ -387,7 +387,7 @@ async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path
     # registry's own generic handler records the run as `error`.
     toolset = FunctionToolset()
 
-    @toolset.tool
+    @toolset.tool_plain
     def boom(x: int) -> int:
         raise RuntimeError("tool exploded")
 
@@ -431,7 +431,7 @@ async def test_cooperative_cancel_flag_stops_the_turn(tmp_path):
     toolset = FunctionToolset()
     run_ref: list = [None]
 
-    @toolset.tool
+    @toolset.tool_plain
     def flag(x: int) -> int:
         run_ref[0].cancel_requested = True
         return x
