@@ -12,6 +12,9 @@ export interface ModalProps {
   footer?: JSX.Element;
   /** Max-width utility class override (default narrow column). */
   class?: string;
+  /** Drop the body inset. For content that owns its own edges — a list whose
+   *  rows should meet the border, a palette whose field sits flush at the top. */
+  padded?: boolean;
   children: JSX.Element;
 }
 
@@ -23,6 +26,7 @@ export function Modal(props: ModalProps): JSX.Element {
     "title",
     "footer",
     "class",
+    "padded",
     "children",
   ]);
   return (
@@ -56,7 +60,14 @@ export function Modal(props: ModalProps): JSX.Element {
                 </button>
               </header>
             </Show>
-            <div class="min-h-0 flex-1 overflow-auto p-4">{local.children}</div>
+            <div
+              class={cx(
+                "min-h-0 flex-1 overflow-auto",
+                local.padded !== false && "p-4",
+              )}
+            >
+              {local.children}
+            </div>
             <Show when={local.footer}>
               <footer class="flex items-center justify-end gap-2 border-t border-line px-4 py-2">
                 {local.footer}

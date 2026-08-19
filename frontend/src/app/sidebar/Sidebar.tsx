@@ -2,20 +2,14 @@ import { For, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import { Button, Icon, ListRow, Text, Tooltip, cx } from "~/ui";
 import { useSession } from "~/lib/stores/session";
-import {
-  anchorItem,
-  areaForPath,
-  FOOTER_ANCHORS,
-  TOP_ANCHORS,
-  type NavItem,
-} from "../nav";
+import { areaForPath, FOOTER_PINS, TOP_PINS, type NavItem } from "../nav";
 import { AreaNav } from "./AreaNav";
 import { AreaSwitcher } from "./AreaSwitcher";
-import { NavSearch } from "./NavSearch";
+import { NavPalette, openNavPalette } from "./NavPalette";
 import { navMeta } from "./navMeta";
 
-/** An area's entry point, kept outside the switcher. */
-function AnchorRow(props: { item: NavItem; active: boolean }): JSX.Element {
+/** A destination kept outside the switcher. */
+function PinRow(props: { item: NavItem; active: boolean }): JSX.Element {
   return (
     <Tooltip
       float
@@ -43,57 +37,58 @@ function AnchorRow(props: { item: NavItem; active: boolean }): JSX.Element {
 }
 
 /** Primary navigation rail, in two tiers: a switcher naming the area you're in,
- *  and that area's pages below it. Which area is active is derived from the
- *  route — nothing here stores it. */
+ *  and that area's pages directly beneath it. Which area is active is derived
+ *  from the route — nothing here stores it.
+ *
+ *  Pins sit *outside* both tiers — above the switcher, below the page list — so
+ *  a permanent row never reads as a page of whichever area happens to be open. */
 export function Sidebar(): JSX.Element {
   const location = useLocation();
   const session = useSession();
   const activeArea = () => areaForPath(location.pathname);
   const isActive = (href: string) =>
     location.pathname === href || location.pathname.startsWith(`${href}/`);
-  // Only the top anchors are dropped from the body list — they sit immediately
-  // above it, so repeating them would read as a duplicate. A footer anchor is a
-  // shortcut *into* its area from anywhere, so its row still belongs in the list
-  // once you're there (otherwise SYSTEM would silently lose "Appearance").
-  const pinnedHrefs = () => TOP_ANCHORS.map((a) => anchorItem(a).href);
 
   return (
     <nav class="flex min-h-full flex-col bg-surface">
       <div class="sticky top-0 z-30 bg-surface">
-        <a
-          href="/"
-          class="flex flex-col gap-0.5 border-b border-line px-3 py-3 transition-colors hover:bg-raised"
-        >
-          <Text variant="readout" tone="bright" class="font-display">
-            ODYSSEUS
-          </Text>
-          <Text variant="micro" tone="dim">
-            ODY-WORKSPACE-02.1
-          </Text>
-        </a>
-
-        <NavSearch />
-
-        <div class="border-b border-line p-2">
-          <AreaSwitcher active={activeArea()} />
+        <div class="flex items-center justify-between gap-2 border-b border-line pr-2">
+          <a
+            href="/"
+            class="flex min-w-0 flex-1 flex-col gap-0.5 px-3 py-3 transition-colors hover:bg-raised"
+          >
+            <Text variant="readout" tone="bright" class="font-display">
+              ODYSSEUS
+            </Text>
+            <Text variant="micro" tone="dim">
+              ODY-WORKSPACE-02.1
+            </Text>
+          </a>
+          <Tooltip float side="right" label="Go to… (⌘K)">
+            <Button
+              variant="ghost"
+              size="sm"
+              leading="search"
+              aria-label="Go to page"
+              onClick={openNavPalette}
+            />
+          </Tooltip>
         </div>
 
-        <For each={TOP_ANCHORS}>
-          {(area) => {
-            const item = anchorItem(area);
-            return <AnchorRow item={item} active={isActive(item.href)} />;
-          }}
-        </For>
+        <div class="border-b border-line">
+          <For each={TOP_PINS}>
+            {(item) => <PinRow item={item} active={isActive(item.href)} />}
+          </For>
+        </div>
+
+        <AreaSwitcher active={activeArea()} />
       </div>
 
-      <AreaNav active={activeArea()} pinned={pinnedHrefs()} />
+      <AreaNav active={activeArea()} />
 
       <div class="sticky bottom-0 border-t border-line bg-surface">
-        <For each={FOOTER_ANCHORS}>
-          {(area) => {
-            const item = anchorItem(area);
-            return <AnchorRow item={item} active={isActive(item.href)} />;
-          }}
+        <For each={FOOTER_PINS}>
+          {(item) => <PinRow item={item} active={isActive(item.href)} />}
         </For>
         <div class="flex items-center justify-between gap-2 px-3 py-3">
           <span class="flex items-center gap-2">
@@ -112,6 +107,8 @@ export function Sidebar(): JSX.Element {
           </Button>
         </div>
       </div>
+
+      <NavPalette />
     </nav>
   );
 }

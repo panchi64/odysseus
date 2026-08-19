@@ -1,8 +1,9 @@
-import type { NavArea } from "./types";
+import type { NavArea, NavPin } from "./types";
 
 /**
- * The single source of truth for primary navigation. Adding a surface = an entry
- * here + the matching route file + feature folder.
+ * The areas the switcher offers — every group of pages, and nothing else. A lone
+ * destination belongs in `PINS` below, not here: an area with one item gives the
+ * switcher a row that switches to nothing.
  *
  * An `href` must appear in exactly one area: the active area is derived from the
  * current path, so a duplicated href would make that derivation ambiguous.
@@ -10,22 +11,6 @@ import type { NavArea } from "./types";
  * and model setup) live in one area and are reached from the other by search.
  */
 export const AREAS: NavArea[] = [
-  {
-    id: "chat",
-    label: "CHAT",
-    icon: "chat",
-    description: "Converse with local models and tool-using agents",
-    anchor: "top",
-    items: [
-      {
-        label: "Chat",
-        href: "/chat",
-        icon: "chat",
-        connected: true,
-        description: "Converse with local models and tool-using agents",
-      },
-    ],
-  },
   {
     id: "knowledge",
     label: "KNOWLEDGE",
@@ -241,9 +226,6 @@ export const AREAS: NavArea[] = [
     label: "SYSTEM",
     icon: "settings",
     description: "Preferences, connections, and the state of the machine",
-    anchor: "footer",
-    anchorHref: "/settings/appearance",
-    anchorLabel: "Settings",
     items: [
       {
         label: "Appearance",
@@ -287,5 +269,36 @@ export const AREAS: NavArea[] = [
         connected: true,
       },
     ],
+  },
+];
+
+/**
+ * The two destinations that sit outside the switcher. Chat is where the work
+ * happens and Settings is where you go when something is wrong — both are worth
+ * a permanent row, and neither is a group of pages.
+ *
+ * Settings points into SYSTEM rather than owning a page of its own, so opening
+ * it lands in that area with the rest of it listed.
+ */
+export const PINS: NavPin[] = [
+  {
+    slot: "top",
+    item: {
+      label: "Chat",
+      href: "/chat",
+      icon: "chat",
+      connected: true,
+      description: "Converse with local models and tool-using agents",
+    },
+  },
+  {
+    slot: "footer",
+    item: {
+      label: "Settings",
+      href: "/settings/appearance",
+      icon: "settings",
+      connected: true,
+      description: "Preferences, connections, and the state of the machine",
+    },
   },
 ];

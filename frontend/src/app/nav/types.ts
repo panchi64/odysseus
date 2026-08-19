@@ -18,9 +18,9 @@ export interface NavItem {
   connected?: boolean;
 }
 
-/** A top-level destination group. Exactly one area is active at a time, and which
- *  one is derived from the route — never stored — so a deep link, the back
- *  button, and a search jump all reconcile the switcher on their own. */
+/** A group of pages. Exactly one area is shown at a time, and which one is
+ *  derived from the route — never stored — so a deep link, the back button, and
+ *  a search jump all reconcile the switcher on their own. */
 export interface NavArea {
   id: string;
   /** Switcher label, uppercase. */
@@ -28,17 +28,23 @@ export interface NavArea {
   icon: IconName;
   description: string;
   items: NavItem[];
-  /** Pin this area's entry point outside the switcher so it's always one click
-   *  away: `top` sits under the switcher, `footer` beside OPERATOR/LOCK. */
-  anchor?: "top" | "footer";
-  /** Which href the pinned row points at, when it isn't the first item. */
-  anchorHref?: string;
-  /** Label for the pinned row, when it shouldn't read as the area name. */
-  anchorLabel?: string;
 }
 
-/** An item paired with the area it belongs to — the unit search returns. */
+/** A destination kept outside the switcher, always one click away. A pin is a
+ *  single page, not a group — that is why it isn't an area with one item: the
+ *  switcher lists groups, and a lone page in that list has nothing to switch to. */
+export interface NavPin {
+  /** `top` sits above the switcher, `footer` beside OPERATOR/LOCK. */
+  slot: "top" | "footer";
+  /** The page the pin opens. It may point at a page that also lives in an area
+   *  (Settings opens the first SYSTEM page), in which case the area still owns
+   *  it and the pin is only a shortcut. */
+  item: NavItem;
+}
+
+/** An item paired with the area that owns it — the unit search returns. A pin
+ *  with no area of its own (Chat) matches with `area` undefined. */
 export interface NavMatch {
   item: NavItem;
-  area: NavArea;
+  area?: NavArea;
 }
