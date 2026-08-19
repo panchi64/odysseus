@@ -15,10 +15,14 @@ from .models import (
     KvCacheType,
     LaunchOptions,
     ManagedModelView,
+    ModelSource,
+    ServeStage,
+    ServeStageInfo,
     ServeState,
     Workload,
+    emit_flag,
+    flag_names,
     validate_extra_args,
-    validate_options,
 )
 from .paths import ServingPaths
 from .service import ServingService
@@ -30,10 +34,14 @@ __all__ = [
     "KvCacheType",
     "LaunchOptions",
     "ManagedModelView",
+    "ModelSource",
+    "ServeStage",
+    "ServeStageInfo",
     "ServeState",
     "ServingPaths",
     "ServingService",
     "Workload",
+    "emit_flag",
+    "flag_names",
     "validate_extra_args",
-    "validate_options",
 ]

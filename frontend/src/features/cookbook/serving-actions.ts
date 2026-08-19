@@ -58,11 +58,13 @@ export function useManagedModelActions(
   }
 
   async function remove(model: ManagedModel): Promise<void> {
+    const local = model.source === "local";
     const ok = await confirm({
-      title: `Delete ${model.hfRepo}?`,
-      detail:
-        "This stops the model and removes its managed record. Downloaded weights stay on disk.",
-      confirmLabel: "DELETE",
+      title: local ? `Remove ${model.hfRepo}?` : `Delete ${model.hfRepo}?`,
+      detail: local
+        ? "This stops the model and removes it from this list. Your model files are left exactly where they are."
+        : "This stops the model and removes its managed record. Downloaded weights stay on disk.",
+      confirmLabel: local ? "REMOVE" : "DELETE",
       tone: "alert",
     });
     if (!ok) return;

@@ -20,6 +20,7 @@ from sqlalchemy import Engine
 
 from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from core.vault import Vault
+from models._fields import utcnow
 from models.serving import ManagedModel
 from services.cookbook import CookbookService
 from services.credential_store import CredentialStore
@@ -34,11 +35,14 @@ from .models import (
     EngineRecommendation,
     LaunchOptions,
     ManagedModelView,
+    ModelSource,
+    ServeStage,
+    ServeStageInfo,
     ServeState,
     Workload,
 )
 from .paths import ServingPaths, _safe, dir_size
-from .store import ManagedModelStore, launch_options
+from .store import ManagedModelStore, launch_options, model_source
 from .supervisor import EngineExitedDuringStartup, ProcessSupervisor
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,13 @@ logger = logging.getLogger(__name__)
 # How many times to (re)allocate a port and spawn before giving up — closes the
 # bind-to-0 → spawn race where the allocated port is taken before the engine binds it.
 _SPAWN_ATTEMPTS = 3
+# How long an exit can take and still look like the port race rather than a failed model
+# load. A losing bind fails on the first syscall; anything that ran longer was working.
+_RACE_EXIT_S = 5.0
+# The role a chat-capable model auto-binds to when the operator has nothing else usable.
+_DEFAULT_CHAT_ROLE = "main"
+# Distinguishes "not looked at yet" from a cached "this model has no MTP" (None).
+_UNREAD = object()
 # The operator-settable preference key for the local models directory.
 _MODELS_DIR_KEY = "serving.models_dir"
 # The credential-store id the operator's optional HuggingFace token is stored under.
@@ -123,6 +134,13 @@ class ServingService:
         self._credentials = credentials
         # In-flight serve jobs (download → spawn → register), one per managed model.
         self._serve_tasks: dict[str, asyncio.Task] = {}
+        # What each starting model is doing right now. In-memory like download progress:
+        # it describes a live process, so it means nothing after a restart and needs no
+        # column. Overlaid onto the view in `status`.
+        self._stages: dict[str, ServeStageInfo] = {}
+        # artifact path → its draft-token capability note (None = none). Memoized because
+        # answering means reading the artifact and `status` is polled every second.
+        self._speculative: dict[str, str | None] = {}
         # Serializes serve admission so the headroom check and the state reservation it
         # guards are atomic (two concurrent serves can't both pass a stale resident set).
         self._serve_lock = asyncio.Lock()
@@ -134,11 +152,19 @@ class ServingService:
         recs = recommend.recommend(profile)
         # `available` (can the host run it) is already honest from the profile; overlay
         # `installed` (is the runtime actually present) so the UI shows "ready" vs
-        # "downloads the engine on first use" instead of guessing.
+        # "downloads the engine on first use" instead of guessing, and the adapter's own
+        # tunable fields so the form offers exactly what will reach a process.
         for rec in recs:
             adapter = self._adapters.get(rec.engine)
             rec.installed = bool(rec.available and adapter and await adapter.is_installed())
+            rec.supported_options = sorted(adapter.supported_options) if adapter else []
         return recs
+
+    def validate_options(self, engine: EngineKind, options: LaunchOptions | None) -> None:
+        """Reject launch overrides ``engine`` can't honour. The adapter owns the rule —
+        it is the thing that knows its own flag vocabulary — so this is only the facade
+        the route calls without reaching into the adapter registry itself."""
+        self._adapter(engine).validate_options(options)
 
     async def list_repo_quants(
         self, owner_id: str, engine: EngineKind, repo: str
@@ -212,15 +238,25 @@ class ServingService:
         return await self._credentials.get_secret(owner_id, _HF_SERVICE)
 
     async def _headroom_inputs(
-        self, owner_id: str, engine: EngineKind, repo: str, quant: str | None
+        self,
+        owner_id: str,
+        engine: EngineKind,
+        repo: str,
+        quant: str | None,
+        local_artifact: Path | None = None,
     ) -> tuple[int | None, int | None]:
         """The resident-independent inputs to the pre-flight guard — the usable VRAM
-        budget and the candidate's HuggingFace-reported size. Gathered **off the serve
-        lock**, since the HF round-trip mustn't serialize concurrent serves; either value
-        ``None`` (unknown budget, or a candidate we can't size) disables the guard."""
+        budget and the candidate's size. Gathered **off the serve lock**, since the HF
+        round-trip mustn't serialize concurrent serves; either value ``None`` (unknown
+        budget, or a candidate we can't size) disables the guard.
+
+        A model already on disk is sized from the disk — asking HuggingFace about a repo
+        id we invented from a local path would size the wrong thing, or nothing."""
         usable = recommend.usable_budget(recommend.vram_budget(await self._cookbook.detect()))
         if usable is None:
             return None, None
+        if local_artifact is not None:
+            return usable, await asyncio.to_thread(_artifact_bytes, local_artifact)
         token = await self._hf_token(owner_id)
         need = await asyncio.to_thread(
             self._adapter(engine).download_size, repo, quant, token
@@ -276,6 +312,60 @@ class ServingService:
         refreshed = await self._store.get(row.id)
         return self._store.to_view(refreshed or row)
 
+    async def import_local(
+        self,
+        owner_id: str,
+        engine: EngineKind,
+        path: str,
+        *,
+        workload: Workload = Workload.chat,
+        name: str | None = None,
+    ) -> ManagedModelView:
+        """Register weights the operator already has on disk as a managed model, ready to
+        serve without downloading anything.
+
+        The path is theirs — we read it where it is and never move, rewrite, or (on
+        delete) remove it. The adapter validates the shape up front so a mistyped path is
+        a clear rejection now rather than a failed spawn minutes later."""
+        adapter = self._adapter(engine)
+        if not await adapter.is_available():
+            raise ServingUnavailableError(
+                f"the {engine.value} engine is not available on this host"
+            )
+        artifact = Path(path.strip()).expanduser()
+        if not str(artifact) or not artifact.is_absolute():
+            raise ServingError("point at a full path, starting from the root of the disk")
+        await asyncio.to_thread(adapter.validate_artifact, artifact)
+        # A folder keeps its whole name: `Path.stem` truncates at the last dot, which
+        # mangles exactly the names MLX snapshots carry (`Qwen2.5-7B-…` → `Qwen2`) — and
+        # since this is the row's natural key, two of them would collide onto one row.
+        # Only a file's extension is worth dropping.
+        display = (name or "").strip() or (
+            artifact.name if artifact.is_dir() else artifact.stem or artifact.name
+        )
+        # Re-pointing an entry that is currently serving must tear the engine down first:
+        # the row is about to be reset to `stopped`, and an engine left running behind it
+        # would be unreachable to stop and still advertising itself as live.
+        existing = await self._store.find(owner_id, engine, display)
+        if existing is not None:
+            await self._halt(owner_id, existing.id)
+            if existing.endpoint_id:
+                with suppress(NotFoundError):
+                    await self._registry.update_endpoint(
+                        owner_id, existing.endpoint_id, live_status="stopped"
+                    )
+        row = await self._store.get_or_create(
+            owner_id,
+            engine,
+            display,
+            workload,
+            None,
+            source=ModelSource.local,
+            artifact_path=str(artifact),
+            state=ServeState.stopped,
+        )
+        return self._store.to_view(row)
+
     def _start_download(
         self,
         row: ManagedModel,
@@ -330,8 +420,19 @@ class ServingService:
                 f"the {engine.value} engine is not available on this host"
             )
         # Gather the guard's slow inputs (a HuggingFace size lookup) before taking the
-        # lock, so concurrent serves don't serialize on a network round-trip.
-        usable, need = await self._headroom_inputs(owner_id, engine, repo, quant)
+        # lock, so concurrent serves don't serialize on a network round-trip. A model
+        # imported from disk is sized locally instead.
+        existing = await self._store.find(owner_id, engine, repo)
+        local_artifact = (
+            Path(existing.artifact_path)
+            if existing is not None
+            and model_source(existing) is ModelSource.local
+            and existing.artifact_path
+            else None
+        )
+        usable, need = await self._headroom_inputs(
+            owner_id, engine, repo, quant, local_artifact
+        )
         async with self._serve_lock:
             # Admission is serialized so two concurrent serves can't both pass the headroom
             # check against a stale resident set and then oversubscribe memory. The check
@@ -367,12 +468,26 @@ class ServingService:
         """The background half of ``serve``: ensure the runtime, download if needed,
         spawn, register, bind. All failures land on the row as ``error`` + a reason."""
         try:
+            # Installing an engine runtime is a once-per-host, multi-minute step (a uv
+            # venv and its wheels, or a prebuilt binary). Say so while it happens rather
+            # than leaving `starting` to read as a stall.
+            if not await self._adapter(engine).is_installed():
+                self._set_stage(managed_id, ServeStage.installing_engine)
             adapter = await self._ready_adapter(engine)
             row = await self._store.get(managed_id)
             if row is None:
                 return
             artifact = Path(row.artifact_path) if row.artifact_path else None
             if artifact is None or not artifact.exists():
+                if model_source(row) is ModelSource.local:
+                    # Nothing to fall back on: these weights are the operator's, at a path
+                    # they chose. Re-downloading a repo id we invented from that path
+                    # would fetch something else entirely.
+                    raise ServingError(
+                        f"the model at {row.artifact_path} is no longer there — point at "
+                        "it again, or remove this entry"
+                    )
+                self._clear_stage(managed_id)
                 await self._store.update(managed_id, state=ServeState.downloading, last_error=None)
                 dest = await self._model_dest(owner_id, engine, repo)
                 token = await self._hf_token(owner_id)
@@ -387,6 +502,12 @@ class ServingService:
 
             await self._store.update(managed_id, state=ServeState.starting, last_error=None)
             model_id = adapter.resolved_model_id(repo, artifact)
+            # Loading weights is the other long step, and on an engine that loads before
+            # it binds its port it is the *whole* wait — carry the budget so the UI can
+            # say how long it may honestly take.
+            self._set_stage(
+                managed_id, ServeStage.loading_model, timeout_s=adapter.startup_timeout_s
+            )
             # The overrides live on the row, written by `serve`, so a re-serve reuses what
             # the operator last set without the caller having to thread them through.
             proc, port, base_url = await self._spawn_engine(
@@ -398,16 +519,12 @@ class ServingService:
                 launch_options(row),
             )
             endpoint = await self._ensure_endpoint(
-                owner_id, row, base_url, model_id, adapter, port
+                owner_id, row, base_url, model_id, adapter, port, artifact
             )
             # Bind the role before declaring "running", so that state means fully usable
             # (a rejected bind surfaces as last_error but leaves the engine up).
-            bind_error = (
-                await self._bind_role(
-                    owner_id, role, endpoint.id, model_id, Workload(row.workload)
-                )
-                if role is not None
-                else None
+            bind_error = await self._bind_after_serve(
+                owner_id, role, endpoint.id, model_id, Workload(row.workload)
             )
             await self._store.update(
                 managed_id,
@@ -420,12 +537,71 @@ class ServingService:
         except asyncio.CancelledError:
             raise
         except ServingError as exc:
-            await self._store.update(managed_id, state=ServeState.error, last_error=str(exc))
+            await self._fail_serve(managed_id, str(exc))
         except Exception:
             logger.exception("serving: serve failed for %s", managed_id)
-            await self._store.update(
-                managed_id, state=ServeState.error, last_error="serving the model failed"
-            )
+            await self._fail_serve(managed_id, "serving the model failed")
+        finally:
+            # Every exit — served, refused, cancelled — leaves nothing "starting".
+            self._clear_stage(managed_id)
+
+    async def _fail_serve(self, managed_id: str, message: str) -> None:
+        """Land a failed serve. The row carries the reason **and** the endpoint stops
+        claiming to be running — both halves, because a serve can fail after the endpoint
+        exists (the engine is up, then the bind or the final write goes wrong). Resolution
+        reads ``live_status``, so an endpoint left at "running" behind a failed serve keeps
+        sending its role's requests to a port with nothing listening, and the row it would
+        have been reconciled from is now terminal and no longer swept at startup.
+
+        The endpoint is read back from the store rather than from the row captured at
+        entry: this attempt may be the one that created it."""
+        await self._store.update(
+            managed_id, state=ServeState.error, last_error=message, port=None, pid=None
+        )
+        row = await self._store.get(managed_id)
+        if row is not None and row.endpoint_id:
+            with suppress(Exception):
+                await self._registry.update_endpoint(
+                    row.owner_id, row.endpoint_id, live_status="stopped"
+                )
+
+    # --- the starting stage (in-memory, like download progress) -----------
+
+    def _set_stage(
+        self, managed_id: str, stage: ServeStage, *, timeout_s: float | None = None
+    ) -> None:
+        self._stages[managed_id] = ServeStageInfo(
+            stage=stage, started_at=utcnow(), timeout_s=timeout_s
+        )
+
+    def _clear_stage(self, managed_id: str) -> None:
+        self._stages.pop(managed_id, None)
+
+    async def _bind_after_serve(
+        self,
+        owner_id: str,
+        role: str | None,
+        endpoint_id: str,
+        model_id: str,
+        workload: Workload,
+    ) -> str | None:
+        """Bind the newly-served model to a role, and decide which one when the caller
+        named none.
+
+        An explicit role is honoured as asked. Otherwise a chat-capable model claims the
+        chat role **only when nothing else usable is bound** — the case where the operator
+        has just brought up their one live model and would otherwise have to go and pick
+        it. If a working chat model is already bound, that is their setting and it stands;
+        choosing between two live models is the operator's call, not ours."""
+        if role is not None:
+            return await self._bind_role(owner_id, role, endpoint_id, model_id, workload)
+        if workload == Workload.embedding:
+            return None
+        if await self._registry.role_is_usable(owner_id, _DEFAULT_CHAT_ROLE):
+            return None
+        return await self._bind_role(
+            owner_id, _DEFAULT_CHAT_ROLE, endpoint_id, model_id, workload
+        )
 
     async def _spawn_engine(
         self,
@@ -437,8 +613,10 @@ class ServingService:
         options: LaunchOptions | None = None,
     ):
         """Allocate a port, build the engine argv, and spawn it — retrying on a fresh port
-        when the engine exits before it binds (the bind-to-0 → spawn race, or a port taken
-        out from under us). A startup *timeout* (a slow-loading model) is not retried."""
+        when the engine exits *quickly* before it binds (the bind-to-0 → spawn race, or a
+        port taken out from under us). A startup *timeout* (a slow-loading model) is not
+        retried, and neither is a slow exit: an engine that ran for a while and then died
+        was loading a model, so re-running that load only pays the same failure again."""
         for attempt in range(_SPAWN_ATTEMPTS):
             port = self._supervisor.allocate_port()
             spec = adapter.serve_spec(artifact, port, workload, model_id, options)
@@ -451,9 +629,10 @@ class ServingService:
                     base_url=base_url,
                     on_crash=self._make_on_crash(),
                     log_path=self._paths.log_file(managed_id),
+                    timeout_s=adapter.startup_timeout_s,
                 )
-            except EngineExitedDuringStartup:
-                if attempt == _SPAWN_ATTEMPTS - 1:
+            except EngineExitedDuringStartup as exc:
+                if attempt == _SPAWN_ATTEMPTS - 1 or exc.elapsed_s > _RACE_EXIT_S:
                     raise
                 logger.warning(
                     "serving: engine for %s exited during startup; retrying on a fresh port",
@@ -546,7 +725,10 @@ class ServingService:
         if row.endpoint_id:
             with suppress(NotFoundError):
                 await self._registry.delete_endpoint(owner_id, row.endpoint_id)
-        if row.artifact_path:
+        # Only weights we fetched into the models dir are ours to remove. A model the
+        # operator imported lives wherever they keep it — forgetting the row must never
+        # touch the files.
+        if row.artifact_path and model_source(row) is ModelSource.huggingface:
             await asyncio.to_thread(_remove_model_dir, row.artifact_path, row.hf_repo)
         await self._store.delete(managed_id)
 
@@ -576,6 +758,7 @@ class ServingService:
         model_id: str,
         adapter: EngineAdapter,
         port: int,
+        artifact: Path,
     ):
         """Register (or refresh) the registry endpoint for a served model. Re-serving
         reuses the same endpoint so its role bindings survive a stop/start cycle."""
@@ -590,6 +773,15 @@ class ServingService:
         # window the model doesn't have. A failed probe yields None, which
         # `update_endpoint` skips, so an unreachable server leaves the old value intact.
         context_window = await adapter.probe_context_window(port) or adapter.context_window_hint
+        # Both capabilities come from what was actually loaded, for the same reason the
+        # window does: tool-calling is a property of the model's chat template and vision
+        # of its config, neither of which the operator's workload choice can know. Both
+        # are refreshed on every serve, so re-serving a different model on the same row
+        # can't leave the endpoint advertising the previous one's abilities.
+        native_tools = await adapter.probe_native_tools(port)
+        vision = await asyncio.to_thread(
+            adapter.detect_vision, artifact, Workload(row.workload)
+        )
         if row.endpoint_id:
             try:
                 await self._registry.update_endpoint(
@@ -598,8 +790,16 @@ class ServingService:
                     base_url=base_url,
                     model=model_id,
                     live_status="running",
-                    native_tools=adapter.native_tools_default,
+                    native_tools=native_tools,
+                    vision=vision,
                     context_window=context_window,
+                )
+                # A role pinned to this endpoint names a model *string*, sent verbatim on
+                # every request. The id an engine answers to can change under it — MLX
+                # keys a model by the path it loaded from — so a pin left naming the old
+                # one would ask for a model the server doesn't have.
+                await self._registry.repin_roles_for_endpoint(
+                    owner_id, row.endpoint_id, model_id
                 )
                 return await self._registry.get_endpoint(owner_id, row.endpoint_id)
             except NotFoundError:
@@ -612,8 +812,8 @@ class ServingService:
             live_status="running",
             base_url=base_url,
             model=model_id,
-            native_tools=adapter.native_tools_default,
-            vision=Workload(row.workload) == Workload.vision,
+            native_tools=native_tools,
+            vision=vision,
             context_window=context_window,
         )
 
@@ -633,8 +833,34 @@ class ServingService:
             progress = self._downloads.progress(row.id)
             if progress is not None:
                 view.progress = progress
+            # Only meaningful while the row says it's starting — a stage left over from a
+            # job that has since settled would render as a wait that isn't happening.
+            if view.state == ServeState.starting:
+                view.stage = self._stages.get(row.id)
+            view.speculative = await self._speculative_note(row)
             views.append(view)
         return views
+
+    async def _speculative_note(self, row: ManagedModel) -> str | None:
+        """What draft-token capability this model's weights carry, cached per artifact.
+
+        Reading it means touching the file (a GGUF header, a safetensors index), and
+        ``status`` is polled once a second while anything is in flight — so the answer is
+        memoized against the artifact path. It only changes when the artifact does, and a
+        re-download re-points the path, which invalidates the entry by construction."""
+        if not row.artifact_path:
+            return None
+        cached = self._speculative.get(row.artifact_path, _UNREAD)
+        if cached is not _UNREAD:
+            return cached  # type: ignore[return-value]
+        adapter = self._adapters.get(EngineKind(row.engine))
+        note = (
+            await asyncio.to_thread(adapter.describe_speculative, Path(row.artifact_path))
+            if adapter is not None
+            else None
+        )
+        self._speculative[row.artifact_path] = note
+        return note
 
     async def reconcile_on_startup(self) -> None:
         """Clean up after a prior process: any model left mid-flight (running / starting
@@ -661,6 +887,17 @@ class ServingService:
                     )
         if rows:
             logger.info("serving: reconciled %d managed model(s) to stopped", len(rows))
+        # Then the endpoints themselves, independently of the rows. A row that reached a
+        # terminal state while its endpoint still claimed to be running is invisible to
+        # the loop above, and that claim is what resolution trusts — left standing, it
+        # points a role at a dead port for the life of the process.
+        try:
+            cleared = await self._registry.stop_managed_endpoints()
+        except Exception:
+            logger.exception("serving: reconcile could not stand down managed endpoints")
+        else:
+            if cleared:
+                logger.info("serving: stood down %d stale managed endpoint(s)", cleared)
 
     async def shutdown(self) -> None:
         """Stop every running engine and cancel in-flight serve/download work (lifespan

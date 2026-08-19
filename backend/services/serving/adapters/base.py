@@ -12,8 +12,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from core.exceptions import ServingError
+
 from ..download import DownloadSpec
-from ..models import EngineKind, LaunchOptions, Workload
+from ..models import EngineKind, LaunchOptions, Workload, validate_extra_args
 from ..supervisor import ServeSpec
 
 
@@ -25,6 +27,50 @@ class EngineAdapter(ABC):
     # roles at instruct models that support it.
     native_tools_default: bool = True
     context_window_hint: int | None = None
+
+    # --- launch-option vocabulary ----------------------------------------
+    # Kept beside the adapter that emits the flags, so adding an engine can't leave a
+    # central table of someone else's flag names behind.
+
+    # LaunchOptions field names this engine can actually translate. Anything else is
+    # rejected by name rather than stored as tuning that never reaches a process.
+    supported_options: frozenset[str] = frozenset()
+    # Flags the adapter emits itself and the operator may never override: they define
+    # the served model's identity and pin it to loopback.
+    owned_flags: frozenset[str] = frozenset()
+    # How long this engine may take between spawn and serving. Engines differ by more
+    # than jitter: llama.cpp binds its port and then mmaps, while mlx-vlm loads the whole
+    # model inside its lifespan *before* uvicorn binds, so a large model's entire load
+    # sits inside this budget.
+    startup_timeout_s: float = 180.0
+
+    def validate_options(self, options: LaunchOptions | None) -> None:
+        """Reject launch overrides this engine can't honour, by field name, then check
+        the verbatim arguments against :attr:`owned_flags`. Raises ``ServingError``.
+
+        Refusing beats storing: a stored-but-undeliverable option leaves the row carrying
+        tuning that never reaches a process while the form renders it as applied. An
+        all-empty ``LaunchOptions`` is always fine — it asks for nothing."""
+        if options is None:
+            return
+        unsupported = sorted(
+            set(options.model_dump(exclude_defaults=True)) - {"extra_args"} - self.supported_options
+        )
+        if unsupported:
+            raise ServingError(
+                f"the {self.kind.value} engine has no equivalent for "
+                f"{', '.join(unsupported)} — clear it, or pass the engine's own flag "
+                "in the extra arguments"
+            )
+        validate_extra_args(options.extra_args, owned=self.owned_flags)
+
+    def validate_artifact(self, path: Path) -> None:
+        """Confirm ``path`` is a model this engine can actually load — the gate on
+        importing weights the operator already has on disk. Raises ``ServingError`` with
+        what was expected. The default accepts anything that exists; an adapter that
+        knows its own format overrides."""
+        if not path.exists():
+            raise ServingError(f"there is nothing at {path}")
 
     @abstractmethod
     async def is_available(self) -> bool:
@@ -93,6 +139,31 @@ class EngineAdapter(ABC):
         the engine can't report it, so the endpoint falls back to
         :attr:`context_window_hint`."""
         return None
+
+    async def probe_native_tools(self, port: int) -> bool:
+        """Whether the *loaded* model can actually call tools, asked of the running
+        server. Tool-calling is a property of the model's chat template, not of the
+        engine, so an engine that can report it should — the alternative is a chat role
+        bound to a model that silently never calls a tool. Best-effort: an engine that
+        can't tell keeps :attr:`native_tools_default`."""
+        return self.native_tools_default
+
+    def describe_speculative(self, artifact: Path) -> str | None:
+        """What draft-token capability these weights actually carry, phrased for the
+        operator — or ``None`` when they carry none (blocking; run in a thread).
+
+        Multi-token prediction is a *pretraining* property: a model either has the heads
+        or it doesn't, and no flag can add them. It also can't be read off the config —
+        conversions routinely keep ``mtp_num_hidden_layers`` in ``config.json`` long after
+        dropping the tensors — so an adapter that answers this must look at the weights
+        (or, for GGUF, the header) rather than the declaration."""
+        return None
+
+    def detect_vision(self, artifact: Path, workload: Workload) -> bool:
+        """Whether the served model accepts images (blocking — run in a thread). The
+        declared workload is the baseline; an adapter that can read the model's own
+        config says so from the weights instead of from what was asked for."""
+        return workload == Workload.vision
 
     @abstractmethod
     def resolved_model_id(self, repo: str, artifact: Path) -> str:

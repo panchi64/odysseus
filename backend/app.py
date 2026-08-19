@@ -9,6 +9,7 @@ this is the chassis — see ``docs/architecture/README.md``.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 import httpx
@@ -20,6 +21,7 @@ from core.api_scopes import CORE_CLAIMS, ScopeTable
 from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
+from core.devserver import UNGUARDED_RELOAD_WARNING, reload_watches_runtime_state
 from core.vault import Vault
 from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
@@ -128,6 +130,13 @@ async def lifespan(app: FastAPI):
     )
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # `uvicorn app:app --reload` watches the data directory, so the first serve of a model
+    # restarts the server while its engine is installing. Nothing here can stop that — the
+    # reloader is the parent process — but a server that knows it is about to behave that
+    # way should say so, because the symptom (a serve that dies silently) points nowhere
+    # near the cause.
+    if reload_watches_runtime_state(sys.argv, settings.data_dir):
+        logger.warning(UNGUARDED_RELOAD_WARNING, settings.data_dir)
     url = settings.db_url or f"sqlite:///{settings.data_dir / 'app.db'}"
     engine = make_engine(url)
     init_db(engine)

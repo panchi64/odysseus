@@ -13,7 +13,11 @@ import pytest
 from core.exceptions import ServingError
 from services.serving.adapters.fake import FakeAdapter
 from services.serving.models import Workload
-from services.serving.supervisor import ProcessSupervisor, ServeSpec
+from services.serving.supervisor import (
+    EngineExitedDuringStartup,
+    ProcessSupervisor,
+    ServeSpec,
+)
 
 
 def _supervisor() -> ProcessSupervisor:
@@ -86,3 +90,50 @@ async def test_spawn_raises_when_the_engine_never_serves(tmp_path: Path):
             on_crash=_noop_crash, log_path=tmp_path / "m.log",
         )
     assert not sup.is_running("m")
+
+
+async def test_the_per_engine_timeout_overrides_the_constructor_default(tmp_path: Path):
+    # How long "starting" may take is a property of the engine, not of the supervisor:
+    # one binds its port and then loads, another loads the whole model first.
+    sup = ProcessSupervisor(startup_timeout_s=60.0, poll_interval_s=0.05)
+    port = sup.allocate_port()
+    # Never listens, so the wait runs to the deadline — the short override is what makes
+    # this finish in a fraction of a second instead of a minute.
+    never = "import time; time.sleep(30)"
+    spec = ServeSpec(argv=[sys.executable, "-c", never])
+    with pytest.raises(ServingError, match="within 1s"):
+        await sup.spawn(
+            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash, log_path=tmp_path / "m.log", timeout_s=1.0,
+        )
+
+
+async def test_a_fast_exit_reports_how_long_the_engine_lived(tmp_path: Path):
+    # The caller retries a losing port bind but not a failed model load, and the lifetime
+    # is what tells them apart — a bind fails on the first syscall.
+    sup = ProcessSupervisor(startup_timeout_s=5.0, poll_interval_s=0.05)
+    port = sup.allocate_port()
+    spec = ServeSpec(argv=[sys.executable, "-c", "import sys; sys.exit(1)"])
+    with pytest.raises(EngineExitedDuringStartup) as excinfo:
+        await sup.spawn(
+            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash, log_path=tmp_path / "m.log",
+        )
+    assert excinfo.value.elapsed_s < 1.0
+
+
+async def test_a_slow_exit_is_reported_as_slow(tmp_path: Path):
+    # An engine that ran for a while and then died was loading a model; re-running that
+    # load on a fresh port would only pay the same failure again.
+    sup = ProcessSupervisor(startup_timeout_s=5.0, poll_interval_s=0.05)
+    port = sup.allocate_port()
+    dies_late = "import sys, time; time.sleep(0.6); sys.stderr.write('bad weights'); sys.exit(1)"
+    spec = ServeSpec(argv=[sys.executable, "-c", dies_late])
+    with pytest.raises(EngineExitedDuringStartup) as excinfo:
+        await sup.spawn(
+            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash, log_path=tmp_path / "m.log",
+        )
+    assert excinfo.value.elapsed_s >= 0.5
+    # The log tail still rides along, so the row can say what actually went wrong.
+    assert "bad weights" in str(excinfo.value)

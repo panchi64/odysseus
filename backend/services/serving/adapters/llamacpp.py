@@ -28,9 +28,16 @@ import httpx
 
 from core.exceptions import ServingError
 
-from .. import hf
+from .. import gguf, hf
 from ..download import DownloadSpec, worker_spec
-from ..models import EngineKind, LaunchOptions, Workload
+from ..models import (
+    EngineKind,
+    LaunchOptions,
+    SpeculativeMode,
+    Workload,
+    emit_flag,
+    flag_names,
+)
 from ..paths import ServingPaths
 from ..supervisor import ServeSpec
 from .base import EngineAdapter
@@ -64,6 +71,14 @@ class LlamaCppAdapter(EngineAdapter):
     workloads = frozenset({Workload.chat, Workload.embedding})
     native_tools_default = True
     context_window_hint = None
+    supported_options = frozenset(
+        {"context_size", "kv_cache_type", "cache_reuse", "speculative", "draft_model"}
+    )
+    owned_flags = frozenset({"-m", "--model", "--host", "--port", "--alias", "--jinja",
+                             "--embeddings"})
+    # llama-server binds its port early and streams weights in behind it, so this budget
+    # covers startup rather than the whole load.
+    startup_timeout_s = 180.0
 
     def __init__(self, paths: ServingPaths, *, binary_override: str | None = None) -> None:
         self._paths = paths
@@ -133,10 +148,8 @@ class LlamaCppAdapter(EngineAdapter):
         if self._binary is None:
             raise ServingError("llama.cpp is not initialized (call ensure_engine first)")
         opts = options or LaunchOptions()
-        # The operator's opaque arguments go first, so the flags below — which define the
-        # served model's identity and pin it to loopback — always win a conflict. Request
-        # -time validation already rejects those flags; this is the belt to that braces.
-        argv = [self._binary, *opts.extra_args]
+        overrides = flag_names(opts.extra_args)
+        argv = [self._binary]
         argv += [
             "-m", str(artifact),
             "--host", "127.0.0.1",
@@ -150,19 +163,82 @@ class LlamaCppAdapter(EngineAdapter):
             # into the model's GGUF metadata (e.g. CLS for BGE, mean for Nomic);
             # overriding it here would silently mis-pool models that aren't mean-pooled.
             argv += ["--embeddings"]
-        # Everything below is emitted only when the operator set it. llama-server already
-        # auto-sizes slots, GPU layers, flash attention, continuous batching and prompt
-        # caching; naming those here would replace its sizing with a guess.
+        # Everything below is emitted only when the operator set it — and skipped when
+        # their extra arguments already name the same flag, so an override reaches the
+        # engine exactly once. llama-server already auto-sizes slots, GPU layers, flash
+        # attention, continuous batching and prompt caching; naming those here would
+        # replace its sizing with a guess.
         if opts.context_size is not None:
-            argv += ["-c", str(opts.context_size)]
+            argv += emit_flag(
+                "-c", [str(opts.context_size)],
+                aliases=frozenset({"-c", "--ctx-size"}), overrides=overrides,
+            )
         if opts.kv_cache_type is not None:
             # Both halves of the cache together — quantizing K alone is rarely what an
             # operator means. -ctv wants flash attention, which defaults to auto; if the
             # pair is refused, the supervisor captures the startup log into last_error.
-            argv += ["-ctk", opts.kv_cache_type.value, "-ctv", opts.kv_cache_type.value]
+            argv += emit_flag(
+                "-ctk", [opts.kv_cache_type.value],
+                aliases=frozenset({"-ctk", "--cache-type-k"}), overrides=overrides,
+            )
+            argv += emit_flag(
+                "-ctv", [opts.kv_cache_type.value],
+                aliases=frozenset({"-ctv", "--cache-type-v"}), overrides=overrides,
+            )
         if opts.cache_reuse is not None:
-            argv += ["--cache-reuse", str(opts.cache_reuse)]
+            argv += emit_flag(
+                "--cache-reuse", [str(opts.cache_reuse)],
+                aliases=frozenset({"--cache-reuse"}), overrides=overrides,
+            )
+        argv += self._speculative_args(artifact, opts, overrides)
+        # Last, so a repeated flag the adapter also emits resolves to the operator's
+        # value on engines that take the final occurrence.
+        argv += opts.extra_args
         return ServeSpec(argv=argv, cwd=Path(self._binary).parent)
+
+    def _speculative_args(
+        self, artifact: Path, opts: LaunchOptions, overrides: set[str]
+    ) -> list[str]:
+        """Draft-token flags, when this model can actually draft.
+
+        llama.cpp carries MTP heads **inside** the GGUF, so there is nothing to download
+        and nothing for the operator to point at — the only question is whether these
+        particular weights have them, which the header answers. An explicit
+        ``draft_model`` is the separate-drafter case and takes precedence.
+        """
+        if opts.speculative is SpeculativeMode.off:
+            return []
+        if overrides & {"--spec-type", "-md", "--model-draft", "--spec-draft-model"}:
+            return []  # the operator is driving this themselves
+        if opts.draft_model:
+            # A separate drafter: MTP when the *target* has the heads to verify against,
+            # otherwise the ordinary draft-model path.
+            kind = "draft-mtp" if self.mtp_layers(artifact) else "draft-simple"
+            return ["--spec-draft-model", opts.draft_model, "--spec-type", kind]
+        if self.mtp_layers(artifact):
+            return ["--spec-type", "draft-mtp"]
+        return []
+
+    def mtp_layers(self, artifact: Path) -> int:
+        """How many multi-token-prediction layers this GGUF carries (0 = none). Reads
+        only the header, so it costs the same on a 2GB file as a 200GB one."""
+        return gguf.mtp_layers(artifact)
+
+    def describe_speculative(self, artifact: Path) -> str | None:
+        layers = self.mtp_layers(artifact)
+        return f"{layers} MTP layer{'s' if layers != 1 else ''} in the weights" if layers else None
+
+    def validate_artifact(self, path: Path) -> None:
+        # llama.cpp serves one GGUF file, not a directory of weights.
+        if not path.exists():
+            raise ServingError(f"there is nothing at {path}")
+        if path.is_dir():
+            raise ServingError(
+                f"{path} is a folder — llama.cpp serves a single .gguf file, so point it "
+                "at the file itself"
+            )
+        if path.suffix.lower() != ".gguf":
+            raise ServingError(f"{path.name} is not a .gguf file — llama.cpp only serves GGUF")
 
     async def probe_context_window(self, port: int) -> int | None:
         """The per-slot context of the running server, read from ``/props``. This is the

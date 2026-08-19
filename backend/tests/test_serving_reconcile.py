@@ -109,3 +109,55 @@ async def test_reconcile_is_a_noop_when_nothing_was_running(tmp_path: Path):
 
     reconciled = await service._store.get(row.id)
     assert reconciled is not None and reconciled.state == ServeState.stopped.value
+
+
+async def test_reconcile_stands_down_an_endpoint_its_row_no_longer_points_at(
+    tmp_path: Path,
+):
+    """The row-driven sweep only sees non-terminal rows, so a serve that failed *after*
+    its endpoint came up leaves the endpoint claiming to be running with nothing behind
+    it. Resolution trusts that claim, so the stale endpoint has to be stood down on its
+    own account — otherwise every request for its role dials a dead port until someone
+    re-serves by hand."""
+    service, registry = await _service(tmp_path)
+    endpoint = await registry.create_endpoint(
+        OWNER,
+        name="Local · acme/m",
+        provider="local",
+        managed=True,
+        live_status="running",
+        base_url="http://127.0.0.1:9/v1",
+        model="acme/m",
+        native_tools=True,
+    )
+    await registry.set_role(OWNER, "main", [endpoint.id])
+    row = await service._store.get_or_create(
+        OWNER, EngineKind.llama_cpp, "acme/m", Workload.chat, None
+    )
+    # Terminal, so `active_rows` skips it — and the endpoint was never cleared.
+    await service._store.update(row.id, state=ServeState.error, endpoint_id=endpoint.id)
+
+    await service.reconcile_on_startup()
+
+    reconciled = await registry.get_endpoint(OWNER, endpoint.id)
+    assert reconciled.live_status == "stopped"
+    assert reconciled.enabled is True  # the operator's own switch is untouched
+    assert await registry.get_role(OWNER, "main") == [endpoint.id]
+
+
+async def test_reconcile_leaves_unmanaged_endpoints_alone(tmp_path: Path):
+    """An endpoint we don't serve is somebody else's process — its liveness is none of
+    our business, and clearing it would bench a working remote endpoint on every boot."""
+    service, registry = await _service(tmp_path)
+    endpoint = await registry.create_endpoint(
+        OWNER,
+        name="Someone else's server",
+        provider="local",
+        managed=False,
+        live_status="running",
+        base_url="http://127.0.0.1:1234/v1",
+    )
+
+    await service.reconcile_on_startup()
+
+    assert (await registry.get_endpoint(OWNER, endpoint.id)).live_status == "running"

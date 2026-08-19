@@ -233,6 +233,23 @@ async def test_embedding_role_persists_the_picked_model(monkeypatch):
     assert spec.model == "text-embed-3"  # resolution honors the pinned model
 
 
+async def test_an_unreachable_embedding_endpoint_degrades_instead_of_raising(monkeypatch):
+    """A local model server that isn't running is the ordinary case, and every caller
+    already handles "degraded" by falling back to keyword recall. Raised raw it instead
+    buries a connection traceback in the log on every persisted turn — and never names
+    the address, which is the one fact needed to fix it. The bind-time probe already
+    draws this line; runtime has to draw it the same way."""
+    reg = await _registry()
+    ep = await reg.create_endpoint(
+        OWNER, name="local", base_url="http://127.0.0.1:9/v1", model="embed"
+    )
+    monkeypatch.setattr(embeddings, "probe_embedding", _passing_probe)
+    await reg.set_role(OWNER, "embedding", [ep.id])
+
+    with pytest.raises(DegradedCapabilityError, match="127.0.0.1:9"):
+        await embeddings.RegistryEmbedder(reg).embed(OWNER, ["hello"])
+
+
 async def test_unknown_endpoint_in_chain_is_not_found():
     reg = await _registry()
     with pytest.raises(NotFoundError):

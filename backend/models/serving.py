@@ -49,6 +49,11 @@ class ManagedModel(SQLModel, table=True):
     # Resolved local artifact under data/ — a GGUF file (llama.cpp) or a snapshot
     # dir (MLX). None until the download completes.
     artifact_path: str | None = None
+    # ModelSource: "huggingface" (we fetched it, so we may remove it) | "local" (the
+    # operator pointed us at weights they already had — read where they are, never
+    # moved, never deleted). Rows predating this column are downloads, which is the
+    # default.
+    source: str = Field(default="huggingface", nullable=False)
     state: str = "stopped"  # ServeState: stopped|downloading|starting|running|error
     port: int | None = None  # allocated host port while running
     pid: int | None = None  # OS pid while running (for orphan reconciliation)

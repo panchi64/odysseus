@@ -90,10 +90,12 @@ The central abstraction is a **Run**: one server-side, background-executing unit
 ```bash
 cd backend
 uv sync                                       # creates .venv (Python 3.14), installs deps
-uv run uvicorn app:app --reload --port 8000   # http://localhost:8000  (/health to check)
+uv run python dev.py                          # http://localhost:8000  (/health to check)
 uv run pytest                                 # the test suite
 uv run ruff check .                           # lint
 ```
+`dev.py` is `uvicorn app:app` with auto-reload, minus the directories that hold runtime state rather than source — without that, installing an inference engine on the first serve restarts the server in the middle of the serve that triggered it. To run without reload (production), use `uv run uvicorn app:app` directly.
+
 On first run, create the operator account via the frontend (the password you choose also derives the at-rest encryption key). A container runtime (Docker/Podman) is needed for the code sandbox and managed web search; without one, those capabilities report unavailable rather than falling back to the host.
 
 **Frontend** (requires [bun](https://bun.sh)):

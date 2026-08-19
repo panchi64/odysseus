@@ -14,13 +14,14 @@ from pydantic import BaseModel
 from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
 from routes import deps
 from routes.deps import OPERATOR_ID
+from services import host_picker
+from services.host_picker import PickerAvailability, PickMode
 from services.serving import (
     EngineKind,
     EngineRecommendation,
     LaunchOptions,
     ManagedModelView,
     Workload,
-    validate_options,
 )
 
 router = APIRouter(prefix="/models/serving", tags=["serving"])
@@ -44,8 +45,30 @@ class ServeRequest(BaseModel):
     options: LaunchOptions | None = None
 
 
+class ImportRequest(BaseModel):
+    """Weights the operator already has on disk. ``path`` is absolute and stays where it
+    is — nothing is copied into the models directory, and deleting the entry later leaves
+    the files alone."""
+
+    engine: EngineKind
+    path: str
+    workload: Workload = Workload.chat
+    name: str | None = None  # display name; defaults to the file/folder's own
+
+
 class ModelsDirBody(BaseModel):
     models_dir: str
+
+
+class PickRequest(BaseModel):
+    mode: PickMode = "file"
+    title: str = "Choose"
+    start_dir: str | None = None
+    extensions: list[str] | None = None  # bare, e.g. ["gguf"]
+
+
+class PickResult(BaseModel):
+    path: str | None = None  # None ⇒ the operator cancelled the dialog
 
 
 @router.get("/recommendations", response_model=list[EngineRecommendation])
@@ -92,13 +115,56 @@ async def download_model(request: Request, body: DownloadRequest) -> ManagedMode
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
+@router.post("/import", response_model=ManagedModelView, status_code=201)
+async def import_model(request: Request, body: ImportRequest) -> ManagedModelView:
+    """Register a model already on disk, so it can be served without downloading."""
+    try:
+        return await deps.serving(request).import_local(
+            OPERATOR_ID,
+            body.engine,
+            body.path,
+            workload=body.workload,
+            name=body.name,
+        )
+    except ServingUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except ServingError as exc:
+        # A path that doesn't exist or isn't this engine's format is the operator's to
+        # correct, so it comes back as a 400 the form can show inline.
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.get("/file-picker", response_model=PickerAvailability)
+async def file_picker_availability() -> PickerAvailability:
+    """Whether this host can open a native chooser. The path field works either way —
+    this only decides whether a BROWSE control is worth offering."""
+    return host_picker.probe()
+
+
+@router.post("/file-picker", response_model=PickResult)
+async def open_file_picker(body: PickRequest) -> PickResult:
+    """Open a native file/folder dialog on the host and return what was chosen."""
+    try:
+        path = await host_picker.pick(
+            body.mode,
+            title=body.title,
+            start_dir=body.start_dir,
+            extensions=body.extensions,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return PickResult(path=path)
+
+
 @router.post("/serve", response_model=ManagedModelView)
 async def serve_model(request: Request, body: ServeRequest) -> ManagedModelView:
     # A bad flag (or one aimed at an engine that can't use it) is the operator's mistake,
     # not an engine fault — reject it as a 400 the form can show, rather than letting it
     # become a failed spawn minutes later or tuning that is stored but never applied.
     try:
-        validate_options(body.engine, body.options)
+        deps.serving(request).validate_options(body.engine, body.options)
+    except ServingUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except ServingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     try:

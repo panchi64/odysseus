@@ -89,6 +89,7 @@ export {
   type ButtonSize,
 } from "./components/Button";
 export { Input, type InputProps } from "./components/Input";
+export { PathInput, type PathInputProps } from "./components/PathInput";
 export { Textarea, type TextareaProps } from "./components/Textarea";
 export {
   ExternalLink,

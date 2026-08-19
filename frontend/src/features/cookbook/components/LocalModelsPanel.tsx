@@ -2,8 +2,10 @@ import { For, Show, type JSX } from "solid-js";
 import { EmptyState, LoadingText, Panel, Resource, Stack, toast } from "~/ui";
 import {
   downloadModel,
+  supportedOptionsFor,
   useEngineSelection,
   useManagedModels,
+  usePathPicker,
   useRecommendations,
   type ManagedModelsController,
 } from "../serving";
@@ -12,9 +14,11 @@ import {
   type ManagedModelActions,
 } from "../serving-actions";
 import type { EngineKind, Workload } from "~/lib/api/models-types";
+import type { EngineRecommendation } from "../model";
 import { ManagedModelRow } from "./ManagedModelRow";
 import { EnginePicker } from "./EnginePicker";
 import { EngineSwitchNote } from "./EngineSwitchNote";
+import { LocalArtifactForm } from "./LocalArtifactForm";
 import { RepoDownloadForm } from "./RepoDownloadForm";
 import { RepoFinderHint } from "./RepoFinderHint";
 import { HfTokenNotice } from "./HfTokenNotice";
@@ -31,6 +35,7 @@ export function LocalModelsPanel(): JSX.Element {
   const recommendations = useRecommendations();
   const managed = useManagedModels();
   const actions = useManagedModelActions(managed);
+  const picker = usePathPicker();
 
   // The selected engine (preselected to the host's top pick, self-healing) drives the
   // free-text download below.
@@ -102,21 +107,36 @@ export function LocalModelsPanel(): JSX.Element {
         </Stack>
       </Panel>
 
+      <Panel label="USE A MODEL ON DISK">
+        <LocalArtifactForm
+          engine={selectedEngine()}
+          picker={picker()}
+          onImported={() => managed.refresh()}
+        />
+      </Panel>
+
       <ModelsDirSection />
 
-      <ManagedModelsPanel controller={managed} actions={actions} />
+      <ManagedModelsPanel
+        controller={managed}
+        actions={actions}
+        recommendations={recommendations.latest}
+      />
     </Stack>
   );
 }
 
 /** The MANAGED MODELS list, driven by the polling controller — one row per model
- *  with its state, (while downloading) live progress, and lifecycle actions.
- *  Empty until the first download lands. A re-served model keeps whatever role it
- *  carried before it was stopped (this panel binds none — the headline GET STARTED
- *  flow owns role binding). */
+ *  with its state, live progress while downloading, the named step while starting,
+ *  per-model tuning, and lifecycle actions. Empty until the first model is added.
+ *
+ *  This panel names no role on serve. The backend claims the chat role itself when
+ *  nothing else usable is bound, and each running row offers USE FOR CHAT for the case
+ *  where more than one model is live and the choice is genuinely the operator's. */
 function ManagedModelsPanel(props: {
   controller: ManagedModelsController;
   actions: ManagedModelActions;
+  recommendations: EngineRecommendation[] | undefined;
 }): JSX.Element {
   return (
     <Panel label="MANAGED MODELS" flush>
@@ -143,12 +163,17 @@ function ManagedModelsPanel(props: {
               {(model) => (
                 <ManagedModelRow
                   model={model}
-                  onServe={() =>
+                  supportedOptions={supportedOptionsFor(
+                    props.recommendations,
+                    model.engine,
+                  )}
+                  onServe={(options) =>
                     props.actions.serve({
                       engine: model.engine,
                       repo: model.hfRepo,
                       quant: model.quant ?? undefined,
                       workload: model.workload,
+                      options,
                     })
                   }
                   onStop={() => props.actions.stop(model)}

@@ -1,9 +1,12 @@
 """Per-model engine launch overrides — validation, argv composition, and persistence.
 
-The load-bearing property under test is **absent means absent**: an unset field emits no
-flag, so llama.cpp's own auto-sizing (server slots, GPU layers, flash attention, continuous
-batching, prompt caching) survives untouched. A regression here would look like a working
-server that quietly performs worse than the one it replaced.
+Two load-bearing properties are under test. **Absent means absent**: an unset field emits
+no flag, so llama.cpp's own auto-sizing (server slots, GPU layers, flash attention,
+continuous batching, prompt caching) survives untouched — a regression there looks like a
+working server that quietly performs worse than the one it replaced. And **extra arguments
+override**: naming a curated flag by hand suppresses the adapter's own emission of it, so
+the operator's value is the only one on the command line rather than a duplicate the
+engine resolves by its own rules.
 """
 
 from __future__ import annotations
@@ -16,27 +19,17 @@ import pytest
 from core.exceptions import ServingError
 from models.serving import ManagedModel
 from services.serving.adapters.llamacpp import LlamaCppAdapter
+from services.serving.adapters.mlx import MlxAdapter
 from services.serving.models import (
-    EngineKind,
     KvCacheType,
     LaunchOptions,
     Workload,
     validate_extra_args,
-    validate_options,
 )
 from services.serving.paths import ServingPaths
 from services.serving.store import launch_options
 
 # --- extra-arg validation ---------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "flag",
-    ["-c", "--ctx-size", "-ctk", "--cache-type-k", "-ctv", "--cache-type-v", "--cache-reuse"],
-)
-def test_flags_owned_by_the_curated_fields_are_rejected(flag):
-    with pytest.raises(ServingError, match="fields above"):
-        validate_extra_args([flag, "4096"])
 
 
 @pytest.mark.parametrize(
@@ -46,37 +39,61 @@ def test_flags_owned_by_the_platform_are_rejected(flag):
     # --host is the one that matters beyond tidiness: 0.0.0.0 would put the model server
     # on the network, outside the loopback assumption the rest of serving is built on.
     with pytest.raises(ServingError, match="managed by the platform"):
-        validate_extra_args([flag, "0.0.0.0"])
+        validate_extra_args([flag, "0.0.0.0"], owned=LlamaCppAdapter.owned_flags)
 
 
-def test_equals_form_is_caught_too():
-    with pytest.raises(ServingError):
-        validate_extra_args(["--ctx-size=8192"])
+def test_the_equals_form_is_caught_too():
+    with pytest.raises(ServingError, match="managed by the platform"):
+        validate_extra_args(["--host=0.0.0.0"], owned=LlamaCppAdapter.owned_flags)
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["-c", "--ctx-size", "-ctk", "--cache-type-k", "-ctv", "--cache-type-v", "--cache-reuse"],
+)
+def test_flags_the_curated_fields_emit_are_allowed_as_overrides(flag):
+    # Deliberately *not* an error: writing the flag by hand is how an operator overrides
+    # the field above it. The adapter suppresses its own emission instead (see below).
+    validate_extra_args([flag, "4096"], owned=LlamaCppAdapter.owned_flags)
 
 
 def test_unrelated_flags_pass():
-    validate_extra_args(["--no-context-shift", "--cache-ram", "16384", "-fa", "on"])
+    validate_extra_args(
+        ["--no-context-shift", "--cache-ram", "16384", "-fa", "on"],
+        owned=LlamaCppAdapter.owned_flags,
+    )
 
 
 # --- per-engine gating ------------------------------------------------------
 
 
-def test_an_engine_that_cannot_use_options_rejects_them():
-    # MLX's adapter ignores LaunchOptions entirely. Storing them would leave the row
-    # carrying tuning that never reaches a process while the UI renders it as applied.
-    with pytest.raises(ServingError, match="no tunable launch options"):
-        validate_options(EngineKind.mlx, LaunchOptions(context_size=4096))
+def test_a_field_the_engine_cannot_translate_is_rejected_by_name(tmp_path):
+    # mlx-vlm's prefix cache is automatic, so there is no minimum-reuse knob. Storing the
+    # field anyway would leave the row carrying tuning that never reaches a process while
+    # the form renders it as applied.
+    with pytest.raises(ServingError, match="cache_reuse"):
+        MlxAdapter(ServingPaths(tmp_path)).validate_options(LaunchOptions(cache_reuse=256))
 
 
-def test_empty_options_are_accepted_by_any_engine():
-    validate_options(EngineKind.mlx, LaunchOptions())
-    validate_options(EngineKind.mlx, None)
+def test_fields_the_engine_does_translate_are_accepted(tmp_path):
+    MlxAdapter(ServingPaths(tmp_path)).validate_options(
+        LaunchOptions(context_size=4096, kv_cache_type=KvCacheType.q4_0)
+    )
 
 
-def test_the_tunable_engine_still_gets_its_extra_args_validated():
-    validate_options(EngineKind.llama_cpp, LaunchOptions(context_size=4096))
+def test_empty_options_are_accepted_by_any_engine(tmp_path):
+    MlxAdapter(ServingPaths(tmp_path)).validate_options(LaunchOptions())
+    MlxAdapter(ServingPaths(tmp_path)).validate_options(None)
+
+
+def test_each_engine_validates_extra_args_against_its_own_owned_flags(tmp_path):
+    mlx = MlxAdapter(ServingPaths(tmp_path))
     with pytest.raises(ServingError, match="managed by the platform"):
-        validate_options(EngineKind.llama_cpp, LaunchOptions(extra_args=["--host", "0.0.0.0"]))
+        mlx.validate_options(LaunchOptions(extra_args=["--host", "0.0.0.0"]))
+    # llama.cpp's `-m` is not mlx-vlm's flag vocabulary, so mlx has no opinion on it.
+    mlx.validate_options(LaunchOptions(extra_args=["-m", "elsewhere.gguf"]))
+    with pytest.raises(ServingError, match="managed by the platform"):
+        _adapter(tmp_path).validate_options(LaunchOptions(extra_args=["-m", "elsewhere.gguf"]))
 
 
 # --- argv composition -------------------------------------------------------
@@ -117,12 +134,36 @@ def test_curated_fields_map_to_their_flags(tmp_path):
     assert argv[argv.index("-ctv") + 1] == "q8_0"
 
 
-def test_extra_args_precede_the_flags_the_adapter_owns(tmp_path):
-    # Ordering is the belt to validation's braces: llama.cpp takes the last occurrence, so
-    # placing operator args first means identity and loopback binding always win.
+def test_unrelated_extra_args_are_appended(tmp_path):
     argv = _argv(tmp_path, LaunchOptions(extra_args=["--no-context-shift"]))
-    assert argv.index("--no-context-shift") < argv.index("--host")
-    assert argv.index("--no-context-shift") < argv.index("--alias")
+    assert argv[-1] == "--no-context-shift"
+
+
+@pytest.mark.parametrize("flag", ["-c", "--ctx-size"])
+def test_an_extra_arg_overrides_the_field_it_names(tmp_path, flag):
+    # The whole point of the override: the flag appears once, carrying the operator's
+    # value — not twice, leaving the engine's own last-wins rule to decide.
+    argv = _argv(tmp_path, LaunchOptions(context_size=32768, extra_args=[flag, "4096"]))
+    assert argv.count("-c") + argv.count("--ctx-size") == 1
+    assert argv[argv.index(flag) + 1] == "4096"
+
+
+def test_an_override_of_one_cache_half_leaves_the_other_emitted(tmp_path):
+    argv = _argv(
+        tmp_path,
+        LaunchOptions(kv_cache_type=KvCacheType.q8_0, extra_args=["-ctk", "q4_0"]),
+    )
+    assert argv.count("-ctk") == 1
+    assert argv[argv.index("-ctk") + 1] == "q4_0"
+    assert argv[argv.index("-ctv") + 1] == "q8_0"
+
+
+def test_the_flags_the_adapter_owns_are_never_displaced(tmp_path):
+    # Validation refuses these outright, so they can't reach the argv; this asserts the
+    # identity/loopback flags are still all present alongside operator arguments.
+    argv = _argv(tmp_path, LaunchOptions(extra_args=["--no-context-shift"]))
+    for flag in ("-m", "--host", "--port", "--alias", "--jinja"):
+        assert flag in argv
 
 
 def test_embedding_workload_keeps_its_flag_alongside_options(tmp_path):

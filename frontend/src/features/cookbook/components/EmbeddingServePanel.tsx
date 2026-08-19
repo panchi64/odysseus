@@ -1,6 +1,10 @@
 import { For, Show, type JSX } from "solid-js";
 import { Panel, Stack, Text } from "~/ui";
-import { useManagedModels } from "../serving";
+import {
+  supportedOptionsFor,
+  useManagedModels,
+  useRecommendations,
+} from "../serving";
 import { useManagedModelActions } from "../serving-actions";
 import { ManagedModelRow } from "./ManagedModelRow";
 import { RepoDownloadForm } from "./RepoDownloadForm";
@@ -18,6 +22,7 @@ import { HfTokenNotice } from "./HfTokenNotice";
 export function EmbeddingServePanel(): JSX.Element {
   const managed = useManagedModels();
   const actions = useManagedModelActions(managed);
+  const recommendations = useRecommendations();
 
   // The embedding-workload managed models (the LOCAL MODELS tab manages chat ones).
   const embeddingModels = () =>
@@ -64,13 +69,18 @@ export function EmbeddingServePanel(): JSX.Element {
               {(model) => (
                 <ManagedModelRow
                   model={model}
-                  onServe={() =>
+                  supportedOptions={supportedOptionsFor(
+                    recommendations.latest,
+                    model.engine,
+                  )}
+                  onServe={(options) =>
                     actions.serve({
                       engine: model.engine,
                       repo: model.hfRepo,
                       role: "embedding",
                       workload: "embedding",
                       quant: model.quant ?? undefined,
+                      options,
                     })
                   }
                   onStop={() => actions.stop(model)}

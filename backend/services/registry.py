@@ -197,6 +197,35 @@ class ModelRegistry:
 
         await in_session(self._engine, work)
 
+    async def stop_managed_endpoints(self) -> int:
+        """Mark every serving-managed endpoint not-running, returning how many changed.
+
+        A boot sweep, and owner-agnostic on purpose: a managed endpoint is served by a
+        child of *this* process, so at startup nothing that claims to be running can
+        still be true, for any owner. Sweeping the endpoints directly — rather than only
+        the ones a still-active managed row points at — is the part that matters. A row
+        that reached a terminal state with its endpoint left at ``"running"`` is invisible
+        to a row-driven sweep, and resolution reads ``live_status``: the endpoint stays
+        eligible forever, and every request for the role bound to it goes to a port with
+        nothing behind it. The role binding and the operator's ``enabled`` choice survive
+        untouched, so re-serving restores the endpoint rather than rebuilding it.
+        """
+
+        def work(session: Session) -> int:
+            endpoints = session.exec(
+                select(ModelEndpoint).where(
+                    ModelEndpoint.managed.is_(True),  # type: ignore[attr-defined]
+                    ModelEndpoint.live_status == "running",
+                )
+            ).all()
+            for endpoint in endpoints:
+                endpoint.live_status = "stopped"
+                endpoint.updated_at = datetime.now(UTC)
+                session.add(endpoint)
+            return len(endpoints)
+
+        return await in_session(self._engine, work)
+
     # --- role bindings ----------------------------------------------------
 
     async def get_role(self, owner_id: str, role: str) -> list[str]:
@@ -377,6 +406,59 @@ class ModelRegistry:
             self._to_spec(endpoint, role, model_override=pinned_model if i == 0 else None)
             for i, endpoint in enumerate(live)
         ]
+
+    async def repin_roles_for_endpoint(
+        self, owner_id: str, endpoint_id: str, model: str
+    ) -> list[str]:
+        """Re-point every role pinned to a **stale** model on ``endpoint_id``, returning
+        the roles that were moved.
+
+        A role's pin names a model *string*, and resolution sends that string verbatim as
+        the request's ``model``. That is safe while the endpoint keeps answering to it —
+        but a managed endpoint's model id is derived from what is being served, so
+        re-serving can change it under a pin the operator set earlier. MLX makes this
+        concrete: it identifies a model by the local path it loaded from, so a pin left
+        naming the old id would ask the server for a model it doesn't have, and mlx-vlm
+        resolves an unrecognized name by going to the HuggingFace cache for a *different*
+        model.
+
+        Only the pin is rewritten — the operator chose this endpoint and still has it.
+        Writes directly rather than through :meth:`set_role`, which re-runs binding
+        validation (including a live embedding probe) that has no business firing inside
+        a serve."""
+        moved: list[str] = []
+
+        def work(session: Session) -> list[str]:
+            bindings = session.exec(
+                select(ModelRole).where(ModelRole.owner_id == owner_id)
+            ).all()
+            for binding in bindings:
+                # The pin only ever applies to the chain's head, so a role that merely
+                # lists this endpoint as a fallback is untouched.
+                head = (binding.endpoint_ids or [None])[0]
+                if head != endpoint_id or not binding.model or binding.model == model:
+                    continue
+                binding.model = model
+                session.add(binding)
+                moved.append(binding.role)
+            return moved
+
+        return await in_session(self._engine, work)
+
+    async def role_is_usable(self, owner_id: str, role: str) -> bool:
+        """Whether ``role`` currently resolves to at least one endpoint that could serve
+        a request right now — bound, enabled, running if managed, tool-capable if the role
+        needs it, and with a model configured.
+
+        Asked by the serving layer before it auto-binds a freshly-served model: a role
+        that already resolves is the operator's working choice and is never displaced.
+        Reuses the real resolution path rather than re-deriving availability, so the two
+        can't drift."""
+        try:
+            await self._resolve_specs(role, owner_id=owner_id)
+        except (DegradedCapabilityError, NotFoundError, ValueError):
+            return False
+        return True
 
     async def resolve(
         self,

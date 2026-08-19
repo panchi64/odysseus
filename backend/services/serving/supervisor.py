@@ -36,7 +36,16 @@ class EngineExitedDuringStartup(ServingError):
     """The engine process exited before it began listening — a fast failure (a port
     already in use, an immediate crash). Distinct from a startup *timeout* so the caller
     can cheaply retry on a fresh port (closing the bind-to-0 → spawn race) without
-    re-waiting the full timeout on a model that simply takes a long time to load."""
+    re-waiting the full timeout on a model that simply takes a long time to load.
+
+    ``elapsed_s`` is how long the process lived. Only a *fast* exit looks like the port
+    race worth retrying: an engine that ran for a minute and then died was loading a
+    model, and re-running that load on a fresh port just pays the same failure again.
+    """
+
+    def __init__(self, message: str, elapsed_s: float = 0.0) -> None:
+        super().__init__(message)
+        self.elapsed_s = elapsed_s
 
 
 @dataclass(frozen=True)
@@ -93,9 +102,14 @@ class ProcessSupervisor:
         base_url: str,
         on_crash: OnCrash,
         log_path: Path,
+        timeout_s: float | None = None,
     ) -> RunningProc:
         """Start the engine and return once it is actually serving. Raises
-        ``ServingError`` (with the log tail) if it doesn't come up."""
+        ``ServingError`` (with the log tail) if it doesn't come up.
+
+        ``timeout_s`` overrides the constructor default for this engine — how long
+        "starting" may take is a property of the engine, not of the supervisor (one binds
+        its port before loading weights, another loads them first)."""
         await self.stop(managed_id)  # clear any prior process for this model
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_fh = open(log_path, "ab")  # noqa: SIM115 — handle lives as long as the process
@@ -114,14 +128,21 @@ class ProcessSupervisor:
         running = RunningProc(managed_id, port, proc.pid, base_url, proc, log_fh)
         self._procs[managed_id] = running
         try:
-            await self._await_ready(port, base_url, proc)
+            await self._await_ready(port, base_url, proc, timeout_s or self._startup_timeout_s)
+        except EngineExitedDuringStartup as exc:
+            await self.stop(managed_id)
+            tail = _read_tail(log_path)
+            detail = f"{exc}" + (f"\n{tail}" if tail else "")
+            # Carry the lifetime forward so the caller can tell a fast bind failure
+            # (worth retrying on a fresh port) from a model that failed mid-load.
+            raise EngineExitedDuringStartup(
+                f"the engine failed to start: {detail}", exc.elapsed_s
+            ) from exc
         except ServingError as exc:
             await self.stop(managed_id)
             tail = _read_tail(log_path)
             detail = f"{exc}" + (f"\n{tail}" if tail else "")
-            # Preserve the subclass (EngineExitedDuringStartup) so the caller can retry a
-            # fast bind failure on a fresh port without re-waiting the full timeout.
-            raise type(exc)(f"the engine failed to start: {detail}") from exc
+            raise ServingError(f"the engine failed to start: {detail}") from exc
 
         running.watchdog = asyncio.create_task(self._watch(running, on_crash))
         return running
@@ -162,10 +183,15 @@ class ProcessSupervisor:
             os.kill(pid, signal.SIGTERM)
 
     async def _await_ready(
-        self, port: int, base_url: str, proc: asyncio.subprocess.Process
+        self,
+        port: int,
+        base_url: str,
+        proc: asyncio.subprocess.Process,
+        timeout_s: float,
     ) -> None:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._startup_timeout_s
+        started = loop.time()
+        deadline = started + timeout_s
         # 1) TCP: wait for the server to bind the port (failing fast if it exits first).
         try:
             await net.await_listening(
@@ -176,18 +202,20 @@ class ProcessSupervisor:
             )
         except ConnectionError:
             raise EngineExitedDuringStartup(
-                "the engine process exited during startup"
+                "the engine process exited during startup", loop.time() - started
             ) from None
         except TimeoutError:
             raise ServingError(
-                f"the engine did not start listening within {self._startup_timeout_s:.0f}s"
+                f"the engine did not start listening within {timeout_s:.0f}s"
             ) from None
         # 2) HTTP: wait for an OpenAI-compatible /v1/models response (it is serving,
         # not merely bound). 5xx is "not ready yet"; anything below is good enough.
         async with httpx.AsyncClient(timeout=5.0) as client:
             while True:
                 if proc.returncode is not None:
-                    raise EngineExitedDuringStartup("the engine process exited during startup")
+                    raise EngineExitedDuringStartup(
+                        "the engine process exited during startup", loop.time() - started
+                    )
                 try:
                     resp = await client.get(f"{base_url}/models")
                     if resp.status_code < 500:

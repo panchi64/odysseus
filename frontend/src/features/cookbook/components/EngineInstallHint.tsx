@@ -9,7 +9,7 @@ export function EngineInstallHint(props: { installed: boolean }): JSX.Element {
     <Text variant="micro" tone="dim">
       {props.installed
         ? "Ready — engine runtime is installed."
-        : "Downloads engine (~once) on first serve."}
+        : "First serve installs the engine runtime — a one-time step that can take a few minutes."}
     </Text>
   );
 }

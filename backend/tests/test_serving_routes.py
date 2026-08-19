@@ -134,9 +134,32 @@ async def test_serve_rejects_an_extra_arg_the_platform_owns():
         assert "--host" in resp.json()["detail"]
 
 
-async def test_serve_rejects_options_for_an_engine_that_ignores_them(monkeypatch):
-    # MLX's adapter discards LaunchOptions; accepting them would persist tuning that
-    # never reaches a process while the UI shows it as applied.
+async def test_serve_rejects_a_field_the_engine_cannot_translate(monkeypatch):
+    # mlx-vlm's prefix cache is automatic, so it has no minimum-reuse knob. Accepting the
+    # field would persist tuning that never reaches a process while the UI shows it as
+    # applied — and the refusal names the field, so the form can point at it.
+    async def unavailable(self) -> bool:
+        return False
+
+    monkeypatch.setattr(MlxAdapter, "is_available", unavailable)
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/serve",
+            json={
+                "engine": "mlx",
+                "repo": "mlx-community/whatever",
+                "options": {"cache_reuse": 256},
+            },
+        )
+        # 400, not the 409 an unavailable engine earns — validation runs first.
+        assert resp.status_code == 400
+        assert "cache_reuse" in resp.json()["detail"]
+
+
+async def test_serve_accepts_a_field_the_engine_does_translate(monkeypatch):
+    # The counterpart: context size reaches mlx-vlm as --max-kv-size, so it must not be
+    # refused. The engine is unavailable here, so the request gets that far and stops at
+    # the 409 — which is exactly the proof that validation let it through.
     async def unavailable(self) -> bool:
         return False
 
@@ -150,9 +173,7 @@ async def test_serve_rejects_options_for_an_engine_that_ignores_them(monkeypatch
                 "options": {"context_size": 4096},
             },
         )
-        # 400, not the 409 an unavailable engine earns — validation runs first.
-        assert resp.status_code == 400
-        assert "no tunable launch options" in resp.json()["detail"]
+        assert resp.status_code == 409
 
 
 async def test_serve_options_persist_onto_the_managed_model(monkeypatch):
@@ -177,3 +198,115 @@ async def test_serve_options_persist_onto_the_managed_model(monkeypatch):
         listing = (await client.get("/models/serving/models")).json()
         row = next(m for m in listing if m["hf_repo"] == "acme/model-GGUF")
         assert row["options"]["kv_cache_type"] == "q8_0"
+
+
+# --- importing a model already on disk --------------------------------------
+
+
+def _gguf(tmp_path) -> str:
+    path = tmp_path / "Qwen3-8B-Q4_K_M.gguf"
+    path.write_bytes(b"GGUF")
+    return str(path)
+
+
+async def test_import_registers_a_model_already_on_disk(tmp_path):
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "llama.cpp", "path": _gguf(tmp_path)},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        # Ready to serve with nothing to fetch, and pointed at the operator's own file.
+        assert body["state"] == "stopped"
+        assert body["source"] == "local"
+        assert body["artifact_path"] == _gguf(tmp_path)
+        assert body["hf_repo"] == "Qwen3-8B-Q4_K_M"
+
+
+async def test_import_takes_a_display_name(tmp_path):
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "llama.cpp", "path": _gguf(tmp_path), "name": "My Qwen"},
+        )
+        assert resp.json()["hf_repo"] == "My Qwen"
+
+
+async def test_import_refuses_a_path_that_is_not_there(tmp_path):
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "llama.cpp", "path": str(tmp_path / "nowhere.gguf")},
+        )
+        assert resp.status_code == 400
+        assert "nothing at" in resp.json()["detail"]
+
+
+async def test_import_refuses_the_wrong_shape_for_the_engine(tmp_path):
+    # A folder is what MLX wants and llama.cpp doesn't — the rejection says which.
+    (tmp_path / "snapshot").mkdir()
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "llama.cpp", "path": str(tmp_path / "snapshot")},
+        )
+        assert resp.status_code == 400
+        assert ".gguf" in resp.json()["detail"]
+
+
+async def test_import_refuses_a_relative_path(tmp_path):
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "llama.cpp", "path": "models/thing.gguf"},
+        )
+        assert resp.status_code == 400
+        assert "full path" in resp.json()["detail"]
+
+
+async def test_import_refuses_an_engine_this_host_cannot_run(monkeypatch, tmp_path):
+    async def unavailable(self) -> bool:
+        return False
+
+    monkeypatch.setattr(MlxAdapter, "is_available", unavailable)
+    (tmp_path / "snap").mkdir()
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/import",
+            json={"engine": "mlx", "path": str(tmp_path / "snap")},
+        )
+        assert resp.status_code == 409
+
+
+# --- the native file chooser ------------------------------------------------
+
+
+async def test_file_picker_availability_is_reported_either_way(monkeypatch):
+    # The UI only shows a BROWSE control when this says yes; the path field works
+    # regardless, so an unavailable chooser is a clean answer, never an error.
+    monkeypatch.setattr("services.host_picker._resolve", lambda: None)
+    async with client_app() as (client, _app):
+        body = (await client.get("/models/serving/file-picker")).json()
+        assert body["available"] is False
+        assert body["reason"]
+
+
+async def test_opening_a_chooser_on_a_host_without_one_is_a_409(monkeypatch):
+    monkeypatch.setattr("services.host_picker._resolve", lambda: None)
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/models/serving/file-picker", json={"mode": "directory"}
+        )
+        assert resp.status_code == 409
+
+
+async def test_a_cancelled_chooser_returns_no_path(monkeypatch):
+    async def cancelled(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("services.host_picker.pick", cancelled)
+    async with client_app() as (client, _app):
+        resp = await client.post("/models/serving/file-picker", json={"mode": "file"})
+        assert resp.status_code == 200
+        assert resp.json()["path"] is None

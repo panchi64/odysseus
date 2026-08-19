@@ -69,7 +69,28 @@ class RegistryEmbedder:
         # The OpenAI client refuses a None key; a keyless local server gets a
         # placeholder header it ignores (same adapter-boundary quirk as the chat path).
         client = AsyncOpenAI(base_url=spec.base_url, api_key=spec.api_key or "unused")
-        response = await client.embeddings.create(model=spec.model, input=texts)
+        try:
+            response = await client.embeddings.create(model=spec.model, input=texts)
+        except APIConnectionError as exc:
+            # Nothing is listening. That is the capability being *degraded*, not a fault
+            # to report as one — a local model server the operator hasn't started is the
+            # ordinary case, and every caller already handles degraded by falling back to
+            # keyword recall. Raised as such it stays silent; raised raw it buries a
+            # 60-line traceback in the log for a routine condition, and never names the
+            # address it failed to reach, which is the one fact needed to fix it. The
+            # validation path (`probe_embedding`) already draws this line — runtime has
+            # to draw it the same way or the same failure has two different characters.
+            # One line, not silence: "not configured" is genuinely unremarkable, but
+            # "configured and unreachable" is a thing the operator can fix, and semantic
+            # recall staying quietly off is how it goes unnoticed for weeks.
+            logger.warning(
+                "embedding endpoint %s is unreachable — semantic recall is off until it "
+                "is back; keyword recall still covers these messages",
+                spec.base_url,
+            )
+            raise DegradedCapabilityError(
+                f"couldn't reach embedding endpoint {spec.base_url!r}"
+            ) from exc
         vectors = [item.embedding for item in response.data]
         dim = len(vectors[0]) if vectors else 0
         return EmbeddingBatch(vectors=vectors, model=spec.model, dim=dim)

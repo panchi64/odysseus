@@ -17,16 +17,15 @@ import {
 } from "~/ui";
 import { refreshEndpoints } from "~/lib/stores/models";
 import {
+  EMPTY_OPTIONS,
+  optionsForEngine,
   serveModel,
+  supportedOptionsFor,
   useEngineSelection,
   useManagedModels,
   useRecommendations,
 } from "../serving";
-import {
-  AdvancedServeOptions,
-  EMPTY_OPTIONS,
-  hasAnyOption,
-} from "./AdvancedServeOptions";
+import { AdvancedServeOptions } from "./AdvancedServeOptions";
 import { DownloadProgress } from "./DownloadProgress";
 import { EnginePicker } from "./EnginePicker";
 import { EngineSwitchNote } from "./EngineSwitchNote";
@@ -83,14 +82,15 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
         role: "main",
         workload: "chat",
         quant: (engine === "llama.cpp" && quant().trim()) || undefined,
-        // Sent only when the advanced section was actually filled in, and only for the
-        // engine that has these flags: an untouched section must omit the field so a
-        // re-serve keeps the model's existing tuning instead of clearing it, and MLX
-        // would store llama.cpp overrides it never applies.
+        // Only the fields this engine can take, and only when something was actually
+        // set: an untouched section must omit the field so a re-serve keeps the model's
+        // existing tuning, and a value typed under a previously-selected engine must not
+        // ride along to one that has no equivalent for it.
         options:
-          engine === "llama.cpp" && hasAnyOption(options())
-            ? options()
-            : undefined,
+          optionsForEngine(
+            options(),
+            supportedOptionsFor(recommendations.latest, engine),
+          ) ?? undefined,
       });
       setServedId(model.id);
       toast.success(`Serving ${model.hfRepo} as your main model`);
@@ -159,7 +159,10 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
               </Row>
               <HfTokenNotice />
               <AdvancedServeOptions
-                engine={selected()}
+                supportedOptions={supportedOptionsFor(
+                  recommendations.latest,
+                  selected(),
+                )}
                 value={options()}
                 onChange={setOptions}
               />

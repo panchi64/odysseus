@@ -1,6 +1,6 @@
 import { createEffect, createResource, createSignal, type JSX } from "solid-js";
-import { Button, Input, Panel, Row, Stack, Text, toast } from "~/ui";
-import { fetchModelsDir, updateModelsDir } from "../serving";
+import { Button, PathInput, Panel, Row, Stack, Text, toast } from "~/ui";
+import { fetchModelsDir, updateModelsDir, usePathPicker } from "../serving";
 
 /** Where new model downloads are written. Loads the current dir and lets the
  *  operator point it elsewhere. Validation is the backend's job — it returns 400
@@ -10,6 +10,7 @@ export function ModelsDirSection(): JSX.Element {
   const [dir, { mutate }] = createResource(fetchModelsDir);
   const [value, setValue] = createSignal("");
   const [saving, setSaving] = createSignal(false);
+  const picker = usePathPicker();
 
   // Prefill the field once the current dir loads (and on a successful save).
   createEffect(() => {
@@ -44,12 +45,17 @@ export function ModelsDirSection(): JSX.Element {
       <Stack gap={3}>
         <Row gap={3} align="end" class="flex-wrap">
           <div class="min-w-0 flex-1">
-            <Input
+            <PathInput
               label="DIRECTORY"
               placeholder="/path/to/models"
               value={value()}
-              onInput={(e) => setValue(e.currentTarget.value)}
+              onChange={setValue}
               disabled={dir.loading}
+              onBrowse={
+                picker() &&
+                (() =>
+                  picker()!({ mode: "directory", title: "Models directory" }))
+              }
             />
           </div>
           <Button leading="check" disabled={!canSave()} onClick={save}>

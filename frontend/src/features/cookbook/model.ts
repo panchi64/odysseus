@@ -48,6 +48,10 @@ export interface EngineRecommendation {
   reason: string;
   /** The workloads this engine covers on this host. */
   workloads: Workload[];
+  /** The `LaunchOptions` fields this engine can translate into its own flags — the
+   *  tuning form renders these and nothing else, so it offers only what will reach
+   *  a process. The backend is the authority on which those are. */
+  supportedOptions: LaunchOptionField[];
 }
 
 /** Live download progress for a managed model — mirrors the backend's HF download
@@ -64,30 +68,67 @@ export interface DownloadProgress {
   file: string | null;
 }
 
-/** KV cache dtypes the engine offers. `f16` is the engine default. */
+/** KV cache precision. `f16` is the engine default — each engine spells it in its
+ *  own flags (a dtype for llama.cpp, a bit width for mlx-vlm). */
 export type KvCacheType = "f16" | "q8_0" | "q4_0";
 
-/** Per-model engine launch overrides. Every field unset means the engine's own
- *  default stands — the engine already auto-sizes slots, GPU layers and batching,
+/** The tunable fields, by name — what an engine reports in `supportedOptions`. */
+export type LaunchOptionField =
+  "contextSize" | "kvCacheType" | "cacheReuse" | "speculative" | "draftModel";
+
+/** Whether to draft tokens ahead with the model's own multi-token-prediction head.
+ *  `auto` enables it exactly when the weights actually carry it — MTP is a training-time
+ *  property, so no flag can add it to a model that lacks it. */
+export type SpeculativeMode = "auto" | "off";
+
+/** Per-model engine launch overrides, in engine-neutral terms — the backend's
+ *  adapter translates each into its own flags. Every field unset means the engine's
+ *  own default stands: the engine already auto-sizes slots, GPU layers and batching,
  *  so an unset field must stay unset rather than being filled with a guess. */
 export interface LaunchOptions {
-  /** Total context across the server's slots, or null for the model's own. */
+  /** The context window the server should hold, or null for the model's own. */
   contextSize: number | null;
   kvCacheType: KvCacheType | null;
   cacheReuse: number | null;
-  /** Passed to the engine verbatim. Unsupported by design. */
+  /** Draft-token decoding. Null means `auto`. */
+  speculative: SpeculativeMode | null;
+  /** An explicit drafter — a local path or a Hugging Face repo id. MLX needs one (its
+   *  conversion splits the MTP head into a companion `…-MTP-<quant>` repo); llama.cpp
+   *  only needs it for a separate draft *model*, since its MTP heads ride in the GGUF. */
+  draftModel: string | null;
+  /** Passed to the engine verbatim, and an override: naming a flag one of the fields
+   *  above would emit replaces it rather than duplicating it. Unsupported by design. */
   extraArgs: string[];
 }
+
+/** What a `starting` model is doing. Both steps run for minutes on a real host, so
+ *  the state flag alone would read as a stall. */
+export type ServeStage = "installing_engine" | "loading_model";
+
+export interface ServeStageInfo {
+  stage: ServeStage;
+  /** ISO timestamp the step began — the UI derives elapsed from it. */
+  startedAt: string;
+  /** When this step gives up, in seconds, or null when unbounded. */
+  timeoutS: number | null;
+}
+
+/** Where a managed model's weights came from. `local` weights belong to the operator
+ *  and live wherever they put them — read where they are, never moved or deleted. */
+export type ModelSource = "huggingface" | "local";
 
 /** A model Odysseus is managing (downloaded and/or served). */
 export interface ManagedModel {
   id: string;
   engine: EngineKind;
   workload: Workload;
-  /** Hugging Face repo id. */
+  /** Hugging Face repo id, or the display name of an imported local model. */
   hfRepo: string;
   quant: string | null;
   state: ServeState;
+  source: ModelSource;
+  /** Where the weights live on disk, once known. */
+  artifactPath: string | null;
   /** The endpoint this model is served through, when running. */
   endpointId: string | null;
   endpointName: string | null;
@@ -96,6 +137,19 @@ export interface ManagedModel {
   lastError: string | null;
   /** Live download progress, present while `state === "downloading"`. */
   progress: DownloadProgress | null;
+  /** What's happening now, present while `state === "starting"`. */
+  stage: ServeStageInfo | null;
+  /** What draft-token capability the downloaded weights actually carry, phrased for
+   *  the operator — null when they carry none. Read from the weights, not the config. */
+  speculative: string | null;
   /** The launch overrides this model is served with. */
   options: LaunchOptions;
+}
+
+/** Whether this host can open a native file/folder dialog. The typed path field
+ *  works either way — this only decides whether a BROWSE control is offered. */
+export interface PickerAvailability {
+  available: boolean;
+  /** Why not, phrased for the operator, when unavailable. */
+  reason: string | null;
 }
