@@ -22,6 +22,7 @@ import {
   useFileDrop,
 } from "~/ui";
 import { createListView } from "~/lib/list";
+import { useTabParam } from "~/lib/useTabParam";
 import { bytes, relativeTime } from "~/lib/format";
 import {
   deleteSkill,
@@ -44,6 +45,8 @@ const STATUS_TABS = [
   { value: "published", label: "PUBLISHED" },
   { value: "draft", label: "DRAFT" },
 ];
+const STATUS_VALUES = ["all", "published", "draft"] as const;
+type StatusFilter = (typeof STATUS_VALUES)[number];
 
 export function SkillsDirectoryScreen(): JSX.Element {
   const navigate = useNavigate();
@@ -58,7 +61,11 @@ export function SkillsDirectoryScreen(): JSX.Element {
     skillsResource.error
       ? skillErrorMessage(skillsResource.error, "Could not load skills.")
       : null;
-  const [statusFilter, setStatusFilter] = createSignal("all");
+  const [statusFilter, setStatusFilter] = useTabParam<StatusFilter>(
+    "tab",
+    STATUS_VALUES,
+    "all",
+  );
   const [newOpen, setNewOpen] = createSignal(false);
   const [importing, setImporting] = createSignal(false);
 
@@ -234,7 +241,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
           <Tabs
             items={STATUS_TABS}
             value={statusFilter()}
-            onChange={setStatusFilter}
+            onChange={(v) => setStatusFilter(v as StatusFilter)}
           />
           <Row align="center" gap={3}>
             <Row align="center" gap={1}>

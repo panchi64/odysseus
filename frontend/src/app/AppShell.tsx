@@ -5,6 +5,7 @@ import {
   Combobox,
   NotConnectedOverlay,
   RegistrationFrame,
+  ResizeHandle,
   StatusFlag,
   ThemeToggle,
   Text,
@@ -23,7 +24,7 @@ import {
   stopNotifications,
 } from "~/lib/stores/notifications";
 import { NotificationBell } from "./NotificationBell";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, useSidebarWidth } from "./sidebar";
 import { isConnectedRoute } from "./nav";
 
 /** The authenticated app chrome: sidebar rail + top status bar + framed main
@@ -32,6 +33,7 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
   const location = useLocation();
   const connected = () => isConnectedRoute(location.pathname);
   const session = useSession();
+  const rail = useSidebarWidth();
 
   // The notification feed is app-lifetime, not per-route: subscribe once the
   // workspace is authenticated (the same signal the auth guard gates on) and
@@ -43,9 +45,19 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
   onCleanup(stopNotifications);
   return (
     <div class="flex h-screen overflow-hidden bg-bg text-text">
-      <aside class="w-52 shrink-0 overflow-y-auto border-r border-line">
+      {/* The rail is drag-sized; the handle draws the hairline that used to be
+          the aside's right border. */}
+      <aside
+        class="shrink-0 overflow-y-auto"
+        style={{ width: `${rail.width()}px` }}
+      >
         <Sidebar />
       </aside>
+      <ResizeHandle
+        aria-label="Resize navigation rail"
+        onResize={rail.resize}
+        onResizeEnd={rail.persist}
+      />
 
       <div class="flex min-w-0 flex-1 flex-col">
         <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-2">

@@ -19,6 +19,7 @@ import {
 } from "~/ui";
 import { useNavigate } from "@solidjs/router";
 import { createListView } from "~/lib/list";
+import { useTabParam } from "~/lib/useTabParam";
 import { relativeTime } from "~/lib/format";
 import {
   useDocuments,
@@ -48,7 +49,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
   const navigate = useNavigate();
   const docsResource = useDocuments();
   const documents = (): DocumentSummary[] => docsResource() ?? [];
-  const [tab, setTab] = createSignal<DocStatus>("active");
+  const [tab, setTab] = useTabParam<DocStatus>(
+    "tab",
+    ["active", "archived"],
+    "active",
+  );
   const [selectMode, setSelectMode] = createSignal(false);
   const [renaming, setRenaming] = createSignal<DocumentSummary | null>(null);
 
@@ -198,6 +203,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
             ]}
             value={tab()}
             onChange={(v) => setTab(v as DocStatus)}
+
             class="flex-1"
           />
           <Button

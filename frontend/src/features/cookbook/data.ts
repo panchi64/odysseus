@@ -78,9 +78,17 @@ async function fetchHardware(): Promise<HardwareInfo> {
   );
 }
 
+/** One host profile, fetched once and shared. The cookbook chrome and the LOCAL
+ *  MODELS readout both want it, and the host's hardware doesn't change under us —
+ *  a per-caller resource would just probe twice. */
+let hardwareResource: Resource<HardwareInfo> | undefined;
+
 export function useHardware(): Resource<HardwareInfo> {
-  const [data] = createResource(fetchHardware);
-  return data;
+  if (!hardwareResource) {
+    const [data] = createResource(fetchHardware);
+    hardwareResource = data;
+  }
+  return hardwareResource;
 }
 
 /** The configured endpoints, read from the shared models store — the same single

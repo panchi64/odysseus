@@ -22,22 +22,33 @@ export interface StatusDotProps {
   status?: Status;
   /** Hard-stepped pulse to signal live activity (cursor-blink family, §8). */
   pulse?: boolean;
+  /** Mark form. `dot` is the inline 6px disc that sits beside a label; `square`
+   *  is the 8px block the nav rail uses to flag ambient activity on a row you
+   *  aren't reading — square by default per §2, and larger because it has to be
+   *  legible on its own, with no adjacent text to anchor it. */
+  shape?: "dot" | "square";
+  /** Accessible name. Omit for a mark that merely restates adjacent text (the
+   *  default: `aria-hidden`, since §4 already requires a label beside it). */
+  label?: string;
   class?: string;
 }
 
-/** The shared state dot: a bare 6px disc carrying one semantic accent. The single
- *  source for every health/status indicator so the state→color mapping never
- *  forks — `bg-current` over the tone's text color keeps dot and label in sync. */
+/** The shared state mark: one semantic accent, in the dot or square form. The
+ *  single source for every health/status indicator so the state→color mapping
+ *  never forks — `bg-current` over the tone's text color keeps mark and label in
+ *  sync. */
 export function StatusDot(props: StatusDotProps): JSX.Element {
   return (
     <span
       class={cx(
-        "inline-block size-1.5 shrink-0 rounded-full bg-current",
+        "inline-block shrink-0 bg-current",
+        props.shape === "square" ? "size-2" : "size-1.5 rounded-full",
         `text-${statusTone[props.status ?? "idle"]}`,
         props.pulse && "ody-pulse",
         props.class,
       )}
-      aria-hidden="true"
+      aria-label={props.label}
+      aria-hidden={props.label ? undefined : "true"}
     />
   );
 }

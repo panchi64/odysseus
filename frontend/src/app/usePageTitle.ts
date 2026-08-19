@@ -1,6 +1,6 @@
 import { createEffect } from "solid-js";
 import { useLocation } from "@solidjs/router";
-import { NAV } from "./nav";
+import { itemForPath } from "./nav";
 
 const BRAND = "ODYSSEUS";
 
@@ -11,22 +11,12 @@ const STATIC_TITLES: Record<string, string> = {
   "/signup": "Sign Up",
 };
 
-/** href -> label, derived from the single nav model. */
-const NAV_TITLES: Record<string, string> = Object.fromEntries(
-  NAV.flatMap((section) => section.items).map((item) => [
-    item.href,
-    item.label,
-  ]),
-);
-
 function titleFor(pathname: string): string {
   if (STATIC_TITLES[pathname]) return STATIC_TITLES[pathname];
-  if (NAV_TITLES[pathname]) return NAV_TITLES[pathname];
-  // Longest-prefix match handles detail/nested routes (e.g. /research/r-007).
-  const match = Object.keys(NAV_TITLES)
-    .filter((href) => pathname === href || pathname.startsWith(`${href}/`))
-    .sort((a, b) => b.length - a.length)[0];
-  return match ? NAV_TITLES[match] : "Not Found";
+  // The same longest-prefix resolution the rail uses, so a detail route
+  // (`/research/r-007`) is titled by the surface it belongs to and the title can
+  // never disagree with the highlighted row.
+  return itemForPath(pathname)?.label ?? "Not Found";
 }
 
 /**

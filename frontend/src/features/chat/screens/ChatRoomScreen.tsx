@@ -63,7 +63,7 @@ import {
   viewerDirty,
   viewerWidth,
 } from "../viewerPersistence";
-import { registerKeymap } from "../keymap";
+import { registerKeymap } from "~/lib/keymap";
 import { ContextMeter } from "../components/ContextMeter";
 import { ConversationGrants } from "../components/ConversationGrants";
 import { ConversationCompactionToggle } from "../components/ConversationCompactionToggle";

@@ -13,6 +13,10 @@ export interface ListRowProps {
   leading?: IconProps["name"];
   /** Right-aligned content: status flag, meta, icon. */
   right?: JSX.Element;
+  /** Secondary line under the label (§6.1 — a dim `micro` value beneath its
+   *  label). Turns the single-line row into a two-line one; use it where the
+   *  label alone doesn't say what the row is. */
+  description?: string;
   selected?: boolean;
   /** Render a leading selection checkbox (driven by `selected`). The row's
    *  `onClick` should toggle selection. Replaces the `leading` icon. */
@@ -32,6 +36,7 @@ export function ListRow(props: ListRowProps): JSX.Element {
     "label",
     "leading",
     "right",
+    "description",
     "selected",
     "selectable",
     "locked",
@@ -103,13 +108,20 @@ export function ListRow(props: ListRowProps): JSX.Element {
         <Show when={local.leading && !local.selectable}>
           <Icon name={local.leading!} class="text-dim" />
         </Show>
-        <Text
-          variant="label"
-          tone={local.locked ? "dim" : local.selected ? "bright" : "default"}
-          class="truncate"
-        >
-          {local.label}
-        </Text>
+        <span class="flex min-w-0 flex-col gap-0.5">
+          <Text
+            variant="label"
+            tone={local.locked ? "dim" : local.selected ? "bright" : "default"}
+            class="truncate"
+          >
+            {local.label}
+          </Text>
+          <Show when={local.description}>
+            <Text variant="micro" tone="dim" class="truncate">
+              {local.description}
+            </Text>
+          </Show>
+        </span>
       </span>
       <span
         class="flex shrink-0 items-center gap-2"
