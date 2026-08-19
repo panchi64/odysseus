@@ -167,6 +167,28 @@ export interface ConversationTitled extends Base {
   title: string;
 }
 
+/** The thread's earlier turns were folded into a summary before this turn ran,
+ *  because its context footprint reached the operator's threshold. Nothing was
+ *  deleted — the transcript keeps every turn; this marks where the *model's*
+ *  replayed view narrows to `summary` plus the turns after it. Emitted mid-run,
+ *  before the answer streams, and persisted as its own message so a reload
+ *  renders the same divider. */
+export interface ConversationCompacted extends Base {
+  type: "conversation.compacted";
+  conversation_id: string;
+  /** The checkpoint message the summary is stored on — the id the divider is
+   *  keyed by, and the same one a cold read returns. */
+  message_id: string;
+  summary: string;
+  /** How many messages the summary stands in for, so the divider can say so
+   *  without the client counting anything itself. */
+  messages_compacted: number;
+  /** The rendered turn the divider follows. The backend resolves the position —
+   *  a tree node is not a rendered message, so the client would otherwise have to
+   *  guess and could land somewhere a reload disagrees with. Null ⇒ append. */
+  after_message_id: string | null;
+}
+
 // --- Notices ---------------------------------------------------------------
 export interface CitationAdded extends Base {
   type: "citation.added";
@@ -245,6 +267,7 @@ export type RunEvent =
   | ViewLiveStopped
   | ViewSnapshot
   | ConversationTitled
+  | ConversationCompacted
   | CitationAdded
   | ApprovalRequired
   | MessageQueued

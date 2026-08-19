@@ -1,5 +1,15 @@
-import { For, Show, createSignal, type JSX } from "solid-js";
-import { Button, Chip, Icon, Stack, Text, Textarea, Tooltip } from "~/ui";
+import { For, Match, Show, Switch, createSignal, type JSX } from "solid-js";
+import {
+  Button,
+  Chip,
+  Disclosure,
+  Divider,
+  Icon,
+  Stack,
+  Text,
+  Textarea,
+  Tooltip,
+} from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
@@ -55,11 +65,12 @@ export interface MessageItemProps {
 /** A single chat turn. User turns fill the row with a distinct `surface`
  *  background and right-aligned content; assistant turns sit on the base
  *  background with reasoning, tool calls, then a markdown-formatted answer and a
- *  streaming caret while in flight. */
+ *  streaming caret while in flight. A compaction entry is neither — it is a
+ *  full-width divider marking where the thread's earlier turns were folded into a
+ *  summary, with no actions and no bubble. */
 export function MessageItem(props: MessageItemProps): JSX.Element {
   return (
-    <Show
-      when={props.message.role === "user"}
+    <Switch
       fallback={
         <AssistantTurn
           message={props.message}
@@ -77,16 +88,45 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
         />
       }
     >
-      <UserTurn
-        message={props.message}
-        onEditMessage={props.onEditMessage}
-        onDelete={props.onDelete}
-        onSwitchVersion={props.onSwitchVersion}
-        onTogglePin={props.onTogglePin}
-        onWithdraw={props.onWithdraw}
-        onEditQueued={props.onEditQueued}
-      />
-    </Show>
+      <Match when={props.message.role === "compaction"}>
+        <CompactionDivider message={props.message} />
+      </Match>
+      <Match when={props.message.role === "user"}>
+        <UserTurn
+          message={props.message}
+          onEditMessage={props.onEditMessage}
+          onDelete={props.onDelete}
+          onSwitchVersion={props.onSwitchVersion}
+          onTogglePin={props.onTogglePin}
+          onWithdraw={props.onWithdraw}
+          onEditQueued={props.onEditQueued}
+        />
+      </Match>
+    </Switch>
+  );
+}
+
+/** Where the thread's earlier turns were folded into a summary to free up context.
+ *  A rule across the width rather than a bubble, because nobody said it — the
+ *  chassis did. The summary itself is what the model now replays in place of
+ *  everything above, so it is available behind a disclosure rather than hidden:
+ *  it is the only way to see what the assistant still remembers. */
+function CompactionDivider(props: { message: ChatMessage }): JSX.Element {
+  return (
+    <Stack gap={2} class="w-full py-3">
+      <div class="flex items-center gap-3">
+        <Divider class="flex-1" />
+        <Text variant="label" tone="dim">
+          CONTEXT COMPACTED
+        </Text>
+        <Divider class="flex-1" />
+      </div>
+      <Disclosure label="SUMMARY" triggerClass="w-full">
+        <Text variant="body" tone="dim" class="whitespace-pre-wrap">
+          {props.message.content}
+        </Text>
+      </Disclosure>
+    </Stack>
   );
 }
 

@@ -62,6 +62,13 @@ class Conversation(SQLModel, table=True):
     # debugging chat can keep full fidelity while research compacts hard). Policy, not user
     # content, so it stays in the clear — like `model`/`ephemeral`.
     compaction_override: bool | None = Field(default=None)
+    # Per-conversation override of the global conversation auto-compaction toggle (folding
+    # older turns into a utility-model summary once the context footprint nears the model's
+    # window): null inherits the operator default, True/False forces it on/off for this
+    # thread. Distinct from `compaction_override` above, which governs *tool-result*
+    # compaction — one condenses whole turns, the other individual tool outputs. Policy,
+    # not user content, so it stays in the clear.
+    auto_compact_override: bool | None = Field(default=None)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -97,6 +104,15 @@ class Message(SQLModel, table=True):
     # the human-readable reason (`Run.detail`), so a reload shows the same
     # persistent stop marker the live stream rendered. Null for every other turn.
     blocked_reason: str | None = None
+    # A conversation-compaction checkpoint: this node's blob is a utility-model summary
+    # of everything on its path up to and including `compacted_through`, folded in once
+    # the context footprint neared the model's window. Nothing is deleted — the summarized
+    # turns stay in the tree and in the operator's transcript; the checkpoint only changes
+    # what the *model* replays (see `ConversationStore.model_history`). A checkpoint row
+    # deliberately carries an empty `text`, so it contributes no embedding, no cross-chat
+    # search hit, and no listing preview — the summary lives only in the sealed blob.
+    compacted: bool = Field(default=False)
+    compacted_through: str | None = None
     # Semantic-search vector over `text`, encrypted at rest like the projection it
     # embeds. Null when the message has no searchable text (tool/reasoning-only
     # turns) or the embedder was unavailable when it was persisted — such a message

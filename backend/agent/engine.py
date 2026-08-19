@@ -44,7 +44,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from core.config import get_settings
+from core.config import Settings, get_settings
 from core.container import ServiceContainer
 from core.exceptions import ModelLoadError
 from prompts.agent import (
@@ -55,6 +55,7 @@ from prompts.agent import (
 )
 from runs import (
     ApprovalRequired,
+    ConversationCompacted,
     ConversationTitled,
     LimitNotice,
     Orchestrator,
@@ -77,6 +78,12 @@ from tools import (
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .summarize import (
+    AutoCompactPolicy,
+    build_auto_compact_policy,
+    compact_conversation,
+    should_compact,
+)
 from .title import generate_title, last_user_text, title_from_history
 from .translate import stream_agent_run
 
@@ -243,6 +250,59 @@ def _turn_metrics(
         context_window=run.context_window,
         context_used=context_footprint(messages),
     )
+
+
+async def _maybe_compact(
+    run: Run,
+    store: ConversationStore,
+    conversation_id: str,
+    history: list[ModelMessage],
+    *,
+    policy: AutoCompactPolicy,
+    model: Model | None,
+    reasoning_off: ModelSettings | None,
+    context_window: int | None,
+    settings: Settings,
+) -> list[ModelMessage]:
+    """Fold this conversation's older turns into a summary when it has reached the
+    operator's share of the model's context window, returning the history to replay.
+
+    Returns ``history`` unchanged whenever compaction is off, unmeasurable (no declared
+    window), not yet due, has nothing left to fold, or the summarizer failed — this runs on
+    the critical path of every turn, so nothing here may raise. Compaction is an efficiency
+    measure, not a guard: when it doesn't free enough room the turn still meets the model's
+    real ceiling and stops with the context notice, which is the honest outcome.
+
+    Emitted before the answer streams, so the operator sees *why* the thread's memory
+    changed shape at the moment it happens rather than inferring it from a shorter reply."""
+    if not policy.enabled or model is None:
+        return history
+    if not should_compact(history, context_window, policy.threshold):
+        return history
+    try:
+        outcome = await compact_conversation(
+            store,
+            conversation_id,
+            model=model,
+            reasoning_off=reasoning_off,
+            keep_turns=policy.keep_turns,
+            settings=settings,
+        )
+    except Exception:  # noqa: BLE001 — an optimization must never take the turn down with it
+        logger.warning("auto-compaction failed for %s", conversation_id, exc_info=True)
+        return history
+    if outcome is None:
+        return history
+    run.emit(
+        ConversationCompacted(
+            conversation_id=conversation_id,
+            message_id=outcome.message_id,
+            summary=outcome.summary,
+            messages_compacted=outcome.messages_compacted,
+            after_message_id=outcome.after_message_id,
+        )
+    )
+    return await store.model_history(conversation_id)
 
 
 async def _approval_conversation_title(
@@ -757,6 +817,32 @@ async def _verify_and_correct(
     return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
+def _merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Collapse adjacent ``ModelRequest``s the way Pydantic AI will anyway, **before**
+    ``start`` is measured against the list.
+
+    ``_finalize`` persists ``result.all_messages()[start:]`` with ``start`` the length of
+    the history we handed in. That only holds while the library gives the history back at
+    the length we supplied it — and it does not: preparing the wire format merges
+    consecutive requests (most chat APIs cannot carry two user messages in a row), so
+    ``all_messages()`` comes back *shorter* than what went in and ``start`` silently points
+    one message too far, dropping the operator's own message from the turn it persists.
+
+    Two things produce adjacent requests here, and both are load-bearing: a compaction
+    checkpoint hoisted in front of a retained tail that opens on a user prompt, and
+    :func:`_split_injected_requests`' own output replayed on the *next* turn. Normalizing
+    up front costs nothing (the library was going to do exactly this) and makes the index
+    honest in both cases. New objects throughout — the store's in-memory tree shares these
+    messages, so nothing here may mutate one in place."""
+    out: list[ModelMessage] = []
+    for message in messages:
+        if isinstance(message, ModelRequest) and out and isinstance(out[-1], ModelRequest):
+            out[-1] = replace(out[-1], parts=[*out[-1].parts, *message.parts])
+            continue
+        out.append(message)
+    return out
+
+
 def _split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
     """Give each mid-run injected operator message its own persisted request.
 
@@ -1044,6 +1130,7 @@ def build_chat_orchestrator(
     vision: bool = False,
     inline_max_tokens: int | None = None,
     compaction: CompactionContext | None = None,
+    auto_compact: AutoCompactPolicy | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     request_limit: int | None = None,
 ) -> Orchestrator:
@@ -1080,6 +1167,13 @@ def build_chat_orchestrator(
     when the caller resolved one, else the config default. It bounds the *whole* turn,
     grant-resume and mid-run-steering continuations included, so a steady drip of
     steering messages can't extend it.
+
+    ``auto_compact`` is the conversation-compaction policy (the operator's default folded
+    with any per-thread override; absent ⇒ the config defaults). When the replayed history
+    has reached its share of ``context_window``, the turns before the retained tail are
+    summarized onto a checkpoint *before* the agent runs, and the turn continues from that
+    summary. The summarizer is ``utility_model`` — the same cheap model the namer and the
+    judge use.
     """
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
@@ -1089,10 +1183,26 @@ def build_chat_orchestrator(
         )
         announced: set[str] = set()
         history = (
-            await store.history(conversation_id)
+            await store.model_history(conversation_id)
             if store is not None and conversation_id is not None
             else None
         )
+        # Fold the older turns away *before* anything downstream measures this list. The
+        # rebuild has to land ahead of both `_drop_dangling_tool_calls` and `start`, because
+        # `start` is the index `_finalize` slices the turn out of `result.all_messages()` at
+        # — it must count the list actually handed to the model, not the one we started from.
+        if history and store is not None and conversation_id is not None:
+            history = await _maybe_compact(
+                run,
+                store,
+                conversation_id,
+                history,
+                policy=auto_compact or build_auto_compact_policy(settings),
+                model=utility_model,
+                reasoning_off=utility_settings,
+                context_window=context_window,
+                settings=settings,
+            )
         # A prior turn stopped at a bound persists its transcript verbatim — which can end on
         # an assistant tool call that never got its result. That full record is right for the
         # operator's view, but replaying a dangling tool call to the model is a provider error
@@ -1101,6 +1211,7 @@ def build_chat_orchestrator(
         # model history is sanitized, and `start` tracks the trimmed length.
         if history:
             history = _drop_dangling_tool_calls(history)
+            history = _merge_consecutive_requests(history)
         start = len(history) if history else 0
         is_first_turn = start == 0
         # What the model replays — `history` plus, on a regenerate, the per-turn prompt

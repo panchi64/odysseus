@@ -88,6 +88,10 @@ export interface SearchProviderInput {
  *  tool-result compaction — digesting oversized prior-turn tool outputs for the model
  *  (the operator always keeps the full output): whether it's on, how many of the newest
  *  results stay full, and the token floor below which a result is left untouched.
+ *  The `autoCompact*` fields tune the other reduction — folding whole earlier *turns*
+ *  into a utility-model summary once the context window fills: whether it's on, and how
+ *  full the window must get first (`autoCompactThreshold` is a fraction of the window,
+ *  the same 0–1 quantity the context meter reports; the UI presents it as a percentage).
  *  `agentRequestLimit` is how many model round-trips a single turn may spend before it
  *  stops — the ceiling a long tool-using turn actually runs out of. */
 export interface ChatSettings {
@@ -95,6 +99,8 @@ export interface ChatSettings {
   compactionEnabled: boolean;
   compactionKeepRecent: number;
   compactionMinTokens: number;
+  autoCompactEnabled: boolean;
+  autoCompactThreshold: number;
   agentRequestLimit: number;
 }
 

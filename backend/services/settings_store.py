@@ -28,6 +28,13 @@ COMPACTION_ENABLED_KEY = "chat.compaction_enabled"
 COMPACTION_KEEP_RECENT_KEY = "chat.compaction_keep_recent"
 COMPACTION_MIN_TOKENS_KEY = "chat.compaction_min_tokens"
 
+# Conversation auto-compaction (agent/summarize.py) — the other half of context reduction:
+# whether to fold a thread's older turns into a utility-model summary once its footprint
+# reaches `threshold` of the model's context window, expressed as a fraction (0.95 = 95%).
+# The retained-turn count is config-only; these two are what the operator actually tunes.
+AUTO_COMPACT_ENABLED_KEY = "chat.auto_compact_enabled"
+AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"
+
 # The agent's per-turn model-request ceiling (agent/engine.py's `UsageLimits`): the
 # operator's runtime override of `agent_request_limit`. Every model round-trip spends
 # one, so this is what a tool-heavy turn actually runs out of.
@@ -156,6 +163,30 @@ def _positive_int_or(raw: str | None, default: int) -> int:
     return value if value >= 1 else default
 
 
+@dataclass(frozen=True)
+class AutoCompactSettings:
+    """The operator's effective conversation auto-compaction preferences. ``threshold`` is
+    a fraction of the model's context window, not a percentage — the UI presents it as one,
+    but the wire and the store carry the same 0–1 quantity the context meter already uses."""
+
+    enabled: bool
+    threshold: float
+
+
+def _float_or(raw: str | None, default: float) -> float:
+    """A float in ``(0, 1]`` from a stored string, else the default — :func:`_int_or` for
+    the one setting that is a fraction. Both bounds matter: 0 (or a negative) would fire
+    compaction on an empty thread, and above 1 it could never fire at all, so a corrupted
+    value falls back rather than silently disabling or thrashing the feature."""
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if 0 < value <= 1 else default
+
+
 def _bool_or(raw: str | None, default: bool) -> bool:
     """``True``/``False`` from a stored ``"true"``/``"false"`` string, else the default — so a
     corrupted/legacy value falls back to the default instead of silently reading as ``False``
@@ -170,7 +201,9 @@ def _bool_or(raw: str | None, default: bool) -> bool:
 def resolve_compaction_enabled(override: bool | None, global_enabled: bool) -> bool:
     """A conversation's effective compaction on/off: its stored override when set, else the
     operator's global default. The one place this precedence lives, so the per-thread toggle's
-    displayed state and the turn's actual behavior can't drift apart."""
+    displayed state and the turn's actual behavior can't drift apart. Shared by both
+    compactions — tool-result and whole-conversation — which have separate overrides but the
+    identical precedence rule."""
     return global_enabled if override is None else override
 
 
@@ -195,4 +228,28 @@ async def set_compaction(
     await store.set(owner_id, COMPACTION_ENABLED_KEY, "true" if settings.enabled else "false")
     await store.set(owner_id, COMPACTION_KEEP_RECENT_KEY, str(settings.keep_recent))
     await store.set(owner_id, COMPACTION_MIN_TOKENS_KEY, str(settings.min_tokens))
+    return settings
+
+
+async def get_auto_compact(store: SettingsStore, owner_id: str) -> AutoCompactSettings:
+    """The operator's effective conversation auto-compaction settings — runtime overrides
+    where set (and valid), else the config defaults. One batched read for the pair."""
+    cfg = get_settings()
+    values = await store.get_many(
+        owner_id, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
+    )
+    return AutoCompactSettings(
+        enabled=_bool_or(values.get(AUTO_COMPACT_ENABLED_KEY), cfg.auto_compact_enabled),
+        threshold=_float_or(values.get(AUTO_COMPACT_THRESHOLD_KEY), cfg.auto_compact_threshold),
+    )
+
+
+async def set_auto_compact(
+    store: SettingsStore, owner_id: str, settings: AutoCompactSettings
+) -> AutoCompactSettings:
+    """Persist the operator's auto-compaction preferences. Returns the stored settings."""
+    await store.set(
+        owner_id, AUTO_COMPACT_ENABLED_KEY, "true" if settings.enabled else "false"
+    )
+    await store.set(owner_id, AUTO_COMPACT_THRESHOLD_KEY, str(settings.threshold))
     return settings

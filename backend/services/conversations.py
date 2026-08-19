@@ -42,6 +42,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
@@ -70,10 +71,24 @@ logger = logging.getLogger(__name__)
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 
-# A persistence-ready message row, still plaintext: (id, parent_id, seq, kind,
-# text, blob). The drainer encrypts text + blob just before the write (lock-aware
-# side of the queue), so a vault lock mid-turn parks the write rather than losing it.
-_Row = tuple[str, str | None, int, str, str, str, list[str], str | None]
+
+class _Row(NamedTuple):
+    """A persistence-ready message row, still plaintext. The drainer encrypts ``text`` +
+    ``blob`` just before the write (lock-aware side of the queue), so a vault lock
+    mid-turn parks the write rather than losing it."""
+
+    id: str
+    parent_id: str | None
+    seq: int
+    kind: str
+    text: str
+    blob: str
+    attachment_ids: list[str]
+    blocked_reason: str | None
+    # Set only on a conversation-compaction checkpoint: the flag, plus the id of the last
+    # node on the path its summary covers. See `record_compaction`.
+    compacted: bool = False
+    compacted_through: str | None = None
 
 
 @dataclass
@@ -119,6 +134,12 @@ class _Node:
     # Set on an assistant turn's first response node when the run that produced it
     # ended blocked — the human-readable reason. None otherwise.
     blocked_reason: str | None = None
+    # A conversation-compaction checkpoint (see `record_compaction`): this node's message
+    # is a utility-model summary of everything on the path up to and including
+    # `compacted_through`. The summarized nodes stay in the tree untouched — only what the
+    # *model* replays changes (`model_history`).
+    compacted: bool = False
+    compacted_through: str | None = None
 
 
 class _Tree:
@@ -245,6 +266,118 @@ def _is_user_prompt(message: ModelMessage) -> bool:
     )
 
 
+def _is_turn_start(path: list[_Node], index: int) -> bool:
+    """Whether ``path[index]`` opens a fresh operator turn — a user-prompt request that is
+    either the conversation's root or directly follows an assistant response.
+
+    Not every user-prompt request opens a turn. A message the operator sends *while a run
+    is executing* is persisted as its own request sitting directly behind the tool-return
+    request it was injected into (the engine's injected-request split), so counting bare
+    user prompts would read a mid-run aside as a whole exchange — and a compaction that
+    keeps "the last two turns" would keep two asides and fold a real one."""
+    if not _is_user_prompt(path[index].message):
+        return False
+    return index == 0 or isinstance(path[index - 1].message, ModelResponse)
+
+
+def _checkpoint_split(path: list[_Node]) -> tuple[int, int]:
+    """``(checkpoint, through)`` — the path index of the newest compaction checkpoint and
+    the index of the last node its summary covers. ``(-1, -1)`` when the path holds no
+    checkpoint. A checkpoint whose covered node is no longer on the path degrades to
+    ``through == checkpoint``: the summary still stands, it just covers nothing verbatim."""
+    checkpoint = next((i for i in range(len(path) - 1, -1, -1) if path[i].compacted), -1)
+    if checkpoint < 0:
+        return -1, -1
+    through_id = path[checkpoint].compacted_through
+    through = next((i for i, node in enumerate(path) if node.id == through_id), checkpoint)
+    return checkpoint, through
+
+
+def _replay_nodes(path: list[_Node], stop: int | None = None) -> list[_Node]:
+    """The nodes the **model** replays: the newest checkpoint's summary **hoisted to the
+    front**, then every node after the one it covers. ``stop`` truncates at a path index,
+    which is how a fresh compaction collects exactly what it is about to fold.
+
+    Hoisting is what lets the checkpoint be a plain leaf node in the tree. Splicing it in
+    at the boundary instead would mean re-parenting a live node, which would pull the
+    turns below it out of their own version sets. Hoisting also preserves the regenerate
+    shape: with the leaf reseated onto a user request, the replay still *ends* on that
+    request even though the checkpoint was appended after it."""
+    end = len(path) if stop is None else stop
+    checkpoint, through = _checkpoint_split(path)
+    if checkpoint < 0:
+        return path[:end]
+    head = [path[checkpoint]] if checkpoint < end else []
+    return head + [path[i] for i in range(through + 1, end) if i != checkpoint]
+
+
+def _view_nodes(path: list[_Node]) -> list[_Node]:
+    """The nodes the **operator** sees, in transcript order: each compaction checkpoint
+    moved back to sit immediately after the node its summary covers.
+
+    The opposite reordering to :func:`_replay_nodes`, and deliberately so. The model wants
+    the summary first, as a preamble; the operator wants it where it happened, so the
+    divider reads "everything above this line is what got folded" rather than trailing the
+    recent turns it did *not* fold. A checkpoint whose covered node has left the path stays
+    where it is rather than disappearing."""
+    followers: dict[str, list[_Node]] = {}
+    for node in path:
+        if node.compacted and node.compacted_through:
+            followers.setdefault(node.compacted_through, []).append(node)
+    if not followers:
+        return path
+    on_path = {node.id for node in path}
+    out: list[_Node] = []
+    for node in path:
+        if node.compacted and node.compacted_through in on_path:
+            continue  # emitted after its anchor below
+        out.append(node)
+        out.extend(followers.get(node.id, ()))
+    return out
+
+
+def _turn_anchor_id(path: list[_Node], node_id: str) -> str | None:
+    """The id of the **rendered turn** ``node_id`` belongs to — a turn's branch node, the
+    same one ``project_tree`` keys a view by: the user request for an operator turn, the
+    first response for an assistant one.
+
+    A tree node is not a rendered message: an assistant turn spans several nodes and shows
+    as one bubble. A live client is told where to draw the divider in terms it can actually
+    address, so the position it draws matches the one a reload computes rather than
+    approximating it."""
+    index = next((i for i, node in enumerate(path) if node.id == node_id), None)
+    if index is None:
+        return None
+    if _is_user_prompt(path[index].message):
+        return path[index].id
+    start = max((j for j in range(index + 1) if _is_turn_start(path, j)), default=None)
+    if start is None:
+        return path[index].id
+    first_response = next(
+        (path[j].id for j in range(start, index + 1) if isinstance(path[j].message, ModelResponse)),
+        None,
+    )
+    return first_response or path[index].id
+
+
+@dataclass(frozen=True)
+class CompactionPlan:
+    """What one conversation compaction would fold, resolved against the active path.
+
+    ``messages`` is the model's *current* replay view up to the boundary — so a second
+    compaction summarizes the first summary plus what followed it, never the original
+    turns all over again. ``expected_leaf_id`` is re-checked at record time, because
+    generating the summary takes seconds and the operator can switch versions meanwhile."""
+
+    messages: list[ModelMessage]
+    through_id: str
+    expected_leaf_id: str
+    # The rendered turn the divider follows — what a live client needs to place it where a
+    # reload will, since it addresses turns, not tree nodes. None when the covered node
+    # doesn't resolve to a turn (defensive; the client then appends).
+    anchor_id: str | None
+
+
 @dataclass
 class ConversationSummaryView:
     """A listing projection — never the authoritative history, just enough to
@@ -312,7 +445,7 @@ def _prompt_text(content: object) -> str:
     """The operator's typed text from a user-prompt content value. The engine builds an
     attachment turn's content as ``[prompt, *attachment_parts]``, so the leading string is
     the prompt; a bare string is already it. Deliberately *not* a join (unlike ``_project``
-    / ``conversation_view._user_text``) — a join would also slurp the injected file text
+    / ``conversation_view.flatten_content``) — a join would also slurp the injected file text
     this strip exists to drop."""
     if isinstance(content, str):
         return content
@@ -453,7 +586,12 @@ class ConversationStore:
             def work(
                 session: Session,
             ) -> tuple[
-                list[tuple[str, str | None, int, bool, str, list[str], str | None]], str | None
+                list[
+                    tuple[
+                        str, str | None, int, bool, str, list[str], str | None, bool, str | None
+                    ]
+                ],
+                str | None,
             ]:
                 rows = session.exec(
                     select(Message)
@@ -463,7 +601,17 @@ class ConversationStore:
                 conversation = session.get(Conversation, conversation_id)
                 active = conversation.active_leaf_id if conversation is not None else None
                 return [
-                    (r.id, r.parent_id, r.seq, r.pinned, r.blob, r.attachment_ids, r.blocked_reason)
+                    (
+                        r.id,
+                        r.parent_id,
+                        r.seq,
+                        r.pinned,
+                        r.blob,
+                        r.attachment_ids,
+                        r.blocked_reason,
+                        r.compacted,
+                        r.compacted_through,
+                    )
                     for r in rows
                 ], active
 
@@ -477,6 +625,8 @@ class ConversationStore:
                 blob,
                 attachment_ids,
                 blocked_reason,
+                compacted,
+                compacted_through,
             ) in rows:  # pre-sorted by seq
                 message = _MESSAGE.validate_json(self._vault.decrypt_str(blob))
                 tree.add(
@@ -488,6 +638,8 @@ class ConversationStore:
                         pinned=pinned,
                         attachment_ids=attachment_ids,
                         blocked_reason=blocked_reason,
+                        compacted=compacted,
+                        compacted_through=compacted_through,
                     )
                 )
             tree.active_leaf_id = active if active in tree.nodes else tree.fallback_leaf()
@@ -495,9 +647,108 @@ class ConversationStore:
             return tree
 
     async def history(self, conversation_id: str) -> list[ModelMessage]:
-        """The active path's messages — the flat history the agent continues from."""
+        """The active path's messages — the full transcript, compaction and all.
+
+        This is what the operator's own surfaces read (titling, retitling, the context
+        meter). The **model's** view is :meth:`model_history`, which is narrower once a
+        thread has been compacted; the two are deliberately separate methods rather than
+        one with a flag, because every caller here wants the whole thread."""
         tree = await self._tree(conversation_id)
         return [node.message for node in tree.active_path()]
+
+    async def model_history(self, conversation_id: str) -> list[ModelMessage]:
+        """The history the **model** replays: identical to :meth:`history` until the
+        thread has been compacted, then the newest checkpoint's summary followed by the
+        turns it doesn't cover. Nothing is lost — the folded turns stay in the tree and in
+        the transcript; only what is re-sent each turn shrinks."""
+        tree = await self._tree(conversation_id)
+        return [node.message for node in _replay_nodes(tree.active_path())]
+
+    async def compaction_plan(
+        self, conversation_id: str, *, keep_turns: int
+    ) -> CompactionPlan | None:
+        """What compacting this conversation right now would fold, or ``None`` when it
+        would fold nothing.
+
+        The boundary is the ``keep_turns``-th-from-last turn start **after the newest
+        existing checkpoint**, so a compaction can never reach back past an earlier one and
+        re-expose its summary as an ordinary turn. Cutting at a turn start is also what
+        keeps the retained tail replayable: a turn always opens with an operator prompt, so
+        the split can't strand an assistant tool call from its result.
+
+        ``None`` when the active leaf already has children — a regenerate or edit has
+        reseated the leaf and its run hasn't recorded yet, and grafting a checkpoint there
+        would re-parent the incoming answer out of the version set it belongs to. After any
+        completed turn the leaf is childless again, so this only sits out the turn itself."""
+        tree = await self._tree(conversation_id)
+        leaf = tree.active_leaf_id
+        if leaf is None or tree.children.get(leaf):
+            return None
+        path = tree.active_path()
+        checkpoint, _ = _checkpoint_split(path)
+        starts = [i for i in range(checkpoint + 1, len(path)) if _is_turn_start(path, i)]
+        if len(starts) <= keep_turns:
+            return None
+        boundary = starts[-keep_turns] if keep_turns > 0 else len(path)
+        folded = _replay_nodes(path, stop=boundary)
+        if not folded:
+            return None
+        through_id = path[boundary - 1].id
+        return CompactionPlan(
+            messages=[node.message for node in folded],
+            through_id=through_id,
+            expected_leaf_id=leaf,
+            anchor_id=_turn_anchor_id(path, through_id),
+        )
+
+    def record_compaction(
+        self, conversation_id: str, *, summary: str, through_id: str, expected_leaf_id: str
+    ) -> str | None:
+        """Append a compaction checkpoint at the tip and queue its durable write, returning
+        the new node's id — or ``None`` when the plan went stale.
+
+        Synchronous on purpose, exactly like :meth:`record`: the staleness re-check and the
+        append happen with no ``await`` between them, so under single-threaded asyncio no
+        other coroutine can move the leaf in the window. It has to be re-checked at all
+        because generating the summary takes seconds, and the route's conversation claim
+        blocks *runs* — not a version switch or a rewind."""
+        tree = self._cache.get(conversation_id)
+        if tree is None or tree.active_leaf_id != expected_leaf_id:
+            return None
+        if tree.children.get(expected_leaf_id):
+            return None
+        message = ModelRequest(parts=[UserPromptPart(content=summary)])
+        node = tree.append_chain([message])[0]
+        node.compacted = True
+        node.compacted_through = through_id
+        self._worker.submit(
+            _PersistJob(
+                kind="messages",
+                conversation_id=conversation_id,
+                active_leaf_id=tree.active_leaf_id,
+                rows=[
+                    _Row(
+                        id=node.id,
+                        parent_id=node.parent_id,
+                        seq=node.seq,
+                        kind="request",
+                        # An empty projection, deliberately: a checkpoint contributes no
+                        # embedding (the drainer only embeds non-empty text), no cross-chat
+                        # search hit, and no listing preview. A summary surfacing in search
+                        # as if it were the operator's own words is worse than not
+                        # surfacing at all. The text lives only in the sealed blob.
+                        text="",
+                        blob=_MESSAGE.dump_json(message).decode(),
+                        attachment_ids=[],
+                        blocked_reason=None,
+                        compacted=True,
+                        compacted_through=through_id,
+                    )
+                ],
+                model=_active_path_model(tree.active_path()),
+            )
+        )
+        return node.id
 
     def _summarize(
         self, conversation: Conversation, db_count: int, last_text_enc: str | None
@@ -510,7 +761,10 @@ class ConversationStore:
         warm and cold agree and listing never opens a blob."""
         cached = self._cache.get(conversation.id)
         if cached is not None:
-            path = cached.active_path()
+            # Compaction checkpoints are chassis bookkeeping, not turns: they must not be
+            # counted as messages, and the newest one must not become the listing preview
+            # (it is the tip right after a compaction, so it otherwise would).
+            path = [node for node in cached.active_path() if not node.compacted]
             count = len(path)
             preview = next(
                 (text for text in (_project(n.message)[1] for n in reversed(path)) if text), None
@@ -587,8 +841,9 @@ class ConversationStore:
         split out, tool calls stitched to results), each carrying its branch node id
         and version index/count so the operator can regenerate, edit, or cycle it."""
         tree = await self._tree(conversation_id)
-        nodes = tree.active_path()
-        views = project_tree([(n.id, n.message) for n in nodes])
+        nodes = _view_nodes(tree.active_path())
+        compacted_ids = frozenset(n.id for n in nodes if n.compacted)
+        views = project_tree([(n.id, n.message) for n in nodes], compacted_ids=compacted_ids)
         for view in views:
             node = tree.nodes.get(view.id)
             if node is not None:
@@ -672,6 +927,32 @@ class ConversationStore:
 
         await in_session(self._engine, work)
 
+    async def get_auto_compact_override(self, conversation_id: str) -> bool | None:
+        """This conversation's *conversation*-compaction override (folding older turns into
+        a summary) — ``None`` inherits the operator default, ``True``/``False`` force it
+        on/off. Separate from ``get_compaction_override``, which governs tool-result
+        compaction: a thread can want full-fidelity tool output and aggressive turn folding,
+        or the reverse."""
+
+        def work(session: Session) -> bool | None:
+            conversation = session.get(Conversation, conversation_id)
+            return conversation.auto_compact_override if conversation is not None else None
+
+        return await in_session(self._engine, work)
+
+    async def set_auto_compact_override(
+        self, conversation_id: str, override: bool | None
+    ) -> None:
+        """Set (or clear, with ``None``) this conversation's auto-compaction override. Like
+        its tool-result peer, a quiet preference — it doesn't bump ``updated_at``."""
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.auto_compact_override = override
+
+        await in_session(self._engine, work)
+
     async def delete_conversation(self, conversation_id: str) -> None:
         """Drop a conversation and its messages from the durable record, and evict
         the in-memory tree."""
@@ -732,15 +1013,15 @@ class ConversationStore:
             kind, text = _project(node.message)
             blob = _MESSAGE.dump_json(node.message).decode()
             rows.append(
-                (
-                    node.id,
-                    node.parent_id,
-                    node.seq,
-                    kind,
-                    text,
-                    blob,
-                    node.attachment_ids,
-                    node.blocked_reason,
+                _Row(
+                    id=node.id,
+                    parent_id=node.parent_id,
+                    seq=node.seq,
+                    kind=kind,
+                    text=text,
+                    blob=blob,
+                    attachment_ids=node.attachment_ids,
+                    blocked_reason=node.blocked_reason,
                 )
             )
         self._worker.submit(
@@ -1007,19 +1288,20 @@ class ConversationStore:
             if conversation is None:
                 return
             for row in job.rows:
-                row_id, parent_id, seq, kind, text, blob, attachment_ids, blocked_reason = row
-                model, dim, vector_enc = vectors.get(row_id, (None, None, None))
+                model, dim, vector_enc = vectors.get(row.id, (None, None, None))
                 session.add(
                     Message(
-                        id=row_id,
+                        id=row.id,
                         conversation_id=job.conversation_id,
-                        parent_id=parent_id,
-                        seq=seq,
-                        kind=kind,
-                        text=self._vault.encrypt_str(text),
-                        blob=self._vault.encrypt_str(blob),
-                        attachment_ids=attachment_ids,
-                        blocked_reason=blocked_reason,
+                        parent_id=row.parent_id,
+                        seq=row.seq,
+                        kind=row.kind,
+                        text=self._vault.encrypt_str(row.text),
+                        blob=self._vault.encrypt_str(row.blob),
+                        attachment_ids=row.attachment_ids,
+                        blocked_reason=row.blocked_reason,
+                        compacted=row.compacted,
+                        compacted_through=row.compacted_through,
                         embedding_enc=vector_enc,
                         embedding_model=model,
                         embedding_dim=dim,
@@ -1039,7 +1321,7 @@ class ConversationStore:
         embed or the embedder is unavailable — the write then stores no vectors."""
         if self._embedder is None:
             return {}
-        texts = [(row[0], row[4]) for row in job.rows if row[4].strip()]
+        texts = [(row.id, row.text) for row in job.rows if row.text.strip()]
         if not texts:
             return {}
 

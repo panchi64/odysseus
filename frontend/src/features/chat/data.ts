@@ -240,7 +240,9 @@ interface ConversationDocumentDTO {
 
 interface MessageDTO {
   id: string;
-  role: "user" | "assistant";
+  /** "compaction" is a chassis-authored divider, not a turn — the summary the
+   *  thread's earlier turns were folded into, carried in `content`. */
+  role: "user" | "assistant" | "compaction";
   content: string;
   reasoning?: string | null;
   tools: ToolCallDTO[];
@@ -818,6 +820,28 @@ export async function setCompactionOverride(
 ): Promise<CompactionState> {
   return api.put<CompactionState>(
     `/conversations/${conversationId}/compaction`,
+    { override },
+  );
+}
+
+/** This conversation's *conversation*-compaction state — folding older turns into a
+ *  summary, as opposed to `/compaction` above, which condenses individual tool outputs. */
+export async function fetchAutoCompactOverride(
+  conversationId: string,
+): Promise<CompactionState> {
+  return api.get<CompactionState>(
+    `/conversations/${conversationId}/auto-compact`,
+  );
+}
+
+/** Force conversation compaction on/off for this chat (or `null` to inherit the global
+ *  setting); returns the new state. */
+export async function setAutoCompactOverride(
+  conversationId: string,
+  override: boolean | null,
+): Promise<CompactionState> {
+  return api.put<CompactionState>(
+    `/conversations/${conversationId}/auto-compact`,
     { override },
   );
 }
@@ -1440,6 +1464,28 @@ export function createChatStream(
           }),
         );
         break;
+      case "conversation.compacted": {
+        // Conversation-level, like the title above — but it *is* a message, so it goes
+        // into the list. Placed after the turn the backend named rather than appended:
+        // a divider at the bottom would claim to have folded the turns it kept, and a
+        // reload (which places it chronologically) would then disagree with the live view.
+        const divider: ChatMessage = {
+          id: ev.message_id,
+          role: "compaction",
+          content: ev.summary,
+          createdAt: ev.ts,
+        };
+        setMessages(
+          produce((list) => {
+            const at = ev.after_message_id
+              ? list.findIndex((m) => m.id === ev.after_message_id)
+              : -1;
+            if (at >= 0) list.splice(at + 1, 0, divider);
+            else list.push(divider);
+          }),
+        );
+        break;
+      }
       case "conversation.titled":
         // Conversation-level, not message-level: hand it to the typewriter reveal
         // rather than folding onto the assistant message. The throbber clears in the
@@ -2285,6 +2331,25 @@ export function createChatStream(
     }
   }
 
+  /** Fold this thread's older turns into a summary now, rather than waiting for it to
+   *  reach the automatic threshold — for a thread the operator knows is about to need the
+   *  room. Reseats from the returned active path like the other transcript-mutating
+   *  actions, so the new divider renders from exactly the shape a cold read gives. */
+  async function compactNow(): Promise<void> {
+    if (activeConversationId === null) return;
+    if (sending()) await cancel();
+    try {
+      const detail = await api.post<ConversationDetailDTO>(
+        `/conversations/${activeConversationId}/compact`,
+        {},
+      );
+      reseatFromDetail(detail);
+      toast.success("Earlier turns folded into a summary");
+    } catch (err) {
+      toastError(err, "Unable to compact this conversation.");
+    }
+  }
+
   /** Delete a turn and everything after it; reseat from the returned active path
    *  (the DELETE returns the post-delete detail, like version-switch/rewind). */
   async function removeMessage(
@@ -2497,6 +2562,7 @@ export function createChatStream(
     edit,
     switchVersion,
     rewind,
+    compactNow,
     removeMessage,
     toggleMessagePin,
   };

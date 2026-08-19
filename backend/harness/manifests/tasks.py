@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from agent.summarize import resolve_auto_compact_policy
 from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from models.task import TaskOutcome, TaskOutput
@@ -121,6 +122,12 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             # Same reasoning for the per-turn model-request ceiling: an unattended task
             # runs under the operator's own setting, not a separate default.
             request_limit=await get_agent_request_limit(settings_store, view.owner_id),
+            # And the same for conversation compaction. Inert today — each fire starts a
+            # fresh conversation, so there is never history to fold — but passing the
+            # operator's policy rather than letting it default keeps the unattended path
+            # from quietly disagreeing with the interactive one the day a task's thread
+            # does carry history.
+            auto_compact=await resolve_auto_compact_policy(settings_store, view.owner_id),
             owner_id=view.owner_id,
         )
         # Registered before the very first `await` below — the newly submitted Run's

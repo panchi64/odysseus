@@ -14,9 +14,10 @@ import { saveChatSettings, useChatSettings } from "../data";
 
 /* Operator preferences for how a turn runs: how much of an attached file's text
    rides inline in replayed history before it's cut off and reached via the agent's
-   tools, how many model round-trips one turn may spend, and how older tool results
-   are condensed. Each editable value seeds from the backend resource and saves
-   back to it. */
+   tools, how many model round-trips one turn may spend, and the two context
+   reductions — how older tool results are condensed, and when whole earlier turns
+   are folded into a summary. Each editable value seeds from the backend resource and
+   saves back to it. */
 export function ChatSection(): JSX.Element {
   const chatSettings = useChatSettings();
   const [cap, setCap] = createSignal("");
@@ -31,6 +32,12 @@ export function ChatSection(): JSX.Element {
   // the ceiling a long tool-using turn actually stops at.
   const [stepLimit, setStepLimit] = createSignal("");
   const [savingSteps, setSavingSteps] = createSignal(false);
+  // Conversation compaction: fold whole earlier turns into a summary once the context
+  // window fills. The threshold is stored as a fraction and edited as a percentage — the
+  // number the operator actually thinks in.
+  const [autoCompactEnabled, setAutoCompactEnabled] = createSignal(true);
+  const [autoCompactPct, setAutoCompactPct] = createSignal("");
+  const [savingAutoCompact, setSavingAutoCompact] = createSignal(false);
   createEffect(() => {
     const s = chatSettings();
     if (!s) return;
@@ -39,6 +46,8 @@ export function ChatSection(): JSX.Element {
     setKeepRecent(String(s.compactionKeepRecent));
     setMinTokens(String(s.compactionMinTokens));
     setStepLimit(String(s.agentRequestLimit));
+    setAutoCompactEnabled(s.autoCompactEnabled);
+    setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
   });
   const saveCap = async () => {
     const raw = cap().trim();
@@ -113,6 +122,31 @@ export function ChatSection(): JSX.Element {
       toast.error("Unable to update the step limit.");
     } finally {
       setSavingSteps(false);
+    }
+  };
+
+  const saveAutoCompact = async () => {
+    const raw = autoCompactPct().trim();
+    const pct = Number(raw);
+    // Above 0 and at most 100: a 0% threshold would fire on an empty thread, and there is
+    // nothing above "the window is full" to wait for.
+    if (raw === "" || !Number.isInteger(pct) || pct < 1 || pct > 100) {
+      toast.error("Enter a whole percentage between 1 and 100.");
+      return;
+    }
+    setSavingAutoCompact(true);
+    try {
+      const saved = await saveChatSettings({
+        autoCompactEnabled: autoCompactEnabled(),
+        autoCompactThreshold: pct / 100,
+      });
+      setAutoCompactEnabled(saved.autoCompactEnabled);
+      setAutoCompactPct(String(Math.round(saved.autoCompactThreshold * 100)));
+      toast.success("Auto-compaction updated");
+    } catch {
+      toast.error("Unable to update auto-compaction settings.");
+    } finally {
+      setSavingAutoCompact(false);
     }
   };
 
@@ -243,6 +277,53 @@ export function ChatSection(): JSX.Element {
               onClick={() => void saveCompaction()}
             >
               {savingCompaction() ? "SAVING…" : "SAVE"}
+            </Button>
+          </Row>
+
+          <div class="border-line border-t" />
+
+          <Stack gap={1}>
+            <Text variant="label" tone="default">
+              AUTO-COMPACT CONVERSATIONS
+            </Text>
+            <Text variant="micro" tone="dim">
+              When a conversation nears the model's context limit, its earlier
+              turns are folded into a summary and the chat carries on instead of
+              stopping. The most recent exchanges are kept word for word, and
+              your transcript keeps everything — only what the model re-reads is
+              condensed. Off, a full conversation stops at the limit and you
+              start a new one or rewind.
+            </Text>
+          </Stack>
+          <Toggle
+            checked={autoCompactEnabled()}
+            onChange={setAutoCompactEnabled}
+            label="Fold older turns into a summary when the context fills"
+          />
+          <Row gap={4} align="end">
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                TRIGGER AT (% of context)
+              </Text>
+              <div class="w-32">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="100"
+                  value={autoCompactPct()}
+                  onInput={(e) => setAutoCompactPct(e.currentTarget.value)}
+                  placeholder="95"
+                  disabled={!autoCompactEnabled()}
+                />
+              </div>
+            </Stack>
+            <Button
+              variant="primary"
+              disabled={savingAutoCompact()}
+              onClick={() => void saveAutoCompact()}
+            >
+              {savingAutoCompact() ? "SAVING…" : "SAVE"}
             </Button>
           </Row>
         </Stack>

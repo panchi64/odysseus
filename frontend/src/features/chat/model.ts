@@ -16,7 +16,10 @@ export interface TokenUsage {
   output: number | null;
 }
 
-export type Role = "user" | "assistant";
+/** "compaction" is not a turn either party took — it is the chassis marking where the
+ *  thread's earlier turns were folded into a summary. Rendered as a full-width divider,
+ *  not a bubble; it carries the summary in `content` and has no actions. */
+export type Role = "user" | "assistant" | "compaction";
 
 export type ToolStatus = "running" | "ok" | "error";
 
@@ -357,9 +360,10 @@ export interface ApprovalGrant {
   toolName: string;
 }
 
-/** A conversation's tool-result compaction state. `override` is the stored per-chat choice
- *  (`null` = inherit the operator's global setting); `effective` is the resolved on/off the
- *  UI renders. The backend owns the resolution — the frontend only reflects it. */
+/** A conversation's compaction state — the same shape for both reductions. `override` is
+ *  the stored per-chat choice (`null` = inherit the operator's global setting); `effective`
+ *  is the resolved on/off the UI renders. The backend owns the resolution — the frontend
+ *  only reflects it. */
 export interface CompactionState {
   override: boolean | null;
   effective: boolean;

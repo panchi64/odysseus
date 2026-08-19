@@ -262,6 +262,8 @@ interface ChatSettingsDTO {
   compaction_enabled: boolean;
   compaction_keep_recent: number;
   compaction_min_tokens: number;
+  auto_compact_enabled: boolean;
+  auto_compact_threshold: number;
   agent_request_limit: number;
 }
 
@@ -272,6 +274,8 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     compactionEnabled: dto.compaction_enabled,
     compactionKeepRecent: dto.compaction_keep_recent,
     compactionMinTokens: dto.compaction_min_tokens,
+    autoCompactEnabled: dto.auto_compact_enabled,
+    autoCompactThreshold: dto.auto_compact_threshold,
     agentRequestLimit: dto.agent_request_limit,
   };
 }
@@ -290,6 +294,10 @@ function toChatSettingsBody(
     body.compaction_keep_recent = patch.compactionKeepRecent;
   if (patch.compactionMinTokens !== undefined)
     body.compaction_min_tokens = patch.compactionMinTokens;
+  if (patch.autoCompactEnabled !== undefined)
+    body.auto_compact_enabled = patch.autoCompactEnabled;
+  if (patch.autoCompactThreshold !== undefined)
+    body.auto_compact_threshold = patch.autoCompactThreshold;
   if (patch.agentRequestLimit !== undefined)
     body.agent_request_limit = patch.agentRequestLimit;
   return body;

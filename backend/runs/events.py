@@ -238,6 +238,30 @@ class ConversationTitled(_Body):
     title: str
 
 
+class ConversationCompacted(_Body):
+    """The thread's earlier turns were folded into a summary before this turn ran,
+    because its context footprint had reached the operator's threshold. Nothing was
+    deleted — the transcript keeps every turn; this marks where the *model's* replayed
+    view narrows to ``summary`` plus the turns after it. Emitted mid-run (before the
+    answer streams) so a live client can drop the divider in as it happens, and
+    persisted as its own message so a reload renders the same thing. Additive to v1;
+    no bump."""
+
+    type: Literal["conversation.compacted"] = "conversation.compacted"
+    conversation_id: str
+    # The checkpoint message the summary is stored on — the node the client renders
+    # the divider against, and the same id a cold read returns.
+    message_id: str
+    summary: str
+    # How many messages the summary stands in for, so the divider can say so without
+    # the client counting anything itself.
+    messages_compacted: int
+    # The rendered turn the divider follows. A live client addresses turns, not tree
+    # nodes, so the backend resolves the position rather than leaving the client to
+    # approximate it and land somewhere a reload disagrees with. Null => append.
+    after_message_id: str | None = None
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -328,6 +352,7 @@ EventBody = Annotated[
     | ViewLiveStopped
     | ViewSnapshot
     | ConversationTitled
+    | ConversationCompacted
     | ApprovalRequired
     | MessageQueued
     | MessageEdited

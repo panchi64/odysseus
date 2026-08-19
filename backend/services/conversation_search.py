@@ -90,6 +90,10 @@ class ConversationSearch:
                 .join(Conversation, Message.conversation_id == Conversation.id)  # type: ignore[arg-type]
                 .where(Conversation.owner_id == owner_id)
                 .where(Conversation.ephemeral == False)  # noqa: E712 — SQL boolean compare
+                # A compaction checkpoint is a machine-written summary of turns that are
+                # themselves still in the table. Ranking it would double-count them and
+                # surface a paraphrase as if it were something the operator wrote.
+                .where(Message.compacted == False)  # noqa: E712 — SQL boolean compare
             )
             if exclude_conversation_id is not None:
                 stmt = stmt.where(Message.conversation_id != exclude_conversation_id)
@@ -107,6 +111,10 @@ class ConversationSearch:
         views = await self._store.messages_view(conversation_id)
         lines = []
         for view in views:
+            # A compaction checkpoint is chassis bookkeeping, not something either party
+            # said — reading it back as "Assistant" would put words in the model's mouth.
+            if view.role == "compaction":
+                continue
             content = view.content.strip()
             if content:
                 label = "User" if view.role == "user" else "Assistant"

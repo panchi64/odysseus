@@ -44,7 +44,10 @@ class ToolView:
 
 @dataclass
 class MessageView:
-    role: str  # "user" | "assistant"
+    # "compaction" is a chassis-authored divider, not a turn either party took: the
+    # conversation was folded into a summary here (`content`), and the turns above it are
+    # what the model now replays as that summary.
+    role: str  # "user" | "assistant" | "compaction"
     content: str = ""
     reasoning: str = ""
     tools: list[ToolView] = field(default_factory=list)
@@ -72,8 +75,8 @@ class MessageView:
     blocked_reason: str | None = None
 
 
-def _user_text(content: Any) -> str:
-    """Flatten a user prompt's content (str or multimodal sequence) to text.
+def flatten_content(content: Any) -> str:
+    """Flatten a message part's content (str or multimodal sequence) to text.
 
     A multimodal turn keeps its text parts; non-text parts (images, files) are
     represented by a single ``[attachment]`` marker so an image-only turn still
@@ -89,9 +92,16 @@ def _user_text(content: Any) -> str:
     return ""
 
 
-def project_tree(nodes: list[tuple[str, Any]]) -> list[MessageView]:
+def project_tree(
+    nodes: list[tuple[str, Any]], *, compacted_ids: frozenset[str] = frozenset()
+) -> list[MessageView]:
     """Fold an active-path ``(node_id, ModelMessage)`` sequence into ordered
     user/assistant view turns.
+
+    ``compacted_ids`` names the conversation-compaction checkpoints among ``nodes``. Each
+    becomes its own ``role="compaction"`` view — a divider carrying the summary — instead
+    of the user turn its underlying ``UserPromptPart`` would otherwise read as. This stays
+    purely order-driven: the caller hands the nodes in the order it wants them rendered.
 
     One turn = one view. A user turn is a request carrying a ``UserPromptPart``.
     An assistant turn is the run of everything after it until the next user turn —
@@ -114,6 +124,21 @@ def project_tree(nodes: list[tuple[str, Any]]) -> list[MessageView]:
     by_call: dict[str, ToolView] = {}
     assistant: MessageView | None = None  # the open assistant turn, if any
     for node_id, message in nodes:
+        if node_id in compacted_ids:
+            # A conversation-compaction checkpoint: its own turn, not the operator's.
+            # It closes any open assistant turn, exactly as a user turn would.
+            assistant = None
+            views.append(
+                MessageView(
+                    role="compaction",
+                    content=flatten_content(message.parts[0].content) if message.parts else "",
+                    timestamp=getattr(message.parts[0], "timestamp", None)
+                    if message.parts
+                    else None,
+                    id=node_id,
+                )
+            )
+            continue
         if isinstance(message, ModelRequest):
             user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
             if user_parts:
@@ -123,7 +148,7 @@ def project_tree(nodes: list[tuple[str, Any]]) -> list[MessageView]:
                 views.append(
                     MessageView(
                         role="user",
-                        content=_user_text(part.content),
+                        content=flatten_content(part.content),
                         timestamp=getattr(part, "timestamp", None),
                         id=node_id,
                     )

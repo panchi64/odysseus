@@ -292,6 +292,29 @@ class Settings(BaseSettings):
     compaction_keep_recent: int = 6
     compaction_min_tokens: int = 1000
 
+    # Conversation auto-compaction — the other half of context reduction, and a different
+    # thing from the tool-result compaction above: that one condenses individual tool
+    # outputs, this one folds whole *turns*. Once a thread's measured footprint reaches
+    # `auto_compact_threshold` of the model's context window, everything older than the
+    # last `auto_compact_keep_turns` exchanges is summarized by the utility model into one
+    # checkpoint, and the thread carries on from that summary plus the retained turns.
+    # Nothing is deleted: the operator's transcript keeps every turn, and only what is
+    # re-sent to the model shrinks. It fires **between** turns, in the orchestrator prelude,
+    # so it can never disturb reasoning already in flight. It is also not a safety net — a
+    # prompt that overruns the window anyway still stops the run with a context notice.
+    # `auto_compact_input_max_tokens` bounds the transcript handed to the summarizer, which
+    # by definition is folding most of the *main* model's window into a utility model that
+    # may be smaller; `auto_compact_max_tokens` is the summary's own output budget, sized
+    # (like the titler's) to leave room for a `<think>` block on a runtime that ignores the
+    # reasoning-off lever. Enabled/threshold are the *defaults* — the operator overrides
+    # them at runtime via `PUT /chat/settings`, and per thread via `/conversations/{id}`.
+    auto_compact_enabled: bool = True
+    auto_compact_threshold: float = 0.95
+    auto_compact_keep_turns: int = 2
+    auto_compact_input_max_tokens: int = 24000
+    auto_compact_max_tokens: int = 4096
+    auto_compact_timeout_s: float = 120.0
+
     # Deep research (DR-*): a run is a deterministic rounds loop with a dynamic
     # per-round fan-out of search/read workers, bounded by whichever of rounds or wall-
     # clock time comes first (DR-3.1). `research_max_concurrency` caps how many workers

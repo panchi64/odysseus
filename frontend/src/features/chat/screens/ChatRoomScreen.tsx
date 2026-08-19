@@ -76,8 +76,16 @@ import { MessageItem } from "../components/MessageItem";
 function buildConversationTranscript(messages: ChatMessage[]): string {
   return messages
     .map((m) => {
-      const label = m.role === "user" ? "OPERATOR" : "ASSISTANT";
-      const body = m.role === "user" ? m.content : assembleTranscript(m.blocks);
+      // A compaction divider is neither party's words — label it as the chassis note it
+      // is rather than attributing the summary to the assistant.
+      const label =
+        m.role === "user"
+          ? "OPERATOR"
+          : m.role === "compaction"
+            ? "CONTEXT COMPACTED"
+            : "ASSISTANT";
+      const body =
+        m.role === "assistant" ? assembleTranscript(m.blocks) : m.content;
       return `${label} · ${m.createdAt}\n${body}`;
     })
     .join("\n\n---\n\n");
@@ -687,6 +695,12 @@ export function ChatRoomScreen(): JSX.Element {
               )}
             </Show>
             <Show when={currentId()}>
+              {/* The two reductions, side by side next to the CTX meter they act on:
+                  FOLD condenses whole earlier turns, CMPCT individual tool outputs. */}
+              <ConversationCompactionToggle
+                conversationId={currentId}
+                kind="turns"
+              />
               <ConversationCompactionToggle conversationId={currentId} />
             </Show>
             <Tooltip label="VIEWPORT" side="bottom">
@@ -726,6 +740,14 @@ export function ChatRoomScreen(): JSX.Element {
                     icon: "refresh",
                     disabled: !currentId(),
                     onSelect: handleRegenerateTitle,
+                  },
+                  {
+                    label: "COMPACT NOW",
+                    icon: "layers",
+                    // Nothing to fold in an empty or one-turn thread; the backend
+                    // refuses those anyway, this just doesn't offer the action.
+                    disabled: !currentId() || stream.messages.length < 3,
+                    onSelect: () => void stream.compactNow(),
                   },
                   {
                     label: "COPY CONVERSATION",

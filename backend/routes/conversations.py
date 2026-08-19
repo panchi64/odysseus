@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from agent.summarize import compact_conversation
 from agent.title import title_from_history
 from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
@@ -25,7 +26,11 @@ from routes.deps import OPERATOR_ID
 from runs import ContextWindow
 from services.conversation_view import MessageView
 from services.conversations import ConversationSummaryView, context_footprint
-from services.settings_store import get_compaction, resolve_compaction_enabled
+from services.settings_store import (
+    get_auto_compact,
+    get_compaction,
+    resolve_compaction_enabled,
+)
 from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
@@ -632,3 +637,92 @@ async def set_compaction_override(
     await _require_owned(request, conversation_id)
     await deps.store(request).set_compaction_override(conversation_id, body.override)
     return await _compaction_state(request, conversation_id)
+
+
+async def _auto_compact_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
+    override = await deps.store(request).get_auto_compact_override(conversation_id)
+    global_cfg = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
+    return CompactionOverrideOut(
+        override=override,
+        effective=resolve_compaction_enabled(override, global_cfg.enabled),
+    )
+
+
+@router.get("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
+async def get_auto_compact_override(
+    conversation_id: str, request: Request
+) -> CompactionOverrideOut:
+    """This thread's *conversation*-compaction state (its override + the effective on/off).
+
+    The same shape as ``/compaction`` above, over the other of the two reductions: that one
+    condenses individual tool outputs, this one folds whole turns into a summary once the
+    context window fills. They are separate switches because a thread can reasonably want
+    one without the other."""
+    await _require_owned(request, conversation_id)
+    return await _auto_compact_state(request, conversation_id)
+
+
+@router.put("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
+async def set_auto_compact_override(
+    conversation_id: str, body: CompactionOverrideUpdate, request: Request
+) -> CompactionOverrideOut:
+    """Force conversation compaction on/off for this thread, or clear it (``null``) to
+    inherit the operator's global setting."""
+    await _require_owned(request, conversation_id)
+    await deps.store(request).set_auto_compact_override(conversation_id, body.override)
+    return await _auto_compact_state(request, conversation_id)
+
+
+@router.post("/{conversation_id}/compact", response_model=ConversationDetail)
+async def compact_conversation_now(
+    conversation_id: str, request: Request, body: RetitleRequest | None = None
+) -> ConversationDetail:
+    """Fold this thread's older turns into a summary now, without waiting for it to reach
+    the automatic threshold — for a thread the operator knows is about to need the room.
+
+    Unlike the automatic path this ignores the threshold and the on/off switches entirely:
+    the operator asked for it explicitly. It still respects everything that makes a
+    compaction *safe* — the retained tail, the never-reach-past-an-earlier-checkpoint rule,
+    and the refusal to graft onto a branch point.
+
+    Claims the conversation for the duration, which ``retitle`` (whose shape this otherwise
+    follows) does not need to: this one appends to the tree, so it must not run beside a
+    live turn recording its own messages. Returns the refreshed detail so the client renders
+    the new divider from the same shape a cold read gives it.
+
+    ``503`` when the summarizer couldn't produce a summary; ``409`` when nothing was folded
+    — either the thread is too short to have anything to fold, or the operator has just
+    started a regenerate/edit and the leaf is a branch point."""
+    store = deps.store(request)
+    summary = await store.get_summary(conversation_id, OPERATOR_ID)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    pick = body or RetitleRequest()
+    deps.claim_conversation(request, conversation_id)
+    try:
+        try:
+            utility = await deps.models(request).resolve_background(
+                owner_id=OPERATOR_ID,
+                override_endpoint_id=pick.endpoint_id,
+                override_model=pick.model,
+            )
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="model endpoint not found") from None
+        except DegradedCapabilityError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        outcome = await compact_conversation(
+            store,
+            conversation_id,
+            model=utility.model,
+            reasoning_off=utility.reasoning_off,
+        )
+        if outcome is None:
+            raise HTTPException(
+                status_code=409, detail="there is nothing to compact in this conversation"
+            )
+    finally:
+        deps.release_conversation(request, conversation_id)
+    refreshed = await store.get_summary(conversation_id, OPERATOR_ID)
+    if refreshed is None:  # pragma: no cover — just confirmed it exists
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return await _detail(request, conversation_id, refreshed)
