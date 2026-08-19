@@ -1,7 +1,16 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  on,
+  onCleanup,
+  Show,
+  type JSX,
+} from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text } from "~/ui";
 import { formatArgs } from "../data";
 import type { Approval, ApprovalDecision } from "../model";
+import { consumeApprovalFocus, HIGHLIGHT_MS } from "../viewerPersistence";
 import {
   ConversationGrantToggle,
   createGrantToggle,
@@ -30,6 +39,32 @@ export function ApprovalCard(props: {
   // transcript with whatever actually happened.
   const stale = () => props.approvals.some((a) => a.stale);
 
+  // Deep-link focus: when an `approval_needed` notification is opened, the pending
+  // card scrolls itself into view and flashes a brief emphasis (the Panel's native
+  // "active" 2px border) so it reads as "the thing you came for". Consumed exactly
+  // once (module one-shot), gated on non-stale so a resolved card never claims it.
+  // The flash is the emphasis; the scroll is best-effort (no-ops if the ref isn't
+  // attached yet), so a focus miss never breaks the render.
+  let cardRef: HTMLElement | undefined;
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  const [flashing, setFlashing] = createSignal(false);
+  onCleanup(() => {
+    if (flashTimer !== undefined) clearTimeout(flashTimer);
+  });
+  createEffect(
+    on(
+      () => stale(),
+      (isStale) => {
+        if (isStale || !consumeApprovalFocus()) return;
+        queueMicrotask(() => {
+          cardRef?.scrollIntoView({ block: "center" });
+          setFlashing(true);
+          flashTimer = setTimeout(() => setFlashing(false), HIGHLIGHT_MS);
+        });
+      },
+    ),
+  );
+
   const decide = (toolCallId: string, approved: boolean) =>
     setDecisions((d) => ({ ...d, [toolCallId]: approved }));
 
@@ -52,7 +87,12 @@ export function ApprovalCard(props: {
   }
 
   return (
-    <Panel label="APPROVAL REQUIRED" flush>
+    <Panel
+      label="APPROVAL REQUIRED"
+      flush
+      ref={cardRef}
+      state={flashing() ? "active" : undefined}
+    >
       <Stack gap={3} class="p-3">
         <For each={props.approvals}>
           {(approval) => {

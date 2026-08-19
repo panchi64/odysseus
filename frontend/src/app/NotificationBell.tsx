@@ -5,18 +5,23 @@ import {
   EmptyState,
   Icon,
   Popover,
+  Select,
   StatusDot,
   Text,
   cx,
   type IconName,
 } from "~/ui";
 import { relativeTime } from "~/lib/format";
-import { useNotifications } from "~/lib/stores/notifications";
+import {
+  AUTO_CLEAR_OPTIONS,
+  useNotifications,
+} from "~/lib/stores/notifications";
 import type {
   Notification,
   NotificationKind,
 } from "~/lib/stream/notificationEvents";
 import { openConversation } from "~/features/chat/data";
+import { requestApprovalFocus } from "~/features/chat/viewerPersistence";
 
 /** Icon + accent per kind (design: approval_needed = warn, run_failed = danger,
  *  run_completed/task_outcome = neutral, reminder = info accent). */
@@ -101,6 +106,9 @@ export function NotificationBell(): JSX.Element {
   };
 
   const openNotification = (n: Notification) => {
+    // An approval deep-link asks the pending card to focus itself on arrival —
+    // consumed once by the non-stale ApprovalCard that mounts for this thread.
+    if (n.kind === "approval_needed") requestApprovalFocus();
     void notifications.markRead([n.id]);
     if (n.conversationId) {
       openConversation(n.conversationId);
@@ -132,26 +140,42 @@ export function NotificationBell(): JSX.Element {
       )}
       panel={({ close }) => (
         <div class="flex max-h-96 flex-col">
-          <div class="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2">
-            <Text variant="micro" tone="dim">
-              NOTIFICATIONS
-            </Text>
-            <Show when={notifications.unreadCount > 0}>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void notifications.markAllRead()}
-              >
-                MARK ALL READ
-              </Button>
-            </Show>
+          <div class="shrink-0 border-b border-line">
+            <div class="flex items-center justify-between gap-2 px-3 py-2">
+              <Text variant="micro" tone="dim">
+                NOTIFICATIONS
+              </Text>
+              <Show when={notifications.unreadCount > 0}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void notifications.markAllRead()}
+                >
+                  MARK ALL READ
+                </Button>
+              </Show>
+            </div>
+            {/* Auto-clear: a display preference (mark read + drop from the list
+                after a timeout). `approval_needed` is exempt. Off disables it. */}
+            <div class="flex items-center gap-2 border-t border-line px-3 py-1.5">
+              <Text variant="micro" tone="dim">
+                AUTO-CLEAR
+              </Text>
+              <div class="ml-auto w-24">
+                <Select
+                  options={AUTO_CLEAR_OPTIONS}
+                  value={String(notifications.autoClearSeconds)}
+                  onChange={(v) => notifications.setAutoClearSeconds(Number(v))}
+                />
+              </div>
+            </div>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto">
             <Show
-              when={notifications.items.length > 0}
+              when={notifications.visibleItems.length > 0}
               fallback={<EmptyState icon="bell" message="NO NOTIFICATIONS" />}
             >
-              <For each={notifications.items}>
+              <For each={notifications.visibleItems}>
                 {(n) => (
                   <NotificationRow
                     notification={n}

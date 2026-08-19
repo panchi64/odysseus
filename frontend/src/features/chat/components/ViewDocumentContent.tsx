@@ -12,6 +12,7 @@ import type { ViewDocumentRef } from "../model";
 import { documentKey } from "../viewport";
 import {
   consumeAnchor,
+  HIGHLIGHT_MS,
   rememberScroll,
   setActiveDownload,
   setViewerDirty,
@@ -49,8 +50,6 @@ function blockIndexForLine(blocks: string[], lineNo: number): number {
   }
   return blocks.length - 1;
 }
-
-const ANCHOR_MS = 2000;
 
 /**
  * Renders a document version's **preview** — its markdown + LaTeX body via the shared
@@ -174,7 +173,7 @@ export function ViewDocumentContent(props: {
         anchorTimer = setTimeout(() => {
           target.removeAttribute("data-anchored");
           target.classList.remove("border-l-2", "border-bright");
-        }, ANCHOR_MS);
+        }, HIGHLIGHT_MS);
       } catch {
         // An anchor miss must never break the render.
       }

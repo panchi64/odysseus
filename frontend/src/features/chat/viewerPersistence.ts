@@ -215,6 +215,28 @@ export function consumeAnchor(itemKey: string): boolean {
   return true;
 }
 
+/** How long a "you came for this" highlight lingers before it hard-cuts off (no
+ *  fade — design §8). Shared by the document passage-anchor and the approval
+ *  deep-link focus so both read as the same mechanical emphasis. */
+export const HIGHLIGHT_MS = 2000;
+
+/** A pending "focus the approval card" intent, set when an `approval_needed`
+ *  notification is opened and consumed exactly once by the pending (non-stale)
+ *  `ApprovalCard` that mounts for that conversation. A plain module-level flag —
+ *  non-reactive intent, not render state — like `pendingAnchors` above. */
+let approvalFocusPending = false;
+
+export function requestApprovalFocus(): void {
+  approvalFocusPending = true;
+}
+
+/** True exactly once per `requestApprovalFocus` call. */
+export function consumeApprovalFocus(): boolean {
+  if (!approvalFocusPending) return false;
+  approvalFocusPending = false;
+  return true;
+}
+
 export interface ActiveDownload {
   name: string;
   getBlob: () => Promise<Blob>;

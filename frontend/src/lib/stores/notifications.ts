@@ -15,7 +15,7 @@
  * singleton, like `chatActivity`/`connectivity` — there is exactly one
  * operator, so exactly one notification feed.
  */
-import { createSignal } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 import { api } from "~/lib/api";
 import { getToken } from "~/lib/api/token";
 import {
@@ -41,6 +41,83 @@ const [connectionState, setConnectionState] = createSignal<
 
 let controller: AbortController | null = null;
 let running = false;
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+
+// --- Auto-clear (a presentation display policy, not backend policy) ----------
+// Aged non-approval notifications are cleared after a configurable timeout: they're
+// marked read (badge + backend state) AND dropped from the visible list. It's an
+// operator display preference, so it lives in localStorage (like the theme), not on
+// the backend. `approval_needed` is exempt — a pending approval stays until it's
+// resolved or read, never auto-cleared. Off (0) disables both halves entirely.
+const AUTO_CLEAR_KEY = "odysseus:notif-autoclear";
+/** How often the age filter re-evaluates while the feed is live. */
+const TICK_MS = 15000;
+
+/** The bell's AUTO-CLEAR control options (seconds, as strings for the Select). */
+export const AUTO_CLEAR_OPTIONS: { value: string; label: string }[] = [
+  { value: "0", label: "OFF" },
+  { value: "300", label: "5M" },
+  { value: "600", label: "10M" },
+  { value: "1800", label: "30M" },
+  { value: "3600", label: "1H" },
+];
+
+function readAutoClear(): number {
+  if (typeof localStorage === "undefined") return 0; // Off by default
+  const raw = Number(localStorage.getItem(AUTO_CLEAR_KEY));
+  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 0;
+}
+
+const [autoClearSeconds, setAutoClearSignal] =
+  createSignal<number>(readAutoClear());
+
+// A ticking clock that drives the age filter. An already-read item crossing the
+// threshold has no other state change to recompute `visibleItems`, so time itself
+// must be a dependency. Bumped on start and by the interval in startNotifications().
+const [now, setNow] = createSignal<number>(Date.now());
+
+/** The list the bell renders: everything except aged non-approval notifications.
+ *  `approval_needed` is never age-filtered; with auto-clear Off (0) nothing is. */
+const visibleItems = createMemo(() => {
+  const limit = autoClearSeconds();
+  if (limit === 0) return items();
+  const t = now();
+  return items().filter(
+    (n) =>
+      n.kind === "approval_needed" ||
+      t - new Date(n.createdAt).getTime() <= limit * 1000,
+  );
+});
+
+/** The "mark read" half of a clear (the `visibleItems` filter is the "remove from
+ *  list" half). Marks aged unread non-approval notifications read, reusing `markRead`
+ *  so the optimistic update + backend relay + rollback match a manual read exactly. */
+function sweepAged(): void {
+  const limit = autoClearSeconds();
+  if (limit === 0) return;
+  const t = now();
+  const ids = items()
+    .filter(
+      (n) =>
+        !n.readAt &&
+        n.kind !== "approval_needed" &&
+        t - new Date(n.createdAt).getTime() > limit * 1000,
+    )
+    .map((n) => n.id);
+  if (ids.length > 0) void markRead(ids);
+}
+
+/** Set the timeout (seconds; 0 = Off). Persists to localStorage and re-evaluates
+ *  immediately so the change applies without waiting for the next tick. */
+export function setAutoClearSeconds(seconds: number): void {
+  const v = Math.max(0, Math.round(seconds));
+  setAutoClearSignal(v);
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(AUTO_CLEAR_KEY, String(v));
+  }
+  setNow(Date.now());
+  sweepAged();
+}
 
 // Backfill (REST) and the live stream connect concurrently so there's no gap
 // between "as of the backfill query" and "first live event" — but that means
@@ -110,6 +187,10 @@ async function hydrate(gen: number, signal: AbortSignal): Promise<void> {
     if (gen !== generation) return; // superseded — a newer session owns the store now
     setItems(page.items);
     setUnreadCount(page.unreadCount);
+    // Clear anything already past the timeout so a reload doesn't resurrect aged
+    // items for a tick before the interval catches them.
+    setNow(Date.now());
+    sweepAged();
   } catch {
     /* best effort — the live stream still delivers new notifications; the
      * next reconnect (or an explicit re-hydrate) retries the backfill. */
@@ -134,6 +215,13 @@ export function startNotifications(): void {
   const ac = new AbortController();
   controller = ac;
   setConnectionState("connecting");
+  // Drive the auto-clear age filter: a fresh clock for this session, then a tick
+  // that re-evaluates the filter and sweeps newly-aged unread items to read.
+  setNow(Date.now());
+  tickTimer = setInterval(() => {
+    setNow(Date.now());
+    sweepAged();
+  }, TICK_MS);
   void streamNotifications({
     signal: ac.signal,
     onEvent: handleStreamEvent,
@@ -152,6 +240,10 @@ export function stopNotifications(): void {
   generation += 1;
   controller?.abort();
   controller = null;
+  if (tickTimer !== null) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
   hydrating = false;
   buffered = [];
   setItems([]);
@@ -216,12 +308,21 @@ export function useNotifications() {
     get items(): Notification[] {
       return items();
     },
+    /** The auto-clear-filtered list the bell renders (see `visibleItems`). */
+    get visibleItems(): Notification[] {
+      return visibleItems();
+    },
     get unreadCount(): number {
       return unreadCount();
     },
     get connectionState(): NotificationStreamState | "idle" {
       return connectionState();
     },
+    /** Current auto-clear timeout in seconds (0 = Off). */
+    get autoClearSeconds(): number {
+      return autoClearSeconds();
+    },
+    setAutoClearSeconds,
     markRead,
     markAllRead,
     markConversationRead,
