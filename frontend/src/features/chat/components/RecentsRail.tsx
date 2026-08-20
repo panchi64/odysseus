@@ -50,7 +50,7 @@ export function RecentsRail(): JSX.Element {
   return (
     <div class="mb-2">
       <div class="flex items-center justify-between px-3 py-1">
-        <Text variant="micro" tone="dim">
+        <Text variant="label" tone="dim">
           RECENTS
         </Text>
         <Button variant="ghost" size="sm" leading="plus" onClick={startNew}>

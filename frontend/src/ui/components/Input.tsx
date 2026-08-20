@@ -38,7 +38,7 @@ export function Input(props: InputProps): JSX.Element {
         <Show when={local.leading}>
           <Icon
             name={local.leading!}
-            size={14}
+            size={12}
             class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-dim"
           />
         </Show>

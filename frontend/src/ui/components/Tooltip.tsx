@@ -75,7 +75,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
   const show = () => {
     if (!ref) return;
     const r = ref.getBoundingClientRect();
-    const gap = 6;
+    const gap = 4;
     switch (side()) {
       case "right":
         setPos({ x: r.right + gap, y: r.top + r.height / 2 });

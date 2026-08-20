@@ -56,7 +56,7 @@ export function Modal(props: ModalProps): JSX.Element {
                   aria-label="Close"
                   class="text-dim transition-colors hover:text-bright"
                 >
-                  <Icon name="close" size={14} />
+                  <Icon name="close" size={16} />
                 </button>
               </header>
             </Show>

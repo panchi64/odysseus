@@ -30,8 +30,8 @@ export interface DisclosureProps {
  * body beneath. Works controlled (pass `open` + `onToggle`) or uncontrolled.
  *
  * Two nearby collapsibles deliberately do *not* use this and should not be forced onto
- * it: the sidebar's section headers put the chevron on the right beside a status
- * indicator, and `ToolCallCard` shares its trigger row with a sibling copy button.
+ * it: the sidebar's section headers put a plus/minus toggle on the right beside a
+ * status indicator, and `ToolCallCard` shares its trigger row with a sibling copy button.
  * Covering those would mean prop-configuring chevron placement and arbitrary trigger
  * children, at which point the component stops being simpler than the markup it hides.
  */

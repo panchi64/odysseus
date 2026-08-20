@@ -9,8 +9,8 @@ import { railSlotFor } from "./railSlots";
  *
  *  All six headers are always visible — the map of the app at a glance — and
  *  which sections are open is derived, never persisted: the area the route
- *  sits in opens by default, and the operator's chevron toggles layer on top
- *  for the session. Toggles clear when the route lands in that area, because
+ *  sits in opens by default, and the operator's plus/minus toggle layers on
+ *  top for the session. Toggles clear when the route lands in that area, because
  *  arriving always shows the area's pages. */
 export function AreaNav(props: { active: NavArea | undefined }): JSX.Element {
   const location = useLocation();

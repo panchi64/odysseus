@@ -108,7 +108,7 @@ export function ListRow(props: ListRowProps): JSX.Element {
         <Show when={local.leading && !local.selectable}>
           <Icon name={local.leading!} class="text-dim" />
         </Show>
-        <span class="flex min-w-0 flex-col gap-0.5">
+        <span class="flex min-w-0 flex-col gap-1">
           <Text
             variant="label"
             tone={local.locked ? "dim" : local.selected ? "bright" : "default"}

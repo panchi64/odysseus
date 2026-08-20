@@ -8,11 +8,13 @@ import { areaMeta, navMeta } from "./navMeta";
  *  area's pages beneath it while the section is open.
  *
  *  The header is a link — clicking it goes to the area's first page, and the
- *  route opens the section — while the chevron is a separate button that
- *  toggles open state without navigating, so an area can be peeked at without
- *  leaving the current page. The two are siblings, not nested: a button inside
- *  a button is invalid HTML (the same reason ListRow's `right` slot is a span,
- *  not a button).
+ *  route opens the section — while the plus/minus toggle is a separate button
+ *  that opens and closes the section without navigating, so an area can be
+ *  peeked at without leaving the current page. A chevron was tried here first
+ *  but beside a link it reads as "go to that page"; plus/minus is the
+ *  registration-crosshair disclosure of §5 and can't be misread. The two are
+ *  siblings, not nested: a button inside a button is invalid HTML (the same
+ *  reason ListRow's `right` slot is a span, not a button).
  *
  *  `active` (the route sits in this area) and `open` are different: a peeked
  *  section is open but not active, and the active section is the one whose
@@ -54,10 +56,7 @@ export function AreaSection(props: {
           onClick={props.onToggle}
           class="flex size-7 shrink-0 items-center justify-center text-dim transition-colors hover:bg-raised hover:text-text"
         >
-          <Icon
-            name={props.open() ? "chevron-down" : "chevron-right"}
-            size={12}
-          />
+          <Icon name={props.open() ? "minus" : "plus"} size={16} />
         </button>
       </div>
       <Show when={props.open()}>

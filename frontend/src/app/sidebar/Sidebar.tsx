@@ -54,7 +54,7 @@ export function Sidebar(): JSX.Element {
         <div class="flex items-center justify-between gap-2 border-b border-line pr-2">
           <a
             href="/"
-            class="flex min-w-0 flex-1 flex-col gap-0.5 px-3 py-3 transition-colors hover:bg-raised"
+            class="flex min-w-0 flex-1 flex-col gap-1 px-3 py-3 transition-colors hover:bg-raised"
           >
             <Text variant="readout" tone="bright" class="font-display">
               ODYSSEUS
@@ -89,7 +89,7 @@ export function Sidebar(): JSX.Element {
         </For>
         <div class="flex items-center justify-between gap-2 px-3 py-3">
           <span class="flex items-center gap-2">
-            <Icon name="user" size={14} class="text-dim" />
+            <Icon name="user" size={16} class="text-dim" />
             <Text variant="label" tone="dim">
               OPERATOR
             </Text>

@@ -80,9 +80,12 @@ body {
   color: var(--bg);
 }
 
-/* Mechanical motion: no decorative transitions slower than the base tempo. */
+/* Mechanical motion: no decorative transitions slower than the base tempo.
+   The timing function is pinned to linear — §8 permits instant or linear only,
+   and Tailwind's `transition-*` utilities otherwise carry an eased default. */
 :where(button, a, [role="button"], input, select, textarea) {
   transition-duration: var(--motion-fast);
+  transition-timing-function: linear;
 }
 
 /* Shared utility for non-interactive elements that need the same ≤120ms,
