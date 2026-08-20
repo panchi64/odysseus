@@ -265,6 +265,7 @@ interface ChatSettingsDTO {
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
   agent_request_limit: number;
+  inactivity_timeout_s: number;
 }
 
 /** The single snake_case→camel mapper for the stored chat preferences. */
@@ -277,6 +278,7 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
     agentRequestLimit: dto.agent_request_limit,
+    inactivityTimeoutS: dto.inactivity_timeout_s,
   };
 }
 
@@ -300,6 +302,8 @@ function toChatSettingsBody(
     body.auto_compact_threshold = patch.autoCompactThreshold;
   if (patch.agentRequestLimit !== undefined)
     body.agent_request_limit = patch.agentRequestLimit;
+  if (patch.inactivityTimeoutS !== undefined)
+    body.inactivity_timeout_s = patch.inactivityTimeoutS;
   return body;
 }
 

@@ -1303,19 +1303,37 @@ def build_chat_orchestrator(
         # the turn on the next reload — see `RunRegistry._flush_timeout`).
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
 
+        def _turn_messages_or_prompt() -> list[ModelMessage]:
+            # The turn's own messages — its slice of the partial history — or, if the
+            # bound tripped in the pre-model setup window (before the first step landed
+            # and `partial_history_ref` is still empty), the operator's typed prompt
+            # alone. Without the fallback, a stop there would persist nothing and the
+            # turn (the operator's own message) would vanish on reload. The plain
+            # `prompt` persists, not the attachment/context-augmented `user_prompt`:
+            # attachments ride on `persisted`/`stamp_ids` and per-turn context is
+            # re-resolved fresh each turn and never persisted.
+            if partial_history_ref:
+                turn = partial_history_ref[0]()[start:]
+                if turn:
+                    return turn
+            if isinstance(prompt, str) and prompt:
+                return [ModelRequest(parts=[UserPromptPart(prompt)])]
+            return []
+
         def _on_timeout(detail: str) -> None:
             # `detail` is already the operator-legible message the registry built
             # (`RunTimeout.__str__`, from the bound's configured duration) — reused
             # verbatim so the persisted marker matches the toast the live stream showed.
-            if not partial_history_ref:
+            messages = _turn_messages_or_prompt()
+            if not messages:
                 return
             run.block(detail)
             _finalize(
                 run,
-                _TurnResult(answer=None, messages=partial_history_ref[0](), blocked_reason=detail),
+                _TurnResult(answer=None, messages=messages, blocked_reason=detail),
                 store=store,
                 conversation_id=conversation_id,
-                start=start,
+                start=0,
                 attachment_ids=stamp_ids,
                 persisted=persisted,
                 compaction=active_compaction,
@@ -1326,18 +1344,19 @@ def build_chat_orchestrator(
             # but must not call `run.block(...)` — the registry's own
             # `except asyncio.CancelledError` handler sets the terminal `cancelled`
             # status once the cancellation lands, and that must not be clobbered.
-            if not partial_history_ref:
+            messages = _turn_messages_or_prompt()
+            if not messages:
                 return
             _finalize(
                 run,
                 _TurnResult(
                     answer=None,
-                    messages=partial_history_ref[0](),
+                    messages=messages,
                     blocked_reason=_CANCELLED_DETAIL,
                 ),
                 store=store,
                 conversation_id=conversation_id,
-                start=start,
+                start=0,
                 attachment_ids=stamp_ids,
                 persisted=persisted,
                 compaction=active_compaction,

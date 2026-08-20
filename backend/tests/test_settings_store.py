@@ -8,9 +8,12 @@ from services.settings_store import (
     COMPACTION_ENABLED_KEY,
     COMPACTION_KEEP_RECENT_KEY,
     COMPACTION_MIN_TOKENS_KEY,
+    INACTIVITY_TIMEOUT_KEY,
     SettingsStore,
     get_compaction,
+    get_inactivity_timeout,
     resolve_compaction_enabled,
+    set_inactivity_timeout,
 )
 
 OWNER = "op"
@@ -79,3 +82,28 @@ def test_resolve_compaction_enabled_precedence():
     assert resolve_compaction_enabled(None, False) is False
     assert resolve_compaction_enabled(False, True) is False
     assert resolve_compaction_enabled(True, False) is True
+
+
+async def test_get_inactivity_timeout_uses_config_default_when_unset():
+    store = _store()
+    assert await get_inactivity_timeout(store, OWNER) == get_settings().run_inactivity_timeout_s
+
+
+async def test_inactivity_timeout_round_trips_an_override():
+    store = _store()
+    stored = await set_inactivity_timeout(store, OWNER, 300.0)
+    assert stored == 300.0
+    assert await get_inactivity_timeout(store, OWNER) == 300.0
+
+
+async def test_corrupted_inactivity_timeout_falls_back_to_the_config_default():
+    # A stored 0, negative, or non-numeric value must fall back to the config default
+    # rather than silently disabling the watchdog (0) or reading as a nonsense bound.
+    store = _store()
+    cfg = get_settings()
+    await store.set(OWNER, INACTIVITY_TIMEOUT_KEY, "0")
+    assert await get_inactivity_timeout(store, OWNER) == cfg.run_inactivity_timeout_s
+    await store.set(OWNER, INACTIVITY_TIMEOUT_KEY, "-5")
+    assert await get_inactivity_timeout(store, OWNER) == cfg.run_inactivity_timeout_s
+    await store.set(OWNER, INACTIVITY_TIMEOUT_KEY, "not-a-number")
+    assert await get_inactivity_timeout(store, OWNER) == cfg.run_inactivity_timeout_s

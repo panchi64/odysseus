@@ -32,6 +32,10 @@ export function ChatSection(): JSX.Element {
   // the ceiling a long tool-using turn actually stops at.
   const [stepLimit, setStepLimit] = createSignal("");
   const [savingSteps, setSavingSteps] = createSignal(false);
+  // How long (seconds) a run may go silent before the watchdog stops it — the bound a
+  // long generation (a big write, a slow first token) needs raised to stay alive.
+  const [timeoutS, setTimeoutS] = createSignal("");
+  const [savingTimeout, setSavingTimeout] = createSignal(false);
   // Conversation compaction: fold whole earlier turns into a summary once the context
   // window fills. The threshold is stored as a fraction and edited as a percentage — the
   // number the operator actually thinks in.
@@ -46,6 +50,7 @@ export function ChatSection(): JSX.Element {
     setKeepRecent(String(s.compactionKeepRecent));
     setMinTokens(String(s.compactionMinTokens));
     setStepLimit(String(s.agentRequestLimit));
+    setTimeoutS(String(s.inactivityTimeoutS));
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
   });
@@ -122,6 +127,26 @@ export function ChatSection(): JSX.Element {
       toast.error("Unable to update the step limit.");
     } finally {
       setSavingSteps(false);
+    }
+  };
+  const saveTimeout = async () => {
+    const raw = timeoutS().trim();
+    const n = Number(raw);
+    // Whole seconds, above 0: a 0 bound would stop every turn immediately, and the
+    // backend rejects it too.
+    if (raw === "" || !Number.isInteger(n) || n < 1) {
+      toast.error("Enter whole seconds (1 or more).");
+      return;
+    }
+    setSavingTimeout(true);
+    try {
+      const saved = await saveChatSettings({ inactivityTimeoutS: n });
+      setTimeoutS(String(saved.inactivityTimeoutS));
+      toast.success("Inactivity timeout updated");
+    } catch {
+      toast.error("Unable to update the inactivity timeout.");
+    } finally {
+      setSavingTimeout(false);
     }
   };
 
@@ -216,6 +241,39 @@ export function ChatSection(): JSX.Element {
               onClick={() => void saveSteps()}
             >
               {savingSteps() ? "SAVING…" : "SAVE"}
+            </Button>
+          </Row>
+
+          <div class="border-line border-t" />
+
+          <Stack gap={1}>
+            <Text variant="label" tone="default">
+              INACTIVITY TIMEOUT
+            </Text>
+            <Text variant="micro" tone="dim">
+              How long a run may go without producing anything before it is
+              stopped, in seconds. A long generation — a big file write, a slow
+              first token — needs more than the default; raise it so a slow turn
+              isn't cut off, or lower it to bail on a stuck one sooner.
+            </Text>
+          </Stack>
+          <Row gap={2} align="center">
+            <div class="w-48">
+              <Input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                value={timeoutS()}
+                onInput={(e) => setTimeoutS(e.currentTarget.value)}
+                placeholder="120"
+              />
+            </div>
+            <Button
+              variant="primary"
+              disabled={savingTimeout()}
+              onClick={() => void saveTimeout()}
+            >
+              {savingTimeout() ? "SAVING…" : "SAVE"}
             </Button>
           </Row>
 

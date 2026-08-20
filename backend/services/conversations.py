@@ -996,6 +996,13 @@ class ConversationStore:
             return
         tree = self._cache.setdefault(conversation_id, _Tree())
         added = tree.append_chain(new_messages)
+        # A turn blocked before it produced a response (a time/cancel bound tripping in
+        # the pre-model setup window) has no response node to carry the marker — so the
+        # turn's user request carries it instead, and a reload still shows the persistent
+        # stop marker (under the operator's own message) rather than dropping it.
+        blocked_on_request = bool(blocked_reason) and not any(
+            isinstance(n.message, ModelResponse) for n in added
+        )
         rows: list[_Row] = []
         stamped = False
         blocked_stamped = False
@@ -1006,8 +1013,15 @@ class ConversationStore:
                 if attachment_ids:
                     node.attachment_ids = list(attachment_ids)
                 install_persisted_attachments(node.message, persisted)
+                if blocked_on_request:
+                    node.blocked_reason = blocked_reason
                 stamped = True
-            if not blocked_stamped and blocked_reason and isinstance(node.message, ModelResponse):
+            if (
+                not blocked_stamped
+                and blocked_reason
+                and not blocked_on_request
+                and isinstance(node.message, ModelResponse)
+            ):
                 node.blocked_reason = blocked_reason
                 blocked_stamped = True
             kind, text = _project(node.message)

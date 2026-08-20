@@ -59,6 +59,12 @@ import { saveDocument } from "~/features/documents/data";
  *  approval card or tool card. */
 export const HOST_COMMAND_TOOL = "code_run_host_command";
 
+/** The prompt a "Continue." turn sends — the operator's way to resume a turn that a
+ *  bound (inactivity/wall-clock timeout or cancel) stopped before it finished. A plain
+ *  user turn on the same conversation, so the model picks up where the prior turn left
+ *  off and a small "Continue." bubble appears in the transcript. */
+export const CONTINUE_PROMPT = "Continue.";
+
 /* ── Recency-gated resume ─────────────────────────────────────────────────────
    On entry the chat resumes the last conversation only while it's still "warm"
    (last activity within the window); otherwise it opens a fresh composer. */
@@ -2048,6 +2054,18 @@ export function createChatStream(
     await driveRun(created.run_id, assistantId, wasNew);
   }
 
+  /** Resume a turn a bound stopped (inactivity/wall-clock timeout or cancel) by
+   *  sending a fresh "Continue." turn on the same conversation. Reuses the ordinary
+   *  send path — no backend change — so a small "Continue." bubble appears in the
+   *  transcript and the model picks up where the prior turn left off. */
+  async function continueTurn(): Promise<void> {
+    // A blocked turn is settled, so this is a fresh turn — but if a run is already
+    // in flight (the operator started a new one), don't inject "Continue." as a
+    // steering message; just no-op.
+    if (activeConversationId === null || sending()) return;
+    await send(CONTINUE_PROMPT);
+  }
+
   /** Cancel the in-flight run for real: tell the backend to stop it (it keeps
    *  running even when the SSE is dropped), then abort the local stream and clear
    *  the streaming state. Safe to call with no active run. */
@@ -2601,6 +2619,8 @@ export function createChatStream(
     /** Highest event seq folded so far — the resume point for a reattach. */
     lastSeq: () => maxFoldedSeq,
     send,
+    /** Resume a turn a bound stopped by sending a fresh "Continue." turn. */
+    continueTurn,
     cancel,
     /** Withdraw a queued (not-yet-injected) steering message from the live run. */
     withdrawQueued,

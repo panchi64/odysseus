@@ -229,6 +229,62 @@ async def test_wall_clock_timeout_persists_the_partial_turn(tmp_path):
     await cold.stop()
 
 
+async def test_inactivity_timeout_in_setup_window_persists_the_prompt(tmp_path):
+    # The inactivity clock starts at run start and is refreshed only by events. If it
+    # trips in the pre-model window — the model never produced a first token — the turn
+    # has no response, only the operator's own request. Without the fix, the stop would
+    # persist nothing (the partial history is still empty) and the operator's message
+    # would vanish on reload; the engine's timeout hook now persists the turn (falling
+    # back to the typed prompt), and `record()` stamps the marker on the request node
+    # since there's no response to carry it.
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from pydantic_ai.models.test import TestModel
+
+    class _SilentModel(TestModel):
+        # Never yields a first token — the request stream hangs, so the inactivity
+        # watchdog trips while the model is still silent.
+        @asynccontextmanager
+        async def request_stream(
+            self, messages, model_settings, model_request_parameters, run_context=None
+        ):
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.05)
+    orch = build_chat_orchestrator(
+        "hello there",
+        model=_SilentModel(),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    views = await store.messages_view(conv)
+    # Only the operator's own message survives — the model never answered.
+    assert len(views) == 1
+    assert views[0].role == "user"
+    assert views[0].content == "hello there"
+    # The marker lands on the request node (there's no response to carry it).
+    assert views[0].blocked_reason == "no activity for 1 second"
+
+    # Reload parity: a cold store rehydrates the same marker from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert cold_views[0].blocked_reason == "no activity for 1 second"
+    await cold.stop()
+
+
 async def test_cancel_persists_the_partial_turn(tmp_path):
     # A manual Stop (`RunRegistry.cancel`) force-cancels the orchestrator's task just
     # like a wall-clock timeout does — the engine's `on_cancel` hook (the cancel

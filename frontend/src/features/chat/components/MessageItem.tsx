@@ -53,6 +53,9 @@ export interface MessageItemProps {
   /** Re-attach to this turn's run after its transport detached (reconnect
    *  budget exhausted) — the run may still be alive server-side. */
   onReattach?: () => void;
+  /** Resume a turn a bound stopped by sending a fresh "Continue." turn on the
+   *  same conversation. Shown next to the persistent "Stopped:" marker. */
+  onContinue?: () => void;
   /** The conversation's consolidated View list — read-only here, so inline
    *  transcript chips (`TurnBlocks`) can show the same version/time/NEW
    *  metadata `ViewTimelineRail` shows for the same item. */
@@ -83,6 +86,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           onTogglePin={props.onTogglePin}
           onOpenInView={props.onOpenInView}
           onReattach={props.onReattach}
+          onContinue={props.onContinue}
           viewItems={props.viewItems}
           seenKey={props.seenKey}
         />
@@ -100,6 +104,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           onTogglePin={props.onTogglePin}
           onWithdraw={props.onWithdraw}
           onEditQueued={props.onEditQueued}
+          onContinue={props.onContinue}
         />
       </Match>
     </Switch>
@@ -179,6 +184,35 @@ function PinMarker(props: { message: ChatMessage }): JSX.Element {
   );
 }
 
+/** The persistent "Stopped:" marker for a turn a bound stopped (a time/cancel
+ *  bound, a usage/context/loop limit), with a "Continue." button that resumes it by
+ *  sending a fresh "Continue." turn. Shown on whichever message carries the turn's
+ *  `blocked_reason` — the assistant's answer when one was produced, or the operator's
+ *  own message when the bound tripped before any response landed. */
+function BlockedFooter(props: {
+  detail: string | undefined;
+  onContinue?: () => void;
+}): JSX.Element {
+  return (
+    <div class="flex items-center gap-1.5 text-warn">
+      <Icon name="warning" size={12} />
+      <Text variant="micro" tone="warn">
+        Stopped: {props.detail ?? "a run limit was reached"}
+      </Text>
+      <Show when={props.onContinue}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="play"
+          onClick={() => props.onContinue?.()}
+        >
+          CONTINUE
+        </Button>
+      </Show>
+    </div>
+  );
+}
+
 function UserTurn(props: {
   message: ChatMessage;
   onEditMessage?: (id: string, text: string) => void;
@@ -187,6 +221,7 @@ function UserTurn(props: {
   onTogglePin?: () => void;
   onWithdraw?: () => void;
   onEditQueued?: (text: string) => void;
+  onContinue?: () => void;
 }): JSX.Element {
   const m = () => props.message;
   const [editing, setEditing] = createSignal(false);
@@ -290,6 +325,15 @@ function UserTurn(props: {
                 it finishes first.
               </Text>
             </Show>
+            {/* A bound that tripped before any response landed stamps the stop on
+                this message (the turn's own prompt) — show the marker + Continue
+                here, where the operator's own words sit. */}
+            <Show when={m().blocked}>
+              <BlockedFooter
+                detail={m().blockedDetail}
+                onContinue={props.onContinue}
+              />
+            </Show>
           </>
         }
       >
@@ -384,6 +428,7 @@ function AssistantTurn(props: {
   onTogglePin?: MessageItemProps["onTogglePin"];
   onOpenInView?: MessageItemProps["onOpenInView"];
   onReattach?: MessageItemProps["onReattach"];
+  onContinue?: MessageItemProps["onContinue"];
   viewItems?: MessageItemProps["viewItems"];
   seenKey?: MessageItemProps["seenKey"];
 }): JSX.Element {
@@ -459,12 +504,10 @@ function AssistantTurn(props: {
           <SourcesRow citations={m().citations!} />
         </Show>
         <Show when={m().blocked}>
-          <div class="flex items-center gap-1.5 text-warn">
-            <Icon name="warning" size={12} />
-            <Text variant="micro" tone="warn">
-              Stopped: {m().blockedDetail ?? "a run limit was reached"}
-            </Text>
-          </div>
+          <BlockedFooter
+            detail={m().blockedDetail}
+            onContinue={props.onContinue}
+          />
         </Show>
         <Show when={m().detached}>
           <div class="flex items-center gap-2 text-alert">

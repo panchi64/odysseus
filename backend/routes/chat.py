@@ -36,6 +36,7 @@ from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ConversationBusyError, RunRegistry
+from runs.registry import _UNSET
 from services.conversations import ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
@@ -45,11 +46,13 @@ from services.settings_store import (
     get_attachment_inline_max_tokens,
     get_auto_compact,
     get_compaction,
+    get_inactivity_timeout,
     resolve_compaction_enabled,
     set_agent_request_limit,
     set_attachment_inline_max_tokens,
     set_auto_compact,
     set_compaction,
+    set_inactivity_timeout,
 )
 from services.uploads import UploadStore
 from tools import CompactionContext, InstructionProvider, PromptContextProvider
@@ -136,6 +139,11 @@ class ChatSettings(BaseModel):
     # ``ge=1``, not ``ge=0``: a turn allowed zero model requests could never produce an
     # answer, so 0 is a nonsensical value to accept rather than merely a minimal one.
     agent_request_limit: int | None = Field(default=None, ge=1)
+    # The inactivity watchdog's bound in seconds: how long a run may go without emitting
+    # an event before it is stopped. ``gt=0`` (a 0 bound would stop every turn
+    # immediately); the config default applies when the operator hasn't set one, and a
+    # deploy-level ``None`` disables the watchdog entirely.
+    inactivity_timeout_s: float | None = Field(default=None, gt=0)
 
 
 async def resolve_turn_models(
@@ -213,6 +221,7 @@ def compose_turn(
     compaction: CompactionContext | None = None,
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
+    inactivity_timeout_s: float | None | object = _UNSET,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -260,6 +269,9 @@ def compose_turn(
             owner_id=owner_id,
             orchestrator=orchestrator,
             conversation_id=conversation_id,
+            # The operator's inactivity bound, resolved by the interactive caller; the
+            # unattended task path omits it (_UNSET) and the registry default applies.
+            inactivity_timeout_s=inactivity_timeout_s,
         )
     except ConversationBusyError as exc:
         # The registry's own atomic check-and-claim caught a race the caller's
@@ -313,6 +325,11 @@ async def _submit_turn(
         # regenerate, edit — runs under the operator's ceiling without threading it
         # through three call sites.
         request_limit=await get_agent_request_limit(
+            deps.settings_store(request), OPERATOR_ID
+        ),
+        # Same reason as the request limit: every interactive turn runs under the
+        # operator's inactivity bound (else the config default).
+        inactivity_timeout_s=await get_inactivity_timeout(
             deps.settings_store(request), OPERATOR_ID
         ),
     )
@@ -526,7 +543,11 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
 
 
 def _settings_response(
-    cap: int, comp: CompactionSettings, auto: AutoCompactSettings, steps: int
+    cap: int,
+    comp: CompactionSettings,
+    auto: AutoCompactSettings,
+    steps: int,
+    inactivity: float | None,
 ) -> ChatSettings:
     return ChatSettings(
         attachment_inline_max_tokens=cap,
@@ -536,6 +557,7 @@ def _settings_response(
         auto_compact_enabled=auto.enabled,
         auto_compact_threshold=auto.threshold,
         agent_request_limit=steps,
+        inactivity_timeout_s=inactivity,
     )
 
 
@@ -547,7 +569,8 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     comp = await get_compaction(store, OPERATOR_ID)
     auto = await get_auto_compact(store, OPERATOR_ID)
     steps = await get_agent_request_limit(store, OPERATOR_ID)
-    return _settings_response(cap, comp, auto, steps)
+    inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
+    return _settings_response(cap, comp, auto, steps, inactivity)
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -567,6 +590,12 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         steps = await set_agent_request_limit(store, OPERATOR_ID, body.agent_request_limit)
     else:
         steps = await get_agent_request_limit(store, OPERATOR_ID)
+    if body.inactivity_timeout_s is not None:
+        inactivity = await set_inactivity_timeout(
+            store, OPERATOR_ID, body.inactivity_timeout_s
+        )
+    else:
+        inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
 
     comp = await get_compaction(store, OPERATOR_ID)
     if any(
@@ -603,4 +632,4 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 else body.auto_compact_threshold,
             ),
         )
-    return _settings_response(cap, comp, auto, steps)
+    return _settings_response(cap, comp, auto, steps, inactivity)

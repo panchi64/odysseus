@@ -40,6 +40,13 @@ AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"
 # one, so this is what a tool-heavy turn actually runs out of.
 AGENT_REQUEST_LIMIT_KEY = "chat.agent_request_limit"
 
+# The run substrate's inactivity watchdog (runs/registry.py): the operator's runtime
+# override of `run_inactivity_timeout_s` — how long a run may go without emitting an
+# event before it is stopped. Long generations (a big file write, a slow first token)
+# need more than the 120s default, so this is what the operator tunes to keep a turn
+# alive. Seconds; the config default (or None = disabled) applies when unset.
+INACTIVITY_TIMEOUT_KEY = "chat.inactivity_timeout_s"
+
 # Offline mode (services/offline.py) persists the operator's two switches here as
 # "true"/"false" strings: the manual force-offline toggle and the auto-detect master
 # switch. Policy, not a secret — stored in the clear like every other app preference.
@@ -135,6 +142,26 @@ async def set_agent_request_limit(store: SettingsStore, owner_id: str, value: in
     return value
 
 
+async def get_inactivity_timeout(store: SettingsStore, owner_id: str) -> float | None:
+    """The operator's inactivity timeout in seconds — the runtime override if set (and
+    valid), else the config default. The default may itself be ``None`` (watchdog
+    disabled), which is a meaningful value to return, not a corruption. A stored 0,
+    negative, or non-numeric value falls back to the default rather than disabling the
+    watchdog by accident."""
+    raw = await store.get(owner_id, INACTIVITY_TIMEOUT_KEY)
+    return _positive_float_or(raw, get_settings().run_inactivity_timeout_s)
+
+
+async def set_inactivity_timeout(
+    store: SettingsStore, owner_id: str, value: float
+) -> float:
+    """Persist the operator's inactivity timeout in seconds. Returns the stored value.
+    The ``gt=0`` body field at the route rejects a nonsensical one; a stray non-positive
+    value stored here would simply be ignored by the getter."""
+    await store.set(owner_id, INACTIVITY_TIMEOUT_KEY, str(value))
+    return value
+
+
 @dataclass(frozen=True)
 class CompactionSettings:
     """The operator's effective tool-result compaction preferences."""
@@ -185,6 +212,20 @@ def _float_or(raw: str | None, default: float) -> float:
     except ValueError:
         return default
     return value if 0 < value <= 1 else default
+
+
+def _positive_float_or(raw: str | None, default: float | None) -> float | None:
+    """A positive float (seconds) from a stored string, else the default — the
+    :func:`_float_or` counterpart for a setting whose value is unbounded above and whose
+    default may legitimately be ``None`` (the watchdog disabled). A stored 0, negative, or
+    non-numeric value falls back to the default rather than silently disabling a bound."""
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _bool_or(raw: str | None, default: bool) -> bool:

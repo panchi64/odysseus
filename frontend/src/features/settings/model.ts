@@ -93,7 +93,10 @@ export interface SearchProviderInput {
  *  full the window must get first (`autoCompactThreshold` is a fraction of the window,
  *  the same 0–1 quantity the context meter reports; the UI presents it as a percentage).
  *  `agentRequestLimit` is how many model round-trips a single turn may spend before it
- *  stops — the ceiling a long tool-using turn actually runs out of. */
+ *  stops — the ceiling a long tool-using turn actually runs out of.
+ *  `inactivityTimeoutS` is how long (seconds) a run may go without emitting an event
+ *  before the watchdog stops it — the bound a long generation (a big write, a slow
+ *  first token) needs raised to stay alive. */
 export interface ChatSettings {
   attachmentInlineMaxTokens: number;
   compactionEnabled: boolean;
@@ -102,6 +105,7 @@ export interface ChatSettings {
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
   agentRequestLimit: number;
+  inactivityTimeoutS: number;
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────── */
