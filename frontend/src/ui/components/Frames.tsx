@@ -41,20 +41,29 @@ function probeBraille(): boolean {
 }
 
 /** Shared by every mounted throbber. Seeded by a synchronous probe, then
- *  re-probed once the self-hosted webfont finishes loading — the first probe
- *  may have measured a system fallback that lacks braille. Only ever flips
- *  false → true (the webfont adds braille coverage, never removes it). */
+ *  re-probed whenever webfont loading finishes — the first probe may have
+ *  measured a system fallback that lacks braille, and a one-shot
+ *  document.fonts.load() at module-eval time is a no-op if the stylesheet
+ *  hasn't parsed yet (always so in Vite dev). Only ever flips false → true
+ *  (the webfont adds braille coverage, never removes it). */
 const [brailleOk, setBrailleOk] = createSignal(probeBraille());
 
 if (typeof document !== "undefined" && "fonts" in document) {
+  const reprobe = (): void => {
+    if (!brailleOk() && probeBraille()) {
+      setBrailleOk(true);
+      document.fonts.removeEventListener("loadingdone", reprobe);
+    }
+  };
+  // Kick off the load now (no-op if the stylesheet isn't parsed yet)…
   document.fonts
     .load('12px "JetBrains Mono"', "⠿")
-    .then(() => {
-      if (!brailleOk() && probeBraille()) setBrailleOk(true);
-    })
+    .then(reprobe)
     .catch(() => {
       /* webfont failed to load — keep the initial probe result */
     });
+  // …and re-probe on any later load, once the stylesheet arrives.
+  document.fonts.addEventListener("loadingdone", reprobe);
 }
 
 export interface FramesProps {
