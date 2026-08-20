@@ -18,9 +18,10 @@ export interface NavItem {
   connected?: boolean;
 }
 
-/** A group of pages. Exactly one area is shown at a time, and which one is
- *  derived from the route — never stored — so a deep link, the back button, and
- *  a search jump all reconcile the switcher on their own. */
+/** A group of pages. Every area's header is always visible in the rail; which
+ *  section is expanded follows the route — derived, never stored — so a deep
+ *  link, the back button, and a search jump all reconcile the rail on their
+ *  own. */
 export interface NavArea {
   id: string;
   /** Switcher label, uppercase. */

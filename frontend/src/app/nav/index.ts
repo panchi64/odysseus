@@ -91,8 +91,8 @@ export function isConnectedRoute(
 }
 
 /** Search across every area — label first, then description, so a surface is
- *  findable by what it does. Spanning all areas is what makes showing one at a
- *  time safe: this is the escape hatch. */
+ *  findable by what it does. The fast jump: a keystroke beats expanding a
+ *  section and scanning its rows. */
 export function searchNav(query: string, areas: NavArea[] = AREAS): NavMatch[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];

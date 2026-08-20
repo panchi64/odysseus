@@ -7,7 +7,7 @@ interface RailSlot {
 }
 
 /**
- * Feature-owned panels the rail mounts under an area's page list — the one place
+ * Feature-owned panels the rail mounts above the area sections — the one place
  * the shell hosts feature content. It decides *where* and nothing else.
  *
  * Most areas need no entry: their options are pages, which are already rows in

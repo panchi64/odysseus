@@ -4,7 +4,6 @@ import { Button, Icon, ListRow, Text, Tooltip, cx } from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import { areaForPath, FOOTER_PINS, TOP_PINS, type NavItem } from "../nav";
 import { AreaNav } from "./AreaNav";
-import { AreaSwitcher } from "./AreaSwitcher";
 import { NavPalette, openNavPalette } from "./NavPalette";
 import { navMeta } from "./navMeta";
 
@@ -36,12 +35,12 @@ function PinRow(props: { item: NavItem; active: boolean }): JSX.Element {
   );
 }
 
-/** Primary navigation rail, in two tiers: a switcher naming the area you're in,
- *  and that area's pages directly beneath it. Which area is active is derived
- *  from the route — nothing here stores it.
+/** Primary navigation rail: pinned rows, then every area as a collapsible
+ *  section. Which section the route sits in is derived from the path — nothing
+ *  here stores it.
  *
- *  Pins sit *outside* both tiers — above the switcher, below the page list — so
- *  a permanent row never reads as a page of whichever area happens to be open. */
+ *  Pins sit *outside* the sections — above the list, in the footer — so a
+ *  permanent row never reads as a page of whichever area happens to be open. */
 export function Sidebar(): JSX.Element {
   const location = useLocation();
   const session = useSession();
@@ -80,8 +79,6 @@ export function Sidebar(): JSX.Element {
             {(item) => <PinRow item={item} active={isActive(item.href)} />}
           </For>
         </div>
-
-        <AreaSwitcher active={activeArea()} />
       </div>
 
       <AreaNav active={activeArea()} />

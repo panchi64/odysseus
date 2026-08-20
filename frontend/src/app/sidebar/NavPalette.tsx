@@ -20,10 +20,9 @@ export function openNavPalette(): void {
 }
 
 /**
- * The escape hatch. One area is visible at a time, so this is what keeps every
- * other surface one keystroke away: it spans all areas and matches descriptions
- * as well as labels, since a page is often known by what it does rather than
- * what it's called.
+ * The fast jump. It spans all areas and matches descriptions as well as
+ * labels, since a page is often known by what it does rather than what it's
+ * called — a keystroke beats expanding a section and scanning its rows.
  *
  * It's an overlay rather than a field in the rail because a permanent input cost
  * a band of vertical space and a third tier of clickable rows for something used
