@@ -9,18 +9,16 @@ const BLOCKS = ["▖", "▘", "▝", "▗", "▚", "▞"];
 
 /** Whether the font stack actually draws braille (vs. tofu). Monospace defeats
  *  width-based detection — every advance is equal — so diff the rendered pixels
- *  of a braille glyph against the notdef box. Memoized; assumes support where a
- *  canvas isn't available (SSR/headless) since the live throbber is client-only. */
-let brailleOk: boolean | null = null;
-function brailleSupported(): boolean {
-  if (brailleOk !== null) return brailleOk;
-  if (typeof document === "undefined") return (brailleOk = true);
+ *  of a braille glyph against the notdef box. Assumes support where a canvas
+ *  isn't available (SSR/headless) since the live throbber is client-only. */
+function probeBraille(): boolean {
+  if (typeof document === "undefined") return true;
   try {
     const canvas = document.createElement("canvas");
     canvas.width = 16;
     canvas.height = 16;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return (brailleOk = true);
+    if (!ctx) return true;
     ctx.font = '12px "JetBrains Mono", monospace';
     ctx.textBaseline = "top";
     const ink = (ch: string): string => {
@@ -36,10 +34,27 @@ function brailleSupported(): boolean {
     // box (￿ is an unassigned noncharacter → the font's placeholder). Matching
     // either means the throbber would render blank or as boxes, so fall back.
     const braille = ink("⠿");
-    return (brailleOk = braille !== ink(" ") && braille !== ink("￿"));
+    return braille !== ink(" ") && braille !== ink("￿");
   } catch {
-    return (brailleOk = true);
+    return true;
   }
+}
+
+/** Shared by every mounted throbber. Seeded by a synchronous probe, then
+ *  re-probed once the self-hosted webfont finishes loading — the first probe
+ *  may have measured a system fallback that lacks braille. Only ever flips
+ *  false → true (the webfont adds braille coverage, never removes it). */
+const [brailleOk, setBrailleOk] = createSignal(probeBraille());
+
+if (typeof document !== "undefined" && "fonts" in document) {
+  document.fonts
+    .load('12px "JetBrains Mono"', "⠿")
+    .then(() => {
+      if (!brailleOk() && probeBraille()) setBrailleOk(true);
+    })
+    .catch(() => {
+      /* webfont failed to load — keep the initial probe result */
+    });
 }
 
 export interface FramesProps {
@@ -57,8 +72,7 @@ export interface FramesProps {
  *  never an eased/decorative spinner. Decorative, so hidden from assistive tech;
  *  pair it with a text label that carries the meaning. */
 export function Frames(props: FramesProps): JSX.Element {
-  const set = (): string[] =>
-    props.frames ?? (brailleSupported() ? BRAILLE : BLOCKS);
+  const set = (): string[] => props.frames ?? (brailleOk() ? BRAILLE : BLOCKS);
   const [i, setI] = createSignal(0);
 
   onMount(() => {

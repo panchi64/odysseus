@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check \"src/**/*.{ts,tsx,css}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "build:fonts": "python3 scripts/build-mono-font.py",
     "postinstall": "node scripts/copy-pyodide.mjs"
   },
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/oswald": "^5.3.0",
     "@solidjs/router": "^0.15.4",
     "@solidjs/start": "2.0.0-alpha.2",

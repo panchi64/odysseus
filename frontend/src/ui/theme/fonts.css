@@ -1,8 +1,59 @@
-/* Self-hosted fonts (bundled via @fontsource).
-   Mono: JetBrains Mono (primary — tabular figures).
+/* Self-hosted fonts.
+   Mono: JetBrains Mono — served as a Nerd Font build (JetBrainsMono Nerd Font
+   Mono, v3.5.0) subset to the ranges below plus Braille Patterns
+   (U+2800-28FF), so the braille throbber renders natively with no system-font
+   install. Regenerate with `python3 scripts/build-mono-font.py` (license in
+    fonts/OFL.txt). unicode-range is an optimization, not a correctness
+    requirement: without it, out-of-range characters (emoji, CJK, …) still
+    render — the browser falls back per glyph to the stack's system fonts.
+    The 1E00-1EFF and 2800-28FF blocks are each written as two halves because
+    lightningcss ≤1.32 corrupts full 256-block ranges (XX00-XXFF) into invalid
+    U+1E??-style values, silently dropping the declaration.
    Display: Oswald (heavy condensed grotesque, titles only). */
 
-@import "@fontsource/jetbrains-mono/400.css";
-@import "@fontsource/jetbrains-mono/500.css";
-@import "@fontsource/jetbrains-mono/700.css";
 @import "@fontsource/oswald/700.css";
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./fonts/jetbrains-mono-400.woff2") format("woff2");
+  unicode-range:
+    U+0000-02CC, U+02CE-02D7, U+02DA, U+02DC-0301, U+0303-0304, U+0308-0309,
+    U+0323, U+0329, U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1,
+    U+03A3-052F, U+1C80-1C8A, U+1D00-1DBF, U+1E00-1E9F, U+1EA0-1EFF,
+    U+2000-206F, U+20A0-20C0, U+2113, U+2116, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+2800-287F, U+2880-28FF, U+2C60-2C7F, U+2DE0-2DFF, U+A640-A69F,
+    U+A720-A7FF, U+FE2E-FE2F, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("./fonts/jetbrains-mono-500.woff2") format("woff2");
+  unicode-range:
+    U+0000-02CC, U+02CE-02D7, U+02DA, U+02DC-0301, U+0303-0304, U+0308-0309,
+    U+0323, U+0329, U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1,
+    U+03A3-052F, U+1C80-1C8A, U+1D00-1DBF, U+1E00-1E9F, U+1EA0-1EFF,
+    U+2000-206F, U+20A0-20C0, U+2113, U+2116, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+2800-287F, U+2880-28FF, U+2C60-2C7F, U+2DE0-2DFF, U+A640-A69F,
+    U+A720-A7FF, U+FE2E-FE2F, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("./fonts/jetbrains-mono-700.woff2") format("woff2");
+  unicode-range:
+    U+0000-02CC, U+02CE-02D7, U+02DA, U+02DC-0301, U+0303-0304, U+0308-0309,
+    U+0323, U+0329, U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1,
+    U+03A3-052F, U+1C80-1C8A, U+1D00-1DBF, U+1E00-1E9F, U+1EA0-1EFF,
+    U+2000-206F, U+20A0-20C0, U+2113, U+2116, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+2800-287F, U+2880-28FF, U+2C60-2C7F, U+2DE0-2DFF, U+A640-A69F,
+    U+A720-A7FF, U+FE2E-FE2F, U+FEFF, U+FFFD;
+}
