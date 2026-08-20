@@ -62,6 +62,16 @@ _KILL_HARD_TIMEOUT_S = 1.0
 _REAP_POLL_S = 0.05
 
 
+def _claim_controlling_tty(slave_fd: int) -> None:
+    """Runs in the child before exec: new session, then claim the PTY slave as
+    that session's controlling terminal. Without the claim, strict shells
+    (fish) refuse to start interactive at all, and job control (Ctrl-C,
+    fg/bg) is broken in the shells that tolerate a missing controlling
+    terminal."""
+    os.setsid()
+    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+
 @dataclass
 class _Session:
     id: str
@@ -258,7 +268,7 @@ class ShellService:
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
-                    preexec_fn=os.setsid,
+                    preexec_fn=lambda fd=slave_fd: _claim_controlling_tty(fd),
                     env=os.environ.copy(),
                     cwd=os.path.expanduser("~"),
                     close_fds=True,

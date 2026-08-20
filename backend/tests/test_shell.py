@@ -138,7 +138,27 @@ def _mint_token(client: TestClient) -> str:
     return resp.json()["token"]
 
 
-def test_ws_full_round_trip(tmp_path):
+def _fake_shell(tmp_path: Path) -> str:
+    """A minimal POSIX stand-in for the user's real `$SHELL`. The real shell is
+    a test-environment dependency — its startup capability queries, rc-file
+    side effects, and time-to-first-prompt vary by platform and shell (fish
+    blocks on terminal queries a test client never answers) — while these tests
+    exercise the app's WS/PTY plumbing, not the shell. The stand-in echoes each
+    input line with an ``OUT:`` prefix so a test can tell real command output
+    apart from the line discipline's echo of the typed input."""
+    script = tmp_path / "fake_shell.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "while IFS= read -r line; do\n"
+        "    printf 'OUT:%s\\n' \"$line\"\n"
+        "done\n"
+    )
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_ws_full_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", _fake_shell(tmp_path))
     app = _sync_app(tmp_path)
     with TestClient(app) as client:
         token = _mint_token(client)
@@ -146,20 +166,23 @@ def test_ws_full_round_trip(tmp_path):
             ws.send_text(json.dumps({"type": "auth", "bearer": "", "host": token}))
             assert ws.receive_json() == {"type": "ready"}
 
+            # Match the stand-in's `OUT:`-prefixed output, not the line
+            # discipline's echo of the typed input — the echo alone would pass
+            # this test even with a dead shell.
             ws.send_text(json.dumps({"type": "stdin", "data": "echo hi\n"}))
             collected = b""
             deadline = time.monotonic() + 10
-            while b"hi" not in collected and time.monotonic() < deadline:
+            while b"OUT:echo hi" not in collected and time.monotonic() < deadline:
                 collected += ws.receive_bytes()
-            assert b"hi" in collected
+            assert b"OUT:echo hi" in collected
 
             # A resize must not crash the session.
             ws.send_text(json.dumps({"type": "resize", "cols": 100, "rows": 40}))
             ws.send_text(json.dumps({"type": "stdin", "data": "echo still-alive\n"}))
             deadline = time.monotonic() + 10
-            while b"still-alive" not in collected and time.monotonic() < deadline:
+            while b"OUT:echo still-alive" not in collected and time.monotonic() < deadline:
                 collected += ws.receive_bytes()
-            assert b"still-alive" in collected
+            assert b"OUT:echo still-alive" in collected
 
 
 def test_ws_missing_host_token_closes_4403(tmp_path):
@@ -172,7 +195,8 @@ def test_ws_missing_host_token_closes_4403(tmp_path):
         assert excinfo.value.code == 4403
 
 
-def test_ws_host_token_is_single_use(tmp_path):
+def test_ws_host_token_is_single_use(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", _fake_shell(tmp_path))
     app = _sync_app(tmp_path)
     with TestClient(app) as client:
         token = _mint_token(client)
@@ -187,7 +211,8 @@ def test_ws_host_token_is_single_use(tmp_path):
         assert excinfo.value.code == 4403
 
 
-def test_vault_lock_kills_live_session(tmp_path):
+def test_vault_lock_kills_live_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", _fake_shell(tmp_path))
     app = _sync_app(tmp_path)
     with TestClient(app) as client:
         token = _mint_token(client)
@@ -199,7 +224,10 @@ def test_vault_lock_kills_live_session(tmp_path):
                 # POST /auth/lock — runs on the app's own event loop, unlike
                 # poking app.state.vault directly from the test thread).
                 assert client.post("/auth/lock").status_code == 200
-                ws.receive_text()  # the session was torn down by the lock hook
+                # The session was torn down by the lock hook; any pending
+                # output frames may arrive before the close, so drain them.
+                while True:
+                    ws.receive_bytes()
 
 
 def test_ws_bearer_rejection_closes_4401(tmp_path):
@@ -217,7 +245,8 @@ def test_ws_bearer_rejection_closes_4401(tmp_path):
         assert excinfo.value.code == 4401
 
 
-def test_ws_idle_timeout_closes_4403(tmp_path):
+def test_ws_idle_timeout_closes_4403(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", _fake_shell(tmp_path))
     app = _sync_app(tmp_path, shell_idle_timeout_s=0.05)
     with TestClient(app) as client:
         token = _mint_token(client)
@@ -226,15 +255,18 @@ def test_ws_idle_timeout_closes_4403(tmp_path):
                 ws.send_text(json.dumps({"type": "auth", "bearer": "", "host": token}))
                 assert ws.receive_json() == {"type": "ready"}
                 # No stdin at all — the idle watcher must tear the session down
-                # on its own.
-                ws.receive_text()
+                # on its own. The shell's startup output is legitimate pending
+                # data, so drain frames until the close arrives.
+                while True:
+                    ws.receive_bytes()
         assert excinfo.value.code == 4403
 
 
-def test_ws_concurrent_session_limit_closes_4409(tmp_path):
+def test_ws_concurrent_session_limit_closes_4409(tmp_path, monkeypatch):
     # shell_max_sessions defaults to 1 — a second connection while the first is
     # still open must be rejected as busy, even with its own valid, unspent
     # host-mode token.
+    monkeypatch.setenv("SHELL", _fake_shell(tmp_path))
     app = _sync_app(tmp_path)
     with TestClient(app) as client:
         token1 = _mint_token(client)
