@@ -83,7 +83,16 @@ async def assert_public_url(url: str) -> None:
     if not addresses:
         raise SSRFError(f"refused to fetch {url!r}: host {host!r} did not resolve")
     for addr in addresses:
-        if _is_blocked(ipaddress.ip_address(addr)):
+        # An address this can't parse is one it can't prove is public, so it is refused
+        # rather than passed through — the guard fails closed. (Scoped link-local forms
+        # like ``fe80::1%eth0`` do parse, and land in `_is_blocked` on their own merits.)
+        try:
+            parsed = ipaddress.ip_address(addr)
+        except ValueError as exc:
+            raise SSRFError(
+                f"refused to fetch {url!r}: host {host!r} resolved to unparseable address {addr!r}"
+            ) from exc
+        if _is_blocked(parsed):
             raise SSRFError(
                 f"refused to fetch {url!r}: host {host!r} resolves to non-public address {addr}"
             )

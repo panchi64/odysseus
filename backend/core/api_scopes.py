@@ -12,10 +12,13 @@ Core owns the **vocabulary** (`SCOPE_DEFS` — the operator-facing groups) and t
 assembly — `CORE_CLAIMS` for the surfaces core itself wires, plus each feature manifest's
 own claims — so core never has to know which features exist.
 
-Two rules make it safe:
+Three rules make it safe:
 
 * **Longest prefix wins.** ``/models/serving`` resolves to the ``serving`` scope, not the
   broader ``models`` one, so bringing model servers up and down is grantable on its own.
+* **A claim may narrow to read methods.** Where one prefix covers both reading a surface
+  and reconfiguring it, the claim says which methods it means, so a scope described to the
+  operator as read-only cannot be spent on a write.
 * **Deny by default.** A path no claim covers is unreachable with a token, whatever scopes
   it carries. That is deliberate for the surfaces that claim nothing — ``/auth``,
   ``/setup``, ``/tokens``, ``/credentials``, ``/vault``, ``/backup``, ``/shell``, mail,
@@ -39,13 +42,30 @@ class ScopeDef:
     description: str
 
 
+# The HTTP methods that only read. A claim restricted to these turns its prefixes into a
+# read-only reach: a write to the same path matches no claim and is therefore denied by
+# default, exactly as an unclaimed surface is.
+READ_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
 @dataclass(frozen=True)
 class ScopeClaim:
     """Path prefixes claimed into a scope — contributed by core assembly and by
-    feature manifests. The scope id must name a `SCOPE_DEFS` entry."""
+    feature manifests. The scope id must name a `SCOPE_DEFS` entry.
+
+    ``methods`` narrows the claim to those HTTP methods; ``None`` (the default) claims
+    every method. It exists because a prefix is not always uniformly sensitive: the whole
+    model registry is worth reading under one grant, while creating an endpoint and
+    rebinding a role — same prefix — is the power to point every future turn at someone
+    else's inference server. A scope the operator is told is read-only has to *be* one.
+    """
 
     scope_id: str
     prefixes: tuple[str, ...]
+    methods: frozenset[str] | None = None
+
+    def covers(self, method: str) -> bool:
+        return self.methods is None or method.upper() in self.methods
 
 
 @dataclass(frozen=True)
@@ -86,7 +106,12 @@ SCOPE_DEFS: tuple[ScopeDef, ...] = (
 # claims through its own manifest.
 CORE_CLAIMS: tuple[ScopeClaim, ...] = (
     ScopeClaim("chat", ("/chat", "/conversations", "/runs")),
-    ScopeClaim("models", ("/models",)),
+    # Read-only, as the scope's own description promises. Writes under `/models` are not
+    # a lesser version of reading it: `POST /models/endpoints` plus `PUT /models/roles/main`
+    # is enough to route every future turn — prompts, history, recalled memories — through
+    # an endpoint of the token holder's choosing. Those stay unreachable with a token,
+    # like `/vault` and `/tokens`; `/models/serving` remains its own deliberate grant.
+    ScopeClaim("models", ("/models",), methods=READ_METHODS),
     ScopeClaim("status", ("/overview",)),
 )
 
@@ -98,10 +123,12 @@ class ScopeTable:
 
     def __init__(self, claims: Iterable[ScopeClaim]) -> None:
         merged: dict[str, list[str]] = {}
+        entries: list[tuple[str, str, frozenset[str] | None]] = []
         for claim in claims:
             if claim.scope_id not in _DEFS_BY_ID:
                 raise ValueError(f"scope claim names unknown scope id {claim.scope_id!r}")
             merged.setdefault(claim.scope_id, []).extend(claim.prefixes)
+            entries.extend((prefix, claim.scope_id, claim.methods) for prefix in claim.prefixes)
         # Catalog order follows SCOPE_DEFS; a scope nothing claims is simply absent —
         # never offered on a token it could not put to use.
         self.scopes: tuple[ApiScope, ...] = tuple(
@@ -111,21 +138,23 @@ class ScopeTable:
         )
         self.scope_ids: frozenset[str] = frozenset(merged)
         # Longest prefix first, so the first match is the most specific one.
-        self._by_specificity: tuple[tuple[str, str], ...] = tuple(
-            sorted(
-                ((prefix, scope.id) for scope in self.scopes for prefix in scope.prefixes),
-                key=lambda pair: len(pair[0]),
-                reverse=True,
-            )
+        self._by_specificity: tuple[tuple[str, str, frozenset[str] | None], ...] = tuple(
+            sorted(entries, key=lambda entry: len(entry[0]), reverse=True)
         )
 
-    def scope_for_path(self, path: str) -> str | None:
-        """The scope a request path belongs to, or ``None`` when no claim covers it.
+    def scope_for_path(self, path: str, method: str = "GET") -> str | None:
+        """The scope a request path+method belongs to, or ``None`` when no claim covers it.
 
-        ``None`` means *unreachable with a token* — the deny-by-default half of the rule."""
-        for prefix, scope_id in self._by_specificity:
-            if path == prefix or path.startswith(prefix + "/"):
-                return scope_id
+        ``None`` means *unreachable with a token* — the deny-by-default half of the rule.
+        A method-restricted claim is skipped rather than matched, so a write under a
+        read-only prefix falls through to the shorter claims and, finding none, is denied.
+        """
+        for prefix, scope_id, methods in self._by_specificity:
+            if path != prefix and not path.startswith(prefix + "/"):
+                continue
+            if methods is not None and method.upper() not in methods:
+                continue
+            return scope_id
         return None
 
     def unknown_scopes(self, scopes: list[str]) -> list[str]:

@@ -48,7 +48,7 @@ async def request_host_mode(body: HostModeRequest, request: Request) -> HostMode
             detail="too many attempts",
             headers={"Retry-After": str(int(retry_after) + 1)},
         ) from None
-    if not vault.verify_password(body.password):
+    if not await vault.verify_password(body.password):
         raise HTTPException(status_code=401, detail="invalid password")
     token, ttl = deps.shell(request).mint_host_token()
     return HostModeResponse(token=token, expires_in_s=ttl)
@@ -58,4 +58,4 @@ async def request_host_mode(body: HostModeRequest, request: Request) -> HostMode
 async def shell_ws(websocket: WebSocket) -> None:
     # `deps.py` accessors take a `Request`, not a `WebSocket` — reach `app.state`
     # directly here, mirroring `routes/previews.py`'s websocket handler.
-    await websocket.app.state.shell.open_session(websocket)
+    await deps.shell(websocket).open_session(websocket)

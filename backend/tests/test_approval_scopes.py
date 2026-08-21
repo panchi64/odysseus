@@ -34,6 +34,7 @@ async def test_statically_marked_tools_are_scopes():
         "mail_reply",
         "vault_list_entries",
         "vault_get_entry",
+        "skills_edit",
     } <= names
 
 
@@ -60,7 +61,16 @@ async def test_ungated_tools_are_not_scopes():
     async with client_app() as (client, _app):
         body = (await client.get("/tools/approval-scopes")).json()
     names = _names(body)
-    for ungated in ("builtin_now", "mail_read", "mail_list_messages", "document_create"):
+    ungated_names = (
+        "builtin_now",
+        "mail_read",
+        "mail_list_messages",
+        "document_create",
+        # A skill the agent writes is a draft the operator must publish before it can
+        # ever reach the model — their review already stands where the prompt would.
+        "skills_create",
+    )
+    for ungated in ungated_names:
         assert ungated not in names
 
 

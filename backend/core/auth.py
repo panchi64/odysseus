@@ -116,12 +116,23 @@ class AuthManager:
         self._tokens.clear()
 
 
-def _is_public(path: str, extra_prefixes: tuple[str, ...]) -> bool:
-    if path in _PUBLIC_PATHS:
-        return True
-    return any(
-        path == p or path.startswith(p + "/") for p in (*_PUBLIC_PREFIXES, *extra_prefixes)
-    )
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
+
+
+def _is_core_public(path: str) -> bool:
+    """Reachable with no credential **and** with the vault locked — the surfaces whose
+    whole job is to get the operator past the lock (status, login, first-run setup) plus
+    liveness and the docs UIs. Nothing here touches operator data."""
+    return path in _PUBLIC_PATHS or _under(path, _PUBLIC_PREFIXES)
+
+
+def _is_feature_public(path: str, extra_prefixes: tuple[str, ...]) -> bool:
+    """A feature's own auth exemption (the preview proxy, the task webhook): the
+    unguessable path token *is* the credential, so no session is required — but these
+    surfaces do reach operator data, so they stay behind the vault-locked gate like
+    every other feature. See :class:`AuthMiddleware`."""
+    return _under(path, extra_prefixes)
 
 
 def token_from_headers(authorization: str | None, cookie_token: str | None) -> str | None:
@@ -132,7 +143,12 @@ def token_from_headers(authorization: str | None, cookie_token: str | None) -> s
 
 
 def _token_from_scope(scope: Scope) -> str | None:
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    # HTTP header bytes are latin-1 on the wire, not UTF-8: decoding them as UTF-8 would
+    # raise on any high byte a client happens to send (a legacy user-agent, a filename in
+    # a custom header) and 500 the request from inside the middleware, before any handler.
+    headers = {
+        k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
+    }
     cookie_token = None
     for part in headers.get("cookie", "").split(";"):
         name, _, value = part.strip().partition("=")
@@ -192,7 +208,7 @@ async def _authenticate_api_token(
         if identity is None:
             return _UNAUTHENTICATED
 
-    required = scope_table.scope_for_path(scope["path"])
+    required = scope_table.scope_for_path(scope["path"], scope["method"])
     if required is None or required not in identity.scopes:
         # Deny-by-default: an unclaimed path (`/tokens`, `/vault`, `/shell`) is out of
         # reach for every token, whatever it carries.
@@ -218,12 +234,18 @@ class AuthMiddleware:
         if (
             scope["type"] != "http"
             or scope["method"] == "OPTIONS"
-            or _is_public(scope["path"], self._extra_public_prefixes)
+            or _is_core_public(scope["path"])
         ):
             return await self.app(scope, receive, send)
 
         state = scope["app"].state
-        if state.settings.auth_enabled:
+        # A feature's declared exemption waives the *session*, not the lock: the preview
+        # proxy and the task webhook authenticate by unguessable path token, but both
+        # reach operator data, so locking must take them offline with everything else.
+        # Without this they kept serving the agent's live workspace after `/auth/lock`.
+        if state.settings.auth_enabled and not _is_feature_public(
+            scope["path"], self._extra_public_prefixes
+        ):
             presented = _token_from_scope(scope)
             # The operator session comes first: an in-memory set membership test, so the
             # browser's every request stays free of the token path entirely.

@@ -121,9 +121,13 @@ class SecretVaultService:
     # --- lifecycle (`VAULT-1`) ------------------------------------------------------
 
     async def status(self, owner_id: str) -> SecretVaultStatus:
+        """Whether the vault is configured and open — an observation, not a use, so it
+        does NOT slide the idle deadline (the UI polls this to render the lock indicator;
+        counting a poll as activity would keep the vault open indefinitely)."""
         config = await self._config(owner_id)
         return SecretVaultStatus(
-            configured=config is not None, unlocked=self._live_key(owner_id) is not None
+            configured=config is not None,
+            unlocked=self._live_key(owner_id, touch=False) is not None,
         )
 
     async def configure(self, owner_id: str, passphrase: str) -> None:
@@ -138,9 +142,12 @@ class SecretVaultService:
         key = crypto.generate_dek()
         salt = crypto.generate_salt()
         kek = await asyncio.to_thread(crypto.derive_kek, passphrase, salt)
+        # Threaded like `derive_kek`: the same Argon2 cost, and inline it would stall
+        # every other connection on the loop for its duration.
+        verifier = await asyncio.to_thread(crypto.hash_password, passphrase)
         row = SecretVaultConfig(
             owner_id=owner_id,
-            verifier=crypto.hash_password(passphrase),
+            verifier=verifier,
             kek_salt=_b64e(salt),
             wrapped_key_enc=self._vault.encrypt_str(_b64e(crypto.aead_encrypt(kek, key))),
         )
@@ -159,7 +166,7 @@ class SecretVaultService:
         config = await self._config(owner_id)
         if config is None:
             raise SecretVaultNotConfigured("the password vault has not been set up")
-        if not crypto.verify_password(config.verifier, passphrase):
+        if not await asyncio.to_thread(crypto.verify_password, config.verifier, passphrase):
             return False
         kek = await asyncio.to_thread(
             crypto.derive_kek, passphrase, _b64d(config.kek_salt)
@@ -299,17 +306,24 @@ class SecretVaultService:
             key=key, expires_at=self._clock() + self._idle_timeout_s
         )
 
-    def _live_key(self, owner_id: str) -> bytes | None:
+    def _live_key(self, owner_id: str, *, touch: bool = True) -> bytes | None:
         """The session key if the vault is open, else None — expiring the session in
-        passing. Reading slides the idle deadline forward, so a vault in active use never
-        locks under the operator, and one left alone closes itself."""
+        passing. ``touch`` slides the idle deadline forward, so a vault in active use
+        never locks under the operator, and one left alone closes itself.
+
+        ``touch=False`` is for *observing* the state rather than using the key. It matters
+        because the UI polls the lock indicator: counting a poll as use would slide the
+        deadline on every tick, and a vault the operator walked away from would stay open
+        for as long as a browser tab is pointed at it — the auto-relock would never fire.
+        """
         session = self._sessions.get(owner_id)
         if session is None:
             return None
         if self._clock() >= session.expires_at:
             del self._sessions[owner_id]
             return None
-        session.expires_at = self._clock() + self._idle_timeout_s
+        if touch:
+            session.expires_at = self._clock() + self._idle_timeout_s
         return session.key
 
     def _require_key(self, owner_id: str) -> bytes:

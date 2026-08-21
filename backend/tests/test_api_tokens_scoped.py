@@ -71,7 +71,14 @@ async def test_scopes_catalog_never_covers_credential_or_host_surfaces():
             assert table.scope_for_path(path) is None
         # Longest prefix wins, so serving is grantable apart from the rest of /models.
         assert table.scope_for_path("/models/roles") == "models"
-        assert table.scope_for_path("/models/serving/start") == "serving"
+        assert table.scope_for_path("/models/serving/start", "POST") == "serving"
+        # The `models` scope is described to the operator as read-only, so it has to be
+        # one: creating an endpoint and rebinding a role would let a token route every
+        # future turn through an inference server of its choosing.
+        assert table.scope_for_path("/models/endpoints", "POST") is None
+        assert table.scope_for_path("/models/roles/main", "PUT") is None
+        assert table.scope_for_path("/models/endpoints/abc", "DELETE") is None
+        assert table.scope_for_path("/models/endpoints", "GET") == "models"
 
 
 async def test_token_authenticates_in_scope_and_is_refused_out_of_scope():
