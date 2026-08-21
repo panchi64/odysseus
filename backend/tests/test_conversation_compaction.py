@@ -31,7 +31,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
-from agent.engine import _merge_consecutive_requests
+from agent.history import merge_consecutive_requests
 from agent.summarize import (
     build_auto_compact_policy,
     compact_conversation,
@@ -598,7 +598,7 @@ def test_consecutive_requests_merge_so_the_index_stays_honest():
     """Pydantic AI collapses adjacent requests when it prepares the wire format, so
     ``all_messages()`` comes back shorter than what was handed in. Normalizing first is
     what keeps ``start`` pointing at the real boundary."""
-    merged = _merge_consecutive_requests(
+    merged = merge_consecutive_requests(
         [
             ModelRequest(parts=[UserPromptPart(content="a")]),
             ModelRequest(parts=[UserPromptPart(content="b")]),
@@ -650,7 +650,7 @@ async def test_the_library_really_does_merge_and_its_own_index_is_not_a_substitu
     )
     # Normalizing first is what fixes it: `start` measured against the merged list points
     # at the operator's prompt, which is what gets persisted.
-    normalized = _merge_consecutive_requests(history)
+    normalized = merge_consecutive_requests(history)
     assert isinstance(everything[len(normalized)], ModelRequest)
     assert any(
         isinstance(part, UserPromptPart) and part.content == "new question"
@@ -662,7 +662,7 @@ def test_the_merge_does_not_mutate_the_messages_it_was_given():
     """The store's in-memory tree shares these objects — mutating one in place would
     corrupt the durable history of every later read."""
     first = ModelRequest(parts=[UserPromptPart(content="a")])
-    _merge_consecutive_requests([first, ModelRequest(parts=[UserPromptPart(content="b")])])
+    merge_consecutive_requests([first, ModelRequest(parts=[UserPromptPart(content="b")])])
     assert [p.content for p in first.parts] == ["a"]
 
 

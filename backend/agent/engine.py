@@ -11,6 +11,19 @@ approval resume. When the model requests a sensitive (approval-required) tool,
 Pydantic AI ends the turn with ``DeferredToolRequests`` *without executing it*;
 we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
 :class:`ParkedTurn` so an approve decision can resume exactly where it left off.
+
+What lives *here* is the turn's control flow and the two orchestrators that wrap it.
+Four neighbours carry the concerns that aren't that, each with its own reason to change:
+
+- ``history.py`` — the surgeries on a message list before it reaches a model or the
+  store. Pure functions; each encodes one fact about how the library or a provider
+  behaves.
+- ``naming.py`` — when and how a fresh thread gets named, either concurrently with the
+  answer or after a resume. (``title.py`` remains the model call itself.)
+- ``flush.py`` — persisting a turn that was stopped from outside, shared by both
+  orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
+- ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
+  operator is told.
 """
 
 from __future__ import annotations
@@ -19,7 +32,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -29,12 +42,8 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
     RunUsage,
     ToolApproved,
-    ToolCallPart,
-    ToolReturnPart,
     UsageLimitExceeded,
     UsageLimits,
     UserPromptPart,
@@ -56,7 +65,6 @@ from prompts.agent import (
 from runs import (
     ApprovalRequired,
     ConversationCompacted,
-    ConversationTitled,
     LimitNotice,
     Orchestrator,
     Run,
@@ -78,6 +86,12 @@ from tools import (
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
+from .history import (
+    drop_dangling_tool_calls,
+    merge_consecutive_requests,
+    split_injected_requests,
+    with_tail_context,
+)
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .model_errors import (
     context_limit_message,
@@ -86,13 +100,21 @@ from .model_errors import (
     usage_limit_kind,
     usage_limit_message,
 )
+from .naming import (
+    TitleContext,
+    approval_conversation_title,
+    discard_title,
+    maybe_title,
+    settle_title,
+    start_title,
+)
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
     compact_conversation,
     should_compact,
 )
-from .title import generate_title, last_user_text, title_from_history
+from .title import last_user_text
 from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -100,16 +122,6 @@ logger = logging.getLogger(__name__)
 # A shared empty bag for the no-capabilities default — every capability-backed tool
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
-
-
-@dataclass(frozen=True)
-class TitleContext:
-    """What auto-titling needs, bundled so it can ride a parked turn to its resume.
-    The model + its reasoning-off settings come resolved together from the registry
-    (titling is a fast, no-reasoning pass). Absent ⇒ titling is off for this run."""
-
-    model: Model
-    settings: ModelSettings
 
 
 @dataclass
@@ -306,23 +318,6 @@ async def _maybe_compact(
     return await store.model_history(conversation_id)
 
 
-async def _approval_conversation_title(
-    store: ConversationStore | None, owner_id: str, conversation_id: str | None
-) -> str:
-    """A short, human name for the conversation a park's notification names — the
-    conversation's own title when one exists (auto-titling may not have run yet on a
-    fresh thread), else a plain fallback. Never raises: a lookup failure degrades to
-    the fallback rather than losing the notification over a cosmetic detail."""
-    if store is not None and conversation_id is not None:
-        try:
-            summary = await store.get_summary(conversation_id, owner_id)
-        except Exception:  # noqa: BLE001 — a title lookup must not block the notify
-            summary = None
-        if summary is not None and summary.title:
-            return summary.title
-    return "this conversation"
-
-
 async def _park_for_approval(
     run: Run,
     agent: Agent,
@@ -367,7 +362,7 @@ async def _park_for_approval(
     # window would see the parked status while this coroutine is still suspended on a
     # real await — violating that assumption and racing the run's own finalize.
     if notifications is not None and pending_names:
-        title = await _approval_conversation_title(store, run.owner_id, conversation_id)
+        title = await approval_conversation_title(store, run.owner_id, conversation_id)
         try:
             await notifications.notify(
                 run.owner_id,
@@ -390,50 +385,6 @@ async def _park_for_approval(
             request_limit=request_limit,
         )
     )
-
-
-def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Strip a trailing tool call that never received its result.
-
-    A turn stopped at a bound (usage limit, loop guard, timeout) can leave history ending
-    on a ``ModelResponse`` whose ``ToolCallPart`` has no matching ``ToolReturnPart`` — the
-    call was requested but the bound tripped before it ran. Persisting that and replaying it
-    on the next turn is a provider error (an assistant tool call with no following tool
-    result → HTTP 400), which would break every later turn in the thread. Since this is the
-    final message, any tool call in it is necessarily unanswered: drop those parts, and the
-    whole message if nothing else remains."""
-    if not messages or not isinstance(messages[-1], ModelResponse):
-        return messages
-    last = messages[-1]
-    kept = [p for p in last.parts if not isinstance(p, ToolCallPart)]
-    if len(kept) == len(last.parts):
-        return messages
-    if kept:
-        return [*messages[:-1], replace(last, parts=kept)]
-    return messages[:-1]
-
-
-def _with_tail_context(
-    messages: list[ModelMessage], texts: list[str]
-) -> list[ModelMessage]:
-    """Append per-turn context to the trailing user request — the *model's view only*.
-
-    The regenerate path re-runs a history that already ends in the user request, so
-    there is no fresh ``user_prompt`` to carry the prompt-context providers' output;
-    instead it rides on that trailing request here. Rebuilds via ``replace`` (never
-    mutates — the store's in-memory tree shares these objects), and since the caller
-    persists only ``messages[start:]``, a message replaced *before* ``start`` never
-    reaches the durable history. No trailing user request (defensive) ⇒ unchanged."""
-    if not messages or not isinstance(messages[-1], ModelRequest):
-        return messages
-    last = messages[-1]
-    for index, part in enumerate(last.parts):
-        if isinstance(part, UserPromptPart):
-            content = part.content if isinstance(part.content, list) else [part.content]
-            parts = list(last.parts)
-            parts[index] = replace(part, content=[*content, *texts])
-            return [*messages[:-1], replace(last, parts=parts)]
-    return messages
 
 
 async def _drive_turn(
@@ -753,69 +704,6 @@ async def _verify_and_correct(
     return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
-def _merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Collapse adjacent ``ModelRequest``s the way Pydantic AI will anyway, **before**
-    ``start`` is measured against the list.
-
-    ``_finalize`` persists ``result.all_messages()[start:]`` with ``start`` the length of
-    the history we handed in. That only holds while the library gives the history back at
-    the length we supplied it — and it does not: preparing the wire format merges
-    consecutive requests (most chat APIs cannot carry two user messages in a row), so
-    ``all_messages()`` comes back *shorter* than what went in and ``start`` silently points
-    one message too far, dropping the operator's own message from the turn it persists.
-
-    Two things produce adjacent requests here, and both are load-bearing: a compaction
-    checkpoint hoisted in front of a retained tail that opens on a user prompt, and
-    :func:`_split_injected_requests`' own output replayed on the *next* turn. Normalizing
-    up front costs nothing (the library was going to do exactly this) and makes the index
-    honest in both cases. New objects throughout — the store's in-memory tree shares these
-    messages, so nothing here may mutate one in place.
-
-    **Why not use the library's own boundary.** ``AgentRunResult.new_messages()`` slices at
-    an index Pydantic AI maintains for exactly this hazard, and it is correct — for one
-    agent run. Ours is not one agent run. A single operator-facing turn can span several:
-    a continuation after the operator queued more text mid-answer, an approval resume, a
-    verifier correction. Each re-enters with a rebuilt history, so the library's index
-    marks the start of the *last* run's new messages, not of the turn — on a corrective
-    re-attempt it points two messages into a turn that began at zero. On top of that, four
-    of the five things measured against ``start`` (the timeout flush, the cancel flush, the
-    error flush, the park) happen where no result exists to ask. So ``start`` stays ours,
-    and this keeps it honest."""
-    out: list[ModelMessage] = []
-    for message in messages:
-        if isinstance(message, ModelRequest) and out and isinstance(out[-1], ModelRequest):
-            out[-1] = replace(out[-1], parts=[*out[-1].parts, *message.parts])
-            continue
-        out.append(message)
-    return out
-
-
-def _split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Give each mid-run injected operator message its own persisted request.
-
-    Mid-run steering appends ``UserPromptPart``s onto the tool-return request the
-    model was about to receive (`_drive_turn`'s ``_inject_queued``). Persisting that
-    merged request as-is would bury the operator's message inside a tool exchange —
-    no tree node of its own, so no user bubble, no edit/regenerate anchor. Split it:
-    the tool returns keep their request, and each injected part becomes its own
-    ``ModelRequest`` right after. Replay stays wire-identical — the library re-merges
-    consecutive requests (tool returns first) when preparing the model's input."""
-    out: list[ModelMessage] = []
-    for message in messages:
-        if not isinstance(message, ModelRequest):
-            out.append(message)
-            continue
-        user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
-        tool_parts = [p for p in message.parts if isinstance(p, ToolReturnPart | RetryPromptPart)]
-        if not user_parts or not tool_parts:
-            out.append(message)
-            continue
-        rest = [p for p in message.parts if not isinstance(p, UserPromptPart)]
-        out.append(replace(message, parts=rest))
-        out.extend(ModelRequest(parts=[part]) for part in user_parts)
-    return out
-
-
 def _finalize(
     run: Run,
     turn: _TurnResult,
@@ -859,7 +747,7 @@ def _finalize(
         # empty slice, e.g. a bound hit before any new message accumulated).
         store.record(
             conversation_id,
-            _split_injected_requests(messages[context.start :]),
+            split_injected_requests(messages[context.start :]),
             attachment_ids=list(context.attachment_ids),
             persisted=context.persisted,
             blocked_reason=turn.blocked_reason,
@@ -914,161 +802,6 @@ def _parked_context(parked: ParkedTurn) -> PersistContext:
         persisted=parked.persisted,
         compaction=parked.compaction,
     )
-
-
-async def _maybe_title(
-    run: Run,
-    *,
-    title: TitleContext | None,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-    is_first_turn: bool,
-) -> None:
-    """Auto-name a fresh conversation from the operator's opening message.
-
-    The resume path's namer: a first turn that parked for approval is named once it
-    resumes to completion. The user's first message is read from the just-persisted
-    history rather than threaded in (the resume has no ``prompt`` in hand). The
-    initial chat orchestrator instead titles concurrently via :func:`_start_title` /
-    :func:`_emit_title` so it adds no post-answer delay. The title reflects what the operator
-    asked — the assistant's reply is deliberately not fed to the namer. Guards:
-
-    - ``is_first_turn`` (no prior messages) is the cheap pre-filter that skips the
-      model call on continuation turns;
-    - :meth:`ConversationStore.set_title_if_absent` is the authoritative guard —
-      it fills only a blank title, so an operator-named thread is never clobbered,
-      and we announce ``conversation.titled`` only when it actually set the name.
-
-    Emitted before the orchestrator returns (before ``run.ended``) so the open
-    stream carries it. Best-effort throughout: any failure leaves the thread
-    untitled without disturbing the finished turn."""
-    if not is_first_turn or title is None or store is None or conversation_id is None:
-        return
-    try:
-        name = await title_from_history(
-            title.model,
-            await store.history(conversation_id),
-            reasoning_off=title.settings,
-            timeout_s=get_settings().title_timeout_s,
-            max_tokens=get_settings().title_max_tokens,
-        )
-        await _announce_title(run, name, store=store, conversation_id=conversation_id)
-    except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
-        logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
-
-
-async def _announce_title(
-    run: Run,
-    name: str | None,
-    *,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-) -> None:
-    """Persist a generated title (fill-only-if-blank) and announce it on success.
-
-    :meth:`ConversationStore.set_title_if_absent` is the authoritative guard — it
-    fills only a blank title, so an operator-named thread is never clobbered, and
-    ``conversation.titled`` is announced only when it actually set the name. Shared
-    by both the concurrent (:func:`_emit_title`) and resume (:func:`_maybe_title`)
-    paths."""
-    if not name or store is None or conversation_id is None:
-        return
-    if await store.set_title_if_absent(conversation_id, name):
-        run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
-
-
-@dataclass(frozen=True)
-class _Namer:
-    """The concurrent auto-namer: its task, plus the point past which cancelling would
-    do damage. ``announcing`` is set the instant generation yields a name, immediately
-    before the persist+emit — so an abandoning caller can tell "still waiting on the
-    title model" (cancel freely) from "committing the name" (let it finish)."""
-
-    task: asyncio.Task[None]
-    announcing: asyncio.Event
-
-
-def _start_title(
-    title: TitleContext | None,
-    prompt: str | None,
-    *,
-    run: Run,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-) -> _Namer | None:
-    """Begin naming the thread concurrently with the turn's answer, announcing the
-    name the moment it lands.
-
-    Titling needs only the operator's opening message, which a first turn already has
-    in ``prompt`` — so there's no need to wait for the answer (or persistence) first.
-    The task persists and emits ``conversation.titled`` **itself**, rather than handing
-    a name back for the orchestrator to announce after the turn: the utility call
-    typically resolves in a second or two, and deferring the announcement to the end of
-    a long tool-using turn would leave the operator staring at an unnamed thread for the
-    whole run even though the name was ready almost immediately. :func:`_settle_title`
-    only waits for this task to finish before ``run.ended``, so the open stream still
-    carries the event.
-
-    Returns ``None`` when titling is off or there is nothing to name from. The call stays
-    bounded by ``title_timeout_s``, and is best-effort throughout: any failure leaves the
-    thread untitled without disturbing the turn."""
-    if title is None or not prompt:
-        return None
-    announcing = asyncio.Event()
-
-    async def _name() -> None:
-        try:
-            name = await generate_title(
-                title.model,
-                prompt,
-                reasoning_off=title.settings,
-                timeout_s=get_settings().title_timeout_s,
-                max_tokens=get_settings().title_max_tokens,
-            )
-            # Set synchronously with the announce that follows — no await between, so an
-            # abandoning caller either sees this before the persist begins (safe to
-            # cancel) or waits the announce out. Torn in half instead — cancelled between
-            # `set_title_if_absent` committing and the emit — the thread would be named in
-            # the database but never announced on the stream, and the resume's own namer
-            # would then find the name already there, return False, and emit nothing
-            # either: a thread that stays "Untitled" until a reload.
-            announcing.set()
-            await _announce_title(
-                run, name, store=store, conversation_id=conversation_id
-            )
-        except asyncio.CancelledError:
-            raise  # a park/cancel abandoning the name (see `_discard_title`)
-        except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
-            logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
-
-    return _Namer(task=asyncio.create_task(_name()), announcing=announcing)
-
-
-async def _settle_title(namer: _Namer | None) -> None:
-    """Wait for the concurrent namer to finish before the orchestrator returns, so a
-    name that lands in the last moments of the turn still rides the open stream (the
-    task announces it itself — see :func:`_start_title`). Usually already done by the
-    time the answer is; swallows the task's own failure, which it has already logged."""
-    if namer is None:
-        return
-    with suppress(Exception):
-        await namer.task
-
-
-async def _discard_title(namer: _Namer | None) -> None:
-    """Abandon a concurrently-started title (the turn parked, raised, or was cancelled):
-    cancel it and drain the cancellation so the title-model *call* does not outlive the
-    run. Past ``announcing`` there is no model call left to abandon — only a local write
-    and an emit — so that one is waited out instead: cancelling there is precisely what
-    would strand a persisted name with no event to announce it."""
-    if namer is None or namer.task.done():
-        return
-    if namer.announcing.is_set():
-        await _settle_title(namer)
-        return
-    namer.task.cancel()
-    with suppress(asyncio.CancelledError):
-        await namer.task
 
 
 def build_chat_orchestrator(
@@ -1260,8 +993,8 @@ def build_chat_orchestrator(
         # the *model's* input here. The persisted transcript is untouched; only this turn's
         # model history is sanitized, and `start` tracks the trimmed length.
         if history:
-            history = _drop_dangling_tool_calls(history)
-            history = _merge_consecutive_requests(history)
+            history = drop_dangling_tool_calls(history)
+            history = merge_consecutive_requests(history)
         start = len(history) if history else 0
         is_first_turn = start == 0
         # What the model replays — `history` plus, on a regenerate, the per-turn prompt
@@ -1279,7 +1012,7 @@ def build_chat_orchestrator(
             if title_model is not None and settings.title_enabled
             else None
         )
-        title_namer = _start_title(
+        title_namer = start_title(
             title_ctx if is_first_turn else None,
             prompt,
             run=run,
@@ -1335,7 +1068,7 @@ def build_chat_orchestrator(
                 # user request in the *model's* view only (`history` itself stays
                 # pristine for the verifier's `last_user_text`, and everything before
                 # `start` is never re-persisted).
-                model_history = _with_tail_context(history, context_texts)
+                model_history = with_tail_context(history, context_texts)
 
         try:
             turn = await _drive_turn(
@@ -1425,7 +1158,7 @@ def build_chat_orchestrator(
                 # its name rather than sitting "Untitled" for however long the operator
                 # takes to decide — and the resume's `set_title_if_absent` then finds the
                 # name in place, returns False, and emits nothing a second time.
-                await _discard_title(title_namer)
+                await discard_title(title_namer)
                 if isinstance(run.parked_payload, ParkedTurn):
                     run.parked_payload.title = title_ctx
             else:
@@ -1433,7 +1166,7 @@ def build_chat_orchestrator(
                 # (typically well before the answer does); this only waits for a still-
                 # running one so the event is emitted before the orchestrator returns
                 # (run.ended) and the open stream carries it.
-                await _settle_title(title_namer)
+                await settle_title(title_namer)
         except Exception:
             # Anything else that escapes `_drive_turn` (a provider error its specific
             # catches don't cover, a tool/dependency raising, …) must still not silently
@@ -1539,7 +1272,7 @@ def build_resume_orchestrator(
             else:
                 # A first turn that parked then resumed to completion is still the
                 # opening exchange — name it (persist_from == 0 means no prior turns).
-                await _maybe_title(
+                await maybe_title(
                     run,
                     title=parked.title,
                     store=store,
