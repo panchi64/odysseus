@@ -1,7 +1,13 @@
 """The application exception hierarchy.
 
 Lower layers raise these domain errors — never transport-layer ``HTTPException``.
-``app.py`` maps them to HTTP responses (wired as the error-handling layer lands).
+:mod:`core.http_errors` maps them to HTTP responses, installed as app-wide handlers, so a
+domain error that reaches the transport boundary is answered correctly whether or not the
+route that produced it thought to catch it.
+
+A route still catches one of these deliberately — to say something more specific than the
+domain message, or to answer with a status this table can't know is right for that
+endpoint. What it must not do is restate the *same* answer the table already gives.
 """
 
 from __future__ import annotations
@@ -13,6 +19,18 @@ class OdysseusError(Exception):
 
 class NotFoundError(OdysseusError):
     """A requested resource does not exist."""
+
+
+class InvalidInputError(OdysseusError):
+    """The caller supplied something well-formed but unacceptable — a blank name, a path
+    that isn't a model of the expected shape, a launch flag the chosen engine can't use.
+
+    Distinct from :class:`DegradedCapabilityError` (a capability is *missing*) and from a
+    genuine upstream failure: this is the operator's to correct, and the surface that
+    collected it can show the message inline. Its own type because without one, services
+    reached for whichever neighbouring error was closest — a blank connector name was
+    being reported as a degraded capability, and a mistyped model path as an engine
+    fault — and each route then had to translate it back by hand."""
 
 
 class PermissionDeniedError(OdysseusError):

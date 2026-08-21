@@ -22,6 +22,7 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.devserver import UNGUARDED_RELOAD_WARNING, reload_watches_runtime_state
+from core.http_errors import install_error_handlers
 from core.vault import Vault
 from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
@@ -374,6 +375,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.network_tools = frozenset(network_tools)
     app.state.instruction_providers = tuple(instruction_providers)
     app.state.prompt_context_providers = tuple(prompt_context_providers)
+
+    # Domain errors answered at the transport boundary, per `core.http_errors`. This is
+    # what `core.exceptions` has always said happens here: a route that doesn't catch a
+    # `NotFoundError` now returns a 404 rather than a 500.
+    install_error_handlers(app)
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.

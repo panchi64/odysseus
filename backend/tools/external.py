@@ -34,7 +34,12 @@ from pydantic_ai import AbstractToolset, CombinedToolset, FunctionToolset, RunCo
 from pydantic_ai.exceptions import ApprovalRequired, ModelRetry
 from pydantic_ai.toolsets import ToolsetTool
 
-from core.exceptions import DegradedCapabilityError, NotFoundError, SSRFError
+from core.exceptions import (
+    DegradedCapabilityError,
+    InvalidInputError,
+    NotFoundError,
+    SSRFError,
+)
 from core.untrusted import wrap_untrusted
 from services.external_tools import ExternalTools, SourceKind
 from services.integrations import IntegrationService, IntegrationView
@@ -257,7 +262,7 @@ def _connector_call(
                 params=params,
                 body=body if takes_body else None,
             )
-        except (NotFoundError, DegradedCapabilityError, SSRFError) as exc:
+        except (NotFoundError, InvalidInputError, DegradedCapabilityError, SSRFError) as exc:
             # The model can fix these by calling differently (a missing parameter, a
             # body where none is taken), so hand them back rather than failing the turn.
             raise ModelRetry(str(exc)) from exc

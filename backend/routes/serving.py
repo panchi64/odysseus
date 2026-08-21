@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
+from core.exceptions import NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from services import host_picker
@@ -91,10 +91,9 @@ async def get_serving_settings(request: Request) -> ModelsDirBody:
 
 @router.put("/settings", response_model=ModelsDirBody)
 async def update_serving_settings(request: Request, body: ModelsDirBody) -> ModelsDirBody:
-    try:
-        stored = await deps.serving(request).set_models_dir(OPERATOR_ID, body.models_dir)
-    except ServingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    # A directory that isn't absolute or isn't writable comes back as an `InvalidInputError`
+    # the shared handler answers 422, with the reason the form shows inline.
+    stored = await deps.serving(request).set_models_dir(OPERATOR_ID, body.models_dir)
     return ModelsDirBody(models_dir=stored)
 
 
@@ -105,33 +104,25 @@ async def list_models(request: Request) -> list[ManagedModelView]:
 
 @router.post("/download", response_model=ManagedModelView, status_code=202)
 async def download_model(request: Request, body: DownloadRequest) -> ManagedModelView:
-    try:
-        return await deps.serving(request).download(
-            OPERATOR_ID, body.engine, body.repo, workload=body.workload, quant=body.quant
-        )
-    except ServingUnavailableError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-    except ServingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return await deps.serving(request).download(
+        OPERATOR_ID, body.engine, body.repo, workload=body.workload, quant=body.quant
+    )
 
 
 @router.post("/import", response_model=ManagedModelView, status_code=201)
 async def import_model(request: Request, body: ImportRequest) -> ManagedModelView:
-    """Register a model already on disk, so it can be served without downloading."""
-    try:
-        return await deps.serving(request).import_local(
-            OPERATOR_ID,
-            body.engine,
-            body.path,
-            workload=body.workload,
-            name=body.name,
-        )
-    except ServingUnavailableError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-    except ServingError as exc:
-        # A path that doesn't exist or isn't this engine's format is the operator's to
-        # correct, so it comes back as a 400 the form can show inline.
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    """Register a model already on disk, so it can be served without downloading.
+
+    A path that doesn't exist or isn't this engine's format is the operator's to correct,
+    so the adapter raises `InvalidInputError` and the shared handler answers 422 with the
+    reason the form shows inline."""
+    return await deps.serving(request).import_local(
+        OPERATOR_ID,
+        body.engine,
+        body.path,
+        workload=body.workload,
+        name=body.name,
+    )
 
 
 @router.get("/file-picker", response_model=PickerAvailability)
@@ -158,39 +149,29 @@ async def open_file_picker(body: PickRequest) -> PickResult:
 
 @router.post("/serve", response_model=ManagedModelView)
 async def serve_model(request: Request, body: ServeRequest) -> ManagedModelView:
-    # A bad flag (or one aimed at an engine that can't use it) is the operator's mistake,
-    # not an engine fault — reject it as a 400 the form can show, rather than letting it
-    # become a failed spawn minutes later or tuning that is stored but never applied.
-    try:
-        deps.serving(request).validate_options(body.engine, body.options)
-    except ServingUnavailableError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-    except ServingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    try:
-        return await deps.serving(request).serve(
-            OPERATOR_ID,
-            body.engine,
-            body.repo,
-            role=body.role,
-            workload=body.workload,
-            quant=body.quant,
-            options=body.options,
-        )
-    except ServingUnavailableError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
-    except ServingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+    # Checked before anything is spawned: a bad flag (or one aimed at an engine that can't
+    # use it) is the operator's mistake, not an engine fault, and rejecting it here beats
+    # letting it become a failed spawn minutes later or tuning stored but never applied.
+    deps.serving(request).validate_options(body.engine, body.options)
+    return await deps.serving(request).serve(
+        OPERATOR_ID,
+        body.engine,
+        body.repo,
+        role=body.role,
+        workload=body.workload,
+        quant=body.quant,
+        options=body.options,
+    )
 
 
 @router.post("/{managed_id}/stop", response_model=ManagedModelView)
 async def stop_model(request: Request, managed_id: str) -> ManagedModelView:
+    # The store's message names an id the operator never typed, so this one is worth
+    # restating; a serving failure keeps the shared handler's 502 and its own words.
     try:
         return await deps.serving(request).stop(OPERATOR_ID, managed_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="managed model not found") from None
-    except ServingError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
 
 
 @router.delete("/{managed_id}", status_code=204)

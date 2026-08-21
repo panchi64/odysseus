@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from core.exceptions import DegradedCapabilityError, NotFoundError, SSRFError
+from core.exceptions import DegradedCapabilityError, SSRFError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
@@ -160,8 +160,6 @@ async def configure_integration(request: Request, body: IntegrationCreate) -> In
             base_url=body.base_url,
             credentials=body.credentials,
         )
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _out(view)
@@ -171,26 +169,20 @@ async def configure_integration(request: Request, body: IntegrationCreate) -> In
 async def update_integration(
     request: Request, integration_id: str, body: IntegrationUpdate
 ) -> IntegrationOut:
-    try:
-        view = await deps.integrations(request).update(
-            OPERATOR_ID,
-            integration_id,
-            name=body.name,
-            base_url=body.base_url,
-            credentials=body.credentials,
-            enabled=body.enabled,
-        )
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    view = await deps.integrations(request).update(
+        OPERATOR_ID,
+        integration_id,
+        name=body.name,
+        base_url=body.base_url,
+        credentials=body.credentials,
+        enabled=body.enabled,
+    )
     return _out(view)
 
 
 @router.delete("/{integration_id}", status_code=204)
 async def remove_integration(request: Request, integration_id: str) -> Response:
-    try:
-        await deps.integrations(request).remove(OPERATOR_ID, integration_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await deps.integrations(request).remove(OPERATOR_ID, integration_id)
     return Response(status_code=204)
 
 
@@ -200,8 +192,6 @@ async def test_integration(request: Request, integration_id: str) -> Integration
     outcome either way — a rejected credential comes back as ``status: "error"``."""
     try:
         view = await deps.integrations(request).test(OPERATOR_ID, integration_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SSRFError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _out(view)
@@ -216,11 +206,8 @@ async def set_action_policy(
 ) -> IntegrationActionOut:
     """Enable/disable one action, or mark it trusted / revoke that trust (`AE-3.6`)."""
     service = deps.integrations(request)
-    try:
-        await service.set_action_policy(
-            OPERATOR_ID, integration_id, action_name, enabled=body.enabled, trusted=body.trusted
-        )
-        view = await service.get(OPERATOR_ID, integration_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await service.set_action_policy(
+        OPERATOR_ID, integration_id, action_name, enabled=body.enabled, trusted=body.trusted
+    )
+    view = await service.get(OPERATOR_ID, integration_id)
     return _action_out(next(a for a in view.actions if a.name == action_name))

@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError
 
 
 class EngineKind(StrEnum):
@@ -108,8 +108,9 @@ def flag_names(args: list[str]) -> set[str]:
 
 def validate_extra_args(args: list[str], *, owned: frozenset[str]) -> None:
     """Reject engine arguments the platform itself owns, naming the flag so the operator
-    can fix it. Raises ``ServingError``; a clean rejection at request time beats a spawn
-    that quietly disagrees with the rest of serving.
+    can fix it. Raises ``InvalidInputError`` — this is the operator's to correct, not an
+    engine fault — and a clean rejection at request time beats a spawn that quietly
+    disagrees with the rest of serving.
 
     Only ``owned`` flags are refused — they define the served model's identity and its
     loopback binding (``--host 0.0.0.0`` would put the model server on the network,
@@ -118,7 +119,9 @@ def validate_extra_args(args: list[str], *, owned: frozenset[str]) -> None:
     """
     for flag in flag_names(args):
         if flag in owned:
-            raise ServingError(f"{flag} is managed by the platform and can't be overridden")
+            raise InvalidInputError(
+                f"{flag} is managed by the platform and can't be overridden"
+            )
 
 
 def emit_flag(flag: str, values: list[str], *, aliases: frozenset[str], overrides: set[str]):

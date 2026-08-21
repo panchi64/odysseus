@@ -15,7 +15,7 @@ import pytest
 from sqlmodel import Session, select
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.external_tool import McpServer
 from services.external_tools import ExternalPolicyStore, tool_slug
@@ -66,13 +66,13 @@ async def test_register_records_the_server_and_its_failed_connect():
 async def test_register_rejects_a_shape_that_cannot_be_dialled():
     _engine, _vault, registry = await _registry()
 
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         await registry.register(OWNER, name="No command", transport="stdio")
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         await registry.register(OWNER, name="No url", transport="http")
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         await registry.register(OWNER, name="Bad", transport="carrier-pigeon", url="x")
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         await registry.register(OWNER, name="  ", transport="http", url="http://x/mcp")
 
 

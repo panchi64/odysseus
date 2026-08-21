@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError
 
 from ..download import DownloadSpec
 from ..models import EngineKind, LaunchOptions, Workload, validate_extra_args
@@ -46,7 +46,9 @@ class EngineAdapter(ABC):
 
     def validate_options(self, options: LaunchOptions | None) -> None:
         """Reject launch overrides this engine can't honour, by field name, then check
-        the verbatim arguments against :attr:`owned_flags`. Raises ``ServingError``.
+        the verbatim arguments against :attr:`owned_flags`. Raises ``InvalidInputError`` —
+        a flag aimed at an engine that can't use it is the operator's to correct, not an
+        engine fault, and the tuning form shows the message inline.
 
         Refusing beats storing: a stored-but-undeliverable option leaves the row carrying
         tuning that never reaches a process while the form renders it as applied. An
@@ -57,7 +59,7 @@ class EngineAdapter(ABC):
             set(options.model_dump(exclude_defaults=True)) - {"extra_args"} - self.supported_options
         )
         if unsupported:
-            raise ServingError(
+            raise InvalidInputError(
                 f"the {self.kind.value} engine has no equivalent for "
                 f"{', '.join(unsupported)} — clear it, or pass the engine's own flag "
                 "in the extra arguments"
@@ -66,11 +68,11 @@ class EngineAdapter(ABC):
 
     def validate_artifact(self, path: Path) -> None:
         """Confirm ``path`` is a model this engine can actually load — the gate on
-        importing weights the operator already has on disk. Raises ``ServingError`` with
-        what was expected. The default accepts anything that exists; an adapter that
+        importing weights the operator already has on disk. Raises ``InvalidInputError``
+        with what was expected. The default accepts anything that exists; an adapter that
         knows its own format overrides."""
         if not path.exists():
-            raise ServingError(f"there is nothing at {path}")
+            raise InvalidInputError(f"there is nothing at {path}")
 
     @abstractmethod
     async def is_available(self) -> bool:

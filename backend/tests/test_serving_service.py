@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, NotFoundError, ServingError
+from core.exceptions import (
+    DegradedCapabilityError,
+    InvalidInputError,
+    NotFoundError,
+    ServingError,
+)
 from core.vault import Vault
 from services.cookbook import CookbookService
 from services.credential_store import CredentialStore
@@ -408,7 +413,7 @@ async def test_models_dir_setting_routes_downloads(tmp_path: Path):
         # The artifact landed under the configured directory, not the default data dir.
         assert (custom / "llama.cpp" / "acme__Model-GGUF").exists()
 
-        with pytest.raises(ServingError):
+        with pytest.raises(InvalidInputError):
             await service.set_models_dir(OWNER, "relative/not/absolute")
     finally:
         await service.shutdown()
@@ -788,7 +793,7 @@ async def test_an_imported_model_whose_files_moved_says_so(tmp_path: Path):
 async def test_import_refuses_a_path_of_the_wrong_shape(tmp_path: Path):
     service, _ = await _service(tmp_path)
     try:
-        with pytest.raises(ServingError):
+        with pytest.raises(InvalidInputError):
             await service.import_local(OWNER, EngineKind.llama_cpp, str(tmp_path / "gone.gguf"))
     finally:
         await service.shutdown()

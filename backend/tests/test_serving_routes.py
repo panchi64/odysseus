@@ -118,7 +118,7 @@ async def test_stop_unknown_model_returns_404():
 
 
 async def test_serve_rejects_an_extra_arg_the_platform_owns():
-    # The operator's typo is a 400 the form can render, not a spawn that fails minutes
+    # The operator's typo is a 422 the form can render, not a spawn that fails minutes
     # later — and --host in particular would move the server off loopback. Validation
     # runs before anything is downloaded or spawned, so no engine work happens here.
     async with client_app() as (client, _app):
@@ -130,7 +130,7 @@ async def test_serve_rejects_an_extra_arg_the_platform_owns():
                 "options": {"extra_args": ["--host", "0.0.0.0"]},
             },
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "--host" in resp.json()["detail"]
 
 
@@ -151,8 +151,8 @@ async def test_serve_rejects_a_field_the_engine_cannot_translate(monkeypatch):
                 "options": {"cache_reuse": 256},
             },
         )
-        # 400, not the 409 an unavailable engine earns — validation runs first.
-        assert resp.status_code == 400
+        # 422, not the 409 an unavailable engine earns — validation runs first.
+        assert resp.status_code == 422
         assert "cache_reuse" in resp.json()["detail"]
 
 
@@ -239,7 +239,7 @@ async def test_import_refuses_a_path_that_is_not_there(tmp_path):
             "/models/serving/import",
             json={"engine": "llama.cpp", "path": str(tmp_path / "nowhere.gguf")},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "nothing at" in resp.json()["detail"]
 
 
@@ -251,7 +251,7 @@ async def test_import_refuses_the_wrong_shape_for_the_engine(tmp_path):
             "/models/serving/import",
             json={"engine": "llama.cpp", "path": str(tmp_path / "snapshot")},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert ".gguf" in resp.json()["detail"]
 
 
@@ -261,7 +261,7 @@ async def test_import_refuses_a_relative_path(tmp_path):
             "/models/serving/import",
             json={"engine": "llama.cpp", "path": "models/thing.gguf"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
         assert "full path" in resp.json()["detail"]
 
 

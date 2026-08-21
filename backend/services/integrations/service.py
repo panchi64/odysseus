@@ -10,8 +10,9 @@ Every outbound request is SSRF-guarded (`core/ssrf`) on the fully-resolved URL, 
 resolved URL must still sit under the operator's configured base URL — the model supplies
 path parameters, so nothing it passes may be allowed to walk the request somewhere else.
 
-Raises domain errors only (`NotFoundError`, `DegradedCapabilityError`, `SSRFError`); the
-route maps them to HTTP and the tool decides retry vs degrade.
+Raises domain errors only (`NotFoundError`, `InvalidInputError`,
+`DegradedCapabilityError`, `SSRFError`); `core.http_errors` maps them to HTTP and the
+tool decides retry vs degrade.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import DegradedCapabilityError, InvalidInputError, NotFoundError
 from core.ssrf import assert_public_url
 from core.vault import Vault, VaultLocked
 from models._fields import utcnow
@@ -158,7 +159,7 @@ class IntegrationService:
             raise NotFoundError(f"unknown connector preset {preset_id!r}")
         label = (name or found.name).strip()
         if not label:
-            raise DegradedCapabilityError("a connector name is required")
+            raise InvalidInputError("a connector name is required")
         row = Integration(
             owner_id=owner_id,
             preset=preset_id,
@@ -284,7 +285,7 @@ class IntegrationService:
                 f"action {action_name!r} on {row.name!r} is disabled"
             )
         if body and not chosen.takes_body:
-            raise DegradedCapabilityError(f"action {action_name!r} does not take a body")
+            raise InvalidInputError(f"action {action_name!r} does not take a body")
         path, query = _fill_path(chosen, params or {})
         return await self._request(row, found, path, chosen.method, query, body)
 
@@ -370,7 +371,7 @@ class IntegrationService:
             candidate = f"{base}_{suffix}"
             if candidate not in taken:
                 return candidate
-        raise DegradedCapabilityError(f"too many connectors named like {label!r}")
+        raise InvalidInputError(f"too many connectors named like {label!r}")
 
     async def _rows(self, owner_id: str) -> list[Integration]:
         def work(session: Session) -> list[Integration]:
@@ -494,7 +495,7 @@ def _fill_path(chosen: IntegrationAction, params: dict[str, str]) -> tuple[str, 
             remaining.pop(key, None)
     if "{" in path:
         missing = path[path.index("{") + 1 : path.index("}")] if "}" in path else path
-        raise DegradedCapabilityError(f"action {chosen.name!r} needs a {missing!r} parameter")
+        raise InvalidInputError(f"action {chosen.name!r} needs a {missing!r} parameter")
     return path, {k: str(v) for k, v in remaining.items()}
 
 
@@ -508,12 +509,12 @@ def _assert_within(base_url: str, url: str) -> None:
     is the check that keeps one from walking the request off the configured service."""
     base, target = urlsplit(base_url.rstrip("/")), urlsplit(url)
     if (base.scheme, base.netloc) != (target.scheme, target.netloc):
-        raise DegradedCapabilityError(f"refused to call {url!r}: outside {base_url!r}")
+        raise InvalidInputError(f"refused to call {url!r}: outside {base_url!r}")
     prefix = base.path or ""
     if prefix and not target.path.startswith(prefix):
-        raise DegradedCapabilityError(f"refused to call {url!r}: outside {base_url!r}")
+        raise InvalidInputError(f"refused to call {url!r}: outside {base_url!r}")
     if ".." in target.path.split("/"):
-        raise DegradedCapabilityError(f"refused to call {url!r}: path traversal")
+        raise InvalidInputError(f"refused to call {url!r}: path traversal")
 
 
 def _first_line(body: str) -> str:

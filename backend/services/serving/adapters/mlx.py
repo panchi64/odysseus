@@ -35,7 +35,7 @@ from pathlib import Path
 
 import httpx
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError, ServingError
 
 from .. import hf
 from ..download import DownloadSpec, worker_spec
@@ -304,16 +304,18 @@ class MlxAdapter(EngineAdapter):
         # MLX serves a snapshot directory. The shape checked here is the one mlx-vlm's own
         # model listing uses to decide a checkpoint is loadable.
         if not path.exists():
-            raise ServingError(f"there is nothing at {path}")
+            raise InvalidInputError(f"there is nothing at {path}")
         if not path.is_dir():
-            raise ServingError(
+            raise InvalidInputError(
                 f"{path.name} is a file — MLX serves a model folder (the snapshot "
                 "directory holding config.json and the safetensors weights)"
             )
         if not (path / "config.json").is_file():
-            raise ServingError(f"{path} has no config.json — it isn't an MLX model folder")
+            raise InvalidInputError(
+                f"{path} has no config.json — it isn't an MLX model folder"
+            )
         if not any(path.glob("*.safetensors")):
-            raise ServingError(f"{path} has no .safetensors weights — nothing to serve")
+            raise InvalidInputError(f"{path} has no .safetensors weights — nothing to serve")
 
     def resolved_model_id(self, repo: str, artifact: Path) -> str:
         # mlx-vlm has no --served-model-name: it identifies a model by the path (or repo

@@ -18,7 +18,12 @@ from typing import Protocol
 
 from sqlalchemy import Engine
 
-from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
+from core.exceptions import (
+    InvalidInputError,
+    NotFoundError,
+    ServingError,
+    ServingUnavailableError,
+)
 from core.vault import Vault
 from models._fields import utcnow
 from models.serving import ManagedModel
@@ -96,7 +101,7 @@ def _ensure_writable_dir(path: Path) -> None:
         probe.touch()
         probe.unlink()
     except OSError as exc:
-        raise ServingError(f"that models directory isn't usable: {exc}") from exc
+        raise InvalidInputError(f"that models directory isn't usable: {exc}") from exc
 
 
 class Reindexer(Protocol):
@@ -197,7 +202,7 @@ class ServingService:
         Returns the stored absolute path. Raises ``ServingError`` if it can't be used."""
         target = Path(path).expanduser()
         if not target.is_absolute():
-            raise ServingError("the models directory must be an absolute path")
+            raise InvalidInputError("the models directory must be an absolute path")
         if self._settings is None:
             raise ServingError("settings storage is not available")
         await asyncio.to_thread(_ensure_writable_dir, target)
@@ -336,7 +341,7 @@ class ServingService:
             )
         artifact = Path(path.strip()).expanduser()
         if not str(artifact) or not artifact.is_absolute():
-            raise ServingError("point at a full path, starting from the root of the disk")
+            raise InvalidInputError("point at a full path, starting from the root of the disk")
         await asyncio.to_thread(adapter.validate_artifact, artifact)
         # A folder keeps its whole name: `Path.stem` truncates at the last dot, which
         # mangles exactly the names MLX snapshots carry (`Qwen2.5-7B-…` → `Qwen2`) — and

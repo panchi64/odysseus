@@ -10,7 +10,7 @@ import pytest
 from sqlmodel import Session, select
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.external_tool import Integration
 from services.external_tools import ExternalPolicyStore
@@ -155,7 +155,7 @@ def test_path_parameters_fill_the_action_and_the_rest_become_query():
     escaped, _ = _fill_path(get_repo, {"owner": "a/../b", "repo": "r"})
     assert escaped == "/repos/a%2F..%2Fb/r"
 
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         _fill_path(get_repo, {"owner": "acme"})
 
 
@@ -163,11 +163,11 @@ def test_a_resolved_url_must_stay_inside_the_configured_connector():
     _assert_within("https://api.github.com", "https://api.github.com/repos/a/b")
     _assert_within("https://gitlab.com/api/v4", "https://gitlab.com/api/v4/projects/1")
 
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         _assert_within("https://api.github.com", "https://evil.example/repos")
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         _assert_within("https://gitlab.com/api/v4", "https://gitlab.com/admin")
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         _assert_within("https://api.github.com", "https://api.github.com/a/../../b")
 
 

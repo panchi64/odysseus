@@ -15,8 +15,8 @@ Two properties worth keeping in mind when changing this:
   row and returns; nothing about one unreachable server may break the surface, and the
   agent path skips servers that aren't currently connected.
 
-Raises domain errors only (`NotFoundError`, `DegradedCapabilityError`); the route maps
-them to HTTP.
+Raises domain errors only (`NotFoundError`, `InvalidInputError`,
+`DegradedCapabilityError`); `core.http_errors` maps them to HTTP.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import DegradedCapabilityError, InvalidInputError, NotFoundError
 from core.vault import Vault, VaultLocked
 from models._fields import utcnow
 from models.external_tool import McpServer
@@ -137,7 +137,7 @@ class McpRegistry:
         discovered tools (or the reason there are none) from the one action (`MCP-1`)."""
         name = name.strip()
         if not name:
-            raise DegradedCapabilityError("a server name is required")
+            raise InvalidInputError("a server name is required")
         self._validate_shape(transport, command, url)
         slug = await self._unique_slug(owner_id, name)
         row = McpServer(
@@ -306,13 +306,13 @@ class McpRegistry:
     @staticmethod
     def _validate_shape(transport: str, command: str | None, url: str | None) -> None:
         if transport not in TRANSPORTS:
-            raise DegradedCapabilityError(
+            raise InvalidInputError(
                 f"unknown transport {transport!r} (expected one of {', '.join(TRANSPORTS)})"
             )
         if transport == "stdio" and not command:
-            raise DegradedCapabilityError("a stdio server needs a command to run")
+            raise InvalidInputError("a stdio server needs a command to run")
         if transport != "stdio" and not url:
-            raise DegradedCapabilityError(f"an {transport} server needs a URL")
+            raise InvalidInputError(f"an {transport} server needs a URL")
 
     async def _unique_slug(self, owner_id: str, name: str) -> str:
         """A slug no other of this owner's servers holds — two servers both called
@@ -325,7 +325,7 @@ class McpRegistry:
             candidate = f"{base}_{suffix}"
             if candidate not in taken:
                 return candidate
-        raise DegradedCapabilityError(f"too many servers named like {name!r}")
+        raise InvalidInputError(f"too many servers named like {name!r}")
 
     async def _rows(self, owner_id: str) -> list[McpServer]:
         def work(session: Session) -> list[McpServer]:

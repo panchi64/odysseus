@@ -28,7 +28,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, UploadFile
 
-from core.exceptions import DegradedCapabilityError, NotFoundError, SSRFError
+from core.exceptions import DegradedCapabilityError, SSRFError
 from models.calendar import DEFAULT_TIMEZONE
 from routes import deps
 from routes.camel import CamelModel
@@ -271,8 +271,6 @@ async def sync_calendar(calendar_id: str, request: Request) -> SyncOut:
     service = deps.calendar(request)
     try:
         result = await CalDavSync(service).sync(OPERATOR_ID, calendar_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SSRFError as exc:
         raise HTTPException(status_code=502, detail=f"refused to reach that server: {exc}") from exc
     except ValueError as exc:
@@ -489,8 +487,6 @@ def _mapped() -> Iterator[None]:
     422, on every route here."""
     try:
         yield
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
