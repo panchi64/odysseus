@@ -762,17 +762,24 @@ class ServingService:
     ):
         """Register (or refresh) the registry endpoint for a served model. Re-serving
         reuses the same endpoint so its role bindings survive a stop/start cycle."""
-        # Ask the running server what context it settled on, falling back to the engine's
-        # generic hint. Refreshed on every serve, not just creation: a re-serve with a new
-        # context size would otherwise leave the endpoint advertising the old window.
+        # Ask the running server what context it settled on. Refreshed on every serve, not
+        # just creation: a re-serve with a new context size would otherwise leave the
+        # endpoint advertising the old window.
         #
         # This deliberately overwrites a hand-edited window on a *managed* endpoint. For
         # a remote endpoint the operator's number is the only source of truth, but here
         # the server itself can be asked, and a hand-set value that disagrees with the
         # running process is simply wrong — it would drive context reduction against a
-        # window the model doesn't have. A failed probe yields None, which
-        # `update_endpoint` skips, so an unreachable server leaves the old value intact.
-        context_window = await adapter.probe_context_window(port) or adapter.context_window_hint
+        # window the model doesn't have.
+        #
+        # The engine's generic hint *seeds* a window nobody knows yet; it never corrects
+        # one that was measured. A ``None`` probe means "couldn't ask" — MLX answers None
+        # whenever /health is unreachable or doesn't carry the keys — not "the window
+        # shrank", so falling back to the hint there would let one transient probe failure
+        # cap a real 128K endpoint at MLX's conservative 32768 and persist that. A failed
+        # probe therefore contributes nothing on the update path: `update_endpoint` skips
+        # a None and the stored window survives untouched.
+        probed = await adapter.probe_context_window(port)
         # Both capabilities come from what was actually loaded, for the same reason the
         # window does: tool-calling is a property of the model's chat template and vision
         # of its config, neither of which the operator's workload choice can know. Both
@@ -784,6 +791,13 @@ class ServingService:
         )
         if row.endpoint_id:
             try:
+                # The hint still gets to seed an endpoint that carries no window at all
+                # (registered while the probe was down), which is the one case where a
+                # generic number beats nothing.
+                current = await self._registry.get_endpoint(owner_id, row.endpoint_id)
+                window = probed or (
+                    adapter.context_window_hint if current.context_window is None else None
+                )
                 await self._registry.update_endpoint(
                     owner_id,
                     row.endpoint_id,
@@ -792,7 +806,7 @@ class ServingService:
                     live_status="running",
                     native_tools=native_tools,
                     vision=vision,
-                    context_window=context_window,
+                    context_window=window,
                 )
                 # A role pinned to this endpoint names a model *string*, sent verbatim on
                 # every request. The id an engine answers to can change under it — MLX
@@ -814,7 +828,9 @@ class ServingService:
             model=model_id,
             native_tools=native_tools,
             vision=vision,
-            context_window=context_window,
+            # Nothing is known yet on a brand-new endpoint, so here the hint is the
+            # honest floor rather than a guess overwriting a measurement.
+            context_window=probed or adapter.context_window_hint,
         )
 
     # --- managed-model status --------------------------------------------
