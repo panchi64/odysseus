@@ -8,8 +8,9 @@ the global ASGI auth gate entirely, so the socket authenticates itself — see
 `tools/`/`agent/`/`research/` references this module (`tests/test_shell_guard.py`
 asserts it).
 
-Wire casing here is snake_case — a new surface, not one of the camelCase
-exceptions (`documents`/`uploads`/`gallery`/`corpus`).
+Wire casing here is snake_case, like the rest of the chassis surfaces (`runs`, `chat`,
+`auth`, the event protocol). The feature surfaces the frontend renders as domain data
+use `CamelModel` instead; this is not one of them.
 """
 
 from __future__ import annotations
