@@ -135,6 +135,11 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         # it), so there is no window for it to reach terminal and fire the terminal
         # dispatch before this waiter exists.
         run_waiters[created.run_id] = waiter
+        # Deliberately waits for a *terminal* outcome, not merely for the turn's task to
+        # end: a fire that parks for approval is unfinished, and its `TaskRun` row stays
+        # open until the operator decides. What keeps that from stranding the process at
+        # shutdown is `RunRegistry.shutdown` — registered to stop before this one, it
+        # cancels every live run, which fires the terminal hook that resolves this waiter.
         run = await waiter
 
         outcome = _TASK_OUTCOME_BY_RUN_STATUS.get(run.status, TaskOutcome.ERROR.value)

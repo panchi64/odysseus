@@ -9,7 +9,7 @@ import asyncio
 from sqlmodel import select
 
 from core.db import in_session
-from models.task import TaskRun
+from models.task import ScheduledTask, TaskRun
 from services.scheduler import TaskRunResult
 
 from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
@@ -395,6 +395,37 @@ async def test_webhook_does_not_fire_once_the_task_is_disabled(monkeypatch):
         assert (await client.post(f"/tasks/hooks/{token}")).status_code == 202
         await asyncio.sleep(0.05)
         assert (await client.get(f"/tasks/{task_id}/runs")).json()["items"] == []
+
+
+async def test_a_webhook_token_cannot_fire_another_owners_task(monkeypatch):
+    """The hook route is auth-exempt, so the candidate scan is the *only* place ownership
+    can be enforced — `scheduler.fire_now` does none of its own, its docstring assuming
+    the route already did. An unscoped scan would let a token minted under one owner match
+    another owner's row the moment the `owner_id` seam carries more than one operator, so
+    the predicate is asserted now rather than discovered then."""
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        created = await _create_task(client, schedule={"type": "webhook"})
+        task_id = created["id"]
+        token = created["webhookUrl"].rsplit("/", 1)[-1]
+
+        # Hand the row to somebody else, leaving the token itself untouched: the caller
+        # still holds a genuine, unrotated credential — it just isn't for this owner.
+        def reassign(session):
+            row = session.get(ScheduledTask, task_id)
+            row.owner_id = "somebody-else"
+            session.add(row)
+
+        await in_session(app.state.db_engine, reassign)
+
+        # 404, exactly as an unknown token does — no way to tell the two apart.
+        assert (await client.post(f"/tasks/hooks/{token}")).status_code == 404
+        await asyncio.sleep(0.05)
+
+        def runs(session):
+            return list(session.exec(select(TaskRun).where(TaskRun.task_id == task_id)).all())
+
+        assert await in_session(app.state.db_engine, runs) == []
 
 
 async def test_run_now_refuses_a_disabled_task():

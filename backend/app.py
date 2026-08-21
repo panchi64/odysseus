@@ -27,6 +27,7 @@ from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
 from harness.manifest import HarnessContext, ServiceContainer
 from harness.run_terminal import RunTerminalDispatcher
+from models.artifact import Artifact
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from routes import (
@@ -60,7 +61,8 @@ logger = logging.getLogger(__name__)
 
 async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
     """Once the vault is unlocked, seal the columns that were stored in the clear before
-    they were sealed — the conversation title and the corpus source's host path — and drop
+    they were sealed — the conversation title, the corpus source's host path, and the
+    artifact's title and filename — and drop
     the cleartext behind them (`XC-SEC-3`).
 
     A migration can't do this: schema upgrades run at startup with the vault locked, so
@@ -71,6 +73,8 @@ async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
     for model_cls, legacy, sealed in (
         (Conversation, "title", "title_enc"),
         (CorpusSource, "path", "path_enc"),
+        (Artifact, "title", "title_enc"),
+        (Artifact, "filename", "filename_enc"),
     ):
         try:
             await seal_legacy_column(
@@ -98,6 +102,24 @@ async def lifespan(app: FastAPI):
     # is one call, not a hand-maintained mirror of this sequence. Something that must
     # stop *earlier* than its construction position implies simply registers later.
     lifecycle = LifecycleRegistry()
+    # `_wire` starts long-lived units as it goes, so it runs inside the same `try` as
+    # the serving phase below. A manifest that fails to build half-way has to unwind the
+    # units already started — otherwise a boot that never finishes leaves containers,
+    # drainers, and proxy listeners running with nothing left holding a reference.
+    try:
+        await _wire(app, settings, lifecycle)
+        yield
+    finally:
+        await lifecycle.stop_all()
+
+
+async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) -> None:
+    """Build, wire, and start everything the app owns, in dependency order.
+
+    Every unit needing shutdown registers on ``lifecycle`` at its construction point,
+    so the caller's single ``stop_all`` unwinds the whole graph — including a partially
+    built one, when a build raises part-way through.
+    """
     # Typed capability handles. Core wiring adds what it builds; each feature
     # manifest's build resolves its cross-feature dependencies here and adds what
     # it hands back — never by importing another feature's wiring.
@@ -286,10 +308,13 @@ async def lifespan(app: FastAPI):
             run_terminal.add_sync(sync_hook)
         for hook in runtime.run_terminal:
             run_terminal.add(hook)
-    try:
-        yield
-    finally:
-        await lifecycle.stop_all()
+
+    # Registered last so it stops first (reverse registration order): live runs write
+    # through the stores and the sandbox brought up above, so they have to be cancelled
+    # — and given their own pre-cancel flush — while those are still running. Without
+    # this a turn in flight at shutdown submits onto an already-stopped write-behind
+    # drainer, which discards it with no error.
+    lifecycle.on_stop("runs", app.state.runs.shutdown)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

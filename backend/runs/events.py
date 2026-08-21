@@ -84,12 +84,25 @@ class RunMetrics(_Body):
 
 
 class RunEnded(_Body):
+    """The closing frame for a run that reached an *expected* end.
+
+    A run closes with exactly one of `run.ended` or `run.error`, never both — the
+    terminal frame has two shapes because the two carry different payloads, and a
+    failure has a message and an exception kind where an expected end has an outcome
+    and a detail. Readers treat either as end-of-stream (`isTerminal` on the client).
+    `error` is deliberately absent from ``outcome`` for that reason: it is not an
+    outcome this frame ever carries. Both are preceded by `run.metrics`.
+    """
+
     type: Literal["run.ended"] = "run.ended"
     outcome: Literal["done", "blocked", "cancelled"]
     detail: str | None = None
 
 
 class RunError(_Body):
+    """The closing frame for a run that failed. See :class:`RunEnded` — these two are
+    the same terminal position in the protocol, not a frame plus an extra."""
+
     type: Literal["run.error"] = "run.error"
     message: str
     kind: str | None = None

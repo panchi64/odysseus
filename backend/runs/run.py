@@ -195,7 +195,10 @@ class Run:
         return self.status in TERMINAL_STATUSES
 
     async def wait(self) -> None:
-        """Await the executing task (returns when the Run reaches terminal)."""
+        """Await the executing task — it ends when the Run settles, which means either a
+        terminal status **or** ``awaiting_input``: parking returns the orchestrator, so
+        the task finishes there too and the run continues on a fresh task if it resumes.
+        Callers that need "finished for good" must check ``is_terminal`` afterwards."""
         if self.task is not None:
             await asyncio.shield(self.task)
 

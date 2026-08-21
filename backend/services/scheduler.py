@@ -70,6 +70,11 @@ _DB_LOCK_RETRIES = 5
 _DB_LOCK_RETRY_BASE_S = 0.05
 _DB_LOCK_RETRY_MAX_S = 0.5
 
+# How long shutdown waits for in-flight executions to finalize their own `TaskRun` rows
+# before giving up on them. Generous enough for a turn to flush, short enough that one
+# wedged execution can't stop the process from exiting.
+_SHUTDOWN_DRAIN_TIMEOUT_S = 30.0
+
 
 def _is_transient_lock(exc: OperationalError) -> bool:
     """A SQLite "busy" — another connection holds the write lock *right now* — as
@@ -185,7 +190,22 @@ class SchedulerService:
                 await self._task
             self._task = None
         if self._running:
-            await asyncio.gather(*list(self._running.values()), return_exceptions=True)
+            # Bounded: an execution that will not settle must not take the whole shutdown
+            # with it. Letting one finalize its own `TaskRun` row is worth waiting for;
+            # waiting forever means every lifecycle unit registered before this one never
+            # gets to stop either, and the process hangs instead of exiting.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*list(self._running.values()), return_exceptions=True),
+                    timeout=_SHUTDOWN_DRAIN_TIMEOUT_S,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "scheduler: %d task execution(s) did not settle within %.0fs; "
+                    "their TaskRun rows stay unfinished",
+                    len(self._running),
+                    _SHUTDOWN_DRAIN_TIMEOUT_S,
+                )
 
     def wake(self) -> None:
         """Re-arm the sleep — call after any task create/update/delete so a changed
