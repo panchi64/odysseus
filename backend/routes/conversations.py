@@ -486,30 +486,43 @@ async def delete_conversation(
     """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
     the image attachments this would orphan; the default keeps them in the gallery."""
     store = deps.store(request)
-    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    orphans = (
-        await _image_orphans(request, conversation_id, message_id=None)
-        if purge_images
-        else []
-    )
-    await store.delete_conversation(conversation_id)
-    await _purge_uploads(request, orphans)
-    # Drop the conversation's View history (snapshots + any blob no other snapshot
-    # needs), so the work doesn't linger encrypted on disk after the thread is gone.
-    await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
-    # Same reasoning for the agent's task list: it restates what was asked for, so it must
-    # not outlive the thread.
-    await deps.conversation_plans(request).delete_for_conversation(OPERATOR_ID, conversation_id)
-    # Delete the conversation's sandbox too (its workspace + sealed archive),
-    # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
-    # delete above is the authoritative action, so a purge failure must not fail it.
-    sandbox = deps.sandbox_sessions(request)
-    if sandbox is not None:
-        try:
-            await sandbox.purge(conversation_id)
-        except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
-            logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
+    # The purging delete `routes/deps.claim_conversation` names, and the one mutator here
+    # that was not taking the claim. Deleting under a live run tears the tree, the sandbox
+    # and the turn's attachments out from beneath it: the run keeps going, its own
+    # `_finalize` re-creates a ghost cache entry nothing ever evicts, and the turn is
+    # discarded with no error. 409 instead, like every sibling mutation.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        if await store.get_summary(conversation_id, OPERATOR_ID) is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        orphans = (
+            await _image_orphans(request, conversation_id, message_id=None)
+            if purge_images
+            else []
+        )
+        await store.delete_conversation(conversation_id)
+        await _purge_uploads(request, orphans)
+        # Drop the conversation's View history (snapshots + any blob no other snapshot
+        # needs), so the work doesn't linger encrypted on disk after the thread is gone.
+        await deps.workspace_history(request).delete_for_conversation(
+            OPERATOR_ID, conversation_id
+        )
+        # Same reasoning for the agent's task list: it restates what was asked for, so it
+        # must not outlive the thread.
+        await deps.conversation_plans(request).delete_for_conversation(
+            OPERATOR_ID, conversation_id
+        )
+        # Delete the conversation's sandbox too (its workspace + sealed archive),
+        # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
+        # delete above is the authoritative action, so a purge failure must not fail it.
+        sandbox = deps.sandbox_sessions(request)
+        if sandbox is not None:
+            try:
+                await sandbox.purge(conversation_id)
+            except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+                logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
+    finally:
+        deps.release_conversation(request, conversation_id)
 
 
 @router.delete("/{conversation_id}/messages/{message_id}", response_model=ConversationDetail)

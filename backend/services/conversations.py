@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import NamedTuple
@@ -67,6 +68,11 @@ from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.sealing import open_sealed
 
 logger = logging.getLogger(__name__)
+
+# How many conversation trees stay decrypted in memory. Sized for one operator: the
+# working set is the handful of threads actually being read or written, and a miss
+# costs one rehydrate from the database, not an error.
+_DEFAULT_MAX_CACHED_CONVERSATIONS = 64
 
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
@@ -523,14 +529,35 @@ def _db_stats(
 
 
 class ConversationStore:
-    def __init__(self, engine: Engine, vault: Vault, embedder: Embedder | None = None) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        vault: Vault,
+        embedder: Embedder | None = None,
+        *,
+        max_cached_conversations: int = _DEFAULT_MAX_CACHED_CONVERSATIONS,
+    ) -> None:
         self._engine = engine
         self._vault = vault
         # Embeds each persisted turn's text for cross-chat semantic search. Optional
         # (and best-effort): with no embedder, or when it degrades, messages persist
         # without a vector and recall over them falls back to keyword (EMB-2).
         self._embedder = embedder
-        self._cache: dict[str, _Tree] = {}
+        # Least-recently-used first. Every entry holds a fully *decrypted* tree —
+        # including any inline image bytes a turn carried — so an unbounded dict grows
+        # to the size of every conversation the process has ever touched and never
+        # gives it back. It is a pure cache (`_tree` rehydrates on a miss), so evicting
+        # costs one reload and nothing else.
+        self._cache: OrderedDict[str, _Tree] = OrderedDict()
+        self._max_cached = max_cached_conversations
+        # Conversations with durable work still queued. `record()` extends the cached
+        # tree in place and hands the drainer a *slice*, so evicting between the two
+        # would leave `setdefault` rebuilding an empty tree and the turn appending to
+        # nothing. Never evict one of these; the count drains to zero as the writes land.
+        self._pending: Counter[str] = Counter()
+        # conversation id → owner. Immutable per conversation, so it is memoized rather
+        # than re-read on the write-behind path once per persisted turn.
+        self._owners: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._worker: WriteBehindWorker[_PersistJob] = WriteBehindWorker(
             self._persist,
@@ -544,6 +571,52 @@ class ConversationStore:
 
     async def stop(self) -> None:
         await self._worker.stop()
+
+    # --- cache residency -----------------------------------------------------------
+    def _cache_put(self, conversation_id: str, tree: _Tree) -> _Tree:
+        """Install a tree as the most-recently-used entry and trim back to the cap."""
+        self._cache[conversation_id] = tree
+        self._cache.move_to_end(conversation_id)
+        self._trim_cache()
+        return tree
+
+    def _cache_get(self, conversation_id: str) -> _Tree | None:
+        """The cached tree, counting the read as a use so it isn't evicted next.
+
+        Only genuine reads go through here. The listing summary and the compaction
+        leaf check peek with a plain ``self._cache.get`` on purpose: the listing walks
+        *every* conversation, so promoting each would flatten the ordering into
+        meaninglessness and could evict the thread actually being used.
+        """
+        tree = self._cache.get(conversation_id)
+        if tree is not None:
+            self._cache.move_to_end(conversation_id)
+        return tree
+
+    def _trim_cache(self) -> None:
+        """Drop least-recently-used trees until the cache is back within its cap.
+
+        Entries with queued durable work are skipped, never dropped: `record()` mutates
+        the cached tree and queues only the new slice, so evicting one mid-turn would
+        leave the next `record` appending to a freshly-built empty tree. If every entry
+        is pending — far more in flight than the cap — the cache simply runs over rather
+        than corrupting a tree; the overflow drains on its own as the writes land.
+        """
+        if len(self._cache) <= self._max_cached:
+            return
+        for conversation_id in list(self._cache):
+            if len(self._cache) <= self._max_cached:
+                break
+            if self._pending[conversation_id]:
+                continue
+            # A held lock means a rehydrate is in flight for this id. Dropping the lock
+            # under it would let a second rehydrate run concurrently and clobber the
+            # tree the first one is about to install.
+            lock = self._locks.get(conversation_id)
+            if lock is not None and lock.locked():
+                continue
+            del self._cache[conversation_id]
+            self._locks.pop(conversation_id, None)
 
     async def create_conversation(
         self, owner_id: str, title: str | None = None, ephemeral: bool = False
@@ -559,7 +632,8 @@ class ConversationStore:
             return conversation.id
 
         conversation_id = await in_session(self._engine, work)
-        self._cache[conversation_id] = _Tree()
+        self._cache_put(conversation_id, _Tree())
+        self._owners[conversation_id] = owner_id
         return conversation_id
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
@@ -572,14 +646,14 @@ class ConversationStore:
 
     async def _tree(self, conversation_id: str) -> _Tree:
         """The conversation's tree — from the cache, or rehydrated once from the DB."""
-        cached = self._cache.get(conversation_id)
+        cached = self._cache_get(conversation_id)
         if cached is not None:
             return cached
 
         # Serialize rehydration per conversation and re-check inside the lock, so a
         # concurrent record()/history() can't be clobbered by a stale DB snapshot.
         async with self._locks.setdefault(conversation_id, asyncio.Lock()):
-            cached = self._cache.get(conversation_id)
+            cached = self._cache_get(conversation_id)
             if cached is not None:
                 return cached
 
@@ -643,8 +717,7 @@ class ConversationStore:
                     )
                 )
             tree.active_leaf_id = active if active in tree.nodes else tree.fallback_leaf()
-            self._cache[conversation_id] = tree
-            return tree
+            return self._cache_put(conversation_id, tree)
 
     async def history(self, conversation_id: str) -> list[ModelMessage]:
         """The active path's messages — the full transcript, compaction and all.
@@ -721,7 +794,7 @@ class ConversationStore:
         node = tree.append_chain([message])[0]
         node.compacted = True
         node.compacted_through = through_id
-        self._worker.submit(
+        self._submit(
             _PersistJob(
                 kind="messages",
                 conversation_id=conversation_id,
@@ -969,6 +1042,7 @@ class ConversationStore:
         await in_session(self._engine, work)
         self._cache.pop(conversation_id, None)
         self._locks.pop(conversation_id, None)
+        self._owners.pop(conversation_id, None)
 
     def record(
         self,
@@ -994,7 +1068,14 @@ class ConversationStore:
         so a reload carries the same persistent stop marker the live stream showed."""
         if not new_messages:
             return
-        tree = self._cache.setdefault(conversation_id, _Tree())
+        tree = self._cache_get(conversation_id)
+        if tree is None:
+            # Nothing cached: either a brand-new conversation (`create_conversation`
+            # seeds an empty tree, so normally this doesn't fire) or one whose id no
+            # longer exists — a delete that landed while this turn was still running.
+            # An empty tree is right for the first case and a resurrected ghost in the
+            # second, so `_persist_messages` re-checks the row before writing.
+            tree = self._cache_put(conversation_id, _Tree())
         added = tree.append_chain(new_messages)
         # A turn blocked before it produced a response (a time/cancel bound tripping in
         # the pre-model setup window) has no response node to carry the marker — so the
@@ -1038,7 +1119,7 @@ class ConversationStore:
                     blocked_reason=node.blocked_reason,
                 )
             )
-        self._worker.submit(
+        self._submit(
             _PersistJob(
                 kind="messages",
                 conversation_id=conversation_id,
@@ -1060,7 +1141,7 @@ class ConversationStore:
         older version), so the denormalized model rides along with the pointer."""
         tree = self._cache.get(conversation_id)
         model = _active_path_model(tree.active_path()) if tree is not None else None
-        self._worker.submit(
+        self._submit(
             _PersistJob(
                 kind="active_leaf",
                 conversation_id=conversation_id,
@@ -1142,7 +1223,7 @@ class ConversationStore:
         if node is None:
             return False
         node.pinned = pinned
-        self._worker.submit(
+        self._submit(
             _PersistJob(
                 kind="pin",
                 conversation_id=conversation_id,
@@ -1167,7 +1248,7 @@ class ConversationStore:
         tree.remove(doomed)
         keep = new_leaf is None or new_leaf in tree.nodes
         tree.active_leaf_id = new_leaf if keep else tree.fallback_leaf()
-        self._worker.submit(
+        self._submit(
             _PersistJob(
                 kind="delete",
                 conversation_id=conversation_id,
@@ -1279,6 +1360,40 @@ class ConversationStore:
 
     # ── Write-behind drainer ───────────────────────────────────────────────────
 
+    async def _owner_of(self, conversation_id: str) -> str | None:
+        """The conversation's owner, memoized. A conversation never changes hands, and
+        this sits on the write-behind path — one extra round trip per persisted turn,
+        purely to re-read an immutable column."""
+        cached = self._owners.get(conversation_id)
+        if cached is not None:
+            return cached
+
+        def work(session: Session) -> str | None:
+            conversation = session.get(Conversation, conversation_id)
+            return conversation.owner_id if conversation is not None else None
+
+        owner_id = await in_session(self._engine, work)
+        if owner_id is not None:
+            self._owners[conversation_id] = owner_id
+        return owner_id
+
+    def _submit(self, job: _PersistJob) -> None:
+        """Queue durable work and pin its conversation in the cache until it lands.
+
+        The pin is what makes eviction safe: between this call and the write, the
+        cached tree is the only place the turn's structure exists.
+        """
+        self._pending[job.conversation_id] += 1
+        self._worker.submit(job)
+
+    def _release(self, job: _PersistJob) -> None:
+        """Drop this job's pin once it has reached a terminal disposition."""
+        conversation_id = job.conversation_id
+        if self._pending[conversation_id] <= 1:
+            del self._pending[conversation_id]  # keep the Counter from growing forever
+        else:
+            self._pending[conversation_id] -= 1
+
     async def _persist(self, job: _PersistJob) -> None:
         if job.kind == "messages":
             await self._persist_messages(job)
@@ -1288,6 +1403,10 @@ class ConversationStore:
             await self._persist_delete(job)
         elif job.kind == "pin":
             await self._persist_pin(job)
+        # Deliberately not in a `finally`: a raise here is retried by the worker, and
+        # the conversation must stay pinned across those attempts. A job that exhausts
+        # its retries releases through `_on_drop` instead.
+        self._release(job)
 
     async def _persist_messages(self, job: _PersistJob) -> None:
         # Embed off the DB thread, before the write — vectors travel into work() as
@@ -1339,11 +1458,7 @@ class ConversationStore:
         if not texts:
             return {}
 
-        def owner_of(session: Session) -> str | None:
-            conversation = session.get(Conversation, job.conversation_id)
-            return conversation.owner_id if conversation is not None else None
-
-        owner_id = await in_session(self._engine, owner_of)
+        owner_id = await self._owner_of(job.conversation_id)
         if owner_id is None:
             return {}
         # Embedding is strictly best-effort: it must never fail or stall a durable
@@ -1459,3 +1574,6 @@ class ConversationStore:
             len(job.deleted_ids),
             exc,
         )
+        # Terminal, so the pin goes even though the write never landed — holding it
+        # would keep this conversation resident for the life of the process.
+        self._release(job)
