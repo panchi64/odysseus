@@ -775,7 +775,18 @@ def _merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessa
     :func:`_split_injected_requests`' own output replayed on the *next* turn. Normalizing
     up front costs nothing (the library was going to do exactly this) and makes the index
     honest in both cases. New objects throughout — the store's in-memory tree shares these
-    messages, so nothing here may mutate one in place."""
+    messages, so nothing here may mutate one in place.
+
+    **Why not use the library's own boundary.** ``AgentRunResult.new_messages()`` slices at
+    an index Pydantic AI maintains for exactly this hazard, and it is correct — for one
+    agent run. Ours is not one agent run. A single operator-facing turn can span several:
+    a continuation after the operator queued more text mid-answer, an approval resume, a
+    verifier correction. Each re-enters with a rebuilt history, so the library's index
+    marks the start of the *last* run's new messages, not of the turn — on a corrective
+    re-attempt it points two messages into a turn that began at zero. On top of that, four
+    of the five things measured against ``start`` (the timeout flush, the cancel flush, the
+    error flush, the park) happen where no result exists to ask. So ``start`` stays ours,
+    and this keeps it honest."""
     out: list[ModelMessage] = []
     for message in messages:
         if isinstance(message, ModelRequest) and out and isinstance(out[-1], ModelRequest):
