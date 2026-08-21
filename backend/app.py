@@ -291,6 +291,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
         tool_categories=app.state.tool_categories,
         instruction_providers=app.state.instruction_providers,
         prompt_context_providers=app.state.prompt_context_providers,
+        network_tools=app.state.network_tools,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -348,6 +349,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # listing and the agent's own stack cannot diverge.
     tool_categories = core_categories()
     gated_tools: set[str] = set()
+    # Which tools can't work without internet — each feature declares its own, and offline
+    # mode enforces the union. The feature that suspends them is not the feature that
+    # ships them, so the declaration travels rather than being restated at the gate.
+    network_tools: set[str] = set()
     instruction_providers: list[InstructionProvider] = []
     # The plan reminder is core, not a manifest's: the `plan` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
@@ -361,10 +366,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             tool_categories[category] = factory()
         gated_tools |= manifest.gated_tools
+        network_tools |= manifest.network_tools
         instruction_providers.extend(manifest.instructions)
         prompt_context_providers.extend(manifest.prompt_context)
     app.state.tool_categories = tool_categories
     app.state.gated_tools = frozenset(gated_tools)
+    app.state.network_tools = frozenset(network_tools)
     app.state.instruction_providers = tuple(instruction_providers)
     app.state.prompt_context_providers = tuple(prompt_context_providers)
 

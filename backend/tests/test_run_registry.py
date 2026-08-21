@@ -116,6 +116,71 @@ async def test_inactivity_timeout():
     assert events[-1].body.outcome == "blocked"
 
 
+async def test_keepalive_holds_a_long_silent_call_open_past_the_inactivity_bound():
+    # A non-streaming model call — a long report being generated — emits nothing between
+    # phase boundaries. Without this the run would be stopped for idling while making real
+    # progress, and every feature with a slow call would hand-roll its own heartbeat.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.1)
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="start"))
+        async with run.keepalive():
+            await asyncio.sleep(0.5)  # five times the bound, silent throughout
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert run.stream.replay()[-1].body.outcome == "done"
+
+
+async def test_the_bound_applies_again_the_moment_the_call_returns():
+    # The scope covers one awaited call, not the rest of the run: leaving it must not
+    # leave the watchdog disarmed.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.1)
+
+    async def orch(run):
+        async with run.keepalive():
+            await asyncio.sleep(0.3)
+        await asyncio.sleep(5)  # unprotected again → inactivity fires
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    notice = next(e.body for e in run.stream.replay() if e.body.type == "limit.notice")
+    assert notice.limit == "time"
+
+
+async def test_keepalive_beats_inside_a_bound_shorter_than_its_default_interval():
+    # The interval is a ceiling, not a fixed rate: a run held to a tight inactivity bound
+    # gets a proportionally faster heartbeat, so a shortened timeout can't outrun it.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.06)
+
+    async def orch(run):
+        async with run.keepalive():
+            await asyncio.sleep(0.4)
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+
+
+async def test_keepalive_does_not_hide_a_failure_raised_inside_it():
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=1.0)
+
+    async def orch(run):
+        async with run.keepalive():
+            raise RuntimeError("the model refused")
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.error
+    assert "the model refused" in (run.error or "")
+
+
 async def test_concurrency_limit_queues_bursts():
     reg = RunRegistry(max_concurrency=1)
     started1, release1 = asyncio.Event(), asyncio.Event()

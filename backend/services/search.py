@@ -26,6 +26,7 @@ import httpx
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from core.citations import Citation
 from core.db import get_owned, in_session
 from core.exceptions import DegradedCapabilityError
 from core.untrusted import untrusted_fence, untrusted_preamble
@@ -55,6 +56,16 @@ class SearchResults:
 
     instruction: str
     results: list[SearchResult]
+
+    def citations(self) -> list[Citation]:
+        """The hits, in result order — how the run stream learns a search's sources
+        without the event translator having to know what a search result is. Already
+        URL-unique from the service, so nothing is deduped here."""
+        return [
+            Citation(url=item.url, title=item.title)
+            for item in self.results
+            if isinstance(item, SearchResult)
+        ]
 
 
 @dataclass(frozen=True)

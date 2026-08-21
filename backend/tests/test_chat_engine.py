@@ -151,46 +151,46 @@ def test_drop_dangling_tool_calls_trims_unanswered_trailing_call():
 def test_usage_limit_kind_distinguishes_the_tripped_bound():
     from pydantic_ai import UsageLimitExceeded
 
-    from agent.engine import _usage_limit_kind
+    from agent.model_errors import usage_limit_kind
 
     steps = UsageLimitExceeded("The next request would exceed the request_limit of 25")
-    assert _usage_limit_kind(steps) == "steps"
+    assert usage_limit_kind(steps) == "steps"
 
     tool_calls = UsageLimitExceeded(
         "The next tool call(s) would exceed the tool_calls_limit of 0 (tool_calls=1)."
     )
-    assert _usage_limit_kind(tool_calls) == "tool_calls"
+    assert usage_limit_kind(tool_calls) == "tool_calls"
 
     tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
-    assert _usage_limit_kind(tokens) == "tokens"
+    assert usage_limit_kind(tokens) == "tokens"
 
 
 def test_usage_limit_message_is_operator_legible_for_every_kind():
     from pydantic_ai import UsageLimitExceeded
 
-    from agent.engine import _usage_limit_message
+    from agent.model_errors import usage_limit_message
 
     steps = UsageLimitExceeded("The next request would exceed the request_limit of 25")
-    assert _usage_limit_message(steps).startswith(
+    assert usage_limit_message(steps).startswith(
         "this run hit its step limit for a single turn and stopped"
     )
 
     tool_calls = UsageLimitExceeded(
         "The next tool call(s) would exceed the tool_calls_limit of 0 (tool_calls=1)."
     )
-    assert "{tool_calls=}" not in _usage_limit_message(tool_calls)
+    assert "{tool_calls=}" not in usage_limit_message(tool_calls)
     assert (
-        _usage_limit_message(tool_calls)
+        usage_limit_message(tool_calls)
         == "this run hit its tool-call limit for a single turn and stopped"
     )
 
     tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
     assert (
-        _usage_limit_message(tokens)
+        usage_limit_message(tokens)
         == "this run hit its token budget for a single turn and stopped"
     )
 
     # Every one of them names a *per-turn* bound. None may read as an account-level
     # provider quota, which is what sent the operator hunting for a rate limit before.
     for exc in (steps, tool_calls, tokens):
-        assert "for a single turn" in _usage_limit_message(exc)
+        assert "for a single turn" in usage_limit_message(exc)

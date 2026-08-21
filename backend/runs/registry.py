@@ -410,6 +410,9 @@ class RunRegistry:
         inactivity: float | None,
     ) -> None:
         """Run the orchestrator under wall-clock + inactivity bounds."""
+        # Tell the run which bound it is being held to, so `Run.keepalive` can beat inside
+        # it rather than against a fixed interval that a shortened timeout would outrun.
+        run.inactivity_timeout_s = inactivity
         if not wall_clock and not inactivity:
             await orchestrator(run)
             return

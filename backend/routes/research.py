@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -83,28 +83,6 @@ _REQUIRED_WEB_TOOLS = frozenset({"web_search", "web_fetch"})
 # report. This is slack on the *backstop*, not the operator-facing limit itself
 # (`research_deps.time_limit_s`, DR-6.1).
 _WALL_CLOCK_BUFFER_S = 180.0
-
-# How often the research Run's orchestrator touches activity while a single long
-# Pydantic AI call (e.g. `write_report` on a slow local model) is in flight between
-# the pipeline's own phase-boundary touches — comfortably inside the inactivity
-# watchdog's default bound so a still-progressing call is never mistaken for a stall.
-_HEARTBEAT_INTERVAL_S = 20.0
-
-
-async def _heartbeat(run: Run, interval_s: float = _HEARTBEAT_INTERVAL_S) -> None:
-    """Keep the run's activity clock alive for the duration of a single long
-    in-flight call. The pipeline's own touches (``step.started``/``step.completed``,
-    per-source ``citation.added``) only land at phase boundaries — a slow model
-    generating a long report (or any other single-shot `agents.py` call) between two
-    boundaries would otherwise look idle to the inactivity watchdog even while making
-    real progress. Cancelled by the orchestrator once its awaited call returns."""
-    try:
-        while True:
-            await asyncio.sleep(interval_s)
-            run.touch()
-    except asyncio.CancelledError:
-        pass
-
 
 # --- the two pre-run agent calls (utility judgement, main planning) ------------------
 
@@ -629,16 +607,16 @@ async def _start_claimed(research_id: str, request: Request) -> ResearchOut:
 
     async def orchestrate(run: Run) -> None:
         research_deps.cancel_requested = lambda: run.cancel_requested
-        heartbeat = asyncio.create_task(_heartbeat(run))
+        # The pipeline's own touches (`step.started`/`step.completed`, per-source
+        # `citation.added`) only land at phase boundaries. A slow model generating a long
+        # report between two of them looks idle to the watchdog while making real
+        # progress, so the substrate's keepalive holds the clock open for it.
         try:
-            outcome.result = await run_research(plan, question, research_deps, run.emit)
+            async with run.keepalive():
+                outcome.result = await run_research(plan, question, research_deps, run.emit)
         except Exception as exc:  # noqa: BLE001 — recorded, then re-raised for the registry
             outcome.error = str(exc)
             raise
-        finally:
-            heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
 
     # The run id is minted here rather than by `submit`, so the row can record it
     # *before* the run exists to reach terminal. The terminal hooks resolve their

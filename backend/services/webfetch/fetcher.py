@@ -23,6 +23,7 @@ import httpx
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from core.citations import Citation
 from core.exceptions import WebFetchError
 from core.ssrf import assert_public_url
 from core.text import tokens_to_chars, truncate_on_boundary
@@ -84,6 +85,11 @@ class FetchedPage:
     url: str
     title: str | None
     content: str
+
+    def citations(self) -> list[Citation]:
+        """The page itself — a fetch has exactly one source, and this is how the run
+        stream learns of it without the event translator knowing what a fetch is."""
+        return [Citation(url=self.url, title=self.title)]
 
 
 class BrowserFetcher:

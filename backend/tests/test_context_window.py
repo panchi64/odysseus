@@ -19,7 +19,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
-from agent.engine import _context_limit_message, _is_context_overflow
+from agent.model_errors import context_limit_message, is_context_overflow
 from runs import ContextWindow, Run, RunRegistry, RunStatus, RunStream
 from runs.events import RunMetrics
 from services.conversations import context_footprint
@@ -144,7 +144,7 @@ def _ctx_error(message: str = _DEFAULT_CTX_MSG) -> ModelHTTPError:
     ],
 )
 def test_is_context_overflow_detects_provider_phrasings(message: str):
-    assert _is_context_overflow(_ctx_error(message))
+    assert is_context_overflow(_ctx_error(message))
 
 
 @pytest.mark.parametrize(
@@ -160,13 +160,63 @@ def test_is_context_overflow_detects_provider_phrasings(message: str):
     ],
 )
 def test_is_context_overflow_ignores_unrelated_errors(message: str):
-    assert not _is_context_overflow(_ctx_error(message))
+    assert not is_context_overflow(_ctx_error(message))
+
+
+def test_a_provider_error_code_decides_without_consulting_the_prose():
+    # A published error code is the structured signal the text scan stands in for. Where
+    # one exists, reading it is not a heuristic — so the message is not consulted at all.
+    coded = ModelHTTPError(
+        status_code=400,
+        model_name="m",
+        body={"error": {"code": "context_length_exceeded", "message": "nothing familiar here"}},
+    )
+    assert is_context_overflow(coded)
+
+    # And the converse: a provider that named its error something else has answered the
+    # question, even when its prose happens to carry one of our markers.
+    other = ModelHTTPError(
+        status_code=400,
+        model_name="m",
+        body={
+            "error": {
+                "code": "invalid_prompt",
+                "message": "maximum context length is mentioned here but that isn't the fault",
+            }
+        },
+    )
+    assert not is_context_overflow(other)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500, 503])
+def test_the_prose_scan_never_runs_on_a_status_an_overflow_cannot_arrive_as(status: int):
+    # The failure this guards: a rate-limit or server-fault body that quotes the prompt's
+    # token counts used to be classified as a context ceiling, stopping the run with a
+    # misleading message and swallowing the real, actionable error.
+    exc = ModelHTTPError(
+        status_code=status,
+        model_name="m",
+        body={"message": "This model's maximum context length is 8192 tokens."},
+    )
+    assert not is_context_overflow(exc)
+
+
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_the_prose_scan_still_runs_for_a_local_engine_that_sends_no_code(status: int):
+    # llama.cpp/LM Studio/vLLM answer in English with no error object — the scan is the
+    # only signal there is, and must keep working.
+    exc = ModelHTTPError(
+        status_code=status,
+        model_name="m",
+        body="the request exceeds the context window (n_ctx=4096)",
+    )
+    assert is_context_overflow(exc)
 
 
 def test_context_limit_message_names_the_window():
     run = Run(id="t", kind="chat", owner_id="op", stream=RunStream())
     run.context_window = 128_000
-    assert "128,000" in _context_limit_message(run)
+    assert "128,000" in context_limit_message(run)
 
 
 class _ContextOverflowModel(WrapperModel):

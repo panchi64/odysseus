@@ -78,6 +78,13 @@ from tools import (
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .model_errors import (
+    context_limit_message,
+    is_context_overflow,
+    model_load_hint,
+    usage_limit_kind,
+    usage_limit_message,
+)
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
@@ -391,96 +398,6 @@ async def _park_for_approval(
     )
 
 
-# On-demand inference servers (LM Studio, llama.cpp, …) reject a request for a
-# model they couldn't bring up with a terse, mechanical message. The most common
-# cause here is a side-by-side compare firing two *unloaded* models at once: the
-# server can only cold-load one at a time, so the second aborts.
-_MODEL_LOAD_MARKERS = ("failed to load model", "engine protocol startup was aborted")
-
-
-def _model_load_hint(exc: ModelHTTPError) -> str | None:
-    """An operator-actionable message if ``exc`` is an engine model-load failure,
-    else ``None`` (leave other HTTP errors with their own detail). The fix is
-    engine-side, so the hint points there rather than implying an app bug."""
-    if not any(marker in str(exc).lower() for marker in _MODEL_LOAD_MARKERS):
-        return None
-    model = exc.model_name or "the selected model"
-    return (
-        f"Couldn't load {model!r} on its inference server. Load it before use — in "
-        "LM Studio, pre-load each model you want to compare, or raise “Max loaded "
-        "models” / enable JIT so the server can hold more than one at once."
-    )
-
-
-# How the common providers/engines phrase "the prompt is bigger than the context window":
-# OpenAI ("maximum context length … context_length_exceeded"), Anthropic ("prompt is too
-# long"), and local servers (llama.cpp/LM Studio/vLLM — "exceeds context", "context size",
-# "n_ctx"). Matched case-insensitively as substrings of the error text, so each marker must be
-# specific enough that an *unrelated* error can't carry it: deliberately omitted are generic
-# phrasings ("context window", "too many tokens", "reduce the length") that also appear in
-# rate-limit/validation errors — misclassifying those would block the run with a misleading
-# context-window stop and swallow the real, actionable error.
-_CONTEXT_OVERFLOW_MARKERS = (
-    "context length",
-    "context_length_exceeded",
-    "maximum context",
-    "prompt is too long",
-    "exceeds context",
-    "exceed context",
-    "context size",
-    "n_ctx",
-)
-
-
-def _is_context_overflow(exc: ModelHTTPError) -> bool:
-    """Whether ``exc`` is the model refusing a prompt that overran its context window."""
-    return any(marker in str(exc).lower() for marker in _CONTEXT_OVERFLOW_MARKERS)
-
-
-def _context_limit_message(run: Run) -> str:
-    """The operator-facing stop message — names the model's context window (the number the
-    operator needs) when known, and what to do next."""
-    window = run.context_window
-    ceiling = f" of {window:,} tokens" if window else ""
-    return (
-        f"This conversation reached the model's context window{ceiling} and can't continue. "
-        "Start a new chat, or edit/rewind to remove earlier messages, to keep going."
-    )
-
-
-def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
-    """Which bound in ``UsageLimits`` tripped — ``UsageLimitExceeded`` carries no
-    structured field, only a message, so classify it by the marker each check raises
-    (see ``pydantic_ai.usage.UsageLimits``)."""
-    message = str(exc)
-    if "tool_calls_limit" in message:
-        return "tool_calls"
-    if "tokens_limit" in message:
-        return "tokens"
-    return "steps"
-
-
-def _usage_limit_message(exc: UsageLimitExceeded) -> str:
-    """An operator-legible sentence for a usage-limit stop, mirroring the treatment
-    ``_timeout_message`` (``runs/registry.py``) gives wall-clock/inactivity bounds:
-    this reaches the operator verbatim, both as the toast (``LimitNotice.message``) and
-    as the turn's persisted stop marker, so it must read as a plain sentence — never
-    ``str(exc)``'s raw internal phrasing (e.g. pydantic_ai's own ``{tool_calls=}`` repr).
-
-    Each names the *local* budget that tripped and where to raise it. These are this
-    chassis's own per-turn ceilings, nothing to do with a provider's rate limit — so the
-    wording must never leave the operator hunting for an account-level quota."""
-    kind = _usage_limit_kind(exc)
-    if kind == "tool_calls":
-        return "this run hit its tool-call limit for a single turn and stopped"
-    if kind == "tokens":
-        return "this run hit its token budget for a single turn and stopped"
-    return (
-        "this run hit its step limit for a single turn and stopped — raise the "
-        "model request limit in Settings to let a turn run longer"
-    )
-
-
 def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
     """Strip a trailing tool call that never received its result.
 
@@ -656,8 +573,8 @@ async def _drive_turn(
             # reads as a provider rate limit (the operator's first guess, and the wrong
             # one), where this names the bound that actually tripped — one of this run's
             # own local budgets.
-            detail = _usage_limit_message(exc)
-            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=detail))
+            detail = usage_limit_message(exc)
+            run.emit(LimitNotice(limit=usage_limit_kind(exc), message=detail))
             run.block(detail)
             return _TurnResult(
                 answer=None,
@@ -678,8 +595,8 @@ async def _drive_turn(
             # Context-window overflow: a definitive ceiling, not something to paper over by
             # silently dropping content — stop and tell the operator the model's limit so they
             # can start a new chat or trim. (Compaction reduces pressure; it never absorbs this.)
-            if _is_context_overflow(exc):
-                run.emit(LimitNotice(limit="context", message=_context_limit_message(run)))
+            if is_context_overflow(exc):
+                run.emit(LimitNotice(limit="context", message=context_limit_message(run)))
                 detail = "context window exceeded"
                 run.block(detail)
                 return _TurnResult(
@@ -689,7 +606,7 @@ async def _drive_turn(
                 )
             # Rewrite a model-couldn't-load error into something the operator can act
             # on; let every other HTTP error propagate with its own detail.
-            hint = _model_load_hint(exc)
+            hint = model_load_hint(exc)
             if hint is None:
                 raise
             raise ModelLoadError(hint) from exc
