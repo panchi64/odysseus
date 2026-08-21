@@ -13,7 +13,7 @@ is unavailable (or a memory has no vector), that item simply contributes via the
 sparse signal alone. Pinned memories are always included (`MEM-4`).
 
 Brute-force-in-Python (not an in-DB ANN index) is the deliberate consequence of
-encrypting vectors at rest — see decision D18. It is microseconds at this scale
+encrypting vectors at rest. It is microseconds at this scale
 and keeps every vector sealed. The pluggable seam (a different store) stays open
 for when volume, not confidentiality, becomes the constraint.
 

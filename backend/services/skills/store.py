@@ -10,7 +10,7 @@ Two invariants worth naming:
 
 * **Import always lands as a draft.** A bundle is instructions the agent will follow, so
   ``published`` is the trust boundary rather than a display state: nothing the operator hasn't
-  read reaches the model's catalog (D32).
+  read reaches the model's catalog.
 * **Sealing happens here, never in the columns.** Description, body, files, and the preserved
   non-standard frontmatter go through the vault on the way in and out; what the DB must filter
   or order stays clear (see ``models/skill.py`` for the per-column reasoning).

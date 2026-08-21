@@ -9,7 +9,7 @@ Two things this surface is deliberate about:
 
 * **Publish is a distinct endpoint, not a field on the update body.** It is the boundary
   between "a document the operator is drafting" and "instructions the agent will follow", so
-  it takes its own call rather than riding along with a title change (D32).
+  it takes its own call rather than riding along with a title change.
 * **Validation errors name their field.** ``SkillValidationError`` carries which part of the
   bundle is wrong; that reaches the client as a 422 whose detail the editor renders verbatim,
   because the backend decides what's valid and the frontend only shows it.
@@ -87,7 +87,7 @@ class SkillOut(CamelModel):
     license: str | None = None
     compatibility: str | None = None
     metadata: dict[str, Any] | None = None
-    #: Recorded and displayed, never enforced — see D32.
+    #: Advisory: recorded and displayed, never enforced (the tool policy enforces).
     allowed_tools: list[str] | None = None
     #: Non-standard frontmatter preserved from the bundle, so an export is lossless.
     extras: dict[str, Any] | None = None

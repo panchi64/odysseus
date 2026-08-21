@@ -8,7 +8,7 @@ Everything that derives from the memory's content is **encrypted at rest** under
 the vault: the ``content`` itself (source of truth) and the ``embedding`` vector
 (embeddings are invertible enough to leak the text, so they are sealed too —
 this is why recall is brute-force-in-Python over the decrypted working set rather
-than an in-DB plaintext ANN index; see decision D18). Structural metadata
+than an in-DB plaintext ANN index). Structural metadata
 (owner, timestamps, pinned, embedding provenance) stays in the clear so the DB
 can order the timeline and segregate stale embeddings.
 
