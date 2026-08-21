@@ -10,6 +10,10 @@ seal text + vectors, so it can't run without the key), resuming on unlock.
 Crawl is conservative: only text-like extensions, skipping binaries and oversized
 files, so a stray archive never poisons the index. A missing path is recorded as an
 ``error`` source with a terse hint ("PATH NOT FOUND") rather than failing the request.
+
+A re-crawl **reconciles** rather than rebuilds: it indexes what it finds and prunes what
+it no longer finds, so a file deleted or edited on disk stops being retrievable. See
+``_index`` for why a folder can't take the sibling sources' drop-and-rewrite shortcut.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ from core.worker import WriteBehindWorker
 from models.corpus import CorpusSource
 from services.chunking import chunk_text
 from services.corpus.adapter import CorpusHit, SourceAdapter, SourceStatus
-from services.corpus.chunk_store import CorpusChunkStore
+from services.corpus.chunk_store import CorpusChunkStore, content_hash
 from services.sealing import open_sealed
 
 logger = logging.getLogger(__name__)
@@ -181,11 +185,13 @@ class FolderAdapter(SourceAdapter):
     # --- indexing ---------------------------------------------------------
 
     async def _index(self, job: IndexJob) -> None:
-        """Crawl one folder, chunk every text-like file, seal new chunks, embed them.
+        """Crawl one folder, chunk every text-like file, seal new chunks, embed them, and
+        prune whatever the tree no longer holds.
 
-        The worker handler — runs only while the vault is unlocked. A missing path
-        records an error status; a present one crawls, dedups by content hash, and
-        backfills vectors for the freshly inserted chunks."""
+        The worker handler — runs only while the vault is unlocked. A missing path records
+        an error status; a present one crawls, dedups by content hash per file, reconciles
+        the store against what it actually found, and backfills vectors for the freshly
+        inserted chunks."""
 
         def load(session: Session) -> CorpusSource | None:
             source = session.get(CorpusSource, job.source_id)
@@ -201,17 +207,38 @@ class FolderAdapter(SourceAdapter):
             return
         root = os.path.realpath(path)
 
+        # A re-crawl reconciles; it does not rebuild. The single-item sources (documents,
+        # uploads) can afford to drop a source's chunks and re-insert, because one edited
+        # document supersedes itself wholesale. A folder is not one item: dropping the
+        # source would discard every embedding under an unchanged tree and pay to compute
+        # them all again, which for a large repo is the expensive part of indexing by a
+        # wide margin. So the crawl records what it actually found and prunes exactly what
+        # stopped matching. Without it the store is insert-only, and a file deleted on
+        # disk stays retrievable while an edited one accumulates both of its versions.
+        live_refs: list[str] = []
+        live_hashes: dict[str, set[str]] = {}
         for file_path in self._walk(root):
+            live_refs.append(file_path)
             try:
                 text = self._read(file_path)
             except OSError:
+                # Seen but unreadable. Recording no hashes for it leaves its existing
+                # chunks untouched — a permission blip is not a deletion.
                 logger.warning("corpus folder: could not read %s", file_path, exc_info=True)
                 continue
             chunks = chunk_text(text)
+            # Mirrors what `upsert` will actually store (it drops blank chunks), so the
+            # live set describes the rows that should exist, not the ones we chunked.
+            live_hashes[file_path] = {
+                content_hash(chunk.text) for chunk in chunks if chunk.text.strip()
+            }
             if chunks:
                 await self._chunks.upsert(
                     job.owner_id, self.source_kind, job.source_id, file_path, chunks
                 )
+        await self._chunks.prune_stale(
+            job.owner_id, job.source_id, live_refs=live_refs, live_hashes=live_hashes
+        )
         # Best-effort embed of the freshly inserted (null-vector) chunks.
         await self._chunks.reembed(job.owner_id, job.source_id)
         await self._mark(job.source_id, status="indexed", last_indexed_at=datetime.now(UTC))
