@@ -268,13 +268,9 @@ def _install_sensitive_tool(monkeypatch):
     which the resume path runs. Mirrors ``test_approval_routes``' own fixture; pair with
     ``swap_tool_catalog(app, _danger_categories())`` after boot."""
 
-    async def fake_resolve(self, role, **kwargs):
-        return TestModel(custom_output_text="done")
-
     async def fake_resolve_detailed(self, role, **kwargs):
         return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
 
-    monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

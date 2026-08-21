@@ -605,8 +605,19 @@ async def _drive_turn(
         # with these user parts is split back into separate messages on persist
         # (`_split_injected_requests`), which replays wire-identically because the
         # library re-merges consecutive requests at wire-prep.
-        for queued in run.drain_messages():
-            node.request.parts.append(UserPromptPart(queued.text))
+        #
+        # Rebinds `parts` to a NEW list rather than appending in place. On a regenerate
+        # the node's request is built by the library reusing the *same* parts list object
+        # as the last history message — which the store handed out by reference from its
+        # in-memory tree. Appending would therefore graft the steering text into the
+        # operator's original user bubble for every later replay. Same invariant
+        # `_with_tail_context` documents: never mutate what the store shares.
+        queued = run.drain_messages()
+        if queued:
+            node.request.parts = [
+                *node.request.parts,
+                *(UserPromptPart(message.text) for message in queued),
+            ]
 
     if partial_history_ref is not None:
         # Let the caller reach this turn's current partial state at any point — even
@@ -770,6 +781,7 @@ async def _verify_and_correct(
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
+    drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -791,6 +803,12 @@ async def _verify_and_correct(
     # the original attempt) through the injected nudge ModelRequest (the first
     # new message of the correction) — two adjacent messages.
     clean_drop = (len(turn.messages) - 1, len(turn.messages))
+    # Publish the range before re-driving, so a stop *during* the correction (an
+    # inactivity bound, the operator's Stop) drops the same two messages the completed
+    # path does. Without it, a stop here persists the rejected answer and a user message
+    # nobody typed, and both replay to the model on every later turn.
+    if drop_ref is not None:
+        drop_ref[:] = [clean_drop]
     # One attempt only — no re-verify, so it cannot retry endlessly.
     corrected = await _drive_turn(
         run,
@@ -813,7 +831,14 @@ async def _verify_and_correct(
             run.parked_payload.clean_drop = clean_drop
         return corrected
     if corrected.answer is None:
-        return corrected  # hit a bound — caller finalizes it
+        # Hit a bound — the caller finalizes it, but the drop range has to ride along or
+        # the rejected answer and the synthetic nudge persist as real transcript.
+        return _TurnResult(
+            answer=None,
+            messages=corrected.messages,
+            clean_drop=clean_drop,
+            blocked_reason=corrected.blocked_reason,
+        )
     return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
@@ -1182,6 +1207,119 @@ def build_chat_orchestrator(
             model, categories=categories, instruction_providers=instruction_providers
         )
         announced: set[str] = set()
+
+        # --- the stop-flush hooks, armed before anything that can suspend -------------
+        # Everything below this block awaits: the history read, auto-compaction (a whole
+        # utility-model summarization, bounded by its own timeout), attachment resolution,
+        # the per-turn context providers. None of it emits, so the inactivity watchdog is
+        # ticking against a run that looks idle — and the compaction bound and the
+        # inactivity bound share a default, so a compaction that runs to its own limit
+        # trips the watchdog. Armed after that window, the hooks would be `None` exactly
+        # when they are needed and the operator's typed message would vanish on reload.
+        # The state they read is declared here and filled in below; a hook that fires
+        # early simply sees the empty values, which is the correct record for a turn that
+        # stopped before it began.
+        start = 0
+        persisted: list | None = None
+        stamp_ids: list[str] = []
+        # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
+        # turn has produced before the registry force-cancels this task (which would
+        # otherwise interrupt us before we reach `_finalize` below and silently drop
+        # the turn on the next reload — see `RunRegistry._flush_timeout`).
+        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
+        # Resolve the turn's compaction context once and anchor its boundary to the
+        # persistence index (`protect_from`, set below once `start` is known): everything
+        # from `start` on is this (to-be-persisted) turn and stays full, so a verifier
+        # re-attempt's injected nudge can't push the original tool returns onto the
+        # "prior" side. The same object rides every segment (drive → verify → finalize →
+        # resume), keeping one handle map so a result digested before an approval park
+        # can still be expanded.
+        active_compaction = (
+            compaction if compaction is not None else build_compaction_context(settings)
+        )
+
+        def _turn_messages_or_prompt() -> list[ModelMessage]:
+            # The turn's own messages — its slice of the partial history — or, if the
+            # bound tripped in the pre-model setup window (before the first step landed
+            # and `partial_history_ref` is still empty), the operator's typed prompt
+            # alone. Without the fallback, a stop there would persist nothing and the
+            # turn (the operator's own message) would vanish on reload. The plain
+            # `prompt` persists, not the attachment/context-augmented `user_prompt`:
+            # attachments ride on `persisted`/`stamp_ids` and per-turn context is
+            # re-resolved fresh each turn and never persisted.
+            if partial_history_ref:
+                turn = partial_history_ref[0]()[start:]
+                if turn:
+                    return turn
+            if isinstance(prompt, str) and prompt:
+                return [ModelRequest(parts=[UserPromptPart(prompt)])]
+            return []
+
+        def _on_timeout(detail: str) -> None:
+            # `detail` is already the operator-legible message the registry built
+            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
+            # verbatim so the persisted marker matches the toast the live stream showed.
+            messages = _turn_messages_or_prompt()
+            if not messages:
+                return
+            run.block(detail)
+            _finalize(
+                run,
+                _TurnResult(answer=None, messages=messages, blocked_reason=detail),
+                store=store,
+                conversation_id=conversation_id,
+                start=0,
+                clean_drop=_flush_clean_drop(),
+                attachment_ids=stamp_ids,
+                persisted=persisted,
+                compaction=active_compaction,
+            )
+
+        def _on_cancel() -> None:
+            # The cancel counterpart of `_on_timeout` above: same pre-cancel flush,
+            # but must not call `run.block(...)` — the registry's own
+            # `except asyncio.CancelledError` handler sets the terminal `cancelled`
+            # status once the cancellation lands, and that must not be clobbered.
+            messages = _turn_messages_or_prompt()
+            if not messages:
+                return
+            _finalize(
+                run,
+                _TurnResult(
+                    answer=None,
+                    messages=messages,
+                    blocked_reason=_CANCELLED_DETAIL,
+                ),
+                store=store,
+                conversation_id=conversation_id,
+                start=0,
+                clean_drop=_flush_clean_drop(),
+                attachment_ids=stamp_ids,
+                persisted=persisted,
+                compaction=active_compaction,
+            )
+
+        def _flush_clean_drop() -> tuple[int, int] | None:
+            # A stop landing *during* a verifier correction must drop the same two
+            # messages the completed path drops — the rejected answer and the synthetic
+            # nudge the operator never sent — or they persist as real transcript and
+            # replay to the model on every later turn. `drop_ref` carries the range in
+            # absolute history indices; the hooks above hand `_finalize` an already
+            # sliced list with `start=0`, so rebase it onto that slice.
+            if not drop_ref:
+                return None
+            reject_idx, nudge_idx = drop_ref[0]
+            if reject_idx < start:
+                return None
+            return reject_idx - start, nudge_idx - start
+
+        # Set by `_verify_and_correct` the moment it commits to a correction, so a stop
+        # mid-correction can drop the same range the completed path does.
+        drop_ref: list[tuple[int, int]] = []
+        run.on_timeout = _on_timeout
+        run.on_cancel = _on_cancel
+        # -----------------------------------------------------------------------------
+
         history = (
             await store.model_history(conversation_id)
             if store is not None and conversation_id is not None
@@ -1218,14 +1356,6 @@ def build_chat_orchestrator(
         # context appended below. `history` itself stays the persistence baseline.
         model_history = history
 
-        # Resolve the turn's compaction context once and anchor its boundary to the persistence
-        # index: everything from `start` on is this (to-be-persisted) turn and stays full, so a
-        # verifier re-attempt's injected nudge can't push the original tool returns onto the
-        # "prior" side. The same object rides every segment (drive → verify → finalize → resume),
-        # keeping one handle map so a result digested before an approval park can still be expanded.
-        active_compaction = (
-            compaction if compaction is not None else build_compaction_context(settings)
-        )
         active_compaction.protect_from = start
 
         # Auto-title context for this run — None disables it (feature off, or no
@@ -1257,8 +1387,6 @@ def build_chat_orchestrator(
             if inline_max_tokens is not None
             else settings.attachment_inline_max_tokens
         )
-        persisted: list | None = None
-        stamp_ids: list[str] = []
         user_prompt: str | list[Any] | None = prompt
         if attachment_ids and prompt is not None and uploads is not None:
             resolved = await resolve_attachments(
@@ -1297,73 +1425,6 @@ def build_chat_orchestrator(
                 # `start` is never re-persisted).
                 model_history = _with_tail_context(history, context_texts)
 
-        # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
-        # turn has produced before the registry force-cancels this task (which would
-        # otherwise interrupt us before we reach `_finalize` below and silently drop
-        # the turn on the next reload — see `RunRegistry._flush_timeout`).
-        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
-
-        def _turn_messages_or_prompt() -> list[ModelMessage]:
-            # The turn's own messages — its slice of the partial history — or, if the
-            # bound tripped in the pre-model setup window (before the first step landed
-            # and `partial_history_ref` is still empty), the operator's typed prompt
-            # alone. Without the fallback, a stop there would persist nothing and the
-            # turn (the operator's own message) would vanish on reload. The plain
-            # `prompt` persists, not the attachment/context-augmented `user_prompt`:
-            # attachments ride on `persisted`/`stamp_ids` and per-turn context is
-            # re-resolved fresh each turn and never persisted.
-            if partial_history_ref:
-                turn = partial_history_ref[0]()[start:]
-                if turn:
-                    return turn
-            if isinstance(prompt, str) and prompt:
-                return [ModelRequest(parts=[UserPromptPart(prompt)])]
-            return []
-
-        def _on_timeout(detail: str) -> None:
-            # `detail` is already the operator-legible message the registry built
-            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
-            # verbatim so the persisted marker matches the toast the live stream showed.
-            messages = _turn_messages_or_prompt()
-            if not messages:
-                return
-            run.block(detail)
-            _finalize(
-                run,
-                _TurnResult(answer=None, messages=messages, blocked_reason=detail),
-                store=store,
-                conversation_id=conversation_id,
-                start=0,
-                attachment_ids=stamp_ids,
-                persisted=persisted,
-                compaction=active_compaction,
-            )
-
-        def _on_cancel() -> None:
-            # The cancel counterpart of `_on_timeout` above: same pre-cancel flush,
-            # but must not call `run.block(...)` — the registry's own
-            # `except asyncio.CancelledError` handler sets the terminal `cancelled`
-            # status once the cancellation lands, and that must not be clobbered.
-            messages = _turn_messages_or_prompt()
-            if not messages:
-                return
-            _finalize(
-                run,
-                _TurnResult(
-                    answer=None,
-                    messages=messages,
-                    blocked_reason=_CANCELLED_DETAIL,
-                ),
-                store=store,
-                conversation_id=conversation_id,
-                start=0,
-                attachment_ids=stamp_ids,
-                persisted=persisted,
-                compaction=active_compaction,
-            )
-
-        run.on_timeout = _on_timeout
-        run.on_cancel = _on_cancel
         # Guards the `except Exception` flush below from double-persisting: once the
         # normal `_finalize` call has run, the only remaining calls are the best-effort
         # titling helpers, which already swallow their own exceptions internally — but
@@ -1416,6 +1477,7 @@ def build_chat_orchestrator(
                         partial_history_ref=partial_history_ref,
                         store=store,
                         request_limit=request_limit,
+                        drop_ref=drop_ref,
                     )
 
             _finalize(
@@ -1469,17 +1531,23 @@ def build_chat_orchestrator(
             # generic handler, which records the run as `error`. Mirrors the
             # timeout/cancel flush above but never touches `run.status` — the registry
             # is the one that decides the terminal outcome for an unhandled exception.
-            if not finalized and partial_history_ref:
+            # `_turn_messages_or_prompt` (and `start=0`, since it slices itself) rather
+            # than the raw partial history, for the same reason the two hook paths use
+            # it: an exception raised before the first step landed leaves
+            # `partial_history_ref` empty, and persisting that empty slice drops the
+            # operator's own typed prompt exactly the way a bound tripping in the prelude
+            # used to.
+            if not finalized and (messages := _turn_messages_or_prompt()):
                 _finalize(
                     run,
                     _TurnResult(
                         answer=None,
-                        messages=partial_history_ref[0](),
+                        messages=messages,
                         blocked_reason=_ERRORED_DETAIL,
                     ),
                     store=store,
                     conversation_id=conversation_id,
-                    start=start,
+                    start=0,
                     attachment_ids=stamp_ids,
                     persisted=persisted,
                     compaction=active_compaction,
@@ -1493,15 +1561,25 @@ def build_chat_orchestrator(
         finally:
             # Safety net: if the turn raised or was cancelled before the title was
             # consumed above, don't let the detached title-model call outlive the run.
-            # A bare cancel (this path is unwinding — it can't safely await), so it holds
-            # off past `announcing` for `_discard_title`'s reason: there's no model call
-            # left to abandon there, only the write and emit that must not be split.
-            if (
-                title_namer is not None
-                and not title_namer.task.done()
-                and not title_namer.announcing.is_set()
-            ):
-                title_namer.task.cancel()
+            if title_namer is not None and not title_namer.task.done():
+                if not title_namer.announcing.is_set():
+                    # Still waiting on the title model — nothing committed yet, so a
+                    # bare cancel is safe and this path is unwinding anyway.
+                    title_namer.task.cancel()
+                else:
+                    # Past `announcing` there is no model call left to abandon, only the
+                    # write and the emit, which must not be split. Left detached, it
+                    # would race the stream close in `RunRegistry._run`'s finally and
+                    # lose `conversation.titled` — the name reaching the database but
+                    # never the client. Shielded so an unwinding *cancellation* still
+                    # leaves the task alive to finish its write; on that path the await
+                    # itself aborts and the event is genuinely lost, which is the
+                    # accepted cost of a Stop landing in this exact window (the title is
+                    # in the database and appears on reload). On the error path — not
+                    # cancelled — the await completes and the frame rides the open
+                    # stream as it should.
+                    with suppress(Exception, asyncio.CancelledError):
+                        await asyncio.shield(title_namer.task)
 
     return orchestrate
 

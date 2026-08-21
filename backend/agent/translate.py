@@ -93,15 +93,18 @@ def _on_tool_event(
 ) -> None:
     if isinstance(event, FunctionToolCallEvent):
         part = event.part
-        # No-progress guard: trips before we announce a looping call.
-        if loop_breaker is not None:
-            loop_breaker.check(part.tool_name, part.args_as_dict())
         # tool.started is idempotent per run: an approval-deferred call re-fires
         # its call event on the resume turn, so announce each id once.
         if announced is not None and part.tool_call_id in announced:
             return
         if announced is not None:
             announced.add(part.tool_call_id)
+        # No-progress guard: trips before we announce a looping call — and *after* the
+        # dedupe above, so the re-fired event of a deferred call isn't counted a second
+        # time. Counting it twice would halve the effective repeat threshold for every
+        # tool an approval grant auto-approves, since those hops share one LoopBreaker.
+        if loop_breaker is not None:
+            loop_breaker.check(part.tool_name, part.args_as_dict())
         run.emit(
             ToolStarted(
                 tool_call_id=part.tool_call_id,

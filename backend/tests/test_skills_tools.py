@@ -6,7 +6,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from pydantic_ai import ModelRetry
+from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
@@ -17,6 +19,7 @@ from services.skills.store import SkillCatalogEntry
 from tools.deps import RunDeps
 from tools.skills import _skill_catalog_block, skills_toolset
 
+from ._helpers import client_app
 from .test_skills_bundle import SKILL_MD, _zip
 
 OWNER = "operator"
@@ -184,7 +187,7 @@ async def test_tools_degrade_when_the_capability_is_absent():
     for name, args in [
         ("open", ("anything",)),
         ("create", ("a-skill", "desc", "body")),
-        ("edit", ("a-skill", "old", "new")),
+        ("edit", ("a-skill", "old", "new", "why")),
     ]:
         result = await _tool(name)(_ctx(_deps()), *args)
         assert result["ok"] is False
@@ -218,7 +221,11 @@ async def test_edit_replaces_one_span():
     store = await _store()
     await _published(store)
     result = await _tool("edit")(
-        _ctx(_deps(skills=store)), "release-notes", "Collect the merged PRs.", "Collect the tags."
+        _ctx(_deps(skills=store)),
+        "release-notes",
+        "Collect the merged PRs.",
+        "Collect the tags.",
+        "The repo tags releases now.",
     )
     assert result["ok"] is True
     assert "Collect the tags." in (await store.get_by_name(OWNER, "release-notes")).body
@@ -235,7 +242,32 @@ async def test_edit_retries_with_a_precise_reason(body, old, expected):
     store = await _store()
     await _published(store, body=body)
     with pytest.raises(ModelRetry, match=expected):
-        await _tool("edit")(_ctx(_deps(skills=store)), "release-notes", old, "x")
+        await _tool("edit")(_ctx(_deps(skills=store)), "release-notes", old, "x", "why")
+
+
+async def test_rewriting_a_published_skill_is_the_one_gated_skill_tool():
+    """A published skill's body is loaded and *followed* on every later `skills_open`, in
+    conversations unrelated to the one that changed it — so untrusted content the agent
+    read this turn must not be able to poison a standing playbook without the operator
+    seeing it. `create` stays ungated: it can only write a draft, and publishing (the act
+    that makes a skill reachable at all) is already the operator's."""
+    # A real RunContext here, not the module's duck-typed one: `get_tools` is the path
+    # that stamps the approval kind onto each tool def, and it reads more of the context
+    # than a direct function call does.
+    ctx = RunContext(deps=_deps(skills=await _store()), model=TestModel(), usage=RunUsage())
+    tools = await skills_toolset().get_tools(ctx)
+    gated = {name for name, tool in tools.items() if tool.tool_def.kind == "unapproved"}
+    assert gated == {"edit"}
+
+
+async def test_the_edit_gate_reaches_the_approval_scope_vocabulary():
+    """The static mark is what `tools/catalog` discovers by inspection, so `skills_edit`
+    becomes a name a conversation grant or a task pre-authorization can name — without
+    the skills manifest having to declare it in `gated_tools`."""
+    async with client_app() as (client, _app):
+        scopes = {row["name"] for row in (await client.get("/tools/approval-scopes")).json()}
+    assert "skills_edit" in scopes
+    assert "skills_create" not in scopes  # a draft needs no approval
 
 
 # ── the injected catalog ─────────────────────────────────────────────────────────────────
@@ -291,7 +323,7 @@ async def test_edit_refuses_a_draft_the_same_way_open_does():
 
     with pytest.raises(ModelRetry) as caught:
         await _tool("edit")(
-            _ctx(_deps(skills=store)), "secret-draft", "private", "public"
+            _ctx(_deps(skills=store)), "secret-draft", "private", "public", "why"
         )
     message = str(caught.value)
     assert "No published skill named" in message
