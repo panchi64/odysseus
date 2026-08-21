@@ -68,6 +68,13 @@ _MAX_CLARIFYING_QUESTIONS = 3
 # enough not to blow either surface's own display budget.
 _TITLE_MAX_CHARS = 120
 
+# The namespaced tool names deep research *is* — every round is outbound search plus
+# browser fetch, and the pipeline has no other way to gather evidence. Named here rather
+# than imported from `services/offline` because this is a statement about what the
+# pipeline needs, not about what offline mode happens to suspend; the two sets coincide
+# today and each should be free to move.
+_REQUIRED_WEB_TOOLS = frozenset({"web_search", "web_fetch"})
+
 # The pipeline's own round loop enforces `research_time_limit_s` at round boundaries
 # (DR-3.1), but that check can't cover the final, un-timed "writing" step that runs
 # after the loop breaks — so the Run's own wall-clock bound (the outer backstop) is
@@ -576,6 +583,25 @@ async def _start_claimed(research_id: str, request: Request) -> ResearchOut:
             " straight to a plan) before starting",
         )
     question = vault.decrypt_str(row.question_enc)
+
+    # Research is a run path like any other, so it honors the same effective disabled set
+    # the chat turn, the approval-resume, and the scheduler's executor do (`AE-3.3`
+    # unioned with offline mode's automatic web suspension) — resolved through the one
+    # dependency that composes both sources, so this can't drift into applying one and
+    # dropping the other. Refuse rather than degrade: `_search_one`/`_read_one` treat a
+    # missing capability as "this source found nothing", so starting anyway would burn a
+    # full Run's model budget to produce an evidence-free report — and, worse, would read
+    # as research having *looked*. The message names the two switches that can cause it.
+    withheld = _REQUIRED_WEB_TOOLS & await deps.disabled_tools(request)
+    if withheld:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"deep research needs {', '.join(sorted(withheld))}, which "
+                f"{'is' if len(withheld) == 1 else 'are'} currently unavailable — "
+                "re-enable the web tools in settings, or leave offline mode, and start again"
+            ),
+        )
 
     settings = get_settings()
     registry = deps.models(request)

@@ -263,6 +263,54 @@ async def test_start_unknown_id_404s(monkeypatch):
         assert (await client.post("/research/does-not-exist/start")).status_code == 404
 
 
+def _never_runs(monkeypatch) -> None:
+    """Fail loudly if the pipeline is entered at all — a refused start must not spend a
+    Run, and must not reach the point where `deps.search`/`deps.fetcher` are dialled."""
+
+    async def run_research(plan, question, deps, emit):
+        raise AssertionError("the pipeline must not start with its web tools withheld")
+
+    monkeypatch.setattr("routes.research.run_research", run_research)
+
+
+async def test_start_refuses_when_the_operator_disabled_a_web_tool(monkeypatch):
+    """Deep research is nothing but search + fetch, so the operator's own disabled set
+    (`AE-3.3`) binds it exactly as it binds a chat turn — research is not an exemption
+    from the switch. Refused up front rather than degraded: the pipeline treats a missing
+    capability as "this source found nothing", so starting would burn a full Run to
+    produce an evidence-free report that reads as though it had looked."""
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+        _never_runs(monkeypatch)
+        assert (await client.put("/tools/web_search", json={"enabled": False})).status_code == 200
+
+        resp = await client.post(f"/research/{created['id']}/start")
+        assert resp.status_code == 409
+        assert "web_search" in resp.json()["detail"]
+        # Still a draft, so re-enabling the tool and pressing start again just works.
+        assert (await client.get(f"/research/{created['id']}")).json()["status"] == "draft"
+
+
+async def test_start_refuses_while_offline_suspends_the_web_tools(monkeypatch):
+    """The other half of the effective set: offline mode's automatic suspension is not a
+    thing the operator chose, and research honours it the same way. Both names are
+    reported, so the message tells them what is actually missing."""
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+        _never_runs(monkeypatch)
+        monkeypatch.setattr(
+            app.state.offline, "web_tools_disabled", lambda: frozenset({"web_search", "web_fetch"})
+        )
+
+        resp = await client.post(f"/research/{created['id']}/start")
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "web_search" in detail and "web_fetch" in detail
+        assert (await client.get(f"/research/{created['id']}")).json()["status"] == "draft"
+
+
 async def test_start_submits_a_run_and_persists_done_report_and_stats(monkeypatch):
     patch_model_resolution(monkeypatch)
     async with client_app() as (client, app):
