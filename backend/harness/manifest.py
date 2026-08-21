@@ -57,6 +57,9 @@ class HarnessContext:
     tool_categories: Mapping[str, AbstractToolset[RunDeps]] = field(default_factory=dict)
     instruction_providers: tuple[InstructionProvider, ...] = ()
     prompt_context_providers: tuple[PromptContextProvider, ...] = ()
+    # Every enabled manifest's ``network_tools``, unioned — for the feature that enforces
+    # the offline gate, which is not the same feature as the ones declaring the tools.
+    network_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,13 @@ class FeatureManifest:
     # ``ApprovalRequired`` from inside the call, so inspection can't find them) —
     # this feature's contribution to the approval-scope vocabulary.
     gated_tools: frozenset[str] = frozenset()
+    # Namespaced tool names that cannot work without internet access, so offline mode
+    # withholds them from the agent while the link is down. Declared by the feature that
+    # owns the tool rather than listed inside the offline service: offline mode's job is
+    # to suspend network-dependent capabilities, and it should not have to be edited every
+    # time a feature grows another one — which is exactly what a hard-coded set there
+    # would require, silently offering a dead tool until someone remembered.
+    network_tools: frozenset[str] = frozenset()
     # Dynamic instruction providers the engine registers on every agent it builds —
     # each resolves its capability from the run's bag and returns "" to no-op. These
     # render at the *head* of every request, so they should stay small and low-churn:

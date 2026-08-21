@@ -15,7 +15,6 @@ that flips to a private address after the account was added is still refused.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any
 
 import httpx
@@ -40,7 +39,7 @@ from .models import (
     OutgoingMail,
     TransportCapabilities,
 )
-from .parse import html_to_text, snippet_of
+from .parse import html_to_text, parse_utc, snippet_of
 
 logger = logging.getLogger(__name__)
 
@@ -191,12 +190,23 @@ class JmapTransport:
         await self._call([["Email/set", {"accountId": None, "update": {uid: patch}}, "e0"]])
 
     async def move(self, folder: str, uid: str, destination: str) -> None:
+        if folder == destination:
+            # Already where it was asked to go. Worth an explicit branch because the two
+            # patch keys below would collapse into one — a dict literal keeps the last —
+            # and the removal half would silently vanish, leaving a patch that does
+            # nothing while reporting success.
+            return
         patch = {f"mailboxIds/{folder}": None, f"mailboxIds/{destination}": True}
         await self._call([["Email/set", {"accountId": None, "update": {uid: patch}}, "e0"]])
 
     async def delete(self, folder: str, uid: str) -> None:
+        # Delete means the message is gone from where it was — the caller drops it from
+        # the cache on return, so a no-op here reads to the operator as a message that
+        # deleted itself and then came back on the next sync. Trashing is the recoverable
+        # default, but a message *already* in Trash has no gentler step left: emptying the
+        # trash is a destroy, exactly as every mail client treats it.
         trash = await self._role_mailbox(ROLE_TRASH)
-        if trash is None:
+        if trash is None or folder == trash:
             await self._call([["Email/set", {"accountId": None, "destroy": [uid]}, "e0"]])
             return
         await self.move(folder, uid, trash)
@@ -322,7 +332,7 @@ def _to_header(email: dict[str, Any]) -> MailHeader:
         uid=str(email["id"]),
         sender=sender,
         subject=str(email.get("subject") or ""),
-        received_at=_parse_utc(email.get("receivedAt")),
+        received_at=parse_utc(email.get("receivedAt")),
         to=_addresses(email.get("to")),
         cc=_addresses(email.get("cc")),
         snippet=snippet_of(str(email.get("preview") or "")),
@@ -342,13 +352,6 @@ def _first(value: Any) -> str | None:
     return str(value) if isinstance(value, str) else None
 
 
-def _parse_utc(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _bodies(email: dict[str, Any]) -> tuple[str, str | None]:

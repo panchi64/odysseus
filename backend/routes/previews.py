@@ -2,12 +2,16 @@
 
 The agent runs a dev server in its sandbox (``start_preview``); this forwards the
 operator's browser to it. The address carries an unguessable per-preview **token**
-(``/previews/{token}/…``) which *is* the credential: that lets the frontend host
-the preview in a sandboxed iframe **without** ``allow-same-origin`` (an opaque
-origin that can't send the operator's auth cookie), and the token rides every
+(``/previews/{token}/…``) which *is* the credential, and the token rides every
 relative subresource load automatically. So this subtree is exempt from the cookie
 gate (see ``core/auth``) — it only ever proxies to a loopback preview container,
-never to operator data.
+never to operator data. It is *not* exempt from the vault-locked gate: locking takes
+the preview offline with everything else.
+
+The opaque origin the frontend's sandboxed iframe provides is also enforced here, as a
+``Content-Security-Policy: sandbox`` without ``allow-same-origin`` on every proxied
+response — so agent-authored HTML is isolated from the API origin however it is opened,
+not only when the frontend happens to frame it correctly.
 
 Both legs are byte-transparent: HTTP via a streaming ``httpx`` proxy, WebSocket via
 a ``websockets`` bridge (so Vite/HMR live-reload works). The operator's credentials
@@ -25,6 +29,7 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from routes import deps
 from services.sandbox import PreviewHandle
 
 router = APIRouter(prefix="/previews", tags=["previews"])
@@ -48,12 +53,30 @@ _HOP_BY_HOP = frozenset(
 _STRIP_REQUEST = _HOP_BY_HOP | {"cookie", "authorization", "host"}
 # Outbound: the preview must not plant cookies on the API origin, and a server
 # default of `x-frame-options: deny` must not block the iframe this feature renders
-# into (the sandboxed iframe is the isolation boundary, not a framing header).
-_STRIP_RESPONSE = _HOP_BY_HOP | {"set-cookie", "x-frame-options"}
+# into (the sandboxed iframe is the isolation boundary, not a framing header). The
+# upstream's own CSP is dropped so it can't weaken or complicate ours below.
+_STRIP_RESPONSE = _HOP_BY_HOP | {
+    "set-cookie",
+    "x-frame-options",
+    "content-security-policy",
+    "content-security-policy-report-only",
+}
+
+# The opaque origin, enforced here rather than assumed of the caller. This subtree is
+# served from the API's own origin, so agent-authored HTML reaching it top-level (a new
+# tab, a link out of the iframe, anything that isn't the frontend's sandboxed iframe)
+# would otherwise be same-origin with the API and able to read `/conversations` with the
+# operator's session. `sandbox` *without* `allow-same-origin` puts the document in an
+# opaque origin — no cookies, no credentialed same-origin fetch — while leaving a dev
+# server fully functional. `routes/views.py` makes the same call for the same reason; the
+# frontend's iframe attributes are UX, not the enforcement point.
+_PREVIEW_SANDBOX = (
+    "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
+)
 
 
 def _preview(request_or_ws: Request | WebSocket, token: str) -> PreviewHandle | None:
-    manager = request_or_ws.app.state.sandbox
+    manager = deps.sandbox_sessions(request_or_ws)
     return manager.resolve_preview(token) if manager is not None else None
 
 
@@ -78,6 +101,7 @@ def _response_headers(headers: httpx.Headers, prefix: str) -> dict[str, str]:
             continue
         out[key] = _rewrite_location(value, prefix) if lower == "location" else value
     out["x-content-type-options"] = "nosniff"
+    out["content-security-policy"] = _PREVIEW_SANDBOX
     return out
 
 
@@ -88,7 +112,7 @@ async def proxy_http(token: str, path: str, request: Request) -> Response:
         raise HTTPException(status_code=404, detail="preview not found")
 
     prefix = f"/previews/{token}"
-    client: httpx.AsyncClient = request.app.state.preview_client
+    client: httpx.AsyncClient = deps.preview_client(request)
     url = httpx.URL(
         scheme="http",
         host="127.0.0.1",

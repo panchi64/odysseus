@@ -42,11 +42,6 @@ from services.settings_store import OFFLINE_AUTO_KEY, OFFLINE_MANUAL_KEY, Settin
 
 logger = logging.getLogger(__name__)
 
-# The namespaced tool names hidden from the agent while offline (the "web" category
-# prefixes its `search`/`fetch` verbs). Gated via RunDeps.disabled_tools at the route.
-_WEB_TOOLS = frozenset({"web_search", "web_fetch"})
-
-
 def _flag(value: bool) -> str:
     """The on-disk form of a switch — settings are plain strings."""
     return "true" if value else "false"
@@ -94,9 +89,11 @@ class OfflineModeService:
         recover_threshold: int,
         auto_default: bool = True,
         probe: Callable[[], Awaitable[bool]] | None = None,
+        network_tools: frozenset[str] = frozenset(),
     ) -> None:
         self._searxng = searxng
         self._browser = browser
+        self._network_tools = network_tools
         self._settings = settings_store
         self._owner = owner_id
         self._interval_s = interval_s
@@ -159,8 +156,15 @@ class OfflineModeService:
         )
 
     def web_tools_disabled(self) -> frozenset[str]:
-        """The web tool names to hide from the agent while offline (empty when online)."""
-        return _WEB_TOOLS if self._effective_offline else frozenset()
+        """The network-dependent tool names to hide from the agent while offline (empty
+        when online).
+
+        The set comes from the feature manifests — each declares which of its own tools
+        need the internet — not from a list here. Offline mode's job is to suspend
+        network-dependent capabilities; which tools those *are* is knowledge the feature
+        that ships them owns, and a copy here would go stale the first time a feature grew
+        another one, leaving a dead tool on offer."""
+        return self._network_tools if self._effective_offline else frozenset()
 
     # --- operator switches ------------------------------------------------
 

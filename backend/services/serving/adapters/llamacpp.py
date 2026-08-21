@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError, ServingError
 
 from .. import gguf, hf
 from ..download import DownloadSpec, worker_spec
@@ -231,14 +231,16 @@ class LlamaCppAdapter(EngineAdapter):
     def validate_artifact(self, path: Path) -> None:
         # llama.cpp serves one GGUF file, not a directory of weights.
         if not path.exists():
-            raise ServingError(f"there is nothing at {path}")
+            raise InvalidInputError(f"there is nothing at {path}")
         if path.is_dir():
-            raise ServingError(
+            raise InvalidInputError(
                 f"{path} is a folder — llama.cpp serves a single .gguf file, so point it "
                 "at the file itself"
             )
         if path.suffix.lower() != ".gguf":
-            raise ServingError(f"{path.name} is not a .gguf file — llama.cpp only serves GGUF")
+            raise InvalidInputError(
+                f"{path.name} is not a .gguf file — llama.cpp only serves GGUF"
+            )
 
     async def probe_context_window(self, port: int) -> int | None:
         """The per-slot context of the running server, read from ``/props``. This is the

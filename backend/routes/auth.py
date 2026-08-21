@@ -46,7 +46,7 @@ async def auth_status(request: Request) -> AuthStatus:
     return AuthStatus(
         initialized=vault.is_initialized,
         unlocked=vault.is_unlocked,
-        auth_enabled=request.app.state.settings.auth_enabled,
+        auth_enabled=deps.settings(request).auth_enabled,
     )
 
 
@@ -86,11 +86,21 @@ async def login(body: PasswordBody, request: Request, response: Response) -> Tok
 
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response) -> dict[str, str]:
+    """End the session and lock the vault: logging out zeroes the key, never just the cookie.
+
+    The DEK is process-global for the single operator, so a session that outlived the
+    key would be able to do nothing anyway — and one that kept the key alive would let
+    "log out" leave every decrypted secret, PTY, and secret-vault session running. Both
+    endpoints therefore converge on the same teardown; `/auth/lock` is the variant that
+    keeps no cookie semantics of its own.
+    """
     token = token_from_headers(
         request.headers.get("authorization"), request.cookies.get(SESSION_COOKIE)
     )
     if token:
         deps.auth_manager(request).revoke(token)
+    deps.vault(request).lock()
+    deps.auth_manager(request).revoke_all()
     response.delete_cookie(SESSION_COOKIE)
     return {"status": "logged out"}
 

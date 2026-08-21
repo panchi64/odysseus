@@ -11,10 +11,12 @@ levels two and three of it:
    supporting files are real files: references to read, scripts to run with ``code_execute``.
    Nothing about a skill ever touches the host — a skill's script is ordinary sandboxed code.
 
-``create`` and ``edit`` let the agent write skills down as it learns them, always as
-**drafts**: publishing is the operator's act, and it is what makes a skill visible to the
-model at all. That split is also the seam `SKILL-4` (auto-publishing high-confidence
-recoveries) will plug into.
+``create`` and ``edit`` let the agent write skills down as it learns them. ``create``
+always writes a **draft**: publishing is the operator's act, and it is what makes a skill
+visible to the model at all. That split is also the seam `SKILL-4` (auto-publishing
+high-confidence recoveries) will plug into — and it is why ``create`` needs no approval
+while ``edit``, which rewrites something already published and therefore already being
+followed, is approval-gated (`AE-3`).
 
 Thin like every tool here: the format rules, sealing, and validation live in
 ``services/skills``; a missing capability degrades to a message the model can act on.
@@ -134,6 +136,11 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
             result["note"] = f"The skill's files could not be staged: {exc}"
         return result
 
+    # Ungated on purpose, and the *only* skill write that is: `create` can produce
+    # nothing but a draft, and a draft reaches the model exactly never — `open` and
+    # `catalog` are both `published_only`. Publishing is the operator's own act, so their
+    # review already stands where an approval prompt would. Gating this would ask them the
+    # same question twice.
     @toolset.tool
     async def create(ctx: RunContext[RunDeps], name: str, description: str, body: str) -> dict:
         """Write down a reusable procedure you worked out, so it's available in future
@@ -171,10 +178,31 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
             "note": "Saved as a draft for the operator to review and publish.",
         }
 
-    @toolset.tool
-    async def edit(ctx: RunContext[RunDeps], name: str, old_text: str, new_text: str) -> dict:
+    # Approval-gated (`AE-3`), statically rather than conditionally: unlike a document,
+    # a skill has no "born in this conversation" case to exempt — `edit` resolves
+    # `published_only`, so the only skills it can reach are ones the operator themselves
+    # published, and a skill the agent created here is still a draft it cannot touch.
+    # The stakes are why: a published skill's body is loaded and *followed* on every later
+    # `skills_open`, in conversations that have nothing to do with this one, so untrusted
+    # content the agent merely read this turn — a fetched page, an email — could otherwise
+    # instruct it to poison a standing playbook permanently, with nothing shown to the
+    # operator. Marked on the tool (rather than raising `ApprovalRequired` inside it) so
+    # `tools/catalog._is_statically_gated` discovers it by inspection and it needs no
+    # `gated_tools` declaration in the skills manifest.
+    @toolset.tool(requires_approval=True)
+    async def edit(
+        ctx: RunContext[RunDeps],
+        name: str,
+        old_text: str,
+        new_text: str,
+        explanation: str,
+    ) -> dict:
         """Make a small, targeted change to a skill's instructions — refine a step, fix a
         detail, add a pitfall you just hit — without rewriting the whole thing.
+
+        A published skill is followed in *future* conversations too, so rewriting one is
+        shown to the operator for approval first. ``explanation`` MUST be a plain-language
+        note of what you are changing and why — it is what they judge the request on.
 
         ``old_text`` must appear **exactly once** in the skill's text; include enough
         surrounding context to make it unique. To append rather than replace, use the last

@@ -12,6 +12,7 @@ capability already uses — one HTML-to-text implementation in the codebase, not
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from email import message_from_bytes, policy
 from email.headerregistry import Address
 from email.message import EmailMessage
@@ -126,6 +127,21 @@ def snippet_of(text: str, limit: int = SNIPPET_CHARS) -> str:
     """A single-line preview of ``text``, whitespace-collapsed and capped."""
     collapsed = _WHITESPACE.sub(" ", text).strip()
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
+
+
+def parse_utc(value: Any) -> datetime | None:
+    """An ISO-8601 timestamp from a JSON mail API, or ``None`` if it is absent or junk.
+
+    Shared by the Graph and JMAP adapters, which had identical private copies. Both
+    APIs spell UTC as a trailing ``Z``, which ``fromisoformat`` did not accept before
+    3.11 and which is normalized here so the two adapters cannot drift apart on it.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def build_outgoing(sender: MailAddress, message: OutgoingMail) -> EmailMessage:

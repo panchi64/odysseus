@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import DegradedCapabilityError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
@@ -144,30 +144,24 @@ async def register_server(request: Request, body: McpServerCreate) -> McpServerO
 async def update_server(
     request: Request, server_id: str, body: McpServerUpdate
 ) -> McpServerOut:
-    try:
-        view = await deps.mcp(request).update(
-            OPERATOR_ID,
-            server_id,
-            name=body.name,
-            enabled=body.enabled,
-            command=body.command,
-            args=body.args,
-            env=body.env,
-            url=body.url,
-            auth_required=body.auth_required,
-            credentials=body.credentials,
-        )
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    view = await deps.mcp(request).update(
+        OPERATOR_ID,
+        server_id,
+        name=body.name,
+        enabled=body.enabled,
+        command=body.command,
+        args=body.args,
+        env=body.env,
+        url=body.url,
+        auth_required=body.auth_required,
+        credentials=body.credentials,
+    )
     return _out(view)
 
 
 @router.delete("/servers/{server_id}", status_code=204)
 async def remove_server(request: Request, server_id: str) -> Response:
-    try:
-        await deps.mcp(request).remove(OPERATOR_ID, server_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await deps.mcp(request).remove(OPERATOR_ID, server_id)
     return Response(status_code=204)
 
 
@@ -175,10 +169,7 @@ async def remove_server(request: Request, server_id: str) -> Response:
 async def connect_server(request: Request, server_id: str) -> McpServerOut:
     """Reconnect and re-discover (`MCP-3`). Answers with the outcome either way — a
     server that refuses comes back with ``status: "error"`` and the reason."""
-    try:
-        view = await deps.mcp(request).connect(OPERATOR_ID, server_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    view = await deps.mcp(request).connect(OPERATOR_ID, server_id)
     return _out(view)
 
 
@@ -189,13 +180,10 @@ async def set_tool_policy(
     """Enable/disable a single tool (`MCP-1`) or mark it trusted / revoke that trust
     (`AE-3.6`). Marking trusted is an operator action; the agent never reaches here."""
     registry = deps.mcp(request)
-    try:
-        policy = await registry.set_tool_policy(
-            OPERATOR_ID, server_id, tool_name, enabled=body.enabled, trusted=body.trusted
-        )
-        view = await registry.get(OPERATOR_ID, server_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    policy = await registry.set_tool_policy(
+        OPERATOR_ID, server_id, tool_name, enabled=body.enabled, trusted=body.trusted
+    )
+    view = await registry.get(OPERATOR_ID, server_id)
     description = next((t.description for t in view.tools if t.name == tool_name), "")
     return McpToolOut(
         name=tool_name,

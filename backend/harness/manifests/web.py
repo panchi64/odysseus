@@ -129,6 +129,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         auto_default=settings.offline_auto_default,
         # Probing off ⇒ assume online (no network); only the manual switch acts.
         probe=None if settings.offline_check_enabled else _assume_online,
+        # Every feature's declared network-dependent tools, not just this one's: offline
+        # mode is the gate for all of them.
+        network_tools=ctx.network_tools,
     )
     await ctx.lifecycle.start("offline", start=offline.start, stop=offline.stop)
     return FeatureRuntime(
@@ -153,5 +156,9 @@ MANIFEST = FeatureManifest(
         ScopeClaim("status", ("/offline",)),
     ),
     toolsets=(("web", web_toolset),),
+    # Both of this feature's tools *are* the internet — a search with no link reaches no
+    # engine and a fetch renders nothing — so offline mode withholds them rather than
+    # offering the model a tool that can only fail.
+    network_tools=frozenset({"web_search", "web_fetch"}),
     build=_build,
 )

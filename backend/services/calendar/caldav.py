@@ -18,7 +18,9 @@ Three things shape the implementation:
 
 **Scope.** Sync is *pull-authoritative with a first-time push*: remote changes win on
 conflict (the server is the shared copy), local events that have never been pushed are
-uploaded, and an event the server no longer has is removed locally. A local **deletion** is
+uploaded, and an event the server no longer has is removed locally — but only when the
+remote listing came back whole, since a truncated one can't tell a deleted event from one
+it never reached (`MAX_REMOTE_OBJECTS`). A local **deletion** is
 not propagated — knowing a row was deleted rather than never created needs a tombstone the
 schema doesn't carry, and inventing a heuristic here would silently delete the operator's
 data off a server shared with other clients.
@@ -40,7 +42,9 @@ from services.calendar.service import CalendarService, EventView
 logger = logging.getLogger(__name__)
 
 # The remote is not asked for an unbounded object list in one breath; a collection larger
-# than this is truncated with a log line rather than held whole in memory.
+# than this is truncated with a log line rather than held whole in memory. Truncation is
+# reported back to the reconciler (`RemoteListing.truncated`) because a partial listing
+# changes what the sync is allowed to conclude — see `_apply_remote`.
 MAX_REMOTE_OBJECTS = 5000
 
 
@@ -66,6 +70,21 @@ class RemoteCalendar(Protocol):
 
 
 Connector = Callable[[str, str | None, str | None], RemoteCalendar]
+
+
+@dataclass(frozen=True)
+class RemoteListing:
+    """One pass over the remote collection: its objects as ``(ics, href, etag)``, plus
+    whether the listing was cut short at :data:`MAX_REMOTE_OBJECTS`.
+
+    ``truncated`` is not bookkeeping — it is what stops the reconciler from reading a
+    partial listing as a complete one. The UIDs a truncated pass saw say nothing about
+    the objects it never reached, and treating them as the server's whole inventory is
+    how a sync deletes the operator's data.
+    """
+
+    objects: list[tuple[str, str | None, str | None]]
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,20 +143,27 @@ class CalDavSync:
 
     def _read_remote(
         self, url: str, username: str | None, password: str | None
-    ) -> list[tuple[str, str | None, str | None]]:
-        """Every object on the collection as ``(ics, href, etag)``. One thread hop covers
-        connect *and* list, because each is its own blocking round-trip."""
+    ) -> RemoteListing:
+        """Every object on the collection as ``(ics, href, etag)``, up to the cap. One
+        thread hop covers connect *and* list, because each is its own blocking
+        round-trip. A listing that hit the cap comes back flagged rather than silently
+        short, so the merge can tell "the server has these" from "these are the first
+        few thousand the server mentioned"."""
         collection = self._connector(url, username, password)
         objects: list[tuple[str, str | None, str | None]] = []
+        truncated = False
         for index, obj in enumerate(collection.events()):
             if index >= MAX_REMOTE_OBJECTS:
+                truncated = True
                 logger.warning(
-                    "calendar: remote collection exceeds %d objects; truncating the sync",
+                    "calendar: remote collection exceeds %d objects; truncating the sync "
+                    "(events past the cap are not synced, and nothing is removed locally "
+                    "this pass)",
                     MAX_REMOTE_OBJECTS,
                 )
                 break
             objects.append((_data(obj), _href(obj), _etag(obj)))
-        return objects
+        return RemoteListing(objects=objects, truncated=truncated)
 
     def _write_remote(
         self,
@@ -166,9 +192,10 @@ class CalDavSync:
         self,
         owner_id: str,
         calendar_id: str,
-        remote: Sequence[tuple[str, str | None, str | None]],
+        remote: RemoteListing,
     ) -> SyncResult:
-        """Merge the server's objects in, then drop local events the server no longer has.
+        """Merge the server's objects in, then drop local events the server no longer has
+        — *unless* the listing was truncated, in which case nothing is removed.
 
         An object whose ``etag`` matches what we already recorded is **not re-parsed** —
         that is the whole point of an etag, and it keeps a routine sync over a large
@@ -177,7 +204,7 @@ class CalDavSync:
         created = updated = skipped = 0
         seen_uids: set[str] = set()
 
-        for document, href, etag in remote:
+        for document, href, etag in remote.objects:
             for entry in parse_ics(document):
                 if entry.uid is None:
                     skipped += 1
@@ -225,7 +252,24 @@ class CalDavSync:
                     logger.warning("calendar: remote event rejected locally", exc_info=True)
                     skipped += 1
 
-        removed = await self._remove_vanished(owner_id, calendar_id, seen_uids)
+        if remote.truncated:
+            # `seen_uids` covers only the front of the collection, so every local event
+            # whose object sits past the cap looks "gone from the server" and would be
+            # deleted — permanently, on every sync, for any calendar bigger than the cap.
+            # A partial listing is not evidence that anything was deleted upstream, so
+            # the vanished pass is skipped whole rather than scoped: what came back is
+            # whichever objects the server chose to send first, in an order we neither
+            # control nor can map onto a subset of local events, so there is no slice of
+            # the local calendar this listing can safely speak for.
+            logger.warning(
+                "calendar: the remote listing stopped at the %d-object cap, so no local "
+                "event was removed this sync — a partial listing can't tell a deleted "
+                "event from one it never reached",
+                MAX_REMOTE_OBJECTS,
+            )
+            removed = 0
+        else:
+            removed = await self._remove_vanished(owner_id, calendar_id, seen_uids)
         return SyncResult(
             pulled_created=created,
             pulled_updated=updated,

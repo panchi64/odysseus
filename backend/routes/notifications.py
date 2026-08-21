@@ -13,32 +13,19 @@ only exposes what the service already recorded.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
-from contextlib import suppress
 from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.sse import parse_last_event_id, sse_stream
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
-from runs import parse_last_event_id
-from services.notifications import NotificationEvent, NotificationService, NotificationView
+from services.notifications import NotificationEvent, NotificationView
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
-
-_SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",  # disable proxy buffering so frames flush live
-}
-# Mirrors runs/transport.py's constants — same framing, separate surface.
-_KEEPALIVE_INTERVAL_S = 15.0
-_RELAY_QUEUE_MAX = 256
 
 
 class NotificationOut(CamelModel):
@@ -125,38 +112,11 @@ async def mark_all_read(request: Request) -> MarkReadOut:
     return MarkReadOut(updated=updated)
 
 
-def _stream_response(service: NotificationService, after_seq: int) -> StreamingResponse:
-    async def frames() -> AsyncIterator[str]:
-        # Pump through a local queue so the keepalive timeout sits on the queue, not on
-        # the subscribe generator itself (mirrors runs/transport.py's sse_response).
-        queue: asyncio.Queue[NotificationEvent | None] = asyncio.Queue(maxsize=_RELAY_QUEUE_MAX)
-
-        async def pump() -> None:
-            try:
-                async for event in service.subscribe(after_seq):
-                    await queue.put(event)
-            finally:
-                with suppress(asyncio.QueueFull):
-                    queue.put_nowait(None)
-
-        task = asyncio.create_task(pump())
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), _KEEPALIVE_INTERVAL_S)
-                except TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                if item is None:
-                    break
-                payload = _envelope(item).model_dump_json(by_alias=True)
-                yield f"id: {item.seq}\ndata: {payload}\n\n"
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-    return StreamingResponse(frames(), media_type="text/event-stream", headers=_SSE_HEADERS)
+def _frame(event: NotificationEvent) -> str:
+    """One notification as an SSE frame — the same framing the run transport emits, since
+    the client parses both with one reader."""
+    payload = _envelope(event).model_dump_json(by_alias=True)
+    return f"id: {event.seq}\ndata: {payload}\n\n"
 
 
 @router.get("/stream")
@@ -164,4 +124,5 @@ async def stream_notifications(request: Request, last_event_id: int | None = Que
     """SSE stream of `notification.created`/`notification.updated`. Reconnect with
     `Last-Event-ID` to replay from the in-memory ring buffer (process-lifetime)."""
     after = parse_last_event_id(request.headers.get("last-event-id"), last_event_id)
-    return _stream_response(deps.notifications(request), after)
+    service = deps.notifications(request)
+    return sse_stream(lambda: service.subscribe(after), _frame)

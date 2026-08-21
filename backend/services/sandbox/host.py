@@ -179,6 +179,17 @@ async def _confine(command: str) -> str:
     return await SandboxManager.wrap_with_sandbox(command)
 
 
+def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the whole process group, not just the shell — otherwise a child the command
+    spawned (a server, a backgrounded job) outlives whatever stopped its parent."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+    except OSError:  # already reaped, or no such group
+        pass
+
+
 async def run_on_host(
     command: str,
     *,
@@ -186,7 +197,8 @@ async def run_on_host(
     confinement: HostConfinement | None = None,
 ) -> SandboxResult:
     """Run ``command`` in the host shell, after approval. Bounded by a wall-clock
-    timeout; the process group is killed on overrun.
+    timeout; the process group is killed on overrun — and on cancellation, so a stopped
+    run never leaves the command's tree running on the operator's machine.
 
     ``confinement`` is resolved by the caller (see :func:`resolve_confinement`) and passed
     in rather than looked up here, so the tool reports the same fence it asked for. ``None``
@@ -210,16 +222,19 @@ async def run_on_host(
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except TimeoutError:
-        # Kill the whole process group, not just the shell — otherwise a child the
-        # command spawned (a server, a backgrounded job) survives the timeout.
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
+        _kill_tree(proc)
         await proc.wait()
         return SandboxResult(
             exit_code=124, stdout="", stderr="host command timed out", timed_out=True
         )
+    except BaseException:
+        # Cancellation lands here — the run hit its inactivity/wall-clock bound, or the
+        # operator pressed Stop. Unwinding without reaping would leave the approved
+        # command's whole tree alive on the operator's real machine with no run left to
+        # stop it, which is precisely what the process group exists to prevent. Not
+        # awaited: this coroutine is already being torn down, and the group is signalled.
+        _kill_tree(proc)
+        raise
     return SandboxResult(
         exit_code=proc.returncode or 0,
         stdout=out.decode("utf-8", "replace"),

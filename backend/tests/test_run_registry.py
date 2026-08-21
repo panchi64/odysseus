@@ -116,6 +116,71 @@ async def test_inactivity_timeout():
     assert events[-1].body.outcome == "blocked"
 
 
+async def test_keepalive_holds_a_long_silent_call_open_past_the_inactivity_bound():
+    # A non-streaming model call — a long report being generated — emits nothing between
+    # phase boundaries. Without this the run would be stopped for idling while making real
+    # progress, and every feature with a slow call would hand-roll its own heartbeat.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.1)
+
+    async def orch(run):
+        run.emit(AnswerDelta(text="start"))
+        async with run.keepalive():
+            await asyncio.sleep(0.5)  # five times the bound, silent throughout
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert run.stream.replay()[-1].body.outcome == "done"
+
+
+async def test_the_bound_applies_again_the_moment_the_call_returns():
+    # The scope covers one awaited call, not the rest of the run: leaving it must not
+    # leave the watchdog disarmed.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.1)
+
+    async def orch(run):
+        async with run.keepalive():
+            await asyncio.sleep(0.3)
+        await asyncio.sleep(5)  # unprotected again → inactivity fires
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    notice = next(e.body for e in run.stream.replay() if e.body.type == "limit.notice")
+    assert notice.limit == "time"
+
+
+async def test_keepalive_beats_inside_a_bound_shorter_than_its_default_interval():
+    # The interval is a ceiling, not a fixed rate: a run held to a tight inactivity bound
+    # gets a proportionally faster heartbeat, so a shortened timeout can't outrun it.
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.06)
+
+    async def orch(run):
+        async with run.keepalive():
+            await asyncio.sleep(0.4)
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+
+
+async def test_keepalive_does_not_hide_a_failure_raised_inside_it():
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=1.0)
+
+    async def orch(run):
+        async with run.keepalive():
+            raise RuntimeError("the model refused")
+
+    run = reg.submit(kind="research", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.error
+    assert "the model refused" in (run.error or "")
+
+
 async def test_concurrency_limit_queues_bursts():
     reg = RunRegistry(max_concurrency=1)
     started1, release1 = asyncio.Event(), asyncio.Event()
@@ -438,6 +503,84 @@ async def test_on_terminal_sees_zero_subscribers_when_nobody_is_watching():
     await run.wait()
 
     assert seen["count"] == 0
+
+
+async def test_cancel_while_parked_survives_an_orchestrator_still_unwinding():
+    # A turn stays externally visible as `awaiting_input` while its orchestrator finishes
+    # its own post-park work (settling the concurrent title namer). A cancel landing in
+    # that window closes the stream; the orchestrator then returns into `_execute`, which
+    # must not emit onto the closed stream — doing so flipped the recorded `cancelled`
+    # outcome to `error` and fired the terminal hook a second time.
+    calls = []
+    reg = RunRegistry(on_terminal=calls.append)
+    parked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def orch(run):
+        run.park(None)
+        parked.set()
+        await release.wait()  # still running, but the run already reads as parked
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await parked.wait()
+
+    assert await reg.cancel(run.id) is True
+    release.set()
+    await asyncio.gather(run.task, return_exceptions=True)
+
+    assert run.status is RunStatus.cancelled
+    assert calls == [run]  # exactly once
+    assert _types(run)[-1] == "run.ended"
+    assert run.stream.replay()[-1].body.outcome == "cancelled"
+
+
+async def test_a_bound_tripping_just_after_a_park_still_flushes_the_parked_turn():
+    # `on_timeout` is disarmed at the park, so a bound tripping before the orchestrator
+    # has finished unwinding would otherwise block the run with the parked turn never
+    # persisted — the operator's own prompt included.
+    flushed = []
+    reg = RunRegistry(inactivity_timeout_s=0.05)
+
+    async def orch(run):
+        run.park(None)
+        run.on_timeout = None  # what the engine does once a turn has parked
+        run.on_park_cancel = lambda: flushed.append(run.id)
+        await asyncio.Event().wait()  # never returns; the bound trips here
+
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    assert flushed == [run.id]
+
+
+async def test_shutdown_cancels_live_runs_so_their_waiters_settle():
+    # Nothing else cancels an in-flight or parked run at shutdown, and the stores each run
+    # writes through are torn down right after — so a turn still executing would submit
+    # onto a stopped drainer and be discarded with no error. Registered last in the app's
+    # lifecycle (so it stops first), this gives every run its pre-cancel flush while those
+    # stores are still live, and settles anything awaiting the run's terminal transition.
+    reg = RunRegistry()
+    started = asyncio.Event()
+
+    async def running(run):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def parking(run):
+        run.park(None)
+
+    live = reg.submit(kind="chat", owner_id="operator", orchestrator=running)
+    idle = reg.submit(kind="chat", owner_id="operator", orchestrator=parking)
+    await started.wait()
+    await idle.wait()
+    assert idle.status is RunStatus.awaiting_input
+
+    await reg.shutdown()
+
+    assert live.status is RunStatus.cancelled
+    assert idle.status is RunStatus.cancelled
+    assert live.stream.closed and idle.stream.closed
 
 
 # --- duration formatting: exact minutes, no silent rounding --------------------------

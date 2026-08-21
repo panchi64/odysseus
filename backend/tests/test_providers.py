@@ -13,7 +13,7 @@ from core.db import make_engine
 from core.exceptions import DegradedCapabilityError
 from services import llm
 from services.providers import all_providers, get_provider
-from tests.test_registry import _registry
+from tests.test_registry import _registry, _resolve
 
 from ._helpers import client_app
 
@@ -114,7 +114,7 @@ async def test_provider_flows_into_the_resolved_spec():
         api_key="sk-ant-k",
     )
     await reg.set_role(OWNER, "main", [ep.id])
-    model = await reg.resolve("main", owner_id=OWNER)
+    model = await _resolve(reg, "main", owner_id=OWNER)
     assert isinstance(model, AnthropicModel)
 
 
@@ -135,22 +135,22 @@ async def test_stopped_managed_endpoint_is_skipped_in_the_chain():
     backup = await reg.create_endpoint(OWNER, name="cloud", base_url="http://b/v1", model="m2")
     await reg.set_role(OWNER, "utility", [local.id, backup.id])
 
-    model = await reg.resolve("utility", owner_id=OWNER)
+    model = await _resolve(reg, "utility", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel) and model.model_name == "m2"
 
     # Alone in the chain ⇒ degraded, and the per-conversation override rejects it too.
     await reg.set_role(OWNER, "utility", [local.id])
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("utility", owner_id=OWNER)
+        await _resolve(reg, "utility", owner_id=OWNER)
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("main", owner_id=OWNER, override_endpoint_id=local.id)
+        await _resolve(reg, "main", owner_id=OWNER, override_endpoint_id=local.id)
 
     # Back to running ⇒ resolvable again; the operator's `enabled` switch still wins.
     await reg.update_endpoint(OWNER, local.id, live_status="running")
-    assert (await reg.resolve("utility", owner_id=OWNER)).model_name == "m-local"
+    assert (await _resolve(reg, "utility", owner_id=OWNER)).model_name == "m-local"
     await reg.update_endpoint(OWNER, local.id, enabled=False)
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("utility", owner_id=OWNER)
+        await _resolve(reg, "utility", owner_id=OWNER)
 
 
 # --- the surface --------------------------------------------------------------

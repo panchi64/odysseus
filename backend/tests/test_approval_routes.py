@@ -28,15 +28,12 @@ def _install_sensitive_tool(monkeypatch):
     danger_categories())`` after boot so the catalog is exactly the one
     approval-required tool."""
 
-    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
-        return TestModel(custom_output_text="done")
-
     async def fake_resolve_detailed(self, role, **kwargs):
-        # The titler runs on this (toolless) agent after the approved turn
-        # completes; a plain text model names the thread without tool calls.
+        # One patch covers the whole run: the turn's own model and the titler that
+        # runs (on a toolless agent) after the approved turn completes both resolve
+        # through here. A plain text model names the thread without tool calls.
         return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
 
-    monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

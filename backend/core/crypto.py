@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -34,9 +34,25 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(stored_hash: str, password: str) -> bool:
+    # `VerificationError` is the parent of `VerifyMismatchError`: catching only the
+    # mismatch leaves every other verification failure (a truncated or foreign-format
+    # PHC string) escaping as a 500 out of the login route instead of a clean "no".
     try:
         return _PASSWORD_HASHER.verify(stored_hash, password)
-    except (VerifyMismatchError, InvalidHashError):
+    except (VerificationError, InvalidHashError):
+        return False
+
+
+def needs_rehash(stored_hash: str) -> bool:
+    """Whether a verifier predates the current Argon2 work factors.
+
+    Raising the cost parameters is worthless while every existing operator keeps
+    logging in against a hash minted under the old ones, so a successful unlock
+    re-mints the verifier through this.
+    """
+    try:
+        return _PASSWORD_HASHER.check_needs_rehash(stored_hash)
+    except (VerificationError, InvalidHashError):
         return False
 
 

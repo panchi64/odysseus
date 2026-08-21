@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from sqlmodel import Session, select
@@ -39,6 +40,17 @@ async def _registry() -> ModelRegistry:
     return ModelRegistry(engine, vault)
 
 
+async def _resolve(reg: ModelRegistry, role: str, **overrides) -> Model:
+    """The chain ``role`` resolves to, reached the way production reaches it.
+
+    Every caller — chat, research, the scheduler, titling — goes through
+    ``resolve_detailed`` (or ``resolve_background``, which delegates to it), so these
+    tests do too rather than through a model-only entry point nothing ships. The
+    assertions below are about the built chain, so they take ``.model`` off the result;
+    the reasoning-off settings that travel with it are covered separately."""
+    return (await reg.resolve_detailed(role, **overrides)).model
+
+
 async def test_single_endpoint_resolves_to_plain_model():
     reg = await _registry()
     ep = await reg.create_endpoint(
@@ -46,7 +58,7 @@ async def test_single_endpoint_resolves_to_plain_model():
     )
     await reg.set_role(OWNER, "main", [ep.id])
 
-    model = await reg.resolve("main", owner_id=OWNER)
+    model = await _resolve(reg, "main", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel)
     assert not isinstance(model, FallbackModel)
 
@@ -57,7 +69,7 @@ async def test_multi_endpoint_chain_wraps_in_fallback():
     backup = await reg.create_endpoint(OWNER, name="b", base_url="http://b/v1", model="m2")
     await reg.set_role(OWNER, "main", [primary.id, backup.id])
 
-    model = await reg.resolve("main", owner_id=OWNER)
+    model = await _resolve(reg, "main", owner_id=OWNER)
     assert isinstance(model, FallbackModel)
     assert len(model.models) == 2
 
@@ -69,14 +81,14 @@ async def test_unbound_utility_is_degraded():
     # utility no longer inherits main's chain — an unbound utility is degraded;
     # the chat layer reuses the resolved main model instead.
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("utility", owner_id=OWNER)
+        await _resolve(reg, "utility", owner_id=OWNER)
 
 
 async def test_bound_utility_resolves_independently():
     reg = await _registry()
     ep = await reg.create_endpoint(OWNER, name="util", base_url="http://u/v1", model="u")
     await reg.set_role(OWNER, "utility", [ep.id])
-    model = await reg.resolve("utility", owner_id=OWNER)
+    model = await _resolve(reg, "utility", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel)
 
 
@@ -86,7 +98,7 @@ async def test_main_override_picks_a_specific_endpoint():
     picked = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1", model="p")
     await reg.set_role(OWNER, "main", [default.id])
 
-    model = await reg.resolve("main", owner_id=OWNER, override_endpoint_id=picked.id)
+    model = await _resolve(reg, "main", owner_id=OWNER, override_endpoint_id=picked.id)
     assert isinstance(model, OpenAIChatModel)
     assert model.model_name == "p"
 
@@ -96,8 +108,8 @@ async def test_main_override_with_model_picks_that_model():
     # The endpoint is a bare provider connection (no baked model); the picker
     # supplies the specific model it discovered from the provider.
     ep = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1")
-    model = await reg.resolve(
-        "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="qwen-72b"
+    model = await _resolve(
+        reg, "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="qwen-72b"
     )
     assert isinstance(model, OpenAIChatModel)
     assert model.model_name == "qwen-72b"
@@ -109,7 +121,7 @@ async def test_modelless_endpoint_without_override_is_degraded():
     await reg.set_role(OWNER, "main", [ep.id])
     # No baked model and no picker override → nothing to run.
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("main", owner_id=OWNER)
+        await _resolve(reg, "main", owner_id=OWNER)
 
 
 async def test_role_pinned_model_resolves_a_modelless_endpoint():
@@ -121,14 +133,14 @@ async def test_role_pinned_model_resolves_a_modelless_endpoint():
     ep = await reg.create_endpoint(OWNER, name="p", base_url="http://p/v1")  # no model
     await reg.set_role(OWNER, "main", [ep.id], model="qwen3-32b")
 
-    model = await reg.resolve("main", owner_id=OWNER)  # no override
+    model = await _resolve(reg, "main", owner_id=OWNER)  # no override
     assert isinstance(model, OpenAIChatModel)
     assert model.model_name == "qwen3-32b"
 
     # Same for a bound utility on a modelless endpoint.
     util = await reg.create_endpoint(OWNER, name="u", base_url="http://u/v1")
     await reg.set_role(OWNER, "utility", [util.id], model="qwen3-4b")
-    util_model = await reg.resolve("utility", owner_id=OWNER)
+    util_model = await _resolve(reg, "utility", owner_id=OWNER)
     assert isinstance(util_model, OpenAIChatModel)
     assert util_model.model_name == "qwen3-4b"
 
@@ -141,7 +153,7 @@ async def test_role_pinned_model_applies_to_head_only_in_a_chain():
     tail = await reg.create_endpoint(OWNER, name="tail", base_url="http://t/v1", model="tail-m")
     await reg.set_role(OWNER, "utility", [head.id, tail.id], model="head-pinned")
 
-    model = await reg.resolve("utility", owner_id=OWNER)
+    model = await _resolve(reg, "utility", owner_id=OWNER)
     assert isinstance(model, FallbackModel)
     assert [m.model_name for m in model.models] == ["head-pinned", "tail-m"]
 
@@ -164,9 +176,9 @@ async def test_unconfigured_role_is_degraded():
     # No endpoints, no bindings → degraded; the registry is the only source of
     # truth, so there is no env (or other) fallback to rescue resolution.
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("main", owner_id=OWNER)
+        await _resolve(reg, "main", owner_id=OWNER)
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("embedding", owner_id=OWNER)
+        await _resolve(reg, "embedding", owner_id=OWNER)
 
 
 async def test_api_key_is_encrypted_at_rest():
@@ -178,7 +190,7 @@ async def test_api_key_is_encrypted_at_rest():
     assert "super-secret" not in ep.api_key_enc  # stored as ciphertext
     # And it round-trips on resolve: the built provider gets the plaintext key.
     await reg.set_role(OWNER, "main", [ep.id])
-    model = await reg.resolve("main", owner_id=OWNER)
+    model = await _resolve(reg, "main", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel)
 
 
@@ -522,8 +534,8 @@ async def test_disabled_endpoint_via_main_override_is_degraded():
     ep = await reg.create_endpoint(OWNER, name="picked", base_url="http://p/v1", model="m")
     await reg.update_endpoint(OWNER, ep.id, enabled=False)
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve(
-            "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="m"
+        await _resolve(
+            reg, "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="m"
         )
 
 
@@ -536,7 +548,7 @@ async def test_disabled_endpoint_is_skipped_in_role_chain():
     await reg.set_role(OWNER, "utility", [primary.id, backup.id])
 
     await reg.update_endpoint(OWNER, primary.id, enabled=False)
-    model = await reg.resolve("utility", owner_id=OWNER)
+    model = await _resolve(reg, "utility", owner_id=OWNER)
     assert isinstance(model, OpenAIChatModel)
     assert not isinstance(model, FallbackModel)  # only the live backup remains
     assert model.model_name == "m2"
@@ -548,7 +560,7 @@ async def test_all_disabled_chain_is_degraded():
     await reg.set_role(OWNER, "utility", [ep.id])
     await reg.update_endpoint(OWNER, ep.id, enabled=False)
     with pytest.raises(DegradedCapabilityError):
-        await reg.resolve("utility", owner_id=OWNER)
+        await _resolve(reg, "utility", owner_id=OWNER)
 
 
 async def test_endpoint_test_route_returns_verdict_and_reflects_on_list(monkeypatch):

@@ -11,6 +11,19 @@ approval resume. When the model requests a sensitive (approval-required) tool,
 Pydantic AI ends the turn with ``DeferredToolRequests`` *without executing it*;
 we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
 :class:`ParkedTurn` so an approve decision can resume exactly where it left off.
+
+What lives *here* is the turn's control flow and the two orchestrators that wrap it.
+Four neighbours carry the concerns that aren't that, each with its own reason to change:
+
+- ``history.py`` — the surgeries on a message list before it reaches a model or the
+  store. Pure functions; each encodes one fact about how the library or a provider
+  behaves.
+- ``naming.py`` — when and how a fresh thread gets named, either concurrently with the
+  answer or after a resume. (``title.py`` remains the model call itself.)
+- ``flush.py`` — persisting a turn that was stopped from outside, shared by both
+  orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
+- ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
+  operator is told.
 """
 
 from __future__ import annotations
@@ -19,7 +32,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -29,12 +42,8 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
     RunUsage,
     ToolApproved,
-    ToolCallPart,
-    ToolReturnPart,
     UsageLimitExceeded,
     UsageLimits,
     UserPromptPart,
@@ -56,7 +65,6 @@ from prompts.agent import (
 from runs import (
     ApprovalRequired,
     ConversationCompacted,
-    ConversationTitled,
     LimitNotice,
     Orchestrator,
     Run,
@@ -77,14 +85,36 @@ from tools import (
 
 from .attachments import resolve_attachments
 from .compaction import build_compaction_context, compact_tool_returns
+from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
+from .history import (
+    drop_dangling_tool_calls,
+    merge_consecutive_requests,
+    split_injected_requests,
+    with_tail_context,
+)
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .model_errors import (
+    context_limit_message,
+    is_context_overflow,
+    model_load_hint,
+    usage_limit_kind,
+    usage_limit_message,
+)
+from .naming import (
+    TitleContext,
+    approval_conversation_title,
+    discard_title,
+    maybe_title,
+    settle_title,
+    start_title,
+)
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
     compact_conversation,
     should_compact,
 )
-from .title import generate_title, last_user_text, title_from_history
+from .title import last_user_text
 from .translate import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -92,23 +122,6 @@ logger = logging.getLogger(__name__)
 # A shared empty bag for the no-capabilities default — every capability-backed tool
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
-
-# Persistent stop markers for the cancel/unhandled-error flush paths (mirrors the
-# bound-hit details above them — a plain sentence, not internal jargon — stamped via
-# `_finalize`'s `blocked_reason` so a reload shows the same explanation the live
-# stream did, without touching `run.status`, which the registry itself decides).
-_CANCELLED_DETAIL = "cancelled by the operator"
-_ERRORED_DETAIL = "an unexpected error stopped this turn"
-
-
-@dataclass(frozen=True)
-class TitleContext:
-    """What auto-titling needs, bundled so it can ride a parked turn to its resume.
-    The model + its reasoning-off settings come resolved together from the registry
-    (titling is a fast, no-reasoning pass). Absent ⇒ titling is off for this run."""
-
-    model: Model
-    settings: ModelSettings
 
 
 @dataclass
@@ -305,23 +318,6 @@ async def _maybe_compact(
     return await store.model_history(conversation_id)
 
 
-async def _approval_conversation_title(
-    store: ConversationStore | None, owner_id: str, conversation_id: str | None
-) -> str:
-    """A short, human name for the conversation a park's notification names — the
-    conversation's own title when one exists (auto-titling may not have run yet on a
-    fresh thread), else a plain fallback. Never raises: a lookup failure degrades to
-    the fallback rather than losing the notification over a cosmetic detail."""
-    if store is not None and conversation_id is not None:
-        try:
-            summary = await store.get_summary(conversation_id, owner_id)
-        except Exception:  # noqa: BLE001 — a title lookup must not block the notify
-            summary = None
-        if summary is not None and summary.title:
-            return summary.title
-    return "this conversation"
-
-
 async def _park_for_approval(
     run: Run,
     agent: Agent,
@@ -366,7 +362,7 @@ async def _park_for_approval(
     # window would see the parked status while this coroutine is still suspended on a
     # real await — violating that assumption and racing the run's own finalize.
     if notifications is not None and pending_names:
-        title = await _approval_conversation_title(store, run.owner_id, conversation_id)
+        title = await approval_conversation_title(store, run.owner_id, conversation_id)
         try:
             await notifications.notify(
                 run.owner_id,
@@ -389,140 +385,6 @@ async def _park_for_approval(
             request_limit=request_limit,
         )
     )
-
-
-# On-demand inference servers (LM Studio, llama.cpp, …) reject a request for a
-# model they couldn't bring up with a terse, mechanical message. The most common
-# cause here is a side-by-side compare firing two *unloaded* models at once: the
-# server can only cold-load one at a time, so the second aborts.
-_MODEL_LOAD_MARKERS = ("failed to load model", "engine protocol startup was aborted")
-
-
-def _model_load_hint(exc: ModelHTTPError) -> str | None:
-    """An operator-actionable message if ``exc`` is an engine model-load failure,
-    else ``None`` (leave other HTTP errors with their own detail). The fix is
-    engine-side, so the hint points there rather than implying an app bug."""
-    if not any(marker in str(exc).lower() for marker in _MODEL_LOAD_MARKERS):
-        return None
-    model = exc.model_name or "the selected model"
-    return (
-        f"Couldn't load {model!r} on its inference server. Load it before use — in "
-        "LM Studio, pre-load each model you want to compare, or raise “Max loaded "
-        "models” / enable JIT so the server can hold more than one at once."
-    )
-
-
-# How the common providers/engines phrase "the prompt is bigger than the context window":
-# OpenAI ("maximum context length … context_length_exceeded"), Anthropic ("prompt is too
-# long"), and local servers (llama.cpp/LM Studio/vLLM — "exceeds context", "context size",
-# "n_ctx"). Matched case-insensitively as substrings of the error text, so each marker must be
-# specific enough that an *unrelated* error can't carry it: deliberately omitted are generic
-# phrasings ("context window", "too many tokens", "reduce the length") that also appear in
-# rate-limit/validation errors — misclassifying those would block the run with a misleading
-# context-window stop and swallow the real, actionable error.
-_CONTEXT_OVERFLOW_MARKERS = (
-    "context length",
-    "context_length_exceeded",
-    "maximum context",
-    "prompt is too long",
-    "exceeds context",
-    "exceed context",
-    "context size",
-    "n_ctx",
-)
-
-
-def _is_context_overflow(exc: ModelHTTPError) -> bool:
-    """Whether ``exc`` is the model refusing a prompt that overran its context window."""
-    return any(marker in str(exc).lower() for marker in _CONTEXT_OVERFLOW_MARKERS)
-
-
-def _context_limit_message(run: Run) -> str:
-    """The operator-facing stop message — names the model's context window (the number the
-    operator needs) when known, and what to do next."""
-    window = run.context_window
-    ceiling = f" of {window:,} tokens" if window else ""
-    return (
-        f"This conversation reached the model's context window{ceiling} and can't continue. "
-        "Start a new chat, or edit/rewind to remove earlier messages, to keep going."
-    )
-
-
-def _usage_limit_kind(exc: UsageLimitExceeded) -> str:
-    """Which bound in ``UsageLimits`` tripped — ``UsageLimitExceeded`` carries no
-    structured field, only a message, so classify it by the marker each check raises
-    (see ``pydantic_ai.usage.UsageLimits``)."""
-    message = str(exc)
-    if "tool_calls_limit" in message:
-        return "tool_calls"
-    if "tokens_limit" in message:
-        return "tokens"
-    return "steps"
-
-
-def _usage_limit_message(exc: UsageLimitExceeded) -> str:
-    """An operator-legible sentence for a usage-limit stop, mirroring the treatment
-    ``_timeout_message`` (``runs/registry.py``) gives wall-clock/inactivity bounds:
-    this reaches the operator verbatim, both as the toast (``LimitNotice.message``) and
-    as the turn's persisted stop marker, so it must read as a plain sentence — never
-    ``str(exc)``'s raw internal phrasing (e.g. pydantic_ai's own ``{tool_calls=}`` repr).
-
-    Each names the *local* budget that tripped and where to raise it. These are this
-    chassis's own per-turn ceilings, nothing to do with a provider's rate limit — so the
-    wording must never leave the operator hunting for an account-level quota."""
-    kind = _usage_limit_kind(exc)
-    if kind == "tool_calls":
-        return "this run hit its tool-call limit for a single turn and stopped"
-    if kind == "tokens":
-        return "this run hit its token budget for a single turn and stopped"
-    return (
-        "this run hit its step limit for a single turn and stopped — raise the "
-        "model request limit in Settings to let a turn run longer"
-    )
-
-
-def _drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Strip a trailing tool call that never received its result.
-
-    A turn stopped at a bound (usage limit, loop guard, timeout) can leave history ending
-    on a ``ModelResponse`` whose ``ToolCallPart`` has no matching ``ToolReturnPart`` — the
-    call was requested but the bound tripped before it ran. Persisting that and replaying it
-    on the next turn is a provider error (an assistant tool call with no following tool
-    result → HTTP 400), which would break every later turn in the thread. Since this is the
-    final message, any tool call in it is necessarily unanswered: drop those parts, and the
-    whole message if nothing else remains."""
-    if not messages or not isinstance(messages[-1], ModelResponse):
-        return messages
-    last = messages[-1]
-    kept = [p for p in last.parts if not isinstance(p, ToolCallPart)]
-    if len(kept) == len(last.parts):
-        return messages
-    if kept:
-        return [*messages[:-1], replace(last, parts=kept)]
-    return messages[:-1]
-
-
-def _with_tail_context(
-    messages: list[ModelMessage], texts: list[str]
-) -> list[ModelMessage]:
-    """Append per-turn context to the trailing user request — the *model's view only*.
-
-    The regenerate path re-runs a history that already ends in the user request, so
-    there is no fresh ``user_prompt`` to carry the prompt-context providers' output;
-    instead it rides on that trailing request here. Rebuilds via ``replace`` (never
-    mutates — the store's in-memory tree shares these objects), and since the caller
-    persists only ``messages[start:]``, a message replaced *before* ``start`` never
-    reaches the durable history. No trailing user request (defensive) ⇒ unchanged."""
-    if not messages or not isinstance(messages[-1], ModelRequest):
-        return messages
-    last = messages[-1]
-    for index, part in enumerate(last.parts):
-        if isinstance(part, UserPromptPart):
-            content = part.content if isinstance(part.content, list) else [part.content]
-            parts = list(last.parts)
-            parts[index] = replace(part, content=[*content, *texts])
-            return [*messages[:-1], replace(last, parts=parts)]
-    return messages
 
 
 async def _drive_turn(
@@ -605,8 +467,19 @@ async def _drive_turn(
         # with these user parts is split back into separate messages on persist
         # (`_split_injected_requests`), which replays wire-identically because the
         # library re-merges consecutive requests at wire-prep.
-        for queued in run.drain_messages():
-            node.request.parts.append(UserPromptPart(queued.text))
+        #
+        # Rebinds `parts` to a NEW list rather than appending in place. On a regenerate
+        # the node's request is built by the library reusing the *same* parts list object
+        # as the last history message — which the store handed out by reference from its
+        # in-memory tree. Appending would therefore graft the steering text into the
+        # operator's original user bubble for every later replay. Same invariant
+        # `_with_tail_context` documents: never mutate what the store shares.
+        queued = run.drain_messages()
+        if queued:
+            node.request.parts = [
+                *node.request.parts,
+                *(UserPromptPart(message.text) for message in queued),
+            ]
 
     if partial_history_ref is not None:
         # Let the caller reach this turn's current partial state at any point — even
@@ -645,8 +518,8 @@ async def _drive_turn(
             # reads as a provider rate limit (the operator's first guess, and the wrong
             # one), where this names the bound that actually tripped — one of this run's
             # own local budgets.
-            detail = _usage_limit_message(exc)
-            run.emit(LimitNotice(limit=_usage_limit_kind(exc), message=detail))
+            detail = usage_limit_message(exc)
+            run.emit(LimitNotice(limit=usage_limit_kind(exc), message=detail))
             run.block(detail)
             return _TurnResult(
                 answer=None,
@@ -667,8 +540,8 @@ async def _drive_turn(
             # Context-window overflow: a definitive ceiling, not something to paper over by
             # silently dropping content — stop and tell the operator the model's limit so they
             # can start a new chat or trim. (Compaction reduces pressure; it never absorbs this.)
-            if _is_context_overflow(exc):
-                run.emit(LimitNotice(limit="context", message=_context_limit_message(run)))
+            if is_context_overflow(exc):
+                run.emit(LimitNotice(limit="context", message=context_limit_message(run)))
                 detail = "context window exceeded"
                 run.block(detail)
                 return _TurnResult(
@@ -678,7 +551,7 @@ async def _drive_turn(
                 )
             # Rewrite a model-couldn't-load error into something the operator can act
             # on; let every other HTTP error propagate with its own detail.
-            hint = _model_load_hint(exc)
+            hint = model_load_hint(exc)
             if hint is None:
                 raise
             raise ModelLoadError(hint) from exc
@@ -770,6 +643,7 @@ async def _verify_and_correct(
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
+    drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
@@ -791,6 +665,12 @@ async def _verify_and_correct(
     # the original attempt) through the injected nudge ModelRequest (the first
     # new message of the correction) — two adjacent messages.
     clean_drop = (len(turn.messages) - 1, len(turn.messages))
+    # Publish the range before re-driving, so a stop *during* the correction (an
+    # inactivity bound, the operator's Stop) drops the same two messages the completed
+    # path does. Without it, a stop here persists the rejected answer and a user message
+    # nobody typed, and both replay to the model on every later turn.
+    if drop_ref is not None:
+        drop_ref[:] = [clean_drop]
     # One attempt only — no re-verify, so it cannot retry endlessly.
     corrected = await _drive_turn(
         run,
@@ -813,60 +693,15 @@ async def _verify_and_correct(
             run.parked_payload.clean_drop = clean_drop
         return corrected
     if corrected.answer is None:
-        return corrected  # hit a bound — caller finalizes it
+        # Hit a bound — the caller finalizes it, but the drop range has to ride along or
+        # the rejected answer and the synthetic nudge persist as real transcript.
+        return _TurnResult(
+            answer=None,
+            messages=corrected.messages,
+            clean_drop=clean_drop,
+            blocked_reason=corrected.blocked_reason,
+        )
     return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
-
-
-def _merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Collapse adjacent ``ModelRequest``s the way Pydantic AI will anyway, **before**
-    ``start`` is measured against the list.
-
-    ``_finalize`` persists ``result.all_messages()[start:]`` with ``start`` the length of
-    the history we handed in. That only holds while the library gives the history back at
-    the length we supplied it — and it does not: preparing the wire format merges
-    consecutive requests (most chat APIs cannot carry two user messages in a row), so
-    ``all_messages()`` comes back *shorter* than what went in and ``start`` silently points
-    one message too far, dropping the operator's own message from the turn it persists.
-
-    Two things produce adjacent requests here, and both are load-bearing: a compaction
-    checkpoint hoisted in front of a retained tail that opens on a user prompt, and
-    :func:`_split_injected_requests`' own output replayed on the *next* turn. Normalizing
-    up front costs nothing (the library was going to do exactly this) and makes the index
-    honest in both cases. New objects throughout — the store's in-memory tree shares these
-    messages, so nothing here may mutate one in place."""
-    out: list[ModelMessage] = []
-    for message in messages:
-        if isinstance(message, ModelRequest) and out and isinstance(out[-1], ModelRequest):
-            out[-1] = replace(out[-1], parts=[*out[-1].parts, *message.parts])
-            continue
-        out.append(message)
-    return out
-
-
-def _split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Give each mid-run injected operator message its own persisted request.
-
-    Mid-run steering appends ``UserPromptPart``s onto the tool-return request the
-    model was about to receive (`_drive_turn`'s ``_inject_queued``). Persisting that
-    merged request as-is would bury the operator's message inside a tool exchange —
-    no tree node of its own, so no user bubble, no edit/regenerate anchor. Split it:
-    the tool returns keep their request, and each injected part becomes its own
-    ``ModelRequest`` right after. Replay stays wire-identical — the library re-merges
-    consecutive requests (tool returns first) when preparing the model's input."""
-    out: list[ModelMessage] = []
-    for message in messages:
-        if not isinstance(message, ModelRequest):
-            out.append(message)
-            continue
-        user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
-        tool_parts = [p for p in message.parts if isinstance(p, ToolReturnPart | RetryPromptPart)]
-        if not user_parts or not tool_parts:
-            out.append(message)
-            continue
-        rest = [p for p in message.parts if not isinstance(p, UserPromptPart)]
-        out.append(replace(message, parts=rest))
-        out.extend(ModelRequest(parts=[part]) for part in user_parts)
-    return out
 
 
 def _finalize(
@@ -874,38 +709,35 @@ def _finalize(
     turn: _TurnResult,
     *,
     store: ConversationStore | None,
-    conversation_id: str | None,
-    start: int,
-    clean_drop: tuple[int, int] | None = None,
-    attachment_ids: list[str] | None = None,
-    persisted: list | None = None,
-    compaction: CompactionContext | None = None,
+    context: PersistContext,
 ) -> None:
     """Close out a turn: persist it, or wire resume context if it parked.
 
     Shared by the chat and resume orchestrators so the park/answer-None guards
     are applied *after* the verifier too (a corrective re-attempt can itself park
-    or hit a bound). ``clean_drop`` is a verifier correction's message range to
-    drop from the persisted history. ``attachment_ids``/``persisted`` carry a turn's
-    attached files: the ids are stamped on the persisted request (chip rendering),
-    and ``persisted`` is the capped content that replaces the live payload in history."""
+    or hit a bound). ``context`` is where the turn goes — see :class:`PersistContext`;
+    its ``clean_drop`` is a verifier correction's message range to drop from the persisted
+    history, and its ``attachment_ids``/``persisted`` carry a turn's attached files (the
+    ids are stamped on the persisted request for chip rendering, and ``persisted`` is the
+    capped content that replaces the live payload in history)."""
+    conversation_id = context.conversation_id
     if run.status is RunStatus.awaiting_input:
         # Parked: hand the resume the context to persist the parked turn too.
         if conversation_id is not None and isinstance(run.parked_payload, ParkedTurn):
             run.parked_payload.conversation_id = conversation_id
-            run.parked_payload.persist_from = start
-            if clean_drop is not None:  # re-park: carry the drop range forward
-                run.parked_payload.clean_drop = clean_drop
-            run.parked_payload.attachment_ids = attachment_ids or []
-            run.parked_payload.persisted = persisted
-            run.parked_payload.compaction = compaction
+            run.parked_payload.persist_from = context.start
+            if context.clean_drop is not None:  # re-park: carry the drop range forward
+                run.parked_payload.clean_drop = context.clean_drop
+            run.parked_payload.attachment_ids = list(context.attachment_ids)
+            run.parked_payload.persisted = context.persisted
+            run.parked_payload.compaction = context.compaction
         return
     if turn.answer is None and not turn.blocked_reason:
         return  # hit a bound with nothing captured, or a cancel — nothing to persist
     if store is not None and conversation_id is not None:
         messages = turn.messages
-        if clean_drop is not None:
-            reject_idx, nudge_idx = clean_drop
+        if context.clean_drop is not None:
+            reject_idx, nudge_idx = context.clean_drop
             messages = messages[:reject_idx] + messages[nudge_idx + 1 :]
         # The store installs the capped `persisted` content and stamps `attachment_ids`
         # on the turn's user request as it serializes — keeping replayed history capped is
@@ -915,11 +747,28 @@ def _finalize(
         # empty slice, e.g. a bound hit before any new message accumulated).
         store.record(
             conversation_id,
-            _split_injected_requests(messages[start:]),
-            attachment_ids=attachment_ids or [],
-            persisted=persisted,
+            split_injected_requests(messages[context.start :]),
+            attachment_ids=list(context.attachment_ids),
+            persisted=context.persisted,
             blocked_reason=turn.blocked_reason,
         )
+
+
+def _flush_recorder(
+    run: Run, store: ConversationStore | None
+) -> Callable[[list[ModelMessage], str, PersistContext], None]:
+    """The closure :class:`TurnFlush` records through — ``_finalize`` with this run's
+    store already bound, so the flush module never has to know the engine's turn type."""
+
+    def record(messages: list[ModelMessage], detail: str, context: PersistContext) -> None:
+        _finalize(
+            run,
+            _TurnResult(answer=None, messages=messages, blocked_reason=detail),
+            store=store,
+            context=context,
+        )
+
+    return record
 
 
 def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None:
@@ -937,14 +786,15 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
     parked = run.parked_payload
     if not isinstance(parked, ParkedTurn):
         return
-    _finalize(
-        run,
-        _TurnResult(
-            answer=None,
-            messages=parked.message_history,
-            blocked_reason=_CANCELLED_DETAIL,
-        ),
-        store=store,
+    _flush_recorder(run, store)(
+        parked.message_history, CANCELLED_DETAIL, _parked_context(parked)
+    )
+
+
+def _parked_context(parked: ParkedTurn) -> PersistContext:
+    """Where a parked turn goes — fixed at the moment it parked, so every path that
+    persists it later (a resume's flush hooks, a cancel while still parked) agrees."""
+    return PersistContext(
         conversation_id=parked.conversation_id,
         start=parked.persist_from,
         clean_drop=parked.clean_drop,
@@ -952,161 +802,6 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
         persisted=parked.persisted,
         compaction=parked.compaction,
     )
-
-
-async def _maybe_title(
-    run: Run,
-    *,
-    title: TitleContext | None,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-    is_first_turn: bool,
-) -> None:
-    """Auto-name a fresh conversation from the operator's opening message.
-
-    The resume path's namer: a first turn that parked for approval is named once it
-    resumes to completion. The user's first message is read from the just-persisted
-    history rather than threaded in (the resume has no ``prompt`` in hand). The
-    initial chat orchestrator instead titles concurrently via :func:`_start_title` /
-    :func:`_emit_title` so it adds no post-answer delay. The title reflects what the operator
-    asked — the assistant's reply is deliberately not fed to the namer. Guards:
-
-    - ``is_first_turn`` (no prior messages) is the cheap pre-filter that skips the
-      model call on continuation turns;
-    - :meth:`ConversationStore.set_title_if_absent` is the authoritative guard —
-      it fills only a blank title, so an operator-named thread is never clobbered,
-      and we announce ``conversation.titled`` only when it actually set the name.
-
-    Emitted before the orchestrator returns (before ``run.ended``) so the open
-    stream carries it. Best-effort throughout: any failure leaves the thread
-    untitled without disturbing the finished turn."""
-    if not is_first_turn or title is None or store is None or conversation_id is None:
-        return
-    try:
-        name = await title_from_history(
-            title.model,
-            await store.history(conversation_id),
-            reasoning_off=title.settings,
-            timeout_s=get_settings().title_timeout_s,
-            max_tokens=get_settings().title_max_tokens,
-        )
-        await _announce_title(run, name, store=store, conversation_id=conversation_id)
-    except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
-        logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
-
-
-async def _announce_title(
-    run: Run,
-    name: str | None,
-    *,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-) -> None:
-    """Persist a generated title (fill-only-if-blank) and announce it on success.
-
-    :meth:`ConversationStore.set_title_if_absent` is the authoritative guard — it
-    fills only a blank title, so an operator-named thread is never clobbered, and
-    ``conversation.titled`` is announced only when it actually set the name. Shared
-    by both the concurrent (:func:`_emit_title`) and resume (:func:`_maybe_title`)
-    paths."""
-    if not name or store is None or conversation_id is None:
-        return
-    if await store.set_title_if_absent(conversation_id, name):
-        run.emit(ConversationTitled(conversation_id=conversation_id, title=name))
-
-
-@dataclass(frozen=True)
-class _Namer:
-    """The concurrent auto-namer: its task, plus the point past which cancelling would
-    do damage. ``announcing`` is set the instant generation yields a name, immediately
-    before the persist+emit — so an abandoning caller can tell "still waiting on the
-    title model" (cancel freely) from "committing the name" (let it finish)."""
-
-    task: asyncio.Task[None]
-    announcing: asyncio.Event
-
-
-def _start_title(
-    title: TitleContext | None,
-    prompt: str | None,
-    *,
-    run: Run,
-    store: ConversationStore | None,
-    conversation_id: str | None,
-) -> _Namer | None:
-    """Begin naming the thread concurrently with the turn's answer, announcing the
-    name the moment it lands.
-
-    Titling needs only the operator's opening message, which a first turn already has
-    in ``prompt`` — so there's no need to wait for the answer (or persistence) first.
-    The task persists and emits ``conversation.titled`` **itself**, rather than handing
-    a name back for the orchestrator to announce after the turn: the utility call
-    typically resolves in a second or two, and deferring the announcement to the end of
-    a long tool-using turn would leave the operator staring at an unnamed thread for the
-    whole run even though the name was ready almost immediately. :func:`_settle_title`
-    only waits for this task to finish before ``run.ended``, so the open stream still
-    carries the event.
-
-    Returns ``None`` when titling is off or there is nothing to name from. The call stays
-    bounded by ``title_timeout_s``, and is best-effort throughout: any failure leaves the
-    thread untitled without disturbing the turn."""
-    if title is None or not prompt:
-        return None
-    announcing = asyncio.Event()
-
-    async def _name() -> None:
-        try:
-            name = await generate_title(
-                title.model,
-                prompt,
-                reasoning_off=title.settings,
-                timeout_s=get_settings().title_timeout_s,
-                max_tokens=get_settings().title_max_tokens,
-            )
-            # Set synchronously with the announce that follows — no await between, so an
-            # abandoning caller either sees this before the persist begins (safe to
-            # cancel) or waits the announce out. Torn in half instead — cancelled between
-            # `set_title_if_absent` committing and the emit — the thread would be named in
-            # the database but never announced on the stream, and the resume's own namer
-            # would then find the name already there, return False, and emit nothing
-            # either: a thread that stays "Untitled" until a reload.
-            announcing.set()
-            await _announce_title(
-                run, name, store=store, conversation_id=conversation_id
-            )
-        except asyncio.CancelledError:
-            raise  # a park/cancel abandoning the name (see `_discard_title`)
-        except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical
-            logger.warning("auto-titling failed for %s", conversation_id, exc_info=True)
-
-    return _Namer(task=asyncio.create_task(_name()), announcing=announcing)
-
-
-async def _settle_title(namer: _Namer | None) -> None:
-    """Wait for the concurrent namer to finish before the orchestrator returns, so a
-    name that lands in the last moments of the turn still rides the open stream (the
-    task announces it itself — see :func:`_start_title`). Usually already done by the
-    time the answer is; swallows the task's own failure, which it has already logged."""
-    if namer is None:
-        return
-    with suppress(Exception):
-        await namer.task
-
-
-async def _discard_title(namer: _Namer | None) -> None:
-    """Abandon a concurrently-started title (the turn parked, raised, or was cancelled):
-    cancel it and drain the cancellation so the title-model *call* does not outlive the
-    run. Past ``announcing`` there is no model call left to abandon — only a local write
-    and an emit — so that one is waited out instead: cancelling there is precisely what
-    would strand a persisted name with no event to announce it."""
-    if namer is None or namer.task.done():
-        return
-    if namer.announcing.is_set():
-        await _settle_title(namer)
-        return
-    namer.task.cancel()
-    with suppress(asyncio.CancelledError):
-        await namer.task
 
 
 def build_chat_orchestrator(
@@ -1182,6 +877,94 @@ def build_chat_orchestrator(
             model, categories=categories, instruction_providers=instruction_providers
         )
         announced: set[str] = set()
+
+        # --- the stop-flush hooks, armed before anything that can suspend -------------
+        # Everything below this block awaits: the history read, auto-compaction (a whole
+        # utility-model summarization, bounded by its own timeout), attachment resolution,
+        # the per-turn context providers. None of it emits, so the inactivity watchdog is
+        # ticking against a run that looks idle — and the compaction bound and the
+        # inactivity bound share a default, so a compaction that runs to its own limit
+        # trips the watchdog. Armed after that window, the hooks would be `None` exactly
+        # when they are needed and the operator's typed message would vanish on reload.
+        # The state they read is declared here and filled in below; a hook that fires
+        # early simply sees the empty values, which is the correct record for a turn that
+        # stopped before it began.
+        start = 0
+        persisted: list | None = None
+        stamp_ids: list[str] = []
+        # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
+        # turn has produced before the registry force-cancels this task (which would
+        # otherwise interrupt us before we reach `_finalize` below and silently drop
+        # the turn on the next reload — see `RunRegistry._flush_timeout`).
+        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
+        # Resolve the turn's compaction context once and anchor its boundary to the
+        # persistence index (`protect_from`, set below once `start` is known): everything
+        # from `start` on is this (to-be-persisted) turn and stays full, so a verifier
+        # re-attempt's injected nudge can't push the original tool returns onto the
+        # "prior" side. The same object rides every segment (drive → verify → finalize →
+        # resume), keeping one handle map so a result digested before an approval park
+        # can still be expanded.
+        active_compaction = (
+            compaction if compaction is not None else build_compaction_context(settings)
+        )
+
+        def _turn_messages_or_prompt() -> list[ModelMessage]:
+            # The turn's own messages — its slice of the partial history — or, if the
+            # bound tripped in the pre-model setup window (before the first step landed
+            # and `partial_history_ref` is still empty), the operator's typed prompt
+            # alone. Without the fallback, a stop there would persist nothing and the
+            # turn (the operator's own message) would vanish on reload. The plain
+            # `prompt` persists, not the attachment/context-augmented `user_prompt`:
+            # attachments ride on `persisted`/`stamp_ids` and per-turn context is
+            # re-resolved fresh each turn and never persisted.
+            if partial_history_ref:
+                turn = partial_history_ref[0]()[start:]
+                if turn:
+                    return turn
+            if isinstance(prompt, str) and prompt:
+                return [ModelRequest(parts=[UserPromptPart(prompt)])]
+            return []
+
+        def _flush_context() -> PersistContext:
+            # Read at flush time, not at arm time: `start`, `stamp_ids` and `persisted`
+            # are only known once the turn is under way, and the hooks are armed before
+            # that (see above). `start=0` because `_turn_messages_or_prompt` hands over an
+            # already-sliced list.
+            return PersistContext(
+                conversation_id=conversation_id,
+                start=0,
+                clean_drop=_flush_clean_drop(),
+                attachment_ids=stamp_ids,
+                persisted=persisted,
+                compaction=active_compaction,
+            )
+
+        def _flush_clean_drop() -> tuple[int, int] | None:
+            # A stop landing *during* a verifier correction must drop the same two
+            # messages the completed path drops — the rejected answer and the synthetic
+            # nudge the operator never sent — or they persist as real transcript and
+            # replay to the model on every later turn. `drop_ref` carries the range in
+            # absolute history indices; the hooks above hand `_finalize` an already
+            # sliced list with `start=0`, so rebase it onto that slice.
+            if not drop_ref:
+                return None
+            reject_idx, nudge_idx = drop_ref[0]
+            if reject_idx < start:
+                return None
+            return reject_idx - start, nudge_idx - start
+
+        # Set by `_verify_and_correct` the moment it commits to a correction, so a stop
+        # mid-correction can drop the same range the completed path does.
+        drop_ref: list[tuple[int, int]] = []
+        flush = TurnFlush(
+            run,
+            messages=_turn_messages_or_prompt,
+            context=_flush_context,
+            record=_flush_recorder(run, store),
+        )
+        flush.arm()
+        # -----------------------------------------------------------------------------
+
         history = (
             await store.model_history(conversation_id)
             if store is not None and conversation_id is not None
@@ -1210,22 +993,14 @@ def build_chat_orchestrator(
         # the *model's* input here. The persisted transcript is untouched; only this turn's
         # model history is sanitized, and `start` tracks the trimmed length.
         if history:
-            history = _drop_dangling_tool_calls(history)
-            history = _merge_consecutive_requests(history)
+            history = drop_dangling_tool_calls(history)
+            history = merge_consecutive_requests(history)
         start = len(history) if history else 0
         is_first_turn = start == 0
         # What the model replays — `history` plus, on a regenerate, the per-turn prompt
         # context appended below. `history` itself stays the persistence baseline.
         model_history = history
 
-        # Resolve the turn's compaction context once and anchor its boundary to the persistence
-        # index: everything from `start` on is this (to-be-persisted) turn and stays full, so a
-        # verifier re-attempt's injected nudge can't push the original tool returns onto the
-        # "prior" side. The same object rides every segment (drive → verify → finalize → resume),
-        # keeping one handle map so a result digested before an approval park can still be expanded.
-        active_compaction = (
-            compaction if compaction is not None else build_compaction_context(settings)
-        )
         active_compaction.protect_from = start
 
         # Auto-title context for this run — None disables it (feature off, or no
@@ -1237,7 +1012,7 @@ def build_chat_orchestrator(
             if title_model is not None and settings.title_enabled
             else None
         )
-        title_namer = _start_title(
+        title_namer = start_title(
             title_ctx if is_first_turn else None,
             prompt,
             run=run,
@@ -1257,8 +1032,6 @@ def build_chat_orchestrator(
             if inline_max_tokens is not None
             else settings.attachment_inline_max_tokens
         )
-        persisted: list | None = None
-        stamp_ids: list[str] = []
         user_prompt: str | list[Any] | None = prompt
         if attachment_ids and prompt is not None and uploads is not None:
             resolved = await resolve_attachments(
@@ -1295,80 +1068,8 @@ def build_chat_orchestrator(
                 # user request in the *model's* view only (`history` itself stays
                 # pristine for the verifier's `last_user_text`, and everything before
                 # `start` is never re-persisted).
-                model_history = _with_tail_context(history, context_texts)
+                model_history = with_tail_context(history, context_texts)
 
-        # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
-        # turn has produced before the registry force-cancels this task (which would
-        # otherwise interrupt us before we reach `_finalize` below and silently drop
-        # the turn on the next reload — see `RunRegistry._flush_timeout`).
-        partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
-
-        def _turn_messages_or_prompt() -> list[ModelMessage]:
-            # The turn's own messages — its slice of the partial history — or, if the
-            # bound tripped in the pre-model setup window (before the first step landed
-            # and `partial_history_ref` is still empty), the operator's typed prompt
-            # alone. Without the fallback, a stop there would persist nothing and the
-            # turn (the operator's own message) would vanish on reload. The plain
-            # `prompt` persists, not the attachment/context-augmented `user_prompt`:
-            # attachments ride on `persisted`/`stamp_ids` and per-turn context is
-            # re-resolved fresh each turn and never persisted.
-            if partial_history_ref:
-                turn = partial_history_ref[0]()[start:]
-                if turn:
-                    return turn
-            if isinstance(prompt, str) and prompt:
-                return [ModelRequest(parts=[UserPromptPart(prompt)])]
-            return []
-
-        def _on_timeout(detail: str) -> None:
-            # `detail` is already the operator-legible message the registry built
-            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
-            # verbatim so the persisted marker matches the toast the live stream showed.
-            messages = _turn_messages_or_prompt()
-            if not messages:
-                return
-            run.block(detail)
-            _finalize(
-                run,
-                _TurnResult(answer=None, messages=messages, blocked_reason=detail),
-                store=store,
-                conversation_id=conversation_id,
-                start=0,
-                attachment_ids=stamp_ids,
-                persisted=persisted,
-                compaction=active_compaction,
-            )
-
-        def _on_cancel() -> None:
-            # The cancel counterpart of `_on_timeout` above: same pre-cancel flush,
-            # but must not call `run.block(...)` — the registry's own
-            # `except asyncio.CancelledError` handler sets the terminal `cancelled`
-            # status once the cancellation lands, and that must not be clobbered.
-            messages = _turn_messages_or_prompt()
-            if not messages:
-                return
-            _finalize(
-                run,
-                _TurnResult(
-                    answer=None,
-                    messages=messages,
-                    blocked_reason=_CANCELLED_DETAIL,
-                ),
-                store=store,
-                conversation_id=conversation_id,
-                start=0,
-                attachment_ids=stamp_ids,
-                persisted=persisted,
-                compaction=active_compaction,
-            )
-
-        run.on_timeout = _on_timeout
-        run.on_cancel = _on_cancel
-        # Guards the `except Exception` flush below from double-persisting: once the
-        # normal `_finalize` call has run, the only remaining calls are the best-effort
-        # titling helpers, which already swallow their own exceptions internally — but
-        # this stays the authoritative check rather than relying on that.
-        finalized = False
         try:
             turn = await _drive_turn(
                 run,
@@ -1416,26 +1117,31 @@ def build_chat_orchestrator(
                         partial_history_ref=partial_history_ref,
                         store=store,
                         request_limit=request_limit,
+                        drop_ref=drop_ref,
                     )
 
             _finalize(
                 run,
                 turn,
                 store=store,
-                conversation_id=conversation_id,
-                start=start,
-                clean_drop=turn.clean_drop,
-                attachment_ids=stamp_ids,
-                persisted=persisted,
-                compaction=active_compaction,
+                # The completed path measures against the real `start` and carries the
+                # verifier's own drop range, where a flush hands over an already-sliced
+                # list — hence its own context rather than `_flush_context()`.
+                context=PersistContext(
+                    conversation_id=conversation_id,
+                    start=start,
+                    clean_drop=turn.clean_drop,
+                    attachment_ids=stamp_ids,
+                    persisted=persisted,
+                    compaction=active_compaction,
+                ),
             )
             # Disarm the flush hooks now the turn is recorded: a wall-clock/inactivity bound
             # or a cancel landing during the post-answer title window (below) must not
             # re-run `_finalize` and double-record the turn (or stamp a spurious stop on a
             # completed answer).
-            run.on_timeout = None
-            run.on_cancel = None
-            finalized = True
+            flush.disarm()
+            flush.done = True
 
             if run.status is RunStatus.awaiting_input:
                 # Arm the park-cancel flush now, before any further `await` — a
@@ -1452,7 +1158,7 @@ def build_chat_orchestrator(
                 # its name rather than sitting "Untitled" for however long the operator
                 # takes to decide — and the resume's `set_title_if_absent` then finds the
                 # name in place, returns False, and emits nothing a second time.
-                await _discard_title(title_namer)
+                await discard_title(title_namer)
                 if isinstance(run.parked_payload, ParkedTurn):
                     run.parked_payload.title = title_ctx
             else:
@@ -1460,7 +1166,7 @@ def build_chat_orchestrator(
                 # (typically well before the answer does); this only waits for a still-
                 # running one so the event is emitted before the orchestrator returns
                 # (run.ended) and the open stream carries it.
-                await _settle_title(title_namer)
+                await settle_title(title_namer)
         except Exception:
             # Anything else that escapes `_drive_turn` (a provider error its specific
             # catches don't cover, a tool/dependency raising, …) must still not silently
@@ -1469,39 +1175,38 @@ def build_chat_orchestrator(
             # generic handler, which records the run as `error`. Mirrors the
             # timeout/cancel flush above but never touches `run.status` — the registry
             # is the one that decides the terminal outcome for an unhandled exception.
-            if not finalized and partial_history_ref:
-                _finalize(
-                    run,
-                    _TurnResult(
-                        answer=None,
-                        messages=partial_history_ref[0](),
-                        blocked_reason=_ERRORED_DETAIL,
-                    ),
-                    store=store,
-                    conversation_id=conversation_id,
-                    start=start,
-                    attachment_ids=stamp_ids,
-                    persisted=persisted,
-                    compaction=active_compaction,
-                )
-                finalized = True
+            # It flushes through `_turn_messages_or_prompt` rather than the raw partial
+            # history, for the same reason the two hook paths do: an exception raised
+            # before the first step landed leaves `partial_history_ref` empty, and
+            # persisting that empty slice drops the operator's own typed prompt exactly
+            # the way a bound tripping in the prelude used to.
+            flush.flush_error()
             # Disarm now that this path has (or the normal path already did) recorded
             # the turn — the task is unwinding, so no further hook call is legitimate.
-            run.on_timeout = None
-            run.on_cancel = None
+            flush.disarm()
             raise
         finally:
             # Safety net: if the turn raised or was cancelled before the title was
             # consumed above, don't let the detached title-model call outlive the run.
-            # A bare cancel (this path is unwinding — it can't safely await), so it holds
-            # off past `announcing` for `_discard_title`'s reason: there's no model call
-            # left to abandon there, only the write and emit that must not be split.
-            if (
-                title_namer is not None
-                and not title_namer.task.done()
-                and not title_namer.announcing.is_set()
-            ):
-                title_namer.task.cancel()
+            if title_namer is not None and not title_namer.task.done():
+                if not title_namer.announcing.is_set():
+                    # Still waiting on the title model — nothing committed yet, so a
+                    # bare cancel is safe and this path is unwinding anyway.
+                    title_namer.task.cancel()
+                else:
+                    # Past `announcing` there is no model call left to abandon, only the
+                    # write and the emit, which must not be split. Left detached, it
+                    # would race the stream close in `RunRegistry._run`'s finally and
+                    # lose `conversation.titled` — the name reaching the database but
+                    # never the client. Shielded so an unwinding *cancellation* still
+                    # leaves the task alive to finish its write; on that path the await
+                    # itself aborts and the event is genuinely lost, which is the
+                    # accepted cost of a Stop landing in this exact window (the title is
+                    # in the database and appears on reload). On the error path — not
+                    # cancelled — the await completes and the frame rides the open
+                    # stream as it should.
+                    with suppress(Exception, asyncio.CancelledError):
+                        await asyncio.shield(title_namer.task)
 
     return orchestrate
 
@@ -1523,52 +1228,15 @@ def build_resume_orchestrator(
         # bound by fresh wall-clock/inactivity timeouts too (see `RunRegistry.resume`),
         # so it needs the same flush-before-force-cancel hook.
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
-
-        def _on_timeout(detail: str) -> None:
-            # `detail` is already the operator-legible message the registry built
-            # (`RunTimeout.__str__`, from the bound's configured duration) — reused
-            # verbatim so the persisted marker matches the toast the live stream showed.
-            if not partial_history_ref:
-                return
-            run.block(detail)
-            _finalize(
-                run,
-                _TurnResult(answer=None, messages=partial_history_ref[0](), blocked_reason=detail),
-                store=store,
-                conversation_id=parked.conversation_id,
-                start=parked.persist_from,
-                clean_drop=parked.clean_drop,
-                attachment_ids=parked.attachment_ids,
-                persisted=parked.persisted,
-                compaction=parked.compaction,
-            )
-
-        def _on_cancel() -> None:
-            # The cancel counterpart of `_on_timeout` above — see the chat
-            # orchestrator's `_on_cancel` for why this must not call `run.block(...)`.
-            if not partial_history_ref:
-                return
-            _finalize(
-                run,
-                _TurnResult(
-                    answer=None,
-                    messages=partial_history_ref[0](),
-                    blocked_reason=_CANCELLED_DETAIL,
-                ),
-                store=store,
-                conversation_id=parked.conversation_id,
-                start=parked.persist_from,
-                clean_drop=parked.clean_drop,
-                attachment_ids=parked.attachment_ids,
-                persisted=parked.persisted,
-                compaction=parked.compaction,
-            )
-
-        run.on_timeout = _on_timeout
-        run.on_cancel = _on_cancel
-        # See the chat orchestrator's identical guard: makes the `except Exception`
-        # flush below a no-op once the normal `_finalize` call has already run.
-        finalized = False
+        # Unlike a chat turn, a resume's destination is already settled — it rode here on
+        # the `ParkedTurn` — so the context is constant and only the messages move.
+        flush = TurnFlush(
+            run,
+            messages=lambda: partial_history_ref[0]() if partial_history_ref else [],
+            context=lambda: _parked_context(parked),
+            record=_flush_recorder(run, store),
+        )
+        flush.arm()
         try:
             turn = await _drive_turn(
                 run,
@@ -1586,23 +1254,12 @@ def build_resume_orchestrator(
                 # under the same one rather than reverting to the config default.
                 request_limit=parked.request_limit,
             )
-            _finalize(
-                run,
-                turn,
-                store=store,
-                conversation_id=parked.conversation_id,
-                start=parked.persist_from,
-                clean_drop=parked.clean_drop,
-                attachment_ids=parked.attachment_ids,
-                persisted=parked.persisted,
-                compaction=parked.compaction,
-            )
+            _finalize(run, turn, store=store, context=_parked_context(parked))
             # Disarm the flush hooks now the turn is recorded — a bound or cancel
             # landing during the title window below must not re-finalize (see the
             # chat orchestrator).
-            run.on_timeout = None
-            run.on_cancel = None
-            finalized = True
+            flush.disarm()
+            flush.done = True
 
             if run.status is RunStatus.awaiting_input:
                 # Re-parked on a further approval: re-arm the park-cancel flush (see
@@ -1615,7 +1272,7 @@ def build_resume_orchestrator(
             else:
                 # A first turn that parked then resumed to completion is still the
                 # opening exchange — name it (persist_from == 0 means no prior turns).
-                await _maybe_title(
+                await maybe_title(
                     run,
                     title=parked.title,
                     store=store,
@@ -1626,27 +1283,10 @@ def build_resume_orchestrator(
             # Same reasoning as the chat orchestrator's identical clause: an
             # unhandled exception must not silently drop this turn (which, on a
             # resume, includes everything since the original park) from persistence.
-            if not finalized and partial_history_ref:
-                _finalize(
-                    run,
-                    _TurnResult(
-                        answer=None,
-                        messages=partial_history_ref[0](),
-                        blocked_reason=_ERRORED_DETAIL,
-                    ),
-                    store=store,
-                    conversation_id=parked.conversation_id,
-                    start=parked.persist_from,
-                    clean_drop=parked.clean_drop,
-                    attachment_ids=parked.attachment_ids,
-                    persisted=parked.persisted,
-                    compaction=parked.compaction,
-                )
-                finalized = True
+            flush.flush_error()
             # Disarm now that this path has (or the normal path already did) recorded
             # the turn — the task is unwinding, so no further hook call is legitimate.
-            run.on_timeout = None
-            run.on_cancel = None
+            flush.disarm()
             raise
 
     return orchestrate

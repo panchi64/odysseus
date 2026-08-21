@@ -12,8 +12,10 @@ app's other newer surfaces (documents/gallery/corpus/notifications).
 ``POST /tasks/hooks/{token}`` is the one auth-EXEMPT route here (``core/auth.py``
 matches ``/tasks/hooks/`` exactly, mirroring the ``/previews`` token-gated-subtree
 pattern) — the per-task unguessable ``webhook_token`` **is** the credential, compared
-in constant time against every webhook-type task rather than resolved by an indexed
-equality lookup, so an inbound caller's timing can't narrow down a valid token.
+in constant time against every webhook-type task **the operator owns** rather than
+resolved by an indexed equality lookup, so an inbound caller's timing can't narrow
+down a valid token. Auth-exempt is not owner-exempt: the candidate scan carries the
+same ``owner_id`` predicate every other query on this surface does.
 """
 
 from __future__ import annotations
@@ -452,7 +454,15 @@ async def fire_webhook(token: str, request: Request) -> None:
         return list(
             session.exec(
                 select(ScheduledTask).where(
-                    ScheduledTask.schedule_type == ScheduleType.WEBHOOK.value
+                    # Owner-scoped like every other query on this surface: this route
+                    # has no authenticated caller to derive an owner from, so the scan
+                    # is pinned to the operator explicitly. `fire_now` does no ownership
+                    # check of its own (its docstring assumes the route already did), so
+                    # an unscoped scan would let a token minted for one owner match — and
+                    # fire — another owner's row the moment the `owner_id` seam carries
+                    # more than one operator.
+                    ScheduledTask.owner_id == OPERATOR_ID,
+                    ScheduledTask.schedule_type == ScheduleType.WEBHOOK.value,
                 )
             ).all()
         )

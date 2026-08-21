@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 
 import httpx
 
+from core.concurrency import gather_bounded
+
 from .errors import MailError
 from .models import (
     ROLE_ARCHIVE,
@@ -39,6 +41,11 @@ from .parse import build_outgoing, parse_message, snippet_of
 from .rest import RestApi
 
 _BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
+
+# How many per-message reads a listing keeps in flight. Gmail's per-user rate limit is
+# generous but real, and this is one operator's mailbox, not a crawler: enough to collapse
+# a page's round trips into a handful, low enough not to look like a burst.
+_LIST_CONCURRENCY = 8
 
 # Gmail's system label ids → our normalized roles.
 _ROLES = {
@@ -85,13 +92,22 @@ class GmailTransport:
     ) -> list[MailHeader]:
         params = {"labelIds": folder, "maxResults": str(limit)}
         listing = await self._api.request("GET", "messages", params=params)
-        headers: list[MailHeader] = []
+        wanted: list[str] = []
         for stub in listing.get("messages", []):
             message_id = str(stub["id"])
             if since_uid is not None and message_id == since_uid:
                 break  # Gmail lists newest-first — stop at what the caller last saw.
-            headers.append((await self._read(message_id)).header)
-        return headers
+            wanted.append(message_id)
+        # Gmail's list endpoint returns id stubs only, so a page of headers costs one
+        # request per message no matter what. What it need not cost is one *round trip* per
+        # message: awaited in a loop, a 50-message page was fifty sequential round trips to
+        # Google. The window is applied before fetching (rather than breaking mid-loop) so
+        # the concurrent form reads exactly the messages the serial form would have, and
+        # `gather_bounded` preserves listing order.
+        bodies = await gather_bounded(
+            [self._read(mid) for mid in wanted], _LIST_CONCURRENCY
+        )
+        return [body.header for body in bodies]
 
     async def fetch(self, folder: str, uid: str) -> MailBody:
         return await self._read(uid)

@@ -19,6 +19,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core.exceptions import OdysseusError
 
@@ -28,6 +29,25 @@ class SandboxError(OdysseusError):
     is an ordinary :class:`SandboxResult` the agent acts on). This is an
     infrastructure failure: the runtime vanished, the image is missing, the
     container could not start."""
+
+
+def contained_path(root: Path, relpath: str, *, what: str = "path") -> Path:
+    """Resolve ``relpath`` under ``root``, refusing anything that escapes it.
+
+    The one place this check lives. It was written out at each of the four call
+    sites — staging inputs, copying outputs, and the session's read/write — and had
+    already drifted: three raised on an escape and the fourth silently dropped the
+    file, which turns a traversal attempt into a missing output rather than an error.
+    A containment check that fails quietly is not a containment check.
+
+    ``root`` is resolved too, so a symlinked workspace doesn't read as an escape from
+    itself.
+    """
+    resolved_root = root.resolve()
+    target = (root / relpath).resolve()
+    if not target.is_relative_to(resolved_root):
+        raise SandboxError(f"{what} escapes the sandbox workspace: {relpath!r}")
+    return target
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,6 @@ thing downstream.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
 from typing import Any
 
 import httpx
@@ -33,7 +32,7 @@ from .models import (
     OutgoingMail,
     TransportCapabilities,
 )
-from .parse import html_to_text, snippet_of
+from .parse import html_to_text, parse_utc, snippet_of
 from .rest import RestApi
 
 _BASE_URL = "https://graph.microsoft.com/v1.0/me"
@@ -194,7 +193,7 @@ def _to_header(message: dict[str, Any]) -> MailHeader:
         uid=str(message["id"]),
         sender=sender,
         subject=str(message.get("subject") or ""),
-        received_at=_parse_utc(message.get("receivedDateTime")),
+        received_at=parse_utc(message.get("receivedDateTime")),
         to=_addresses(message.get("toRecipients")),
         cc=_addresses(message.get("ccRecipients")),
         snippet=snippet_of(str(message.get("bodyPreview") or "")),
@@ -207,10 +206,3 @@ def _to_header(message: dict[str, Any]) -> MailHeader:
     return replace(header, size_bytes=message.get("size"))
 
 
-def _parse_utc(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None

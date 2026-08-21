@@ -31,7 +31,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
-from agent.engine import _merge_consecutive_requests
+from agent.history import merge_consecutive_requests
 from agent.summarize import (
     build_auto_compact_policy,
     compact_conversation,
@@ -598,7 +598,7 @@ def test_consecutive_requests_merge_so_the_index_stays_honest():
     """Pydantic AI collapses adjacent requests when it prepares the wire format, so
     ``all_messages()`` comes back shorter than what was handed in. Normalizing first is
     what keeps ``start`` pointing at the real boundary."""
-    merged = _merge_consecutive_requests(
+    merged = merge_consecutive_requests(
         [
             ModelRequest(parts=[UserPromptPart(content="a")]),
             ModelRequest(parts=[UserPromptPart(content="b")]),
@@ -610,11 +610,59 @@ def test_consecutive_requests_merge_so_the_index_stays_honest():
     assert [p.content for p in merged[0].parts] == ["a", "b"]
 
 
+async def test_the_library_really_does_merge_and_its_own_index_is_not_a_substitute():
+    """Two facts this normalization rests on, checked against the installed library
+    rather than assumed.
+
+    First, Pydantic AI genuinely merges adjacent requests: hand it a history ending in
+    two of them and ``all_messages()`` comes back one short, so a naive
+    ``all_messages()[len(history):]`` slices past the operator's own prompt.
+
+    Second — the reason ``start`` isn't simply replaced by ``new_messages()`` — the
+    library's index is per *agent run*, and one of our turns can be several (a
+    continuation, an approval resume, a verifier correction). It is right about the run
+    it describes; it just isn't answering the question ``start`` answers.
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai.models.function import FunctionModel
+
+    def reply(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="first")]),
+        ModelResponse(parts=[TextPart(content="answered")]),
+        # What a compaction checkpoint in front of a retained tail produces.
+        ModelRequest(parts=[UserPromptPart(content="checkpoint")]),
+        ModelRequest(parts=[UserPromptPart(content="tail")]),
+    ]
+    naive_start = len(history)
+
+    result = await Agent(FunctionModel(reply)).run("new question", message_history=history)
+    everything = result.all_messages()
+
+    # The merge is real, and the naive index loses the operator's message because of it.
+    assert len(everything) == len(history) + 1  # four in, five out — two became one
+    assert not any(
+        isinstance(part, UserPromptPart) and part.content == "new question"
+        for message in everything[naive_start:]
+        for part in message.parts
+    )
+    # Normalizing first is what fixes it: `start` measured against the merged list points
+    # at the operator's prompt, which is what gets persisted.
+    normalized = merge_consecutive_requests(history)
+    assert isinstance(everything[len(normalized)], ModelRequest)
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == "new question"
+        for part in everything[len(normalized)].parts
+    )
+
+
 def test_the_merge_does_not_mutate_the_messages_it_was_given():
     """The store's in-memory tree shares these objects — mutating one in place would
     corrupt the durable history of every later read."""
     first = ModelRequest(parts=[UserPromptPart(content="a")])
-    _merge_consecutive_requests([first, ModelRequest(parts=[UserPromptPart(content="b")])])
+    merge_consecutive_requests([first, ModelRequest(parts=[UserPromptPart(content="b")])])
     assert [p.content for p in first.parts] == ["a"]
 
 

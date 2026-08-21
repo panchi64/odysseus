@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, NotFoundError, ServingError
+from core.exceptions import (
+    DegradedCapabilityError,
+    InvalidInputError,
+    NotFoundError,
+    ServingError,
+)
 from core.vault import Vault
 from services.cookbook import CookbookService
 from services.credential_store import CredentialStore
@@ -147,10 +152,11 @@ async def test_serve_registers_endpoint_binds_role_and_resolves(tmp_path: Path):
         assert endpoint.model == "acme/Model-GGUF" and endpoint.native_tools is True
 
         # The role bound to it, and resolution works unchanged (the zero-agent-change
-        # guarantee — resolve builds the Pydantic AI model without any serving knowledge).
+        # guarantee — resolution builds the Pydantic AI model without any serving
+        # knowledge). Through `resolve_detailed`, which is what every caller uses.
         assert await registry.get_role(OWNER, "main") == [endpoint.id]
-        model = await registry.resolve("main", owner_id=OWNER)
-        assert model is not None
+        resolved = await registry.resolve_detailed("main", owner_id=OWNER)
+        assert resolved.model is not None
     finally:
         await service.shutdown()
 
@@ -173,6 +179,47 @@ async def test_stop_disables_endpoint_and_keeps_the_row(tmp_path: Path):
         assert endpoint.managed is True and endpoint.provider == "local"
         assert await registry.get_role(OWNER, "main") == [view.endpoint_id]
         assert (await service.status(OWNER))[0].state == ServeState.stopped
+    finally:
+        await service.shutdown()
+
+
+async def test_stop_completes_and_logs_when_the_endpoint_write_fails(tmp_path, caplog):
+    # Standing an endpoint down is best-effort on every teardown path: the engine is
+    # already gone, and a failed write must not leave the row claiming to be running.
+    # It must also not be silent — the six copies of this block disagreed, four
+    # swallowing only NotFoundError and two swallowing everything without a word.
+    service, registry = await _service(tmp_path)
+    try:
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
+        view = await _wait_settled(service, started.id)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("the database went away")
+
+        registry.update_endpoint = boom
+        with caplog.at_level("ERROR"):
+            stopped = await service.stop(OWNER, view.id)
+
+        assert stopped.state == ServeState.stopped and stopped.port is None
+        assert any("could not mark endpoint" in r.message for r in caplog.records)
+    finally:
+        await service.shutdown()
+
+
+async def test_stop_is_quiet_when_the_endpoint_is_already_gone(tmp_path, caplog):
+    # An endpoint deleted out from under a teardown is ordinary, not an error worth
+    # logging — the row it belonged to is on its way to `stopped` either way.
+    service, registry = await _service(tmp_path)
+    try:
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
+        view = await _wait_settled(service, started.id)
+        await registry.delete_endpoint(OWNER, view.endpoint_id)
+
+        with caplog.at_level("ERROR"):
+            stopped = await service.stop(OWNER, view.id)
+
+        assert stopped.state == ServeState.stopped
+        assert not [r for r in caplog.records if "could not mark endpoint" in r.message]
     finally:
         await service.shutdown()
 
@@ -366,7 +413,7 @@ async def test_models_dir_setting_routes_downloads(tmp_path: Path):
         # The artifact landed under the configured directory, not the default data dir.
         assert (custom / "llama.cpp" / "acme__Model-GGUF").exists()
 
-        with pytest.raises(ServingError):
+        with pytest.raises(InvalidInputError):
             await service.set_models_dir(OWNER, "relative/not/absolute")
     finally:
         await service.shutdown()
@@ -526,6 +573,46 @@ async def test_endpoint_capabilities_come_from_the_probes(tmp_path: Path):
         assert endpoint.vision is True
         assert endpoint.context_window == 131072
         assert endpoint.native_tools is True
+    finally:
+        await service.shutdown()
+
+
+class _FlakyProbeAdapter(FakeAdapter):
+    """Answers the context-window probe once and reports ``None`` from then on — an MLX
+    ``/health`` that responds on the first serve and is unreachable (or missing the keys)
+    on the next. Carries MLX's generic hint, the number that used to overwrite the real
+    window on that failure."""
+
+    context_window_hint = 32768
+
+    def __init__(self, window: int) -> None:
+        super().__init__()
+        self._windows = [window]
+
+    async def probe_context_window(self, port: int) -> int | None:
+        return self._windows.pop(0) if self._windows else None
+
+
+async def test_a_failed_context_window_probe_leaves_the_stored_one_alone(tmp_path: Path):
+    # A probe that comes back None means "couldn't ask", not "the window shrank".
+    # Falling back to the engine's generic hint there caps a measured 128K endpoint at
+    # 32K — and `update_endpoint` writes it, so the lie outlives the transient failure
+    # and drives context reduction against a window the model does have.
+    adapter = _FlakyProbeAdapter(131072)
+    service, registry = await _service(tmp_path, adapter=adapter)
+    try:
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF")
+        view = await _wait_settled(service, started.id)
+        endpoint_id = view.endpoint_id or ""
+        assert (await registry.get_endpoint(OWNER, endpoint_id)).context_window == 131072
+
+        # Re-serve the same model; this time the probe can't reach the server.
+        await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF")
+        again = await _wait_settled(service, started.id)
+
+        assert again.state == ServeState.running
+        assert again.endpoint_id == endpoint_id  # the same endpoint, refreshed in place
+        assert (await registry.get_endpoint(OWNER, endpoint_id)).context_window == 131072
     finally:
         await service.shutdown()
 
@@ -706,7 +793,7 @@ async def test_an_imported_model_whose_files_moved_says_so(tmp_path: Path):
 async def test_import_refuses_a_path_of_the_wrong_shape(tmp_path: Path):
     service, _ = await _service(tmp_path)
     try:
-        with pytest.raises(ServingError):
+        with pytest.raises(InvalidInputError):
             await service.import_local(OWNER, EngineKind.llama_cpp, str(tmp_path / "gone.gguf"))
     finally:
         await service.shutdown()

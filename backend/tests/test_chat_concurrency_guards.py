@@ -36,13 +36,9 @@ def _patch_hanging_model(monkeypatch, hang: asyncio.Event, started: asyncio.Even
     def _model() -> FunctionModel:
         return FunctionModel(stream_function=stream_fn)
 
-    async def resolve(self, role, **kwargs):
-        return _model()
-
     async def resolve_detailed(self, role, **kwargs):
         return ResolvedModel(model=_model(), reasoning_off={})
 
-    monkeypatch.setattr(ModelRegistry, "resolve", resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
 
@@ -283,18 +279,16 @@ def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Ev
 
         return FunctionModel(stream_function=stream_fn)
 
-    async def resolve(self, role, **kwargs):
-        return _model()
-
     async def resolve_detailed(self, role, **kwargs):
         entered.set()
         await gate.wait()
         return ResolvedModel(model=_model(), reasoning_off={})
 
+    # Patched separately rather than left to delegate: the gate above would otherwise
+    # also stall every background resolution this test isn't trying to hold.
     async def resolve_background(self, *, owner_id, **kwargs):
         return ResolvedModel(model=_model(), reasoning_off={})
 
-    monkeypatch.setattr(ModelRegistry, "resolve", resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
     monkeypatch.setattr(ModelRegistry, "resolve_background", resolve_background)
 

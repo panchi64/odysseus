@@ -34,7 +34,7 @@ def _install_needs_clarification(monkeypatch, questions: list[str]) -> None:
     async def judge(model, settings, *, question, context):
         return ClarifyVerdict(needs_clarification=True, questions=questions)
 
-    monkeypatch.setattr("routes.research._judge_clarification", judge)
+    monkeypatch.setattr("routes.research.judge_clarification", judge)
 
 
 def _install_clear_plan(
@@ -48,15 +48,15 @@ def _install_clear_plan(
             objective=objective, angles=angles or ["angle one", "angle two"], notes=notes
         )
 
-    monkeypatch.setattr("routes.research._judge_clarification", judge)
-    monkeypatch.setattr("routes.research._produce_plan", plan)
+    monkeypatch.setattr("routes.research.judge_clarification", judge)
+    monkeypatch.setattr("routes.research.produce_plan", plan)
 
 
 def _fail_if_judge_called(monkeypatch) -> None:
     async def judge(model, settings, *, question, context):
         raise AssertionError("the clarify judge must not be consulted on a forced plan")
 
-    monkeypatch.setattr("routes.research._judge_clarification", judge)
+    monkeypatch.setattr("routes.research.judge_clarification", judge)
 
 
 async def _drain_terminal_tasks(app) -> None:
@@ -211,7 +211,7 @@ async def test_refine_with_empty_body_skips_the_judge_and_forces_a_plan(monkeypa
         async def plan(model, settings, *, question, context):
             return ResearchPlan(objective="forced plan", angles=["a"])
 
-        monkeypatch.setattr("routes.research._produce_plan", plan)
+        monkeypatch.setattr("routes.research.produce_plan", plan)
 
         refined = await client.post(f"/research/{created['id']}/refine", json={})
         assert refined.status_code == 200
@@ -236,7 +236,7 @@ async def test_refine_rejects_once_no_longer_a_draft(monkeypatch):
                 report="the report", rounds=1, sources=1, queries=1, duration_s=0.01, model="m"
             )
 
-        monkeypatch.setattr("routes.research.run_research", fast_run_research)
+        monkeypatch.setattr("routes.research_launch.run_research", fast_run_research)
         started = await client.post(f"/research/{created['id']}/start")
         assert started.status_code == 200
         await _await_status(client, app, created["id"], "done")
@@ -263,6 +263,54 @@ async def test_start_unknown_id_404s(monkeypatch):
         assert (await client.post("/research/does-not-exist/start")).status_code == 404
 
 
+def _never_runs(monkeypatch) -> None:
+    """Fail loudly if the pipeline is entered at all — a refused start must not spend a
+    Run, and must not reach the point where `deps.search`/`deps.fetcher` are dialled."""
+
+    async def run_research(plan, question, deps, emit):
+        raise AssertionError("the pipeline must not start with its web tools withheld")
+
+    monkeypatch.setattr("routes.research_launch.run_research", run_research)
+
+
+async def test_start_refuses_when_the_operator_disabled_a_web_tool(monkeypatch):
+    """Deep research is nothing but search + fetch, so the operator's own disabled set
+    (`AE-3.3`) binds it exactly as it binds a chat turn — research is not an exemption
+    from the switch. Refused up front rather than degraded: the pipeline treats a missing
+    capability as "this source found nothing", so starting would burn a full Run to
+    produce an evidence-free report that reads as though it had looked."""
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+        _never_runs(monkeypatch)
+        assert (await client.put("/tools/web_search", json={"enabled": False})).status_code == 200
+
+        resp = await client.post(f"/research/{created['id']}/start")
+        assert resp.status_code == 409
+        assert "web_search" in resp.json()["detail"]
+        # Still a draft, so re-enabling the tool and pressing start again just works.
+        assert (await client.get(f"/research/{created['id']}")).json()["status"] == "draft"
+
+
+async def test_start_refuses_while_offline_suspends_the_web_tools(monkeypatch):
+    """The other half of the effective set: offline mode's automatic suspension is not a
+    thing the operator chose, and research honours it the same way. Both names are
+    reported, so the message tells them what is actually missing."""
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        created = await _intake_with_plan(monkeypatch=monkeypatch, client=client)
+        _never_runs(monkeypatch)
+        monkeypatch.setattr(
+            app.state.offline, "web_tools_disabled", lambda: frozenset({"web_search", "web_fetch"})
+        )
+
+        resp = await client.post(f"/research/{created['id']}/start")
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "web_search" in detail and "web_fetch" in detail
+        assert (await client.get(f"/research/{created['id']}")).json()["status"] == "draft"
+
+
 async def test_start_submits_a_run_and_persists_done_report_and_stats(monkeypatch):
     patch_model_resolution(monkeypatch)
     async with client_app() as (client, app):
@@ -279,7 +327,7 @@ async def test_start_submits_a_run_and_persists_done_report_and_stats(monkeypatc
                 model="test-model",
             )
 
-        monkeypatch.setattr("routes.research.run_research", fast_run_research)
+        monkeypatch.setattr("routes.research_launch.run_research", fast_run_research)
         started = await client.post(f"/research/{created['id']}/start")
         assert started.status_code == 200
         assert started.json()["status"] == "running"
@@ -311,7 +359,7 @@ async def test_start_persists_error_report_on_search_unavailable(monkeypatch):
         async def failing_run_research(plan, question, deps, emit):
             raise SearchUnavailableError("search appears to be unavailable")
 
-        monkeypatch.setattr("routes.research.run_research", failing_run_research)
+        monkeypatch.setattr("routes.research_launch.run_research", failing_run_research)
         started = await client.post(f"/research/{created['id']}/start")
         assert started.status_code == 200
 
@@ -331,7 +379,7 @@ async def test_concurrent_starts_submit_exactly_one_run(monkeypatch):
                 report="ok", rounds=1, sources=0, queries=0, duration_s=0.1, model="m"
             )
 
-        monkeypatch.setattr("routes.research.run_research", slow_run_research)
+        monkeypatch.setattr("routes.research_launch.run_research", slow_run_research)
         first, second = await asyncio.gather(
             client.post(f"/research/{created['id']}/start"),
             client.post(f"/research/{created['id']}/start"),
@@ -359,13 +407,13 @@ async def test_wall_clock_blocked_run_persists_the_timeout_detail(monkeypatch):
         # Shrink the Run's wall-clock backstop to ~50ms so the registry blocks the
         # run without waiting out the real operator-configured limit.
         base = get_settings().model_copy(update={"research_time_limit_s": 0.05})
-        monkeypatch.setattr("routes.research.get_settings", lambda: base)
-        monkeypatch.setattr("routes.research._WALL_CLOCK_BUFFER_S", 0.0)
+        monkeypatch.setattr("routes.research_launch.get_settings", lambda: base)
+        monkeypatch.setattr("routes.research_launch._WALL_CLOCK_BUFFER_S", 0.0)
 
         async def never_finishes(plan, question, deps, emit):
             await asyncio.Event().wait()
 
-        monkeypatch.setattr("routes.research.run_research", never_finishes)
+        monkeypatch.setattr("routes.research_launch.run_research", never_finishes)
         started = await client.post(f"/research/{created['id']}/start")
         assert started.status_code == 200
 
@@ -388,7 +436,7 @@ async def test_done_and_error_runs_both_notify_with_research_id(monkeypatch):
                 report="ok", rounds=1, sources=0, queries=0, duration_s=0.1, model="m"
             )
 
-        monkeypatch.setattr("routes.research.run_research", ok)
+        monkeypatch.setattr("routes.research_launch.run_research", ok)
         await client.post(f"/research/{done_entry['id']}/start")
         await _await_status(client, app, done_entry["id"], "done")
 
@@ -397,7 +445,7 @@ async def test_done_and_error_runs_both_notify_with_research_id(monkeypatch):
         async def fail(plan, question, deps, emit):
             raise RuntimeError("kaboom")
 
-        monkeypatch.setattr("routes.research.run_research", fail)
+        monkeypatch.setattr("routes.research_launch.run_research", fail)
         await client.post(f"/research/{error_entry['id']}/start")
         await _await_status(client, app, error_entry["id"], "error")
 
@@ -453,7 +501,7 @@ async def test_a_run_that_fails_to_submit_reverts_the_row_to_draft(monkeypatch):
                 report="ok", rounds=1, sources=0, queries=0, duration_s=0.1, model="m"
             )
 
-        monkeypatch.setattr("routes.research.run_research", ok)
+        monkeypatch.setattr("routes.research_launch.run_research", ok)
         assert (await client.post(f"/research/{created['id']}/start")).status_code == 200
         await _await_status(client, app, created["id"], "done")
 
@@ -480,7 +528,7 @@ async def test_continue_seeds_a_conversation_with_the_report_and_is_idempotent(m
                 duration_s=0.1, model="m",
             )
 
-        monkeypatch.setattr("routes.research.run_research", ok)
+        monkeypatch.setattr("routes.research_launch.run_research", ok)
         await client.post(f"/research/{created['id']}/start")
         await _await_status(client, app, created["id"], "done")
 
@@ -517,7 +565,7 @@ async def test_continue_seeds_the_report_wrapped_as_untrusted_history(monkeypatc
                 duration_s=0.1, model="m",
             )
 
-        monkeypatch.setattr("routes.research.run_research", ok)
+        monkeypatch.setattr("routes.research_launch.run_research", ok)
         await client.post(f"/research/{created['id']}/start")
         await _await_status(client, app, created["id"], "done")
 
@@ -566,7 +614,7 @@ async def test_delete_draft_succeeds_and_delete_while_running_is_refused(monkeyp
                 report="ok", rounds=1, sources=0, queries=0, duration_s=0.1, model="m"
             )
 
-        monkeypatch.setattr("routes.research.run_research", slow_run_research)
+        monkeypatch.setattr("routes.research_launch.run_research", slow_run_research)
         await client.post(f"/research/{created['id']}/start")
         await started_event.wait()
 

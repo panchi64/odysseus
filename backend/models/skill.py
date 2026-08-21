@@ -4,7 +4,8 @@ A skill is reusable know-how the agent applies to future tasks (`SKILL-1`…`SKI
 its on-disk form is the **Agent Skills open standard** artifact: a ``SKILL.md`` with YAML
 frontmatter plus whatever supporting files it ships (``scripts/``, ``references/``,
 ``assets/``). That artifact is the data model — these tables store it, they don't replace it,
-which is what lets a skill move between here and Claude Code in either direction (D32).
+which is what lets a skill move between here and any other Agent Skills reader in either
+direction, imported and exported unchanged.
 
 **Decomposed, not a sealed zip.** The bundle is split across two tables rather than kept as
 one opaque blob because all three requirements need its parts addressable: the per-turn
@@ -13,14 +14,15 @@ surgical edit (`SKILL-3`) needs the instruction body as its own column, and stag
 sandbox writes files straight through with nothing to unzip. An ``Upload`` gets away with a
 single ``blob_enc`` because an upload is opaque; a skill is structured.
 
-At-rest posture follows documents and uploads (D17): the content the skill *is* — its
+At-rest posture follows documents and uploads: the content the skill *is* — its
 description, its instructions, its files' bytes, and any preserved non-standard frontmatter
 — is sealed under the vault. What the database must index or the operator must be able to
 filter stays in the clear: ``owner_id``, timestamps, the ``published`` flag, the ``source``,
 each file's ``relpath``/``sha256``, and the ``name``. ``name`` in the clear is a deliberate,
 slightly weaker posture than the rest: it is simultaneously the uniqueness key, the bundle's
-directory name, and the handle the model calls the skill by, so it cannot be ciphertext —
-the trade, and what it leaks, is recorded in D32.
+directory name, and the handle the model calls the skill by, so it cannot be ciphertext.
+What that leaks is the operator's list of skill names — enough to infer what they work on,
+which is the accepted cost of the name being addressable at all.
 
 ``SKILL.md`` itself is **not** a ``SkillFile`` row: it is ``body_enc`` plus the frontmatter
 columns, rendered on export, so the two can never drift out of agreement.
@@ -68,7 +70,9 @@ class Skill(SQLModel, table=True):
     body_enc: str
     # Spec frontmatter that is policy rather than prose, kept clear so the library can
     # filter and display it without a decrypt: an SPDX-ish license id, and the advisory
-    # allowed-tools list as a JSON array (recorded and shown, never enforced — see D32).
+    # allowed-tools list as a JSON array. Advisory only: it is recorded and displayed,
+    # never enforced — the tool policy is the enforcement point, not a skill's own
+    # frontmatter, which arrives from wherever the bundle was imported from.
     license: str | None = Field(default=None)
     allowed_tools_json: str | None = Field(default=None)
     # Sealed spec frontmatter that may carry operator detail: the compatibility string and

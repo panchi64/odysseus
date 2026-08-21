@@ -21,8 +21,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
 from core import net
 from core.exceptions import ServingError
 
@@ -208,23 +206,23 @@ class ProcessSupervisor:
             raise ServingError(
                 f"the engine did not start listening within {timeout_s:.0f}s"
             ) from None
-        # 2) HTTP: wait for an OpenAI-compatible /v1/models response (it is serving,
-        # not merely bound). 5xx is "not ready yet"; anything below is good enough.
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            while True:
-                if proc.returncode is not None:
-                    raise EngineExitedDuringStartup(
-                        "the engine process exited during startup", loop.time() - started
-                    )
-                try:
-                    resp = await client.get(f"{base_url}/models")
-                    if resp.status_code < 500:
-                        return
-                except httpx.HTTPError:
-                    pass
-                if loop.time() >= deadline:
-                    raise ServingError("the engine did not become ready in time")
-                await asyncio.sleep(self._poll_interval_s)
+        # 2) HTTP: wait for an OpenAI-compatible /v1/models response (it is serving, not
+        # merely bound) — the same probe the sandbox preview waits on, differing only in
+        # what a timeout means here: a failed start, not a page worth opening anyway.
+        try:
+            ready = await net.await_http_ready(
+                f"{base_url}/models",
+                max(0.0, deadline - loop.time()),
+                poll_interval_s=self._poll_interval_s,
+                request_timeout_s=5.0,
+                is_alive=lambda: proc.returncode is None,
+            )
+        except ConnectionError:
+            raise EngineExitedDuringStartup(
+                "the engine process exited during startup", loop.time() - started
+            ) from None
+        if not ready:
+            raise ServingError("the engine did not become ready in time")
 
     async def _watch(self, running: RunningProc, on_crash: OnCrash) -> None:
         returncode = await running.proc.wait()

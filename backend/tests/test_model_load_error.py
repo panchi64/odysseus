@@ -16,7 +16,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.models.wrapper import WrapperModel
 
 from agent import build_chat_orchestrator
-from agent.engine import _model_load_hint
+from agent.model_errors import model_load_hint
 from runs import RunRegistry, RunStatus
 
 
@@ -26,7 +26,7 @@ def _abort_error(model: str = "qwen3.6-35b-a3b-mtp") -> ModelHTTPError:
 
 
 def test_hint_detects_an_engine_load_abort():
-    hint = _model_load_hint(_abort_error())
+    hint = model_load_hint(_abort_error())
     assert hint is not None
     assert "qwen3.6-35b-a3b-mtp" in hint  # names the model that wouldn't load
     assert "LM Studio" in hint  # points at the engine-side fix
@@ -34,7 +34,7 @@ def test_hint_detects_an_engine_load_abort():
 
 def test_hint_ignores_unrelated_http_errors():
     other = ModelHTTPError(status_code=500, model_name="m", body={"message": "internal error"})
-    assert _model_load_hint(other) is None
+    assert model_load_hint(other) is None
 
 
 class _LoadFailingModel(WrapperModel):

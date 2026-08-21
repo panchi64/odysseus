@@ -1,4 +1,4 @@
-"""Untrusted-content marking (D11): the wrap that tells the model 'this is data'."""
+"""Untrusted-content marking: the wrap that tells the model 'this is data'."""
 
 from __future__ import annotations
 

@@ -18,7 +18,12 @@ from typing import Protocol
 
 from sqlalchemy import Engine
 
-from core.exceptions import NotFoundError, ServingError, ServingUnavailableError
+from core.exceptions import (
+    InvalidInputError,
+    NotFoundError,
+    ServingError,
+    ServingUnavailableError,
+)
 from core.vault import Vault
 from models._fields import utcnow
 from models.serving import ManagedModel
@@ -96,7 +101,7 @@ def _ensure_writable_dir(path: Path) -> None:
         probe.touch()
         probe.unlink()
     except OSError as exc:
-        raise ServingError(f"that models directory isn't usable: {exc}") from exc
+        raise InvalidInputError(f"that models directory isn't usable: {exc}") from exc
 
 
 class Reindexer(Protocol):
@@ -197,7 +202,7 @@ class ServingService:
         Returns the stored absolute path. Raises ``ServingError`` if it can't be used."""
         target = Path(path).expanduser()
         if not target.is_absolute():
-            raise ServingError("the models directory must be an absolute path")
+            raise InvalidInputError("the models directory must be an absolute path")
         if self._settings is None:
             raise ServingError("settings storage is not available")
         await asyncio.to_thread(_ensure_writable_dir, target)
@@ -272,12 +277,18 @@ class ServingService:
         lock; the slow inputs were gathered by ``_headroom_inputs`` beforehand."""
         if usable is None or need_bytes is None:
             return
-        resident: list[tuple[str, int]] = []
-        for r in await self._store.list_rows(owner_id):
-            if r.state not in headroom.RESIDENT_STATES or r.hf_repo == repo or not r.artifact_path:
-                continue
-            size = await asyncio.to_thread(_artifact_bytes, Path(r.artifact_path))
-            resident.append((r.hf_repo, size))
+        candidates = [
+            (r.hf_repo, Path(r.artifact_path))
+            for r in await self._store.list_rows(owner_id)
+            if r.state in headroom.RESIDENT_STATES and r.hf_repo != repo and r.artifact_path
+        ]
+        # One thread hop for the whole snapshot rather than one per model. `_artifact_bytes`
+        # walks an MLX repo's entire directory tree, and this runs with the serve lock held:
+        # awaited in a loop, a few resident models turned "cheap fs stats" into a serialized
+        # queue of directory walks that every concurrent serve waited behind.
+        resident = await asyncio.to_thread(
+            lambda: [(repo_id, _artifact_bytes(path)) for repo_id, path in candidates]
+        )
         headroom.check(repo=repo, need_bytes=need_bytes, resident=resident, usable_budget=usable)
 
     # --- downloads --------------------------------------------------------
@@ -298,11 +309,7 @@ class ServingService:
         # tear down any in-flight serve/engine for this model and mark its endpoint
         # not-running first, then reset the row to a clean downloading state.
         await self._halt(owner_id, row.id)
-        if row.endpoint_id:
-            with suppress(NotFoundError):
-                await self._registry.update_endpoint(
-                    owner_id, row.endpoint_id, live_status="stopped"
-                )
+        await self._mark_endpoint_stopped(owner_id, row.endpoint_id)
         await self._store.update(
             row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
         )
@@ -334,7 +341,7 @@ class ServingService:
             )
         artifact = Path(path.strip()).expanduser()
         if not str(artifact) or not artifact.is_absolute():
-            raise ServingError("point at a full path, starting from the root of the disk")
+            raise InvalidInputError("point at a full path, starting from the root of the disk")
         await asyncio.to_thread(adapter.validate_artifact, artifact)
         # A folder keeps its whole name: `Path.stem` truncates at the last dot, which
         # mangles exactly the names MLX snapshots carry (`Qwen2.5-7B-…` → `Qwen2`) — and
@@ -349,11 +356,7 @@ class ServingService:
         existing = await self._store.find(owner_id, engine, display)
         if existing is not None:
             await self._halt(owner_id, existing.id)
-            if existing.endpoint_id:
-                with suppress(NotFoundError):
-                    await self._registry.update_endpoint(
-                        owner_id, existing.endpoint_id, live_status="stopped"
-                    )
+            await self._mark_endpoint_stopped(owner_id, existing.endpoint_id)
         row = await self._store.get_or_create(
             owner_id,
             engine,
@@ -559,11 +562,8 @@ class ServingService:
             managed_id, state=ServeState.error, last_error=message, port=None, pid=None
         )
         row = await self._store.get(managed_id)
-        if row is not None and row.endpoint_id:
-            with suppress(Exception):
-                await self._registry.update_endpoint(
-                    row.owner_id, row.endpoint_id, live_status="stopped"
-                )
+        if row is not None:
+            await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
 
     # --- the starting stage (in-memory, like download progress) -----------
 
@@ -705,16 +705,30 @@ class ServingService:
         await self._downloads.cancel(managed_id)
         await self._supervisor.stop(managed_id)
 
+    async def _mark_endpoint_stopped(self, owner_id: str, endpoint_id: str | None) -> None:
+        """Stand an endpoint's *liveness* down, if the model has one.
+
+        Liveness only — the operator's own ``enabled`` switch is never touched by the
+        serving lifecycle. Six paths end this way (stop, delete-and-replace, re-download,
+        a crash, a failed serve, startup reconcile) and every one of them is mid-teardown
+        with nothing useful to do about a write that fails, so this never raises. An
+        endpoint deleted out from under us is ordinary and silent; anything else is
+        logged rather than swallowed, which is what the scattered copies of this block
+        disagreed about — four suppressed ``NotFoundError``, two suppressed everything.
+        """
+        if not endpoint_id:
+            return
+        try:
+            await self._registry.update_endpoint(owner_id, endpoint_id, live_status="stopped")
+        except NotFoundError:
+            pass
+        except Exception:
+            logger.exception("serving: could not mark endpoint %s stopped", endpoint_id)
+
     async def stop(self, owner_id: str, managed_id: str) -> ManagedModelView:
         row = await self._store.get_owned(owner_id, managed_id)
         await self._halt(owner_id, managed_id)
-        if row.endpoint_id:
-            with suppress(NotFoundError):
-                # Liveness only — the operator's own `enabled` switch is never
-                # touched by the serving lifecycle.
-                await self._registry.update_endpoint(
-                    owner_id, row.endpoint_id, live_status="stopped"
-                )
+        await self._mark_endpoint_stopped(owner_id, row.endpoint_id)
         await self._store.update(managed_id, state=ServeState.stopped, port=None, pid=None)
         refreshed = await self._store.get(managed_id)
         return self._store.to_view(refreshed or row)
@@ -742,11 +756,8 @@ class ServingService:
                 last_error=f"the engine exited unexpectedly (code {returncode})",
             )
             row = await self._store.get(managed_id)
-            if row and row.endpoint_id:
-                with suppress(NotFoundError):
-                    await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, live_status="stopped"
-                    )
+            if row:
+                await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
 
         return on_crash
 
@@ -762,17 +773,24 @@ class ServingService:
     ):
         """Register (or refresh) the registry endpoint for a served model. Re-serving
         reuses the same endpoint so its role bindings survive a stop/start cycle."""
-        # Ask the running server what context it settled on, falling back to the engine's
-        # generic hint. Refreshed on every serve, not just creation: a re-serve with a new
-        # context size would otherwise leave the endpoint advertising the old window.
+        # Ask the running server what context it settled on. Refreshed on every serve, not
+        # just creation: a re-serve with a new context size would otherwise leave the
+        # endpoint advertising the old window.
         #
         # This deliberately overwrites a hand-edited window on a *managed* endpoint. For
         # a remote endpoint the operator's number is the only source of truth, but here
         # the server itself can be asked, and a hand-set value that disagrees with the
         # running process is simply wrong — it would drive context reduction against a
-        # window the model doesn't have. A failed probe yields None, which
-        # `update_endpoint` skips, so an unreachable server leaves the old value intact.
-        context_window = await adapter.probe_context_window(port) or adapter.context_window_hint
+        # window the model doesn't have.
+        #
+        # The engine's generic hint *seeds* a window nobody knows yet; it never corrects
+        # one that was measured. A ``None`` probe means "couldn't ask" — MLX answers None
+        # whenever /health is unreachable or doesn't carry the keys — not "the window
+        # shrank", so falling back to the hint there would let one transient probe failure
+        # cap a real 128K endpoint at MLX's conservative 32768 and persist that. A failed
+        # probe therefore contributes nothing on the update path: `update_endpoint` skips
+        # a None and the stored window survives untouched.
+        probed = await adapter.probe_context_window(port)
         # Both capabilities come from what was actually loaded, for the same reason the
         # window does: tool-calling is a property of the model's chat template and vision
         # of its config, neither of which the operator's workload choice can know. Both
@@ -784,6 +802,13 @@ class ServingService:
         )
         if row.endpoint_id:
             try:
+                # The hint still gets to seed an endpoint that carries no window at all
+                # (registered while the probe was down), which is the one case where a
+                # generic number beats nothing.
+                current = await self._registry.get_endpoint(owner_id, row.endpoint_id)
+                window = probed or (
+                    adapter.context_window_hint if current.context_window is None else None
+                )
                 await self._registry.update_endpoint(
                     owner_id,
                     row.endpoint_id,
@@ -792,7 +817,7 @@ class ServingService:
                     live_status="running",
                     native_tools=native_tools,
                     vision=vision,
-                    context_window=context_window,
+                    context_window=window,
                 )
                 # A role pinned to this endpoint names a model *string*, sent verbatim on
                 # every request. The id an engine answers to can change under it — MLX
@@ -814,7 +839,9 @@ class ServingService:
             model=model_id,
             native_tools=native_tools,
             vision=vision,
-            context_window=context_window,
+            # Nothing is known yet on a brand-new endpoint, so here the hint is the
+            # honest floor rather than a guess overwriting a measurement.
+            context_window=probed or adapter.context_window_hint,
         )
 
     # --- managed-model status --------------------------------------------
@@ -880,11 +907,7 @@ class ServingService:
                 self._supervisor.terminate_orphan(row.pid)
             with suppress(Exception):
                 await self._store.update(row.id, state=ServeState.stopped, port=None, pid=None)
-            if row.endpoint_id:
-                with suppress(Exception):
-                    await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, live_status="stopped"
-                    )
+            await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
         if rows:
             logger.info("serving: reconciled %d managed model(s) to stopped", len(rows))
         # Then the endpoints themselves, independently of the rows. A row that reached a

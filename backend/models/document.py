@@ -16,7 +16,7 @@ monotonic ``version`` number and ``origin``.
 
 Versions are **append-only full snapshots**, not diffs: at single-operator scale,
 with everything sealed at rest, a snapshot makes restore a copy rather than a diff
-replay — the same reasoning (brute-force over the sealed working set, D18) that the
+replay — the same reasoning (brute-force over the sealed working set) that the
 rest of the recall path takes.
 """
 

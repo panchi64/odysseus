@@ -28,7 +28,6 @@ from typing import Any
 
 from pydantic_ai import BinaryContent
 
-from core.exceptions import NotFoundError
 from core.text import tokens_to_chars, truncate_on_boundary
 from core.untrusted import wrap_untrusted
 from models.upload import UploadStatus
@@ -75,15 +74,25 @@ async def resolve_attachments(
     refs: list[str] = []
     resolved_ids: list[str] = []
     max_chars = tokens_to_chars(inline_max_tokens)
+    # Two reads for the whole turn, not two per file: the metadata for every id, then the
+    # bytes for just the images that will actually go in as binary content. Each store call
+    # is a thread hop, and a four-image turn was paying eight of them.
+    views = await uploads.get_many(owner_id, ids)
+    blobs = (
+        await uploads.contents(
+            owner_id,
+            [i for i, v in views.items() if v.mime.startswith(_IMAGE_PREFIX)],
+        )
+        if vision
+        else {}
+    )
     for upload_id in ids:
-        try:
-            view = await uploads.get(owner_id, upload_id)
-        except NotFoundError:
+        view = views.get(upload_id)
+        if view is None:
             continue  # deleted or not the operator's — silently drop
         resolved_ids.append(upload_id)
         refs.append(f"{view.filename} (id: {upload_id})")
-        if vision and view.mime.startswith(_IMAGE_PREFIX):
-            blob = await uploads.content(owner_id, upload_id)
+        if (blob := blobs.get(upload_id)) is not None:
             binary = BinaryContent(data=blob.content, media_type=view.mime)
             content.append(binary)
             persisted.append(binary)  # an image is always retained inline

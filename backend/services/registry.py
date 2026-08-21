@@ -26,7 +26,7 @@ from pydantic_ai.settings import ModelSettings
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import get_owned, in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
@@ -90,14 +90,9 @@ class ModelRegistry:
         return await in_session(self._engine, work)
 
     async def get_endpoint(self, owner_id: str, endpoint_id: str) -> ModelEndpoint:
-        def work(session: Session) -> ModelEndpoint | None:
-            endpoint = session.get(ModelEndpoint, endpoint_id)
-            return endpoint if endpoint is not None and endpoint.owner_id == owner_id else None
-
-        endpoint = await in_session(self._engine, work)
-        if endpoint is None:
-            raise NotFoundError(f"endpoint {endpoint_id!r} not found")
-        return endpoint
+        return await get_owned(
+            self._engine, ModelEndpoint, endpoint_id, owner_id, what="endpoint"
+        )
 
     async def create_endpoint(
         self,
@@ -360,9 +355,10 @@ class ModelRegistry:
         override_model: str | None = None,
     ) -> list[llm.EndpointSpec]:
         """The ordered, decrypted endpoint specs ``role`` resolves to: a
-        per-conversation ``main`` override → the role's own chain. Shared by
-        :meth:`resolve` (which builds a model) and :meth:`resolve_detailed` (which
-        also derives reasoning-off settings), so both see identical resolution.
+        per-conversation ``main`` override → the role's own chain. Shared by every
+        resolution entry point — :meth:`resolve_detailed`, :meth:`resolve_background`,
+        :meth:`main_context_window`, :meth:`role_is_usable` — so all of them see
+        identical resolution.
 
         The role's **pinned model** is applied to the chain's primary (head)
         endpoint — a stored binding is thus self-describing, so background /
@@ -460,30 +456,6 @@ class ModelRegistry:
             return False
         return True
 
-    async def resolve(
-        self,
-        role: str,
-        *,
-        owner_id: str,
-        override_endpoint_id: str | None = None,
-        override_model: str | None = None,
-    ) -> Model:
-        """Resolve ``role`` to a model: per-conversation ``main`` override → the
-        role's own chain. The chat picker overrides ``main`` with a provider
-        (``override_endpoint_id``) and a specific model on it (``override_model``,
-        discovered from the provider); ``utility``/``embedding`` resolve their own
-        bindings. Wraps a multi-endpoint chain in ``FallbackModel`` (AE-5.3). An
-        unconfigured role is a degraded capability — the registry is the only
-        source of truth (the chat layer reuses ``main`` when ``utility`` is unset)."""
-        return llm.build_chain(
-            await self._resolve_specs(
-                role,
-                owner_id=owner_id,
-                override_endpoint_id=override_endpoint_id,
-                override_model=override_model,
-            )
-        )
-
     async def resolve_detailed(
         self,
         role: str,
@@ -492,11 +464,23 @@ class ModelRegistry:
         override_endpoint_id: str | None = None,
         override_model: str | None = None,
     ) -> ResolvedModel:
-        """Like :meth:`resolve`, but also returns the settings that disable the
-        model's reasoning (from the **primary** endpoint — settings are uniform
-        per run, so the chain's head decides). Background work that must be fast
-        and not reason (titling) uses this; a model with no recognized thinking
-        lever yields empty settings and is left to reason normally."""
+        """Resolve ``role`` to a runnable model *and* the facts a caller needs about it.
+
+        Resolution is a per-conversation ``main`` override → the role's own chain. The
+        chat picker overrides ``main`` with a provider (``override_endpoint_id``) and a
+        specific model on it (``override_model``, discovered from the provider);
+        ``utility``/``embedding`` resolve their own bindings. A multi-endpoint chain is
+        wrapped in ``FallbackModel`` (AE-5.3). An unconfigured role is a degraded
+        capability — the registry is the only source of truth (the chat layer reuses
+        ``main`` when ``utility`` is unset).
+
+        Alongside the model come the settings that disable its reasoning, read from the
+        **primary** endpoint (settings are uniform per run, so the chain's head decides);
+        background work that must be fast and not reason (titling) uses them, and a model
+        with no recognized thinking lever yields empty settings and is left to reason
+        normally. This is the one entry point that builds a chat model: there is
+        deliberately no bare model-only sibling, so no caller can resolve a role while
+        skipping the context window, vision, and reasoning facts that travel with it."""
         specs = await self._resolve_specs(
             role,
             owner_id=owner_id,

@@ -32,7 +32,7 @@ from sqlalchemy import Engine, func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import get_owned, in_session
 from core.exceptions import NotFoundError
 from core.vault import Vault, VaultLocked
 from core.worker import WriteBehindWorker
@@ -326,6 +326,57 @@ class UploadStore:
 
         return await in_session(self._engine, work)
 
+    async def get_many(self, owner_id: str, ids: list[str]) -> dict[str, UploadView]:
+        """The owner's uploads among ``ids``, decrypted, keyed by id — one query for the
+        whole set. Ids that aren't the owner's (or don't exist) are simply absent, so the
+        caller drops them the same way it would drop a ``NotFoundError`` from ``get``.
+
+        A turn's attachments are resolved through this rather than through ``get`` in a
+        loop: each ``in_session`` is a thread hop, and a four-file turn was paying four of
+        them for what is one ``IN`` query."""
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
+
+        def work(session: Session) -> dict[str, UploadView]:
+            rows = session.exec(
+                select(Upload).where(
+                    Upload.owner_id == owner_id,
+                    Upload.id.in_(wanted),  # type: ignore[attr-defined]
+                )
+            ).all()
+            return {row.id: self._view_from_row(row) for row in rows}
+
+        return await in_session(self._engine, work)
+
+    async def contents(self, owner_id: str, ids: list[str]) -> dict[str, UploadBlob]:
+        """The decrypted bytes of the owner's uploads among ``ids``, keyed by id.
+
+        The batch form of :meth:`content`, for the one caller that needs several at once
+        (a turn attaching multiple images). Unlike :meth:`get_many` this materializes every
+        blob, so it is only for a set the caller has already narrowed."""
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
+
+        def work(session: Session) -> dict[str, UploadBlob]:
+            rows = session.exec(
+                select(Upload).where(
+                    Upload.owner_id == owner_id,
+                    Upload.id.in_(wanted),  # type: ignore[attr-defined]
+                )
+            ).all()
+            return {
+                row.id: UploadBlob(
+                    filename=self._vault.decrypt_str(row.filename_enc),
+                    mime=row.mime,
+                    content=self._vault.decrypt_bytes(row.blob_enc),
+                )
+                for row in rows
+            }
+
+        return await in_session(self._engine, work)
+
     async def content(self, owner_id: str, upload_id: str) -> UploadBlob:
         """The original file bytes, decrypted — for download/export."""
 
@@ -493,20 +544,27 @@ class UploadStore:
 
         return await in_session(self._engine, work)
 
-    async def owns(self, owner_id: str, upload_id: str) -> bool:
-        """Whether ``upload_id`` names an upload owned by ``owner_id`` — a cheap existence
-        check that decrypts nothing (unlike ``get``, which opens the sealed filename and
-        the whole extracted text). The chat route validates attachment ids with this."""
+    async def owned_ids(self, owner_id: str, ids: list[str]) -> set[str]:
+        """Which of ``ids`` name uploads this owner has — the batch form of :meth:`owns`,
+        decrypting nothing. The chat route validates a turn's whole attachment list with
+        one query rather than one per id."""
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return set()
 
-        def work(session: Session) -> bool:
-            upload = session.get(Upload, upload_id)
-            return upload is not None and upload.owner_id == owner_id
+        def work(session: Session) -> set[str]:
+            rows = session.exec(
+                select(Upload.id).where(
+                    Upload.owner_id == owner_id,
+                    Upload.id.in_(wanted),  # type: ignore[attr-defined]
+                )
+            ).all()
+            return set(rows)
 
         return await in_session(self._engine, work)
 
     async def _require(self, owner_id: str, upload_id: str) -> None:
-        if not await self.owns(owner_id, upload_id):
-            raise NotFoundError(f"upload {upload_id!r} not found")
+        await get_owned(self._engine, Upload, upload_id, owner_id, what="upload")
 
     def _view_from_row(self, upload: Upload) -> UploadView:
         text = (

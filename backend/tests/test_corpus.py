@@ -316,3 +316,154 @@ async def test_symlinked_file_outside_tree_is_skipped(tmp_path: Path):
         texts = [vault.decrypt_str(row.text_enc) for row in session.exec(select(CorpusChunk)).all()]
     assert any("inside the tree" in t for t in texts)  # the real file was indexed
     assert not any("secret" in t for t in texts)  # external content never ingested
+
+
+# --- regression: a re-crawl reconciles, it does not only insert -------------
+
+
+def _indexed(engine, vault) -> list[tuple[str, str]]:
+    """Every chunk currently in the store as (external_ref, decrypted text). A list, not
+    a dict: an edited file's old and new slices can share a ref (the offset only moves if
+    the edit shifts the text), and collapsing them would hide the very duplication these
+    tests are about."""
+    with Session(engine) as session:
+        rows = session.exec(select(CorpusChunk)).all()
+    return [(row.external_ref, vault.decrypt_str(row.text_enc)) for row in rows]
+
+
+async def test_recrawl_prunes_a_file_deleted_on_disk(tmp_path: Path):
+    """A file removed from disk must stop being retrievable. The crawl is insert-only, so
+    with no prune pass its chunks outlive it: RAG keeps quoting a file the operator
+    deleted (a secrets file stays readable long after `rm`), and the folder's DOCS count
+    still claims it."""
+    (tmp_path / "keep.txt").write_text("a stable note about a dog")
+    secrets = tmp_path / "secrets.txt"
+    secrets.write_text("the launch code is hunter2")
+
+    engine, vault, chunk_store, adapter = await _folder(tmp_path, FakeEmbedder())
+    await adapter.start()
+    source = await adapter.add_folder(OWNER, str(tmp_path))
+    await adapter._worker.join()
+    assert await chunk_store.count_items(OWNER, "folder", source.id) == 2
+
+    secrets.unlink()
+    await adapter.rebuild(OWNER, source.id)
+    await adapter._worker.join()
+    await adapter.stop()
+
+    indexed = _indexed(engine, vault)
+    assert not any("hunter2" in text for _ref, text in indexed)
+    assert not any(ref.startswith(str(secrets)) for ref, _text in indexed)
+    assert any("about a dog" in text for _ref, text in indexed)  # the survivor is untouched
+    assert await chunk_store.count_items(OWNER, "folder", source.id) == 1
+
+
+async def test_recrawl_replaces_an_edited_files_chunks(tmp_path: Path):
+    """An edit supersedes the old text. Insert-only, the store ends up holding both
+    versions of the same passage — so recall can answer with the stale one and the
+    operator has no way to tell which they got."""
+    note = tmp_path / "wifi.txt"
+    note.write_text("the wifi password is hunter2")
+
+    engine, vault, chunk_store, adapter = await _folder(tmp_path, FakeEmbedder())
+    await adapter.start()
+    source = await adapter.add_folder(OWNER, str(tmp_path))
+    await adapter._worker.join()
+    assert await chunk_store.count(OWNER, source.id) == 1
+
+    note.write_text("the wifi password is correcthorse")
+    await adapter.rebuild(OWNER, source.id)
+    await adapter._worker.join()
+    await adapter.stop()
+
+    indexed = _indexed(engine, vault)
+    assert len(indexed) == 1, "the superseded version must not sit alongside the new one"
+    assert "correcthorse" in indexed[0][1]
+    # Still one file, so the DOCS count is unchanged — a rewrite is not a new document.
+    assert await chunk_store.count_items(OWNER, "folder", source.id) == 1
+
+
+async def test_recrawl_keeps_a_file_it_could_not_read(tmp_path: Path, monkeypatch):
+    """A file the crawler can see but cannot open is not a deleted file. Pruning on a
+    permission blip would silently empty the index for content that still exists."""
+    (tmp_path / "notes.txt").write_text("the standup is at nine")
+
+    engine, _vault, chunk_store, adapter = await _folder(tmp_path, FakeEmbedder())
+    await adapter.start()
+    source = await adapter.add_folder(OWNER, str(tmp_path))
+    await adapter._worker.join()
+    assert await chunk_store.count(OWNER, source.id) == 1
+
+    def _unreadable(path: str) -> str:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(FolderAdapter, "_read", staticmethod(_unreadable))
+    await adapter.rebuild(OWNER, source.id)
+    await adapter._worker.join()
+    await adapter.stop()
+
+    assert await chunk_store.count(OWNER, source.id) == 1
+
+
+# --- regression: dedup is per file, not per source -------------------------
+
+
+async def test_two_identical_files_are_both_indexed(tmp_path: Path):
+    """Byte-identical files are still two files. Dedup keyed on content alone across the
+    whole source (a repeated LICENSE, two copies of one config, two empty `__init__.py`)
+    keeps only whichever path the crawl reached first: the other is invisible to search,
+    and every hit on the shared text is cited against the wrong path."""
+    (tmp_path / "env-a").mkdir()
+    (tmp_path / "env-b").mkdir()
+    shared = "retries = 3\nendpoint = 'https://example.invalid'"
+    (tmp_path / "env-a" / "config.toml").write_text(shared)
+    (tmp_path / "env-b" / "config.toml").write_text(shared)
+
+    engine, vault, chunk_store, adapter = await _folder(tmp_path, FakeEmbedder())
+    await adapter.start()
+    source = await adapter.add_folder(OWNER, str(tmp_path))
+    await adapter._worker.join()
+    await adapter.stop()
+
+    refs = {ref for ref, _text in _indexed(engine, vault)}
+    assert len(refs) == 2, f"both copies should be indexed under their own paths: {refs}"
+    assert any("env-a" in ref for ref in refs)
+    assert any("env-b" in ref for ref in refs)
+    assert await chunk_store.count_items(OWNER, "folder", source.id) == 2
+
+
+async def test_dedup_scope_escapes_wildcards_in_a_path(tmp_path: Path):
+    """The per-item scope becomes a LIKE prefix, so it has to escape wildcards. Paths are
+    full of `_`, which LIKE reads as "any one character", and `my-notes.txt` alongside
+    `my_notes.txt` is an ordinary pair to have. Unescaped, the second one's dedup lookup
+    matches the first one's rows and its content is silently never stored. Driven through
+    the store directly, since the crawl's file order is the filesystem's to choose."""
+    embedder = FakeEmbedder()
+    engine, vault = await _engine_vault(embedder)
+    store = CorpusChunkStore(engine, vault, embedder)
+    from services.chunking import chunk_text
+
+    chunks = chunk_text("the same two lines in both notes")
+    assert await store.upsert(OWNER, "folder", "src-1", "/notes/my-notes.txt", chunks) == 1
+    assert await store.upsert(OWNER, "folder", "src-1", "/notes/my_notes.txt", chunks) == 1
+    assert await store.count_items(OWNER, "folder", "src-1") == 2
+
+
+async def test_identical_files_still_dedup_within_themselves_across_recrawls(tmp_path: Path):
+    """The per-file key must not cost idempotency: a second crawl of the same two
+    identical files still inserts nothing."""
+    (tmp_path / "a.txt").write_text("the same words in both files")
+    (tmp_path / "b.txt").write_text("the same words in both files")
+
+    engine, _vault, chunk_store, adapter = await _folder(tmp_path, FakeEmbedder())
+    await adapter.start()
+    source = await adapter.add_folder(OWNER, str(tmp_path))
+    await adapter._worker.join()
+    first = await chunk_store.count(OWNER, source.id)
+
+    await adapter.rebuild(OWNER, source.id)
+    await adapter._worker.join()
+    await adapter.stop()
+
+    assert first == 2
+    assert await chunk_store.count(OWNER, source.id) == first

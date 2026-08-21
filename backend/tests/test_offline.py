@@ -42,6 +42,7 @@ async def _make(
     auto: bool | None = None,
     fail_threshold: int = 3,
     recover_threshold: int = 2,
+    network_tools: frozenset[str] = WEB_TOOLS,
 ) -> tuple[OfflineModeService, _StubContainer, _StubContainer]:
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
@@ -66,6 +67,7 @@ async def _make(
         fail_threshold=fail_threshold,
         recover_threshold=recover_threshold,
         probe=probe,
+        network_tools=network_tools,
     )
     return svc, searxng, browser
 
@@ -93,6 +95,32 @@ async def test_boot_offline_never_starts_the_browser():
         assert svc.state().online is False
         assert svc.state().effective_offline is True
         assert svc.web_tools_disabled() == WEB_TOOLS
+    finally:
+        await svc.stop()
+
+
+async def test_the_offline_gate_withholds_whatever_the_features_declared():
+    # Which tools need the internet is the declaring feature's knowledge, arriving here as
+    # the union of every manifest's `network_tools`. Offline mode suspends what it was
+    # given — so a feature that grows another network tool is covered the day it lands,
+    # with nothing to remember to edit here.
+    declared = frozenset({"web_search", "web_fetch", "weather_forecast"})
+    svc, _searxng, _browser = await _make(online=False, network_tools=declared)
+    await svc.start()
+    try:
+        assert svc.web_tools_disabled() == declared
+    finally:
+        await svc.stop()
+
+
+async def test_a_build_that_declared_nothing_withholds_nothing():
+    # The gate is not allowed to invent a set of its own: no declarations, no withholding,
+    # even fully offline.
+    svc, _searxng, _browser = await _make(online=False, network_tools=frozenset())
+    await svc.start()
+    try:
+        assert svc.state().effective_offline is True
+        assert svc.web_tools_disabled() == frozenset()
     finally:
         await svc.stop()
 

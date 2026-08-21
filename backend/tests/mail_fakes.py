@@ -22,6 +22,7 @@ from services.mail.models import (
     OutgoingMail,
     TransportCapabilities,
 )
+from services.mail.service import LiveTransport
 
 
 def sample_header(uid: str = "1", **overrides) -> MailHeader:
@@ -35,6 +36,20 @@ def sample_header(uid: str = "1", **overrides) -> MailHeader:
         message_id=f"<{uid}@example.org>",
     )
     return replace(base, **overrides)
+
+
+async def install_transport(service, owner_id: str, account_id: str, transport) -> None:
+    """Wire ``transport`` into the service's per-account cache in place of a real one.
+
+    The cache holds an adapter *and* the credentials it was built with as one unit, so
+    that a rotated token can never be served by a transport still holding the old one.
+    Resolving the credentials here the same way the service does keeps a fake honest
+    against that rule — an installed transport is cached on the same terms as a built one,
+    and a test never has to restate the account's secret.
+    """
+    account = await service._row(owner_id, account_id)
+    credentials = await service._secrets.open_access(account)
+    service._transports[account_id] = LiveTransport(transport, credentials)
 
 
 class FakeTransport:

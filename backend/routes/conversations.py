@@ -25,7 +25,11 @@ from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow
 from services.conversation_view import MessageView
-from services.conversations import ConversationSummaryView, context_footprint
+from services.conversations import (
+    CompactionKind,
+    ConversationSummaryView,
+    context_footprint,
+)
 from services.plans import plan_payload
 from services.settings_store import (
     get_auto_compact,
@@ -486,30 +490,43 @@ async def delete_conversation(
     """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
     the image attachments this would orphan; the default keeps them in the gallery."""
     store = deps.store(request)
-    if await store.get_summary(conversation_id, OPERATOR_ID) is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    orphans = (
-        await _image_orphans(request, conversation_id, message_id=None)
-        if purge_images
-        else []
-    )
-    await store.delete_conversation(conversation_id)
-    await _purge_uploads(request, orphans)
-    # Drop the conversation's View history (snapshots + any blob no other snapshot
-    # needs), so the work doesn't linger encrypted on disk after the thread is gone.
-    await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
-    # Same reasoning for the agent's task list: it restates what was asked for, so it must
-    # not outlive the thread.
-    await deps.conversation_plans(request).delete_for_conversation(OPERATOR_ID, conversation_id)
-    # Delete the conversation's sandbox too (its workspace + sealed archive),
-    # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
-    # delete above is the authoritative action, so a purge failure must not fail it.
-    sandbox = deps.sandbox_sessions(request)
-    if sandbox is not None:
-        try:
-            await sandbox.purge(conversation_id)
-        except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
-            logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
+    # The purging delete `routes/deps.claim_conversation` names, and the one mutator here
+    # that was not taking the claim. Deleting under a live run tears the tree, the sandbox
+    # and the turn's attachments out from beneath it: the run keeps going, its own
+    # `_finalize` re-creates a ghost cache entry nothing ever evicts, and the turn is
+    # discarded with no error. 409 instead, like every sibling mutation.
+    deps.claim_conversation(request, conversation_id)
+    try:
+        if await store.get_summary(conversation_id, OPERATOR_ID) is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        orphans = (
+            await _image_orphans(request, conversation_id, message_id=None)
+            if purge_images
+            else []
+        )
+        await store.delete_conversation(conversation_id)
+        await _purge_uploads(request, orphans)
+        # Drop the conversation's View history (snapshots + any blob no other snapshot
+        # needs), so the work doesn't linger encrypted on disk after the thread is gone.
+        await deps.workspace_history(request).delete_for_conversation(
+            OPERATOR_ID, conversation_id
+        )
+        # Same reasoning for the agent's task list: it restates what was asked for, so it
+        # must not outlive the thread.
+        await deps.conversation_plans(request).delete_for_conversation(
+            OPERATOR_ID, conversation_id
+        )
+        # Delete the conversation's sandbox too (its workspace + sealed archive),
+        # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
+        # delete above is the authoritative action, so a purge failure must not fail it.
+        sandbox = deps.sandbox_sessions(request)
+        if sandbox is not None:
+            try:
+                await sandbox.purge(conversation_id)
+            except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+                logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
+    finally:
+        deps.release_conversation(request, conversation_id)
 
 
 @router.delete("/{conversation_id}/messages/{message_id}", response_model=ConversationDetail)
@@ -658,9 +675,15 @@ class CompactionOverrideOut(BaseModel):
     effective: bool
 
 
-async def _compaction_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
-    override = await deps.store(request).get_compaction_override(conversation_id)
-    global_cfg = await get_compaction(deps.settings_store(request), OPERATOR_ID)
+async def _compaction_state(
+    request: Request, conversation_id: str, kind: CompactionKind
+) -> CompactionOverrideOut:
+    """One reduction's state for one thread: the stored override plus the effective on/off
+    after resolving it against the operator's global default. The two reductions differ
+    only in which override column and which global setting they read, so they share this."""
+    override = await deps.store(request).get_compaction_override(conversation_id, kind)
+    read_global = get_compaction if kind == "tool_results" else get_auto_compact
+    global_cfg = await read_global(deps.settings_store(request), OPERATOR_ID)
     return CompactionOverrideOut(
         override=override,
         effective=resolve_compaction_enabled(override, global_cfg.enabled),
@@ -671,7 +694,7 @@ async def _compaction_state(request: Request, conversation_id: str) -> Compactio
 async def get_compaction_override(conversation_id: str, request: Request) -> CompactionOverrideOut:
     """This conversation's compaction state (its override + the effective on/off)."""
     await _require_owned(request, conversation_id)
-    return await _compaction_state(request, conversation_id)
+    return await _compaction_state(request, conversation_id, "tool_results")
 
 
 @router.put("/{conversation_id}/compaction", response_model=CompactionOverrideOut)
@@ -681,17 +704,10 @@ async def set_compaction_override(
     """Force compaction on/off for this conversation, or clear it (``null``) to inherit the
     operator's global setting."""
     await _require_owned(request, conversation_id)
-    await deps.store(request).set_compaction_override(conversation_id, body.override)
-    return await _compaction_state(request, conversation_id)
-
-
-async def _auto_compact_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
-    override = await deps.store(request).get_auto_compact_override(conversation_id)
-    global_cfg = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
-    return CompactionOverrideOut(
-        override=override,
-        effective=resolve_compaction_enabled(override, global_cfg.enabled),
+    await deps.store(request).set_compaction_override(
+        conversation_id, "tool_results", body.override
     )
+    return await _compaction_state(request, conversation_id, "tool_results")
 
 
 @router.get("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
@@ -705,7 +721,7 @@ async def get_auto_compact_override(
     context window fills. They are separate switches because a thread can reasonably want
     one without the other."""
     await _require_owned(request, conversation_id)
-    return await _auto_compact_state(request, conversation_id)
+    return await _compaction_state(request, conversation_id, "turns")
 
 
 @router.put("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
@@ -715,8 +731,8 @@ async def set_auto_compact_override(
     """Force conversation compaction on/off for this thread, or clear it (``null``) to
     inherit the operator's global setting."""
     await _require_owned(request, conversation_id)
-    await deps.store(request).set_auto_compact_override(conversation_id, body.override)
-    return await _auto_compact_state(request, conversation_id)
+    await deps.store(request).set_compaction_override(conversation_id, "turns", body.override)
+    return await _compaction_state(request, conversation_id, "turns")
 
 
 @router.post("/{conversation_id}/compact", response_model=ConversationDetail)

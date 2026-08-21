@@ -162,7 +162,8 @@ def _json_safe(value: Any) -> Any:
 
 def _normalize_allowed_tools(raw: Any, warnings: list[str]) -> list[str] | None:
     """``allowed-tools`` accepts a space- or comma-separated string or a YAML list. Advisory
-    here — recorded and displayed, never enforced (see D32)."""
+    here — recorded and displayed, never enforced. The tool policy is the enforcement
+    point; this list arrives with the bundle, from wherever it was imported."""
     if raw is None:
         return None
     if isinstance(raw, str):

@@ -8,14 +8,21 @@ each dense (cosine over the per-chunk vector) and sparse (token overlap), and re
 the per-chunk scores *unfused* (``CorpusIndex`` fuses across sources). The scoring
 primitives are the shared ones in :mod:`services.ranking`.
 
-Inserts are **idempotent** on ``(owner_id, source_id, content_hash)``: a re-crawl of
-unchanged content hashes to the same value and is skipped, so reindex never dupes.
-Embedding reuses the one shared loop, ``embed_and_seal_rows(model_cls=CorpusChunk)``.
+Inserts are **idempotent per item**: a re-crawl of an unchanged item hashes to the same
+values and is skipped, so reindex never dupes. The dedup key is ``(item, content)``, not
+content alone — two byte-identical files under one source (a repeated LICENSE, two empty
+``__init__.py``) are two items and must both be indexed, or one of them is invisible to
+search and every hit on the shared text is cited to the other's path.
+
+``upsert`` only ever *inserts*, so a source whose origin can lose or change items needs
+``prune_stale`` to reconcile the other direction. Embedding reuses the one shared loop,
+``embed_and_seal_rows(model_cls=CorpusChunk)``.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Collection, Mapping
 
 import numpy as np
 from sqlalchemy import Engine, func, or_
@@ -33,6 +40,21 @@ from services.embeddings import Embedder, decode_vector, embed_and_seal_rows
 def content_hash(text: str) -> str:
     """The dedup/idempotency key for a chunk — sha256 of its text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def item_of(external_ref: str) -> str:
+    """The origin item an ``external_ref`` points into — its ``"<item>#<offset>"`` head.
+
+    The offset moves whenever an edit shifts the text, so the *item* is the stable half
+    and the only thing two crawls can compare. Split on the **last** ``#`` so a path that
+    itself contains one stays intact."""
+    return external_ref.rsplit("#", 1)[0]
+
+
+# How many ids one delete statement binds. A wide re-crawl (a whole subtree removed) can
+# doom more rows than SQLite will accept parameters for in a single statement, so the
+# prune goes out in batches rather than betting on the driver's limit.
+_DELETE_BATCH = 500
 
 
 class CorpusChunkStore:
@@ -60,11 +82,14 @@ class CorpusChunkStore:
         *,
         kb_excluded: bool = False,
     ) -> int:
-        """Insert each chunk's sealed text with a null vector, skipping any whose
-        content hash already exists for this source (idempotent reindex). Returns
-        how many new chunks were inserted. ``kb_excluded`` is stamped on every new
+        """Insert each chunk's sealed text with a null vector, skipping any whose content
+        hash this source already holds **for this same item** (idempotent reindex).
+        Returns how many new chunks were inserted. ``kb_excluded`` is stamped on every new
         chunk so a source that's currently scoped out of the knowledge base stays out
-        across a reindex (the source row is authoritative; the caller passes its state)."""
+        across a reindex (the source row is authoritative; the caller passes its state).
+
+        Insert-only: a caller whose origin can drop or edit items pairs this with
+        :meth:`prune_stale`."""
         prepared = [
             (
                 content_hash(chunk.text),
@@ -77,11 +102,21 @@ class CorpusChunkStore:
         ]
 
         def work(session: Session) -> int:
+            # Scoped to *this item*, not the whole source. The hash set exists to stop a
+            # re-crawl re-inserting a chunk it already holds for the same file; widened to
+            # the source it also swallows a different file that happens to be byte-identical
+            # — the second file is then never indexed at all, and every retrieval hit on the
+            # shared text is cited against the first path that claimed it. `autoescape`
+            # matters: a prefix goes into a LIKE, and paths are full of `_` (`__init__.py`
+            # is the collision case), which would otherwise match any character.
             existing = set(
                 session.exec(
                     select(CorpusChunk.content_hash).where(
                         CorpusChunk.owner_id == owner_id,
                         CorpusChunk.source_id == source_id,
+                        CorpusChunk.external_ref.startswith(  # type: ignore[attr-defined]
+                            f"{base_ref}#", autoescape=True
+                        ),
                     )
                 ).all()
             )
@@ -104,6 +139,60 @@ class CorpusChunkStore:
                 )
                 inserted += 1
             return inserted
+
+        return await in_session(self._engine, work)
+
+    async def prune_stale(
+        self,
+        owner_id: str,
+        source_id: str,
+        *,
+        live_refs: Collection[str],
+        live_hashes: Mapping[str, set[str]],
+    ) -> int:
+        """Reconcile a source down to what its origin still holds — the *delete* half of a
+        re-index, which the insert-only :meth:`upsert` cannot do on its own.
+
+        Two kinds of row go. One whose item is absent from ``live_refs``: the file was
+        deleted, renamed, grew past the crawler's size cap, or stopped being text-like, so
+        nothing behind it exists any more and leaving it in means recall keeps quoting
+        content the operator removed. And one whose item *is* live but whose content hash
+        is absent from ``live_hashes`` for it: the file was edited, so that slice is
+        superseded and would otherwise sit alongside the new text as a second, stale
+        version of the same passage.
+
+        An item in ``live_refs`` with **no** ``live_hashes`` entry is left entirely alone.
+        That is the "seen but unreadable" case — the crawler knows the file is there but
+        couldn't open it — and a transient permission error must never erase a file's
+        index. Callers pass hashes only for items they actually read.
+
+        Returns how many chunks were removed."""
+        live = set(live_refs)
+
+        def work(session: Session) -> int:
+            # Only the three structural columns — the sealed text and vector are never
+            # needed to decide this, and they are by far the widest columns in the row.
+            rows = session.exec(
+                select(
+                    CorpusChunk.id, CorpusChunk.external_ref, CorpusChunk.content_hash
+                ).where(
+                    CorpusChunk.owner_id == owner_id,
+                    CorpusChunk.source_id == source_id,
+                )
+            ).all()
+            doomed: list[str] = []
+            for row_id, ref, chash in rows:
+                item = item_of(ref)
+                keep = live_hashes.get(item)
+                if item not in live or (keep is not None and chash not in keep):
+                    doomed.append(row_id)
+            for start in range(0, len(doomed), _DELETE_BATCH):
+                session.exec(
+                    delete(CorpusChunk).where(
+                        CorpusChunk.id.in_(doomed[start : start + _DELETE_BATCH])  # type: ignore[attr-defined]
+                    )
+                )
+            return len(doomed)
 
         return await in_session(self._engine, work)
 
@@ -206,13 +295,11 @@ class CorpusChunkStore:
         """How many distinct source *items* a kind has indexed (never decrypts).
 
         An item is one origin document/file, regardless of how many chunks it split
-        into — the count the ``/rag`` row labels "DOCS". An item is identified by its
-        ``external_ref`` with the trailing ``#<offset>`` stripped (``upsert`` always
-        appends that, so the base is the file path or document id). Scoped to one
+        into — the count the ``/rag`` row labels "DOCS". An item is identified the same
+        way :meth:`prune_stale` identifies one, via :func:`item_of`. Scoped to one
         ``source_id`` when given (a single folder's file count), else the whole kind
         (e.g. every document). ``external_ref`` is structural/unencrypted, so this only
-        loads short ref strings. Splitting on the *last* ``#`` keeps paths that contain
-        ``#`` intact."""
+        loads short ref strings."""
 
         def work(session: Session) -> int:
             # Counts indexed items regardless of kb_excluded — the /rag DOCS readout
@@ -225,7 +312,7 @@ class CorpusChunkStore:
             if source_id is not None:
                 query = query.where(CorpusChunk.source_id == source_id)
             refs = session.exec(query).all()
-            return len({ref.rsplit("#", 1)[0] for ref in refs})
+            return len({item_of(ref) for ref in refs})
 
         return await in_session(self._engine, work)
 

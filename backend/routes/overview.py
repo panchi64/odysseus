@@ -11,6 +11,8 @@ absent rather than fabricated; they grow rows here as their capabilities land.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
@@ -49,8 +51,17 @@ class Overview(BaseModel):
 @router.get("", response_model=Overview)
 async def get_overview(request: Request) -> Overview:
     models = deps.models(request)
-    roles = await models.list_roles(OPERATOR_ID)
-    endpoints = await models.list_endpoints(OPERATOR_ID)
+    # These five reads are independent — each hits the database on its own threadpool
+    # hop — so they are gathered rather than awaited in sequence. This is the home
+    # screen's one request; serially it cost the sum of five round trips to render a
+    # page that has nothing else to wait for.
+    roles, endpoints, search_providers, conversation_count, memory_count = await asyncio.gather(
+        models.list_roles(OPERATOR_ID),
+        models.list_endpoints(OPERATOR_ID),
+        deps.search(request).list_providers(OPERATOR_ID),
+        deps.store(request).count_conversations(OPERATOR_ID),
+        deps.memory(request).count(OPERATOR_ID),
+    )
 
     # The chat (`main`) model is chosen live from the top-bar picker, not bound
     # here — so the precondition the workspace can't function without is simply
@@ -59,7 +70,6 @@ async def get_overview(request: Request) -> Overview:
     usable_chat_endpoints = [e for e in endpoints if e.native_tools and e.enabled]
     embedding_configured = bool(roles.get("embedding"))
     sandbox_present = deps.sandbox_sessions(request) is not None
-    search_providers = await deps.search(request).list_providers(OPERATOR_ID)
     provider_enabled = any(p.enabled for p in search_providers)
     managed_search_ready = deps.searxng(request).base_url is not None
     web_search_configured = provider_enabled or managed_search_ready
@@ -68,8 +78,6 @@ async def get_overview(request: Request) -> Overview:
     # generic "no runtime" detail below.
     offline_active = deps.offline(request).state().effective_offline
 
-    conversation_count = await deps.store(request).count_conversations(OPERATOR_ID)
-    memory_count = await deps.memory(request).count(OPERATOR_ID)
     active_runs = [r for r in deps.registry(request).list(OPERATOR_ID) if not r.is_terminal]
 
     capabilities: list[Capability] = []

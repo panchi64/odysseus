@@ -82,6 +82,8 @@ class _SandboxFileToolset(AbstractToolset[RunDeps]):
     def __init__(self, template: FileSystemToolset[RunDeps]) -> None:
         self._template = template
         self._bound: OrderedDict[str, FileSystemToolset[RunDeps]] = OrderedDict()
+        # Resolved tools per bound toolset, keyed by object identity and evicted with it.
+        self._tools: dict[int, dict[str, ToolsetTool[RunDeps]]] = {}
 
     @property
     def id(self) -> str:
@@ -120,8 +122,26 @@ class _SandboxFileToolset(AbstractToolset[RunDeps]):
             return f"Your files could not be opened: {exc}"
         bound = self._for(workspace)
         # Re-resolve the tool against the bound toolset: the object handed in carries the
-        # template's function, which would act on the template's root.
-        return await bound.call_tool(name, tool_args, ctx, (await bound.get_tools(ctx))[name])
+        # template's function, which would act on the template's root. Resolved from the
+        # per-workspace cache rather than by rebuilding the whole tool dict — the set is
+        # fixed for a given workspace, and this runs on every single file tool call.
+        tools = await self._tools_for(bound, ctx)
+        return await bound.call_tool(name, tool_args, ctx, tools[name])
+
+    async def _tools_for(
+        self, bound: FileSystemToolset[RunDeps], ctx: RunContext[RunDeps]
+    ) -> dict[str, ToolsetTool[RunDeps]]:
+        """The bound toolset's resolved tools, built once per workspace.
+
+        Keyed by the toolset object's identity so it is evicted with it — a stale entry
+        for a reaped workspace would otherwise hand back tools bound to a directory that
+        no longer exists.
+        """
+        cached = self._tools.get(id(bound))
+        if cached is None:
+            cached = await bound.get_tools(ctx)
+            self._tools[id(bound)] = cached
+        return cached
 
     def _for(self, workspace: Path) -> FileSystemToolset[RunDeps]:
         key = str(workspace)
@@ -129,7 +149,8 @@ class _SandboxFileToolset(AbstractToolset[RunDeps]):
         if bound is None:
             bound = _toolset_for(workspace)
             if len(self._bound) >= _MAX_BOUND:
-                self._bound.popitem(last=False)
+                _, evicted = self._bound.popitem(last=False)
+                self._tools.pop(id(evicted), None)
         self._bound[key] = bound
         return bound
 

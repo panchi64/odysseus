@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError
 from models.serving import ManagedModel
 from services.serving.adapters.llamacpp import LlamaCppAdapter
 from services.serving.adapters.mlx import MlxAdapter
@@ -38,12 +38,12 @@ from services.serving.store import launch_options
 def test_flags_owned_by_the_platform_are_rejected(flag):
     # --host is the one that matters beyond tidiness: 0.0.0.0 would put the model server
     # on the network, outside the loopback assumption the rest of serving is built on.
-    with pytest.raises(ServingError, match="managed by the platform"):
+    with pytest.raises(InvalidInputError, match="managed by the platform"):
         validate_extra_args([flag, "0.0.0.0"], owned=LlamaCppAdapter.owned_flags)
 
 
 def test_the_equals_form_is_caught_too():
-    with pytest.raises(ServingError, match="managed by the platform"):
+    with pytest.raises(InvalidInputError, match="managed by the platform"):
         validate_extra_args(["--host=0.0.0.0"], owned=LlamaCppAdapter.owned_flags)
 
 
@@ -71,7 +71,7 @@ def test_a_field_the_engine_cannot_translate_is_rejected_by_name(tmp_path):
     # mlx-vlm's prefix cache is automatic, so there is no minimum-reuse knob. Storing the
     # field anyway would leave the row carrying tuning that never reaches a process while
     # the form renders it as applied.
-    with pytest.raises(ServingError, match="cache_reuse"):
+    with pytest.raises(InvalidInputError, match="cache_reuse"):
         MlxAdapter(ServingPaths(tmp_path)).validate_options(LaunchOptions(cache_reuse=256))
 
 
@@ -88,11 +88,11 @@ def test_empty_options_are_accepted_by_any_engine(tmp_path):
 
 def test_each_engine_validates_extra_args_against_its_own_owned_flags(tmp_path):
     mlx = MlxAdapter(ServingPaths(tmp_path))
-    with pytest.raises(ServingError, match="managed by the platform"):
+    with pytest.raises(InvalidInputError, match="managed by the platform"):
         mlx.validate_options(LaunchOptions(extra_args=["--host", "0.0.0.0"]))
     # llama.cpp's `-m` is not mlx-vlm's flag vocabulary, so mlx has no opinion on it.
     mlx.validate_options(LaunchOptions(extra_args=["-m", "elsewhere.gguf"]))
-    with pytest.raises(ServingError, match="managed by the platform"):
+    with pytest.raises(InvalidInputError, match="managed by the platform"):
         _adapter(tmp_path).validate_options(LaunchOptions(extra_args=["-m", "elsewhere.gguf"]))
 
 

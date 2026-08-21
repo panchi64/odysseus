@@ -20,7 +20,7 @@ import httpx
 
 from core.exceptions import WebFetchError
 from core.ssrf import assert_public_url
-from services.upload_extraction import _scan_pdf
+from services.upload_extraction import scan_pdf
 
 _MAX_REDIRECTS = 5
 
@@ -52,7 +52,7 @@ async def fetch_pdf_text(
         raise WebFetchError(
             f"{url!r} served a download that is not a PDF; only PDF downloads can be read"
         )
-    scan = await asyncio.to_thread(_scan_pdf, content, max_pages)
+    scan = await asyncio.to_thread(scan_pdf, content, max_pages)
     text = "\n\n".join(page.native_text for page in scan.pages).strip()
     if not text:
         raise WebFetchError(

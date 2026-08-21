@@ -24,6 +24,7 @@ MAILBOXES = {
         {"id": "mb1", "name": "Inbox", "role": "inbox", "totalEmails": 3, "unreadEmails": 1},
         {"id": "mb2", "name": "Sent", "role": "sent"},
         {"id": "mb3", "name": "Notes", "role": None},
+        {"id": "mb-trash", "name": "Trash", "role": "trash"},
     ]
 }
 
@@ -183,6 +184,40 @@ async def test_move_patches_both_mailbox_memberships():
     assert server.last_calls[0][1]["update"]["e1"] == {
         "mailboxIds/mb1": None,
         "mailboxIds/mb3": True,
+    }
+
+
+def test_an_unguarded_same_folder_patch_collapses_to_a_no_op():
+    """Why `move` needs its guard, kept executable rather than described: with
+    ``folder == destination`` the two computed keys are the same string, a dict literal
+    keeps only the last, and the removal half disappears — leaving a patch that asks the
+    server for nothing while every layer above reads it as a completed move."""
+    folder = destination = "mb1"
+    patch = {f"mailboxIds/{folder}": None, f"mailboxIds/{destination}": True}
+    assert patch == {"mailboxIds/mb1": True}
+
+
+async def test_moving_a_message_to_the_folder_it_is_already_in_does_nothing():
+    server = _Server()
+    await _transport(server).move("mb1", "e1", "mb1")
+    assert [r for r in server.requests if r.method == "POST"] == []
+
+
+async def test_deleting_from_trash_destroys_rather_than_re_trashing():
+    """`delete` promises the message is gone from where it was, and the service drops it
+    from the cache on return. Trashing a message already in Trash would patch nothing, so
+    it would come back on the next sync — emptying the trash has to be a real destroy."""
+    server = _Server()
+    await _transport(server).delete("mb-trash", "e1")
+    assert server.last_calls[0][1]["destroy"] == ["e1"]
+
+
+async def test_deleting_from_elsewhere_still_trashes():
+    server = _Server()
+    await _transport(server).delete("mb1", "e1")
+    assert server.last_calls[0][1]["update"]["e1"] == {
+        "mailboxIds/mb1": None,
+        "mailboxIds/mb-trash": True,
     }
 
 

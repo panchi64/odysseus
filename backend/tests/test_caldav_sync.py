@@ -210,6 +210,32 @@ async def test_an_event_the_server_dropped_is_removed_locally(monkeypatch):
     assert await service.list_events(OWNER, calendar.id) == []
 
 
+async def test_a_truncated_listing_removes_nothing(monkeypatch):
+    """The data-loss case: the listing stops at the cap, so the UIDs it saw cover only the
+    front of the collection. Every local event past the cut would look "gone from the
+    server" and be deleted — permanently, on every sync, for any calendar bigger than the
+    cap. A partial listing is not evidence of an upstream deletion."""
+    service = await _service()
+    calendar = await _bound_calendar(service, read_only=True)
+    remote = FakeRemoteCalendar(
+        [
+            FakeRemoteObject(_remote_document(f"{uid}@remote", uid), f"{REMOTE_URL}{uid}.ics")
+            for uid in ("a", "b", "c")
+        ]
+    )
+    monkeypatch.setattr("services.calendar.caldav.assert_public_url", _allow)
+    sync = CalDavSync(service, connector=remote.connector)
+    await sync.sync(OWNER, calendar.id)
+    assert len(await service.list_events(OWNER, calendar.id)) == 3
+
+    # The cap, not the collection, is what shrinks — the server still has all three.
+    monkeypatch.setattr("services.calendar.caldav.MAX_REMOTE_OBJECTS", 2)
+    result = await sync.sync(OWNER, calendar.id)
+
+    assert result.removed_locally == 0
+    assert len(await service.list_events(OWNER, calendar.id)) == 3
+
+
 async def test_a_purely_local_event_survives_a_sync_that_does_not_mention_it(monkeypatch):
     """Absence upstream says nothing about an event that was never pushed there."""
     service = await _service()

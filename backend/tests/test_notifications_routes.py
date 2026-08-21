@@ -25,7 +25,7 @@ def _ticking_clock(monkeypatch):
 
 
 async def _collect_stream_frames(service, *, after_seq: int, n: int):
-    """Drive `_stream_response`'s frame generator directly, bounded to `n` frames.
+    """Drive the notification stream's frame generator directly, bounded to `n` frames.
 
     The stream is deliberately process-lifetime (it never ends on its own), and
     httpx's `ASGITransport` fully buffers a request before returning anything —
@@ -34,9 +34,10 @@ async def _collect_stream_frames(service, *, after_seq: int, n: int):
     response's own `body_iterator` sidesteps that transport limitation entirely
     while still exercising the exact code the route serves over HTTP.
     """
-    from routes.notifications import _stream_response
+    from core.sse import sse_stream
+    from routes.notifications import _frame
 
-    resp = _stream_response(service, after_seq)
+    resp = sse_stream(lambda: service.subscribe(after_seq), _frame)
     frames = []
     gen = resp.body_iterator
     try:

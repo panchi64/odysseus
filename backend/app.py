@@ -22,11 +22,13 @@ from core.auth import AuthManager, AuthMiddleware
 from core.config import Settings, get_settings
 from core.db import init_db, make_engine
 from core.devserver import UNGUARDED_RELOAD_WARNING, reload_watches_runtime_state
+from core.http_errors import install_error_handlers
 from core.vault import Vault
 from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
 from harness.manifest import HarnessContext, ServiceContainer
 from harness.run_terminal import RunTerminalDispatcher
+from models.artifact import Artifact
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from routes import (
@@ -60,7 +62,8 @@ logger = logging.getLogger(__name__)
 
 async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
     """Once the vault is unlocked, seal the columns that were stored in the clear before
-    they were sealed — the conversation title and the corpus source's host path — and drop
+    they were sealed — the conversation title, the corpus source's host path, and the
+    artifact's title and filename — and drop
     the cleartext behind them (`XC-SEC-3`).
 
     A migration can't do this: schema upgrades run at startup with the vault locked, so
@@ -71,6 +74,8 @@ async def _backfill_sealed_columns(engine: Engine, vault: Vault) -> None:
     for model_cls, legacy, sealed in (
         (Conversation, "title", "title_enc"),
         (CorpusSource, "path", "path_enc"),
+        (Artifact, "title", "title_enc"),
+        (Artifact, "filename", "filename_enc"),
     ):
         try:
             await seal_legacy_column(
@@ -98,6 +103,24 @@ async def lifespan(app: FastAPI):
     # is one call, not a hand-maintained mirror of this sequence. Something that must
     # stop *earlier* than its construction position implies simply registers later.
     lifecycle = LifecycleRegistry()
+    # `_wire` starts long-lived units as it goes, so it runs inside the same `try` as
+    # the serving phase below. A manifest that fails to build half-way has to unwind the
+    # units already started — otherwise a boot that never finishes leaves containers,
+    # drainers, and proxy listeners running with nothing left holding a reference.
+    try:
+        await _wire(app, settings, lifecycle)
+        yield
+    finally:
+        await lifecycle.stop_all()
+
+
+async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) -> None:
+    """Build, wire, and start everything the app owns, in dependency order.
+
+    Every unit needing shutdown registers on ``lifecycle`` at its construction point,
+    so the caller's single ``stop_all`` unwinds the whole graph — including a partially
+    built one, when a build raises part-way through.
+    """
     # Typed capability handles. Core wiring adds what it builds; each feature
     # manifest's build resolves its cross-feature dependencies here and adds what
     # it hands back — never by importing another feature's wiring.
@@ -269,6 +292,7 @@ async def lifespan(app: FastAPI):
         tool_categories=app.state.tool_categories,
         instruction_providers=app.state.instruction_providers,
         prompt_context_providers=app.state.prompt_context_providers,
+        network_tools=app.state.network_tools,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -286,10 +310,13 @@ async def lifespan(app: FastAPI):
             run_terminal.add_sync(sync_hook)
         for hook in runtime.run_terminal:
             run_terminal.add(hook)
-    try:
-        yield
-    finally:
-        await lifecycle.stop_all()
+
+    # Registered last so it stops first (reverse registration order): live runs write
+    # through the stores and the sandbox brought up above, so they have to be cancelled
+    # — and given their own pre-cancel flush — while those are still running. Without
+    # this a turn in flight at shutdown submits onto an already-stopped write-behind
+    # drainer, which discards it with no error.
+    lifecycle.on_stop("runs", app.state.runs.shutdown)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -323,6 +350,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # listing and the agent's own stack cannot diverge.
     tool_categories = core_categories()
     gated_tools: set[str] = set()
+    # Which tools can't work without internet — each feature declares its own, and offline
+    # mode enforces the union. The feature that suspends them is not the feature that
+    # ships them, so the declaration travels rather than being restated at the gate.
+    network_tools: set[str] = set()
     instruction_providers: list[InstructionProvider] = []
     # The plan reminder is core, not a manifest's: the `plan` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
@@ -336,12 +367,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             tool_categories[category] = factory()
         gated_tools |= manifest.gated_tools
+        network_tools |= manifest.network_tools
         instruction_providers.extend(manifest.instructions)
         prompt_context_providers.extend(manifest.prompt_context)
     app.state.tool_categories = tool_categories
     app.state.gated_tools = frozenset(gated_tools)
+    app.state.network_tools = frozenset(network_tools)
     app.state.instruction_providers = tuple(instruction_providers)
     app.state.prompt_context_providers = tuple(prompt_context_providers)
+
+    # Domain errors answered at the transport boundary, per `core.http_errors`. This is
+    # what `core.exceptions` has always said happens here: a route that doesn't catch a
+    # `NotFoundError` now returns a 404 rather than a 500.
+    install_error_handlers(app)
 
     # The auth gate runs inside CORS (added first ⇒ inner), so CORS can answer
     # preflight and decorate even a 401 with the right headers.

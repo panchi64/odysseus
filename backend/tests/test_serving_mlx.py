@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from core.exceptions import ServingError
+from core.exceptions import InvalidInputError, ServingError
 from services.serving.adapters.base import EngineAdapter
 from services.serving.adapters.mlx import MlxAdapter
 from services.serving.models import EngineKind, KvCacheType, LaunchOptions, Workload
@@ -284,25 +284,25 @@ def test_a_well_shaped_snapshot_validates(tmp_path: Path):
 def test_a_file_is_refused_with_what_was_expected(tmp_path: Path):
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(b"")
-    with pytest.raises(ServingError, match="model folder"):
+    with pytest.raises(InvalidInputError, match="model folder"):
         _adapter(tmp_path).validate_artifact(gguf)
 
 
 def test_a_folder_without_a_config_is_refused(tmp_path: Path):
     snap = _snapshot(tmp_path, None)
-    with pytest.raises(ServingError, match="config.json"):
+    with pytest.raises(InvalidInputError, match="config.json"):
         _adapter(tmp_path).validate_artifact(snap)
 
 
 def test_a_folder_without_weights_is_refused(tmp_path: Path):
     snap = _snapshot(tmp_path, {"model_type": "qwen3"})
     (snap / "model.safetensors").unlink()
-    with pytest.raises(ServingError, match="safetensors"):
+    with pytest.raises(InvalidInputError, match="safetensors"):
         _adapter(tmp_path).validate_artifact(snap)
 
 
 def test_a_missing_path_is_refused(tmp_path: Path):
-    with pytest.raises(ServingError, match="nothing at"):
+    with pytest.raises(InvalidInputError, match="nothing at"):
         _adapter(tmp_path).validate_artifact(tmp_path / "nowhere")
 
 

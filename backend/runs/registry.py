@@ -15,6 +15,8 @@ from collections.abc import Callable
 from contextlib import suppress
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from .events import LimitNotice, RunEnded, RunError, RunMetrics, RunStarted, now_utc
 from .run import Orchestrator, Run, RunStatus
 from .stream import RunStream
@@ -251,6 +253,12 @@ class RunRegistry:
             run.ended_at = now_utc()
             self._fire_terminal(run)
             run.stream.close()
+            # "The task already ended" holds for a settled park, but not for the window
+            # between `park()` and the orchestrator's own return — it still has work to
+            # unwind (settling the concurrent namer). Interrupt it, or it resumes into a
+            # run this call has already finalized.
+            if run.task is not None and not run.task.done():
+                run.task.cancel()
             return True
         if run.cancel_requested:
             # Already flushed and hard-cancelled by an earlier call; the task
@@ -262,6 +270,23 @@ class RunRegistry:
         if run.task is not None:
             run.task.cancel()
         return True
+
+    async def shutdown(self) -> None:
+        """Cancel every live run and wait for it to unwind.
+
+        The app registers this **last** in its lifecycle, so it stops **first**: an
+        orchestrator writes through stores (the conversation write-behind drainer above
+        all) that shutdown is otherwise free to tear down under it, and a submit onto a
+        stopped drainer is discarded with no error and no ``on_drop``. Cancelling here
+        runs each turn's own pre-cancel flush while the stores are still live, so a turn
+        in flight at shutdown is persisted rather than silently lost.
+        """
+        live = [run for run in self._runs.values() if not run.is_terminal]
+        for run in live:
+            await self.cancel(run.id)
+        pending = [run.task for run in live if run.task is not None and not run.task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def resume(
         self,
@@ -320,33 +345,62 @@ class RunRegistry:
                     return
                 if not run.is_terminal:
                     run.status = RunStatus.done
-                run.emit(run.metrics or RunMetrics())
-                run.emit(RunEnded(outcome=run.status.value, detail=run.detail))
+                self._emit(run, run.metrics or RunMetrics())
+                self._emit(run, RunEnded(outcome=run.status.value, detail=run.detail))
         except RunTimeout as timeout:
             # Terminate the same way a usage-limit stop does (LimitNotice + a
             # blocked RunEnded), not RunError — a timeout is an expected bound, not
             # a failure, and the frontend already renders limit.notice as a toast
             # and a blocked outcome as a persistent inline marker.
-            run.emit(LimitNotice(limit="time", message=str(timeout)))
+            self._emit(run, LimitNotice(limit="time", message=str(timeout)))
+            parked = run.status is RunStatus.awaiting_input
             run.block(str(timeout))
-            run.emit(run.metrics or RunMetrics())
-            run.emit(RunEnded(outcome=run.status.value, detail=run.detail))
+            if parked:
+                # The bound tripped in the window after the orchestrator parked but
+                # before its task finished unwinding. A parked turn's persistence is
+                # otherwise deferred to the resume that will now never happen, and
+                # `on_timeout` was already disarmed at the park — so without this the
+                # whole turn (the operator's own prompt included) is silently dropped.
+                self._flush_park_cancel(run)
+            self._emit(run, run.metrics or RunMetrics())
+            self._emit(run, RunEnded(outcome=run.status.value, detail=run.detail))
         except asyncio.CancelledError:
             # The Run's own top-level handler turns cancellation into a recorded
             # terminal state rather than propagating it — intentional.
             run.status = RunStatus.cancelled
-            run.emit(RunEnded(outcome="cancelled"))
+            # Metrics precede every closing frame, on every path. A stopped or failed
+            # turn still spent the tokens it spent, and a usage view that silently
+            # omits exactly the runs that went wrong is worse than no view.
+            self._emit(run, run.metrics or RunMetrics())
+            self._emit(run, RunEnded(outcome="cancelled"))
         except Exception as exc:  # noqa: BLE001 — orchestrator failures are terminal, not fatal
             run.status = RunStatus.error
             run.error = str(exc)
-            run.emit(RunError(message=str(exc), kind=type(exc).__name__))
+            self._emit(run, run.metrics or RunMetrics())
+            self._emit(run, RunError(message=str(exc), kind=type(exc).__name__))
         finally:
             # Only finalize on a terminal outcome — a parked run keeps its
-            # stream open for the eventual resume.
-            if run.is_terminal:
+            # stream open for the eventual resume. A closed stream means a
+            # concurrent `cancel` already finalized this run (see `_emit`); its
+            # outcome and its terminal hook are recorded, so don't fire either twice.
+            if run.is_terminal and not run.stream.closed:
                 run.ended_at = run.ended_at or now_utc()
                 self._fire_terminal(run)
                 run.stream.close()
+
+    @staticmethod
+    def _emit(run: Run, body: BaseModel) -> None:
+        """Emit a lifecycle frame unless the stream is already closed.
+
+        A parked run stays externally visible while its task is still unwinding (the
+        orchestrator has more to do after ``park`` — settling the concurrent namer, for
+        one), so `cancel`'s parked branch can close the stream out from under this
+        coroutine. Emitting onto it would raise, flip the recorded ``cancelled`` outcome
+        to ``error``, and fire the terminal hook a second time. The cancel already
+        recorded the outcome; there is nothing left for these frames to say.
+        """
+        if not run.stream.closed:
+            run.emit(body)
 
     async def _supervise(
         self,
@@ -356,6 +410,9 @@ class RunRegistry:
         inactivity: float | None,
     ) -> None:
         """Run the orchestrator under wall-clock + inactivity bounds."""
+        # Tell the run which bound it is being held to, so `Run.keepalive` can beat inside
+        # it rather than against a fixed interval that a shortened timeout would outrun.
+        run.inactivity_timeout_s = inactivity
         if not wall_clock and not inactivity:
             await orchestrator(run)
             return

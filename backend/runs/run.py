@@ -10,7 +10,8 @@ with a parked ``awaiting_input`` when a sensitive action needs approval.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -28,6 +29,11 @@ from .events import (
     now_utc,
 )
 from .stream import RunStream
+
+# How often :meth:`Run.keepalive` touches the activity clock while a long, silent call is
+# in flight. A ceiling, not a fixed rate: a run held to a shorter inactivity bound beats
+# proportionally faster (see ``Run._beat``).
+_KEEPALIVE_INTERVAL_S = 20.0
 
 
 class RunStatus(StrEnum):
@@ -75,6 +81,10 @@ class Run:
     started_at: datetime | None = None
     ended_at: datetime | None = None
     last_activity_mono: float = 0.0
+    # The inactivity bound this run is actually being supervised under (None ⇒ unbounded),
+    # stamped by the registry when it starts supervising. Read by ``keepalive`` so a
+    # heartbeat can't drift slower than the bound it exists to stay inside.
+    inactivity_timeout_s: float | None = None
     task: asyncio.Task[None] | None = None
     cancel_requested: bool = False
     metrics: RunMetrics | None = None
@@ -125,6 +135,46 @@ class Run:
     def touch(self) -> None:
         """Mark activity now — feeds the inactivity watchdog."""
         self.last_activity_mono = asyncio.get_running_loop().time()
+
+    @asynccontextmanager
+    async def keepalive(self) -> AsyncIterator[None]:
+        """Hold the inactivity clock open across a single long call that streams nothing.
+
+        The watchdog reads activity from the event stream, which is the right signal
+        almost everywhere: a run that has emitted nothing for minutes has stalled. The
+        exception is one awaited call that is known to be slow and known to produce no
+        frames until it finishes — a non-streaming model call generating a long report,
+        say. Between two step boundaries there is no activity to observe even while real
+        work is happening, and the run would be stopped for idling.
+
+        This belongs to the substrate, not to whichever feature hit it first: the clock is
+        the substrate's, and a heartbeat loop reimplemented per long call is a heartbeat
+        loop that drifts out of step with the operator's configured bound.
+
+        The bargain is explicit: inside this scope the inactivity bound no longer applies,
+        so a call that truly wedges is bounded only by the run's wall clock. Wrap the one
+        awaited call, never a whole orchestration.
+        """
+        task = asyncio.create_task(self._beat())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            self.touch()  # the call returned — that is real activity
+
+    async def _beat(self) -> None:
+        interval = _KEEPALIVE_INTERVAL_S
+        if self.inactivity_timeout_s:
+            # Comfortably inside whatever bound this run is actually being held to, so a
+            # shortened timeout can't outpace a fixed interval chosen against the default.
+            # The small floor is only to keep a nonsensical bound from spinning; at any
+            # realistic timeout the ceiling above is what applies.
+            interval = min(interval, max(self.inactivity_timeout_s / 3, 0.01))
+        while True:
+            await asyncio.sleep(interval)
+            self.touch()
 
     def emit(self, body: BaseModel) -> Event:
         self.touch()
@@ -195,7 +245,10 @@ class Run:
         return self.status in TERMINAL_STATUSES
 
     async def wait(self) -> None:
-        """Await the executing task (returns when the Run reaches terminal)."""
+        """Await the executing task — it ends when the Run settles, which means either a
+        terminal status **or** ``awaiting_input``: parking returns the orchestrator, so
+        the task finishes there too and the run continues on a fresh task if it resumes.
+        Callers that need "finished for good" must check ``is_terminal`` afterwards."""
         if self.task is not None:
             await asyncio.shield(self.task)
 

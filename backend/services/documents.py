@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import get_owned, in_session
 from core.exceptions import DocumentSpanError, NotFoundError
 from core.text import replace_unique
 from core.vault import Vault
@@ -441,14 +441,7 @@ class DocumentStore:
         return await in_session(self._engine, work)
 
     async def _require(self, owner_id: str, document_id: str) -> Document:
-        def work(session: Session) -> Document | None:
-            document = session.get(Document, document_id)
-            return document if document is not None and document.owner_id == owner_id else None
-
-        document = await in_session(self._engine, work)
-        if document is None:
-            raise NotFoundError(f"document {document_id!r} not found")
-        return document
+        return await get_owned(self._engine, Document, document_id, owner_id, what="document")
 
     def _view_from_row(self, document: Document) -> DocumentView:
         return self._to_view(

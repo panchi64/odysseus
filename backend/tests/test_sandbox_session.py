@@ -634,6 +634,53 @@ async def test_replenish_only_proceeds_once_the_image_warmup_resolves_ready(
     assert "--pids-limit" in joined
 
 
+async def test_a_spare_is_containerised_exactly_like_a_session_not_merely_similarly(
+    tmp_path, monkeypatch
+):
+    # The hardening flags *are* the sandbox: no network, dropped capabilities, a read-only
+    # root, a pid cap, one bind mount. A spare that came up any softer than a session's own
+    # container would be a hole with nothing watching it, so the two argv must differ in
+    # nothing but the container name and the directory mounted — not merely agree on a
+    # handful of flags a test remembered to list.
+    vault = await _vault(tmp_path)
+    created = _fake_container_create(monkeypatch)
+
+    manager = _manager(
+        tmp_path, vault, backend=_pinned_backend(), spare_enabled=True, spare_count=1
+    )
+    manager._image_warmup.mark_done(True)
+    manager._kick_replenish()
+    await asyncio.wait_for(manager._replenish_task, timeout=1.0)
+    spare = manager._spares[0]
+    spare_argv = created[-1]
+
+    session = SandboxSession(
+        "s1",
+        workspace=tmp_path / "work",
+        sealed=tmp_path / "sealed.tar.enc.gz",
+        backend=_pinned_backend(),
+        vault=vault,
+        excludes=(),
+        warmup=manager._image_warmup,
+    )
+
+    async def fake_kill_quietly(_runtime) -> None:
+        return None
+
+    monkeypatch.setattr(session, "_kill_quietly", fake_kill_quietly)
+    await session._ensure_up()
+    session_argv = created[-1]
+
+    def normalised(argv: list[str], name: str, workspace) -> list[str]:
+        return [
+            arg.replace(name, "<name>").replace(str(workspace), "<workspace>") for arg in argv
+        ]
+
+    assert normalised(spare_argv, spare.container, spare.workspace) == normalised(
+        session_argv, session.container, session.workspace
+    )
+
+
 async def test_replenish_skips_silently_when_the_image_is_confirmed_unavailable(
     tmp_path, monkeypatch
 ):

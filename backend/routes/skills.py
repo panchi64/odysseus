@@ -9,7 +9,7 @@ Two things this surface is deliberate about:
 
 * **Publish is a distinct endpoint, not a field on the update body.** It is the boundary
   between "a document the operator is drafting" and "instructions the agent will follow", so
-  it takes its own call rather than riding along with a title change (D32).
+  it takes its own call rather than riding along with a title change.
 * **Validation errors name their field.** ``SkillValidationError`` carries which part of the
   bundle is wrong; that reaches the client as a 422 whose detail the editor renders verbatim,
   because the backend decides what's valid and the frontend only shows it.
@@ -23,7 +23,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
-from core.exceptions import NotFoundError, SkillSpanError, SkillValidationError
+from core.exceptions import SkillSpanError, SkillValidationError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
@@ -87,7 +87,7 @@ class SkillOut(CamelModel):
     license: str | None = None
     compatibility: str | None = None
     metadata: dict[str, Any] | None = None
-    #: Recorded and displayed, never enforced — see D32.
+    #: Advisory: recorded and displayed, never enforced (the tool policy enforces).
     allowed_tools: list[str] | None = None
     #: Non-standard frontmatter preserved from the bundle, so an export is lossless.
     extras: dict[str, Any] | None = None
@@ -184,10 +184,7 @@ async def import_skill(
 
 @router.get("/{skill_id}", response_model=SkillOut)
 async def get_skill(skill_id: str, request: Request) -> SkillOut:
-    try:
-        return _out(await deps.skills(request).get(OPERATOR_ID, skill_id))
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return _out(await deps.skills(request).get(OPERATOR_ID, skill_id))
 
 
 @router.patch("/{skill_id}", response_model=SkillOut)
@@ -204,8 +201,6 @@ async def update_skill(skill_id: str, body: SkillUpdate, request: Request) -> Sk
             metadata=body.metadata,
             allowed_tools=body.allowed_tools,
         )
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
     except SkillValidationError as exc:
         raise _invalid(exc) from None
     return _out(view)
@@ -217,8 +212,6 @@ async def edit_skill_span(skill_id: str, body: SkillSpanEdit, request: Request) 
         view = await deps.skills(request).replace_span(
             OPERATOR_ID, skill_id, body.old_text, body.new_text
         )
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
     except SkillSpanError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return _out(view)
@@ -237,8 +230,6 @@ async def unpublish_skill(skill_id: str, request: Request) -> SkillOut:
 async def _set_published(skill_id: str, request: Request, published: bool) -> SkillOut:
     try:
         view = await deps.skills(request).set_published(OPERATOR_ID, skill_id, published)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
     except SkillValidationError as exc:
         raise _invalid(exc) from None
     return _out(view)
@@ -246,19 +237,13 @@ async def _set_published(skill_id: str, request: Request, published: bool) -> Sk
 
 @router.delete("/{skill_id}", status_code=204)
 async def delete_skill(skill_id: str, request: Request) -> None:
-    try:
-        await deps.skills(request).delete(OPERATOR_ID, skill_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await deps.skills(request).delete(OPERATOR_ID, skill_id)
 
 
 @router.get("/{skill_id}/export")
 async def export_skill(skill_id: str, request: Request) -> Response:
     """Download the skill as an Agent Skills bundle — the same shape any other tool reads."""
-    try:
-        filename, data = await deps.skills(request).export_bundle(OPERATOR_ID, skill_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    filename, data = await deps.skills(request).export_bundle(OPERATOR_ID, skill_id)
     return Response(
         content=data,
         media_type="application/zip",
@@ -276,8 +261,6 @@ async def put_skill_file(
     content = await file.read()
     try:
         view = await deps.skills(request).put_file(OPERATOR_ID, skill_id, relpath, content)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
     except SkillValidationError as exc:
         raise _invalid(exc) from None
     return _out(view)
@@ -285,10 +268,7 @@ async def put_skill_file(
 
 @router.get("/{skill_id}/files/{relpath:path}")
 async def get_skill_file(skill_id: str, relpath: str, request: Request) -> Response:
-    try:
-        content = await deps.skills(request).file_content(OPERATOR_ID, skill_id, relpath)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    content = await deps.skills(request).file_content(OPERATOR_ID, skill_id, relpath)
     return Response(
         content=content,
         media_type="application/octet-stream",
@@ -298,7 +278,4 @@ async def get_skill_file(skill_id: str, relpath: str, request: Request) -> Respo
 
 @router.delete("/{skill_id}/files/{relpath:path}", response_model=SkillOut)
 async def delete_skill_file(skill_id: str, relpath: str, request: Request) -> SkillOut:
-    try:
-        return _out(await deps.skills(request).delete_file(OPERATOR_ID, skill_id, relpath))
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return _out(await deps.skills(request).delete_file(OPERATOR_ID, skill_id, relpath))

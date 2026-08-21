@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pydantic_ai import FunctionToolset, ToolApproved
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -32,6 +33,45 @@ async def _fresh_store(tmp_path) -> tuple[ConversationStore, object]:
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
     return ConversationStore(engine, await _unlocked_vault(tmp_path)), engine
+
+
+async def test_cache_is_bounded_and_evicted_trees_rehydrate(tmp_path):
+    # Every cached entry holds a fully decrypted tree (inline image bytes included), so
+    # an unbounded cache grows to every conversation the process ever touched. Eviction
+    # is safe precisely because a miss rehydrates.
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    store = ConversationStore(
+        engine, await _unlocked_vault(tmp_path), max_cached_conversations=2
+    )
+    await store.start()
+
+    convs = [await store.create_conversation("operator", title=f"t{i}") for i in range(5)]
+    assert len(store._cache) <= 2
+
+    # The evicted ones are gone from memory but still readable.
+    for conv in convs:
+        assert await store.history(conv) == []
+    assert len(store._cache) <= 2
+    await store.stop()
+
+
+async def test_a_conversation_with_queued_writes_is_never_evicted(tmp_path):
+    # `record()` extends the cached tree in place and queues only the new slice, so
+    # evicting between the two would leave the next append building on an empty tree.
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = await _unlocked_vault(tmp_path)
+    store = ConversationStore(engine, vault, max_cached_conversations=1)
+    # Never started, so nothing drains: every submitted job stays pending.
+    conv = await store.create_conversation("operator", title="held")
+    store.record(conv, [ModelRequest(parts=[UserPromptPart("hello")])])
+
+    for i in range(5):
+        await store.create_conversation("operator", title=f"other{i}")
+
+    assert conv in store._cache
+    assert len(store._cache[conv].nodes) == 1
 
 
 async def test_store_records_and_rehydrates_from_db(tmp_path):
@@ -283,6 +323,48 @@ async def test_inactivity_timeout_in_setup_window_persists_the_prompt(tmp_path):
     cold_views = await cold.messages_view(conv)
     assert cold_views[0].blocked_reason == "no activity for 1 second"
     await cold.stop()
+
+
+async def test_inactivity_timeout_during_the_orchestrator_prelude_persists_the_prompt(tmp_path):
+    # Everything before the first model call — the history read, auto-compaction, the
+    # attachment and prompt-context resolution — awaits and emits nothing, so the
+    # inactivity watchdog is ticking against a run that looks idle. Compaction's own
+    # bound and the inactivity bound even share a default, so a compaction that runs to
+    # its limit trips the watchdog. The flush hooks must therefore be armed *before* that
+    # window, not after it: armed late they are `None` exactly when they are needed and
+    # the operator's typed message vanishes on reload.
+    import asyncio
+
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    store, _db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+    # Seed a turn so the orchestrator actually takes the history-reading path.
+    store.record(conv, [ModelRequest(parts=[UserPromptPart("earlier")])])
+
+    async def _hangs(conversation_id):  # stands in for a slow compaction/history read
+        await asyncio.Event().wait()
+
+    store.model_history = _hangs  # type: ignore[method-assign]
+
+    reg = RunRegistry(wall_clock_timeout_s=5.0, inactivity_timeout_s=0.05)
+    orch = build_chat_orchestrator(
+        "hello there",
+        model=TestModel(),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    views = await store.messages_view(conv)
+    assert [v.content for v in views] == ["earlier", "hello there"]
+    assert views[-1].blocked_reason == "no activity for 1 second"
+
+    await store.stop()
 
 
 async def test_cancel_persists_the_partial_turn(tmp_path):
@@ -689,17 +771,13 @@ async def test_verify_park_persists_once_on_resume(tmp_path, monkeypatch):
 async def test_chat_route_returns_conversation_and_continues(monkeypatch):
     from services.registry import ModelRegistry, ResolvedModel
 
-    async def fake_resolve(self, role, *, owner_id, override_endpoint_id=None, override_model=None):
+    async def fake_resolve_detailed(self, role, **kwargs):
         # call_tools=[] → a plain text turn; the default catalog's approval-gated
         # tool would otherwise park the run and stall the SSE this test reads.
-        return TestModel(custom_output_text="hi", call_tools=[])
-
-    async def fake_resolve_detailed(self, role, **kwargs):
         return ResolvedModel(
             model=TestModel(custom_output_text="hi", call_tools=[]), reasoning_off={}
         )
 
-    monkeypatch.setattr(ModelRegistry, "resolve", fake_resolve)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
     async with client_app() as (client, app):

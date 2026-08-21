@@ -27,6 +27,7 @@ import asyncio
 import logging
 import platform
 import shutil
+import weakref
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Literal
@@ -43,7 +44,22 @@ _DIALOG_TIMEOUT_S = 300.0
 
 # Only one dialog at a time. Two native choosers racing for focus is a worse experience
 # than a queue, and a wedged one would otherwise stack up invisibly.
-_lock = asyncio.Lock()
+#
+# Created per running loop rather than at import: an `asyncio.Lock()` built at module
+# scope binds to whichever loop first *contends* on it, and every later loop that
+# contends raises. That is not hypothetical here — each test case runs its own loop,
+# and so does a reloading dev server.
+_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _dialog_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _locks.get(loop)
+    if lock is None:
+        lock = _locks[loop] = asyncio.Lock()
+    return lock
 
 
 class PickerAvailability(BaseModel):
@@ -122,7 +138,7 @@ async def pick(
     if helper is None:
         raise RuntimeError(probe().reason or "no native file chooser on this host")
     argv = _build_argv(helper, mode, title, start_dir, extensions)
-    async with _lock:
+    async with _dialog_lock():
         path = await _run(argv)
     if not path:
         return None

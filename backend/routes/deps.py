@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import HTTPException, Request
+import httpx
+from fastapi import HTTPException, Request, WebSocket
 from sqlalchemy import Engine
 
+from core.api_scopes import ScopeTable
 from core.auth import AuthManager
+from core.config import Settings
 from core.container import ServiceContainer
 from core.ratelimit import RateLimiter
 from core.vault import Vault
@@ -214,10 +217,15 @@ def workspace_history(request: Request) -> WorkspaceHistoryStore:
     return request.app.state.workspace_history
 
 
-def sandbox_sessions(request: Request) -> SandboxSessionManager | None:
+def sandbox_sessions(request_or_ws: Request | WebSocket) -> SandboxSessionManager | None:
     """The per-conversation sandbox manager, or None when no runtime is available
-    (fail closed)."""
-    return request.app.state.sandbox
+    (fail closed).
+
+    Accepts a ``WebSocket`` as well as a ``Request``: the preview proxy reaches this
+    from both a request handler and a socket handler, and the two share no base class
+    that carries ``app``.
+    """
+    return request_or_ws.app.state.sandbox
 
 
 def cookbook(request: Request) -> CookbookService:
@@ -254,8 +262,10 @@ def scheduler(request: Request) -> SchedulerService:
     return request.app.state.scheduler
 
 
-def shell(request: Request) -> ShellService:
-    return request.app.state.shell
+def shell(request_or_ws: Request | WebSocket) -> ShellService:
+    # WebSocket-capable for the same reason `sandbox_sessions` is: the shell's only
+    # transport is a socket, while its status routes are ordinary requests.
+    return request_or_ws.app.state.shell
 
 
 def shell_auth_rate_limiter(request: Request) -> RateLimiter:
@@ -333,3 +343,18 @@ def run_terminal_tasks(request: Request) -> set[asyncio.Task[None]]:
     drain it alongside the notification surface's own, rather than tearing the DB
     engine/vault down from under it."""
     return request.app.state.run_terminal_tasks
+
+
+def settings(request: Request) -> Settings:
+    """The process's resolved configuration."""
+    return request.app.state.settings
+
+
+def api_scope_table(request: Request) -> ScopeTable:
+    """The scope catalog the `/tokens` surface lists and the auth gate enforces."""
+    return request.app.state.api_scope_table
+
+
+def preview_client(request: Request) -> httpx.AsyncClient:
+    """The pooled outbound client the preview proxy forwards through."""
+    return request.app.state.preview_client

@@ -13,7 +13,7 @@ is unavailable (or a memory has no vector), that item simply contributes via the
 sparse signal alone. Pinned memories are always included (`MEM-4`).
 
 Brute-force-in-Python (not an in-DB ANN index) is the deliberate consequence of
-encrypting vectors at rest — see decision D18. It is microseconds at this scale
+encrypting vectors at rest. It is microseconds at this scale
 and keeps every vector sealed. The pluggable seam (a different store) stays open
 for when volume, not confidentiality, becomes the constraint.
 
@@ -31,8 +31,8 @@ import numpy as np
 from sqlalchemy import Engine, func, or_
 from sqlmodel import Session, select
 
-from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.db import get_owned, in_session
+from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from models.memory import Memory
 from services.embeddings import (
@@ -322,14 +322,7 @@ class MemoryStore:
         return groups
 
     async def _require(self, owner_id: str, memory_id: str) -> Memory:
-        def work(session: Session) -> Memory | None:
-            memory = session.get(Memory, memory_id)
-            return memory if memory is not None and memory.owner_id == owner_id else None
-
-        memory = await in_session(self._engine, work)
-        if memory is None:
-            raise NotFoundError(f"memory {memory_id!r} not found")
-        return memory
+        return await get_owned(self._engine, Memory, memory_id, owner_id, what="memory")
 
     @staticmethod
     def _to_view(memory: Memory, content: str) -> MemoryView:

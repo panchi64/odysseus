@@ -69,7 +69,7 @@ async def list_scopes(request: Request) -> list[ScopeView]:
     a scope is only offered when something actually claims a surface into it."""
     return [
         ScopeView(id=scope.id, label=scope.label, description=scope.description)
-        for scope in request.app.state.api_scope_table.scopes
+        for scope in deps.api_scope_table(request).scopes
     ]
 
 

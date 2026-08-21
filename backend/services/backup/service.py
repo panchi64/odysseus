@@ -14,9 +14,13 @@ own unique constraints. Anything that matches is skipped, so importing the same 
 changes nothing the second time, and importing a file from another host merges rather than
 duplicates.
 
-Ids are **preserved** across an import rather than reissued. That is what keeps a skill's
-files attached to their skill and a role's fallback chain pointing at its endpoints, with no
-id-remapping pass to get subtly wrong.
+Ids are **preserved** across an import rather than reissued, which is what keeps a skill's
+files attached to their skill and a role's fallback chain pointing at its endpoints. Where
+that is not enough is a *skipped parent*: a skill the target already has under its own id
+is not written, so every row still carrying the file's id for it would land pointing at a
+row this host does not have — silently, since these references carry no foreign key. So the
+merge threads an id remap through: a parent skipped in favour of a local twin records
+file-id → local-id, and the rows that reference it are re-pointed before they are written.
 
 Note what is deliberately *not* here: the secrets manager (``models/secret``) carries no
 backup marker. Its whole point is a second lock; folding its entries into a file protected by
@@ -28,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import io
 import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
@@ -35,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Column, Engine
+from sqlalchemy import Column, Engine, func
 from sqlmodel import Session, SQLModel, select
 
 from core.db import in_session
@@ -140,11 +145,15 @@ class BackupService:
         return sections()
 
     async def counts(self, owner_id: str) -> tuple[BackupManifestItem, ...]:
-        """How many records each group would export right now."""
+        """How many records each group would export right now.
+
+        Counted in SQL. This is a readout for a settings screen; loading (and decrypting)
+        every row the operator owns just to call ``len`` on it made looking at the backup
+        page as expensive as taking a backup."""
         totals: dict[str, int] = {}
         for entity in discover_entities():
-            rows = await self._rows(entity, owner_id)
-            totals[entity.spec.section] = totals.get(entity.spec.section, 0) + len(rows)
+            section = entity.spec.section
+            totals[section] = totals.get(section, 0) + await self._count(entity, owner_id)
         return tuple(BackupManifestItem(name, count) for name, count in totals.items())
 
     async def last_manifest(self, owner_id: str) -> BackupManifest | None:
@@ -167,24 +176,9 @@ class BackupService:
         if not secret:
             raise ValueError("a backup secret is required")
         wanted = None if include is None else set(include)
-        payload_sections: dict[str, dict[str, list[dict[str, Any]]]] = {}
         totals: dict[str, int] = {name: 0 for name in (wanted or set())}
-
-        for entity in discover_entities():
-            section = entity.spec.section
-            if wanted is not None and section not in wanted:
-                continue
-            rows = await self._rows(entity, owner_id)
-            encoded = [self._encode(entity, row) for row in rows]
-            payload_sections.setdefault(section, {})[entity.name] = encoded
-            totals[section] = totals.get(section, 0) + len(encoded)
-
         created_at = datetime.now(UTC)
-        raw = gzip.compress(
-            json.dumps(
-                {"created_at": created_at.isoformat(), "sections": payload_sections}
-            ).encode()
-        )
+        raw = await self._compressed_payload(owner_id, created_at, wanted, totals)
         # Argon2id is deliberately expensive; keep it off the event loop.
         envelope = await asyncio.to_thread(seal, secret, raw, created_at=created_at)
 
@@ -219,9 +213,15 @@ class BackupService:
         wanted = None if include is None else set(include)
         report = BackupImportReport()
         known: set[str] = set()
+        # file-id → local-id, for every row a merge skipped in favour of one this host
+        # already had under a different id. Accumulated across the whole import, not per
+        # entity: the rows that need it (a skill's files, a role's fallback chain) are
+        # merged in a *later* pass than the parent whose id was replaced.
+        remap: dict[str, str] = {}
 
         # Walk the *entities* in import order, not the file's key order, so a parent
-        # (a skill, an endpoint) is always written before the rows that point at it.
+        # (a skill, an endpoint) is always written — or recorded in `remap` — before the
+        # rows that point at it.
         for entity in discover_entities():
             section = entity.spec.section
             if wanted is not None and section not in wanted:
@@ -231,7 +231,7 @@ class BackupService:
             if not rows:
                 report.record(section, imported=0, skipped=0)
                 continue
-            imported, skipped = await self._merge(entity, owner_id, rows)
+            imported, skipped = await self._merge(entity, owner_id, rows, remap)
             report.record(section, imported=imported, skipped=skipped)
 
         in_file = {
@@ -245,6 +245,64 @@ class BackupService:
 
     # --- internals ------------------------------------------------------------------
 
+    async def _compressed_payload(
+        self,
+        owner_id: str,
+        created_at: datetime,
+        wanted: set[str] | None,
+        totals: dict[str, int],
+    ) -> bytes:
+        """The export document, gzipped, written one entity at a time — and ``totals``
+        filled in as it goes.
+
+        Built as a stream rather than as a dict handed to ``json.dumps``. Accumulating the
+        whole payload first meant the peak of an export held four copies of the operator's
+        data at once: the decoded rows, the assembled JSON string, its UTF-8 bytes, and the
+        compressed result. Here the only things alive together are one entity's rows and
+        the compressed buffer, so the peak tracks the largest table rather than the
+        database. ``discover_entities`` is already ordered by section, so each section's
+        object can be opened and closed in one pass without regrouping.
+        """
+        buffer = io.BytesIO()
+        # mtime=0: the document stamps its own `created_at`, and a second, different
+        # timestamp in the gzip header is one nothing reads and everything must ignore.
+        with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
+
+            def write(text: str) -> None:
+                gz.write(text.encode())
+
+            write('{"created_at": ' + json.dumps(created_at.isoformat()) + ', "sections": {')
+            open_section: str | None = None
+            first_entity = True
+            for entity in discover_entities():
+                section = entity.spec.section
+                if wanted is not None and section not in wanted:
+                    continue
+                if section != open_section:
+                    write("}, " if open_section is not None else "")
+                    write(json.dumps(section) + ": {")
+                    open_section = section
+                    first_entity = True
+                rows = await self._rows(entity, owner_id)
+                write(("" if first_entity else ", ") + json.dumps(entity.name) + ": [")
+                first_entity = False
+                for index, row in enumerate(rows):
+                    write((", " if index else "") + json.dumps(self._encode(entity, row)))
+                write("]")
+                totals[section] = totals.get(section, 0) + len(rows)
+            write("}}}" if open_section is not None else "}}")
+        return buffer.getvalue()
+
+    async def _count(self, entity: BackupEntity, owner_id: str) -> int:
+        model = entity.model
+
+        def work(session: Session) -> int:
+            return session.exec(
+                select(func.count()).select_from(model).where(model.owner_id == owner_id)
+            ).one()
+
+        return await in_session(self._engine, work)
+
     async def _rows(self, entity: BackupEntity, owner_id: str) -> list[SQLModel]:
         model = entity.model
 
@@ -254,12 +312,23 @@ class BackupService:
         return await in_session(self._engine, work)
 
     async def _merge(
-        self, entity: BackupEntity, owner_id: str, rows: Iterable[Mapping[str, Any]]
+        self,
+        entity: BackupEntity,
+        owner_id: str,
+        rows: Iterable[Mapping[str, Any]],
+        remap: dict[str, str],
     ) -> tuple[int, int]:
+        """Merge one entity's rows, reading and extending the import-wide id ``remap``."""
         existing = await self._rows(entity, owner_id)
         seen_ids = {row.id for row in existing}  # type: ignore[attr-defined]
-        seen_keys = {self._natural_key(entity, self._plain(entity, row)) for row in existing}
-        seen_keys.discard(None)
+        # Natural key → the id that record already carries *here*. A dict, not a set,
+        # because a skipped row has to hand its local id to whatever pointed at the
+        # file's id — knowing only "a duplicate exists" is what orphans the children.
+        local_by_key: dict[tuple[Any, ...], str] = {}
+        for row in existing:
+            row_key = self._natural_key(entity, self._plain(entity, row))
+            if row_key is not None:
+                local_by_key[row_key] = row.id  # type: ignore[attr-defined]
 
         fresh: list[SQLModel] = []
         skipped = 0
@@ -267,8 +336,23 @@ class BackupService:
             values = dict(incoming)
             # The ownership seam: an imported record belongs to whoever imported it.
             values["owner_id"] = owner_id
+            # Re-point parent references *before* the identity tests, not after: a child
+            # whose parent moved is still the same child, and its natural key may be built
+            # from that very reference (SkillFile keys on ("skill_id", "relpath")), so the
+            # duplicate check has to run against the local ids or it compares the wrong
+            # tuple and re-inserts a file the target already has.
+            self._reparent(entity, values, remap)
             key = self._natural_key(entity, values)
-            if values.get("id") in seen_ids or (key is not None and key in seen_keys):
+            file_id = values.get("id")
+            if file_id in seen_ids:
+                skipped += 1  # the very same record — references already resolve
+                continue
+            local_id = None if key is None else local_by_key.get(key)
+            if local_id is not None:
+                # Present here under a different id: note the substitution so later rows
+                # pointing at the file's id are re-pointed rather than left dangling.
+                if isinstance(file_id, str) and local_id != file_id:
+                    remap[file_id] = local_id
                 skipped += 1
                 continue
             try:
@@ -278,9 +362,11 @@ class BackupService:
                 skipped += 1
                 continue
             fresh.append(instance)
-            seen_ids.add(values.get("id"))
-            if key is not None:
-                seen_keys.add(key)
+            seen_ids.add(file_id)
+            if key is not None and isinstance(file_id, str):
+                # Written under its own id, so it is its own local twin — a second row in
+                # the same file with this key now remaps onto it.
+                local_by_key[key] = file_id
 
         if fresh:
 
@@ -291,6 +377,38 @@ class BackupService:
 
             await in_session(self._engine, work)
         return len(fresh), skipped
+
+    @staticmethod
+    def _reparent(
+        entity: BackupEntity, values: dict[str, Any], remap: Mapping[str, str]
+    ) -> None:
+        """Rewrite a row's references to ids this host actually uses. In place, no-op when
+        nothing has been remapped (the common case — ids are preserved).
+
+        Substitution is by *value*, not against a declared list of foreign-key columns.
+        An id is an opaque uuid4 hex, so a column holding one that a parent gave up is a
+        reference to that parent whatever the column is named — which covers both shapes
+        the schema has today, a scalar (``SkillFile.skill_id``) and a JSON list
+        (``ModelRole.endpoint_ids``), and any future one without a new marker to declare
+        and keep in sync. The primary key is excluded: a row's own identity is never a
+        reference to another row.
+
+        One column deep, deliberately: a reference buried inside a dict-valued JSON column
+        or spliced into a longer string is not rewritten. No backed-up entity holds one
+        today (``SearchProvider.params`` is provider settings, not ids), and guessing at
+        arbitrary nesting would risk mangling opaque operator data to fix nothing."""
+        if not remap:
+            return
+        for column in entity.model.__table__.columns:  # type: ignore[attr-defined]
+            if column.primary_key:
+                continue
+            value = values.get(column.name)
+            if isinstance(value, str) and value in remap:
+                values[column.name] = remap[value]
+            elif isinstance(value, list):
+                values[column.name] = [
+                    remap.get(item, item) if isinstance(item, str) else item for item in value
+                ]
 
     def _natural_key(
         self, entity: BackupEntity, values: Mapping[str, Any]

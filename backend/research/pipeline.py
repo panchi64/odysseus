@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable
 
+from core.concurrency import gather_bounded
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
 from runs import CitationAdded, LimitNotice, StepCompleted, StepStarted, ToolProgress
 from services.search import SearchResult
@@ -84,7 +84,7 @@ async def run_research(
 
         step += 1
         emit(StepStarted(index=step, title="searching"))
-        hit_batches = await _run_bounded(
+        hit_batches = await gather_bounded(
             [_search_one(deps, q) for q in fresh_queries], deps.max_concurrency
         )
         emit(StepCompleted(index=step))
@@ -113,7 +113,7 @@ async def run_research(
         step += 1
         emit(StepStarted(index=step, title="reading"))
         if fresh_hits:
-            outcomes = await _run_bounded(
+            outcomes = await gather_bounded(
                 [_read_one(deps, question, hit) for hit in fresh_hits], deps.max_concurrency
             )
             for outcome in outcomes:
@@ -217,19 +217,6 @@ def _select_fresh_hits(
     for hit in selected:
         dedupe.try_url(hit.url)
     return selected
-
-
-async def _run_bounded(coros: list[Awaitable[object]], max_concurrency: int) -> list[object]:
-    """Run ``coros`` concurrently, at most ``max_concurrency`` in flight at once — the
-    dynamic fan-out: as many workers as there is workload this round, never more than
-    the cap."""
-    semaphore = asyncio.Semaphore(max(1, max_concurrency))
-
-    async def _slot(coro: Awaitable[object]) -> object:
-        async with semaphore:
-            return await coro
-
-    return await asyncio.gather(*(_slot(c) for c in coros))
 
 
 async def _search_one(deps: ResearchDeps, query: str) -> list[SearchResult]:

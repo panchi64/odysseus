@@ -353,14 +353,14 @@ def test_with_tail_context_rewrites_only_the_trailing_request_and_never_mutates(
     # in-memory tree, so the helper must rebuild, never mutate.
     from pydantic_ai import ModelRequest, ModelResponse, TextPart
 
-    from agent.engine import _with_tail_context
+    from agent.history import with_tail_context
 
     history = [
         ModelRequest(parts=[UserPromptPart(content="earlier")]),
         ModelResponse(parts=[TextPart("answer")]),
         ModelRequest(parts=[UserPromptPart(content="redo this")]),
     ]
-    out = _with_tail_context(history, ["[doc context]"])
+    out = with_tail_context(history, ["[doc context]"])
 
     assert out[-1].parts[0].content == ["redo this", "[doc context]"]
     assert history[-1].parts[0].content == "redo this"  # shared original untouched
@@ -368,7 +368,7 @@ def test_with_tail_context_rewrites_only_the_trailing_request_and_never_mutates(
 
     # A history ending in a model response (defensive) passes through unchanged.
     trailing_response = history[:2]
-    assert _with_tail_context(trailing_response, ["ctx"]) == trailing_response
+    assert with_tail_context(trailing_response, ["ctx"]) == trailing_response
 
 
 async def test_injection_ignores_other_conversations_and_archived_docs():

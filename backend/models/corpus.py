@@ -11,8 +11,8 @@ Two tables:
   at-rest posture as every other recall vector: the text and its embedding are
   **encrypted at rest** under the vault (an embedding is invertible enough to leak
   its text, so it is sealed too — which is why recall is brute-force-in-Python over
-  the decrypted working set rather than an in-DB plaintext ANN index; see decision
-  D18). Structural metadata (owner, source, ordinal, content hash, embedding
+  the decrypted working set rather than an in-DB plaintext ANN
+  index). Structural metadata (owner, source, ordinal, content hash, embedding
   provenance, timestamps) stays in the clear so the DB can segregate stale
   embeddings (`EMB-2`) and dedup on re-index.
 - ``CorpusSource`` — the operator-added **folder** registry (path + crawl status).
@@ -37,8 +37,22 @@ from models._fields import new_id, utcnow
 
 class CorpusChunk(SQLModel, table=True):
     __tablename__ = "corpus_chunk"
-    # Idempotent (re)index: the same file content never inserts twice for a source.
-    __table_args__ = (UniqueConstraint("owner_id", "source_id", "content_hash"),)
+    # Idempotent (re)index: the same content never inserts twice for the same *item*.
+    # ``external_ref`` is in the key, not content alone: a source can hold many items (a
+    # folder crawl holds a whole tree), and two byte-identical files under it — a repeated
+    # LICENSE, two empty ``__init__.py``, one config copied into two environments — are
+    # two items that must both be indexable. Keyed on content alone the second one can
+    # never be stored, so it is invisible to search and every hit on the shared text is
+    # cited against the first file's path.
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "source_id",
+            "external_ref",
+            "content_hash",
+            name="uq_corpus_chunk_ref_content",
+        ),
+    )
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)

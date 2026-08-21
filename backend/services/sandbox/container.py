@@ -28,11 +28,9 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-import httpx
-
 from core import net
 
-from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
+from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec, contained_path
 
 logger = logging.getLogger(__name__)
 
@@ -185,21 +183,9 @@ async def await_http_serving(
     ``/`` while the iframe loads the entry path, so a 404 at the root still means "up".
     Each request and the polling sleep are bounded by the remaining budget, so the call
     never overshoots ``timeout_s`` even when a probe hangs."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    url = f"http://127.0.0.1:{host_port}/"
-    async with httpx.AsyncClient() as client:
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return
-            try:
-                resp = await client.get(url, timeout=min(remaining, 2.0))
-                if resp.status_code < 500:
-                    return
-            except httpx.HTTPError:
-                pass  # not answering yet — keep polling within the budget
-            await asyncio.sleep(min(poll_interval_s, max(deadline - loop.time(), 0.0)))
+    await net.await_http_ready(
+        f"http://127.0.0.1:{host_port}/", timeout_s, poll_interval_s=poll_interval_s
+    )
 
 
 # Workspace-relative dirs the env defaults point at, created host-side before a
@@ -482,9 +468,7 @@ class ContainerSandbox(Sandbox):
     @staticmethod
     def _write_inputs(mount: Path, spec: SandboxSpec) -> None:
         for f in spec.files:
-            target = (mount / f.path).resolve()
-            if not target.is_relative_to(mount.resolve()):  # no ../ escape from the box
-                raise SandboxError(f"input path escapes the sandbox: {f.path!r}")
+            target = contained_path(mount, f.path, what="input path")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(f.content)
 
@@ -492,7 +476,10 @@ class ContainerSandbox(Sandbox):
     def _read_outputs(mount: Path, spec: SandboxSpec) -> dict[str, bytes]:
         outputs: dict[str, bytes] = {}
         for name in spec.outputs:
-            path = (mount / name).resolve()
-            if path.is_relative_to(mount.resolve()) and path.is_file():
+            # Raises on an escape rather than skipping it. This site used to drop such
+            # a name silently, which reported a traversal attempt as "the file wasn't
+            # produced" — indistinguishable from an ordinary miss.
+            path = contained_path(mount, name, what="output path")
+            if path.is_file():
                 outputs[name] = path.read_bytes()
         return outputs

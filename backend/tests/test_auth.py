@@ -75,3 +75,32 @@ async def test_auth_disabled_still_requires_unlock():
         # locking still blocks until re-unlocked, even with auth off.
         await client.post("/auth/lock")
         assert (await client.get("/runs/whatever")).status_code == 423
+
+
+async def test_logout_locks_the_vault():
+    # Logging out zeroes the key, it does not just drop the cookie: the DEK is
+    # process-global, so a logout that left it resident would keep every decrypted
+    # secret, PTY, and secret-vault session alive behind a "logged out" UI.
+    async with client_app(auth_enabled=True, passphrase=None) as (client, _app):
+        await client.post("/setup", json={"password": "the-password"})
+        assert (await client.get("/auth/status")).json()["unlocked"] is True
+
+        assert (await client.post("/auth/logout")).status_code == 200
+        assert (await client.get("/auth/status")).json()["unlocked"] is False
+        assert (await client.get("/runs/whatever")).status_code == 401
+
+        # ...and the password still unlocks afterwards.
+        login = await client.post("/auth/login", json={"password": "the-password"})
+        assert login.status_code == 200
+        assert (await client.get("/auth/status")).json()["unlocked"] is True
+
+
+async def test_logout_revokes_every_session_not_just_the_caller():
+    # The key is gone process-wide, so a token issued to another client is dead too —
+    # it has to be rejected at the gate, not 423 deeper in.
+    async with client_app(auth_enabled=True, passphrase=None) as (client, _app):
+        setup = await client.post("/setup", json={"password": "the-password"})
+        other = {"Authorization": f"Bearer {setup.json()['token']}"}
+
+        await client.post("/auth/logout")
+        assert (await client.get("/runs/whatever", headers=other)).status_code == 401

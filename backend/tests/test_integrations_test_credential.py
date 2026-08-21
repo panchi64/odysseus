@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from core.db import init_db, make_engine
-from core.exceptions import DegradedCapabilityError, SSRFError
+from core.exceptions import DegradedCapabilityError, InvalidInputError, SSRFError
 from core.vault import Vault
 from services.external_tools import ExternalPolicyStore
 from services.integrations import IntegrationService
@@ -159,7 +159,7 @@ async def test_a_body_is_refused_on_an_action_that_does_not_take_one(monkeypatch
     service, _seen = await _service(lambda _r: httpx.Response(200), monkeypatch)
     view = await service.configure(OWNER, "github", credentials={"token": "t"})
 
-    with pytest.raises(DegradedCapabilityError):
+    with pytest.raises(InvalidInputError):
         await service.call(
             OWNER,
             view.id,

@@ -122,10 +122,7 @@ async def delete_album(album_id: str, request: Request) -> None:
 async def add_album_item(
     album_id: str, body: AlbumItemIn, request: Request
 ) -> None:
-    try:
-        await deps.gallery(request).add_item(OPERATOR_ID, album_id, body.upload_id)
-    except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await deps.gallery(request).add_item(OPERATOR_ID, album_id, body.upload_id)
 
 
 @router.delete("/albums/{album_id}/items/{upload_id}", status_code=204)

@@ -9,9 +9,11 @@ from core.db import init_db, make_engine
 from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from models.memory import Memory
+from models.registry import ModelRole
 from models.skill import Skill, SkillFile
 from services.backup import BackupFormatError, BackupSecretError, BackupService
 from services.memory import MemoryStore
+from services.registry import ModelRegistry
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
 
@@ -108,7 +110,7 @@ async def test_a_skill_and_its_files_survive_the_round_trip(tmp_path):
 
     restored = await SkillStore(target_engine, target_vault).list_skills(OWNER)
     assert [s.name for s in restored] == ["deploy-runbook"]
-    # Ids are preserved, so the file is still attached to its skill — no remapping pass.
+    # Ids are preserved, so the file arrives still attached to its skill — nothing to remap.
     assert _count(target_engine, SkillFile) == 1
     body = await SkillStore(target_engine, target_vault).file_content(
         OWNER, restored[0].id, "scripts/ship.sh"
@@ -146,3 +148,90 @@ async def test_a_wrong_secret_or_a_foreign_file_is_refused(tmp_path):
         await target.import_backup(OWNER, "wrong-secret", envelope)
     with pytest.raises(BackupFormatError):
         await target.import_backup(OWNER, BACKUP_SECRET, {"format": "something-else"})
+
+
+# --- regression: a skipped parent must not orphan its children -------------
+
+
+async def test_files_of_a_skipped_skill_land_on_the_local_skill(tmp_path):
+    """The target already has a "triage" skill under its own id, so the incoming skill is
+    skipped by natural key — but its files are still imported. Carrying the *file's*
+    skill_id they insert pointing at a skill this host has never had: nothing errors
+    (skill_id has no foreign key), the rows are just unreachable from the skill they
+    belong to, and the operator sees a restored skill with none of its files."""
+    source_engine, source_vault, source = await _host(tmp_path, "source")
+    source_skills = SkillStore(source_engine, source_vault)
+    skill = await source_skills.create(
+        OWNER, name="triage", description="How we triage", body="1. Read the page."
+    )
+    await source_skills.put_file(OWNER, skill.id, "run.sh", b"#!/bin/sh\necho triage\n")
+    envelope, _ = await source.export(OWNER, BACKUP_SECRET, include=["skills"])
+
+    target_engine, target_vault, target = await _host(tmp_path, "target")
+    target_skills = SkillStore(target_engine, target_vault)
+    local = await target_skills.create(
+        OWNER, name="triage", description="The target's own", body="1. Ignore it."
+    )
+    assert local.id != skill.id  # same skill by name, different id — the whole point
+
+    report = await target.import_backup(OWNER, BACKUP_SECRET, envelope)
+    assert report.skipped["skills"] == 1  # the skill itself, already present
+    assert report.imported["skills"] == 1  # its file, which the target lacked
+
+    with Session(target_engine) as session:
+        files = list(session.exec(select(SkillFile)).all())
+    assert [f.skill_id for f in files] == [local.id], "the file must hang off the local skill"
+    body = await target_skills.file_content(OWNER, local.id, "run.sh")
+    assert body == b"#!/bin/sh\necho triage\n"
+
+
+async def test_a_file_the_local_skill_already_has_is_not_duplicated(tmp_path):
+    """The corollary: once the child's reference is rewritten, its natural key
+    ("skill_id", "relpath") lines up with the local row's, so the duplicate is recognized
+    and skipped. Reparenting *after* the identity test would compare the file's skill_id,
+    miss the match, and insert a second copy of a file the skill already has."""
+    source_engine, source_vault, source = await _host(tmp_path, "source")
+    source_skills = SkillStore(source_engine, source_vault)
+    skill = await source_skills.create(OWNER, name="triage", description="d", body="b")
+    await source_skills.put_file(OWNER, skill.id, "run.sh", b"from the backup\n")
+    envelope, _ = await source.export(OWNER, BACKUP_SECRET, include=["skills"])
+
+    target_engine, target_vault, target = await _host(tmp_path, "target")
+    target_skills = SkillStore(target_engine, target_vault)
+    local = await target_skills.create(OWNER, name="triage", description="d", body="b")
+    await target_skills.put_file(OWNER, local.id, "run.sh", b"already here\n")
+
+    report = await target.import_backup(OWNER, BACKUP_SECRET, envelope)
+    assert report.imported["skills"] == 0
+    assert _count(target_engine, SkillFile) == 1
+    # The local copy wins — a merge never overwrites what this host already decided.
+    assert await target_skills.file_content(OWNER, local.id, "run.sh") == b"already here\n"
+
+
+async def test_a_role_chain_repoints_at_a_skipped_endpoint(tmp_path):
+    """Same shape, list-valued: ModelRole.endpoint_ids is a JSON array of endpoint ids.
+    The target already has an endpoint named "workstation", so the incoming one is
+    skipped — and the role that binds it would restore pointing at an id that resolves to
+    nothing, leaving the operator with a role bound to a phantom endpoint."""
+    source_engine, source_vault, source = await _host(tmp_path, "source")
+    source_registry = ModelRegistry(source_engine, source_vault)
+    endpoint = await source_registry.create_endpoint(
+        OWNER, name="workstation", base_url="http://source.invalid/v1"
+    )
+    await source_registry.set_role(OWNER, "main", [endpoint.id])
+    envelope, _ = await source.export(OWNER, BACKUP_SECRET, include=["settings"])
+
+    target_engine, target_vault, target = await _host(tmp_path, "target")
+    target_registry = ModelRegistry(target_engine, target_vault)
+    local = await target_registry.create_endpoint(
+        OWNER, name="workstation", base_url="http://target.invalid/v1"
+    )
+    assert local.id != endpoint.id
+
+    await target.import_backup(OWNER, BACKUP_SECRET, envelope)
+
+    with Session(target_engine) as session:
+        role = session.exec(select(ModelRole).where(ModelRole.role == "main")).one()
+    assert role.endpoint_ids == [local.id], "the chain must name an endpoint that exists here"
+    # And it resolves — the reason the id matters at all.
+    assert (await target_registry.get_endpoint(OWNER, role.endpoint_ids[0])).name == "workstation"

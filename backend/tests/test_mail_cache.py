@@ -20,7 +20,7 @@ from services.mail.errors import MailUnavailableError
 from services.mail.models import MailAddress, MailBody
 from services.mail.service import MailService
 from services.mail.triage import TriageVerdict
-from tests.mail_fakes import FakeTransport, sample_header
+from tests.mail_fakes import FakeTransport, install_transport, sample_header
 
 
 class _NoModels:
@@ -47,7 +47,7 @@ async def mail(tmp_path):
         password="hunter2",
     )
     # Inject the fake in place of a real connection — the seam is the whole point.
-    service._transports[account.id] = transport
+    await install_transport(service, "operator", account.id, transport)
     return service, account, transport, engine, vault
 
 
@@ -105,7 +105,7 @@ async def test_a_lapsed_window_re_consults_the_provider(tmp_path):
         "operator", name="P", address="op@example.com", password="x"
     )
     transport = FakeTransport()
-    service._transports[account.id] = transport
+    await install_transport(service, "operator", account.id, transport)
     calls: list[str] = []
     original = transport.list_messages
 
@@ -286,7 +286,7 @@ async def test_a_probe_records_operator_facing_health(mail):
     assert (healthy.status, healthy.error_detail) == ("ok", None)
 
     transport.probe_error = MailUnavailableError("could not reach the mail server")
-    service._transports[account.id] = transport
+    await install_transport(service, "operator", account.id, transport)
     broken = await service.probe_account("operator", account.id)
     assert broken.status == "error"
     assert "could not reach" in (broken.error_detail or "")
