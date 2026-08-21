@@ -8,7 +8,7 @@ from dataclasses import replace
 from services.mail.models import MailBody
 
 from ._helpers import client_app
-from .mail_fakes import FakeTransport, sample_header
+from .mail_fakes import FakeTransport, install_transport, sample_header
 
 
 async def _connected(app, *, subject="Quarterly report", text="The report is attached.\n"):
@@ -20,7 +20,7 @@ async def _connected(app, *, subject="Quarterly report", text="The report is att
     transport.messages["INBOX"] = [
         MailBody(header=replace(sample_header("1"), subject=subject), text=text)
     ]
-    app.state.mail._transports[account.id] = transport
+    await install_transport(app.state.mail, "operator", account.id, transport)
     return account, transport
 
 

@@ -116,7 +116,10 @@ class ImapTransport:
         async with self._lock:
             client = await self._connect()
             await self._select(client, folder)
-            criteria = f"UID {int(since_uid) + 1}:*" if since_uid else "ALL"
+            # `UNDELETED`, not `ALL`: a message flagged `\Deleted` is gone as far as every
+            # mail client is concerned, and on a server without UIDPLUS that flag is all a
+            # delete leaves behind (see `_expunge`) — listing it would resurrect it.
+            criteria = f"UID {int(since_uid) + 1}:* UNDELETED" if since_uid else "UNDELETED"
             status, lines = await self._command(client.uid_search(criteria))
             if status != "OK":
                 raise MailError(f"the server refused to search {folder!r}")
@@ -176,19 +179,19 @@ class ImapTransport:
         async with self._lock:
             client = await self._connect()
             await self._select(client, folder)
-            status, _lines = await self._command(client.uid("move", uid, destination))
-            if status != "OK":
-                # Pre-RFC 6851 servers have no MOVE: copy, mark deleted, expunge.
-                await self._command(client.uid("copy", uid, destination))
-                await self._command(client.uid("store", uid, "+FLAGS", "(\\Deleted)"))
-                await self._command(client.expunge())
+            if await self._moved(client, uid, destination):
+                return
+            # Pre-RFC 6851 servers have no MOVE: copy, then flag the original deleted.
+            await self._command(client.uid("copy", uid, destination))
+            await self._command(client.uid("store", uid, "+FLAGS", "(\\Deleted)"))
+            await self._expunge(client, uid)
 
     async def delete(self, folder: str, uid: str) -> None:
         async with self._lock:
             client = await self._connect()
             await self._select(client, folder)
             await self._command(client.uid("store", uid, "+FLAGS", "(\\Deleted)"))
-            await self._command(client.expunge())
+            await self._expunge(client, uid)
 
     async def close(self) -> None:
         client, self._client, self._selected = self._client, None, None
@@ -196,6 +199,10 @@ class ImapTransport:
             return
         with suppress(Exception):
             await asyncio.wait_for(client.logout(), timeout=5.0)
+        # LOGOUT is a courtesy to the server, not a release of anything on this side —
+        # aioimaplib leaves the transport open either way, and a logout that timed out or
+        # failed leaves it open with nothing coming.
+        _drop_socket(client)
 
     # --- push (IMAP IDLE) ------------------------------------------------------
 
@@ -241,10 +248,17 @@ class ImapTransport:
                 status, _lines = await self._command(
                     client.login(self._username(), self._spec.password or "")
                 )
+            if status != "OK":
+                raise MailAuthError("the mail server rejected this account's credentials")
         except (TimeoutError, OSError) as exc:
+            # aioimaplib opens the socket from its constructor, so a connection that is
+            # never returned is still holding one. Nobody else can release it — the handle
+            # exists only in this frame — and the sync loop comes back every few minutes.
+            _drop_socket(client)
             raise MailUnavailableError(f"could not reach the mail server: {exc}") from exc
-        if status != "OK":
-            raise MailAuthError("the mail server rejected this account's credentials")
+        except Exception:
+            _drop_socket(client)  # a refused login, or a domain error out of `_command`
+            raise
         self._client = client
         self._selected = None
         return client
@@ -257,13 +271,53 @@ class ImapTransport:
             raise MailError(f"no such folder: {folder!r}")
         self._selected = folder
 
+    async def _moved(self, client: aioimaplib.IMAP4_SSL, uid: str, destination: str) -> bool:
+        """Whether the server took a UID MOVE (RFC 6851).
+
+        The capability is checked before issuing because aioimaplib *raises* rather than
+        answering when MOVE was never advertised — which would surface as a dropped
+        connection and leave :meth:`move`'s copy fallback unreachable on exactly the
+        servers it exists for. A server that advertises MOVE can still refuse this one,
+        so a non-OK status falls back too.
+        """
+        if not client.has_capability("MOVE"):
+            return False
+        status, _lines = await self._command(client.uid("move", uid, destination))
+        return status == "OK"
+
+    async def _expunge(self, client: aioimaplib.IMAP4_SSL, uid: str) -> None:
+        """Reap one ``\\Deleted``-flagged message, never the whole mailbox.
+
+        A bare ``EXPUNGE`` is folder-wide: it permanently destroys *every* message in the
+        selected mailbox that anything has flagged ``\\Deleted``, including deletions
+        another client staged and has not yet committed. ``UID EXPUNGE`` (RFC 4315) is the
+        scoped form and is used wherever the server advertises UIDPLUS.
+
+        Without UIDPLUS there is no way to narrow it, so nothing is expunged and the
+        message is simply left flagged: that is the ordinary, recoverable IMAP outcome,
+        the server collapses it on the next client-issued expunge or close, and listings
+        already hide it (they search ``UNDELETED``). Destroying a stranger's pending
+        deletions to save a tombstone is not a trade worth making.
+        """
+        if not client.has_capability("UIDPLUS"):
+            logger.debug("no UIDPLUS: leaving uid %s flagged \\Deleted rather than expunging", uid)
+            return
+        await self._command(client.uid("expunge", uid))
+
     async def _command(self, awaitable) -> tuple[str, list]:
         """Await one IMAP command, turning connection-level failures into domain errors
         and dropping the cached connection so the next call reconnects."""
         try:
             response = await awaitable
         except (TimeoutError, OSError, aioimaplib.Abort) as exc:
-            self._client, self._selected = None, None
+            # Forgetting the handle is not releasing the connection: the client still owns
+            # a socket, a TLS session and a protocol object, and servers drop idle IMAP
+            # sessions routinely — so one leak per drop, growing for the life of the
+            # process. No LOGOUT here the way `close` does one: this connection just
+            # failed, it has nothing left to say, and the caller must not wait on a dead
+            # socket to be told its command failed. Closing the transport is immediate.
+            client, self._client, self._selected = self._client, None, None
+            _drop_socket(client)
             raise MailUnavailableError(f"the mail server connection failed: {exc}") from exc
         return response.result, list(response.lines)
 
@@ -283,6 +337,16 @@ class ImapTransport:
             seen="\\seen" in flags,
             flagged="\\flagged" in flags,
         )
+
+
+def _drop_socket(client: aioimaplib.IMAP4_SSL | None) -> None:
+    """Give the connection's socket back to the OS. Idempotent and best-effort — it is
+    called on connections that are already broken, and a teardown that raises would mask
+    the failure that prompted it."""
+    if client is None:
+        return
+    with suppress(Exception):
+        client.protocol.transport.close()
 
 
 def _self_address(spec: AccountSpec) -> MailAddress:

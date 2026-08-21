@@ -95,6 +95,20 @@ class AccountView:
 
 
 @dataclass(frozen=True, slots=True)
+class LiveTransport:
+    """A built adapter together with the credentials it was built with.
+
+    One unit, so "cached" and "cached with these credentials" cannot drift apart: an
+    adapter snapshots its secret into an :class:`~services.mail.models.AccountSpec` at
+    construction and holds a connection authenticated with it, so a cache that remembers
+    only the adapter has no way to notice that the account's token has rotated since.
+    """
+
+    transport: MailTransport
+    credentials: tuple[str | None, str | None]
+
+
+@dataclass(frozen=True, slots=True)
 class SyncJob:
     """One account's folder, queued for a background pull. Carries ids only — the rows
     are re-read on each attempt, so a retry after a vault park sees current state."""
@@ -126,7 +140,8 @@ class MailService:
         self.style = MailStyle(registry)
         self._cache_ttl_s = cache_ttl_s
         self._sync_interval_s = sync_interval_s
-        self._transports: dict[str, MailTransport] = {}
+        self._transports: dict[str, LiveTransport] = {}
+        self._transport_locks: dict[str, asyncio.Lock] = {}
         self._refreshed: dict[tuple[str, str], float] = {}
         # Sync opens sealed credentials and seals message content, so it parks while the
         # vault is locked rather than failing — the upload-extraction discipline.
@@ -145,9 +160,9 @@ class MailService:
             with suppress(asyncio.CancelledError):
                 await self._loop_task
         await self._worker.stop()
-        for transport in list(self._transports.values()):
+        for live in list(self._transports.values()):
             with suppress(Exception):
-                await transport.close()
+                await live.transport.close()
         self._transports.clear()
 
     # --- accounts --------------------------------------------------------------
@@ -222,6 +237,12 @@ class MailService:
 
         def work(session: Session) -> MailAccount:
             stored = session.get(MailAccount, row.id)
+            if stored is None:
+                # The row was there when `_row` loaded it, and an await has passed since:
+                # a concurrent delete makes this None. Guarded like `delete_account`'s own
+                # lookup — otherwise `setattr(None, …)` raises AttributeError inside the
+                # worker thread and the caller sees a 500 where 404 is the truth.
+                raise NotFoundError(f"mail account {account_id!r} not found")
             for field, value in updates.items():
                 setattr(stored, field, value)
             session.add(stored)
@@ -535,30 +556,48 @@ class MailService:
         return last is None or (time.monotonic() - last) > self._cache_ttl_s
 
     async def _transport(self, account: MailAccount) -> MailTransport:
-        cached = self._transports.get(account.id)
-        if cached is not None:
-            return cached
-        password, access_token = await self._secrets.open_access(account)
-        if not password and not access_token:
-            raise MailUnavailableError("this account has no stored credentials")
-        spec = AccountSpec(
-            account_id=account.id,
-            address=self._vault.decrypt_str(account.address_enc),
-            provider=account.provider,
-            auth_kind=account.auth_kind,
-            config=dict(account.config or {}),
-            password=password,
-            access_token=access_token,
-        )
-        transport = _TRANSPORTS[account.provider](spec)
-        self._transports[account.id] = transport
-        return transport
+        """The adapter for ``account``, rebuilt whenever its credentials have rotated.
+
+        Credentials are resolved *first*, on every call: :meth:`MailSecrets.open_access`
+        is the only place that knows an access token is near expiry and the only place
+        that refreshes one, so short-circuiting on a cache hit is what freezes an account
+        on the token it happened to hold an hour ago. Resolving is a vault decrypt and a
+        JSON parse — cheap enough to pay per operation, and it reaches the provider only
+        on the refresh it exists to perform.
+        """
+        # Serialized per account: `open_access` refreshes as a side effect, and two
+        # concurrent refreshes of one account both spend the same refresh token. Against a
+        # provider that rotates them (Google does) the loser re-seals a bundle the
+        # provider has already invalidated, and the account needs a manual reconnect.
+        async with self._transport_locks.setdefault(account.id, asyncio.Lock()):
+            password, access_token = await self._secrets.open_access(account)
+            if not password and not access_token:
+                raise MailUnavailableError("this account has no stored credentials")
+            credentials = (password, access_token)
+            live = self._transports.get(account.id)
+            if live is not None and live.credentials == credentials:
+                return live.transport
+            # Rotated token or edited password: the cached adapter's spec is frozen, and
+            # the connection it holds is authenticated with a secret that no longer works.
+            await self._drop_transport(account.id)
+            spec = AccountSpec(
+                account_id=account.id,
+                address=self._vault.decrypt_str(account.address_enc),
+                provider=account.provider,
+                auth_kind=account.auth_kind,
+                config=dict(account.config or {}),
+                password=password,
+                access_token=access_token,
+            )
+            transport = _TRANSPORTS[account.provider](spec)
+            self._transports[account.id] = LiveTransport(transport, credentials)
+            return transport
 
     async def _drop_transport(self, account_id: str) -> None:
-        transport = self._transports.pop(account_id, None)
-        if transport is not None:
+        live = self._transports.pop(account_id, None)
+        if live is not None:
             with suppress(Exception):
-                await transport.close()
+                await live.transport.close()
 
     async def _rows(self, owner_id: str | None) -> list[MailAccount]:
         def work(session: Session) -> list[MailAccount]:

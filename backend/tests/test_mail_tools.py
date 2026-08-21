@@ -18,7 +18,7 @@ from runs import RunRegistry, RunStatus
 from services.credential_store import CredentialStore
 from services.mail.models import MailAddress, MailBody
 from services.mail.service import MailService
-from tests.mail_fakes import FakeTransport, sample_header
+from tests.mail_fakes import FakeTransport, install_transport, sample_header
 from tools import RunDeps
 from tools.mail import mail_toolset
 
@@ -50,7 +50,7 @@ async def wired(tmp_path):
             text=INJECTION,
         )
     ]
-    service._transports[account.id] = transport
+    await install_transport(service, "operator", account.id, transport)
     return service, account, transport
 
 
