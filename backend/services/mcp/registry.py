@@ -109,11 +109,10 @@ class McpRegistry:
 
     async def list(self, owner_id: str) -> list[McpServerView]:
         rows = await self._rows(owner_id)
-        views: list[McpServerView] = []
-        for row in rows:
-            policies = await self._policy.snapshot(owner_id, "mcp", row.id)
-            views.append(self._view(row, policies))
-        return views
+        # One policy read for the whole listing. This runs while the agent's toolset is
+        # being assembled, so a snapshot per server was a query per server per run.
+        policies = await self._policy.snapshots(owner_id, "mcp", [r.id for r in rows])
+        return [self._view(row, policies.get(row.id, {})) for row in rows]
 
     async def get(self, owner_id: str, server_id: str) -> McpServerView:
         row = await self._row(owner_id, server_id)

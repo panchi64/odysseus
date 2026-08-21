@@ -122,13 +122,15 @@ class IntegrationService:
     # --- reads ---------------------------------------------------------------------
 
     async def list(self, owner_id: str) -> list[IntegrationView]:
-        views: list[IntegrationView] = []
-        for row in await self._rows(owner_id):
-            policies = await self._policy.snapshot(owner_id, "integration", row.id)
-            view = self._view(row, policies)
-            if view is not None:
-                views.append(view)
-        return views
+        rows = await self._rows(owner_id)
+        # One policy read for the whole listing — see the same call in the MCP registry:
+        # this sits on the agent's toolset-assembly path, so a query per row is a query
+        # per row on every run.
+        policies = await self._policy.snapshots(
+            owner_id, "integration", [r.id for r in rows]
+        )
+        views = (self._view(row, policies.get(row.id, {})) for row in rows)
+        return [view for view in views if view is not None]
 
     async def get(self, owner_id: str, integration_id: str) -> IntegrationView:
         row = await self._row(owner_id, integration_id)

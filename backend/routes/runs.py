@@ -18,7 +18,6 @@ from agent import ParkedTurn, build_resume_orchestrator
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import covered_by_grant
-from services.conversations import ConversationStore
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -47,11 +46,10 @@ class RunView(BaseModel):
     conversation_title: str | None = Field(default=None, alias="conversationTitle")
 
 
-async def _view(run: Run, store: ConversationStore) -> RunView:
-    title: str | None = None
-    if run.conversation_id is not None:
-        summary = await store.get_summary(run.conversation_id, run.owner_id)
-        title = summary.title if summary is not None else None
+def _view(run: Run, title: str | None) -> RunView:
+    """One run projected for the client. The conversation title is passed in rather than
+    looked up here: the listing resolves every run's title in a single query, and a helper
+    that reached for the store itself would put that back to one read per run."""
     return RunView(
         id=run.id,
         kind=run.kind,
@@ -83,13 +81,25 @@ async def list_runs(request: Request, active: bool = Query(default=True)) -> lis
     if active:
         runs = [r for r in runs if not r.is_terminal]
     runs.sort(key=lambda r: r.created_at, reverse=True)
-    store = deps.store(request)
-    return [await _view(r, store) for r in runs]
+    titles = await deps.store(request).titles(
+        [r.conversation_id for r in runs if r.conversation_id is not None],
+        deps.OPERATOR_ID,
+    )
+    return [
+        _view(r, titles.get(r.conversation_id) if r.conversation_id else None)
+        for r in runs
+    ]
 
 
 @router.get("/{run_id}", response_model=RunView)
 async def get_run(run_id: str, request: Request) -> RunView:
-    return await _view(_require_run(request, run_id), deps.store(request))
+    run = _require_run(request, run_id)
+    titles = (
+        await deps.store(request).titles([run.conversation_id], run.owner_id)
+        if run.conversation_id is not None
+        else {}
+    )
+    return _view(run, titles.get(run.conversation_id or ""))
 
 
 @router.get("/{run_id}/events")

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import io
 import json
 import logging
 from collections.abc import Iterable, Mapping, Sequence
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Column, Engine
+from sqlalchemy import Column, Engine, func
 from sqlmodel import Session, SQLModel, select
 
 from core.db import in_session
@@ -144,11 +145,15 @@ class BackupService:
         return sections()
 
     async def counts(self, owner_id: str) -> tuple[BackupManifestItem, ...]:
-        """How many records each group would export right now."""
+        """How many records each group would export right now.
+
+        Counted in SQL. This is a readout for a settings screen; loading (and decrypting)
+        every row the operator owns just to call ``len`` on it made looking at the backup
+        page as expensive as taking a backup."""
         totals: dict[str, int] = {}
         for entity in discover_entities():
-            rows = await self._rows(entity, owner_id)
-            totals[entity.spec.section] = totals.get(entity.spec.section, 0) + len(rows)
+            section = entity.spec.section
+            totals[section] = totals.get(section, 0) + await self._count(entity, owner_id)
         return tuple(BackupManifestItem(name, count) for name, count in totals.items())
 
     async def last_manifest(self, owner_id: str) -> BackupManifest | None:
@@ -171,24 +176,9 @@ class BackupService:
         if not secret:
             raise ValueError("a backup secret is required")
         wanted = None if include is None else set(include)
-        payload_sections: dict[str, dict[str, list[dict[str, Any]]]] = {}
         totals: dict[str, int] = {name: 0 for name in (wanted or set())}
-
-        for entity in discover_entities():
-            section = entity.spec.section
-            if wanted is not None and section not in wanted:
-                continue
-            rows = await self._rows(entity, owner_id)
-            encoded = [self._encode(entity, row) for row in rows]
-            payload_sections.setdefault(section, {})[entity.name] = encoded
-            totals[section] = totals.get(section, 0) + len(encoded)
-
         created_at = datetime.now(UTC)
-        raw = gzip.compress(
-            json.dumps(
-                {"created_at": created_at.isoformat(), "sections": payload_sections}
-            ).encode()
-        )
+        raw = await self._compressed_payload(owner_id, created_at, wanted, totals)
         # Argon2id is deliberately expensive; keep it off the event loop.
         envelope = await asyncio.to_thread(seal, secret, raw, created_at=created_at)
 
@@ -254,6 +244,64 @@ class BackupService:
         return report
 
     # --- internals ------------------------------------------------------------------
+
+    async def _compressed_payload(
+        self,
+        owner_id: str,
+        created_at: datetime,
+        wanted: set[str] | None,
+        totals: dict[str, int],
+    ) -> bytes:
+        """The export document, gzipped, written one entity at a time — and ``totals``
+        filled in as it goes.
+
+        Built as a stream rather than as a dict handed to ``json.dumps``. Accumulating the
+        whole payload first meant the peak of an export held four copies of the operator's
+        data at once: the decoded rows, the assembled JSON string, its UTF-8 bytes, and the
+        compressed result. Here the only things alive together are one entity's rows and
+        the compressed buffer, so the peak tracks the largest table rather than the
+        database. ``discover_entities`` is already ordered by section, so each section's
+        object can be opened and closed in one pass without regrouping.
+        """
+        buffer = io.BytesIO()
+        # mtime=0: the document stamps its own `created_at`, and a second, different
+        # timestamp in the gzip header is one nothing reads and everything must ignore.
+        with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
+
+            def write(text: str) -> None:
+                gz.write(text.encode())
+
+            write('{"created_at": ' + json.dumps(created_at.isoformat()) + ', "sections": {')
+            open_section: str | None = None
+            first_entity = True
+            for entity in discover_entities():
+                section = entity.spec.section
+                if wanted is not None and section not in wanted:
+                    continue
+                if section != open_section:
+                    write("}, " if open_section is not None else "")
+                    write(json.dumps(section) + ": {")
+                    open_section = section
+                    first_entity = True
+                rows = await self._rows(entity, owner_id)
+                write(("" if first_entity else ", ") + json.dumps(entity.name) + ": [")
+                first_entity = False
+                for index, row in enumerate(rows):
+                    write((", " if index else "") + json.dumps(self._encode(entity, row)))
+                write("]")
+                totals[section] = totals.get(section, 0) + len(rows)
+            write("}}}" if open_section is not None else "}}")
+        return buffer.getvalue()
+
+    async def _count(self, entity: BackupEntity, owner_id: str) -> int:
+        model = entity.model
+
+        def work(session: Session) -> int:
+            return session.exec(
+                select(func.count()).select_from(model).where(model.owner_id == owner_id)
+            ).one()
+
+        return await in_session(self._engine, work)
 
     async def _rows(self, entity: BackupEntity, owner_id: str) -> list[SQLModel]:
         model = entity.model

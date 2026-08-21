@@ -340,11 +340,12 @@ async def _validate_attachments(request: Request, attachment_ids: list[str]) -> 
     ids with a clear 404 rather than silently dropping them at run time."""
     if not attachment_ids:
         return
-    uploads = deps.uploads(request)
+    # Cheap ownership check — decrypts nothing (resolve_attachments opens the bytes/text
+    # later, only for ids that survive to run time) — and one query for the whole list,
+    # since a turn with several files would otherwise pay a thread hop per id.
+    owned = await deps.uploads(request).owned_ids(OPERATOR_ID, attachment_ids)
     for upload_id in attachment_ids:
-        # Cheap ownership check — decrypts nothing (resolve_attachments opens the bytes/text
-        # later, only for ids that survive to run time).
-        if not await uploads.owns(OPERATOR_ID, upload_id):
+        if upload_id not in owned:
             raise HTTPException(
                 status_code=404, detail=f"attachment {upload_id!r} not found"
             )

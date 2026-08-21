@@ -216,6 +216,56 @@ async def test_list_runs_enriches_with_conversation_id_and_title():
         await run.wait()
 
 
+async def test_listing_many_runs_reads_titles_once_and_still_matches_them_up():
+    # The listing used to ask for a full conversation summary per run — every thread's rows
+    # read to produce one title. It now resolves the whole page in one query; each run must
+    # still get *its own* title, and an untitled thread must stay null rather than
+    # borrowing a neighbour's.
+    async with client_app() as (client, app):
+        store = app.state.conversations
+        titled = []
+        for name in ("Weekend plans", "Tax return", "Bike repair"):
+            conv_id = await store.create_conversation("operator")
+            await store.set_title(conv_id, name)
+            titled.append((conv_id, name))
+        untitled = await store.create_conversation("operator")
+
+        release = asyncio.Event()
+        started: list[asyncio.Event] = []
+
+        async def orch(run):
+            started[-1].set()
+            await release.wait()
+
+        runs = []
+        for conv_id in [c for c, _ in titled] + [untitled]:
+            started.append(asyncio.Event())
+            runs.append(
+                app.state.runs.submit(
+                    kind="chat", owner_id="operator", orchestrator=orch, conversation_id=conv_id
+                )
+            )
+            await started[-1].wait()
+
+        calls: list[list[str]] = []
+        original = store.titles
+
+        async def counted(ids, owner_id):
+            calls.append(list(ids))
+            return await original(ids, owner_id)
+
+        store.titles = counted
+        body = (await client.get("/runs")).json()
+
+        by_conversation = {row["conversationId"]: row["conversationTitle"] for row in body}
+        assert by_conversation == {**dict(titled), untitled: None}
+        assert len(calls) == 1  # one read for four runs, not four
+
+        release.set()
+        for run in runs:
+            await run.wait()
+
+
 async def test_get_run_conversation_fields_are_null_without_a_conversation():
     async with client_app() as (client, app):
         async def orch(run):

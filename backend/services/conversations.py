@@ -909,6 +909,32 @@ class ConversationStore:
             return None
         return self._summarize(*result)
 
+    async def titles(self, conversation_ids: list[str], owner_id: str) -> dict[str, str]:
+        """The titles of the owner's conversations among ``conversation_ids``, keyed by id.
+
+        Untitled threads and ids the owner doesn't have are absent. This is deliberately
+        narrower than :meth:`get_summary` — no message count, no last-message preview, and
+        one query for the whole set. The runs listing wants a name per run and nothing
+        else; asking for a full summary per run made it read every thread's rows.
+        """
+        wanted = list(dict.fromkeys(conversation_ids))
+        if not wanted:
+            return {}
+
+        def work(session: Session) -> list[Conversation]:
+            return list(
+                session.exec(
+                    select(Conversation).where(
+                        Conversation.owner_id == owner_id,
+                        Conversation.id.in_(wanted),  # type: ignore[attr-defined]
+                    )
+                ).all()
+            )
+
+        rows = await in_session(self._engine, work)
+        opened = ((row.id, self._open_title(row)) for row in rows)
+        return {cid: title for cid, title in opened if title is not None}
+
     async def messages_view(self, conversation_id: str) -> list[MessageView]:
         """The active path projected to render-ready user/assistant turns (reasoning
         split out, tool calls stitched to results), each carrying its branch node id

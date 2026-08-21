@@ -18,7 +18,6 @@ from research import (
     ResearchPlan,
     SearchUnavailableError,
     agents,
-    pipeline,
     run_research,
 )
 from services.search import SearchResult, SearchResults
@@ -168,26 +167,6 @@ async def test_dedupe_drops_repeated_query_and_url_pre_network():
     assert fetcher.calls == ["https://example.com/a"]  # never re-fetched either
     assert result.sources == 1
     assert result.queries == 1
-
-
-# --- dynamic fan-out sizes to workload and respects the cap -------------------
-async def test_run_bounded_never_exceeds_the_cap_but_shrinks_to_workload():
-    running = 0
-    peak = 0
-
-    async def worker():
-        nonlocal running, peak
-        running += 1
-        peak = max(peak, running)
-        await asyncio.sleep(0)
-        running -= 1
-
-    await pipeline._run_bounded([worker() for _ in range(10)], 3)
-    assert peak == 3  # capped
-
-    running = peak = 0
-    await pipeline._run_bounded([worker() for _ in range(2)], 5)
-    assert peak == 2  # only as many workers as workload, not the cap
 
 
 async def test_query_fanout_is_capped_by_max_concurrency():

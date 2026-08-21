@@ -27,6 +27,7 @@ layer reads off ``RunDeps``.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -92,6 +93,37 @@ class ExternalPolicyStore:
                 .where(ExternalToolPolicy.source_id == source_id)
             ).all()
             return {r.tool_name: ToolPolicy(enabled=r.enabled, trusted=r.trusted) for r in rows}
+
+        return await in_session(self._db, work)
+
+    async def snapshots(
+        self, owner_id: str, source_kind: SourceKind, source_ids: Sequence[str]
+    ) -> dict[str, dict[str, ToolPolicy]]:
+        """:meth:`snapshot` for several sources at once, keyed by source id then tool name.
+        Sources with no recorded decision map to an empty dict, so a caller can index the
+        result unconditionally.
+
+        Listing connectors or MCP servers means one snapshot per row, and that listing sits
+        on the agent's toolset-assembly path — a query per row there is a query per row on
+        every run. The whole set is one ``IN``.
+        """
+        wanted = list(dict.fromkeys(source_ids))
+        if not wanted:
+            return {}
+
+        def work(session: Session) -> dict[str, dict[str, ToolPolicy]]:
+            rows = session.exec(
+                select(ExternalToolPolicy)
+                .where(ExternalToolPolicy.owner_id == owner_id)
+                .where(ExternalToolPolicy.source_kind == source_kind)
+                .where(ExternalToolPolicy.source_id.in_(wanted))  # type: ignore[attr-defined]
+            ).all()
+            by_source: dict[str, dict[str, ToolPolicy]] = {sid: {} for sid in wanted}
+            for r in rows:
+                by_source[r.source_id][r.tool_name] = ToolPolicy(
+                    enabled=r.enabled, trusted=r.trusted
+                )
+            return by_source
 
         return await in_session(self._db, work)
 

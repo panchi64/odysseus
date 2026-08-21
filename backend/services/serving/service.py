@@ -272,12 +272,18 @@ class ServingService:
         lock; the slow inputs were gathered by ``_headroom_inputs`` beforehand."""
         if usable is None or need_bytes is None:
             return
-        resident: list[tuple[str, int]] = []
-        for r in await self._store.list_rows(owner_id):
-            if r.state not in headroom.RESIDENT_STATES or r.hf_repo == repo or not r.artifact_path:
-                continue
-            size = await asyncio.to_thread(_artifact_bytes, Path(r.artifact_path))
-            resident.append((r.hf_repo, size))
+        candidates = [
+            (r.hf_repo, Path(r.artifact_path))
+            for r in await self._store.list_rows(owner_id)
+            if r.state in headroom.RESIDENT_STATES and r.hf_repo != repo and r.artifact_path
+        ]
+        # One thread hop for the whole snapshot rather than one per model. `_artifact_bytes`
+        # walks an MLX repo's entire directory tree, and this runs with the serve lock held:
+        # awaited in a loop, a few resident models turned "cheap fs stats" into a serialized
+        # queue of directory walks that every concurrent serve waited behind.
+        resident = await asyncio.to_thread(
+            lambda: [(repo_id, _artifact_bytes(path)) for repo_id, path in candidates]
+        )
         headroom.check(repo=repo, need_bytes=need_bytes, resident=resident, usable_budget=usable)
 
     # --- downloads --------------------------------------------------------

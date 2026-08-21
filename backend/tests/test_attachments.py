@@ -176,6 +176,53 @@ async def test_unknown_attachment_id_is_skipped():
     assert resolved.content == [] and resolved.persisted == [] and resolved.ids == []
 
 
+async def test_a_multi_file_turn_reads_the_store_a_fixed_number_of_times():
+    # Resolution used to call `get` (and, for an image, `content`) per attachment, each a
+    # thread hop into the DB — a four-file turn cost eight. The count must not scale with
+    # the number of files.
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    ids = [
+        await _insert_upload(engine, store._vault, mime="image/png", content=f"px{n}".encode())
+        for n in range(4)
+    ]
+    calls: list[str] = []
+    for name in ("get", "content", "get_many", "contents"):
+        original = getattr(store, name)
+
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls.append(_name)
+            return _original(*args, **kwargs)
+
+        setattr(store, name, counted)
+
+    resolved = await resolve_attachments(store, OWNER, ids, vision=True, inline_max_tokens=_BIG)
+
+    assert resolved.ids == ids  # order preserved, every file resolved
+    assert len(resolved.content) == 4
+    assert calls == ["get_many", "contents"]  # two reads, not two per file
+
+
+async def test_resolution_order_follows_the_request_not_the_database():
+    # The batch read returns rows in whatever order SQLite hands them back; the marker and
+    # the content list must still follow the order the operator attached them in.
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    ids = [
+        await _insert_upload(
+            engine, store._vault, mime="text/plain", text=f"file-{n}", content=f"c{n}".encode()
+        )
+        for n in range(3)
+    ]
+    reversed_ids = list(reversed(ids))
+
+    resolved = await resolve_attachments(
+        store, OWNER, reversed_ids, vision=False, inline_max_tokens=_BIG
+    )
+
+    assert resolved.ids == reversed_ids
+    body = "".join(p for p in resolved.content if isinstance(p, str))
+    assert body.index("file-2") < body.index("file-1") < body.index("file-0")
+
+
 # --- install_persisted_attachments: what the durable blob carries -----------
 
 

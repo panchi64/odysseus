@@ -128,6 +128,58 @@ async def test_include_selects_groups(tmp_path):
     assert set(payload["sections"]) == {"skills"}
 
 
+async def test_the_streamed_document_has_the_same_shape_every_entity_is_present(tmp_path):
+    # The payload is written straight into the gzip stream one entity at a time rather than
+    # assembled as a dict and dumped — which is only safe if the punctuation comes out
+    # right. Every marked entity must appear under its section, including the ones that
+    # exported no rows, because the importer looks tables up by name.
+    engine, vault, backup = await _host(tmp_path)
+    await _seed(engine, vault)
+
+    envelope, _ = await backup.export(OWNER, BACKUP_SECRET)
+    payload = json.loads(gzip.decompress(open_envelope(BACKUP_SECRET, envelope)))
+
+    assert set(payload) == {"created_at", "sections"}
+    expected: dict[str, set[str]] = {}
+    for entity in discover_entities():
+        expected.setdefault(entity.spec.section, set()).add(entity.name)
+    assert {s: set(tables) for s, tables in payload["sections"].items()} == expected
+    assert all(isinstance(rows, list) for t in payload["sections"].values() for rows in t.values())
+
+
+async def test_the_gzip_header_carries_no_second_timestamp(tmp_path):
+    # The document already stamps its own `created_at`; the container should not stamp a
+    # different one beside it, where nothing reads it and everything has to ignore it.
+    engine, vault, backup = await _host(tmp_path)
+    await _seed(engine, vault)
+
+    envelope, _ = await backup.export(OWNER, BACKUP_SECRET)
+
+    raw = open_envelope(BACKUP_SECRET, envelope)
+    assert raw[:2] == b"\x1f\x8b"  # gzip magic
+    assert raw[4:8] == b"\x00\x00\x00\x00"  # MTIME field, zeroed
+
+
+async def test_counting_a_group_does_not_read_its_rows(tmp_path):
+    # The backup screen's readout is a count, not an export: it must not load (and decrypt)
+    # every row the operator owns just to call `len` on the result.
+    engine, vault, backup = await _host(tmp_path)
+    await _seed(engine, vault)
+    loaded: list[str] = []
+    original = backup._rows
+
+    async def counted(entity, owner_id):
+        loaded.append(entity.name)
+        return await original(entity, owner_id)
+
+    backup._rows = counted
+
+    counts = {item.name: item.count for item in await backup.counts(OWNER)}
+
+    assert counts["memories"] == 2
+    assert loaded == []
+
+
 async def test_the_manifest_is_discovered_not_hardcoded():
     # Every group the export offers traces back to a `__backup__` marker on some entity.
     marked = {entity.spec.section for entity in discover_entities()}
