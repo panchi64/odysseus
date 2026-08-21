@@ -16,10 +16,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Engine, delete
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import in_session, upsert
 from models._fields import new_id, utcnow
 from models.approval_grant import ApprovalGrant
 
@@ -61,7 +60,7 @@ class ApprovalGrantStore:
             # IntegrityError, so push the conflict resolution into the DB — insert, or
             # refresh the existing row's expiry on conflict.
             stmt = (
-                sqlite_insert(ApprovalGrant)
+                upsert(self._db, ApprovalGrant)
                 .values(
                     id=new_id(),
                     owner_id=owner_id,

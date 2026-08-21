@@ -35,10 +35,9 @@ if TYPE_CHECKING:
     from services.mcp import McpRegistry
 
 from sqlalchemy import Engine, delete
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import in_session, upsert
 from core.exceptions import NotFoundError
 from core.vault import Vault
 from models._fields import new_id, utcnow
@@ -159,7 +158,7 @@ class ExternalPolicyStore:
             if trusted is not None:
                 updates["trusted"] = trusted
             session.execute(
-                sqlite_insert(ExternalToolPolicy)
+                upsert(self._db, ExternalToolPolicy)
                 .values(**values)
                 .on_conflict_do_update(
                     index_elements=["owner_id", "source_kind", "source_id", "tool_name"],

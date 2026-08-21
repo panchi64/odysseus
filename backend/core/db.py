@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 from weakref import WeakKeyDictionary
 
 from alembic import command
@@ -211,6 +211,31 @@ async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
             return _run()
 
     return await asyncio.to_thread(_run_guarded)
+
+
+def upsert(engine: Engine, model_cls: type) -> Any:
+    """An INSERT construct carrying ``on_conflict_do_update``, for this engine's dialect.
+
+    Atomic get-or-create needs the conflict resolution pushed into the database — a
+    select-then-insert races two concurrent callers into a duplicate-key IntegrityError.
+    The clause that does it is dialect-specific, and ``db_url`` is configurable, so
+    importing ``dialects.sqlite.insert`` directly silently hard-binds a store to SQLite
+    and fails at runtime on any other backend.
+
+    SQLite and PostgreSQL spell it the same way. Anything else raises here, naming the
+    dialect, rather than failing further in with a syntax error from the driver.
+    """
+    name = engine.dialect.name
+    if name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    elif name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        raise NotImplementedError(
+            f"upsert is not implemented for the {name!r} dialect "
+            "(ON CONFLICT DO UPDATE is SQLite/PostgreSQL syntax)"
+        )
+    return dialect_insert(model_cls)
 
 
 @contextmanager

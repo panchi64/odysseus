@@ -100,15 +100,15 @@ class UploadExtractor(Protocol):
 
 
 @dataclass
-class _ScannedPage:
+class ScannedPage:
     index: int
     native_text: str
     image: bytes | None  # JPEG bytes when the page needs OCR, else None
 
 
 @dataclass
-class _PdfScan:
-    pages: list[_ScannedPage] = field(default_factory=list)
+class PdfScan:
+    pages: list[ScannedPage] = field(default_factory=list)
     total_pages: int = 0
 
 
@@ -145,7 +145,7 @@ class BasicExtractor:
         return ExtractionResult(text="")
 
     async def _extract_pdf(self, owner_id: str, raw: bytes) -> ExtractionResult:
-        scan = await asyncio.to_thread(_scan_pdf, raw, self._max_pages)
+        scan = await asyncio.to_thread(scan_pdf, raw, self._max_pages)
         notes: list[str] = []
         skipped = scan.total_pages - len(scan.pages)
         if skipped > 0:
@@ -169,7 +169,7 @@ class BasicExtractor:
         )
 
     async def _ocr_pages(
-        self, owner_id: str, pages: list[_ScannedPage], out: dict[int, str]
+        self, owner_id: str, pages: list[ScannedPage], out: dict[int, str]
     ) -> tuple[bool, list[str]]:
         """OCR each scanned page into ``out`` (keyed by page index), resolving the
         vision model once for the whole document. Returns whether any page was read
@@ -193,14 +193,18 @@ class BasicExtractor:
         return read_any, notes
 
 
-def _scan_pdf(raw: bytes, max_pages: int) -> _PdfScan:
+def scan_pdf(raw: bytes, max_pages: int) -> PdfScan:
     """Open the PDF and, for each page up to ``max_pages``, pull embedded text and —
     when that text is sparse (a scanned page) — rasterize it to JPEG for OCR. Pure
-    CPU work; the caller runs it in a thread."""
+    CPU work; the caller runs it in a thread.
+
+    Public because uploads are not its only caller: ``services/webfetch/pdf.py`` reads a
+    fetched PDF through exactly this path, so the two agree on page limits and on what
+    counts as a scanned page."""
     pdf = pdfium.PdfDocument(raw)
     try:
         total = len(pdf)
-        scan = _PdfScan(total_pages=total)
+        scan = PdfScan(total_pages=total)
         for index in range(min(total, max_pages)):
             page = pdf[index]
             textpage = page.get_textpage()
@@ -208,7 +212,7 @@ def _scan_pdf(raw: bytes, max_pages: int) -> _PdfScan:
             textpage.close()
             image = _render_jpeg(page) if len(native) < _SPARSE_TEXT_THRESHOLD else None
             page.close()
-            scan.pages.append(_ScannedPage(index=index, native_text=native, image=image))
+            scan.pages.append(ScannedPage(index=index, native_text=native, image=image))
         return scan
     finally:
         pdf.close()
