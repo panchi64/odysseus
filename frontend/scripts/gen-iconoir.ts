@@ -9,13 +9,17 @@
  *
  * This is the on-demand pull mechanism: add `registryName: "iconoir-name"` to MAP,
  * run `bun run scripts/gen-iconoir.ts`, and paste the printed entries into the
- * registry. Iconoir is a devDependency (extraction source), not shipped at runtime —
- * only the inlined markup is.
+ * registry. Only the inlined markup ships. Iconoir is deliberately *not* a
+ * dependency — it was an ~700 KB devDependency serving a generator that runs a
+ * few times a year, so the set is fetched here instead. That makes this script
+ * (and only this script) need network access.
  *
  * Redundant per-element attributes (fill/stroke/stroke-*) are stripped so the
  * primitive's uniform values win, matching the hand-rolled entries' style.
  */
-import icons from "@iconify-json/iconoir/icons.json" with { type: "json" };
+export {}; // Nothing is exported; this marks the file a module so top-level await type-checks.
+
+const ICONS_URL = "https://cdn.jsdelivr.net/npm/@iconify-json/iconoir@1/icons.json";
 
 /** registry IconName → Iconoir icon name. Bespoke HUD glyphs are omitted (kept hand-rolled). */
 const MAP: Record<string, string> = {
@@ -73,7 +77,13 @@ const MAP: Record<string, string> = {
 
 const STRIP = /\s(?:fill|stroke|stroke-width|stroke-linecap|stroke-linejoin)="[^"]*"/g;
 
-const set = icons as { icons: Record<string, { body: string }> };
+const response = await fetch(ICONS_URL);
+if (!response.ok) {
+  throw new Error(
+    `could not fetch Iconoir: ${response.status} ${response.statusText} — ${ICONS_URL}`,
+  );
+}
+const set = (await response.json()) as { icons: Record<string, { body: string }> };
 
 for (const [name, iconoir] of Object.entries(MAP)) {
   const icon = set.icons[iconoir];

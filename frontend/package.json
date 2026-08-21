@@ -7,13 +7,14 @@
     "start": "vite start",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . && prettier --check \"src/**/*.{ts,tsx,css}\"",
+    "lint": "bun run --parallel --no-exit-on-error \"lint:*\"",
+    "lint:es": "eslint .",
+    "lint:fmt": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "build:fonts": "python3 scripts/build-mono-font.py",
-    "postinstall": "node scripts/copy-pyodide.mjs"
+    "postinstall": "bun scripts/copy-pyodide.mjs"
   },
   "dependencies": {
-    "@fontsource/oswald": "^5.3.0",
     "@solidjs/router": "^0.15.4",
     "@solidjs/start": "2.0.0-alpha.2",
     "@solidjs/vite-plugin-nitro-2": "^0.1.0",
@@ -28,7 +29,6 @@
     "vite": "^7.3.6"
   },
   "devDependencies": {
-    "@iconify-json/iconoir": "^1.2.11",
     "@tailwindcss/vite": "^4.3.3",
     "@types/katex": "^0.16.8",
     "eslint": "^9.39.5",
