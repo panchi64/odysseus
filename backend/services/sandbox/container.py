@@ -32,7 +32,7 @@ import httpx
 
 from core import net
 
-from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec
+from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec, contained_path
 
 logger = logging.getLogger(__name__)
 
@@ -482,9 +482,7 @@ class ContainerSandbox(Sandbox):
     @staticmethod
     def _write_inputs(mount: Path, spec: SandboxSpec) -> None:
         for f in spec.files:
-            target = (mount / f.path).resolve()
-            if not target.is_relative_to(mount.resolve()):  # no ../ escape from the box
-                raise SandboxError(f"input path escapes the sandbox: {f.path!r}")
+            target = contained_path(mount, f.path, what="input path")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(f.content)
 
@@ -492,7 +490,10 @@ class ContainerSandbox(Sandbox):
     def _read_outputs(mount: Path, spec: SandboxSpec) -> dict[str, bytes]:
         outputs: dict[str, bytes] = {}
         for name in spec.outputs:
-            path = (mount / name).resolve()
-            if path.is_relative_to(mount.resolve()) and path.is_file():
+            # Raises on an escape rather than skipping it. This site used to drop such
+            # a name silently, which reported a traversal attempt as "the file wasn't
+            # produced" — indistinguishable from an ordinary miss.
+            path = contained_path(mount, name, what="output path")
+            if path.is_file():
                 outputs[name] = path.read_bytes()
         return outputs

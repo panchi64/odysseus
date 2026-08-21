@@ -36,7 +36,7 @@ from pathlib import Path
 
 from core.vault import Vault
 
-from .base import SandboxError, SandboxResult, SandboxSpec
+from .base import SandboxError, SandboxResult, SandboxSpec, contained_path
 from .container import (
     _BACKSTOP_GRACE_S,
     IMAGE_PULL_TIMEOUT_S,
@@ -295,9 +295,7 @@ class SandboxSession:
         """Read a file the agent produced in this session's workspace, restoring
         from the sealed copy if the session was reaped. Guards against escape."""
         self._ensure_workspace()
-        target = (self.workspace / relpath).resolve()
-        if not target.is_relative_to(self.workspace.resolve()):
-            raise SandboxError(f"path escapes the sandbox workspace: {relpath!r}")
+        target = contained_path(self.workspace, relpath)
         if not target.is_file():
             raise SandboxError(f"no such file in the sandbox: {relpath!r}")
         return target.read_bytes()
@@ -309,9 +307,7 @@ class SandboxSession:
         survives a reap (it's inside the sealed workspace). Guards against escape —
         the same invariant as :meth:`read_file`, in reverse."""
         self._ensure_workspace()
-        target = (self.workspace / relpath).resolve()
-        if not target.is_relative_to(self.workspace.resolve()):
-            raise SandboxError(f"path escapes the sandbox workspace: {relpath!r}")
+        target = contained_path(self.workspace, relpath)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         self.touch()
