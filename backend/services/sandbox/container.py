@@ -28,8 +28,6 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-import httpx
-
 from core import net
 
 from .base import Sandbox, SandboxError, SandboxResult, SandboxSpec, contained_path
@@ -185,21 +183,9 @@ async def await_http_serving(
     ``/`` while the iframe loads the entry path, so a 404 at the root still means "up".
     Each request and the polling sleep are bounded by the remaining budget, so the call
     never overshoots ``timeout_s`` even when a probe hangs."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    url = f"http://127.0.0.1:{host_port}/"
-    async with httpx.AsyncClient() as client:
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return
-            try:
-                resp = await client.get(url, timeout=min(remaining, 2.0))
-                if resp.status_code < 500:
-                    return
-            except httpx.HTTPError:
-                pass  # not answering yet — keep polling within the budget
-            await asyncio.sleep(min(poll_interval_s, max(deadline - loop.time(), 0.0)))
+    await net.await_http_ready(
+        f"http://127.0.0.1:{host_port}/", timeout_s, poll_interval_s=poll_interval_s
+    )
 
 
 # Workspace-relative dirs the env defaults point at, created host-side before a

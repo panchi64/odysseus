@@ -178,6 +178,47 @@ async def test_stop_disables_endpoint_and_keeps_the_row(tmp_path: Path):
         await service.shutdown()
 
 
+async def test_stop_completes_and_logs_when_the_endpoint_write_fails(tmp_path, caplog):
+    # Standing an endpoint down is best-effort on every teardown path: the engine is
+    # already gone, and a failed write must not leave the row claiming to be running.
+    # It must also not be silent — the six copies of this block disagreed, four
+    # swallowing only NotFoundError and two swallowing everything without a word.
+    service, registry = await _service(tmp_path)
+    try:
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
+        view = await _wait_settled(service, started.id)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("the database went away")
+
+        registry.update_endpoint = boom
+        with caplog.at_level("ERROR"):
+            stopped = await service.stop(OWNER, view.id)
+
+        assert stopped.state == ServeState.stopped and stopped.port is None
+        assert any("could not mark endpoint" in r.message for r in caplog.records)
+    finally:
+        await service.shutdown()
+
+
+async def test_stop_is_quiet_when_the_endpoint_is_already_gone(tmp_path, caplog):
+    # An endpoint deleted out from under a teardown is ordinary, not an error worth
+    # logging — the row it belonged to is on its way to `stopped` either way.
+    service, registry = await _service(tmp_path)
+    try:
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
+        view = await _wait_settled(service, started.id)
+        await registry.delete_endpoint(OWNER, view.endpoint_id)
+
+        with caplog.at_level("ERROR"):
+            stopped = await service.stop(OWNER, view.id)
+
+        assert stopped.state == ServeState.stopped
+        assert not [r for r in caplog.records if "could not mark endpoint" in r.message]
+    finally:
+        await service.shutdown()
+
+
 async def test_delete_removes_endpoint_and_prunes_role(tmp_path: Path):
     service, registry = await _service(tmp_path)
     try:

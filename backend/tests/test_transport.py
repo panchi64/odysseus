@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
+import core.sse as sse
 import runs.transport as transport
 from runs.events import AnswerDelta
 from runs.run import Run
@@ -12,7 +13,7 @@ from runs.stream import RunStream
 
 
 async def test_keepalive_ping_during_quiet_gap(monkeypatch):
-    monkeypatch.setattr(transport, "_KEEPALIVE_INTERVAL_S", 0.02)
+    monkeypatch.setattr(sse, "KEEPALIVE_INTERVAL_S", 0.02)
     run = Run(id="r1", kind="chat", owner_id="operator", stream=RunStream())
     run.emit(AnswerDelta(text="hi"))  # one buffered event, then quiet
 
@@ -31,7 +32,7 @@ async def test_keepalive_ping_during_quiet_gap(monkeypatch):
 
 
 async def test_terminal_run_replays_then_ends(monkeypatch):
-    monkeypatch.setattr(transport, "_KEEPALIVE_INTERVAL_S", 0.02)
+    monkeypatch.setattr(sse, "KEEPALIVE_INTERVAL_S", 0.02)
     run = Run(id="r2", kind="chat", owner_id="operator", stream=RunStream())
     run.emit(AnswerDelta(text="done"))
     run.stream.close()

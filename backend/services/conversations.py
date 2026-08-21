@@ -43,7 +43,7 @@ import logging
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
@@ -73,6 +73,18 @@ logger = logging.getLogger(__name__)
 # working set is the handful of threads actually being read or written, and a miss
 # costs one rehydrate from the database, not an error.
 _DEFAULT_MAX_CACHED_CONVERSATIONS = 64
+
+# The two reductions a thread can independently opt in or out of. ``tool_results``
+# condenses individual tool outputs; ``turns`` folds whole turns into a summary once the
+# context window fills. They are separate switches because a thread can reasonably want
+# full-fidelity tool output *and* aggressive turn folding, or the reverse — but reading
+# and writing the preference is the same work either way, so it is one pair of methods
+# taking the kind rather than two pairs differing only in a column name.
+CompactionKind = Literal["tool_results", "turns"]
+_OVERRIDE_COLUMN: dict[CompactionKind, str] = {
+    "tool_results": "compaction_override",
+    "turns": "auto_compact_override",
+}
 
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
@@ -1003,52 +1015,32 @@ class ConversationStore:
 
         return await in_session(self._engine, work)
 
-    async def get_compaction_override(self, conversation_id: str) -> bool | None:
-        """This conversation's tool-result compaction override — ``None`` inherits the
-        operator default, ``True``/``False`` force it on/off for this thread."""
+    async def get_compaction_override(
+        self, conversation_id: str, kind: CompactionKind
+    ) -> bool | None:
+        """This conversation's override for one of the two compaction reductions —
+        ``None`` inherits the operator default, ``True``/``False`` force it on/off for
+        this thread."""
+        column = _OVERRIDE_COLUMN[kind]
 
         def work(session: Session) -> bool | None:
             conversation = session.get(Conversation, conversation_id)
-            return conversation.compaction_override if conversation is not None else None
+            return getattr(conversation, column) if conversation is not None else None
 
         return await in_session(self._engine, work)
 
     async def set_compaction_override(
-        self, conversation_id: str, override: bool | None
+        self, conversation_id: str, kind: CompactionKind, override: bool | None
     ) -> None:
-        """Set (or clear, with ``None``) this conversation's compaction override. A quiet
-        preference, so it deliberately does not bump ``updated_at`` (it isn't activity)."""
+        """Set (or clear, with ``None``) one of this conversation's compaction overrides.
+        A quiet preference, so it deliberately does not bump ``updated_at`` (it isn't
+        activity)."""
+        column = _OVERRIDE_COLUMN[kind]
 
         def work(session: Session) -> None:
             conversation = session.get(Conversation, conversation_id)
             if conversation is not None:
-                conversation.compaction_override = override
-
-        await in_session(self._engine, work)
-
-    async def get_auto_compact_override(self, conversation_id: str) -> bool | None:
-        """This conversation's *conversation*-compaction override (folding older turns into
-        a summary) — ``None`` inherits the operator default, ``True``/``False`` force it
-        on/off. Separate from ``get_compaction_override``, which governs tool-result
-        compaction: a thread can want full-fidelity tool output and aggressive turn folding,
-        or the reverse."""
-
-        def work(session: Session) -> bool | None:
-            conversation = session.get(Conversation, conversation_id)
-            return conversation.auto_compact_override if conversation is not None else None
-
-        return await in_session(self._engine, work)
-
-    async def set_auto_compact_override(
-        self, conversation_id: str, override: bool | None
-    ) -> None:
-        """Set (or clear, with ``None``) this conversation's auto-compaction override. Like
-        its tool-result peer, a quiet preference — it doesn't bump ``updated_at``."""
-
-        def work(session: Session) -> None:
-            conversation = session.get(Conversation, conversation_id)
-            if conversation is not None:
-                conversation.auto_compact_override = override
+                setattr(conversation, column, override)
 
         await in_session(self._engine, work)
 

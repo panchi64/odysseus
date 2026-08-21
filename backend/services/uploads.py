@@ -32,7 +32,7 @@ from sqlalchemy import Engine, func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import get_owned, in_session
 from core.exceptions import NotFoundError
 from core.vault import Vault, VaultLocked
 from core.worker import WriteBehindWorker
@@ -544,17 +544,6 @@ class UploadStore:
 
         return await in_session(self._engine, work)
 
-    async def owns(self, owner_id: str, upload_id: str) -> bool:
-        """Whether ``upload_id`` names an upload owned by ``owner_id`` — a cheap existence
-        check that decrypts nothing (unlike ``get``, which opens the sealed filename and
-        the whole extracted text). The chat route validates attachment ids with this."""
-
-        def work(session: Session) -> bool:
-            upload = session.get(Upload, upload_id)
-            return upload is not None and upload.owner_id == owner_id
-
-        return await in_session(self._engine, work)
-
     async def owned_ids(self, owner_id: str, ids: list[str]) -> set[str]:
         """Which of ``ids`` name uploads this owner has — the batch form of :meth:`owns`,
         decrypting nothing. The chat route validates a turn's whole attachment list with
@@ -575,8 +564,7 @@ class UploadStore:
         return await in_session(self._engine, work)
 
     async def _require(self, owner_id: str, upload_id: str) -> None:
-        if not await self.owns(owner_id, upload_id):
-            raise NotFoundError(f"upload {upload_id!r} not found")
+        await get_owned(self._engine, Upload, upload_id, owner_id, what="upload")
 
     def _view_from_row(self, upload: Upload) -> UploadView:
         text = (

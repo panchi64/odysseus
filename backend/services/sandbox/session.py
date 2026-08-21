@@ -61,10 +61,47 @@ _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 # no longer serial, so unrelated conversations aren't stalled behind one another.
 _SWEEP_SEAL_CONCURRENCY = 3
 
+# How many times one `run` will bring the container up and exec. Two: the first attempt,
+# and one rebuild-and-retry after a fault in the runtime itself. A third would be waiting
+# out a container runtime that is genuinely broken, on the agent's clock.
+_RUNTIME_FAULT_ATTEMPTS = 2
+
 
 def _safe_key(key: str) -> str:
     """A container/dir-safe token for a conversation id (leading char guaranteed)."""
     return "s" + _SAFE.sub("-", key)
+
+
+async def _start_idle_container(
+    backend: ContainerSandbox, runtime: str, name: str, workspace: Path
+) -> bytes | None:
+    """Start one hardened, idle container over ``workspace``, kept alive with
+    ``sleep infinity`` so later ``exec`` calls have something to land on. Returns ``None``
+    on success, or the runtime's stderr on failure.
+
+    Both callers come through here — a conversation's own container and a pre-warmed
+    spare — because these flags *are* the sandbox's containment: no network, a memory and
+    CPU cap, a pid limit, and exactly one bind mount. Spelled out per call site, that set
+    has two places to drift, and a spare that came up softer than a session's container is
+    a hole no test would notice.
+    """
+    argv = detached_run_argv(
+        runtime,
+        name,
+        hardened_flags(
+            network=False,
+            memory=backend.memory,
+            cpus=backend.cpus,
+            pids_limit=backend.pids_limit,
+            workdir=backend.workdir,
+            mount=workspace,
+            env={},
+        ),
+        backend.image,
+        ["sleep", "infinity"],
+    )
+    _timed_out, code, _out, err = await run_subprocess(argv, timeout_s=60.0)
+    return None if code == 0 else err
 
 
 class ImageWarmup:
@@ -249,32 +286,30 @@ class SandboxSession:
             # race the much shorter exec timeout on a genuinely cold boot (sandbox-01).
             await self._await_image_ready()
             return await self._backend.run_in(self.workspace, spec)
-        await self._ensure_up()
-        result = await self._exec_once(spec)
-        fault = runtime_fault_line(result.exit_code, result.stdout, result.stderr)
-        if fault is None:
-            return result
-        # The exec failed in the runtime itself (dead/broken container, daemon
-        # hiccup, stale workdir mount) — not in the code it was asked to run. The
-        # workspace holds all durable state and the container is disposable, so
-        # rebuild it and retry once rather than reporting the fault to the model
-        # as if its code had failed (an error it can only flail at).
-        logger.warning(
-            "sandbox %s: exec hit a runtime fault (%s); rebuilding the container",
-            self.key,
-            fault,
-        )
-        await self._kill()
-        self._running = False
-        await self._ensure_up()
-        result = await self._exec_once(spec)
-        fault = runtime_fault_line(result.exit_code, result.stdout, result.stderr)
-        if fault is not None:
-            raise SandboxError(
-                f"the container runtime failed to execute the code even after a "
-                f"container rebuild: {fault}"
+        # Two attempts, because a fault in the *runtime* (dead/broken container, daemon
+        # hiccup, stale workdir mount) is not a fault in the code the model asked to run.
+        # The workspace holds all durable state and the container is disposable, so a
+        # rebuild-and-retry is cheap — and reporting a runtime fault to the model as if
+        # its code had failed gives it an error it can only flail at.
+        for attempt in range(_RUNTIME_FAULT_ATTEMPTS):
+            await self._ensure_up()
+            result = await self._exec_once(spec)
+            fault = runtime_fault_line(result.exit_code, result.stdout, result.stderr)
+            if fault is None:
+                return result
+            if attempt == _RUNTIME_FAULT_ATTEMPTS - 1:
+                raise SandboxError(
+                    f"the container runtime failed to execute the code even after a "
+                    f"container rebuild: {fault}"
+                )
+            logger.warning(
+                "sandbox %s: exec hit a runtime fault (%s); rebuilding the container",
+                self.key,
+                fault,
             )
-        return result
+            await self._kill()
+            self._running = False
+        raise AssertionError("unreachable")  # the loop always returns or raises
 
     async def _exec_once(self, spec: SandboxSpec) -> SandboxResult:
         backstop_timed_out, code, out, err = await run_subprocess(
@@ -456,23 +491,10 @@ class SandboxSession:
             raise SandboxError("no container runtime available")
         await self._await_image_ready()
         await self._kill_quietly(runtime)  # clear any stale same-named container
-        argv = detached_run_argv(
-            runtime,
-            self.container,
-            hardened_flags(
-                network=False,
-                memory=self._backend.memory,
-                cpus=self._backend.cpus,
-                pids_limit=self._backend.pids_limit,
-                workdir=self._backend.workdir,
-                mount=self.workspace,
-                env={},
-            ),
-            self._backend.image,
-            ["sleep", "infinity"],  # keep the container alive between exec calls
+        err = await _start_idle_container(
+            self._backend, runtime, self.container, self.workspace
         )
-        _timed_out, code, _out, err = await run_subprocess(argv, timeout_s=60.0)
-        if code != 0:
+        if err is not None:
             raise SandboxError(f"failed to start sandbox session: {err.decode('utf-8', 'replace')}")
         self._runtime = runtime
         self._running = True
@@ -834,23 +856,8 @@ class SandboxSessionManager:
         workspace = self._work_root / f"_spare-{self._spare_seq}-{token}"
         workspace.mkdir(parents=True, exist_ok=True)
         prepare_workspace(workspace)
-        argv = detached_run_argv(
-            runtime,
-            name,
-            hardened_flags(
-                network=False,
-                memory=self._backend.memory,
-                cpus=self._backend.cpus,
-                pids_limit=self._backend.pids_limit,
-                workdir=self._backend.workdir,
-                mount=workspace,
-                env={},
-            ),
-            self._backend.image,
-            ["sleep", "infinity"],
-        )
-        _timed_out, code, _out, err = await run_subprocess(argv, timeout_s=60.0)
-        if code != 0:
+        err = await _start_idle_container(self._backend, runtime, name, workspace)
+        if err is not None:
             shutil.rmtree(workspace, ignore_errors=True)
             raise SandboxError(
                 f"failed to pre-warm a spare container: {err.decode('utf-8', 'replace')}"

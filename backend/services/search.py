@@ -26,8 +26,8 @@ import httpx
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.db import get_owned, in_session
+from core.exceptions import DegradedCapabilityError
 from core.untrusted import untrusted_fence, untrusted_preamble
 from core.vault import Vault
 from models.search import SearchProvider
@@ -110,14 +110,9 @@ class SearchService:
         return await in_session(self._engine, work)
 
     async def get_provider(self, owner_id: str, provider_id: str) -> SearchProvider:
-        def work(session: Session) -> SearchProvider | None:
-            provider = session.get(SearchProvider, provider_id)
-            return provider if provider is not None and provider.owner_id == owner_id else None
-
-        provider = await in_session(self._engine, work)
-        if provider is None:
-            raise NotFoundError(f"search provider {provider_id!r} not found")
-        return provider
+        return await get_owned(
+            self._engine, SearchProvider, provider_id, owner_id, what="search provider"
+        )
 
     async def create_provider(
         self,

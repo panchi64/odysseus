@@ -31,8 +31,8 @@ import numpy as np
 from sqlalchemy import Engine, func, or_
 from sqlmodel import Session, select
 
-from core.db import in_session
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.db import get_owned, in_session
+from core.exceptions import DegradedCapabilityError
 from core.vault import Vault
 from models.memory import Memory
 from services.embeddings import (
@@ -322,14 +322,7 @@ class MemoryStore:
         return groups
 
     async def _require(self, owner_id: str, memory_id: str) -> Memory:
-        def work(session: Session) -> Memory | None:
-            memory = session.get(Memory, memory_id)
-            return memory if memory is not None and memory.owner_id == owner_id else None
-
-        memory = await in_session(self._engine, work)
-        if memory is None:
-            raise NotFoundError(f"memory {memory_id!r} not found")
-        return memory
+        return await get_owned(self._engine, Memory, memory_id, owner_id, what="memory")
 
     @staticmethod
     def _to_view(memory: Memory, content: str) -> MemoryView:

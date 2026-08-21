@@ -372,7 +372,9 @@ async def _resolve_compaction(
     cs = await get_compaction(deps.settings_store(request), OPERATOR_ID)
     enabled = cs.enabled
     if conversation_id is not None:
-        override = await deps.store(request).get_compaction_override(conversation_id)
+        override = await deps.store(request).get_compaction_override(
+            conversation_id, "tool_results"
+        )
         enabled = resolve_compaction_enabled(override, cs.enabled)
     return build_compaction_context(
         get_settings(),
@@ -390,7 +392,7 @@ async def _resolve_auto_compact(
     default, which beats the config default — resolved here rather than in the engine so
     the orchestrator never reads the settings store itself."""
     override = (
-        await deps.store(request).get_auto_compact_override(conversation_id)
+        await deps.store(request).get_compaction_override(conversation_id, "turns")
         if conversation_id is not None
         else None
     )

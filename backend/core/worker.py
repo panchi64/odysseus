@@ -24,6 +24,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
+from core.backoff import backoff_delay
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,4 +131,4 @@ class WriteBehindWorker[T]:
                     if self._on_drop is not None:
                         self._on_drop(item, exc)
                     return
-                await asyncio.sleep(self._base_backoff_s * 2 ** (attempt - 1))
+                await asyncio.sleep(backoff_delay(self._base_backoff_s, attempt))

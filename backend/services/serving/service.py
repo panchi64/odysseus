@@ -304,11 +304,7 @@ class ServingService:
         # tear down any in-flight serve/engine for this model and mark its endpoint
         # not-running first, then reset the row to a clean downloading state.
         await self._halt(owner_id, row.id)
-        if row.endpoint_id:
-            with suppress(NotFoundError):
-                await self._registry.update_endpoint(
-                    owner_id, row.endpoint_id, live_status="stopped"
-                )
+        await self._mark_endpoint_stopped(owner_id, row.endpoint_id)
         await self._store.update(
             row.id, state=ServeState.downloading, last_error=None, port=None, pid=None
         )
@@ -355,11 +351,7 @@ class ServingService:
         existing = await self._store.find(owner_id, engine, display)
         if existing is not None:
             await self._halt(owner_id, existing.id)
-            if existing.endpoint_id:
-                with suppress(NotFoundError):
-                    await self._registry.update_endpoint(
-                        owner_id, existing.endpoint_id, live_status="stopped"
-                    )
+            await self._mark_endpoint_stopped(owner_id, existing.endpoint_id)
         row = await self._store.get_or_create(
             owner_id,
             engine,
@@ -565,11 +557,8 @@ class ServingService:
             managed_id, state=ServeState.error, last_error=message, port=None, pid=None
         )
         row = await self._store.get(managed_id)
-        if row is not None and row.endpoint_id:
-            with suppress(Exception):
-                await self._registry.update_endpoint(
-                    row.owner_id, row.endpoint_id, live_status="stopped"
-                )
+        if row is not None:
+            await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
 
     # --- the starting stage (in-memory, like download progress) -----------
 
@@ -711,16 +700,30 @@ class ServingService:
         await self._downloads.cancel(managed_id)
         await self._supervisor.stop(managed_id)
 
+    async def _mark_endpoint_stopped(self, owner_id: str, endpoint_id: str | None) -> None:
+        """Stand an endpoint's *liveness* down, if the model has one.
+
+        Liveness only — the operator's own ``enabled`` switch is never touched by the
+        serving lifecycle. Six paths end this way (stop, delete-and-replace, re-download,
+        a crash, a failed serve, startup reconcile) and every one of them is mid-teardown
+        with nothing useful to do about a write that fails, so this never raises. An
+        endpoint deleted out from under us is ordinary and silent; anything else is
+        logged rather than swallowed, which is what the scattered copies of this block
+        disagreed about — four suppressed ``NotFoundError``, two suppressed everything.
+        """
+        if not endpoint_id:
+            return
+        try:
+            await self._registry.update_endpoint(owner_id, endpoint_id, live_status="stopped")
+        except NotFoundError:
+            pass
+        except Exception:
+            logger.exception("serving: could not mark endpoint %s stopped", endpoint_id)
+
     async def stop(self, owner_id: str, managed_id: str) -> ManagedModelView:
         row = await self._store.get_owned(owner_id, managed_id)
         await self._halt(owner_id, managed_id)
-        if row.endpoint_id:
-            with suppress(NotFoundError):
-                # Liveness only — the operator's own `enabled` switch is never
-                # touched by the serving lifecycle.
-                await self._registry.update_endpoint(
-                    owner_id, row.endpoint_id, live_status="stopped"
-                )
+        await self._mark_endpoint_stopped(owner_id, row.endpoint_id)
         await self._store.update(managed_id, state=ServeState.stopped, port=None, pid=None)
         refreshed = await self._store.get(managed_id)
         return self._store.to_view(refreshed or row)
@@ -748,11 +751,8 @@ class ServingService:
                 last_error=f"the engine exited unexpectedly (code {returncode})",
             )
             row = await self._store.get(managed_id)
-            if row and row.endpoint_id:
-                with suppress(NotFoundError):
-                    await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, live_status="stopped"
-                    )
+            if row:
+                await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
 
         return on_crash
 
@@ -902,11 +902,7 @@ class ServingService:
                 self._supervisor.terminate_orphan(row.pid)
             with suppress(Exception):
                 await self._store.update(row.id, state=ServeState.stopped, port=None, pid=None)
-            if row.endpoint_id:
-                with suppress(Exception):
-                    await self._registry.update_endpoint(
-                        row.owner_id, row.endpoint_id, live_status="stopped"
-                    )
+            await self._mark_endpoint_stopped(row.owner_id, row.endpoint_id)
         if rows:
             logger.info("serving: reconciled %d managed model(s) to stopped", len(rows))
         # Then the endpoints themselves, independently of the rows. A row that reached a

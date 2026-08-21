@@ -26,7 +26,7 @@ from pydantic_ai.settings import ModelSettings
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from core.db import in_session
+from core.db import get_owned, in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
@@ -90,14 +90,9 @@ class ModelRegistry:
         return await in_session(self._engine, work)
 
     async def get_endpoint(self, owner_id: str, endpoint_id: str) -> ModelEndpoint:
-        def work(session: Session) -> ModelEndpoint | None:
-            endpoint = session.get(ModelEndpoint, endpoint_id)
-            return endpoint if endpoint is not None and endpoint.owner_id == owner_id else None
-
-        endpoint = await in_session(self._engine, work)
-        if endpoint is None:
-            raise NotFoundError(f"endpoint {endpoint_id!r} not found")
-        return endpoint
+        return await get_owned(
+            self._engine, ModelEndpoint, endpoint_id, owner_id, what="endpoint"
+        )
 
     async def create_endpoint(
         self,

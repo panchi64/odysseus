@@ -28,7 +28,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from core.exceptions import SchemaMigrationError
+from core.exceptions import NotFoundError, SchemaMigrationError
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +211,29 @@ async def in_session[T](engine: Engine, work: Callable[[Session], T]) -> T:
             return _run()
 
     return await asyncio.to_thread(_run_guarded)
+
+
+async def get_owned[M](
+    engine: Engine, model_cls: type[M], row_id: str, owner_id: str, *, what: str
+) -> M:
+    """The row ``row_id`` names, provided ``owner_id`` owns it. Raises ``NotFoundError``
+    otherwise, naming ``what`` (``"endpoint"``, ``"memory"``, …) in the message.
+
+    Every owner-scoped store had its own copy of this three-line read. It is the boundary
+    check on nearly every single-row lookup in the app, and it is worth having exactly one
+    of: notably, "you don't own it" and "it doesn't exist" must answer identically —
+    distinguishing them tells a caller that an id it guessed is real, which is the leak
+    the ownership check exists to prevent.
+    """
+
+    def work(session: Session) -> M | None:
+        row = session.get(model_cls, row_id)
+        return row if row is not None and row.owner_id == owner_id else None  # type: ignore[attr-defined]
+
+    row = await in_session(engine, work)
+    if row is None:
+        raise NotFoundError(f"{what} {row_id!r} not found")
+    return row
 
 
 def upsert(engine: Engine, model_cls: type) -> Any:

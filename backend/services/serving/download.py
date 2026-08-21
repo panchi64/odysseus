@@ -27,6 +27,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.backoff import backoff_delay
 from core.vault import Vault
 
 from .models import DownloadProgress, ServeState
@@ -189,7 +190,7 @@ class DownloadManager:
             except DownloadFailed:
                 if attempt >= self._max_attempts:
                     raise
-                await asyncio.sleep(self._base_backoff_s * 2 ** (attempt - 1))
+                await asyncio.sleep(backoff_delay(self._base_backoff_s, attempt))
 
     async def _run_once(self, job: _Job, dest: Path, spec: DownloadSpec) -> Path:
         try:
