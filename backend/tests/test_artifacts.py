@@ -51,10 +51,64 @@ async def test_content_is_encrypted_at_rest(tmp_path):
     await vault.setup("pw")
     store = ArtifactStore(engine, vault)
 
-    view = await store.publish("operator", "conv-1", filename="s.txt", content=b"SECRET-XYZ")
+    view = await store.publish(
+        "operator",
+        "conv-1",
+        filename="q3-layoffs.txt",
+        content=b"SECRET-XYZ",
+        title="Q3 layoffs",
+    )
     with Session(engine) as session:
         row = session.exec(select(Artifact).where(Artifact.id == view.id)).one()
     assert b"SECRET-XYZ" not in row.blob_enc  # raw bytes on disk are ciphertext
+    # The title and the filename are content too — a filename says as much about the
+    # operator as the document it names — so neither survives in the clear.
+    assert row.title is None and row.filename is None
+    assert "layoffs" not in (row.title_enc or "")
+    assert "layoffs" not in (row.filename_enc or "")
+    # ...and they still read back through the store.
+    assert view.title == "Q3 layoffs"
+    assert view.filename == "q3-layoffs.txt"
+
+
+async def test_legacy_cleartext_rows_still_read_until_the_backfill_seals_them(tmp_path):
+    # A database written before these columns were sealed must read correctly from the
+    # first request — the backfill runs after unlock, not during the migration.
+    from sqlmodel import Session, select
+
+    from models.artifact import Artifact
+    from services.sealing import seal_legacy_column
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "k.json")
+    await vault.setup("pw")
+    store = ArtifactStore(engine, vault)
+
+    view = await store.publish("operator", "conv-1", filename="f.txt", content=b"x")
+    with Session(engine) as session:  # rewind this row to its pre-sealing shape
+        row = session.exec(select(Artifact).where(Artifact.id == view.id)).one()
+        row.title, row.filename = "Old Title", "old.txt"
+        row.title_enc = row.filename_enc = None
+        session.add(row)
+        session.commit()
+
+    blob = await store.content("operator", view.id)
+    assert blob.filename == "old.txt"  # reads through the legacy column
+
+    for legacy, sealed in (("title", "title_enc"), ("filename", "filename_enc")):
+        await seal_legacy_column(
+            engine=engine,
+            vault=vault,
+            model_cls=Artifact,
+            legacy_attr=legacy,
+            sealed_attr=sealed,
+        )
+
+    with Session(engine) as session:
+        healed = session.exec(select(Artifact).where(Artifact.id == view.id)).one()
+    assert healed.title is None and healed.filename is None  # cleartext is gone
+    assert (await store.content("operator", view.id)).filename == "old.txt"
 
 
 # --- REST surface ------------------------------------------------------------

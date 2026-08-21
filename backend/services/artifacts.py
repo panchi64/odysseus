@@ -24,6 +24,7 @@ from core.db import in_session
 from core.exceptions import NotFoundError
 from core.vault import Vault
 from models.artifact import Artifact
+from services.sealing import open_sealed
 
 
 def guess_content_type(filename: str) -> str:
@@ -86,8 +87,8 @@ class ArtifactStore:
             owner_id=owner_id,
             conversation_id=conversation_id,
             run_id=run_id,
-            title=title or filename,
-            filename=filename,
+            title_enc=self._vault.encrypt_str(title or filename),
+            filename_enc=self._vault.encrypt_str(filename),
             content_type=ctype,
             kind=_kind(ctype),
             size=len(content),
@@ -97,7 +98,7 @@ class ArtifactStore:
         def work(session: Session) -> ArtifactView:
             session.add(artifact)
             session.flush()
-            return _to_view(artifact)
+            return self._to_view(artifact)
 
         return await in_session(self._engine, work)
 
@@ -105,7 +106,7 @@ class ArtifactStore:
         def work(session: Session) -> ArtifactBlob:
             row = self._require(session, owner_id, artifact_id)
             return ArtifactBlob(
-                filename=row.filename,
+                filename=self._filename(row),
                 content_type=row.content_type,
                 content=self._vault.decrypt_bytes(row.blob_enc),
             )
@@ -119,15 +120,19 @@ class ArtifactStore:
             raise NotFoundError(f"artifact {artifact_id!r} not found")
         return row
 
+    def _filename(self, row: Artifact) -> str:
+        # `or ""` covers only the impossible row where both columns are null; every
+        # real row has one or the other, whichever side of the backfill it is on.
+        return open_sealed(self._vault, row.filename_enc, row.filename) or ""
 
-def _to_view(row: Artifact) -> ArtifactView:
-    return ArtifactView(
-        id=row.id,
-        conversation_id=row.conversation_id,
-        title=row.title,
-        filename=row.filename,
-        content_type=row.content_type,
-        kind=row.kind,
-        size=row.size,
-        created_at=row.created_at,
-    )
+    def _to_view(self, row: Artifact) -> ArtifactView:
+        return ArtifactView(
+            id=row.id,
+            conversation_id=row.conversation_id,
+            title=open_sealed(self._vault, row.title_enc, row.title) or "",
+            filename=self._filename(row),
+            content_type=row.content_type,
+            kind=row.kind,
+            size=row.size,
+            created_at=row.created_at,
+        )
