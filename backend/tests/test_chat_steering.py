@@ -10,6 +10,7 @@ import json
 from pydantic_ai import FunctionToolset, RunContext, ToolApproved
 from pydantic_ai.messages import ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
 from runs import Run, RunRegistry, RunStatus, RunStream
@@ -245,6 +246,87 @@ async def test_inbox_edit_rewrites_in_place():
     bodies = [e.body for e in run.stream.replay()]
     edited = [b for b in bodies if b.type == "message.edited"]
     assert [(b.message_id, b.text) for b in edited] == [(first.id, "final wording")]
+
+
+def _echo_user_texts():
+    """Answer with every user text on the incoming request, so the assertion reads
+    straight off the answer what the model was actually shown."""
+
+    async def stream_fn(messages, info):
+        texts = [
+            p.content
+            for p in messages[-1].parts
+            if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+        ]
+        yield "saw: " + "|".join(texts)
+
+    return stream_fn
+
+
+async def test_steering_on_a_regenerate_never_mutates_the_stored_user_message(tmp_path):
+    # Guards the invariant `_inject_queued` and `_with_tail_context` both document:
+    # never mutate what the store shares. On the regenerate path (`prompt is None`)
+    # the library may build the first request by reusing the last history message's
+    # own parts list — which the store hands out by reference from its in-memory tree
+    # — so appending in place would graft the steering text into the operator's own
+    # bubble for every later in-process replay.
+    #
+    # Note this asserts the outcome, not the aliasing: with the current Pydantic AI
+    # internals the two lists are not in fact shared here, so the buggy in-place
+    # append also passes. It is kept as a guard against that changing, since the cost
+    # of the mutation would be silent corruption of the operator's own text.
+    store, _engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation(OWNER, title="t")
+
+    reg = RunRegistry()
+    first = build_chat_orchestrator(
+        "the original question",
+        model=TestModel(custom_output_text="first answer"),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    await reg.submit(kind="chat", owner_id=OWNER, orchestrator=first).wait()
+
+    view = await store.messages_view(conv)
+    assert [m.role for m in view] == ["user", "assistant"]
+    assert await store.regenerate_point(conv, view[1].id)
+
+    # Regenerate off that same history with a message already queued, so the injection
+    # lands on the run's *first* request node — the one the library builds by reusing
+    # the last history message's own parts list. `submit` creates the task but does not
+    # run it until the next tick, so this enqueue is guaranteed to precede it.
+    regen = build_chat_orchestrator(
+        None,
+        model=FunctionModel(stream_function=_echo_user_texts()),
+        categories={},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id=OWNER, orchestrator=regen)
+    run.enqueue_message("steer the retry")
+    await run.wait()
+
+    answer = "".join(b.text for b in _bodies(run) if b.type == "answer.delta")
+    assert "steer the retry" in answer  # the model did see it
+
+    # ...but the stored user message is still exactly what was typed. Read off the
+    # store's own in-memory tree nodes, which is the object the library aliased —
+    # a re-projection from the persisted blob would hide the mutation.
+    tree = store._cache[conv]
+    originals = [
+        p.content
+        for node in tree.nodes.values()
+        for p in getattr(node.message, "parts", [])
+        if isinstance(p, UserPromptPart) and isinstance(p.content, str)
+    ]
+    assert "the original question" in originals
+    assert not any(
+        text.startswith("the original question") and text != "the original question"
+        for text in originals
+    )
+    await store.stop()
 
 
 async def test_edited_message_is_injected_with_new_text():

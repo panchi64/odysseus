@@ -40,9 +40,12 @@ class _FakeManager:
 
 
 @contextlib.contextmanager
-def _http_upstream(record: dict):
+def _http_upstream(record: dict, extra_headers: dict[str, str] | None = None):
     """A loopback HTTP server that echoes method+path, sets a cookie, and records
-    what it received — to prove the proxy strips credentials and cookies."""
+    what it received — to prove the proxy strips credentials and cookies.
+
+    ``extra_headers`` lets a test have the upstream assert its own headers (its own
+    CSP, say) so the proxy's handling of them is observable."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -53,6 +56,8 @@ def _http_upstream(record: dict):
             self.send_response(200)
             self.send_header("content-type", "text/plain")
             self.send_header("set-cookie", "evil=1")  # must be stripped on the way out
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, value)
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -112,6 +117,36 @@ async def test_http_proxy_forwards_and_strips_credentials():
     assert record["cookie"] is None
     assert record["authorization"] is None
     assert record["xfp"] == "/previews/tok"  # the prefix is advertised instead
+
+
+async def test_proxied_html_is_sandboxed_by_csp_not_by_the_client():
+    # The preview serves agent-authored HTML from the API origin, auth-exempt. Opened
+    # top-level, a page that fetches /conversations would be same-origin with the API
+    # and the session cookie is samesite=lax — so isolation cannot be left to the
+    # frontend choosing a sandboxed iframe. The backend is the enforcement point.
+    record: dict = {}
+    with _http_upstream(record) as port:
+        async with client_app() as (client, app):
+            app.state.sandbox = _FakeManager("tok", port)
+            resp = await client.get("/previews/tok/index.html")
+
+            csp = resp.headers["content-security-policy"]
+            assert csp.startswith("sandbox")
+            # allow-same-origin is what would hand the page the API's origin back.
+            assert "allow-same-origin" not in csp
+            assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_upstream_cannot_weaken_the_preview_sandbox():
+    # A dev server that sets its own permissive CSP must not be able to relax ours:
+    # the upstream header is stripped, never merged.
+    record: dict = {}
+    with _http_upstream(record, extra_headers={"content-security-policy": "default-src *"}) as port:
+        async with client_app() as (client, app):
+            app.state.sandbox = _FakeManager("tok", port)
+            resp = await client.get("/previews/tok/index.html")
+            assert resp.headers["content-security-policy"].startswith("sandbox")
+            assert "default-src *" not in resp.headers["content-security-policy"]
 
 
 async def test_unknown_token_is_404():
