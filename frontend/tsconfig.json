@@ -18,7 +18,10 @@
     // our own src/ code is still fully type-checked. (TS team's tsc --init
     // default.)
     "skipLibCheck": true,
-    "types": ["vite/client"],
+    // "bun" is here only for `bun:test` in *.test.ts. It brings Bun's server
+    // globals into scope app-wide, which is harmless: nothing in src/ can call
+    // them (this builds to a browser bundle) and the build would fail if it did.
+    "types": ["vite/client", "bun"],
     "isolatedModules": true,
     "paths": {
       "~/*": ["./src/*"]
