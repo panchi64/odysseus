@@ -1,16 +1,15 @@
-"""Owner-scoped settings store — the compaction getters' corruption-safety + batched read."""
+"""Owner-scoped settings store — the getters' corruption-safety + the batched read."""
 
 from __future__ import annotations
 
 from core.config import get_settings
 from core.db import init_db, make_engine
 from services.settings_store import (
-    COMPACTION_ENABLED_KEY,
-    COMPACTION_KEEP_RECENT_KEY,
-    COMPACTION_MIN_TOKENS_KEY,
+    AUTO_COMPACT_ENABLED_KEY,
+    AUTO_COMPACT_THRESHOLD_KEY,
     INACTIVITY_TIMEOUT_KEY,
     SettingsStore,
-    get_compaction,
+    get_auto_compact,
     get_inactivity_timeout,
     resolve_compaction_enabled,
     set_inactivity_timeout,
@@ -27,53 +26,65 @@ def _store() -> SettingsStore:
 
 async def test_get_many_reads_several_keys_in_one_call():
     store = _store()
-    await store.set(OWNER, COMPACTION_KEEP_RECENT_KEY, "4")
-    await store.set(OWNER, COMPACTION_MIN_TOKENS_KEY, "900")
+    await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, "0.5")
 
     values = await store.get_many(
-        OWNER, (COMPACTION_ENABLED_KEY, COMPACTION_KEEP_RECENT_KEY, COMPACTION_MIN_TOKENS_KEY)
+        OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
     )
-    assert values == {COMPACTION_KEEP_RECENT_KEY: "4", COMPACTION_MIN_TOKENS_KEY: "900"}
+    assert values == {AUTO_COMPACT_THRESHOLD_KEY: "0.5"}
     # An absent key is simply omitted — the caller applies its own default.
-    assert COMPACTION_ENABLED_KEY not in values
+    assert AUTO_COMPACT_ENABLED_KEY not in values
 
 
-async def test_get_compaction_uses_config_defaults_when_unset():
+async def test_get_many_ignores_keys_it_was_not_asked_for():
+    # Retiring a setting needs no migration: only the keys a getter names are read, so a
+    # row left behind by a removed preference is inert rather than a stale override.
+    store = _store()
+    await store.set(OWNER, "chat.compaction_enabled", "false")  # a setting that no longer exists
+    await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, "0.5")
+
+    values = await store.get_many(
+        OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
+    )
+    assert values == {AUTO_COMPACT_THRESHOLD_KEY: "0.5"}
+    auto = await get_auto_compact(store, OWNER)
+    assert auto.enabled == get_settings().auto_compact_enabled
+
+
+async def test_get_auto_compact_uses_config_defaults_when_unset():
     store = _store()
     cfg = get_settings()
-    cs = await get_compaction(store, OWNER)
-    assert cs.enabled == cfg.compaction_enabled
-    assert cs.keep_recent == cfg.compaction_keep_recent
-    assert cs.min_tokens == cfg.compaction_min_tokens
+    auto = await get_auto_compact(store, OWNER)
+    assert auto.enabled == cfg.auto_compact_enabled
+    assert auto.threshold == cfg.auto_compact_threshold
 
 
-async def test_get_compaction_round_trips_overrides():
+async def test_get_auto_compact_round_trips_overrides():
     store = _store()
-    await store.set(OWNER, COMPACTION_ENABLED_KEY, "false")
-    await store.set(OWNER, COMPACTION_KEEP_RECENT_KEY, "2")
-    await store.set(OWNER, COMPACTION_MIN_TOKENS_KEY, "1500")
+    await store.set(OWNER, AUTO_COMPACT_ENABLED_KEY, "false")
+    await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, "0.75")
 
-    cs = await get_compaction(store, OWNER)
-    assert cs.enabled is False and cs.keep_recent == 2 and cs.min_tokens == 1500
+    auto = await get_auto_compact(store, OWNER)
+    assert auto.enabled is False and auto.threshold == 0.75
 
 
 async def test_corrupted_enabled_flag_falls_back_to_the_config_default():
     # A stored value that is neither "true" nor "false" (legacy/corrupt/case-variant) must fall
     # back to the config default — not silently read as False the way a bare `== "true"` would.
     store = _store()
-    await store.set(OWNER, COMPACTION_ENABLED_KEY, "True")  # wrong case
-    cs = await get_compaction(store, OWNER)
-    assert cs.enabled == get_settings().compaction_enabled
+    await store.set(OWNER, AUTO_COMPACT_ENABLED_KEY, "True")  # wrong case
+    auto = await get_auto_compact(store, OWNER)
+    assert auto.enabled == get_settings().auto_compact_enabled
 
 
-async def test_corrupted_int_fields_fall_back_to_the_config_default():
+async def test_corrupted_threshold_falls_back_to_the_config_default():
+    # The threshold is a fraction in (0, 1]: 0 would fire compaction on an empty thread and
+    # anything above 1 could never fire at all, so both fall back rather than thrash.
     store = _store()
     cfg = get_settings()
-    await store.set(OWNER, COMPACTION_KEEP_RECENT_KEY, "not-a-number")
-    await store.set(OWNER, COMPACTION_MIN_TOKENS_KEY, "-5")  # negative ⇒ default
-    cs = await get_compaction(store, OWNER)
-    assert cs.keep_recent == cfg.compaction_keep_recent
-    assert cs.min_tokens == cfg.compaction_min_tokens
+    for bad in ("not-a-number", "0", "-0.5", "1.5"):
+        await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, bad)
+        assert (await get_auto_compact(store, OWNER)).threshold == cfg.auto_compact_threshold
 
 
 def test_resolve_compaction_enabled_precedence():

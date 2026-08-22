@@ -79,13 +79,6 @@ class Settings(BaseSettings):
     # Reported to the model alongside memory/cpus (`tools/code.py`) so a fork/thread
     # failure can be attributed to this cap instead of only "possibly OOM".
     sandbox_pids_limit: int = 256
-    # code_execute's stdout+stderr budget shown to the model, split evenly per stream.
-    # A runaway print must not flood the turn's context — current-turn tool results
-    # aren't covered by prior-turn compaction (agent/compaction.py only condenses
-    # already-persisted turns). Generous by design: a safety ceiling, not a normal-
-    # output budget: an over-cap stream is truncated in the middle (head + tail kept,
-    # since errors/final state usually live at the tail).
-    sandbox_output_max_chars: int = 24_000
     # How much of a file one `files_read_file` call returns. Paging exists (the tool takes
     # an offset), so this bounds a single call rather than what the agent can ultimately
     # read — set to keep one oversized file from crowding out the rest of the turn.
@@ -295,35 +288,14 @@ class Settings(BaseSettings):
     upload_extractor: Literal["auto", "mineru", "basic"] = "auto"
     upload_mineru_timeout_s: float = 300.0
 
-    # Chat attachments. A file attached to a message stays inline in the conversation
-    # so a follow-up "just works" — images always (their cost is bounded and there's no
-    # way to re-see one on demand), and a non-image file's extracted text up to this
-    # token budget. Past it, the text is cut off at the cap and a pointer to the
-    # attachments/corpus tools is appended, so a large document can't grow context
-    # without bound. This is the *default*; the operator overrides it at runtime via
-    # `PUT /chat/settings` (stored owner-scoped in the settings store). 0 ⇒ never retain
-    # non-image text inline (always cut to a pointer); images are unaffected either way.
-    attachment_inline_max_tokens: int = 6000
-
-    # Tool-result compaction. In a tool-heavy chat, large tool outputs from *earlier* turns
-    # pile up and crowd the model's context. When enabled, the model re-reads a deterministic
-    # digest of an old, oversized tool result instead of the whole thing — and can call
-    # `expand_tool_result` to pull the full output back on demand. The operator always sees the
-    # full output (it's persisted and streamed untouched); only the model's replayed view of
-    # *prior* turns is condensed — the current turn is never compacted. `compaction_keep_recent`
-    # is the rolling window (the K most-recent tool results always stay full);
-    # `compaction_min_tokens` is the size floor (a result must exceed it to be worth digesting).
-    # These are the *defaults*; the operator overrides them at runtime via `PUT /chat/settings`.
-    compaction_enabled: bool = True
-    compaction_keep_recent: int = 6
-    compaction_min_tokens: int = 1000
-
-    # Conversation auto-compaction — the other half of context reduction, and a different
-    # thing from the tool-result compaction above: that one condenses individual tool
-    # outputs, this one folds whole *turns*. Once a thread's measured footprint reaches
-    # `auto_compact_threshold` of the model's context window, everything older than the
-    # last `auto_compact_keep_turns` exchanges is summarized by the utility model into one
-    # checkpoint, and the thread carries on from that summary plus the retained turns.
+    # Conversation auto-compaction — the **only** context reduction in the product, and
+    # the only one that fires on measured pressure rather than unconditionally. Once a
+    # thread's measured footprint reaches `auto_compact_threshold` of the model's context
+    # window, everything older than the last `auto_compact_keep_turns` exchanges is
+    # summarized by the utility model into one checkpoint, and the thread carries on from
+    # that summary plus the retained turns. `auto_compact_keep_turns` is 0 by default:
+    # the summary is the whole of what the model replays, so nothing sits after the
+    # boundary duplicating what the summary already says.
     # Nothing is deleted: the operator's transcript keeps every turn, and only what is
     # re-sent to the model shrinks. It fires **between** turns, in the orchestrator prelude,
     # so it can never disturb reasoning already in flight. It is also not a safety net — a
@@ -336,7 +308,7 @@ class Settings(BaseSettings):
     # them at runtime via `PUT /chat/settings`, and per thread via `/conversations/{id}`.
     auto_compact_enabled: bool = True
     auto_compact_threshold: float = 0.95
-    auto_compact_keep_turns: int = 2
+    auto_compact_keep_turns: int = 0
     auto_compact_input_max_tokens: int = 24000
     auto_compact_max_tokens: int = 4096
     auto_compact_timeout_s: float = 120.0

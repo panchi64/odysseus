@@ -4,6 +4,7 @@ import { Text } from "../primitives/Text";
 import { Icon } from "../primitives/Icon";
 import { type IconName } from "../icons/registry";
 import { Popover } from "./Popover";
+import { ListGroupHeader } from "./ListGroupHeader";
 
 export interface ComboboxOption {
   value: string;
@@ -142,11 +143,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
                 <For each={filtered()}>
                   {(group) => (
                     <div>
-                      <div class="px-3 pb-0.5 pt-1.5">
-                        <Text variant="micro" tone="dim">
-                          {group.label}
-                        </Text>
-                      </div>
+                      <ListGroupHeader label={group.label} />
                       <For each={group.options}>
                         {(opt) => (
                           <button

@@ -62,26 +62,42 @@ async def test_chat_rejects_unknown_conversation(monkeypatch):
 
 
 async def test_chat_settings_round_trip():
-    # The attachment inline token cap is an operator setting: GET reports the config
-    # default until set, PUT overrides it, and the override persists.
+    # The auto-compaction preferences are operator settings: GET reports the config
+    # defaults until set, PUT overrides them, and the override persists.
     async with client_app() as (client, _app):
         got = await client.get("/chat/settings")
         assert got.status_code == 200
-        default = get_settings().attachment_inline_max_tokens
-        assert got.json()["attachment_inline_max_tokens"] == default
+        assert got.json()["auto_compact_threshold"] == get_settings().auto_compact_threshold
 
-        put = await client.put("/chat/settings", json={"attachment_inline_max_tokens": 1500})
+        put = await client.put("/chat/settings", json={"auto_compact_threshold": 0.5})
         assert put.status_code == 200
-        assert put.json()["attachment_inline_max_tokens"] == 1500
+        assert put.json()["auto_compact_threshold"] == 0.5
 
         again = await client.get("/chat/settings")
-        assert again.json()["attachment_inline_max_tokens"] == 1500
+        assert again.json()["auto_compact_threshold"] == 0.5
 
 
-async def test_chat_settings_rejects_a_negative_cap():
+async def test_chat_settings_rejects_an_out_of_range_threshold():
+    # A fraction in (0, 1]: 0 would fire on an empty thread, above 1 could never fire.
     async with client_app() as (client, _app):
-        resp = await client.put("/chat/settings", json={"attachment_inline_max_tokens": -1})
-        assert resp.status_code == 422
+        for bad in (0, -0.5, 1.5):
+            resp = await client.put("/chat/settings", json={"auto_compact_threshold": bad})
+            assert resp.status_code == 422
+
+
+async def test_chat_settings_rejects_a_retired_field():
+    # The tool-result compaction settings are gone. A client still sending them must get a
+    # 422, not a 200 that silently discards the write.
+    async with client_app() as (client, _app):
+        retired = (
+            "compaction_enabled",
+            "compaction_keep_recent",
+            "compaction_min_tokens",
+            "attachment_inline_max_tokens",
+        )
+        for field in retired:
+            resp = await client.put("/chat/settings", json={field: 5})
+            assert resp.status_code == 422
 
 
 async def test_chat_settings_rejects_an_unknown_field():
@@ -89,37 +105,9 @@ async def test_chat_settings_rejects_an_unknown_field():
     # silently no-op with a 200 — otherwise a client believes a write landed that never did.
     async with client_app() as (client, _app):
         resp = await client.put(
-            "/chat/settings", json={"attachment_inline_max_token": 1500}  # typo: missing 's'
+            "/chat/settings", json={"agent_request_limi": 15}  # typo: missing 't'
         )
         assert resp.status_code == 422
-
-
-async def test_compaction_settings_round_trip():
-    # The compaction preferences are operator settings: GET reports the config defaults,
-    # PUT overrides them, and the override persists.
-    async with client_app() as (client, _app):
-        cfg = get_settings()
-        got = (await client.get("/chat/settings")).json()
-        assert got["compaction_enabled"] == cfg.compaction_enabled
-        assert got["compaction_keep_recent"] == cfg.compaction_keep_recent
-
-        put = await client.put(
-            "/chat/settings",
-            json={
-                "attachment_inline_max_tokens": got["attachment_inline_max_tokens"],
-                "compaction_enabled": False,
-                "compaction_keep_recent": 3,
-                "compaction_min_tokens": 2000,
-            },
-        )
-        assert put.status_code == 200
-        body = put.json()
-        assert body["compaction_enabled"] is False
-        assert body["compaction_keep_recent"] == 3
-        assert body["compaction_min_tokens"] == 2000
-
-        again = (await client.get("/chat/settings")).json()
-        assert again["compaction_enabled"] is False and again["compaction_keep_recent"] == 3
 
 
 async def test_agent_request_limit_round_trip():
@@ -147,30 +135,30 @@ async def test_agent_request_limit_rejects_zero_and_negative():
 
 
 async def test_agent_request_limit_partial_update_leaves_others_unchanged():
-    # Tuning the step limit alone must not reset the compaction or attachment overrides.
+    # Tuning the step limit alone must not reset the auto-compaction overrides.
     async with client_app() as (client, _app):
         await client.put(
             "/chat/settings",
-            json={"attachment_inline_max_tokens": 100, "compaction_keep_recent": 9},
+            json={"auto_compact_enabled": False, "auto_compact_threshold": 0.6},
         )
         await client.put("/chat/settings", json={"agent_request_limit": 40})
         again = (await client.get("/chat/settings")).json()
         assert again["agent_request_limit"] == 40
-        assert again["compaction_keep_recent"] == 9
-        assert again["attachment_inline_max_tokens"] == 100
+        assert again["auto_compact_enabled"] is False
+        assert again["auto_compact_threshold"] == 0.6
 
 
-async def test_compaction_settings_partial_update_leaves_others_unchanged():
-    # Tuning only the attachment cap must not reset compaction overrides set earlier.
+async def test_auto_compact_settings_partial_update_leaves_others_unchanged():
+    # Tuning one half of the pair must not reset the other, set earlier.
     async with client_app() as (client, _app):
         await client.put(
             "/chat/settings",
-            json={"attachment_inline_max_tokens": 100, "compaction_keep_recent": 9},
+            json={"auto_compact_enabled": False, "auto_compact_threshold": 0.6},
         )
-        await client.put("/chat/settings", json={"attachment_inline_max_tokens": 200})
+        await client.put("/chat/settings", json={"auto_compact_threshold": 0.8})
         again = (await client.get("/chat/settings")).json()
-        assert again["compaction_keep_recent"] == 9  # preserved across the attachment-only PUT
-        assert again["attachment_inline_max_tokens"] == 200
+        assert again["auto_compact_enabled"] is False  # preserved across the threshold-only PUT
+        assert again["auto_compact_threshold"] == 0.8
 
 
 async def test_inactivity_timeout_round_trip():

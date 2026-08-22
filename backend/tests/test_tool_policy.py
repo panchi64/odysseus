@@ -75,7 +75,6 @@ async def test_catalog_matches_the_names_the_agent_is_offered():
 # tripwire. A deliberate tool addition/removal updates this list in the same change.
 _PINNED_CATALOG = {
     "attachments_provision",
-    "builtin_expand_tool_result",
     "builtin_now",
     "calendar_agenda",
     "calendar_create_event",
@@ -160,7 +159,7 @@ async def test_operator_disabled_tool_is_absent_from_the_catalog_the_agent_sees(
     disabled = await get_disabled_tools(store, OWNER)
     visible = await _agent_visible(disabled)
     assert "builtin_now" not in visible
-    assert "builtin_expand_tool_result" in visible  # only the named tool goes
+    assert "attachments_provision" in visible  # only the named tool goes
 
 
 async def test_flip_round_trips_and_persists():

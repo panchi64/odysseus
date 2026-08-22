@@ -3,6 +3,7 @@ import { useLocation } from "@solidjs/router";
 import {
   Button,
   Combobox,
+  ErrorBoundary,
   NotConnectedOverlay,
   RegistrationFrame,
   ResizeHandle,
@@ -102,10 +103,14 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
 
         <RegistrationFrame class="min-h-0 flex-1">
           <div class="relative h-full">
-            {/* Scopes a suspending screen to the content region; without it the
-                root boundary blanks the shell too, dropping the rail's scroll. */}
+            {/* Scopes a suspending *or throwing* screen to the content region;
+                without them the root blanks the shell too, taking the rail and
+                the status bar with it. The path is the reset key, so navigating
+                away from a broken screen clears the error. */}
             <main class="h-full overflow-y-auto p-6">
-              <Suspense>{props.children}</Suspense>
+              <ErrorBoundary resetKey={() => location.pathname}>
+                <Suspense>{props.children}</Suspense>
+              </ErrorBoundary>
             </main>
             <Show when={!connected()}>
               <NotConnectedOverlay />

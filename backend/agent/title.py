@@ -15,21 +15,22 @@ hands both in, so this module stays free of per-lab levers. But some runtimes ig
 that lever (e.g. LM Studio drops OpenAI ``chat_template_kwargs``, and the Qwen 2507+
 line dropped the ``/no_think`` soft-switch), so a model can reason anyway. We don't
 fight that here — we *tolerate* it: the caller hands in a generous ``max_tokens`` so a
-``<think>`` block has room to clear *and* still emit the title, and :func:`_clean`
-strips any ``<think>…</think>`` the runtime inlined into the content. A strict endpoint
-with no off-switch simply reasons within that budget.
+``<think>`` block has room to clear *and* still emit the title, and :func:`_clean` runs
+``core.text.strip_think_blocks`` over the output — the same call the compaction summarizer
+makes, since both face the identical runtime. A strict endpoint with no off-switch simply
+reasons within that budget.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
 from pydantic_ai import ModelMessage
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
+from core.text import strip_think_blocks
 from prompts.utility import TITLE_INSTRUCTIONS
 
 from .meta import make_utility_agent
@@ -46,16 +47,6 @@ logger = logging.getLogger(__name__)
 # (see :data:`core.config` ``title_max_tokens`` / ``retitle_max_tokens``) to clear it.
 # This base value is the floor for callers that pass none (e.g. tests).
 _BASE_SETTINGS: ModelSettings = {"max_tokens": 1024, "temperature": 0.3}
-
-# A reasoning model that the runtime didn't keep off inlines its chain-of-thought as a
-# ``<think>…</think>`` block in the content (rather than a separate reasoning channel
-# Pydantic AI would surface as a ``ThinkingPart``). Strip it so the title is taken from
-# the words after it, never from a line of reasoning. No-op when there's no think block.
-# The close is optional (``$`` under DOTALL): a model that exhausts ``max_tokens`` while
-# still reasoning emits an *unclosed* ``<think>`` whose partial content Pydantic AI still
-# returns — strip that to end-of-string so a half-thought never becomes the title.
-# Case-insensitive since the tag casing is the model/template's choice, not ours.
-_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
 
 # Trim the user message fed to the namer — the topic is in the opening, and a
 # long body only slows the call without sharpening the title.
@@ -125,7 +116,7 @@ def _clean(raw: str) -> str | None:
     period; strip those so the stored/animated name is clean. A reasoning model the
     runtime didn't keep off prepends a ``<think>…</think>`` block — drop it first so
     the title is read from the words after it, not from the reasoning."""
-    raw = _THINK_BLOCK.sub("", raw)
+    raw = strip_think_blocks(raw)
     line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
     line = line.strip("\"'`").strip()
     for prefix in ("title:", "title -", "thread:"):

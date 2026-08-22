@@ -57,17 +57,10 @@ class Conversation(SQLModel, table=True):
     # meant to keep. Still a fully real conversation (readable, resumable, branch-
     # able by id); it's only omitted from the conversation list and the count.
     ephemeral: bool = Field(default=False)
-    # Per-conversation override of the global tool-result compaction toggle: null inherits
-    # the operator default, True/False forces it on/off for this thread (so a precision
-    # debugging chat can keep full fidelity while research compacts hard). Policy, not user
-    # content, so it stays in the clear — like `model`/`ephemeral`.
-    compaction_override: bool | None = Field(default=None)
     # Per-conversation override of the global conversation auto-compaction toggle (folding
     # older turns into a utility-model summary once the context footprint nears the model's
     # window): null inherits the operator default, True/False forces it on/off for this
-    # thread. Distinct from `compaction_override` above, which governs *tool-result*
-    # compaction — one condenses whole turns, the other individual tool outputs. Policy,
-    # not user content, so it stays in the clear.
+    # thread. Policy, not user content, so it stays in the clear — like `model`/`ephemeral`.
     auto_compact_override: bool | None = Field(default=None)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

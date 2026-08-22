@@ -1,20 +1,11 @@
 import { For, Match, Show, Switch, createSignal, type JSX } from "solid-js";
-import {
-  Button,
-  Chip,
-  Disclosure,
-  Divider,
-  Icon,
-  Stack,
-  Text,
-  Textarea,
-  Tooltip,
-} from "~/ui";
+import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import type { ViewItem } from "../viewport";
-import { MessageActions } from "./MessageActions";
+import { CompactionDivider } from "./CompactionDivider";
+import { MessageActions, TURN_REVEAL_CLASS } from "./MessageActions";
 import { MessageAttachments } from "./MessageAttachments";
 import { TurnBlocks } from "./TurnBlocks";
 import { TurnProgressRail } from "./TurnProgressRail";
@@ -63,6 +54,11 @@ export interface MessageItemProps {
   /** The key of the newest View item the operator has seen — items after it in
    *  `viewItems()` render their inline chip tagged NEW. */
   seenKey?: () => string | null;
+  /** This turn sits above the newest compaction divider: still in the operator's
+   *  transcript, no longer in what the model replays. Rendered as a dim pass over
+   *  the whole turn — the divider says it in words, this says it at a glance.
+   *  Derived by the transcript (presentation only); a turn can't know it alone. */
+  dimmed?: boolean;
 }
 
 /** A single chat turn. User turns fill the row with a distinct `surface`
@@ -73,65 +69,43 @@ export interface MessageItemProps {
  *  summary, with no actions and no bubble. */
 export function MessageItem(props: MessageItemProps): JSX.Element {
   return (
-    <Switch
-      fallback={
-        <AssistantTurn
-          message={props.message}
-          onResolveApproval={props.onResolveApproval}
-          onResolveHostCommands={props.onResolveHostCommands}
-          onRegenerate={props.onRegenerate}
-          onDelete={props.onDelete}
-          onRewind={props.onRewind}
-          onSwitchVersion={props.onSwitchVersion}
-          onTogglePin={props.onTogglePin}
-          onOpenInView={props.onOpenInView}
-          onReattach={props.onReattach}
-          onContinue={props.onContinue}
-          viewItems={props.viewItems}
-          seenKey={props.seenKey}
-        />
-      }
-    >
-      <Match when={props.message.role === "compaction"}>
-        <CompactionDivider message={props.message} />
-      </Match>
-      <Match when={props.message.role === "user"}>
-        <UserTurn
-          message={props.message}
-          onEditMessage={props.onEditMessage}
-          onDelete={props.onDelete}
-          onSwitchVersion={props.onSwitchVersion}
-          onTogglePin={props.onTogglePin}
-          onWithdraw={props.onWithdraw}
-          onEditQueued={props.onEditQueued}
-          onContinue={props.onContinue}
-        />
-      </Match>
-    </Switch>
-  );
-}
-
-/** Where the thread's earlier turns were folded into a summary to free up context.
- *  A rule across the width rather than a bubble, because nobody said it — the
- *  chassis did. The summary itself is what the model now replays in place of
- *  everything above, so it is available behind a disclosure rather than hidden:
- *  it is the only way to see what the assistant still remembers. */
-function CompactionDivider(props: { message: ChatMessage }): JSX.Element {
-  return (
-    <Stack gap={2} class="w-full py-3">
-      <div class="flex items-center gap-3">
-        <Divider class="flex-1" />
-        <Text variant="label" tone="dim">
-          CONTEXT COMPACTED
-        </Text>
-        <Divider class="flex-1" />
-      </div>
-      <Disclosure label="SUMMARY" triggerClass="w-full">
-        <Text variant="body" tone="dim" class="whitespace-pre-wrap">
-          {props.message.content}
-        </Text>
-      </Disclosure>
-    </Stack>
+    <div class={cx(props.dimmed && "opacity-50")}>
+      <Switch
+        fallback={
+          <AssistantTurn
+            message={props.message}
+            onResolveApproval={props.onResolveApproval}
+            onResolveHostCommands={props.onResolveHostCommands}
+            onRegenerate={props.onRegenerate}
+            onDelete={props.onDelete}
+            onRewind={props.onRewind}
+            onSwitchVersion={props.onSwitchVersion}
+            onTogglePin={props.onTogglePin}
+            onOpenInView={props.onOpenInView}
+            onReattach={props.onReattach}
+            onContinue={props.onContinue}
+            viewItems={props.viewItems}
+            seenKey={props.seenKey}
+          />
+        }
+      >
+        <Match when={props.message.role === "compaction"}>
+          <CompactionDivider message={props.message} />
+        </Match>
+        <Match when={props.message.role === "user"}>
+          <UserTurn
+            message={props.message}
+            onEditMessage={props.onEditMessage}
+            onDelete={props.onDelete}
+            onSwitchVersion={props.onSwitchVersion}
+            onTogglePin={props.onTogglePin}
+            onWithdraw={props.onWithdraw}
+            onEditQueued={props.onEditQueued}
+            onContinue={props.onContinue}
+          />
+        </Match>
+      </Switch>
+    </div>
   );
 }
 
@@ -290,12 +264,16 @@ function UserTurn(props: {
             message={m()}
             onSwitchVersion={props.onSwitchVersion}
           />
-          <Text variant="micro" tone="dim">
-            {relativeTime(m().createdAt)}
-          </Text>
-          <Text variant="label" tone="default">
-            OPERATOR
-          </Text>
+          {/* Same reveal as the assistant turn's model/time line: the bubble's
+              own alignment and surface already say whose turn this is. */}
+          <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
+            <Text variant="micro" tone="dim">
+              {relativeTime(m().createdAt)}
+            </Text>
+            <Text variant="label" tone="default">
+              OPERATOR
+            </Text>
+          </span>
         </div>
       </div>
       <Show
@@ -445,12 +423,17 @@ function AssistantTurn(props: {
   return (
     <div class="group border-b border-line px-4 py-4">
       <div class="mb-2 flex items-center gap-2">
-        <Text variant="label" tone="nominal">
-          {m().model ?? "ASSISTANT"}
-        </Text>
-        <Text variant="micro" tone="dim">
-          {relativeTime(m().createdAt)}
-        </Text>
+        {/* Which model and when: true of every turn, and so rarely the question
+            being asked that always-on it reads as chrome. Revealed by the same
+            hover/focus gesture as the actions opposite it. */}
+        <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
+          <Text variant="label" tone="nominal">
+            {m().model ?? "ASSISTANT"}
+          </Text>
+          <Text variant="micro" tone="dim">
+            {relativeTime(m().createdAt)}
+          </Text>
+        </span>
         <PinMarker message={m()} />
         <VersionCycler message={m()} onSwitchVersion={props.onSwitchVersion} />
         <span class="ml-auto">
@@ -460,30 +443,29 @@ function AssistantTurn(props: {
             onRewind={props.onRewind}
             onDelete={props.onDelete}
             onTogglePin={props.onTogglePin}
-          >
-            <Show when={hasLayers()}>
-              <Tooltip label={forceOpen() ? "COLLAPSE ALL" : "EXPAND ALL"}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leading="layers"
-                  aria-label={forceOpen() ? "Collapse all" : "Expand all"}
-                  onClick={toggleAll}
-                >
-                  {forceOpen() ? "COLLAPSE ALL" : "EXPAND ALL"}
-                </Button>
-              </Tooltip>
-            </Show>
-          </MessageActions>
+            extraItems={
+              hasLayers()
+                ? [
+                    {
+                      label: forceOpen() ? "COLLAPSE ALL" : "EXPAND ALL",
+                      icon: "layers",
+                      onSelect: toggleAll,
+                    },
+                  ]
+                : undefined
+            }
+          />
         </span>
       </div>
 
       <Stack gap={3}>
-        {/* What's happening now (streaming) / what it took (settled). */}
+        {/* What's happening now (streaming) / what it took (settled — and only
+            while the work log it summarizes is folded away). */}
         <TurnProgressRail
           blocks={m().blocks}
           streaming={m().streaming}
           queued={m().queued}
+          collapsed={forceOpen() !== true}
         />
         {/* The turn's ordered, interleaved blocks — the source of truth. */}
         <TurnBlocks

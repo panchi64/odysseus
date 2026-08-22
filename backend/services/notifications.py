@@ -45,6 +45,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from core.db import in_session
+from core.serde import as_utc
 from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id, utcnow
@@ -296,6 +297,9 @@ class NotificationService:
         count. Reads the in-memory index — the same authoritative state `notify` /
         `mark_read` / etc. just updated — rather than a DB round-trip that could lag
         behind a write still sitting in the drainer's queue."""
+        # `before` arrives from a query string, so it is aware only when the client
+        # sent an offset — normalize it onto the same scale as the cached values.
+        before = as_utc(before)
         owned = [v for v in self._cache.values() if v.owner_id == owner_id]
         unread_count = sum(1 for v in owned if v.read_at is None)
         if unread_only:
@@ -430,9 +434,12 @@ class NotificationService:
             run_id=row.run_id,
             task_id=row.task_id,
             research_id=row.research_id,
-            created_at=row.created_at,
-            read_at=row.read_at,
-            resolved_at=row.resolved_at,
+            # SQLite hands these back naive; the cache is also filled by `notify()`
+            # with aware ones, so without this the two populations can't be compared
+            # or sorted against each other (`list_notifications`).
+            created_at=as_utc(row.created_at),
+            read_at=as_utc(row.read_at),
+            resolved_at=as_utc(row.resolved_at),
         )
 
     async def _persist(self, job: _Job) -> None:

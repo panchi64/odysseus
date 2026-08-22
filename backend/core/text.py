@@ -1,21 +1,45 @@
 """Tiny text/token utilities shared across layers.
 
-There is no exact tokenizer at the points these are used (persist-time attachment caps,
-history compaction), and the budgets they serve are *soft*, so a coarse characters-per-token
-proxy is good enough to bound sizes deterministically. Kept here, in the foundation layer, so
-both the chat-attachments path and the compaction processor use one estimate, not two.
+There is no exact tokenizer at the points these are used (conversation compaction's
+footprint estimate, the summarizer's input budget), and the budgets they serve are *soft*,
+so a coarse characters-per-token proxy is good enough to bound sizes deterministically.
+Kept here, in the foundation layer, so every caller shares one estimate, not several.
 
 :func:`replace_unique` is here for the same reason: surgical editing is the shape of both
 ``DOC-2`` and ``SKILL-3``, and one implementation of "replace exactly one span or refuse"
-means both surfaces refuse identically.
+means both surfaces refuse identically. So is :func:`strip_think_blocks` — every utility
+model call that asks for reasoning off has to survive a runtime that ignores the lever.
 """
 
 from __future__ import annotations
+
+import re
 
 from .exceptions import SpanEditError
 
 # A coarse characters≈tokens proxy. Good enough for soft budgets; not a real tokenizer.
 CHARS_PER_TOKEN = 4
+
+# A reasoning model that the runtime didn't keep off inlines its chain-of-thought as a
+# ``<think>…</think>`` block in the *content* (rather than a separate reasoning channel
+# Pydantic AI would surface as a ``ThinkingPart``). The close is optional (``$`` under
+# DOTALL): a model that exhausts ``max_tokens`` while still reasoning emits an *unclosed*
+# ``<think>`` whose partial content Pydantic AI still returns — strip that to end-of-string
+# so a half-thought can never be mistaken for the answer. Case-insensitive, since the tag
+# casing is the model/template's choice, not ours.
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_blocks(text: str) -> str:
+    """Drop any inlined ``<think>…</think>`` reasoning from a model's text output.
+
+    The reasoning-off lever is **best-effort, not guaranteed** — LM Studio drops OpenAI
+    ``chat_template_kwargs``, the Qwen 2507+ line dropped the ``/no_think`` soft-switch —
+    so every utility call that asks for reasoning off (the conversation namer, the
+    compaction summarizer) has to be able to read past a think block it didn't want. One
+    implementation, so a runtime that leaks reasoning leaks it into no surface at all.
+    No-op when there's no think block."""
+    return _THINK_BLOCK.sub("", text)
 
 
 def replace_unique(

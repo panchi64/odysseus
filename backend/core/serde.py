@@ -2,15 +2,38 @@
 
 Lives in ``core`` so both the live translator (``agent/translate.py``) and the
 static-history projection (``services/conversation_view.py``) can share the one
-coercion without the lower layer importing the orchestrator.
+coercion without the lower layer importing the orchestrator — and, for ``as_utc``,
+so every service that reads a timestamp back out of the DB normalizes it the same
+way instead of carrying a private copy.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, overload
+
+
+@overload
+def as_utc(value: datetime) -> datetime: ...
+@overload
+def as_utc(value: None) -> None: ...
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """A datetime forced onto tz-aware UTC; ``None`` passes through.
+
+    SQLite has no native datetime type, so the dialect round-trips a tz-aware value
+    as a **naive** one — a row read back and compared or sorted against a fresh
+    `utcnow()` raises ``TypeError: can't compare offset-naive and offset-aware
+    datetimes``. A naive value is therefore *assumed* UTC and re-stamped; an aware
+    one is converted, so a caller-supplied timestamp in any zone (a query-string
+    filter, an ICS import) lands on the same scale as the stored ones.
+    """
+    if value is None:
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _structure(value: Any) -> Any:

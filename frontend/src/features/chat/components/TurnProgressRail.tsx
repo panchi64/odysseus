@@ -43,6 +43,10 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
 export function TurnProgressRail(props: {
   blocks: AssistantBlock[] | undefined;
   streaming?: boolean;
+  /** Whether the turn's work log is folded away. The settled "N TOOLS · M THINKS"
+   *  line stands in for the log; with the log open it restates what is already on
+   *  screen directly beneath it, so it is withheld. */
+  collapsed?: boolean;
   /** True until the run's first event arrives — waiting behind the backend's
    *  concurrency limit, not yet actually executing. Rendered as an explicit
    *  "QUEUED" state instead of the throbber, which would otherwise look
@@ -56,7 +60,7 @@ export function TurnProgressRail(props: {
     <Show
       when={props.streaming}
       fallback={
-        <Show when={hasWork()}>
+        <Show when={hasWork() && props.collapsed}>
           <Text variant="micro" tone="dim">
             {counts().tools} {counts().tools === 1 ? "TOOL" : "TOOLS"} ·{" "}
             {counts().thinks} {counts().thinks === 1 ? "THINK" : "THINKS"}

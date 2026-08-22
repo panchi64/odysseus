@@ -28,7 +28,6 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from agent import build_chat_orchestrator
-from agent.compaction import build_compaction_context
 from agent.summarize import AutoCompactPolicy, resolve_auto_compact_policy
 from core.config import get_settings
 from core.container import ServiceContainer
@@ -41,21 +40,15 @@ from services.conversations import ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
-    CompactionSettings,
     get_agent_request_limit,
-    get_attachment_inline_max_tokens,
     get_auto_compact,
-    get_compaction,
     get_inactivity_timeout,
-    resolve_compaction_enabled,
     set_agent_request_limit,
-    set_attachment_inline_max_tokens,
     set_auto_compact,
-    set_compaction,
     set_inactivity_timeout,
 )
 from services.uploads import UploadStore
-from tools import CompactionContext, InstructionProvider, PromptContextProvider
+from tools import InstructionProvider, PromptContextProvider
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -108,12 +101,9 @@ class ChatCreated(BaseModel):
 
 
 class ChatSettings(BaseModel):
-    """Operator-tunable chat preferences. ``attachment_inline_max_tokens`` is the token
-    budget an attached file's text is retained inline for before it's cut off with a tool
-    pointer (images are always retained, regardless). The ``compaction*`` fields tune
-    tool-result compaction (digest oversized prior-turn tool outputs for the model); the
-    ``auto_compact*`` fields tune conversation compaction (fold older *turns* into a
-    utility-model summary once the context window fills).
+    """Operator-tunable chat preferences. The ``auto_compact*`` fields tune conversation
+    compaction — the product's one context reduction: fold older *turns* into a
+    utility-model summary once the context window fills.
     ``agent_request_limit`` is how many model round-trips one turn may spend before it
     stops. They're optional on a PUT — an omitted one is left unchanged — and always
     populated on a GET. snake_case out, matching the rest of the ``/chat`` surface."""
@@ -124,11 +114,7 @@ class ChatSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # All fields are optional on a PUT (an omitted one is left unchanged) and always
-    # populated on a GET; ``ge=0`` still rejects a negative value when one is provided.
-    attachment_inline_max_tokens: int | None = Field(default=None, ge=0)
-    compaction_enabled: bool | None = None
-    compaction_keep_recent: int | None = Field(default=None, ge=0)
-    compaction_min_tokens: int | None = Field(default=None, ge=0)
+    # populated on a GET; the bounds still reject a nonsensical value when one is provided.
     # Conversation auto-compaction: whether to fold older turns into a summary, and how
     # full the model's context window must get first. A **fraction**, not a percentage —
     # the same 0–1 quantity the context meter reports, so the client formats one number
@@ -217,8 +203,6 @@ def compose_turn(
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
-    inline_max_tokens: int | None = None,
-    compaction: CompactionContext | None = None,
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
     inactivity_timeout_s: float | None | object = _UNSET,
@@ -253,8 +237,6 @@ def compose_turn(
         uploads=uploads,
         attachment_ids=attachment_ids,
         vision=vision,
-        inline_max_tokens=inline_max_tokens,
-        compaction=compaction,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
         auto_compact=auto_compact,
         # The operator's per-turn model-request ceiling; absent ⇒ the config default.
@@ -289,8 +271,6 @@ async def _submit_turn(
     models: tuple[Model, Model, ModelSettings | None, int | None, bool],
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
-    inline_max_tokens: int | None = None,
-    compaction: CompactionContext | None = None,
 ) -> ChatCreated:
     """Gather this route's resources from the `Request` and hand off to `compose_turn`.
 
@@ -315,8 +295,6 @@ async def _submit_turn(
         disabled_tools=await deps.disabled_tools(request),
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,
-        inline_max_tokens=inline_max_tokens,
-        compaction=compaction,
         # Resolved here, not at each caller, for the same reason as the request limit
         # below: send, regenerate and edit all want it and none of them should have to
         # know it exists.
@@ -351,48 +329,15 @@ async def _validate_attachments(request: Request, attachment_ids: list[str]) -> 
             )
 
 
-async def _attachment_inline_cap(
-    request: Request, attachment_ids: list[str]
-) -> int | None:
-    """The operator's inline-retention token cap, read only for a turn that actually
-    carries attachments (a plain chat turn skips the lookup). ``None`` ⇒ no attachments,
-    so the orchestrator never consults it."""
-    if not attachment_ids:
-        return None
-    return await get_attachment_inline_max_tokens(deps.settings_store(request), OPERATOR_ID)
-
-
-async def _resolve_compaction(
-    request: Request, conversation_id: str | None
-) -> CompactionContext:
-    """The effective tool-result compaction context for a turn, with a fresh per-turn handle
-    map. Precedence: the conversation's on/off override (if set) beats the operator's global
-    default, which beats the config default. Resolved for every turn (a plain turn condenses
-    prior tool-heavy turns too)."""
-    cs = await get_compaction(deps.settings_store(request), OPERATOR_ID)
-    enabled = cs.enabled
-    if conversation_id is not None:
-        override = await deps.store(request).get_compaction_override(
-            conversation_id, "tool_results"
-        )
-        enabled = resolve_compaction_enabled(override, cs.enabled)
-    return build_compaction_context(
-        get_settings(),
-        enabled=enabled,
-        keep_recent=cs.keep_recent,
-        min_tokens=cs.min_tokens,
-    )
-
-
 async def _resolve_auto_compact(
     request: Request, conversation_id: str | None
 ) -> AutoCompactPolicy:
-    """The effective conversation auto-compaction policy for a turn. Same precedence as
-    tool-result compaction — the thread's on/off override beats the operator's global
-    default, which beats the config default — resolved here rather than in the engine so
-    the orchestrator never reads the settings store itself."""
+    """The effective conversation auto-compaction policy for a turn: the thread's on/off
+    override beats the operator's global default, which beats the config default —
+    resolved here rather than in the engine so the orchestrator never reads the settings
+    store itself."""
     override = (
-        await deps.store(request).get_compaction_override(conversation_id, "turns")
+        await deps.store(request).get_compaction_override(conversation_id)
         if conversation_id is not None
         else None
     )
@@ -447,7 +392,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             OPERATOR_ID, ephemeral=body.ephemeral
         )
 
-    # Claim now, before the remaining awaits (attachment cap, compaction resolve) and
+    # Claim now, before the remaining awaits (the auto-compaction policy resolve) and
     # the eventual `submit` below — a plain "is there a live run" check alone leaves a
     # gap a concurrent regenerate/edit/delete could occupy without ever registering a
     # run for `active_run_for` to see. A brand-new conversation's id is unknown to
@@ -468,7 +413,6 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             return queued
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from None
     try:
-        cap = await _attachment_inline_cap(request, body.attachment_ids)
         return await _submit_turn(
             request,
             prompt=body.prompt,
@@ -476,8 +420,6 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             models=models,
             attachment_ids=body.attachment_ids,
             ephemeral=body.ephemeral,
-            inline_max_tokens=cap,
-            compaction=await _resolve_compaction(request, conversation_id),
         )
     finally:
         deps.release_conversation(request, conversation_id)
@@ -507,7 +449,6 @@ async def regenerate(body: RegenerateCreate, request: Request) -> ChatCreated:
             prompt=None,
             conversation_id=body.conversation_id,
             models=models,
-            compaction=await _resolve_compaction(request, body.conversation_id),
         )
     finally:
         deps.release_conversation(request, body.conversation_id)
@@ -531,32 +472,23 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
         models = await _resolve_models(request, body.endpoint_id, body.model)
         if not await store.edit_point(body.conversation_id, body.message_id):
             raise HTTPException(status_code=404, detail="message not found")
-        cap = await _attachment_inline_cap(request, body.attachment_ids)
         return await _submit_turn(
             request,
             prompt=body.prompt,
             conversation_id=body.conversation_id,
             models=models,
             attachment_ids=body.attachment_ids,
-            inline_max_tokens=cap,
-            compaction=await _resolve_compaction(request, body.conversation_id),
         )
     finally:
         deps.release_conversation(request, body.conversation_id)
 
 
 def _settings_response(
-    cap: int,
-    comp: CompactionSettings,
     auto: AutoCompactSettings,
     steps: int,
     inactivity: float | None,
 ) -> ChatSettings:
     return ChatSettings(
-        attachment_inline_max_tokens=cap,
-        compaction_enabled=comp.enabled,
-        compaction_keep_recent=comp.keep_recent,
-        compaction_min_tokens=comp.min_tokens,
         auto_compact_enabled=auto.enabled,
         auto_compact_threshold=auto.threshold,
         agent_request_limit=steps,
@@ -568,12 +500,10 @@ def _settings_response(
 async def get_chat_settings(request: Request) -> ChatSettings:
     """The operator's chat preferences (the runtime overrides, else the config defaults)."""
     store = deps.settings_store(request)
-    cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
-    comp = await get_compaction(store, OPERATOR_ID)
     auto = await get_auto_compact(store, OPERATOR_ID)
     steps = await get_agent_request_limit(store, OPERATOR_ID)
     inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
-    return _settings_response(cap, comp, auto, steps, inactivity)
+    return _settings_response(auto, steps, inactivity)
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -583,12 +513,6 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
     each multi-field group is merged over its current values and only written when the body
     touched it, so a client tuning one preference can't reset the rest."""
     store = deps.settings_store(request)
-    if body.attachment_inline_max_tokens is not None:
-        cap = await set_attachment_inline_max_tokens(
-            store, OPERATOR_ID, body.attachment_inline_max_tokens
-        )
-    else:
-        cap = await get_attachment_inline_max_tokens(store, OPERATOR_ID)
     if body.agent_request_limit is not None:
         steps = await set_agent_request_limit(store, OPERATOR_ID, body.agent_request_limit)
     else:
@@ -599,27 +523,6 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         )
     else:
         inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
-
-    comp = await get_compaction(store, OPERATOR_ID)
-    if any(
-        v is not None
-        for v in (body.compaction_enabled, body.compaction_keep_recent, body.compaction_min_tokens)
-    ):
-        comp = await set_compaction(
-            store,
-            OPERATOR_ID,
-            CompactionSettings(
-                enabled=comp.enabled
-                if body.compaction_enabled is None
-                else body.compaction_enabled,
-                keep_recent=comp.keep_recent
-                if body.compaction_keep_recent is None
-                else body.compaction_keep_recent,
-                min_tokens=comp.min_tokens
-                if body.compaction_min_tokens is None
-                else body.compaction_min_tokens,
-            ),
-        )
 
     auto = await get_auto_compact(store, OPERATOR_ID)
     if body.auto_compact_enabled is not None or body.auto_compact_threshold is not None:
@@ -635,4 +538,4 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 else body.auto_compact_threshold,
             ),
         )
-    return _settings_response(cap, comp, auto, steps, inactivity)
+    return _settings_response(auto, steps, inactivity)

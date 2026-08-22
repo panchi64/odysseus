@@ -1,10 +1,8 @@
-import { createMemo, For, Show, type JSX } from "solid-js";
+import { For, Show, type JSX } from "solid-js";
 import {
   Button,
   Panel,
   Row,
-  Select,
-  type SelectOption,
   Stack,
   StatusDot,
   StatusFlag,
@@ -14,14 +12,16 @@ import {
 import { isApiError } from "~/lib/api";
 import { setRoleBinding, useEndpoints, useRoles } from "../data";
 import { BINDABLE_ROLES } from "../model";
-import { EmbeddingRoleControls } from "./EmbeddingRoleControls";
 import { healthStatus } from "./EndpointHealthFlag";
-import { modelGroups, type ModelEndpoint } from "~/lib/stores/models";
+import type { ModelEndpoint } from "~/lib/stores/models";
 
-/* A role binds to an ordered fallback chain (first = primary). The control
-   below captures that order explicitly — membership *and* position — so it no
-   longer rides on endpoint creation order. */
-export function RoleBindingsSection(): JSX.Element {
+/* The advanced half of a role binding: `utility` and `embedding` each resolve
+   against an ordered fallback chain (first = primary), and the control below
+   captures that order explicitly — membership *and* position — so it doesn't ride
+   on endpoint creation order. WHICH model each job uses is picked on its card
+   above; this only decides where the request goes when the primary is down.
+   `main` has no chain (it is single-endpoint), so it isn't listed here. */
+export function FallbackChainsSection(): JSX.Element {
   const endpoints = useEndpoints();
   const roles = useRoles();
 
@@ -44,50 +44,12 @@ export function RoleBindingsSection(): JSX.Element {
     return (endpoints() ?? []).filter((e) => !bound.has(e.id));
   };
 
-  // The models a role's primary (head) endpoint serves, plus an explicit "endpoint
-  // default" choice and the current pick (so it stays selectable even if discovery
-  // missed it). The backend pins this model on the head endpoint, so a
-  // discovery-only provider (no default model) becomes resolvable — the same fact
-  // research/tasks/titling depend on. Shared by main, utility, and embedding.
-  const roleModelOptions = (role: string): SelectOption[] => {
-    const opts: SelectOption[] = [{ value: "", label: "ENDPOINT DEFAULT" }];
-    const primary = chainFor(role)[0];
-    const models = primary
-      ? (
-          modelGroups().find((g) => g.endpointId === primary)?.choices ?? []
-        ).map((c) => c.model)
-      : [];
-    for (const m of models) opts.push({ value: m, label: m });
-    const current = modelFor(role);
-    if (current && !models.includes(current))
-      opts.push({ value: current, label: current });
-    return opts;
-  };
-  const embeddingModelOptions = createMemo<SelectOption[]>(() =>
-    roleModelOptions("embedding"),
-  );
-
-  // `main` is single-endpoint (the top-bar picker overwrites the whole binding), so
-  // Settings edits it as one provider, not a chain. Only tool-calling endpoints are
-  // offered — the backend rejects the rest on bind.
-  const mainEndpointOptions = (): SelectOption[] => [
-    { value: "", label: "NONE" },
-    ...(endpoints() ?? [])
-      .filter((e) => e.enabled && e.nativeTools)
-      .map((e) => ({ value: e.id, label: e.name })),
-  ];
-
-  // Re-bind preserves the role's pinned model unless a new one is given; a backend
-  // rejection (e.g. a non-embeddings model) surfaces its detail to the operator.
-  // The store's role write re-reads the shared bindings, so a `main` write already
-  // refreshes the top-bar picker — both read the one binding.
-  const applyChain = async (
-    role: string,
-    next: string[],
-    model: string | null = modelFor(role),
-  ) => {
+  // Re-bind preserves the role's pinned model — reordering where a request goes
+  // must never silently change which model answers it. A backend rejection (e.g.
+  // a non-embeddings model) surfaces its detail to the operator verbatim.
+  const applyChain = async (role: string, next: string[]) => {
     try {
-      const reindexStarted = await setRoleBinding(role, next, model);
+      const reindexStarted = await setRoleBinding(role, next, modelFor(role));
       if (reindexStarted)
         toast.info("Re-embedding memories and chats for the new model…");
     } catch (e) {
@@ -96,10 +58,6 @@ export function RoleBindingsSection(): JSX.Element {
       );
     }
   };
-  // Switching main's endpoint clears the old pin (a model on the prior provider
-  // rarely exists on the new one); the operator then picks a model below.
-  const setMainEndpoint = (id: string) =>
-    applyChain("main", id ? [id] : [], null);
   const addToRole = (role: string, id: string) =>
     applyChain(role, [...chainFor(role), id]);
   const removeFromRole = (role: string, id: string) =>
@@ -116,47 +74,22 @@ export function RoleBindingsSection(): JSX.Element {
   };
 
   return (
-    <Panel label="ROLE BINDINGS">
+    <Panel label="FALLBACK CHAINS">
       <Stack gap={4}>
         <Text variant="micro" tone="dim">
-          `main` is the chat model — also used by research, tasks, and titling —
-          and is single-endpoint (the same binding the top-bar picker writes).
-          `utility` runs background verification; `embedding` powers memory
-          recall — both bind an ordered fallback chain (first = primary) and
-          auto-switch past dead/disabled endpoints. A pinned model lets a
-          discovery-only provider (no default) be used.
+          Where a request goes when the primary endpoint is down. The background
+          and search &amp; memory jobs each bind an ordered chain (first =
+          primary) and auto-switch past dead or disabled endpoints. The chat
+          model is single-endpoint and has no chain.
         </Text>
         <Show
           when={(endpoints() ?? []).length}
           fallback={
             <Text variant="micro" tone="dim">
-              Add an endpoint to bind roles.
+              Add an endpoint to bind a chain.
             </Text>
           }
         >
-          <Stack gap={2}>
-            <Text variant="label" tone="bright">
-              MAIN
-            </Text>
-            <Select
-              label="ENDPOINT"
-              value={chainFor("main")[0] ?? ""}
-              options={mainEndpointOptions()}
-              onChange={setMainEndpoint}
-              hint="The chat model. Also drives research, tasks, and titling."
-            />
-            <Show when={chainFor("main").length > 0}>
-              <Select
-                label="MODEL"
-                value={modelFor("main") ?? ""}
-                options={roleModelOptions("main")}
-                onChange={(v) =>
-                  void applyChain("main", chainFor("main"), v === "" ? null : v)
-                }
-                hint="Pin a model — required for a provider that serves no default."
-              />
-            </Show>
-          </Stack>
           <For each={BINDABLE_ROLES}>
             {(role) => (
               <Stack gap={2}>
@@ -241,33 +174,6 @@ export function RoleBindingsSection(): JSX.Element {
                       )}
                     </For>
                   </div>
-                </Show>
-                <Show
-                  when={role === "utility" && chainFor("utility").length > 0}
-                >
-                  <Select
-                    label="MODEL"
-                    value={modelFor("utility") ?? ""}
-                    options={roleModelOptions("utility")}
-                    onChange={(v) =>
-                      void applyChain(
-                        "utility",
-                        chainFor("utility"),
-                        v === "" ? null : v,
-                      )
-                    }
-                    hint="The model on the primary endpoint — pin one for a provider with no default."
-                  />
-                </Show>
-                <Show when={role === "embedding"}>
-                  <EmbeddingRoleControls
-                    bound={chainFor("embedding").length > 0}
-                    model={modelFor("embedding")}
-                    modelOptions={embeddingModelOptions()}
-                    onPickModel={(m) =>
-                      void applyChain("embedding", chainFor("embedding"), m)
-                    }
-                  />
                 </Show>
               </Stack>
             )}

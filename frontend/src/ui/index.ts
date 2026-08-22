@@ -74,6 +74,10 @@ export {
   type AttachmentStatus,
 } from "./components/AttachmentChip";
 export { ListRow, type ListRowProps } from "./components/ListRow";
+export {
+  ListGroupHeader,
+  type ListGroupHeaderProps,
+} from "./components/ListGroupHeader";
 export { ListToolbar, type ListToolbarProps } from "./components/ListToolbar";
 export {
   RegistrationFrame,
@@ -153,6 +157,10 @@ export { ThemeToggle } from "./components/ThemeToggle";
 export { LoadingText, type LoadingTextProps } from "./components/LoadingText";
 export { EmptyState, type EmptyStateProps } from "./components/EmptyState";
 export { ErrorState, type ErrorStateProps } from "./components/ErrorState";
+export {
+  ErrorBoundary,
+  type ErrorBoundaryProps,
+} from "./components/ErrorBoundary";
 export { Resource, type ResourceProps } from "./components/Resource";
 export { EditorShell, type EditorShellProps } from "./components/EditorShell";
 export {

@@ -48,7 +48,7 @@ from pydantic_ai import (
     UsageLimits,
     UserPromptPart,
 )
-from pydantic_ai.capabilities import ProcessHistory, ReinjectSystemPrompt
+from pydantic_ai.capabilities import ReinjectSystemPrompt
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
@@ -74,9 +74,9 @@ from runs import (
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.conversations import ConversationStore, context_footprint
 from services.notifications import NotificationService
+from services.sandbox import SandboxSessionManager
 from services.uploads import UploadStore
 from tools import (
-    CompactionContext,
     InstructionProvider,
     PromptContextProvider,
     RunDeps,
@@ -84,7 +84,6 @@ from tools import (
 )
 
 from .attachments import resolve_attachments
-from .compaction import build_compaction_context, compact_tool_returns
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
 from .history import (
     drop_dangling_tool_calls,
@@ -151,13 +150,10 @@ class ParkedTurn:
     # point, not only in the initial chat turn). None ⇒ don't title on resume.
     title: TitleContext | None = None
     # Attachment context, carried so a turn that parked for approval still installs its
-    # capped attachment content (and stamps the ids) when the resume finally persists it —
-    # keeping replayed history capped just like a direct turn.
+    # durable attachment markers (and stamps the ids) when the resume finally persists it —
+    # keeping replayed history marker-only just like a direct turn.
     attachment_ids: list[str] = field(default_factory=list)
     persisted: list | None = None
-    # The turn's resolved compaction context (config + handle map), carried so the resume
-    # condenses prior turns the same way — and can still expand a result digested before the park.
-    compaction: CompactionContext | None = None
     # The turn's model-request budget (the operator's setting, else the config default),
     # carried so the resume continues under the same ceiling the original turn ran with
     # rather than silently reverting to the default. None ⇒ resolve from config.
@@ -200,14 +196,12 @@ def _build_agent(
         instructions=INSTRUCTIONS,
         toolsets=build_agent_toolsets(categories),
         output_type=[str, DeferredToolRequests],
-        # ReinjectSystemPrompt keeps our system prompt authoritative; ProcessHistory digests
-        # oversized prior-turn tool results for the model's view (a no-op unless the turn's
-        # RunDeps carries an enabled CompactionContext). Both transform only what the model
-        # sees, never what we persist.
-        capabilities=[
-            ReinjectSystemPrompt(replace_existing=True),
-            ProcessHistory(compact_tool_returns),
-        ],
+        # ReinjectSystemPrompt keeps our system prompt authoritative — it transforms only
+        # what the model sees, never what we persist. Nothing else rewrites the history on
+        # its way to the model: a tool result rides into context whole, and the one
+        # reduction that exists (conversation compaction) fires between turns, in the
+        # orchestrator prelude, against measured context pressure.
+        capabilities=[ReinjectSystemPrompt(replace_existing=True)],
     )
 
     # Feature-contributed dynamic instructions (each manifest's `instructions` export —
@@ -312,6 +306,8 @@ async def _maybe_compact(
             message_id=outcome.message_id,
             summary=outcome.summary,
             messages_compacted=outcome.messages_compacted,
+            tokens_before=outcome.tokens_before,
+            tokens_after=outcome.tokens_after,
             after_message_id=outcome.after_message_id,
         )
     )
@@ -398,7 +394,6 @@ async def _drive_turn(
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
@@ -421,11 +416,6 @@ async def _drive_turn(
         caps=caps,
         disabled_tools=disabled_tools,
         conversation_id=conversation_id,
-        # The turn's resolved compaction context (config + persistence boundary + handle map),
-        # built once by the orchestrator and shared across the turn's segments (the grant-resume
-        # continuations reuse this `deps`), so `expand_tool_result` can recover any digested prior
-        # result. None ⇒ compaction is off for this turn.
-        compaction=compaction,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -639,7 +629,6 @@ async def _verify_and_correct(
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    compaction: CompactionContext | None = None,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
@@ -681,7 +670,6 @@ async def _verify_and_correct(
         caps=caps,
         conversation_id=conversation_id,
         disabled_tools=disabled_tools,
-        compaction=compaction,
         partial_history_ref=partial_history_ref,
         store=store,
         request_limit=request_limit,
@@ -719,7 +707,8 @@ def _finalize(
     its ``clean_drop`` is a verifier correction's message range to drop from the persisted
     history, and its ``attachment_ids``/``persisted`` carry a turn's attached files (the
     ids are stamped on the persisted request for chip rendering, and ``persisted`` is the
-    capped content that replaces the live payload in history)."""
+    durable content — the attachment markers, plus any retained image — that replaces the
+    live payload in history)."""
     conversation_id = context.conversation_id
     if run.status is RunStatus.awaiting_input:
         # Parked: hand the resume the context to persist the parked turn too.
@@ -730,7 +719,6 @@ def _finalize(
                 run.parked_payload.clean_drop = context.clean_drop
             run.parked_payload.attachment_ids = list(context.attachment_ids)
             run.parked_payload.persisted = context.persisted
-            run.parked_payload.compaction = context.compaction
         return
     if turn.answer is None and not turn.blocked_reason:
         return  # hit a bound with nothing captured, or a cancel — nothing to persist
@@ -739,9 +727,9 @@ def _finalize(
         if context.clean_drop is not None:
             reject_idx, nudge_idx = context.clean_drop
             messages = messages[:reject_idx] + messages[nudge_idx + 1 :]
-        # The store installs the capped `persisted` content and stamps `attachment_ids`
-        # on the turn's user request as it serializes — keeping replayed history capped is
-        # the store's concern (what the durable blob contains), not the engine's.
+        # The store installs the durable `persisted` content and stamps `attachment_ids`
+        # on the turn's user request as it serializes — what the durable blob contains is
+        # the store's concern, not the engine's.
         # `blocked_reason` stamps the turn's branch node so a reload shows the same
         # persistent stop marker the live stream rendered (`record` is a no-op for an
         # empty slice, e.g. a bound hit before any new message accumulated).
@@ -800,7 +788,6 @@ def _parked_context(parked: ParkedTurn) -> PersistContext:
         clean_drop=parked.clean_drop,
         attachment_ids=parked.attachment_ids,
         persisted=parked.persisted,
-        compaction=parked.compaction,
     )
 
 
@@ -823,8 +810,6 @@ def build_chat_orchestrator(
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
     vision: bool = False,
-    inline_max_tokens: int | None = None,
-    compaction: CompactionContext | None = None,
     auto_compact: AutoCompactPolicy | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     request_limit: int | None = None,
@@ -835,14 +820,14 @@ def build_chat_orchestrator(
     from a history that already ends in the user request (the caller moved the
     active leaf there), producing a fresh answer as a sibling of the previous one.
 
-    ``attachment_ids`` are files the operator attached to *this* message (resolved
-    via ``uploads``; ``vision`` selects image-as-pixels vs extracted text). They're
-    handed to the model in full for this turn, then retained inline on persist up to
-    ``inline_max_tokens`` (the operator's cap; absent ⇒ the config default) — images
-    always, a document's text until it exceeds the cap, past which it's cut off with a
-    pointer to the attachments/corpus tools. Attachments are injected only on a fresh
-    turn; a regenerate (``prompt is None``) re-runs prior history, which already carries
-    the capped content.
+    ``attachment_ids`` are files the operator attached to *this* message (resolved via
+    ``uploads``). Their original bytes are staged into the conversation's sandbox and the
+    turn carries a short marker naming each file and its path — the model reads and pages
+    through the file itself rather than having its text poured into context. ``vision``
+    additionally hands an image over as pixels, which is the one attachment kind that
+    still rides inline (and is retained on persist). Attachments are injected only on a
+    fresh turn; a regenerate (``prompt is None``) re-runs prior history, which already
+    carries the markers.
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
@@ -897,16 +882,6 @@ def build_chat_orchestrator(
         # otherwise interrupt us before we reach `_finalize` below and silently drop
         # the turn on the next reload — see `RunRegistry._flush_timeout`).
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
-        # Resolve the turn's compaction context once and anchor its boundary to the
-        # persistence index (`protect_from`, set below once `start` is known): everything
-        # from `start` on is this (to-be-persisted) turn and stays full, so a verifier
-        # re-attempt's injected nudge can't push the original tool returns onto the
-        # "prior" side. The same object rides every segment (drive → verify → finalize →
-        # resume), keeping one handle map so a result digested before an approval park
-        # can still be expanded.
-        active_compaction = (
-            compaction if compaction is not None else build_compaction_context(settings)
-        )
 
         def _turn_messages_or_prompt() -> list[ModelMessage]:
             # The turn's own messages — its slice of the partial history — or, if the
@@ -936,7 +911,6 @@ def build_chat_orchestrator(
                 clean_drop=_flush_clean_drop(),
                 attachment_ids=stamp_ids,
                 persisted=persisted,
-                compaction=active_compaction,
             )
 
         def _flush_clean_drop() -> tuple[int, int] | None:
@@ -1001,8 +975,6 @@ def build_chat_orchestrator(
         # context appended below. `history` itself stays the persistence baseline.
         model_history = history
 
-        active_compaction.protect_from = start
-
         # Auto-title context for this run — None disables it (feature off, or no
         # utility model). Built up-front so the title can be generated *concurrently*
         # with the answer (it needs only the operator's opening message), leaving no
@@ -1020,22 +992,23 @@ def build_chat_orchestrator(
             conversation_id=conversation_id,
         )
 
-        # Hand any attached files to the model in full for *this* turn — pixels for a
-        # vision model, extracted text otherwise — appended after the operator's prompt.
-        # On persist they're replaced by the capped `persisted` set (images + under-cap
-        # text inline, larger text cut to a tool pointer), so replayed history stays
-        # bounded. Only on a fresh turn: a regenerate (prompt is None) re-runs history,
-        # which already carries the capped content. The cap is the operator's setting,
-        # passed in; absent ⇒ the config default.
-        cap = (
-            inline_max_tokens
-            if inline_max_tokens is not None
-            else settings.attachment_inline_max_tokens
-        )
+        # Stage any attached files into this conversation's sandbox and append their
+        # marker (name, id, mime, size, path) after the operator's prompt — the model
+        # reads what it needs from the path rather than receiving the file's text. A
+        # vision model additionally gets an image's pixels, the one kind that stays
+        # inline in both the live and the persisted shape. Only on a fresh turn: a
+        # regenerate (prompt is None) re-runs history, which already carries the markers.
         user_prompt: str | list[Any] | None = prompt
         if attachment_ids and prompt is not None and uploads is not None:
             resolved = await resolve_attachments(
-                uploads, run.owner_id, attachment_ids, vision=vision, inline_max_tokens=cap
+                uploads,
+                run.owner_id,
+                attachment_ids,
+                vision=vision,
+                sessions=capabilities.get_optional(SandboxSessionManager),
+                # The same key the code/files tools use, so an attachment lands in the
+                # very workspace the agent is about to run code in.
+                sandbox_key=conversation_id or run.id,
             )
             # Only build a multimodal prompt when something actually resolved — else leave
             # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
@@ -1080,7 +1053,6 @@ def build_chat_orchestrator(
                 caps=capabilities,
                 conversation_id=conversation_id,
                 disabled_tools=disabled_tools,
-                compaction=active_compaction,
                 partial_history_ref=partial_history_ref,
                 store=store,
                 request_limit=request_limit,
@@ -1113,7 +1085,6 @@ def build_chat_orchestrator(
                         caps=capabilities,
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
-                        compaction=active_compaction,
                         partial_history_ref=partial_history_ref,
                         store=store,
                         request_limit=request_limit,
@@ -1133,7 +1104,6 @@ def build_chat_orchestrator(
                     clean_drop=turn.clean_drop,
                     attachment_ids=stamp_ids,
                     persisted=persisted,
-                    compaction=active_compaction,
                 ),
             )
             # Disarm the flush hooks now the turn is recorded: a wall-clock/inactivity bound
@@ -1247,7 +1217,6 @@ def build_resume_orchestrator(
                 caps=capabilities,
                 conversation_id=parked.conversation_id,
                 disabled_tools=disabled_tools,
-                compaction=parked.compaction,
                 partial_history_ref=partial_history_ref,
                 store=store,
                 # The ceiling the parked turn was running under — a resume continues

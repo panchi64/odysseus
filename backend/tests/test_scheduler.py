@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import UTC, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy.exc import OperationalError
@@ -14,19 +14,13 @@ from sqlmodel import Session, select
 
 import services.scheduler as scheduler_mod
 from core.db import init_db, make_engine, read_session
+from core.serde import as_utc
 from core.vault import Vault
 from models._fields import utcnow
 from models.task import ScheduledTask, ScheduleType, TaskKind, TaskOutcome, TaskOutput, TaskRun
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
 
 OWNER = "operator"
-
-
-def _as_utc(value):
-    """SQLite round-trips a datetime naive even though it was written tz-aware —
-    normalize before comparing against a fresh `utcnow()` (mirrors the same
-    normalization `services/scheduler.py` applies internally)."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 async def _vault(tmp_path: Path) -> Vault:
@@ -168,7 +162,7 @@ async def test_interval_task_recomputes_forward_and_stays_enabled(tmp_path):
         task = _get_task(engine, task_id)
         assert task.enabled is True
         # Anchored on settlement (~now), not left at the stale past next_run_at.
-        assert _as_utc(task.next_run_at) > before + timedelta(seconds=3500)
+        assert as_utc(task.next_run_at) > before + timedelta(seconds=3500)
     finally:
         await scheduler.stop()
 
@@ -597,7 +591,7 @@ async def test_locked_vault_parks_and_fires_at_most_one_catch_up_on_unlock(tmp_p
 
         task = _get_task(engine, task_id)
         # Recomputed from now, not the stale hour-old timestamp.
-        assert _as_utc(task.next_run_at) > utcnow()
+        assert as_utc(task.next_run_at) > utcnow()
     finally:
         await scheduler.stop()
 

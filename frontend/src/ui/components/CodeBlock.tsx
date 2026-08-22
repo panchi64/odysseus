@@ -7,6 +7,10 @@ export interface CodeBlockProps {
   /** The source text to display, verbatim. */
   code: string;
   class?: string;
+  /** Forwards the scrolling root element — lets a caller hook up scroll-position
+   *  persistence (e.g. `rememberScroll`) without CodeBlock owning that concern.
+   *  Same seam `DiffView` exposes, so a caller can swap between the two. */
+  ref?: (el: HTMLDivElement) => void;
   /** Optional language for syntax highlighting (an alias `highlight.ts`
    *  recognizes, e.g. "ts", "python", "yaml"). Omitted, unrecognized, or still
    *  loading -> the plain, unhighlighted rendering below (zero layout shift —
@@ -49,6 +53,7 @@ export function CodeBlock(props: CodeBlockProps): JSX.Element {
 
   return (
     <div
+      ref={(el) => props.ref?.(el)}
       class={cx(
         "h-full overflow-auto bg-surface font-mono text-body",
         props.class,

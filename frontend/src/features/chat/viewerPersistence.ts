@@ -33,15 +33,23 @@ const DEFAULT_STATE: ViewerPersistedState = {
   pinnedKey: null,
   activeTab: "preview",
   fontStep: 0,
-  softWrap: false,
+  // On by default: an unwrapped split diff puts the whole file behind a
+  // horizontal scroll and lets long lines run across the column divider.
+  softWrap: true,
   fullscreen: false,
   seenKey: null,
 };
 
+const V3_KEY = "ody.chat.viewer.v3";
+/** Prior per-conversation record — identical in shape, but written when `softWrap`
+ *  defaulted *off*. Left in place, read once to seed a conversation's first v3
+ *  entry: every other preference carries over, only `softWrap` is re-defaulted,
+ *  so an existing thread picks up the new resting state without losing its
+ *  open/pin/tab/font/seen position. */
 const V2_KEY = "ody.chat.viewer.v2";
 /** Legacy per-conversation open-state map (`ChatRoomScreen`'s prior `VIEWPORT_KEY`).
- *  Left in place on migration — only read once, to seed a conversation's first v2
- *  entry. */
+ *  Left in place on migration — only read once, to seed a conversation that has
+ *  no v3 *or* v2 entry. */
 const LEGACY_OPEN_KEY = "ody.chat.viewport";
 /** Legacy (and still current) global panel width key — `viewerWidth` keeps using it
  *  directly rather than folding width into the per-conversation v2 record. */
@@ -65,33 +73,41 @@ function readJson<T>(key: string): T | null {
   }
 }
 
-function readV2Map(): PersistedMap {
-  return readJson<PersistedMap>(V2_KEY) ?? {};
+function readV3Map(): PersistedMap {
+  return readJson<PersistedMap>(V3_KEY) ?? {};
 }
 
-function writeV2Map(map: PersistedMap): void {
-  writeLS(V2_KEY, JSON.stringify(map));
+function writeV3Map(map: PersistedMap): void {
+  writeLS(V3_KEY, JSON.stringify(map));
+}
+
+function readV2Map(): PersistedMap {
+  return readJson<PersistedMap>(V2_KEY) ?? {};
 }
 
 function readLegacyOpenMap(): Record<string, boolean> {
   return readJson<Record<string, boolean>>(LEGACY_OPEN_KEY) ?? {};
 }
 
-/** A conversation's v2 entry, seeded from the legacy open-state map the first time
- *  it's read (the legacy key is left in place, never written to again). */
+/** A conversation's v3 entry, seeded the first time it's read: from its v2 record
+ *  when there is one (everything but `softWrap`, which takes the new default),
+ *  else from the legacy open-state map. Neither older key is written again. */
 function seedState(
   conversationId: string,
   map: PersistedMap,
 ): ViewerPersistedState {
   const existing = map[conversationId];
   if (existing) return existing;
+  const prior = readV2Map()[conversationId];
+  if (prior)
+    return { ...DEFAULT_STATE, ...prior, softWrap: DEFAULT_STATE.softWrap };
   const legacyOpen = readLegacyOpenMap()[conversationId] ?? false;
   return { ...DEFAULT_STATE, open: legacyOpen };
 }
 
 // Module-level so the panel's state survives the screen remounting on navigation —
 // same rationale as `claimAutoOpen` below in `viewport.ts`.
-const [v2Map, setV2Map] = createSignal<PersistedMap>(readV2Map());
+const [v3Map, setV3Map] = createSignal<PersistedMap>(readV3Map());
 
 /** Per-conversation View panel state, backed by localStorage. `state()` is reactive
  *  (tracks the module-level store); `patch` merges and persists immediately. */
@@ -100,13 +116,13 @@ export function useViewerPersistence(conversationId: () => string): {
   patch: (p: Partial<ViewerPersistedState>) => void;
 } {
   const state = (): ViewerPersistedState =>
-    seedState(conversationId(), v2Map());
+    seedState(conversationId(), v3Map());
   const patch = (p: Partial<ViewerPersistedState>): void => {
     const id = conversationId();
-    const next: ViewerPersistedState = { ...seedState(id, v2Map()), ...p };
-    const nextMap = { ...v2Map(), [id]: next };
-    setV2Map(nextMap);
-    writeV2Map(nextMap);
+    const next: ViewerPersistedState = { ...seedState(id, v3Map()), ...p };
+    const nextMap = { ...v3Map(), [id]: next };
+    setV3Map(nextMap);
+    writeV3Map(nextMap);
   };
   return { state, patch };
 }

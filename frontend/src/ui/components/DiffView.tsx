@@ -24,7 +24,11 @@ export interface DiffViewProps {
   ref?: (el: HTMLDivElement) => void;
   /** Zoom step (-2..+2), matching the View panel's font-size control. Default 0. */
   fontStep?: number;
-  /** Wraps long lines instead of the default horizontal scroll. Default false. */
+  /** Wraps long lines inside their column instead of scrolling horizontally.
+   *  **Defaults to `true`** — unlike `CodeBlock`, which is a single column and
+   *  can scroll a long line harmlessly. A split diff cannot: two side-by-side
+   *  columns of unwrapped text put the whole file behind a horizontal scroll and
+   *  read badly. The View panel's wrap toggle turns it off. */
   softWrap?: boolean;
 }
 
@@ -314,27 +318,45 @@ function StackedBody(props: { segs: Seg[]; wrap?: boolean }): JSX.Element {
   );
 }
 
+/** Each side is clipped to its own track (`min-w-0 overflow-hidden`) so a long
+ *  line can never paint across the divider onto the other column. That only
+ *  works because the track sizing gives the line somewhere to go:
+ *  - **wrapping** — two equal `1fr` tracks; the line folds inside its column and
+ *    nothing scrolls horizontally at all.
+ *  - **not wrapping** — each track is at least half the width but grows to its
+ *    content, so both sides overflow *together* into the one root scroller
+ *    (a full-width `col-span-2` meta/context line distributes its own
+ *    max-content contribution across both tracks, so it widens them too). */
+const SPLIT_COLS = {
+  wrap: "grid-cols-2",
+  scroll: "grid-cols-[minmax(50%,max-content)_minmax(50%,max-content)]",
+} as const;
+
 function SplitBody(props: { segs: Seg[]; wrap?: boolean }): JSX.Element {
   const rows = createMemo(() => splitRows(props.segs));
   return (
-    <div class="grid grid-cols-2">
+    <div class={cx("grid", SPLIT_COLS[props.wrap ? "wrap" : "scroll"])}>
       <For each={rows()}>
         {(row) => (
           <Show
             when={row.full}
             fallback={
               <>
-                <LineRow line={row.left} wrap={props.wrap} />
+                <LineRow
+                  line={row.left}
+                  wrap={props.wrap}
+                  class="min-w-0 overflow-hidden"
+                />
                 <LineRow
                   line={row.right}
                   wrap={props.wrap}
-                  class="border-l border-line"
+                  class="min-w-0 overflow-hidden border-l border-line"
                 />
               </>
             }
           >
             {(full) => (
-              <div class="col-span-2">
+              <div class="col-span-2 min-w-0">
                 <LineRow line={full()} wrap={props.wrap} />
               </div>
             )}
@@ -350,7 +372,10 @@ function SplitBody(props: { segs: Seg[]; wrap?: boolean }): JSX.Element {
  *  `stacked` is set or the panel is too narrow to split. Changed line pairs
  *  (a removed line matched 1:1 with its replacement) get word-level emphasis
  *  on top of the line-level tone; unpaired adds/removes render plain, as
- *  before. Scrollable, fills its container. */
+ *  before. Long lines soft-wrap inside their column by default, so the resting
+ *  state has no horizontal scroll; `softWrap={false}` trades that for content-
+ *  sized columns both sides scroll through together. Fills its container and
+ *  owns the one scroll root — callers must not nest it in another. */
 export function DiffView(props: DiffViewProps): JSX.Element {
   let root: HTMLDivElement | undefined;
   const [width, setWidth] = createSignal(Infinity);
@@ -370,6 +395,8 @@ export function DiffView(props: DiffViewProps): JSX.Element {
     () => Boolean(props.stacked) || width() < STACK_BREAKPOINT,
   );
   const size = createMemo(() => fontStepSize(props.fontStep));
+  // Wrapping is the resting state (see `softWrap`), so an omitted prop means on.
+  const wrap = createMemo(() => props.softWrap ?? true);
 
   return (
     <div
@@ -385,9 +412,9 @@ export function DiffView(props: DiffViewProps): JSX.Element {
     >
       <Show
         when={stacked()}
-        fallback={<SplitBody segs={segs()} wrap={props.softWrap} />}
+        fallback={<SplitBody segs={segs()} wrap={wrap()} />}
       >
-        <StackedBody segs={segs()} wrap={props.softWrap} />
+        <StackedBody segs={segs()} wrap={wrap()} />
       </Show>
     </div>
   );

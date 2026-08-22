@@ -50,6 +50,11 @@ export function ViewStage(props: {
    *  panel and threaded down to whichever content/code view is on stage. */
   fontStep?: number;
   softWrap?: boolean;
+  /** True when the panel owns the whole screen (the fullscreen sheet) rather than
+   *  sharing it with the transcript — resolved by the panel, since below `lg` the
+   *  sheet is the only mount. Stage arms that need room to be usable (the document
+   *  suggestion review) are gated on it. */
+  expanded?: boolean;
 }): JSX.Element {
   return (
     <Switch>
@@ -79,6 +84,7 @@ export function ViewStage(props: {
                   onDocumentVersion={props.onDocumentVersion}
                   fontStep={props.fontStep}
                   softWrap={props.softWrap}
+                  expanded={props.expanded}
                 />
               </Show>
             </Match>

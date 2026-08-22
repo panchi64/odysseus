@@ -244,7 +244,6 @@ async def test_execute_description_states_the_live_config_caps(monkeypatch):
         sandbox_memory="256m",
         sandbox_cpus="0.5",
         sandbox_pids_limit=64,
-        sandbox_output_max_chars=8000,
     )
     monkeypatch.setattr(code_module, "get_settings", lambda: settings)
 
@@ -253,39 +252,27 @@ async def test_execute_description_states_the_live_config_caps(monkeypatch):
     assert "256m" in description
     assert "0.5" in description
     assert "64" in description
-    assert "4,000" in description  # the per-stream cap: 8000 // 2
+    # The resource caps are real and worth stating; there is no output cap to state.
+    assert "come back whole" in description
 
 
-# --- sandbox-03: stdout/stderr are capped, truncated in the middle -----------
+# --- output is returned whole ------------------------------------------------
 
 
-async def test_output_under_the_cap_is_untouched(monkeypatch):
-    settings = Settings(sandbox_output_max_chars=1000)
-    monkeypatch.setattr(code_module, "get_settings", lambda: settings)
-    result = await _run_canned(result=SandboxResult(exit_code=0, stdout="hello", stderr="world"))
-    assert result["stdout"] == "hello"
+async def test_output_is_returned_whole(monkeypatch):
+    # The blanket per-stream cap is gone. It fired on every run regardless of context
+    # pressure and cost the model the middle of exactly the output it had just asked
+    # for; the turn's own context-overflow stop is what catches a pathological run.
+    monkeypatch.setattr(code_module, "get_settings", Settings)
+    big = "".join(f"{i:04d}\n" for i in range(10_000))  # 50,000 chars
+    result = await _run_canned(result=SandboxResult(exit_code=0, stdout=big, stderr="world"))
+    assert result["stdout"] == big
     assert result["stderr"] == "world"
+    assert "elided" not in result["stdout"]
 
 
-async def test_output_over_the_cap_is_truncated_in_the_middle(monkeypatch):
-    # A 40-char combined budget ⇒ 20 chars per stream (10 head + 10 tail).
-    monkeypatch.setattr(code_module, "get_settings", lambda: Settings(sandbox_output_max_chars=40))
-    big = "".join(f"{i:04d}\n" for i in range(100))  # 500 chars, far over the cap
-    result = await _run_canned(result=SandboxResult(exit_code=0, stdout=big, stderr=""))
-    stdout = result["stdout"]
-
-    head, tail = big[:10], big[-10:]
-    assert stdout.startswith(head)  # the head survives verbatim
-    assert stdout.endswith(tail)  # the tail (where errors/final state live) survives too
-    assert big not in stdout  # the untruncated blob never reaches the model
-    assert "480 characters elided" in stdout  # the exact elided count is stated
-    assert "full output was not kept" in stdout
-    assert "/work" in stdout  # sandboxed execution points at the sandbox, not the host
-
-
-async def test_host_command_output_is_capped_with_the_host_phrasing():
-    # run_host_command shares `_exec_result` but isn't sandboxed — its overflow note
-    # must not claim a `/work` path that doesn't exist on the real host.
+async def test_host_command_output_is_returned_whole():
+    # run_host_command shares `_exec_result`, so it gets the same untrimmed output.
     reg = RunRegistry()
     orch = build_chat_orchestrator(
         "change the host",
@@ -296,7 +283,7 @@ async def test_host_command_output_is_capped_with_the_host_phrasing():
     await run.wait()
     parked: ParkedTurn = run.parked_payload
     call_id = parked.requests.approvals[0].tool_call_id
-    big_echo = "x" * 20_000  # comfortably over the default 12,000-char per-stream cap
+    big_echo = "x" * 20_000  # comfortably over what the retired cap would have trimmed
     decision = {
         call_id: ToolApproved(override_args={"command": f"echo {big_echo}", "explanation": "x"})
     }
@@ -304,9 +291,7 @@ async def test_host_command_output_is_capped_with_the_host_phrasing():
     await run.wait()
 
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
-    stdout = completed.result["stdout"]
-    assert "/work" not in stdout
-    assert "redirecting it to a file" in stdout
+    assert completed.result["stdout"].strip() == big_echo
 
 
 # --- host execution (the deliberate, approval-gated escape hatch) ------------

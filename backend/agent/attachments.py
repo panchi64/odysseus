@@ -1,55 +1,83 @@
-"""Chat attachments — the active-turn hand-off and the retained reference.
+"""Chat attachments — a file goes to the agent's computer, not into its context.
 
-A file the operator attaches to a message reaches the model two ways, split by what the
-*live turn* needs versus what *replayed history* should carry:
+A document the operator attaches is **staged into the conversation's sandbox** (``/work``)
+under ``attachments/`` and announced to the model as a short marker: filename, upload id,
+mime, size, and the path it lives at. The model then decides what to read and pages
+through the file itself with its files/code tools. Nothing of the file's *text* enters the
+prompt — a 300-page PDF costs the same handful of marker tokens as a one-line note, and
+the model reads only the parts it actually needs.
 
-- **For the turn it's attached** it's handed over in full (:attr:`ResolvedAttachments.content`):
-  the real image for a vision model (so it can see it, not just its OCR text) and the
-  whole extracted text otherwise. The operator just gave it to the agent, so the attach
-  turn uses everything.
-- **In replayed history** the content is **retained inline up to a token cap**
-  (:attr:`ResolvedAttachments.persisted`): an image always stays (its cost is bounded and
-  there is no way to re-see one on demand), and a non-image file's text stays whole while
-  it is under the cap. A larger document is **cut off at the cap with a pointer appended**
-  telling the model to reach the full file through the ``attachments_provision`` tool
-  (stage the bytes into the sandbox) or ``corpus.retrieve`` (search its text) by id. A
-  compact marker listing every attachment's id closes the persisted block, so the model
-  can provision *any* attachment — even a fully-inline one — when it needs to run code on it.
+Two shapes still come back, and the split now matters for images only:
 
-Keeping the durable history capped is what stops a large file from growing context without
-bound while still leaving it one tool call away. Shared by the chat engine now;
-research/agent orchestrators can adopt it unchanged.
+- :attr:`ResolvedAttachments.content` — what the live attach turn sees.
+- :attr:`ResolvedAttachments.persisted` — what replayed history carries.
+
+An **image** is handed to a vision model as pixels and retained inline in both (there is
+nothing to "sift through" in a picture, and no way to re-see one on demand), so for images
+the two differ from a document only in kind. Its bytes are staged too, so code can crop or
+convert it without a round-trip. For a **document** the two shapes are identical: the
+marker, and only the marker.
+
+**Degrade path.** The sandbox is fail-closed and can be unavailable (no runtime, a locked
+vault, a workspace that won't open). Pointing the model at a path that doesn't exist would
+be worse than a big prompt, so when staging fails the file's extracted text is handed over
+**inline and in full**, and the marker says exactly that instead of naming a path.
+
+**Staleness is announced, not hidden.** Sandbox sessions are per-conversation and
+recyclable: a thread replayed days later may find nothing at the staged path. The marker
+tells the model so, and names ``attachments_provision`` (re-stage by id, same path) and
+``corpus.retrieve`` (semantic search over the text) as the two ways back.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic_ai import BinaryContent
 
-from core.text import tokens_to_chars, truncate_on_boundary
 from core.untrusted import wrap_untrusted
 from models.upload import UploadStatus
+from services.sandbox import (
+    SandboxError,
+    SandboxSessionManager,
+    stage_attachment,
+    workspace_path,
+)
 from services.uploads import UploadStore
 
-# Only true images get handed to a vision model as pixels; documents (PDFs, etc.) go in as
-# their extracted text, which the upload pipeline already produces at higher fidelity than
-# a raw-bytes pass would — and which a non-vision model can read too.
+logger = logging.getLogger(__name__)
+
+# Only true images get handed to a vision model as pixels; every other file is read from
+# the sandbox by the agent itself, which is both cheaper and better than any amount of
+# extracted text we could pour into the prompt.
 _IMAGE_PREFIX = "image/"
 
 
 @dataclass(frozen=True)
 class ResolvedAttachments:
-    """The two faces of a turn's attachments. ``content`` is the full set appended to the
-    live user prompt (what the attach turn sees); ``persisted`` is the capped set that
-    replaces it in durable/replayed history (images + under-cap text inline, larger text
-    cut to a pointer, a closing id marker). ``ids`` are the uploads that actually resolved
+    """The two faces of a turn's attachments. ``content`` is what the live user prompt
+    carries; ``persisted`` is what replaces it in durable/replayed history. They are
+    identical for documents (a marker naming the staged path) and differ only in that an
+    image's pixels ride in both. ``ids`` are the uploads that actually resolved
     (foreign/deleted ids dropped), so only real attachments get stamped as chips."""
 
-    content: list[Any]  # live-turn UserContent (full)
-    persisted: list[Any]  # durable UserContent (capped + pointers + marker)
+    content: list[Any]  # live-turn UserContent
+    persisted: list[Any]  # durable UserContent
     ids: list[str]
+
+
+@dataclass(frozen=True)
+class _Staged:
+    """One resolved attachment's line in the marker block, plus whether its text had to
+    ride inline because staging failed."""
+
+    filename: str
+    upload_id: str
+    mime: str
+    size_bytes: int
+    path: str | None  # None ⇒ not staged (see `inline_text`)
 
 
 async def resolve_attachments(
@@ -58,87 +86,143 @@ async def resolve_attachments(
     ids: list[str],
     *,
     vision: bool,
-    inline_max_tokens: int,
+    sessions: SandboxSessionManager | None = None,
+    sandbox_key: str | None = None,
 ) -> ResolvedAttachments:
     """Resolve attached upload ids into the live and durable content for this turn.
 
-    An image goes in as ``BinaryContent`` when the model can see (``vision``); anything
-    else — and images for a text-only model — goes in as its extracted text, wrapped
-    untrusted (file content is data, never instructions). ``content`` carries the full
-    content for the live turn; ``persisted`` carries it capped to ``inline_max_tokens``
-    for replayed history (a longer document is truncated and a tool pointer appended).
-    A file still being extracted contributes a short placeholder. Unknown or foreign ids
-    are skipped."""
+    Every non-image upload's **original bytes** are staged into the conversation's sandbox
+    ``/work`` (``sessions`` + ``sandbox_key``); an image's are staged too, and it
+    additionally goes in as ``BinaryContent`` when the model can see (``vision``). Both
+    returned shapes then carry one short marker block naming each file and its staged
+    path — no extracted text.
+
+    When the sandbox is unavailable, or staging a particular file fails, that file
+    degrades to its extracted text inline (wrapped untrusted — file content is data, never
+    instructions) and the marker says so rather than naming a path that isn't there. A
+    file still being extracted contributes a short placeholder. Unknown or foreign ids are
+    skipped."""
     content: list[Any] = []
     persisted: list[Any] = []
-    refs: list[str] = []
+    staged: list[_Staged] = []
     resolved_ids: list[str] = []
-    max_chars = tokens_to_chars(inline_max_tokens)
-    # Two reads for the whole turn, not two per file: the metadata for every id, then the
-    # bytes for just the images that will actually go in as binary content. Each store call
-    # is a thread hop, and a four-image turn was paying eight of them.
     views = await uploads.get_many(owner_id, ids)
-    blobs = (
-        await uploads.contents(
-            owner_id,
-            [i for i, v in views.items() if v.mime.startswith(_IMAGE_PREFIX)],
-        )
+    present = [i for i in ids if i in views]
+    session = await _acquire(sessions, sandbox_key)
+    # One batched read for the whole turn. With a workspace to stage into, every file's
+    # bytes are needed; without one, only the images a vision model will actually see.
+    wanted = (
+        present
+        if session is not None
+        else [i for i in present if views[i].mime.startswith(_IMAGE_PREFIX)]
         if vision
-        else {}
+        else []
     )
-    for upload_id in ids:
-        view = views.get(upload_id)
-        if view is None:
-            continue  # deleted or not the operator's — silently drop
+    blobs = await uploads.contents(owner_id, wanted) if wanted else {}
+    for upload_id in present:
+        view = views[upload_id]
         resolved_ids.append(upload_id)
-        refs.append(f"{view.filename} (id: {upload_id})")
-        if (blob := blobs.get(upload_id)) is not None:
+        blob = blobs.get(upload_id)
+        path = _stage(session, upload_id, view.filename, blob.content if blob else None)
+        staged.append(
+            _Staged(
+                filename=view.filename,
+                upload_id=upload_id,
+                mime=view.mime,
+                size_bytes=view.size_bytes,
+                path=path,
+            )
+        )
+        if vision and view.mime.startswith(_IMAGE_PREFIX) and blob is not None:
+            # An image is pixels in both shapes — bounded in cost, and unre-fetchable
+            # once the turn is behind us.
             binary = BinaryContent(data=blob.content, media_type=view.mime)
             content.append(binary)
-            persisted.append(binary)  # an image is always retained inline
-        elif view.status == UploadStatus.DONE and view.extracted_text:
-            text = view.extracted_text
-            full = wrap_untrusted(text, source=view.filename)
-            content.append(full)
-            if len(text) <= max_chars:
-                persisted.append(full)  # same wrapped block, not re-wrapped
-            else:
-                truncated = truncate_on_boundary(text, max_chars)
-                if truncated:
-                    persisted.append(wrap_untrusted(truncated, source=view.filename))
-                persisted.append(_truncation_note(upload_id, view.filename, inline_max_tokens))
-        else:
-            placeholder = wrap_untrusted(
-                f"[{view.filename} is still being processed — its text isn't available yet.]",
-                source=view.filename,
-            )
-            content.append(placeholder)
-            persisted.append(placeholder)
-    marker = _marker(refs)
+            persisted.append(binary)
+        elif path is None:
+            # Not staged — the file's own content has to ride inline or the model has
+            # nothing at all. Identical in both shapes: there is no cap to apply.
+            inline = _inline_fallback(view)
+            content.append(inline)
+            persisted.append(inline)
+    marker = _marker(staged)
     if marker:
+        content.append(marker)
         persisted.append(marker)
     return ResolvedAttachments(content=content, persisted=persisted, ids=resolved_ids)
 
 
-def _truncation_note(upload_id: str, filename: str, cap_tokens: int) -> str:
-    """The trusted pointer appended after a cut-off file's content — an instruction to the
-    model (kept *outside* the untrusted wrapper) to reach the full file via the tools."""
-    return (
-        f"[The file {filename!r} (id: {upload_id}) was cut off at the {cap_tokens}-token "
-        "inline limit. To read the full file, load it into your computer with the "
-        "attachments_provision tool, or search its text with corpus.retrieve — using the id above.]"
+async def _acquire(
+    sessions: SandboxSessionManager | None, sandbox_key: str | None
+) -> Any | None:
+    """The conversation's sandbox session, or ``None`` when there is no sandbox to stage
+    into. Acquiring is fail-closed by design, so its failure is the degrade signal — never
+    an error that takes the turn down with it."""
+    if sessions is None or not sandbox_key:
+        return None
+    try:
+        return await sessions.acquire(sandbox_key)
+    except SandboxError as exc:
+        logger.info("attachments: no sandbox to stage into (%s)", exc)
+        return None
+
+
+def _stage(session: Any | None, upload_id: str, filename: str, content: bytes | None) -> str | None:
+    """Stage one file's original bytes and return its in-sandbox path, or ``None`` when
+    there was no session, no bytes (still extracting), or the write failed."""
+    if session is None or content is None:
+        return None
+    try:
+        relpath, _ = stage_attachment(
+            session, filename=filename, upload_id=upload_id, content=content
+        )
+    except Exception as exc:  # noqa: BLE001 — staging is best-effort; see below
+        # Deliberately not just `SandboxError`. Staging writes the host-side bind-mount
+        # directory, so a full disk, a permission problem, or a failed restore of a sealed
+        # workspace surfaces as an `OSError` (or worse) rather than a domain error — and a
+        # chat turn must degrade to inline text there, exactly as it does for a missing
+        # runtime, not die before the model is ever called.
+        logger.info("attachments: could not stage %s (%s)", upload_id, exc)
+        return None
+    return workspace_path(relpath)
+
+
+def _inline_fallback(view: Any) -> str:
+    """What a file contributes when it could not be staged: its extracted text in full
+    (wrapped untrusted), or a short placeholder while extraction is still running."""
+    if view.status == UploadStatus.DONE and view.extracted_text:
+        return wrap_untrusted(view.extracted_text, source=view.filename)
+    return wrap_untrusted(
+        f"[{view.filename} is still being processed — its text isn't available yet.]",
+        source=view.filename,
     )
 
 
-def _marker(refs: list[str]) -> str:
-    """The compact line closing the persisted attachment block — names the files and their
-    ids and points at the tools, so the agent can load any of them into the sandbox (or
-    search a document's text) on a later turn even when the content is retained inline."""
-    if not refs:
+def _marker(staged: list[_Staged]) -> str:
+    """The trusted block closing the attachment set — one line per file (name, id, mime,
+    size, and where it lives) plus how to act on it.
+
+    Kept *outside* the untrusted wrapper: it is the chassis talking to the model about
+    where the operator's files are, not file content. It names the staleness recovery
+    explicitly because a replayed thread genuinely can find nothing at these paths."""
+    if not staged:
         return ""
-    listed = "; ".join(refs)
-    return (
-        f"[Attached file(s): {listed}. To work with a file's bytes (run code on it), load it "
-        "into your computer's /work with the attachments_provision tool; to search a "
-        "document's text, use corpus.retrieve with its id.]"
+    lines = [_line(item) for item in staged]
+    body = "\n".join(lines)
+    guidance = (
+        "Read a file from its path with your files/code tools — page through a large one "
+        "rather than reading it whole. These paths live on your computer, which is "
+        "recycled between sessions: if a read fails because the file is not there, "
+        "re-stage it with the attachments_provision tool using the id above (it comes "
+        "back at the same path). To search a document's text semantically instead of "
+        "reading it, use corpus.retrieve with its id."
     )
+    return f"[Attached file(s):\n{body}\n\n{guidance}]"
+
+
+def _line(item: _Staged) -> str:
+    """One file's line in the marker block."""
+    head = f"- {item.filename} (id: {item.upload_id}, {item.mime}, {item.size_bytes:,} bytes)"
+    if item.path is None:
+        return f"{head} — could not be staged on your computer; its content is inline above."
+    return f"{head} → {item.path}"

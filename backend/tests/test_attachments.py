@@ -1,9 +1,11 @@
 """Chat file attachments + the retroactive knowledge-base exclude toggle.
 
-Covers the two halves of the feature: a file is handed to the model *for the turn it's
-attached* (pixels for a vision model, extracted text otherwise) but stripped to a marker
-on persist — so it's available to reference, never re-fed every run — and an enrolled
-upload can be scoped out of the corpus retroactively, dropping it from every retrieve.
+Covers the two halves of the feature: an attached file is **staged into the conversation's
+sandbox** and announced to the model as a short marker naming its path (so the model reads
+and pages through the file itself instead of receiving its text — an image being the one
+exception, still handed over as pixels), with `attachments_provision` as the re-stage path
+for a recycled session; and an enrolled upload can be scoped out of the corpus
+retroactively, dropping it from every retrieve.
 """
 
 from __future__ import annotations
@@ -98,82 +100,185 @@ async def _insert_upload(
     return await in_session(engine, work)
 
 
-# --- resolve_attachments: the live + persisted shapes -----------------------
-
-# Token caps chosen relative to the fixtures' short text: _BIG retains it whole, _TINY
-# forces it over the cap (the chars≈tokens*4 proxy makes a 1-token cap a 4-char budget).
-_BIG = 100
-_TINY = 1
+# --- the sandbox fakes both halves of the feature stage into ----------------
 
 
-async def test_vision_model_gets_pixels_and_retains_the_image_inline():
+class _FakeSandboxSession:
+    """Records files staged into its (host-side) workspace. Mirrors the real
+    ``SandboxSession``'s ``read_file``/``write_file`` contract closely enough to exercise
+    the collision-safe staging path (``services.sandbox.staging``)."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+
+    def write_file(self, relpath: str, content: bytes) -> None:
+        self.files[relpath] = content
+
+    def read_file(self, relpath: str) -> bytes:
+        if relpath not in self.files:
+            raise SandboxError(f"no such file in the sandbox: {relpath!r}")
+        return self.files[relpath]
+
+
+class _FakeSandboxSessions:
+    def __init__(self) -> None:
+        self.session = _FakeSandboxSession()
+        self.acquired: str | None = None
+
+    async def acquire(self, key: str) -> _FakeSandboxSession:
+        self.acquired = key
+        return self.session
+
+
+class _ClosedSandboxSessions:
+    """A fail-closed sandbox — no runtime, a locked vault, a workspace that won't open.
+    Staging must degrade to inline text rather than name a path that isn't there."""
+
+    async def acquire(self, key: str) -> _FakeSandboxSession:
+        raise SandboxError("no sandbox runtime is available")
+
+
+# --- resolve_attachments: staged to the sandbox, announced by marker --------
+
+KEY = "conv-1"
+
+
+def _text(parts: list) -> str:
+    return "".join(p for p in parts if isinstance(p, str))
+
+
+async def test_a_document_becomes_a_marker_not_its_text():
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    uid = await _insert_upload(engine, store._vault, mime="text/plain")
+    sessions = _FakeSandboxSessions()
+
+    resolved = await resolve_attachments(
+        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+    )
+
+    # The original bytes are on the agent's computer, under the sanitized basename.
+    assert sessions.acquired == KEY
+    assert sessions.session.files == {"attachments/dossier": b"raw-bytes"}
+    # And what the model gets is a marker naming it — no extracted text at all, in
+    # either shape. The two collapse to the same thing for a document.
+    body = _text(resolved.content)
+    assert resolved.content == resolved.persisted
+    assert "zebra dossier" not in body
+    assert "dossier" in body and uid in body and "text/plain" in body
+    assert "/work/attachments/dossier" in body
+    # The path can go stale (sessions are recyclable) — the marker has to say so.
+    assert "attachments_provision" in body and "corpus.retrieve" in body
+
+
+async def test_vision_model_gets_pixels_and_the_image_is_staged_too():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="image/png")
+    sessions = _FakeSandboxSessions()
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=True, inline_max_tokens=_BIG)
+    resolved = await resolve_attachments(
+        store, OWNER, [uid], vision=True, sessions=sessions, sandbox_key=KEY
+    )
 
-    # The live turn gets pixels, and an image is retained inline in persisted history too.
+    # An image is still pixels, live and retained — there is nothing to page through in a
+    # picture — but its bytes are staged as well, so code can act on it with no round-trip.
     assert any(isinstance(part, BinaryContent) for part in resolved.content)
     assert any(isinstance(part, BinaryContent) for part in resolved.persisted)
-    marker = "".join(p for p in resolved.persisted if isinstance(p, str))
-    assert "dossier" in marker and uid in marker
+    assert sessions.session.files == {"attachments/dossier": b"raw-bytes"}
+    assert "/work/attachments/dossier" in _text(resolved.persisted)
 
 
-async def test_text_only_model_gets_extracted_text_wrapped_untrusted():
+async def test_an_image_for_a_text_only_model_is_a_staged_file_like_any_other():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="image/png")
+    sessions = _FakeSandboxSessions()
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
+    resolved = await resolve_attachments(
+        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+    )
 
-    # No pixels for a text-only model — the file's extracted text, wrapped as data.
     assert not any(isinstance(part, BinaryContent) for part in resolved.content)
-    body = "".join(p for p in resolved.content if isinstance(p, str))
+    assert "/work/attachments/dossier" in _text(resolved.content)
+
+
+async def test_staging_failure_degrades_to_the_full_text_inline():
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    uid = await _insert_upload(engine, store._vault, mime="text/plain")
+
+    resolved = await resolve_attachments(
+        store, OWNER, [uid], vision=False, sessions=_ClosedSandboxSessions(), sandbox_key=KEY
+    )
+
+    # No path to point at, so the text rides inline — in full, wrapped as data — and the
+    # marker says the file could not be staged rather than naming a path that isn't there.
+    body = _text(resolved.content)
+    assert resolved.content == resolved.persisted
     assert "zebra dossier" in body
     assert "untrusted" in body.lower()  # wrap_untrusted sentinel/instruction present
+    assert "could not be staged" in body
+    assert "/work/attachments" not in body
 
 
-async def test_small_text_is_retained_whole_in_persisted():
+async def test_no_sandbox_wired_degrades_the_same_way():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="text/plain")
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False)
 
-    persisted = "".join(p for p in resolved.persisted if isinstance(p, str))
-    assert "zebra dossier" in persisted  # whole text kept under the cap
-    assert "cut off" not in persisted  # and no truncation pointer
+    body = _text(resolved.content)
+    assert "zebra dossier" in body and "could not be staged" in body
 
 
-async def test_large_text_is_cut_off_with_a_tool_pointer():
+async def test_still_processing_attachment_is_staged_by_its_bytes():
+    # Extraction is what's pending, not the file: the original bytes exist from the moment
+    # of upload, so the agent can already read them from its computer.
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
-    uid = await _insert_upload(engine, store._vault, mime="text/plain")
+    uid = await _insert_upload(
+        engine, store._vault, mime="application/pdf", text=None, status=UploadStatus.EXTRACTING
+    )
+    sessions = _FakeSandboxSessions()
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_TINY)
+    resolved = await resolve_attachments(
+        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+    )
 
-    # The live turn still has the full text; persisted is cut off with a pointer to the tools.
-    assert "zebra dossier" in "".join(p for p in resolved.content if isinstance(p, str))
-    persisted = "".join(p for p in resolved.persisted if isinstance(p, str))
-    assert "cut off" in persisted and uid in persisted
-    assert "attachments_provision" in persisted  # names the tool to reach the full file
+    assert sessions.session.files == {"attachments/dossier": b"raw-bytes"}
+    assert "/work/attachments/dossier" in _text(resolved.content)
 
 
-async def test_still_processing_attachment_yields_a_placeholder():
+async def test_still_processing_attachment_without_a_sandbox_yields_a_placeholder():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(
         engine, store._vault, mime="application/pdf", text=None, status=UploadStatus.EXTRACTING
     )
 
-    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, inline_max_tokens=_BIG)
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False)
 
-    body = "".join(p for p in resolved.content if isinstance(p, str))
-    assert "still being processed" in body
+    assert "still being processed" in _text(resolved.content)
 
 
 async def test_unknown_attachment_id_is_skipped():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     resolved = await resolve_attachments(
-        store, OWNER, ["nope"], vision=True, inline_max_tokens=_BIG
+        store, OWNER, ["nope"], vision=True, sessions=_FakeSandboxSessions(), sandbox_key=KEY
     )
     assert resolved.content == [] and resolved.persisted == [] and resolved.ids == []
+
+
+async def test_two_files_sharing_a_basename_stage_to_distinct_paths():
+    engine, _vault, _chunks, _adapter, store = await _uploads_store()
+    ids = [
+        await _insert_upload(engine, store._vault, mime="text/plain", content=f"c{n}".encode())
+        for n in range(2)
+    ]
+    sessions = _FakeSandboxSessions()
+
+    resolved = await resolve_attachments(
+        store, OWNER, ids, vision=False, sessions=sessions, sandbox_key=KEY
+    )
+
+    assert set(sessions.session.files) == {"attachments/dossier", "attachments/dossier-2"}
+    body = _text(resolved.content)
+    assert "/work/attachments/dossier-2" in body
 
 
 async def test_a_multi_file_turn_reads_the_store_a_fixed_number_of_times():
@@ -195,16 +300,18 @@ async def test_a_multi_file_turn_reads_the_store_a_fixed_number_of_times():
 
         setattr(store, name, counted)
 
-    resolved = await resolve_attachments(store, OWNER, ids, vision=True, inline_max_tokens=_BIG)
+    resolved = await resolve_attachments(
+        store, OWNER, ids, vision=True, sessions=_FakeSandboxSessions(), sandbox_key=KEY
+    )
 
     assert resolved.ids == ids  # order preserved, every file resolved
-    assert len(resolved.content) == 4
+    assert len([p for p in resolved.content if isinstance(p, BinaryContent)]) == 4
     assert calls == ["get_many", "contents"]  # two reads, not two per file
 
 
 async def test_resolution_order_follows_the_request_not_the_database():
-    # The batch read returns rows in whatever order SQLite hands them back; the marker and
-    # the content list must still follow the order the operator attached them in.
+    # The batch read returns rows in whatever order SQLite hands them back; the marker
+    # must still follow the order the operator attached them in.
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     ids = [
         await _insert_upload(
@@ -215,12 +322,12 @@ async def test_resolution_order_follows_the_request_not_the_database():
     reversed_ids = list(reversed(ids))
 
     resolved = await resolve_attachments(
-        store, OWNER, reversed_ids, vision=False, inline_max_tokens=_BIG
+        store, OWNER, reversed_ids, vision=False, sessions=_FakeSandboxSessions(), sandbox_key=KEY
     )
 
     assert resolved.ids == reversed_ids
-    body = "".join(p for p in resolved.content if isinstance(p, str))
-    assert body.index("file-2") < body.index("file-1") < body.index("file-0")
+    body = _text(resolved.content)
+    assert body.index(reversed_ids[0]) < body.index(reversed_ids[1]) < body.index(reversed_ids[2])
 
 
 # --- install_persisted_attachments: what the durable blob carries -----------
@@ -298,7 +405,6 @@ async def test_image_attachment_is_retained_inline_in_history():
         uploads=uploads,
         attachment_ids=[uid],
         vision=True,
-        inline_max_tokens=100,
     )
     run = RunRegistry().submit(kind="chat", owner_id=OWNER, orchestrator=orch)
     await run.wait()
@@ -316,34 +422,7 @@ async def test_image_attachment_is_retained_inline_in_history():
     await conv.stop()
 
 
-# --- attachments_provision: stage a file into the sandbox -------------------
-
-
-class _FakeSandboxSession:
-    """Records files staged into its (host-side) workspace, for the provision tool.
-    Mirrors the real ``SandboxSession``'s ``read_file``/``write_file`` contract closely
-    enough to exercise the collision-safe staging path (`_stage_unique`)."""
-
-    def __init__(self) -> None:
-        self.files: dict[str, bytes] = {}
-
-    def write_file(self, relpath: str, content: bytes) -> None:
-        self.files[relpath] = content
-
-    def read_file(self, relpath: str) -> bytes:
-        if relpath not in self.files:
-            raise SandboxError(f"no such file in the sandbox: {relpath!r}")
-        return self.files[relpath]
-
-
-class _FakeSandboxSessions:
-    def __init__(self) -> None:
-        self.session = _FakeSandboxSession()
-        self.acquired: str | None = None
-
-    async def acquire(self, key: str) -> _FakeSandboxSession:
-        self.acquired = key
-        return self.session
+# --- attachments_provision: re-stage a file into the sandbox ----------------
 
 
 def _provision_then_answer(uid: str):

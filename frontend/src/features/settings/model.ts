@@ -30,9 +30,11 @@ export interface EndpointInput {
   enabled?: boolean;
 }
 
-/** Roles bound as ordered chains in Settings — `main` is single-endpoint and
- *  driven by the top-bar picker. The binding shape (`RoleBinding`/`RoleBindings`)
- *  is owned by `~/lib/stores/models`, shared with the picker. */
+/** The roles that resolve against an ordered fallback chain — the Models page's
+ *  ADVANCED disclosure (`FallbackChainsSection`) is what orders them. `main` is
+ *  absent because it is single-endpoint: its card overwrites the whole binding,
+ *  exactly as the top-bar picker does. The binding shape
+ *  (`RoleBinding`/`RoleBindings`) is owned by `~/lib/stores/models`. */
 export const BINDABLE_ROLES = ["utility", "embedding"] as const;
 
 /** Progress of a background re-embed (after the embedding model changes). The
@@ -82,26 +84,18 @@ export interface SearchProviderInput {
   apiKey?: string;
 }
 
-/** Operator-tunable chat preferences. `attachmentInlineMaxTokens` is the token
- *  budget an attached file's text is retained inline for before it's cut off with a
- *  tool pointer (images are always retained, regardless). The `compaction*` fields tune
- *  tool-result compaction — digesting oversized prior-turn tool outputs for the model
- *  (the operator always keeps the full output): whether it's on, how many of the newest
- *  results stay full, and the token floor below which a result is left untouched.
- *  The `autoCompact*` fields tune the other reduction — folding whole earlier *turns*
- *  into a utility-model summary once the context window fills: whether it's on, and how
- *  full the window must get first (`autoCompactThreshold` is a fraction of the window,
- *  the same 0–1 quantity the context meter reports; the UI presents it as a percentage).
+/** Operator-tunable chat preferences. The `autoCompact*` fields tune conversation
+ *  compaction — folding whole earlier *turns* into a utility-model summary once the
+ *  context window fills: whether it's on, and how full the window must get first
+ *  (`autoCompactThreshold` is a fraction of the window, the same 0–1 quantity the
+ *  context meter reports; the UI presents it as a percentage). It is the only
+ *  reduction there is — per-tool-result digesting was removed.
  *  `agentRequestLimit` is how many model round-trips a single turn may spend before it
  *  stops — the ceiling a long tool-using turn actually runs out of.
  *  `inactivityTimeoutS` is how long (seconds) a run may go without emitting an event
  *  before the watchdog stops it — the bound a long generation (a big write, a slow
  *  first token) needs raised to stay alive. */
 export interface ChatSettings {
-  attachmentInlineMaxTokens: number;
-  compactionEnabled: boolean;
-  compactionKeepRecent: number;
-  compactionMinTokens: number;
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
   agentRequestLimit: number;

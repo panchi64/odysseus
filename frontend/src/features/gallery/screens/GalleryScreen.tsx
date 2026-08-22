@@ -89,10 +89,10 @@ export function GalleryScreen(): JSX.Element {
   );
 
   // Album reads must never throw: if `/gallery/albums` errors, reading the resource
-  // accessor re-throws (there's no ErrorBoundary in this screen), which would blank the
-  // whole gallery — the grid included. Derive from `.latest`/`.error` so a transient album
-  // failure degrades to an empty sidebar (with its own retry) instead of taking the grid
-  // down with it.
+  // accessor re-throws, and the shell's ErrorBoundary would replace the whole gallery —
+  // the grid included — with one failure message. Derive from `.latest`/`.error` so a
+  // transient album failure degrades to an empty sidebar (with its own retry) instead of
+  // taking the grid down with it. The boundary is the net, not the plan.
   const albumList = createMemo<Album[]>(() =>
     albums.error ? [] : (albums.latest ?? []),
   );

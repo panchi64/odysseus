@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
-import { cx, Icon, Panel, Row, StatusFlag, Text } from "~/ui";
+import { cx, Icon, Text } from "~/ui";
 import type { PlanItem } from "~/lib/stream";
 
 /** Compact window: the readout shows at most this many rows — enough to see
@@ -38,33 +38,42 @@ const fade = (distance: number) =>
         ? "opacity-50"
         : "opacity-30";
 
-/** The agent's task list for this thread.
+/** The plan's headline numbers, derived once here and read by both the status
+ *  strip (which shows them) and the rows below it. Cancelled tasks leave the
+ *  denominator: the question the count answers is "how much is left to do", and a
+ *  cancelled task is not left to do. */
+export function planSummary(items: PlanItem[]): {
+  done: number;
+  total: number;
+  active: PlanItem | undefined;
+} {
+  return {
+    done: items.filter((i) => i.status === "completed").length,
+    total: items.filter((i) => i.status !== "cancelled").length,
+    active: items.find((i) => i.status === "in_progress"),
+  };
+}
+
+/** The agent's task list for this thread, as rows.
  *
- *  Always shows a compact window around the frontier — the running task, else the next
- *  pending one, else the last item of a finished plan — so progress is legible at a
- *  glance with no click: green squares for done, blue for running, empty bordered
- *  squares for what's left. Longer plans fold to the window behind an explicit
- *  +N MORE control; expanding lists every row.
+ *  Shows a compact window around the frontier — the running task, else the next pending
+ *  one, else the last item of a finished plan — so progress is legible at a glance with
+ *  no click: green squares for done, blue for running, empty bordered squares for what's
+ *  left. Longer plans fold to the window behind an explicit +N MORE control; expanding
+ *  lists every row.
+ *
+ *  The done/total count and the ACTIVE flag are *not* here — they live in the
+ *  conversation status strip, which is also what opens these rows. This renders only
+ *  what the strip's one-line summary can't say.
  *
  *  Presentation only: the backend owns the list and nothing here can change it. There is
  *  deliberately no edit affordance — the plan is the agent's account of its own work, and
  *  an operator edit would silently disagree with what the model reads back.
  */
-export function PlanPanel(props: { items: () => PlanItem[] }): JSX.Element {
+export function PlanRows(props: { items: () => PlanItem[] }): JSX.Element {
   const [expanded, setExpanded] = createSignal(false);
 
   const items = () => props.items();
-  const active = createMemo(() =>
-    items().find((i) => i.status === "in_progress"),
-  );
-  const done = createMemo(
-    () => items().filter((i) => i.status === "completed").length,
-  );
-  // Cancelled tasks leave the denominator: the question the count answers is "how much is
-  // left to do", and a cancelled task is not left to do.
-  const total = createMemo(
-    () => items().filter((i) => i.status !== "cancelled").length,
-  );
 
   // Where the work currently is: the running task, else the next pending one,
   // else the last item (a finished plan reads from its end).
@@ -93,25 +102,7 @@ export function PlanPanel(props: { items: () => PlanItem[] }): JSX.Element {
 
   return (
     <Show when={items().length > 0}>
-      <Panel
-        label="PLAN"
-        flush
-        meta={
-          <Row gap={2} align="center">
-            {/* Tabular figures line up as the count changes mid-turn (§3). */}
-            <Text variant="label" tone="bright" class="tabular-nums">
-              {done()}/{total()}
-            </Text>
-            <Show when={active()} fallback={<StatusFlag>IDLE</StatusFlag>}>
-              {/* Info blue, not warn amber: the running task is live data — the same
-                  meaning STREAMING carries in the header, and the square below it. */}
-              <StatusFlag status="info" dot pulse>
-                ACTIVE
-              </StatusFlag>
-            </Show>
-          </Row>
-        }
-      >
+      <div class="border-b border-line py-1">
         <ol>
           <For each={visible()}>
             {({ item, index }) => (
@@ -144,7 +135,7 @@ export function PlanPanel(props: { items: () => PlanItem[] }): JSX.Element {
         <Show when={hidden() > 0}>
           <button
             type="button"
-            class="flex w-full items-center gap-2 border-t border-line px-3 py-1 text-left"
+            class="flex w-full items-center gap-2 px-3 py-1 text-left"
             aria-expanded={expanded()}
             onClick={() => setExpanded((v) => !v)}
           >
@@ -158,7 +149,7 @@ export function PlanPanel(props: { items: () => PlanItem[] }): JSX.Element {
             </Text>
           </button>
         </Show>
-      </Panel>
+      </div>
     </Show>
   );
 }

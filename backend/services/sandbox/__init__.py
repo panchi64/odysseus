@@ -36,6 +36,14 @@ from .host import (
 )
 from .preview import PreviewHandle
 from .session import SandboxSession, SandboxSessionManager
+from .staging import (
+    STAGE_DIR,
+    safe_name,
+    stage_attachment,
+    stage_unique,
+    suffixed,
+    workspace_path,
+)
 
 __all__ = [
     "Sandbox",
@@ -55,6 +63,12 @@ __all__ = [
     "PreviewHandle",
     "SandboxSession",
     "SandboxSessionManager",
+    "STAGE_DIR",
+    "safe_name",
+    "stage_attachment",
+    "stage_unique",
+    "suffixed",
+    "workspace_path",
     "HostConfinement",
     "HostExecutionError",
     "resolve_confinement",

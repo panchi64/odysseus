@@ -61,9 +61,10 @@ function draftOf(skill: Skill): SkillDraft {
  *  what it said, on the field it named. */
 export function SkillEditorScreen(props: { id: string }): JSX.Element {
   const skillResource = useSkillDetail(() => props.id);
-  // Reading the accessor re-throws a load failure, and there is no ErrorBoundary in this
-  // app — a 500 would blank the editor entirely. `.latest`/`.error` degrade it to the
-  // not-found panel, which carries the backend's own message.
+  // Reading the accessor re-throws a load failure — a 500 would otherwise trip the
+  // shell's ErrorBoundary and replace the editor with a generic message.
+  // `.latest`/`.error` degrade it to the not-found panel, which carries the backend's
+  // own message.
   const skill = () =>
     skillResource.error ? undefined : (skillResource.latest ?? undefined);
   const loadError = (): string | null =>

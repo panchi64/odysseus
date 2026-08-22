@@ -366,28 +366,37 @@ def test_cold_read_skips_view_without_version_id():
     assert _message_versions(message, {}) == []
 
 
-async def test_compaction_override_round_trip(monkeypatch):
+async def test_auto_compact_override_round_trip(monkeypatch):
     patch_model_resolution(monkeypatch)
     async with client_app() as (client, _app):
         cid = await _start_conversation(client)
 
         # Defaults to null — the thread inherits the operator's global setting.
-        got = await client.get(f"/conversations/{cid}/compaction")
+        got = await client.get(f"/conversations/{cid}/auto-compact")
         assert got.status_code == 200 and got.json()["override"] is None
 
         # Force compaction off for this thread; it persists.
-        put = await client.put(f"/conversations/{cid}/compaction", json={"override": False})
+        put = await client.put(f"/conversations/{cid}/auto-compact", json={"override": False})
         assert put.status_code == 200 and put.json()["override"] is False
-        back = await client.get(f"/conversations/{cid}/compaction")
+        back = await client.get(f"/conversations/{cid}/auto-compact")
         assert back.json()["override"] is False
 
         # Clear it back to inherit.
-        await client.put(f"/conversations/{cid}/compaction", json={"override": None})
-        assert (await client.get(f"/conversations/{cid}/compaction")).json()["override"] is None
+        await client.put(f"/conversations/{cid}/auto-compact", json={"override": None})
+        assert (await client.get(f"/conversations/{cid}/auto-compact")).json()["override"] is None
 
 
-async def test_compaction_override_unknown_conversation_404(monkeypatch):
+async def test_auto_compact_override_unknown_conversation_404(monkeypatch):
     patch_model_resolution(monkeypatch)
     async with client_app() as (client, _app):
-        resp = await client.get("/conversations/does-not-exist/compaction")
+        resp = await client.get("/conversations/does-not-exist/auto-compact")
         assert resp.status_code == 404
+
+
+async def test_retired_tool_result_compaction_route_is_gone(monkeypatch):
+    # Tool-result compaction was removed; its per-thread override went with it. The
+    # surviving `/auto-compact` route must not have quietly inherited the old path.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, _app):
+        cid = await _start_conversation(client)
+        assert (await client.get(f"/conversations/{cid}/compaction")).status_code == 404

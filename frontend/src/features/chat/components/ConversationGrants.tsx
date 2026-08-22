@@ -3,10 +3,12 @@ import { Chip, confirm, Icon, Row, Text, toast } from "~/ui";
 import { fetchGrants, revokeGrant } from "../data";
 import type { ApprovalGrant } from "../model";
 
-/** The conversation's active tool auto-approval grants — a visible, revocable strip
- *  of what the operator allowed to skip the per-call approval prompt for the rest of
- *  this thread. Renders nothing when there are none. Refetches when the thread changes
- *  or the `revalidate` accessor ticks (e.g. a grant was just recorded). */
+/** The conversation's active tool auto-approval grants — a visible, revocable run of
+ *  chips showing what the operator allowed to skip the per-call approval prompt for the
+ *  rest of this thread. Renders nothing when there are none, and carries no band of its
+ *  own: it is one segment of `ConversationStatusStrip`, which owns the layout.
+ *  Refetches when the thread changes or the `revalidate` accessor ticks (e.g. a grant
+ *  was just recorded). */
 export function ConversationGrants(props: {
   conversationId: () => string | null;
   revalidate?: () => unknown;
@@ -16,11 +18,19 @@ export function ConversationGrants(props: {
   // tag the strip would show stale chips and a click would revoke against the now-current
   // (wrong) conversation. The tag lets us ignore the value until it matches what's on
   // screen, and revoke against the conversation the chips actually belong to.
+  //
+  // The fetcher swallows its own failure rather than rejecting. This strip is a
+  // secondary read living inside the transcript: a rejected resource re-throws
+  // on read and would take the whole conversation down with it. An unreachable
+  // grants endpoint should cost the operator the strip, nothing more — the next
+  // decision re-ticks `revalidate` and it comes back.
   const [grants, { mutate, refetch }] = createResource(
     () => ({ id: props.conversationId(), tick: props.revalidate?.() }),
     async (src) => ({
       id: src.id,
-      items: src.id ? await fetchGrants(src.id) : ([] as ApprovalGrant[]),
+      items: src.id
+        ? await fetchGrants(src.id).catch(() => [] as ApprovalGrant[])
+        : ([] as ApprovalGrant[]),
     }),
   );
 
@@ -58,7 +68,7 @@ export function ConversationGrants(props: {
 
   return (
     <Show when={items().length > 0}>
-      <Row gap={2} align="center" class="flex-wrap border-b border-line py-2">
+      <Row gap={2} align="center" class="flex-wrap">
         <Text variant="label" tone="dim">
           AUTO-APPROVED
         </Text>

@@ -5,6 +5,7 @@ import {
   refreshEndpoints,
   setEndpointEnabled,
   setRoleBinding as bindRole,
+  setSelectedModel,
   testEndpoint,
   useEndpoints,
   useProviders,
@@ -22,16 +23,19 @@ import type {
 } from "./model";
 
 // The endpoint catalog, the provider presets, and the role bindings (reads AND
-// the role write) are owned by the shared models store so the chat picker,
+// the role writes) are owned by the shared models store so the chat picker,
 // the Cookbook, and Settings share one fetch and one type each; this module owns
 // the endpoint CRUD writes. Store-owned actions are re-exported here so the
-// screen reaches everything through this one seam.
+// screen reaches everything through this one seam — `setSelectedModel` included,
+// because the Models page's CHAT card is the top-bar picker's control in another
+// skin and must write the `main` binding through the same action it does.
 export {
   useEndpoints,
   useProviders,
   useRoles,
   testEndpoint,
   setEndpointEnabled,
+  setSelectedModel,
 };
 
 /** Map form values to the backend's snake_case body. `apiKey` undefined is
@@ -255,13 +259,9 @@ export async function deleteSearchProvider(id: string): Promise<void> {
   setProvidersTick((n) => n + 1);
 }
 
-/* ── Chat settings (attachment inline token cap) ───────────────────────────── */
+/* ── Chat settings (turn budgets + conversation compaction) ────────────────── */
 
 interface ChatSettingsDTO {
-  attachment_inline_max_tokens: number;
-  compaction_enabled: boolean;
-  compaction_keep_recent: number;
-  compaction_min_tokens: number;
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
   agent_request_limit: number;
@@ -271,10 +271,6 @@ interface ChatSettingsDTO {
 /** The single snake_case→camel mapper for the stored chat preferences. */
 function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
   return {
-    attachmentInlineMaxTokens: dto.attachment_inline_max_tokens,
-    compactionEnabled: dto.compaction_enabled,
-    compactionKeepRecent: dto.compaction_keep_recent,
-    compactionMinTokens: dto.compaction_min_tokens,
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
     agentRequestLimit: dto.agent_request_limit,
@@ -288,14 +284,6 @@ function toChatSettingsBody(
   patch: Partial<ChatSettings>,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  if (patch.attachmentInlineMaxTokens !== undefined)
-    body.attachment_inline_max_tokens = patch.attachmentInlineMaxTokens;
-  if (patch.compactionEnabled !== undefined)
-    body.compaction_enabled = patch.compactionEnabled;
-  if (patch.compactionKeepRecent !== undefined)
-    body.compaction_keep_recent = patch.compactionKeepRecent;
-  if (patch.compactionMinTokens !== undefined)
-    body.compaction_min_tokens = patch.compactionMinTokens;
   if (patch.autoCompactEnabled !== undefined)
     body.auto_compact_enabled = patch.autoCompactEnabled;
   if (patch.autoCompactThreshold !== undefined)

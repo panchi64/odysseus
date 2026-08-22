@@ -51,10 +51,11 @@ type StatusFilter = (typeof STATUS_VALUES)[number];
 export function SkillsDirectoryScreen(): JSX.Element {
   const navigate = useNavigate();
   const skillsResource = useSkills();
-  // Reading a Solid resource accessor re-throws its error, and there is no ErrorBoundary
-  // in this app (same hazard GalleryScreen documents). A 500 from /skills would otherwise
-  // blank the page — InstrumentBand reads this and sits outside the Suspense. Derive from
-  // `.latest`/`.error` so a failed load degrades to an empty library with a message.
+  // Reading a Solid resource accessor re-throws its error (same hazard GalleryScreen
+  // documents). A 500 from /skills would otherwise trip the shell's ErrorBoundary and
+  // replace the whole page with one message — InstrumentBand reads this and sits outside
+  // the Suspense. Derive from `.latest`/`.error` so a failed load degrades to an empty
+  // library with a message, and the boundary stays the net rather than the plan.
   const skills = (): SkillSummary[] =>
     skillsResource.error ? [] : (skillsResource.latest ?? []);
   const loadError = (): string | null =>

@@ -269,6 +269,15 @@ class ConversationCompacted(_Body):
     # How many messages the summary stands in for, so the divider can say so without
     # the client counting anything itself.
     messages_compacted: int
+    # What the fold cost, in coarse tokens: `tokens_before` over the messages that were
+    # folded, `tokens_after` over the summary that replaced them. Both are the same
+    # `estimate_tokens` text-only proxy the compaction trigger itself measures with — not
+    # a provider's usage report — so a client should render them as approximate ("~62k →
+    # ~4k"), never as billing figures. `services/conversation_view.py` recomputes the
+    # identical three values for the cold-read compaction row, so a live divider and the
+    # one a reload draws say the same thing.
+    tokens_before: int = 0
+    tokens_after: int = 0
     # The rendered turn the divider follows. A live client addresses turns, not tree
     # nodes, so the backend resolves the position rather than leaving the client to
     # approximate it and land somewhere a reload disagrees with. Null => append.

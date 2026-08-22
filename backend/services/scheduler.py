@@ -35,7 +35,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from croniter import croniter
 from sqlalchemy import Engine
@@ -43,6 +43,7 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from core.db import in_session
+from core.serde import as_utc
 from core.vault import Vault, VaultLocked
 from models._fields import new_id, utcnow
 from models.task import ScheduledTask, ScheduleType, TaskKind, TaskOutcome, TaskRun
@@ -82,14 +83,6 @@ def _is_transient_lock(exc: OperationalError) -> bool:
     amount of retrying will fix."""
     message = str(exc.orig if exc.orig is not None else exc).lower()
     return "database is locked" in message or "database is busy" in message
-
-
-def _as_utc(value: datetime) -> datetime:
-    """A DB-read datetime as tz-aware UTC. SQLite has no native datetime type — the
-    dialect round-trips one as a naive value even though it was written tz-aware —
-    so every due/ordering comparison against a fresh `utcnow()` normalizes first
-    (mirrors `services/approval_grants.py`'s own `_as_utc`)."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -455,7 +448,7 @@ class SchedulerService:
 
     async def _load_due(self, now: datetime) -> list[ScheduledTask]:
         # The due check itself runs in Python (not a SQL `WHERE next_run_at <= :now`)
-        # so the naive round-trip `_as_utc` corrects for can't produce a wrong
+        # so the naive round-trip `as_utc` corrects for can't produce a wrong
         # comparison at the SQL layer — the same reasoning `approval_grants.py`
         # documents for its own expiry check.
         def work(session: Session) -> list[ScheduledTask]:
@@ -468,10 +461,15 @@ class SchedulerService:
             )
 
         rows = await in_session(self._engine, work)
-        return [row for row in rows if _as_utc(row.next_run_at) <= now]
+        # `next_run_at` is nullable on the model and only the SQL filter above excludes
+        # the nulls, which no reader of this expression can see — so it is re-checked
+        # here rather than assumed.
+        return [
+            row for row in rows if row.next_run_at is not None and as_utc(row.next_run_at) <= now
+        ]
 
     async def _earliest_next_run(self) -> datetime | None:
-        def work(session: Session) -> list[datetime]:
+        def work(session: Session) -> list[datetime | None]:
             return list(
                 session.exec(
                     select(ScheduledTask.next_run_at)
@@ -481,7 +479,7 @@ class SchedulerService:
             )
 
         rows = await in_session(self._engine, work)
-        return min((_as_utc(r) for r in rows), default=None)
+        return min((as_utc(r) for r in rows if r is not None), default=None)
 
     async def _insert_task_run(self, **kwargs) -> None:
         def work(session: Session) -> None:

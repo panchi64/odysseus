@@ -18,6 +18,13 @@ import {
 } from "../blocks";
 import { createDocument } from "~/features/documents/data";
 
+/** The one hover/focus reveal in a turn. Metadata and actions surface together on
+ *  the same gesture — `opacity`, not `hidden`, so nothing reflows when they appear
+ *  and `focus-within` keeps every control reachable from the keyboard. Exported so
+ *  the turn's own model/time line uses this mechanism rather than a second one. */
+export const TURN_REVEAL_CLASS =
+  "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100";
+
 /** The turn's plain-text content, whichever role — a user turn's content lives
  *  in `content`, an assistant turn's in its text blocks. */
 function messageText(m: ChatMessage): string {
@@ -31,9 +38,14 @@ function titleFromText(text: string): string {
   return firstLine.slice(0, 60) || "Untitled";
 }
 
-/** Hover/focus-revealed action row for a chat turn. Lives inside a `group`
- *  wrapper in the parent turn and surfaces on hover or keyboard focus
- *  (`focus-within`), so it stays reachable without a pointer. */
+/** Hover/focus-revealed action row for a chat turn: COPY, and everything else
+ *  behind one overflow menu.
+ *
+ *  Seven labelled buttons per turn made every exchange read as a toolbar with a
+ *  message attached, and the transcript is the thing being read. COPY stays out
+ *  because it is the action reached most often and costs nothing to leave in
+ *  reach; the rest — edit, regenerate, rewind, pin, save, delete — are deliberate
+ *  acts that survive one click of indirection. Nothing was removed. */
 export function MessageActions(props: {
   message: ChatMessage;
   /** Re-answer an assistant turn with the current model selection. */
@@ -46,8 +58,8 @@ export function MessageActions(props: {
   onDelete?: () => void;
   /** Pin/unpin this turn (backend-owned flag). */
   onTogglePin?: () => void;
-  /** Extra controls (e.g. expand-all) rendered alongside the copy affordance. */
-  children?: JSX.Element;
+  /** Turn-specific entries appended to the overflow menu (e.g. expand-all). */
+  extraItems?: MenuItem[];
 }): JSX.Element {
   const m = () => props.message;
   const isAssistant = () => m().role === "assistant";
@@ -68,45 +80,64 @@ export function MessageActions(props: {
     }
   }
 
-  return (
-    <div class="flex items-center gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-      {/* Lead with the turn's primary action: edit for the operator's own
-          message, regenerate/rewind for the assistant's answer. */}
-      <Show when={!isAssistant() && props.onEdit}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="pen"
-          aria-label="Edit message"
-          onClick={() => props.onEdit?.()}
-        >
-          EDIT
-        </Button>
-      </Show>
-      <Show when={isAssistant() && props.onRegenerate}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="refresh"
-          aria-label="Regenerate answer"
-          onClick={() => props.onRegenerate?.()}
-        >
-          REGENERATE
-        </Button>
-      </Show>
-      <Show when={isAssistant() && props.onRewind}>
-        <Button
-          variant="ghost"
-          size="sm"
-          leading="chevron-up"
-          aria-label="Rewind to here"
-          onClick={() => props.onRewind?.()}
-        >
-          REWIND
-        </Button>
-      </Show>
+  const overflowItems = (): MenuItem[] => [
+    // Lead with the turn's primary act: edit for the operator's own message,
+    // regenerate/rewind for the assistant's answer.
+    ...(!isAssistant() && props.onEdit
+      ? [
+          {
+            label: "EDIT",
+            icon: "pen",
+            onSelect: () => props.onEdit?.(),
+          } satisfies MenuItem,
+        ]
+      : []),
+    ...(isAssistant() && props.onRegenerate
+      ? [
+          {
+            label: "REGENERATE",
+            icon: "refresh",
+            onSelect: () => props.onRegenerate?.(),
+          } satisfies MenuItem,
+        ]
+      : []),
+    ...(isAssistant() && props.onRewind
+      ? [
+          {
+            label: "REWIND TO HERE",
+            icon: "chevron-up",
+            onSelect: () => props.onRewind?.(),
+          } satisfies MenuItem,
+        ]
+      : []),
+    {
+      label: m().pinned ? "UNPIN" : "PIN",
+      icon: "pin",
+      onSelect: () => props.onTogglePin?.(),
+    },
+    {
+      label: "SAVE TO DOCUMENT",
+      icon: "note",
+      onSelect: () => void saveToDocument(),
+    },
+    ...(props.extraItems ?? []),
+    ...(props.onDelete
+      ? [
+          {
+            label: "DELETE",
+            icon: "trash",
+            danger: true,
+            onSelect: () => props.onDelete?.(),
+          } satisfies MenuItem,
+        ]
+      : []),
+  ];
 
-      {/* Both roles: copy (answer / full message / reasoning). */}
+  return (
+    <div class={`flex items-center gap-1 ${TURN_REVEAL_CLASS}`}>
+      {/* Copy: one button on a user turn, a small menu on an assistant turn,
+          where "the answer", "the whole turn", and "the reasoning" are different
+          things to put on the clipboard. */}
       <Show
         when={isAssistant()}
         fallback={
@@ -163,38 +194,15 @@ export function MessageActions(props: {
         />
       </Show>
 
-      {/* Both roles: pin, save-to-document, delete. */}
-      <Button
-        variant="ghost"
-        size="sm"
-        leading="pin"
-        aria-label={m().pinned ? "Unpin message" : "Pin message"}
-        onClick={() => props.onTogglePin?.()}
-      >
-        {m().pinned ? "PINNED" : "PIN"}
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        leading="note"
-        aria-label="Save to document"
-        onClick={() => void saveToDocument()}
-      >
-        SAVE TO DOCUMENT
-      </Button>
-      <Show when={props.onDelete}>
-        <Button
-          variant="danger"
-          size="sm"
-          leading="trash"
-          aria-label="Delete message"
-          onClick={() => props.onDelete?.()}
-        >
-          DELETE
-        </Button>
-      </Show>
-
-      {props.children}
+      <Menu
+        align="left"
+        trigger={
+          <Button variant="ghost" size="sm" aria-label="Turn actions">
+            ···
+          </Button>
+        }
+        items={overflowItems()}
+      />
     </div>
   );
 }

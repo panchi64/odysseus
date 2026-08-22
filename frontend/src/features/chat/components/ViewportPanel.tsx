@@ -1,4 +1,5 @@
 import { Show, createMemo, createSignal, type JSX } from "solid-js";
+import { useIsDesktop } from "~/lib/useMediaQuery";
 import {
   Button,
   EmptyState,
@@ -101,6 +102,15 @@ export function ViewportPanel(props: {
   // PREVIEW-only refresh, same condition the old loose header button used.
   const refreshVisible = () =>
     Boolean(selected()) && props.activeTab === "preview";
+
+  // Whether the panel currently owns the whole screen rather than sharing it
+  // with the transcript — the condition the caller mounts the fullscreen sheet
+  // on. `fullscreen` alone is only half of it: below `lg` the panel is *always*
+  // the sheet and the flag stays off, so a stage arm that needs room (the
+  // suggestion review) would go unreachable on a narrow viewport if it read the
+  // flag directly.
+  const isDesktop = useIsDesktop();
+  const expanded = (): boolean => props.fullscreen || !isDesktop();
 
   // Keeper only makes sense for a version the backend can actually bookmark: a
   // captured snapshot, or a *committed* document version (not the in-progress
@@ -236,6 +246,7 @@ export function ViewportPanel(props: {
                     onDocumentVersion={props.onDocumentVersion}
                     fontStep={props.fontStep}
                     softWrap={props.softWrap}
+                    expanded={expanded()}
                   />
                 )}
               </Show>

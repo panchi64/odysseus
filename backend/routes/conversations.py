@@ -25,17 +25,9 @@ from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow
 from services.conversation_view import MessageView
-from services.conversations import (
-    CompactionKind,
-    ConversationSummaryView,
-    context_footprint,
-)
+from services.conversations import ConversationSummaryView, context_footprint
 from services.plans import plan_payload
-from services.settings_store import (
-    get_auto_compact,
-    get_compaction,
-    resolve_compaction_enabled,
-)
+from services.settings_store import get_auto_compact, resolve_compaction_enabled
 from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
@@ -138,6 +130,14 @@ class MessageOut(BaseModel):
     # usage/loop/context/time bound) — the human-readable reason, rendered as a
     # persistent stop marker. None for every other turn.
     blocked_reason: str | None = None
+    # `role == "compaction"` only — what the fold cost, so the divider can read
+    # "14 messages folded, ~62k → ~4k" with no client-side counting or estimating.
+    # The token figures are the same coarse text-only proxy the live
+    # `conversation.compacted` event carries (render them as approximate). 0 on every
+    # other role.
+    messages_compacted: int = 0
+    tokens_before: int = 0
+    tokens_after: int = 0
 
 
 class ActiveRun(BaseModel):
@@ -263,6 +263,9 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         pinned=view.pinned,
         attachment_ids=view.attachment_ids,
         blocked_reason=view.blocked_reason,
+        messages_compacted=view.messages_compacted,
+        tokens_before=view.tokens_before,
+        tokens_after=view.tokens_after,
     )
 
 
@@ -675,53 +678,25 @@ class CompactionOverrideOut(BaseModel):
     effective: bool
 
 
-async def _compaction_state(
-    request: Request, conversation_id: str, kind: CompactionKind
-) -> CompactionOverrideOut:
-    """One reduction's state for one thread: the stored override plus the effective on/off
-    after resolving it against the operator's global default. The two reductions differ
-    only in which override column and which global setting they read, so they share this."""
-    override = await deps.store(request).get_compaction_override(conversation_id, kind)
-    read_global = get_compaction if kind == "tool_results" else get_auto_compact
-    global_cfg = await read_global(deps.settings_store(request), OPERATOR_ID)
+async def _compaction_state(request: Request, conversation_id: str) -> CompactionOverrideOut:
+    """This thread's auto-compaction state: the stored override plus the effective on/off
+    after resolving it against the operator's global default."""
+    override = await deps.store(request).get_compaction_override(conversation_id)
+    global_cfg = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
     return CompactionOverrideOut(
         override=override,
         effective=resolve_compaction_enabled(override, global_cfg.enabled),
     )
 
 
-@router.get("/{conversation_id}/compaction", response_model=CompactionOverrideOut)
-async def get_compaction_override(conversation_id: str, request: Request) -> CompactionOverrideOut:
-    """This conversation's compaction state (its override + the effective on/off)."""
-    await _require_owned(request, conversation_id)
-    return await _compaction_state(request, conversation_id, "tool_results")
-
-
-@router.put("/{conversation_id}/compaction", response_model=CompactionOverrideOut)
-async def set_compaction_override(
-    conversation_id: str, body: CompactionOverrideUpdate, request: Request
-) -> CompactionOverrideOut:
-    """Force compaction on/off for this conversation, or clear it (``null``) to inherit the
-    operator's global setting."""
-    await _require_owned(request, conversation_id)
-    await deps.store(request).set_compaction_override(
-        conversation_id, "tool_results", body.override
-    )
-    return await _compaction_state(request, conversation_id, "tool_results")
-
-
 @router.get("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
 async def get_auto_compact_override(
     conversation_id: str, request: Request
 ) -> CompactionOverrideOut:
-    """This thread's *conversation*-compaction state (its override + the effective on/off).
-
-    The same shape as ``/compaction`` above, over the other of the two reductions: that one
-    condenses individual tool outputs, this one folds whole turns into a summary once the
-    context window fills. They are separate switches because a thread can reasonably want
-    one without the other."""
+    """This thread's conversation-compaction state (its override + the effective on/off) —
+    whether its older turns fold into a summary once the context window fills."""
     await _require_owned(request, conversation_id)
-    return await _compaction_state(request, conversation_id, "turns")
+    return await _compaction_state(request, conversation_id)
 
 
 @router.put("/{conversation_id}/auto-compact", response_model=CompactionOverrideOut)
@@ -731,8 +706,8 @@ async def set_auto_compact_override(
     """Force conversation compaction on/off for this thread, or clear it (``null``) to
     inherit the operator's global setting."""
     await _require_owned(request, conversation_id)
-    await deps.store(request).set_compaction_override(conversation_id, "turns", body.override)
-    return await _compaction_state(request, conversation_id, "turns")
+    await deps.store(request).set_compaction_override(conversation_id, body.override)
+    return await _compaction_state(request, conversation_id)
 
 
 @router.post("/{conversation_id}/compact", response_model=ConversationDetail)

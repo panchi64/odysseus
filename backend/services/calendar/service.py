@@ -34,10 +34,10 @@ from sqlmodel import Session, select
 
 from core.db import in_session
 from core.exceptions import NotFoundError
+from core.serde import as_utc
 from core.vault import Vault
 from models.calendar import DEFAULT_TIMEZONE, Calendar, CalendarEvent, new_uid
 from services.calendar.recurrence import (
-    as_utc,
     canonical_rrule,
     expand,
     next_occurrence,

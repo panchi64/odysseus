@@ -6,17 +6,7 @@ import {
   Show,
   type JSX,
 } from "solid-js";
-import {
-  Button,
-  Frames,
-  Row,
-  Select,
-  type SelectOption,
-  Stack,
-  StatusFlag,
-  Text,
-  toast,
-} from "~/ui";
+import { Button, Frames, Row, Stack, StatusFlag, Text, toast } from "~/ui";
 import { isApiError } from "~/lib/api";
 import {
   refreshEmbeddingHealth,
@@ -26,20 +16,14 @@ import {
   useReindexStatus,
 } from "../data";
 
-/** The embedding role's extra controls: which model on the bound endpoint serves
- *  embeddings, the backend's recall-health verdict, and the re-embed (reindex) the
- *  workspace runs after a model change. Pure presentation — every decision (which
- *  model is valid, whether recall is degraded, when a reindex is needed) is the
+/** The search & memory model's live readouts: the backend's recall-health verdict
+ *  and the re-embed (reindex) the workspace runs after a model change. Which model
+ *  serves embeddings is picked on the card that hosts this. Pure presentation —
+ *  every decision (whether recall is degraded, when a reindex is needed) is the
  *  backend's; this only renders that state and relays the operator's intent. */
 export interface EmbeddingRoleControlsProps {
   /** Whether any endpoint is bound to the embedding role. */
   bound: boolean;
-  /** The currently pinned model (`null` ⇒ the endpoint's default). */
-  model: string | null;
-  /** Models the bound primary endpoint serves, for the picker. */
-  modelOptions: SelectOption[];
-  /** Re-bind with a new model pick (`null` ⇒ endpoint default). */
-  onPickModel: (model: string | null) => void;
 }
 
 export function EmbeddingRoleControls(
@@ -85,16 +69,6 @@ export function EmbeddingRoleControls(
 
   return (
     <Stack gap={2}>
-      <Show when={props.bound}>
-        <Select
-          label="EMBEDDING MODEL"
-          value={props.model ?? ""}
-          options={props.modelOptions}
-          onChange={(v) => props.onPickModel(v === "" ? null : v)}
-          hint="Used to embed memories and chats — must be an embeddings model."
-        />
-      </Show>
-
       {/* The backend owns the verdict; we only render it. */}
       <Show when={health()?.status === "warn"}>
         <StatusFlag status="warn">

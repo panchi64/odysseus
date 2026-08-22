@@ -13,12 +13,13 @@ through SQLite (which may drop tzinfo) can't make a naive/aware comparison raise
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import Engine, delete
 from sqlmodel import Session, select
 
 from core.db import in_session, upsert
+from core.serde import as_utc
 from models._fields import new_id, utcnow
 from models.approval_grant import ApprovalGrant
 
@@ -29,11 +30,6 @@ class GrantInfo:
 
     tool_name: str
     expires_at: datetime
-
-
-def _as_utc(value: datetime) -> datetime:
-    """A DB-read datetime as tz-aware UTC (SQLite may hand it back naive)."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def covered_by_grant(tool_name: str | None, active: set[str]) -> bool:
@@ -98,8 +94,8 @@ class ApprovalGrantStore:
             # rows are pruned opportunistically on read so the table can't grow without
             # bound — a bulk delete by id, idempotent under a concurrent prune.
             for r in rows:
-                if _as_utc(r.expires_at) > now:
-                    live.append(GrantInfo(tool_name=r.tool_name, expires_at=_as_utc(r.expires_at)))
+                if as_utc(r.expires_at) > now:
+                    live.append(GrantInfo(tool_name=r.tool_name, expires_at=as_utc(r.expires_at)))
                 else:
                     expired_ids.append(r.id)
             if expired_ids:

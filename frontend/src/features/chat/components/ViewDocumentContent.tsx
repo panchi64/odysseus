@@ -75,6 +75,11 @@ export function ViewDocumentContent(props: {
   /** Accepted for parity with the renderer prop contract — prose always
    *  soft-wraps regardless (it's flowed text, not a fixed-width viewer). */
   softWrap?: boolean;
+  /** True when the viewport owns the whole screen. The suggestion review only
+   *  renders here: reviewing a proposed change means reading its diff beside the
+   *  passage it rewrites, which a half-width pane beside the transcript can't
+   *  give it — there it just crowds out the document. */
+  expanded?: boolean;
   /** Prior committed versions of this document, oldest -> newest — used only to
    *  resolve the passage-anchor's diff base (the version immediately before the
    *  one on stage). */
@@ -231,8 +236,11 @@ export function ViewDocumentContent(props: {
             <>
               {/* What the AI has proposed for this document but not applied (`DOC-3`) —
                   reviewed change by change right where the document is read. Only on the
-                  newest committed version, since that's what a suggestion anchors to. */}
-              <Show when={props.editable}>
+                  newest committed version, since that's what a suggestion anchors to,
+                  and only with the viewport expanded — see `expanded`. The full-page
+                  editor (`DocumentEditorScreen`) mounts the same review unconditionally,
+                  so an operator who never expands the pane still has a route to it. */}
+              <Show when={props.editable && props.expanded}>
                 <div class="mb-3">
                   <SuggestionReview
                     documentId={props.document.documentId}

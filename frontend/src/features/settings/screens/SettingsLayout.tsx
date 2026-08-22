@@ -8,7 +8,7 @@ export function SettingsLayout(props: { children: JSX.Element }): JSX.Element {
     <Stack gap={6}>
       <PageHeader
         title="SETTINGS"
-        subtitle="Appearance, model, web-search, and offline configuration."
+        subtitle="Appearance, chat, agent-tool, and offline configuration."
         assetId="ODY-CFG-03.0"
       />
       {props.children}

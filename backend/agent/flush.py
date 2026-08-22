@@ -49,7 +49,6 @@ class PersistContext:
     clean_drop: tuple[int, int] | None = None
     attachment_ids: list[str] = field(default_factory=list)
     persisted: list[Any] | None = None
-    compaction: Any = None
 
 
 @dataclass

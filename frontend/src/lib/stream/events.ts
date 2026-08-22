@@ -180,9 +180,17 @@ export interface ConversationCompacted extends Base {
    *  keyed by, and the same one a cold read returns. */
   message_id: string;
   summary: string;
-  /** How many messages the summary stands in for, so the divider can say so
-   *  without the client counting anything itself. */
+  /** How many **messages** the summary stands in for, so the divider can say so
+   *  without the client counting anything itself. `ModelMessage`s, not exchanges —
+   *  a plain exchange is two — so never render this as a turn count. */
   messages_compacted: number;
+  /** Coarse char-based estimates of what the fold replaced (`tokens_before`, over
+   *  the folded messages) and what replaced it (`tokens_after`, over the stored
+   *  summary alone — *not* the next turn's footprint, which also carries whatever
+   *  tail the backend retained). Always sent, 0 when there's nothing to report;
+   *  optional here only so an older backend still renders. */
+  tokens_before?: number | null;
+  tokens_after?: number | null;
   /** The rendered turn the divider follows. The backend resolves the position —
    *  a tree node is not a rendered message, so the client would otherwise have to
    *  guess and could land somewhere a reload disagrees with. Null ⇒ append. */

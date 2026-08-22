@@ -36,6 +36,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dateutil.rrule import rrulestr
 from icalendar.prop import vRecur
 
+from core.serde import as_utc
+
 # The ceiling on how many occurrences one expansion may return. A window is the real
 # bound; this is the backstop against a pathological rule (``FREQ=SECONDLY``) or an
 # absurd window turning a read into an unbounded loop.
@@ -54,14 +56,6 @@ def parse_zone(name: str | None) -> ZoneInfo:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(f"unknown time zone {name!r}") from exc
-
-
-def as_utc(value: datetime) -> datetime:
-    """Force ``value`` onto UTC. A naive datetime is *assumed* UTC — SQLite hands back
-    naive datetimes for the aware ones we store (the same normalization
-    `services/scheduler.py` and `services/approval_grants.py` do), so this is the one
-    place that assumption lives for calendar reads."""
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def canonical_rrule(rule: str) -> str:

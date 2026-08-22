@@ -30,6 +30,7 @@ from pydantic_ai import (
 )
 
 from core.serde import jsonable
+from core.text import CHARS_PER_TOKEN
 
 
 @dataclass
@@ -73,6 +74,53 @@ class MessageView:
     # usage/loop/context/time bound) — the human-readable reason. Filled in by the
     # store from the branch node, like `pinned`; None for every other turn.
     blocked_reason: str | None = None
+    # `role="compaction"` only — what this divider actually cost, so the UI can say
+    # "14 messages folded, ~62k → ~4k" without counting or estimating anything itself.
+    # `messages_compacted` is how many messages the summary stands in for;
+    # `tokens_before`/`tokens_after` are coarse `estimate_tokens` figures over the folded
+    # messages and over the summary. The same three values ride the live
+    # `conversation.compacted` event, computed the same way, so a live divider and the
+    # one a reload draws report identical numbers. 0 on every other role.
+    messages_compacted: int = 0
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+
+def estimate_tokens(messages: list[Any]) -> int:
+    """A coarse token estimate for a list of messages, from its **text only**.
+
+    The fallback for endpoints that report no usage — local servers commonly return
+    ``input_tokens=0``, which ``services.conversations.context_footprint`` (rightly) treats
+    as unmeasured rather than as a real zero. Without an estimate, conversation compaction
+    would be dead on exactly the local-serving setup this workspace is built for.
+
+    Deliberately blind to binary parts. A retained inline image is base64 in the blob, and
+    measuring it by character length would read a single screenshot as hundreds of
+    thousands of phantom tokens and compact a thread that is nowhere near full. Ignoring
+    image tokens under-counts instead — the safe direction, since the run's own
+    context-overflow stop is still there behind this.
+
+    It lives here rather than beside the compaction code that first needed it because the
+    projection needs the same number: a compaction divider reports what it folded, and a
+    cold read must report the same figure the live event did.
+
+    ``messages`` is a list of ``ModelMessage``; typed loosely so this module keeps the
+    same duck-typed part handling as the projection below."""
+    chunks = (_message_text(message) for message in messages)
+    return sum(len(text) for text in chunks if text) // CHARS_PER_TOKEN
+
+
+def _message_text(message: Any) -> str:
+    """Every text-bearing part of a message, joined — the input to
+    :func:`estimate_tokens`. Binary content contributes nothing on purpose (see there)."""
+    chunks: list[str] = []
+    for part in message.parts:
+        content = getattr(part, "content", None)
+        if isinstance(content, str):
+            chunks.append(content)
+        elif isinstance(content, list | tuple):
+            chunks.extend(item for item in content if isinstance(item, str))
+    return " ".join(chunks)
 
 
 def flatten_content(content: Any) -> str:
@@ -103,6 +151,13 @@ def project_tree(
     of the user turn its underlying ``UserPromptPart`` would otherwise read as. This stays
     purely order-driven: the caller hands the nodes in the order it wants them rendered.
 
+    A checkpoint's divider also reports **what the fold cost** — how many messages it
+    stands in for, and a coarse before/after token estimate — derived here rather than
+    persisted. The caller hands the nodes in operator order, where a checkpoint sits
+    immediately after the last node it covers, so the messages since the *previous*
+    checkpoint (that checkpoint included) are exactly the set the fold replaced — the same
+    set the live ``conversation.compacted`` event counted, so the two agree.
+
     One turn = one view. A user turn is a request carrying a ``UserPromptPart``.
     An assistant turn is the run of everything after it until the next user turn —
     one or more ``ModelResponse`` messages plus the interleaved tool-return
@@ -123,6 +178,10 @@ def project_tree(
     views: list[MessageView] = []
     by_call: dict[str, ToolView] = {}
     assistant: MessageView | None = None  # the open assistant turn, if any
+    # The messages a checkpoint would fold: everything since the previous one (which is
+    # itself part of the set — a second fold summarizes the first summary plus what
+    # followed it, exactly as `compaction_plan` collects them).
+    since_checkpoint: list[Any] = []
     for node_id, message in nodes:
         if node_id in compacted_ids:
             # A conversation-compaction checkpoint: its own turn, not the operator's.
@@ -136,9 +195,14 @@ def project_tree(
                     if message.parts
                     else None,
                     id=node_id,
+                    messages_compacted=len(since_checkpoint),
+                    tokens_before=estimate_tokens(since_checkpoint),
+                    tokens_after=estimate_tokens([message]),
                 )
             )
+            since_checkpoint = [message]
             continue
+        since_checkpoint.append(message)
         if isinstance(message, ModelRequest):
             user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
             if user_parts:

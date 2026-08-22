@@ -1,15 +1,18 @@
 """Conversation compaction — folding a thread's older turns into a utility-model summary.
 
-The counterpart to :mod:`agent.compaction`. That one condenses individual *tool results*
-for the model on a fixed rolling window; this one condenses whole *turns* once the thread's
-measured footprint nears the model's context window. Together they are the two halves of
-"reduce older context to stay within budget" (`AE-5.4`, `CHAT-4`).
+**The product's only context reduction** (`AE-5.4`, `CHAT-4`), and the only one that ever
+existed for a good reason: it fires on *measured pressure*, when a thread's footprint has
+actually reached the operator's share of the model's context window. Everything else that
+used to shrink content — digesting prior-turn tool results, capping an attachment's inline
+text, trimming a code run's stdout — fired unconditionally, on turns under no pressure at
+all, and has been removed. A large tool result now rides into context whole; the run's own
+context-overflow stop is what catches a pathological turn.
 
 Three properties make this safe to run automatically:
 
 - **It fires between turns, never inside one.** The trigger sits in the orchestrator
   prelude, before the agent runs, so it can't pull an output out from under reasoning that
-  is already in flight — the objection that kept the tool-result window trigger-free.
+  is already in flight.
 - **Nothing is destroyed.** The summary is appended as a new checkpoint node; the turns it
   covers stay in the tree, in the operator's transcript, and in cross-chat search. Only
   what is *re-sent to the model* narrows (``ConversationStore.model_history``). A rewind
@@ -18,8 +21,11 @@ Three properties make this safe to run automatically:
   with a context notice. Compaction lowers the pressure; it never absorbs an overflow, and
   it never silently drops content to force a fit.
 
-The retained tail is what keeps the *active* request intact: the boundary is a turn start,
-so the last few exchanges replay word for word and only what precedes them is paraphrased.
+``auto_compact_keep_turns`` is **0** by default: the summary *is* what the model replays,
+and a retained tail would restate verbatim what the summary already covers, at the exact
+moment the thread has no room for it. The setting survives because the boundary is a turn
+start, so a non-zero value replays the last few exchanges word for word — but nothing after
+the boundary is kept unless the operator asks for it.
 """
 
 from __future__ import annotations
@@ -43,9 +49,9 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import Settings, get_settings
 from core.serde import jsonable
-from core.text import CHARS_PER_TOKEN, tokens_to_chars, truncate_middle
+from core.text import strip_think_blocks, tokens_to_chars, truncate_middle
 from prompts.utility import COMPACT_INSTRUCTIONS, COMPACT_PREAMBLE
-from services.conversation_view import flatten_content
+from services.conversation_view import estimate_tokens, flatten_content
 from services.conversations import ConversationStore, context_footprint
 from services.settings_store import (
     SettingsStore,
@@ -74,8 +80,8 @@ class AutoCompactPolicy:
     """The effective conversation-compaction policy for one turn.
 
     Resolved at the route (operator default folded with the per-conversation override) and
-    handed to the orchestrator, the same way the tool-result compaction context and the
-    per-turn request limit are — so the engine never reads the settings store itself."""
+    handed to the orchestrator, the same way the per-turn request limit is — so the engine
+    never reads the settings store itself."""
 
     enabled: bool
     threshold: float
@@ -89,6 +95,11 @@ class CompactionOutcome:
     message_id: str
     summary: str
     messages_compacted: int
+    # What the fold cost, in coarse `estimate_tokens` terms: over the folded messages, and
+    # over the summary that replaced them. The same proxy the trigger measures with, so
+    # the divider's "~62k → ~4k" is consistent with the gauge the operator was watching.
+    tokens_before: int
+    tokens_after: int
     # The rendered turn the divider follows, so a live client places it where a reload will.
     after_message_id: str | None
 
@@ -97,7 +108,7 @@ def build_auto_compact_policy(
     settings: Settings, *, enabled: bool | None = None, threshold: float | None = None
 ) -> AutoCompactPolicy:
     """Resolve the effective policy from the config defaults, with optional operator
-    overrides — the counterpart to ``agent.compaction.build_compaction_context``."""
+    overrides."""
     return AutoCompactPolicy(
         enabled=settings.auto_compact_enabled if enabled is None else enabled,
         threshold=settings.auto_compact_threshold if threshold is None else threshold,
@@ -119,23 +130,6 @@ async def resolve_auto_compact_policy(
         enabled=resolve_compaction_enabled(override, stored.enabled),
         threshold=stored.threshold,
     )
-
-
-def estimate_tokens(messages: list[ModelMessage]) -> int:
-    """A coarse token estimate for a history, from its **text only**.
-
-    The fallback for endpoints that report no usage — local servers commonly return
-    ``input_tokens=0``, which ``context_footprint`` (rightly) treats as unmeasured rather
-    than as a real zero. Without an estimate the whole feature would be dead on exactly the
-    local-serving setup this workspace is built for.
-
-    Deliberately blind to binary parts. A retained inline image is base64 in the blob, and
-    measuring it by character length would read a single screenshot as hundreds of
-    thousands of phantom tokens and compact a thread that is nowhere near full. Ignoring
-    image tokens under-counts instead — the safe direction, since the run's own
-    context-overflow stop is still there behind this."""
-    chars = sum(len(text) for text in (_message_text(m) for m in messages) if text)
-    return chars // CHARS_PER_TOKEN
 
 
 def should_compact(
@@ -210,6 +204,11 @@ async def compact_conversation(
         message_id=message_id,
         summary=labelled,
         messages_compacted=len(plan.messages),
+        # Measured over the same two things the projection re-measures on a cold read —
+        # the folded messages, and the stored checkpoint text — so the live divider and
+        # the reloaded one report the same numbers.
+        tokens_before=estimate_tokens(plan.messages),
+        tokens_after=estimate_tokens([ModelRequest(parts=[UserPromptPart(labelled)])]),
         after_message_id=plan.anchor_id,
     )
 
@@ -231,7 +230,9 @@ async def summarize_history(
     handing it that model's tool calls, thinking parts and provider-specific shapes — a
     reliable source of 400s — and the summarizer needs to *read* the exchange, not continue
     it. Best-effort and isolated, like titling: a model error or timeout leaves the thread
-    uncompacted rather than failing the turn it was about to make room for."""
+    uncompacted rather than failing the turn it was about to make room for, and any
+    ``<think>`` block a runtime leaked into the output is stripped before it can become the
+    thread's standing memory."""
     transcript = render_transcript(messages, max_input_tokens=max_input_tokens)
     if not transcript.strip():
         return None
@@ -247,7 +248,12 @@ async def summarize_history(
     except Exception as exc:  # noqa: BLE001 — compaction is best-effort, never fails a turn
         logger.warning("conversation compaction summary failed: %s", exc)
         return None
-    return result.output.strip() or None
+    # Reasoning was requested off, but the lever is best-effort: a runtime that ignores it
+    # inlines the chain-of-thought as a `<think>…</think>` block in the content. Left in,
+    # that block *becomes* the thread's memory — the model would replay the summarizer's
+    # scratch reasoning as established fact for the rest of the conversation. Same call the
+    # namer makes, and it handles the unclosed block a truncated think emits.
+    return strip_think_blocks(result.output).strip() or None
 
 
 def render_transcript(
@@ -312,14 +318,3 @@ def _result_text(content: object) -> str:
     return head if not elided else f"{head} […{elided} chars…] {tail}"
 
 
-def _message_text(message: ModelMessage) -> str:
-    """Every text-bearing part of a message, joined — the input to :func:`estimate_tokens`.
-    Binary content contributes nothing on purpose (see there)."""
-    chunks: list[str] = []
-    for part in message.parts:
-        content = getattr(part, "content", None)
-        if isinstance(content, str):
-            chunks.append(content)
-        elif isinstance(content, list | tuple):
-            chunks.extend(item for item in content if isinstance(item, str))
-    return " ".join(chunks)

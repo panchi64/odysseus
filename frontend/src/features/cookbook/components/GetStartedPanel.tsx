@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
@@ -31,6 +32,7 @@ import { LocalSetupForm } from "./LocalSetupForm";
 export function GetStartedPanel(): JSX.Element {
   const endpoints = useRemoteEndpoints();
   const allProviders = useProviders();
+  const navigate = useNavigate();
 
   // The serving-managed "local" adapter isn't a connectable API — that's the
   // RUN LOCALLY tile's path — so the remote form offers every other preset.
@@ -82,11 +84,14 @@ export function GetStartedPanel(): JSX.Element {
     if (!canConnect() || !p) return;
     setConnecting(true);
     try {
-      const ok = await connectAndSelectEndpoint({
-        provider: p,
-        baseUrl: baseUrl().trim(),
-        apiKey: apiKey().trim(),
-      });
+      const ok = await connectAndSelectEndpoint(
+        {
+          provider: p,
+          baseUrl: baseUrl().trim(),
+          apiKey: apiKey().trim(),
+        },
+        navigate,
+      );
       if (ok) {
         // Connected & selected — collapse the form; the new endpoint shows below.
         setMode(null);

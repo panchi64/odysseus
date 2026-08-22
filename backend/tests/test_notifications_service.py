@@ -265,3 +265,43 @@ async def test_cold_restart_rehydrates_prior_notifications(tmp_path):
     assert items[0].title == "before restart"
     assert items[0].body == "with a body"
     await cold.stop()
+
+
+async def test_rehydrated_and_live_notifications_sort_together(tmp_path):
+    """The cache has two populations after a restart — rows read back from SQLite (which
+    has no tz type, so they arrive naive) and anything `notify()` cached since boot (aware
+    from `utcnow()`). Listing them compares and sorts across both, so the read must
+    normalize or it raises `TypeError: can't compare offset-naive and offset-aware`."""
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+
+    service = NotificationService(engine, vault)
+    await service.start()
+    old = await service.notify(OWNER, "system", "persisted")
+    await service._worker.join()
+    await service.stop()
+
+    # The round-trip really is lossy — otherwise this test would prove nothing.
+    persisted = await in_session(
+        engine, lambda session: session.exec(select(Notification)).all()
+    )
+    assert persisted[0].created_at.tzinfo is None
+
+    cold = NotificationService(engine, vault)
+    await cold.start()
+    await cold._rehydrate_task
+    fresh = await cold.notify(OWNER, "system", "live")
+
+    items, unread = await cold.list_notifications(OWNER)
+    assert [i.id for i in items] == [fresh.id, old.id]  # newest first, across both
+    assert unread == 2
+    assert all(i.created_at.tzinfo is not None for i in items)
+
+    # `before` filters across both populations too, offset or not.
+    aware = fresh.created_at
+    for cutoff in (aware, aware.replace(tzinfo=None)):
+        page, _ = await cold.list_notifications(OWNER, before=cutoff)
+        assert [i.id for i in page] == [old.id]
+    await cold.stop()

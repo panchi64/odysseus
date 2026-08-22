@@ -82,6 +82,32 @@ async def test_list_pagination_unread_filter_and_unread_count(monkeypatch):
         assert {item["title"] for item in before["items"]} == {"n0", "n1"}
 
 
+async def test_list_spans_rehydrated_and_live_notifications(monkeypatch):
+    """After a restart the cache holds both DB-read notifications (SQLite has no tz type,
+    so they come back naive) and ones `notify()` cached since — the route sorts and
+    filters across both, and must not 500 on a naive/aware comparison."""
+    _ticking_clock(monkeypatch)
+    async with client_app() as (client, app):
+        service = app.state.notifications
+        old = await service.notify(OPERATOR_ID, "system", "persisted")
+        await service._worker.join()
+        # Drop it from the cache and reload from the DB — the restart path, without a
+        # second app: `_rehydrate` skips ids already cached.
+        service._cache.pop(old.id)
+        await service._rehydrate()
+        fresh = await service.notify(OPERATOR_ID, "system", "live")
+
+        resp = await client.get("/notifications")
+        assert resp.status_code == 200
+        assert [item["title"] for item in resp.json()["items"]] == ["live", "persisted"]
+
+        # `before` is aware only when the client sends an offset — both forms filter.
+        for cutoff in (fresh.created_at, fresh.created_at.replace(tzinfo=None)):
+            page = await client.get("/notifications", params={"before": cutoff.isoformat()})
+            assert page.status_code == 200
+            assert [item["id"] for item in page.json()["items"]] == [old.id]
+
+
 async def test_notification_out_is_camel_case():
     async with client_app() as (client, app):
         await app.state.notifications.notify(

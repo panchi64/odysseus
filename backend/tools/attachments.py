@@ -1,77 +1,38 @@
-"""Attachments tool — stage an attached file into the conversation's sandbox.
+"""Attachments tool — (re-)stage an attached file into the conversation's sandbox.
 
-The agent reaches a file the operator attached to a message by its upload id (the id
-rides in the attachment marker / chip). Rather than feed the file's bytes back through
-the model, this **provisions** it: the original bytes are written into the conversation's
-sandbox ``/work`` (the "computer" ``code_execute`` describes), so the agent can then read
-and process it with code — works for any file type, not just text. It complements
-``corpus.retrieve`` (semantic text search over a document) with a "give me the actual
-file to compute on" path.
+Every attachment is already staged into the conversation's sandbox ``/work`` eagerly, at
+the moment it is attached (``agent/attachments.py``), and the turn's marker names the
+path. This tool is the **recovery** path for the case that marker warns about: sandbox
+sessions are per-conversation and recyclable, so a replayed thread can find nothing at
+the path it was told about. Calling this re-stages the original bytes at the same path.
+It also serves an attachment from an older turn the agent wants to compute on now.
 
-Thin like every tool: the upload store decrypts the bytes, the sandbox session stages
-them, and this adapter translates a missing capability / bad id into something the model
-can act on.
+It **provisions**, never reads: the file's bytes go into the workspace, not through the
+model. It complements ``corpus.retrieve`` (semantic text search over a document) with a
+"give me the actual file to compute on" path.
+
+Thin like every tool: the upload store decrypts the bytes, ``services.sandbox.staging``
+writes them (the same code the eager attach-time path runs, so both land on the same
+path for the same file), and this adapter translates a missing capability / bad id into
+something the model can act on.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import PurePosixPath
 
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError
-from services.sandbox import SandboxError, SandboxSessionManager
+from services.sandbox import (
+    SandboxError,
+    SandboxSessionManager,
+    stage_attachment,
+    workspace_path,
+)
 from services.uploads import UploadStore
 
 from .deps import RunDeps
-
-# Where staged attachments land inside the sandbox working directory.
-_STAGE_DIR = "attachments"
-_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
-# Hard bound on the collision-suffix search below — sized generously above any
-# realistic same-named-attachment count so a bug can't spin this forever.
-_MAX_SUFFIX_ATTEMPTS = 1000
-
-
-def _safe_name(filename: str, upload_id: str) -> str:
-    """A filesystem-safe basename for the staged file. Strips any path components and
-    unsafe characters; falls back to the upload id when nothing usable survives, so the
-    file always lands at a predictable, escape-free path under the stage dir."""
-    base = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    cleaned = _UNSAFE.sub("-", base).strip("-.")
-    return cleaned or upload_id
-
-
-def _suffixed(relpath: str, n: int) -> str:
-    """``relpath`` with a ``-{n}`` suffix inserted before its extension, for the next
-    collision-safe candidate name (``attachments/data.csv`` → ``attachments/data-2.csv``)."""
-    path = PurePosixPath(relpath)
-    return str(path.with_name(f"{path.stem}-{n}{path.suffix}"))
-
-
-def _stage_unique(session, relpath: str, content: bytes) -> tuple[str, bool]:
-    """Write ``content`` at ``relpath``, or the next available ``-2``/``-3``… suffixed
-    name when that path is already taken by *different* bytes — two attachments sharing
-    a sanitized basename (e.g. two files both named ``invoice.pdf``). The same bytes
-    already at that path means the same attachment is simply being re-provisioned, so
-    it is staged in place rather than renamed — re-provisioning stays idempotent.
-
-    Returns ``(staged_relpath, renamed)``."""
-    candidate = relpath
-    for n in range(2, _MAX_SUFFIX_ATTEMPTS + 2):
-        try:
-            existing = session.read_file(candidate)
-        except SandboxError:
-            break  # nothing at this path — safe to use
-        if existing == content:
-            break  # the same file, already staged — reuse the same path
-        candidate = _suffixed(relpath, n)
-    # If every suffix up to _MAX_SUFFIX_ATTEMPTS is genuinely taken (astronomically
-    # unlikely), the loop exits without re-checking this final candidate — it is
-    # written to unverified rather than exhaustively proven free.
-    session.write_file(candidate, content)
-    return candidate, candidate != relpath
 
 
 def attachments_toolset() -> FunctionToolset[RunDeps]:
@@ -79,17 +40,18 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
 
     @toolset.tool
     async def provision(ctx: RunContext[RunDeps], attachment_id: str) -> dict:
-        """Copy a file the operator attached to this conversation into your computer's
-        working directory (``/work``), so you can read and process it with
-        ``code_execute``. Pass the file's upload id (shown in the attachment note /
-        chip). Use this whenever you need to *work on* an attached file — any type, not
-        just images: parse a CSV, analyze a spreadsheet, run code over a document, crop
-        an image, and so on. It returns the ``path`` where the file was written; read it
-        from there in your next ``code_execute`` call — always use this returned path
-        verbatim, not one you construct from the filename: when another attachment in
-        this conversation already staged a file under the same name, this one is staged
-        under a disambiguated name instead (the result says so). For just searching a
-        document's text, prefer ``corpus.retrieve`` with the id instead.
+        """(Re-)copy a file the operator attached to this conversation into your
+        computer's working directory (``/work``). Attachments are staged there
+        automatically when they are attached, so use this when the path named in an
+        attachment note is **no longer there** (your computer is recycled between
+        sessions, so an older turn's path can go stale), or to bring back a file from an
+        earlier turn you now want to compute on. Pass the file's upload id (shown in the
+        attachment note / chip). It returns the ``path`` where the file was written;
+        read it from there in your next ``code_execute`` call — always use this returned
+        path verbatim, not one you construct from the filename: when another attachment
+        in this conversation already staged a file under the same name, this one is
+        staged under a disambiguated name instead (the result says so). For just
+        searching a document's text, prefer ``corpus.retrieve`` with the id instead.
 
         The result has ``ok`` and, on success, ``path``/``filename``/``mime``/
         ``size_bytes`` (plus ``renamed``/``note`` when the name was disambiguated); on
@@ -112,15 +74,19 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
                 "attachment note for a file in this conversation."
             ) from None
 
-        relpath = f"{_STAGE_DIR}/{_safe_name(blob.filename, attachment_id)}"
         try:
             session = await sessions.acquire(ctx.deps.sandbox_key)
-            staged_relpath, renamed = _stage_unique(session, relpath, blob.content)
+            staged_relpath, renamed = stage_attachment(
+                session,
+                filename=blob.filename,
+                upload_id=attachment_id,
+                content=blob.content,
+            )
         except SandboxError as exc:
             return {"ok": False, "error": f"Could not stage the file: {exc}"}
         result = {
             "ok": True,
-            "path": f"/work/{staged_relpath}",
+            "path": workspace_path(staged_relpath),
             "filename": blob.filename,
             "mime": blob.mime,
             "size_bytes": len(blob.content),

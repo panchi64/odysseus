@@ -20,7 +20,6 @@ from typing import Literal
 from pydantic_ai import FunctionToolset, RunContext
 
 from core.config import Settings, get_settings
-from core.text import truncate_middle
 from runs import ToolProgress
 from services.sandbox import (
     HostExecutionError,
@@ -140,40 +139,24 @@ def _failure_hint(
     return f"It exited with a non-zero status ({exit_code}) and produced no output."
 
 
-def _cap_stream(text: str, max_chars: int, *, sandboxed: bool) -> str:
-    """Cap one stdout/stderr stream to ``max_chars``, eliding the middle (keeping the
-    head and tail — errors and final state usually live at the tail) with an explicit
-    inline marker stating how much was elided and where the full output still lives."""
-    head, tail, elided = truncate_middle(text, max_chars)
-    if not elided:
-        return head
-    redo = (
-        "rerun piping it to a file under /work and read that file back in slices"
-        if sandboxed
-        else "rerun redirecting it to a file and read that file back in slices"
-    )
-    return (
-        f"{head}\n"
-        f"[… {elided:,} characters elided (kept the first {len(head):,} and last "
-        f"{len(tail):,}); the full output was not kept — {redo}.]\n"
-        f"{tail}"
-    )
-
-
 def _exec_result(
     result, settings: Settings, *, sandboxed: bool, network: bool = True
 ) -> dict:
-    """Shape an execution result for the model: an explicit success flag, stdout/stderr
-    each capped to half of ``settings.sandbox_output_max_chars`` (see `_cap_stream`), and
-    on failure a legible hint naming which configured cap was likely hit. ``network``
-    is whether the run actually had egress (the host always does), so the no-egress
-    hint only fires when turning the tool argument on would genuinely fix it."""
-    per_stream_cap = settings.sandbox_output_max_chars // 2
+    """Shape an execution result for the model: an explicit success flag, stdout and
+    stderr **whole**, and on failure a legible hint naming which configured cap was
+    likely hit. ``network`` is whether the run actually had egress (the host always
+    does), so the no-egress hint only fires when turning the tool argument on would
+    genuinely fix it.
+
+    The output is not trimmed. A blanket cap fired on every run whether or not the
+    context was under any pressure, and it cost the model the middle of exactly the
+    output it had just asked for; the turn's own context-overflow stop is what catches
+    a genuinely pathological run."""
     payload = {
         "ok": result.ok,
         "exit_code": result.exit_code,
-        "stdout": _cap_stream(result.stdout, per_stream_cap, sandboxed=sandboxed),
-        "stderr": _cap_stream(result.stderr, per_stream_cap, sandboxed=sandboxed),
+        "stdout": result.stdout,
+        "stderr": result.stderr,
         "timed_out": result.timed_out,
     }
     if not result.ok:
@@ -195,7 +178,6 @@ def _execute_description(settings: Settings) -> str:
     explicit `description=` override — see `FunctionToolset.tool`) so it always states
     the sandbox's *actual* configured resource caps rather than a guess the model has
     no way to verify, and is precise enough to self-diagnose a 137/pid-cap failure."""
-    per_stream_cap = settings.sandbox_output_max_chars // 2
     return (
         "Run `python` (the default `language`) or a `bash` script on your own "
         "computer — a private Linux machine that is yours alone (it is not the "
@@ -230,11 +212,10 @@ def _execute_description(settings: Settings) -> str:
         f"CPU, and {settings.sandbox_pids_limit} processes/threads — exceeding memory "
         "gets the run killed, exceeding the CPU cap only throttles it (the run keeps "
         "going, just slower, and may then also hit the timeout), and exceeding the "
-        "process cap fails the next fork/thread-create inside the run. `stdout`/"
-        f"`stderr` are each capped to {per_stream_cap:,} characters; a stream over "
-        "that has its middle elided (the head and tail are kept, since errors live "
-        "at the tail) — for large output, redirect it to a file under `/work` and "
-        "read that file back in slices instead of printing it all.\n\n"
+        "process cap fails the next fork/thread-create inside the run. `stdout` and "
+        "`stderr` come back whole, so print what you actually need — for output you "
+        "intend to work through rather than read, redirect it to a file under `/work` "
+        "and read that file back in slices instead of printing it all.\n\n"
         "The result has `ok`, `exit_code`, `stdout`, `stderr`, and `timed_out`; on "
         "failure it adds a short `error` hint naming which cap (if any) was likely "
         "hit. When it fails, read `stderr` for the cause, fix the code, and run "

@@ -274,6 +274,14 @@ interface MessageDTO {
   /** Set when the run behind this assistant turn ended blocked (a usage/loop/
    *  context/time bound) — the human-readable reason. */
   blocked_reason?: string | null;
+  /** Compaction rows: how many **messages** the summary stands in for (not turns —
+   *  the backend counts `ModelMessage`s), an estimate of what was folded, and an
+   *  estimate of the summary that replaced it. The backend sends all three as ints
+   *  (0 when there's nothing to report); optional here only so an older backend
+   *  still renders. Every other row carries 0/0/0. */
+  messages_compacted?: number | null;
+  tokens_before?: number | null;
+  tokens_after?: number | null;
 }
 
 interface ActiveRunDTO {
@@ -573,6 +581,9 @@ function toMessage(
     versionCount: dto.version_count,
     pinned: dto.pinned,
     attachmentIds: dto.attachment_ids,
+    foldedMessages: dto.messages_compacted ?? undefined,
+    tokensBefore: dto.tokens_before ?? undefined,
+    tokensAfter: dto.tokens_after ?? undefined,
   };
   if (dto.role !== "assistant") return base;
   // Cold history is still flat (no recorded emission order), so reconstruct the
@@ -827,29 +838,9 @@ export async function revokeGrant(
   );
 }
 
-/** This conversation's compaction state (its override + the resolved effective on/off). */
-export async function fetchCompactionOverride(
-  conversationId: string,
-): Promise<CompactionState> {
-  return api.get<CompactionState>(
-    `/conversations/${conversationId}/compaction`,
-  );
-}
-
-/** Force compaction on/off for this conversation (or `null` to inherit the global setting);
- *  returns the new state. */
-export async function setCompactionOverride(
-  conversationId: string,
-  override: boolean | null,
-): Promise<CompactionState> {
-  return api.put<CompactionState>(
-    `/conversations/${conversationId}/compaction`,
-    { override },
-  );
-}
-
-/** This conversation's *conversation*-compaction state — folding older turns into a
- *  summary, as opposed to `/compaction` above, which condenses individual tool outputs. */
+/** This conversation's compaction state (its override + the resolved effective on/off) —
+ *  folding older turns into a summary once the context window fills. The only reduction
+ *  there is; per-tool-result digesting was removed. */
 export async function fetchAutoCompactOverride(
   conversationId: string,
 ): Promise<CompactionState> {
@@ -1250,12 +1241,15 @@ export function createChatStream(
         planRevision += 1;
         setPlan(ev.items);
         break;
-      case "approval.required":
+      case "approval.required": {
+        // `args` is typed as always-present, but it arrives as untrusted JSON off
+        // the wire — default it once here, in the mapper, so no consumer of the
+        // stored block has to guard a `Object.keys(args)` or an `args.command`.
+        const args: Record<string, unknown> = ev.args ?? {};
         if (ev.name === HOST_COMMAND_TOOL) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, {
-              command:
-                typeof ev.args.command === "string" ? ev.args.command : "",
+              command: typeof args.command === "string" ? args.command : "",
               explanation: ev.explanation ?? undefined,
               phase: "pending",
             }),
@@ -1269,13 +1263,14 @@ export function createChatStream(
             approval: {
               toolCallId: ev.tool_call_id,
               name: ev.name,
-              args: ev.args,
+              args,
               summary: ev.summary,
               explanation: ev.explanation ?? undefined,
             },
           });
         });
         break;
+      }
       case "view.live": {
         // One live head per *conversation*, not per turn: clear any prior live
         // block (it may sit on an earlier turn) before marking this turn's, so a
@@ -1534,9 +1529,19 @@ export function createChatStream(
           role: "compaction",
           content: ev.summary,
           createdAt: ev.ts,
+          foldedMessages: ev.messages_compacted,
+          tokensBefore: ev.tokens_before ?? undefined,
+          tokensAfter: ev.tokens_after ?? undefined,
         };
+        // Idempotent on `message_id`: a reattach replays the run's whole buffer
+        // (`fromSeq: 0`) over a transcript that was cold-loaded *with* this divider
+        // already in it, so an unguarded splice would seat a second identical rule —
+        // and re-announce a fold that happened minutes ago.
+        let inserted = false;
         setMessages(
           produce((list) => {
+            if (list.some((m) => m.id === divider.id)) return;
+            inserted = true;
             const at = ev.after_message_id
               ? list.findIndex((m) => m.id === ev.after_message_id)
               : -1;
@@ -1544,6 +1549,16 @@ export function createChatStream(
             else list.push(divider);
           }),
         );
+        // A fold that lands mid-answer scrolls past unseen — and it changes what the
+        // model can still see, which is not something to discover later by reading
+        // back. The divider is the durable record; this is the notification.
+        // `messages_compacted` counts messages, not exchanges — say messages.
+        if (inserted)
+          toast.info(
+            ev.messages_compacted > 0
+              ? `Context compacted — ${ev.messages_compacted} earlier ${ev.messages_compacted === 1 ? "message is" : "messages are"} now a summary for the model.`
+              : "Context compacted — earlier messages are now a summary for the model.",
+          );
         break;
       }
       case "conversation.titled":

@@ -171,20 +171,12 @@ export const AREAS: NavArea[] = [
         description: "Run the same prompt across models side by side",
       },
       {
-        label: "Endpoints",
-        href: "/settings/endpoints",
-        icon: "link",
-        connected: true,
-        description:
-          "Model endpoints and the providers they're reached through",
-      },
-      {
-        label: "Role Bindings",
-        href: "/settings/roles",
+        label: "Models",
+        href: "/settings/models",
         icon: "reticle",
         connected: true,
         description:
-          "Which model answers chat, embeds, and titles — bound per role",
+          "Which model answers chat, runs background work, and powers recall — plus the endpoints they're reached through",
       },
     ],
   },

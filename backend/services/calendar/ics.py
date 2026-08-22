@@ -29,8 +29,9 @@ from icalendar import Calendar as ICalendar
 from icalendar import Event as IEvent
 from icalendar.prop import vRecur
 
+from core.serde import as_utc
 from models.calendar import DEFAULT_TIMEZONE
-from services.calendar.recurrence import as_utc, parse_zone
+from services.calendar.recurrence import parse_zone
 from services.calendar.service import CalendarService, EventView
 
 logger = logging.getLogger(__name__)

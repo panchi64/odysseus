@@ -114,7 +114,10 @@ function Terminal(props: {
   onDecide: (toolCallId: string, approved: boolean) => void;
 }): JSX.Element {
   const c = () => props.command;
-  const flag = () => phaseFlag[c().phase];
+  // A phase the map doesn't know (a newer backend, a replayed event) must not
+  // throw on the property read below — fall back to a neutral flag.
+  const flag = () =>
+    phaseFlag[c().phase] ?? { status: "idle" as Status, label: c().phase };
   const [showOutput, setShowOutput] = createSignal(true);
   createEffect(() => {
     if (props.open !== undefined) setShowOutput(props.open);

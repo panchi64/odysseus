@@ -237,64 +237,70 @@ export function ViewSnapshotCode(props: {
             }
             keyed
           >
-            {(path) => (
-              <div
-                ref={(el) =>
-                  rememberScroll(
-                    el,
-                    () => `${id()}:${toId()}:${fromId()}:${path}`,
-                  )
-                }
-                class="h-full min-h-0 overflow-auto"
-              >
-                <Switch>
-                  {/* Full code. */}
-                  <Match when={fromId() === NO_DIFF}>
-                    <Switch fallback={<LoadingText label="LOADING FILE…" />}>
-                      <Match when={text.error}>
-                        <ErrorState
-                          message="Could not load this file."
-                          onRetry={() => void refetchText()}
-                        />
-                      </Match>
-                      <Match when={text() !== undefined}>
-                        <CodeBlock
-                          code={text()!}
-                          lang={extensionOf(path) ?? undefined}
-                          fontStep={props.fontStep}
-                          softWrap={props.softWrap}
-                        />
-                      </Match>
-                    </Switch>
-                  </Match>
+            {(path) => {
+              // `CodeBlock`/`DiffView` each own their scroll root, so scroll
+              // persistence hooks onto whichever one is on stage rather than a
+              // wrapper — a second `overflow-auto` around them nested one
+              // scroller inside another and left the diff scrolling in the
+              // wrong box.
+              const scrollRef = (el: HTMLElement): void =>
+                rememberScroll(
+                  el,
+                  () => `${id()}:${toId()}:${fromId()}:${path}`,
+                );
+              return (
+                <div class="h-full min-h-0">
+                  <Switch>
+                    {/* Full code. */}
+                    <Match when={fromId() === NO_DIFF}>
+                      <Switch fallback={<LoadingText label="LOADING FILE…" />}>
+                        <Match when={text.error}>
+                          <ErrorState
+                            message="Could not load this file."
+                            onRetry={() => void refetchText()}
+                          />
+                        </Match>
+                        <Match when={text() !== undefined}>
+                          <CodeBlock
+                            ref={scrollRef}
+                            code={text()!}
+                            lang={extensionOf(path) ?? undefined}
+                            fontStep={props.fontStep}
+                            softWrap={props.softWrap}
+                          />
+                        </Match>
+                      </Switch>
+                    </Match>
 
-                  {/* Diff against the chosen FROM. */}
-                  <Match when={fromId() !== NO_DIFF}>
-                    <Switch fallback={<LoadingText label="LOADING DIFF…" />}>
-                      <Match when={diffs.error}>
-                        <ErrorState
-                          message="Could not load this diff."
-                          onRetry={() => void refetchDiffs()}
-                        />
-                      </Match>
-                      <Match when={diffs() && selectedDiff()?.diff}>
-                        <DiffView
-                          diff={selectedDiff()!.diff}
-                          fontStep={props.fontStep}
-                          softWrap={props.softWrap}
-                        />
-                      </Match>
-                      <Match when={diffs() && !selectedDiff()?.diff}>
-                        <EmptyState
-                          message="NO DIFF"
-                          hint="This file is unchanged between the selected versions (or its diff is empty)."
-                        />
-                      </Match>
-                    </Switch>
-                  </Match>
-                </Switch>
-              </div>
-            )}
+                    {/* Diff against the chosen FROM. */}
+                    <Match when={fromId() !== NO_DIFF}>
+                      <Switch fallback={<LoadingText label="LOADING DIFF…" />}>
+                        <Match when={diffs.error}>
+                          <ErrorState
+                            message="Could not load this diff."
+                            onRetry={() => void refetchDiffs()}
+                          />
+                        </Match>
+                        <Match when={diffs() && selectedDiff()?.diff}>
+                          <DiffView
+                            ref={scrollRef}
+                            diff={selectedDiff()!.diff}
+                            fontStep={props.fontStep}
+                            softWrap={props.softWrap}
+                          />
+                        </Match>
+                        <Match when={diffs() && !selectedDiff()?.diff}>
+                          <EmptyState
+                            message="NO DIFF"
+                            hint="This file is unchanged between the selected versions (or its diff is empty)."
+                          />
+                        </Match>
+                      </Switch>
+                    </Match>
+                  </Switch>
+                </div>
+              );
+            }}
           </Show>
         </div>
       </div>

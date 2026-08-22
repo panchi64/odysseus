@@ -17,6 +17,7 @@ import {
   updateEndpoint as updateEndpointWrite,
 } from "~/features/settings/data";
 import type { EndpointInput } from "~/features/settings/model";
+import { modelsPageAction } from "./chatModelNotice";
 import type { GuidedConnectInput, HardwareInfo } from "./model";
 
 // --- backend DTOs (snake_case) — mapped to model.ts types below ------------
@@ -109,6 +110,10 @@ export function useRemoteEndpoints(): Resource<ModelEndpoint[]> {
  *  selection at send time — the model pick here is an optimistic echo. */
 export async function connectAndSelectEndpoint(
   input: GuidedConnectInput,
+  /** Navigation for the acknowledgement toast's MODELS link. Supplied by the
+   *  calling screen (this module has no router of its own); omitted ⇒ the toast
+   *  still names the change, it just can't offer the jump. */
+  navigate?: (href: string) => void,
 ): Promise<boolean> {
   const { provider, baseUrl, apiKey } = input;
   // The single preset→endpoint field mapping: the provider's preset seeds the
@@ -175,7 +180,13 @@ export async function connectAndSelectEndpoint(
 
   if (model) {
     void setSelectedModel({ endpointId, model });
-    toast.success(`Connected "${provider.displayName}" — using ${model}.`);
+    // This picks the chat model on the operator's behalf, so say so in those
+    // words and point at the page that owns the choice — the convenience is only
+    // a convenience if it's visible and reversible.
+    toast.success(
+      `Connected "${provider.displayName}" — chat model set to ${model}.`,
+      navigate ? { action: modelsPageAction(navigate) } : undefined,
+    );
   } else {
     // Connected, but nothing is selectable: the provider advertised no models —
     // so don't point the operator at an empty top bar. `supported` tells whether

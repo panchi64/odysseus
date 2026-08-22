@@ -301,6 +301,20 @@ export interface ChatMessage {
   /** User turns: ids of the uploads attached to this message. Rendered as
    *  read-only chips on the sent turn; absent/empty on assistant turns. */
   attachmentIds?: string[];
+  /** Compaction dividers only: what the fold actually cost. `foldedMessages` counts
+   *  **messages**, not exchanges — a plain exchange is two of them and a tool-heavy
+   *  turn many more, so this is deliberately not called turns; the backend doesn't
+   *  count turns at fold time and the divider must not imply it did. `tokensBefore`
+   *  estimates the messages that were folded, `tokensAfter` the summary that replaced
+   *  them — *not* the next turn's footprint, which also carries whatever tail the
+   *  backend retained. Both are coarse char-based proxies, hence the `~` on screen.
+   *
+   *  The backend always sends all three (0 when it has nothing to report), so read
+   *  them with a `> 0` guard, not a presence check. Optional here only so an older
+   *  backend still renders the divider. */
+  foldedMessages?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
 }
 
 /** The in-flight run driving a conversation, when one exists. Present on a cold

@@ -1,10 +1,12 @@
 import { createSignal, Show, type JSX } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { Button, Chip, Row, Stack, StatusFlag, Text, toast } from "~/ui";
 import {
   effectiveSelection,
   setSelectedModel,
   useEndpoints,
 } from "~/lib/stores/models";
+import { modelsPageAction } from "../chatModelNotice";
 import type { LaunchOptionField, LaunchOptions, ManagedModel } from "../model";
 import { optionsForEngine } from "../serving";
 import { AdvancedServeOptions } from "./AdvancedServeOptions";
@@ -34,6 +36,7 @@ export function ManagedModelRow(props: {
   const [busy, setBusy] = createSignal(false);
   const [options, setOptions] = createSignal(props.model.options);
   const endpoints = useEndpoints();
+  const navigate = useNavigate();
   const state = () => props.model.state;
   const inFlight = () => state() === "downloading" || state() === "starting";
   const isLocal = () => props.model.source === "local";
@@ -99,7 +102,11 @@ export function ManagedModelRow(props: {
     if (!model || !endpointId) return;
     try {
       await setSelectedModel({ endpointId, model });
-      toast.success(`Chatting with ${props.model.hfRepo}`);
+      // Name the change, not just the model: this button rebinds the chat model
+      // for the whole workspace, and MODELS is where that can be seen or undone.
+      toast.success(`Chat model set to ${props.model.hfRepo}.`, {
+        action: modelsPageAction(navigate),
+      });
     } catch {
       toast.error(`Couldn't switch to ${props.model.hfRepo}`);
     }
