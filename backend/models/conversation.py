@@ -32,6 +32,9 @@ class Conversation(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
+    # The project this belongs to, or null for **unfiled** — visible in every scope,
+    # not orphaned. See models/project.py for the one scope rule.
+    project_id: str | None = Field(default=None, index=True)
     # AEAD ciphertext of the thread's title. It is user content — an auto-generated
     # summary of the operator's own first message, and the most revealing single line a
     # thread has — so it is sealed like every peer entity's title (XC-SEC-3). Null for an

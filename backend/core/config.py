@@ -45,6 +45,21 @@ class Settings(BaseSettings):
         # containers, and a container bind mount needs an absolute source — a
         # relative one is read as a named volume, which forbids path separators.
         return value.expanduser().resolve()
+
+    # Where coding mode's git worktrees are checked out. **Deliberately outside
+    # `data_dir`**: an approved host command is fenced by `services/sandbox/host.py`,
+    # which denies reads of the whole data directory (the vault, the sealed workspaces
+    # and the DB live there). A worktree under `data_dir` would therefore be unreadable
+    # by the very shell that has to build and test it. The tradeoff this accepts is that
+    # a worktree is plaintext on disk — it is a checkout of the operator's own already
+    # plaintext repository, so it exposes nothing that was not already exposed.
+    worktrees_dir: Path = Path("~/.odysseus/worktrees")
+
+    @field_validator("worktrees_dir")
+    @classmethod
+    def _absolute_worktrees_dir(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
+
     # DB connection. None ⇒ a file under data_dir; tests pass an in-memory URL.
     db_url: str | None = None
     # Unlock passphrase for the at-rest encryption vault. When set, the vault is

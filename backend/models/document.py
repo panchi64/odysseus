@@ -45,6 +45,9 @@ class Document(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
+    # The project this belongs to, or null for **unfiled** — visible in every scope,
+    # not orphaned. See models/project.py for the one scope rule.
+    project_id: str | None = Field(default=None, index=True)
     # The conversation that created this document, when it was born in a chat (null for a
     # document created straight from the library UI). Provenance, not content, so it stays
     # in the clear and indexed: it drives whether the agent may edit the document without

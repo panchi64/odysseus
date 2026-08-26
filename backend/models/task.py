@@ -72,6 +72,9 @@ class ScheduledTask(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     owner_id: str = Field(index=True)
+    # The project this belongs to, or null for **unfiled** — visible in every scope,
+    # not orphaned. See models/project.py for the one scope rule.
+    project_id: str | None = Field(default=None, index=True)
     kind: str = Field(index=True)  # TaskKind
 
     # AEAD ciphertext — the operator's own content, sealed like a notification's

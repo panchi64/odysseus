@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic_ai import RunContext
 
@@ -34,9 +35,20 @@ class RunDeps:
     # Empty ⇒ every capability-backed tool degrades — the same contract as a single
     # missing handle, applied uniformly.
     caps: ServiceContainer = field(default_factory=ServiceContainer)
-    # Operator-disabled tools, by namespaced name. Empty ⇒ all enabled.
+    # Operator-disabled tools, by namespaced name. Empty ⇒ all enabled. Carries the
+    # union of every reason a tool is withheld this run — the operator's own set,
+    # offline mode's web suspension, and the tools that do not belong in `mode`.
     disabled_tools: frozenset[str] = field(default_factory=frozenset)
     conversation_id: str | None = None
+    # The project this run works in, or None for unfiled. Resolved from the
+    # *conversation's* stored binding, never from the live request — switching the
+    # active project must not change what an already-running thread is doing.
+    project_id: str | None = None
+    # Which workspace this run's file work happens in: "chat" is the host-isolated
+    # container, "coding" is the project's git worktree on the host. This is the one
+    # channel that answer reaches a tool through — a tool executes inside a Run, long
+    # after the request that chose the mode is gone.
+    mode: Literal["chat", "coding"] = "chat"
 
     @property
     def sandbox_key(self) -> str:
