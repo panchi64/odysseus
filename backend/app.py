@@ -55,6 +55,7 @@ from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_con
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
 from tools import InstructionProvider, PromptContextProvider, core_categories
+from tools.agents import delegate_instructions
 from tools.plan import plan_context
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,10 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # split, and the sandbox backs code execution. Everything else reaches the bag
     # through its own manifest's `capabilities` export.
     agent_capabilities.add(app.state.approval_grants)
+    # Delegation resolves the `utility` model for its sub-agents through the same
+    # `resolve_background` rule titling and verification use, so a delegate is cheap by
+    # construction rather than by a second policy.
+    agent_capabilities.add(app.state.models)
     # The agent's task list: core-owned like the sandbox, because the `plan` category is a
     # core category rather than a feature manifest's.
     app.state.conversation_plans = ConversationPlans(engine, vault)
@@ -361,7 +366,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # mode enforces the union. The feature that suspends them is not the feature that
     # ships them, so the declaration travels rather than being restated at the gate.
     network_tools: set[str] = set()
-    instruction_providers: list[InstructionProvider] = []
+    # The delegate listing is core, not a manifest's, for the same reason the plan
+    # reminder below is: the `agents` category ships with the harness core categories.
+    # It is small and static, so the prompt *head* is the right home — it stays in the
+    # cached prefix rather than churning per turn.
+    instruction_providers: list[InstructionProvider] = [delegate_instructions]
     # The plan reminder is core, not a manifest's: the `plan` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
     prompt_context_providers: list[PromptContextProvider] = [plan_context]

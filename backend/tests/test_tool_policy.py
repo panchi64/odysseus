@@ -74,6 +74,7 @@ async def test_catalog_matches_the_names_the_agent_is_offered():
 # shrinks the agent's world without any other test noticing — this literal set is the
 # tripwire. A deliberate tool addition/removal updates this list in the same change.
 _PINNED_CATALOG = {
+    "agents_delegate_task",
     "attachments_provision",
     "builtin_now",
     "calendar_agenda",

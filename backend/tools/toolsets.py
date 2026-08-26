@@ -24,6 +24,7 @@ from collections.abc import Mapping
 
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
 
+from .agents import agents_toolset
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .deps import RunDeps
@@ -43,6 +44,9 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
         "code": code_toolset(),
         "files": files_toolset(),
         "plan": plan_toolset(),
+        # Core rather than a manifest's, for the same reason `plan` and `files` are: it
+        # is bound to the run's own workspace, which no feature owns.
+        "agents": agents_toolset(),
     }
 
 
