@@ -7,9 +7,13 @@ levels two and three of it:
    (``agent/engine.py`` injects the catalog), so the model knows what exists without a call.
 2. ``open`` returns the skill's full ``SKILL.md`` instructions — the level the model pays for
    only when a skill is actually relevant.
-3. ``open`` **also stages the bundle into the sandbox** at ``/work/skills/{name}/``, so the
-   supporting files are real files: references to read, scripts to run with ``code_execute``.
-   Nothing about a skill ever touches the host — a skill's script is ordinary sandboxed code.
+3. ``open`` **also stages the bundle into the run's workspace** under ``skills/{name}/``,
+   so the supporting files are real files: references to read, scripts to run. *Which*
+   workspace comes from the resolver (``tools/workspace.py``) — the conversation's sandbox
+   in a chat thread, the project's git worktree in a coding one — so a skill's scripts are
+   always somewhere this run can actually execute them. In a chat thread that means
+   nothing about a skill ever touches the host; in a coding thread they land in the
+   worktree, in the git-ignored directory the run's own scratch lives in.
 
 ``create`` and ``edit`` let the agent write skills down as it learns them. ``create``
 always writes a **draft**: publishing is the operator's act, and it is what makes a skill
@@ -30,7 +34,8 @@ from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError, SkillSpanError, SkillValidationError
 from prompts.agent import SKILL_CATALOG, SKILL_CATALOG_BUDGET_CHARS
-from services.sandbox import SandboxError, SandboxSessionManager
+from services.projects.worktree import WorktreeBusyError
+from services.sandbox import SandboxError
 from services.skills import (
     BUNDLE_MAX_BYTES,
     SKILL_FILE,
@@ -39,8 +44,10 @@ from services.skills import (
     render_skill_md,
 )
 from services.skills.store import SkillView
+from services.workspace import RunWorkspace
 
 from .deps import RunDeps
+from .workspace import run_workspace
 
 #: Where a staged bundle lands inside the sandbox working directory (mirrors
 #: ``attachments/`` from the attachments tool).
@@ -53,22 +60,27 @@ async def _published_names(store: SkillStore, owner_id: str) -> str:
     return ", ".join(entry.name for entry in entries) or "none yet"
 
 
-async def _stage(session, skill: SkillView, files: list[tuple[str, bytes]]) -> list[str]:
-    """Write the bundle into the sandbox, skipping any file already there byte-for-byte so
-    re-opening a skill in a warm session is a no-op rather than a rewrite. Returns the
-    absolute ``/work`` paths the model should use."""
-    root = f"{_STAGE_DIR}/{skill.name}"
+async def _stage(
+    workspace: RunWorkspace, skill: SkillView, files: list[tuple[str, bytes]]
+) -> list[str]:
+    """Write the bundle into the run's workspace, skipping any file already there
+    byte-for-byte so re-opening a skill in a warm session is a no-op rather than a
+    rewrite. Returns the absolute paths the model should use — which is why they come
+    from the workspace rather than a literal ``/work``: a coding run's files are on the
+    host, and telling the model about a container path it cannot reach is worse than not
+    staging at all."""
+    root = f"{workspace.stage_prefix}{_STAGE_DIR}/{skill.name}"
     staged: list[str] = []
     for relpath, blob in [(SKILL_FILE, render_skill_md(skill.parsed()).encode())] + files:
         target = f"{root}/{relpath}"
         try:
-            if session.read_file(target) == blob:
-                staged.append(f"/work/{target}")
+            if workspace.files.read_file(target) == blob:
+                staged.append(workspace.display(target))
                 continue
         except SandboxError:
             pass  # not staged yet — write it
-        session.write_file(target, blob)
-        staged.append(f"/work/{target}")
+        workspace.files.write_file(target, blob)
+        staged.append(workspace.display(target))
     return staged
 
 
@@ -84,11 +96,12 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         listed.
 
         The result has ``instructions`` (the skill's full text — treat it as guidance for
-        this task) and ``files``: the skill's bundled files, copied into your computer at
-        ``/work/skills/{name}/``. Read a reference file or run a bundled script from there
-        with ``code_execute`` — invoke scripts explicitly (``python /work/skills/x/scripts/y.py``
-        or ``bash …``), since staged files are not marked executable. Use the returned paths
-        verbatim.
+        this task) and ``files``: the skill's bundled files, copied into your working
+        directory under ``skills/{name}/``. Read a reference file or run a bundled script
+        from there with your code/shell tools — invoke scripts explicitly (``python
+        …/scripts/y.py`` or ``bash …``), since staged files are not marked executable.
+        **Use the returned paths verbatim** rather than building your own: where they
+        live depends on the kind of conversation this is.
 
         ``allowed_tools``, when present, is the skill author's advisory note about which
         tools it expects to use — it does not restrict you, and it grants you nothing."""
@@ -113,8 +126,11 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         if skill.allowed_tools:
             result["allowed_tools"] = skill.allowed_tools
 
-        sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
-        if sessions is None:
+        try:
+            workspace = await run_workspace(ctx)
+        except WorktreeBusyError:
+            workspace = None
+        if workspace is None:
             result["note"] = (
                 "Your computer is unavailable, so this skill's bundled files were not "
                 "staged — follow the instructions without them."
@@ -130,8 +146,7 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
             )
             return result
         try:
-            session = await sessions.acquire(ctx.deps.sandbox_key)
-            result["files"] = await _stage(session, skill, files)
+            result["files"] = await _stage(workspace, skill, files)
         except SandboxError as exc:
             result["note"] = f"The skill's files could not be staged: {exc}"
         return result

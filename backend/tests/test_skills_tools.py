@@ -42,6 +42,11 @@ class FakeSession:
         self.files[relpath] = content
         self.writes += 1
 
+    def ensure_workspace(self) -> Path:
+        """The seam `services/workspace.py` binds to — the file tools and the code
+        runner reach the workspace as a directory, not through the container."""
+        return Path("/fake-host-workspace")
+
 
 class FakeSessions:
     def __init__(self, session: FakeSession | None = None) -> None:
@@ -180,7 +185,10 @@ async def test_open_survives_a_sandbox_failure():
         _ctx(_deps(skills=store, sandbox_sessions=FailingSessions())), "release-notes"
     )
     assert result["ok"] is True
-    assert "could not be staged" in result["note"]
+    # A fail-closed sandbox is now indistinguishable from having no runtime at all —
+    # both are "there is no workspace", answered once by the resolver. The skill still
+    # opens; only its files are missing, and the note says so.
+    assert "not staged" in result["note"]
 
 
 async def test_tools_degrade_when_the_capability_is_absent():

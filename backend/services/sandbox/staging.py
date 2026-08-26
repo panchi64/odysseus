@@ -82,19 +82,24 @@ def stage_unique(session: _Stageable, relpath: str, content: bytes) -> tuple[str
 
 
 def stage_attachment(
-    session: _Stageable, *, filename: str, upload_id: str, content: bytes
+    session: _Stageable,
+    *,
+    filename: str,
+    upload_id: str,
+    content: bytes,
+    prefix: str = "",
 ) -> tuple[str, bool]:
-    """Stage one attachment's original bytes under ``attachments/`` in the session's
+    """Stage one attachment's original bytes under ``attachments/`` in the run's
     workspace, returning ``(relpath, renamed)``. The single entry point both the eager
     attach-time path and the ``attachments_provision`` tool go through, so the two can
     never disagree about where a given file lives.
 
+    ``prefix`` is the workspace's own scratch prefix — empty for a sandbox workspace,
+    which is ours entirely, and ``.odysseus/`` for a coding run's git worktree, where the
+    operator's diff must not fill up with files they attached to a message.
+
     Raises :class:`SandboxError` when the workspace can't be written — the caller
     decides how to degrade."""
-    return stage_unique(session, f"{STAGE_DIR}/{safe_name(filename, upload_id)}", content)
-
-
-def workspace_path(relpath: str) -> str:
-    """The absolute in-sandbox path for a staged relpath — what the model is told to
-    read. Built here so the marker and the tool result name the same thing."""
-    return f"/work/{relpath}"
+    return stage_unique(
+        session, f"{prefix}{STAGE_DIR}/{safe_name(filename, upload_id)}", content
+    )

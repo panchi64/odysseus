@@ -39,13 +39,9 @@ from pydantic_ai import BinaryContent
 
 from core.untrusted import wrap_untrusted
 from models.upload import UploadStatus
-from services.sandbox import (
-    SandboxError,
-    SandboxSessionManager,
-    stage_attachment,
-    workspace_path,
-)
+from services.sandbox import stage_attachment
 from services.uploads import UploadStore
+from services.workspace import RunWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -86,16 +82,15 @@ async def resolve_attachments(
     ids: list[str],
     *,
     vision: bool,
-    sessions: SandboxSessionManager | None = None,
-    sandbox_key: str | None = None,
+    workspace: RunWorkspace | None = None,
 ) -> ResolvedAttachments:
     """Resolve attached upload ids into the live and durable content for this turn.
 
-    Every non-image upload's **original bytes** are staged into the conversation's sandbox
-    ``/work`` (``sessions`` + ``sandbox_key``); an image's are staged too, and it
-    additionally goes in as ``BinaryContent`` when the model can see (``vision``). Both
-    returned shapes then carry one short marker block naming each file and its staged
-    path — no extracted text.
+    Every non-image upload's **original bytes** are staged into the run's ``workspace``
+    (the conversation's sandbox, or a coding thread's worktree — see
+    ``services/workspace.py``); an image's are staged too, and it additionally goes in as
+    ``BinaryContent`` when the model can see (``vision``). Both returned shapes then carry
+    one short marker block naming each file and its staged path — no extracted text.
 
     When the sandbox is unavailable, or staging a particular file fails, that file
     degrades to its extracted text inline (wrapped untrusted — file content is data, never
@@ -108,12 +103,11 @@ async def resolve_attachments(
     resolved_ids: list[str] = []
     views = await uploads.get_many(owner_id, ids)
     present = [i for i in ids if i in views]
-    session = await _acquire(sessions, sandbox_key)
     # One batched read for the whole turn. With a workspace to stage into, every file's
     # bytes are needed; without one, only the images a vision model will actually see.
     wanted = (
         present
-        if session is not None
+        if workspace is not None
         else [i for i in present if views[i].mime.startswith(_IMAGE_PREFIX)]
         if vision
         else []
@@ -123,7 +117,7 @@ async def resolve_attachments(
         view = views[upload_id]
         resolved_ids.append(upload_id)
         blob = blobs.get(upload_id)
-        path = _stage(session, upload_id, view.filename, blob.content if blob else None)
+        path = _stage(workspace, upload_id, view.filename, blob.content if blob else None)
         staged.append(
             _Staged(
                 filename=view.filename,
@@ -145,36 +139,28 @@ async def resolve_attachments(
             inline = _inline_fallback(view)
             content.append(inline)
             persisted.append(inline)
-    marker = _marker(staged)
+    marker = _marker(staged, workspace)
     if marker:
         content.append(marker)
         persisted.append(marker)
     return ResolvedAttachments(content=content, persisted=persisted, ids=resolved_ids)
 
 
-async def _acquire(
-    sessions: SandboxSessionManager | None, sandbox_key: str | None
-) -> Any | None:
-    """The conversation's sandbox session, or ``None`` when there is no sandbox to stage
-    into. Acquiring is fail-closed by design, so its failure is the degrade signal — never
-    an error that takes the turn down with it."""
-    if sessions is None or not sandbox_key:
-        return None
-    try:
-        return await sessions.acquire(sandbox_key)
-    except SandboxError as exc:
-        logger.info("attachments: no sandbox to stage into (%s)", exc)
-        return None
-
-
-def _stage(session: Any | None, upload_id: str, filename: str, content: bytes | None) -> str | None:
-    """Stage one file's original bytes and return its in-sandbox path, or ``None`` when
-    there was no session, no bytes (still extracting), or the write failed."""
-    if session is None or content is None:
+def _stage(
+    workspace: RunWorkspace | None, upload_id: str, filename: str, content: bytes | None
+) -> str | None:
+    """Stage one file's original bytes and return the path the model should be told, or
+    ``None`` when there was no workspace, no bytes (still extracting), or the write
+    failed."""
+    if workspace is None or content is None:
         return None
     try:
         relpath, _ = stage_attachment(
-            session, filename=filename, upload_id=upload_id, content=content
+            workspace.files,
+            filename=filename,
+            upload_id=upload_id,
+            content=content,
+            prefix=workspace.stage_prefix,
         )
     except Exception as exc:  # noqa: BLE001 — staging is best-effort; see below
         # Deliberately not just `SandboxError`. Staging writes the host-side bind-mount
@@ -184,7 +170,7 @@ def _stage(session: Any | None, upload_id: str, filename: str, content: bytes | 
         # runtime, not die before the model is ever called.
         logger.info("attachments: could not stage %s (%s)", upload_id, exc)
         return None
-    return workspace_path(relpath)
+    return workspace.display(relpath)
 
 
 def _inline_fallback(view: Any) -> str:
@@ -198,7 +184,7 @@ def _inline_fallback(view: Any) -> str:
     )
 
 
-def _marker(staged: list[_Staged]) -> str:
+def _marker(staged: list[_Staged], workspace: RunWorkspace | None) -> str:
     """The trusted block closing the attachment set — one line per file (name, id, mime,
     size, and where it lives) plus how to act on it.
 
@@ -209,13 +195,21 @@ def _marker(staged: list[_Staged]) -> str:
         return ""
     lines = [_line(item) for item in staged]
     body = "\n".join(lines)
+    # A coding run's files sit in a git worktree that is not recycled and is not the
+    # model's own scratch space, so the recycling warning would be untrue there — and
+    # telling it these are throwaway paths in a directory it is about to commit from is
+    # exactly the wrong picture.
+    where = (
+        "These paths live in this project's working tree, in a directory git ignores."
+        if workspace is not None and workspace.kind == "worktree"
+        else "These paths live on your computer, which is recycled between sessions."
+    )
     guidance = (
         "Read a file from its path with your files/code tools — page through a large one "
-        "rather than reading it whole. These paths live on your computer, which is "
-        "recycled between sessions: if a read fails because the file is not there, "
-        "re-stage it with the attachments_provision tool using the id above (it comes "
-        "back at the same path). To search a document's text semantically instead of "
-        "reading it, use corpus.retrieve with its id."
+        f"rather than reading it whole. {where} If a read fails because the file is not "
+        "there, re-stage it with the attachments_provision tool using the id above (it "
+        "comes back at the same path). To search a document's text semantically instead "
+        "of reading it, use corpus.retrieve with its id."
     )
     return f"[Attached file(s):\n{body}\n\n{guidance}]"
 

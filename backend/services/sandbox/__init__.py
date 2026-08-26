@@ -42,7 +42,6 @@ from .staging import (
     stage_attachment,
     stage_unique,
     suffixed,
-    workspace_path,
 )
 
 __all__ = [
@@ -68,7 +67,6 @@ __all__ = [
     "stage_attachment",
     "stage_unique",
     "suffixed",
-    "workspace_path",
     "HostConfinement",
     "HostExecutionError",
     "resolve_confinement",

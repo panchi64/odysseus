@@ -39,9 +39,10 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_ai_harness import FileSystem, SubAgent, SubAgents
 
 from runs import ToolProgress
+from services.projects.worktree import WorktreeBusyError
 from services.registry import ModelRegistry
-from services.sandbox import SandboxError, SandboxSessionManager
 from tools.deps import RunDeps
+from tools.workspace import run_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -201,24 +202,18 @@ def _describe(event: Any) -> str:
 
 
 async def _workspace_for(ctx: RunContext[RunDeps]) -> str | None:
-    """Where the sub-agent reads.
+    """Where the sub-agent reads — the *parent's* workspace, resolved the one way.
 
-    Today: the conversation's sandbox workspace — the same root the `files` category
-    resolves, acquired the same way, so the explorer and the parent always see one
-    filesystem. When coding mode lands this becomes the one shared workspace resolver
-    and the explorer follows the parent into a project worktree unchanged.
+    The sandbox workspace in chat mode, the project's worktree in coding mode. It goes
+    through `run_workspace` rather than reaching for a sandbox path so the explorer can
+    never end up looking at a different filesystem than the agent that delegated to it.
     """
-    sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
-    if sessions is None:
-        return None
     try:
-        session = await sessions.acquire(ctx.deps.sandbox_key)
-        return str(session.ensure_workspace())
-    except SandboxError:
-        # A locked vault or an unreadable seal is infrastructure, not the model's
-        # mistake — degrade to "no delegate" rather than raising into the run.
-        logger.debug("delegate: no workspace available", exc_info=True)
+        workspace = await run_workspace(ctx)
+    except WorktreeBusyError:
+        # Another coding conversation holds the checkout; there is nothing to read.
         return None
+    return None if workspace is None else str(workspace.root)
 
 
 def agents_toolset() -> AbstractToolset[RunDeps]:

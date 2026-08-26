@@ -43,6 +43,7 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxError, SandboxSessionManager
 from services.upload_extraction import BasicExtractor
 from services.uploads import UploadStore
+from services.workspace import RunWorkspace
 from tools import RunDeps, build_agent_toolsets
 from tools.attachments import attachments_toolset
 
@@ -119,6 +120,9 @@ class _FakeSandboxSession:
             raise SandboxError(f"no such file in the sandbox: {relpath!r}")
         return self.files[relpath]
 
+    def ensure_workspace(self) -> Path:
+        return Path("/fake-host-workspace")
+
 
 class _FakeSandboxSessions:
     def __init__(self) -> None:
@@ -130,12 +134,14 @@ class _FakeSandboxSessions:
         return self.session
 
 
-class _ClosedSandboxSessions:
-    """A fail-closed sandbox — no runtime, a locked vault, a workspace that won't open.
-    Staging must degrade to inline text rather than name a path that isn't there."""
-
-    async def acquire(self, key: str) -> _FakeSandboxSession:
-        raise SandboxError("no sandbox runtime is available")
+def _workspace(sessions: _FakeSandboxSessions) -> RunWorkspace:
+    """The resolved workspace a chat turn would hand `resolve_attachments`. ``None`` in
+    its place is the degrade case — a fail-closed sandbox, a locked vault, a workspace
+    that won't open — and staging must then fall back to inline text rather than name a
+    path that isn't there."""
+    return RunWorkspace(
+        root=Path("/fake-host-workspace"), kind="sandbox", files=sessions.session
+    )
 
 
 # --- resolve_attachments: staged to the sandbox, announced by marker --------
@@ -153,11 +159,12 @@ async def test_a_document_becomes_a_marker_not_its_text():
     sessions = _FakeSandboxSessions()
 
     resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+        store, OWNER, [uid], vision=False, workspace=_workspace(sessions)
     )
 
-    # The original bytes are on the agent's computer, under the sanitized basename.
-    assert sessions.acquired == KEY
+    # The original bytes are in the run's workspace, under the sanitized basename.
+    # *Which* workspace is `services/workspace.py`'s answer, not this function's — see
+    # `test_workspace.py` for the assertion that a conversation gets its own.
     assert sessions.session.files == {"attachments/dossier": b"raw-bytes"}
     # And what the model gets is a marker naming it — no extracted text at all, in
     # either shape. The two collapse to the same thing for a document.
@@ -176,7 +183,7 @@ async def test_vision_model_gets_pixels_and_the_image_is_staged_too():
     sessions = _FakeSandboxSessions()
 
     resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=True, sessions=sessions, sandbox_key=KEY
+        store, OWNER, [uid], vision=True, workspace=_workspace(sessions)
     )
 
     # An image is still pixels, live and retained — there is nothing to page through in a
@@ -193,7 +200,7 @@ async def test_an_image_for_a_text_only_model_is_a_staged_file_like_any_other():
     sessions = _FakeSandboxSessions()
 
     resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+        store, OWNER, [uid], vision=False, workspace=_workspace(sessions)
     )
 
     assert not any(isinstance(part, BinaryContent) for part in resolved.content)
@@ -205,7 +212,7 @@ async def test_staging_failure_degrades_to_the_full_text_inline():
     uid = await _insert_upload(engine, store._vault, mime="text/plain")
 
     resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=False, sessions=_ClosedSandboxSessions(), sandbox_key=KEY
+        store, OWNER, [uid], vision=False, workspace=None
     )
 
     # No path to point at, so the text rides inline — in full, wrapped as data — and the
@@ -238,7 +245,7 @@ async def test_still_processing_attachment_is_staged_by_its_bytes():
     sessions = _FakeSandboxSessions()
 
     resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=False, sessions=sessions, sandbox_key=KEY
+        store, OWNER, [uid], vision=False, workspace=_workspace(sessions)
     )
 
     assert sessions.session.files == {"attachments/dossier": b"raw-bytes"}
@@ -259,7 +266,7 @@ async def test_still_processing_attachment_without_a_sandbox_yields_a_placeholde
 async def test_unknown_attachment_id_is_skipped():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     resolved = await resolve_attachments(
-        store, OWNER, ["nope"], vision=True, sessions=_FakeSandboxSessions(), sandbox_key=KEY
+        store, OWNER, ["nope"], vision=True, workspace=_workspace(_FakeSandboxSessions())
     )
     assert resolved.content == [] and resolved.persisted == [] and resolved.ids == []
 
@@ -273,7 +280,7 @@ async def test_two_files_sharing_a_basename_stage_to_distinct_paths():
     sessions = _FakeSandboxSessions()
 
     resolved = await resolve_attachments(
-        store, OWNER, ids, vision=False, sessions=sessions, sandbox_key=KEY
+        store, OWNER, ids, vision=False, workspace=_workspace(sessions)
     )
 
     assert set(sessions.session.files) == {"attachments/dossier", "attachments/dossier-2"}
@@ -301,7 +308,7 @@ async def test_a_multi_file_turn_reads_the_store_a_fixed_number_of_times():
         setattr(store, name, counted)
 
     resolved = await resolve_attachments(
-        store, OWNER, ids, vision=True, sessions=_FakeSandboxSessions(), sandbox_key=KEY
+        store, OWNER, ids, vision=True, workspace=_workspace(_FakeSandboxSessions())
     )
 
     assert resolved.ids == ids  # order preserved, every file resolved
@@ -322,7 +329,7 @@ async def test_resolution_order_follows_the_request_not_the_database():
     reversed_ids = list(reversed(ids))
 
     resolved = await resolve_attachments(
-        store, OWNER, reversed_ids, vision=False, sessions=_FakeSandboxSessions(), sandbox_key=KEY
+        store, OWNER, reversed_ids, vision=False, workspace=_workspace(_FakeSandboxSessions())
     )
 
     assert resolved.ids == reversed_ids

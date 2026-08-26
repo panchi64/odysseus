@@ -43,7 +43,7 @@ import logging
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
@@ -367,6 +367,32 @@ def _turn_anchor_id(path: list[_Node], node_id: str) -> str | None:
     return first_response or path[index].id
 
 
+#: How long a forked thread's title may run before it is cut. The source's title is
+#: already a short summary, so this only bites on a hand-typed rename.
+_FORK_TITLE_MAX = 80
+
+
+def _forked_title(source: str | None) -> str | None:
+    """The new thread's name. Prefixed rather than auto-titled: the operator forked a
+    *specific* conversation and the listing should say which, and a fork whose first
+    action is a fresh model call to name itself would spend a request restating what the
+    source already said."""
+    if not source or not source.strip():
+        return None
+    trimmed = source.strip()[:_FORK_TITLE_MAX]
+    return f"Fork of {trimmed}"
+
+
+@dataclass(frozen=True)
+class ConversationBinding:
+    """Where a thread's file work happens. Read as a pair, because a coding mode with no
+    project and a project with no coding mode are both nonsense and both silently
+    plausible if the two are fetched separately."""
+
+    mode: Literal["chat", "coding"] = "chat"
+    project_id: str | None = None
+
+
 @dataclass(frozen=True)
 class CompactionPlan:
     """What one conversation compaction would fold, resolved against the active path.
@@ -620,13 +646,25 @@ class ConversationStore:
             self._locks.pop(conversation_id, None)
 
     async def create_conversation(
-        self, owner_id: str, title: str | None = None, ephemeral: bool = False
+        self,
+        owner_id: str,
+        title: str | None = None,
+        ephemeral: bool = False,
+        *,
+        project_id: str | None = None,
+        mode: str = "chat",
     ) -> str:
+        """Start a thread. ``project_id`` files it (null is unfiled, which is visible
+        under every scope) and ``mode`` decides where its file work happens; both are
+        set here and never afterwards — see `models/conversation.py`."""
+
         def work(session: Session) -> str:
             conversation = Conversation(
                 owner_id=owner_id,
                 title_enc=self._seal_title(title),
                 ephemeral=ephemeral,
+                project_id=project_id,
+                mode=mode,
             )
             session.add(conversation)
             session.flush()
@@ -1015,6 +1053,26 @@ class ConversationStore:
 
         return await in_session(self._engine, work)
 
+    async def binding(self, conversation_id: str) -> ConversationBinding:
+        """This thread's workspace binding — the two facts a run needs to know *where* it
+        works, read together so no path can pick up one and default the other.
+
+        A missing conversation reads as an unfiled chat thread, which is the same answer
+        a stateless turn gets and the safe one: chat mode never touches the host.
+        """
+
+        def work(session: Session) -> ConversationBinding:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return ConversationBinding()
+            # The column is a plain string, so an unrecognised value (a restored backup
+            # from a future version, a hand-edited row) reads as chat rather than
+            # reaching the resolver as something it has no branch for.
+            mode = "coding" if conversation.mode == "coding" else "chat"
+            return ConversationBinding(mode=mode, project_id=conversation.project_id)
+
+        return await in_session(self._engine, work)
+
     async def get_compaction_override(self, conversation_id: str) -> bool | None:
         """This conversation's auto-compaction override — ``None`` inherits the operator
         default, ``True``/``False`` force it on/off for this thread."""
@@ -1206,6 +1264,97 @@ class ConversationStore:
         tree.active_leaf_id = tree.descend_to_leaf(siblings[target_index])
         self._move_leaf(conversation_id, tree.active_leaf_id)
         return True
+
+    async def fork(
+        self, conversation_id: str, message_id: str, owner_id: str
+    ) -> str | None:
+        """Copy this thread's history up to ``message_id`` into a **new** conversation.
+
+        Distinct from regenerate/edit/rewind, which all move the active leaf *within* one
+        thread's tree: a fork produces an independent conversation the operator can take
+        in a different direction while the original stays exactly as it was. Returns the
+        new conversation's id, or None when ``message_id`` isn't on the active path.
+
+        What it deliberately does **not** copy is the interesting part:
+
+        - **runs and pins.** A run belongs to the turn that produced it; a pin is a
+          bookmark on the original.
+        - **the workspace's contents.** The copied transcript may name paths in a sandbox
+          the fork does not have — already true of any replayed thread, and
+          ``attachments_provision`` is the way back. A **coding** fork is different and is
+          handled by the caller: it branches from the source conversation's branch rather
+          than the project's base ref, so the transcript and the tree agree.
+
+        The copy is built in memory and drains through the normal write-behind path, so
+        it is sealed on write like everything else.
+        """
+        tree = await self._tree(conversation_id)
+        path = tree.active_path()
+        ids = [n.id for n in path]
+        if message_id not in ids:
+            return None
+        idx = ids.index(message_id)
+        # The same "tail of this turn" rule `rewind` uses, so forking from an assistant
+        # turn carries its tool exchanges rather than cutting the turn in half.
+        if not _is_user_prompt(path[idx].message):
+            while idx + 1 < len(path) and not _is_user_prompt(path[idx + 1].message):
+                idx += 1
+        copied = path[: idx + 1]
+
+        source = await self.get_summary(conversation_id, owner_id)
+        binding = await self.binding(conversation_id)
+        new_id_ = await self.create_conversation(
+            owner_id,
+            title=_forked_title(source.title if source is not None else None),
+            project_id=binding.project_id,
+            mode=binding.mode,
+        )
+
+        forked = self._cache_get(new_id_) or self._cache_put(new_id_, _Tree())
+        rows: list[_Row] = []
+        parent: str | None = None
+        for seq, node in enumerate(copied):
+            # `compacted` rides along but `compacted_through` deliberately does not: it
+            # names a node id in the *source* tree, so carrying it would leave a dangling
+            # reference for `model_history` to walk into. The checkpoint keeps its summary
+            # (real history) and reads as covering everything before it, which is true.
+            fresh = _Node(
+                id=new_id(),
+                parent_id=parent,
+                seq=seq,
+                message=node.message,
+                # Not `pinned`: a bookmark belongs to the thread it was placed in.
+                attachment_ids=list(node.attachment_ids),
+                blocked_reason=node.blocked_reason,
+                compacted=node.compacted,
+            )
+            forked.add(fresh)
+            kind, text = _project(fresh.message)
+            rows.append(
+                _Row(
+                    id=fresh.id,
+                    parent_id=fresh.parent_id,
+                    seq=fresh.seq,
+                    kind=kind,
+                    text=text,
+                    blob=_MESSAGE.dump_json(fresh.message).decode(),
+                    attachment_ids=fresh.attachment_ids,
+                    blocked_reason=fresh.blocked_reason,
+                    compacted=fresh.compacted,
+                )
+            )
+            parent = fresh.id
+        forked.active_leaf_id = parent
+        self._submit(
+            _PersistJob(
+                kind="messages",
+                conversation_id=new_id_,
+                active_leaf_id=parent,
+                rows=rows,
+                model=_active_path_model(forked.active_path()),
+            )
+        )
+        return new_id_
 
     async def rewind(self, conversation_id: str, message_id: str) -> bool:
         """Rewind the active leaf to the tail of the turn whose branch node is

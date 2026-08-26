@@ -25,6 +25,7 @@ from pydantic_ai import RunContext
 
 from core.container import ServiceContainer
 from runs import Run
+from services.workspace import RunWorkspace
 
 
 @dataclass
@@ -49,6 +50,10 @@ class RunDeps:
     # channel that answer reaches a tool through — a tool executes inside a Run, long
     # after the request that chose the mode is gone.
     mode: Literal["chat", "coding"] = "chat"
+    # This run's resolved workspace, memoised by `tools/workspace.py` on first use.
+    # Never set by a construction site: it is a per-run cache, not an input, and it lives
+    # here so it dies with the run instead of in a module-level dict.
+    workspace: RunWorkspace | None = field(default=None, repr=False, compare=False)
 
     @property
     def sandbox_key(self) -> str:

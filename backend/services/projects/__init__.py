@@ -9,11 +9,25 @@ from services.projects.store import (
     project_clause,
     visible_project_ids,
 )
+from services.projects.worktree import (
+    Diff,
+    WorktreeBusyError,
+    WorktreeError,
+    WorktreeManager,
+    WorktreeState,
+    branch_for,
+)
 
 __all__ = [
+    "Diff",
     "ProjectStore",
     "ProjectView",
     "RepoProbe",
+    "WorktreeBusyError",
+    "WorktreeError",
+    "WorktreeManager",
+    "WorktreeState",
+    "branch_for",
     "project_clause",
     "visible_project_ids",
 ]

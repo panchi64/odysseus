@@ -1,11 +1,15 @@
-"""Attachments tool — (re-)stage an attached file into the conversation's sandbox.
+"""Attachments tool — (re-)stage an attached file into this run's workspace.
 
-Every attachment is already staged into the conversation's sandbox ``/work`` eagerly, at
-the moment it is attached (``agent/attachments.py``), and the turn's marker names the
-path. This tool is the **recovery** path for the case that marker warns about: sandbox
-sessions are per-conversation and recyclable, so a replayed thread can find nothing at
-the path it was told about. Calling this re-stages the original bytes at the same path.
-It also serves an attachment from an older turn the agent wants to compute on now.
+Every attachment is already staged eagerly, at the moment it is attached
+(``agent/attachments.py``), and the turn's marker names the path. This tool is the
+**recovery** path for the case that marker warns about: sandbox sessions are
+per-conversation and recyclable, so a replayed thread can find nothing at the path it was
+told about. Calling this re-stages the original bytes at the same path. It also serves an
+attachment from an older turn the agent wants to compute on now.
+
+*Which* workspace comes from the run's resolver (``tools/workspace.py``), not from the
+sandbox directly — a coding thread stages into its worktree, where its file and shell
+tools can actually reach the file.
 
 It **provisions**, never reads: the file's bytes go into the workspace, not through the
 model. It complements ``corpus.retrieve`` (semantic text search over a document) with a
@@ -24,15 +28,12 @@ from pathlib import PurePosixPath
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import NotFoundError
-from services.sandbox import (
-    SandboxError,
-    SandboxSessionManager,
-    stage_attachment,
-    workspace_path,
-)
+from services.projects.worktree import WorktreeBusyError
+from services.sandbox import SandboxError, stage_attachment
 from services.uploads import UploadStore
 
 from .deps import RunDeps
+from .workspace import run_workspace, unavailable
 
 
 def attachments_toolset() -> FunctionToolset[RunDeps]:
@@ -59,13 +60,12 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
         uploads = ctx.deps.caps.get_optional(UploadStore)
         if uploads is None:
             return {"ok": False, "error": "Attachments are unavailable right now."}
-        sessions = ctx.deps.caps.get_optional(SandboxSessionManager)
-        if sessions is None:
-            return {
-                "ok": False,
-                "error": "Your computer is unavailable right now: no runtime is "
-                "configured, so an attachment can't be staged for processing.",
-            }
+        try:
+            workspace = await run_workspace(ctx)
+        except WorktreeBusyError as exc:
+            return {"ok": False, "error": str(exc)}
+        if workspace is None:
+            return {"ok": False, "error": unavailable(ctx.deps)}
         try:
             blob = await uploads.content(ctx.deps.owner_id, attachment_id)
         except NotFoundError:
@@ -75,18 +75,18 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
             ) from None
 
         try:
-            session = await sessions.acquire(ctx.deps.sandbox_key)
             staged_relpath, renamed = stage_attachment(
-                session,
+                workspace.files,
                 filename=blob.filename,
                 upload_id=attachment_id,
                 content=blob.content,
+                prefix=workspace.stage_prefix,
             )
         except SandboxError as exc:
             return {"ok": False, "error": f"Could not stage the file: {exc}"}
         result = {
             "ok": True,
-            "path": workspace_path(staged_relpath),
+            "path": workspace.display(staged_relpath),
             "filename": blob.filename,
             "mime": blob.mime,
             "size_bytes": len(blob.content),

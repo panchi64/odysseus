@@ -72,10 +72,16 @@ from runs import (
     RunStatus,
 )
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
-from services.conversations import ConversationStore, context_footprint
+from services.conversations import (
+    ConversationBinding,
+    ConversationStore,
+    context_footprint,
+)
 from services.notifications import NotificationService
+from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.uploads import UploadStore
+from services.workspace import resolve_workspace
 from tools import (
     InstructionProvider,
     PromptContextProvider,
@@ -121,6 +127,10 @@ logger = logging.getLogger(__name__)
 # A shared empty bag for the no-capabilities default — every capability-backed tool
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
+# A stateless turn's workspace binding: an unfiled chat thread. The conservative default —
+# chat mode never reaches the host — so a caller that forgets to resolve one cannot
+# accidentally hand a run the operator's own files.
+_CHAT_BINDING = ConversationBinding()
 
 
 @dataclass
@@ -158,6 +168,11 @@ class ParkedTurn:
     # carried so the resume continues under the same ceiling the original turn ran with
     # rather than silently reverting to the default. None ⇒ resolve from config.
     request_limit: int | None = None
+    # The thread's workspace binding, carried rather than re-read on resume. It is
+    # immutable for the life of a conversation, so re-resolving it would be a second
+    # source for one fact — and a resume that defaulted it to chat would hand a parked
+    # coding turn a different filesystem than the one it parked in.
+    binding: ConversationBinding = field(default_factory=ConversationBinding)
 
 
 @dataclass
@@ -326,6 +341,7 @@ async def _park_for_approval(
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
     request_limit: int | None = None,
+    binding: ConversationBinding = _CHAT_BINDING,
 ) -> None:
     # Only the calls still awaiting the operator are announced; any pre-approved by an
     # active grant ride silently on the parked payload and merge into the resume.
@@ -379,6 +395,7 @@ async def _park_for_approval(
             announced,
             pre_approved=pre_approved,
             request_limit=request_limit,
+            binding=binding,
         )
     )
 
@@ -394,6 +411,7 @@ async def _drive_turn(
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
+    binding: ConversationBinding = _CHAT_BINDING,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
@@ -416,6 +434,11 @@ async def _drive_turn(
         caps=caps,
         disabled_tools=disabled_tools,
         conversation_id=conversation_id,
+        # Where this run's file work happens. Resolved from the *conversation's* stored
+        # binding by the caller, never from a live request — switching the active project
+        # must not change what an already-running thread is doing.
+        project_id=binding.project_id,
+        mode=binding.mode,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -594,6 +617,7 @@ async def _drive_turn(
                 store=store,
                 conversation_id=conversation_id,
                 request_limit=request_limit,
+                binding=binding,
             )
             return _TurnResult(answer=None, messages=messages)
         # Every deferred call is grant-covered — continue the SAME turn inline (no
@@ -632,6 +656,7 @@ async def _verify_and_correct(
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
+    binding: ConversationBinding = _CHAT_BINDING,
     drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
@@ -670,6 +695,7 @@ async def _verify_and_correct(
         caps=caps,
         conversation_id=conversation_id,
         disabled_tools=disabled_tools,
+        binding=binding,
         partial_history_ref=partial_history_ref,
         store=store,
         request_limit=request_limit,
@@ -812,6 +838,7 @@ def build_chat_orchestrator(
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     disabled_tools: frozenset[str] = frozenset(),
+    binding: ConversationBinding = _CHAT_BINDING,
     request_limit: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
@@ -847,6 +874,10 @@ def build_chat_orchestrator(
     when the caller resolved one, else the config default. It bounds the *whole* turn,
     grant-resume and mid-run-steering continuations included, so a steady drip of
     steering messages can't extend it.
+
+    ``binding`` is the thread's workspace binding — its mode and its project — read off
+    the conversation by the caller. It decides where this turn's file work happens
+    (``services/workspace.py``) and, through ``disabled_tools``, which tools belong in it.
 
     ``auto_compact`` is the conversation-compaction policy (the operator's default folded
     with any per-thread override; absent ⇒ the config defaults). When the replayed history
@@ -1005,10 +1036,19 @@ def build_chat_orchestrator(
                 run.owner_id,
                 attachment_ids,
                 vision=vision,
-                sessions=capabilities.get_optional(SandboxSessionManager),
-                # The same key the code/files tools use, so an attachment lands in the
-                # very workspace the agent is about to run code in.
-                sandbox_key=conversation_id or run.id,
+                # Resolved the one way the file tools resolve it, so an attachment
+                # lands in the very workspace the agent is about to work in — the
+                # conversation's sandbox, or its project worktree in coding mode.
+                workspace=await resolve_workspace(
+                    mode=binding.mode,
+                    project_id=binding.project_id,
+                    conversation_id=conversation_id,
+                    sandbox_key=conversation_id or run.id,
+                    owner_id=run.owner_id,
+                    sessions=capabilities.get_optional(SandboxSessionManager),
+                    projects=capabilities.get_optional(ProjectStore),
+                    worktrees=capabilities.get_optional(WorktreeManager),
+                ),
             )
             # Only build a multimodal prompt when something actually resolved — else leave
             # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
@@ -1053,6 +1093,7 @@ def build_chat_orchestrator(
                 caps=capabilities,
                 conversation_id=conversation_id,
                 disabled_tools=disabled_tools,
+                binding=binding,
                 partial_history_ref=partial_history_ref,
                 store=store,
                 request_limit=request_limit,
@@ -1085,6 +1126,7 @@ def build_chat_orchestrator(
                         caps=capabilities,
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
+                        binding=binding,
                         partial_history_ref=partial_history_ref,
                         store=store,
                         request_limit=request_limit,
@@ -1217,6 +1259,9 @@ def build_resume_orchestrator(
                 caps=capabilities,
                 conversation_id=parked.conversation_id,
                 disabled_tools=disabled_tools,
+                # From the parked payload, not a fresh read: the resumed turn must work
+                # in the same place the parked one did.
+                binding=parked.binding,
                 partial_history_ref=partial_history_ref,
                 store=store,
                 # The ceiling the parked turn was running under — a resume continues
