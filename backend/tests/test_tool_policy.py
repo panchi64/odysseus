@@ -113,6 +113,8 @@ _PINNED_CATALOG = {
     "plan_update_task_status",
     "plan_update_task_statuses",
     "plan_write_plan",
+    "project_active",
+    "project_list",
     "skills_create",
     "skills_edit",
     "skills_open",

@@ -41,6 +41,7 @@ from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.plans import ConversationPlans
+from services.projects import ProjectStore, visible_project_ids
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -226,6 +227,36 @@ def sandbox_sessions(request_or_ws: Request | WebSocket) -> SandboxSessionManage
     that carries ``app``.
     """
     return request_or_ws.app.state.sandbox
+
+
+def projects(request: Request) -> ProjectStore:
+    return request.app.state.projects
+
+
+#: What ``X-Ody-Project`` must be to mean "show me everything, unscoped". A literal
+#: rather than an absent header, because absent means "use whatever is active" — the two
+#: are different requests and a client must be able to say either.
+PROJECT_SCOPE_ALL = "all"
+
+
+async def project_scope(request: Request) -> tuple[str | None, ...] | None:
+    """The project ids this request may see, or ``None`` for no filter at all.
+
+    Resolved from the ``X-Ody-Project`` header when the client sent one, else from the
+    operator's stored active project. It returns the *visible set* rather than the active
+    id so that every caller applies the one scope rule (``services.projects``) instead of
+    each route re-deriving "unfiled plus this one" and one of them eventually getting it
+    wrong.
+
+    Note the deliberate asymmetry with ``RunDeps.project_id``: a **tool** never reads
+    this. A run keeps working in the project it started in even if the operator switches
+    away mid-turn, so the run's scope comes from the conversation, not the live request.
+    """
+    header = request.headers.get("X-Ody-Project")
+    if header == PROJECT_SCOPE_ALL:
+        return None
+    active = header or await projects(request).active_id(OPERATOR_ID)
+    return visible_project_ids(active)
 
 
 def cookbook(request: Request) -> CookbookService:

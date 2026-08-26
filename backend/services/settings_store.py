@@ -47,6 +47,13 @@ OFFLINE_AUTO_KEY = "offline.auto"
 # list of namespaced tool names. Policy, not content — in the clear like the rest.
 DISABLED_TOOLS_KEY = "tools.disabled"
 
+# The project the operator is currently working in (services/projects), as a project id.
+# Unset or empty means no project is active — which is not the same as "nothing is
+# visible": unfiled rows are visible in every scope, so an unset key simply means the
+# operator sees exactly what they saw before projects existed. A selection, not a
+# session: it survives a reload and a vault lock, which is what a *workspace* implies.
+ACTIVE_PROJECT_KEY = "projects.active"
+
 
 class SettingsStore:
     def __init__(self, db_engine: Engine) -> None:

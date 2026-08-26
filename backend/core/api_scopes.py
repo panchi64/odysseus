@@ -100,6 +100,11 @@ SCOPE_DEFS: tuple[ScopeDef, ...] = (
         "Start and stop local model servers — powerful; grant deliberately.",
     ),
     ScopeDef("status", "Status", "Read-only system status and the home overview."),
+    ScopeDef(
+        "projects",
+        "Projects",
+        "List the operator's working directories and switch the active one.",
+    ),
 )
 
 # The surfaces the core assembly itself wires (see `app.py`); every feature surface
