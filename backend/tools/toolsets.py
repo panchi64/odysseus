@@ -31,7 +31,16 @@ from .deps import RunDeps
 from .files import files_toolset
 from .plan import plan_toolset
 from .repo import repo_toolset
+from .shell import GATED_TOOLS as _SHELL_GATED
 from .shell import shell_toolset
+
+#: Conditionally-gated names the **core** categories contribute — the ones that raise
+#: `ApprovalRequired` from inside the call rather than carrying `requires_approval=True`,
+#: which no amount of inspection can discover. A feature category declares its own on its
+#: manifest; the core ones have no manifest, so they are collected here and seeded into
+#: `app.state.gated_tools` at assembly. A name missing from that union is missing from the
+#: operator's approval-scope vocabulary, which is what makes a grant possible.
+CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:

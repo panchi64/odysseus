@@ -145,14 +145,22 @@ async def test_booted_app_assembles_the_same_catalog():
     # otherwise the pin guards a mapping no run actually uses.
     async with client_app() as (_, app):
         assert {t.name for t in tool_catalog(app.state.tool_categories)} == _PINNED_CATALOG
-        # The conditionally-gated vocabulary, likewise assembled from the manifests.
+        # The conditionally-gated vocabulary: each manifest's own, plus the core
+        # categories' (`tools.CORE_GATED_TOOLS` — they have no manifest to declare
+        # theirs). A name missing here is a tool that parks the run but can never be
+        # granted for the conversation, so the operator is asked again on every call.
         assert app.state.gated_tools == {
             "corpus_retrieve",
             "memory_recall",
             "conversations_search",
             "document_edit",
             "document_suggest",
+            "shell_run_command",
+            "shell_start_command",
         }
+        # ...and every one of them is a real, registered tool, so the operator's scope
+        # list can actually offer it.
+        assert app.state.gated_tools <= _PINNED_CATALOG
 
 
 async def test_catalog_carries_category_and_description():

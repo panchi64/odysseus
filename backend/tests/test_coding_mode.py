@@ -154,7 +154,10 @@ class TestDeletingAThread:
         conversation_id = created.json()["conversation_id"]
         await _settled(app, created.json()["run_id"])
 
-        # Do what a coding turn would: acquire the worktree, edit, commit.
+        # Do what a coding turn actually does: acquire the worktree and edit files.
+        # **No commit** — the agent has no `git commit`, so this is the state every real
+        # session is in when the operator opens the diff. Committing here by hand is what
+        # made an earlier version of these tests pass against inert code.
         state = await app.state.worktrees.acquire(
             project_id=project["id"],
             root=Path(project["rootPath"]),
@@ -162,18 +165,6 @@ class TestDeletingAThread:
             conversation_id=conversation_id,
         )
         (state.path / "hello.txt").write_text("changed by the agent\n")
-        await _git(state.path, "git", "add", "-A")
-        await _git(
-            state.path,
-            "git",
-            "-c",
-            "user.name=A",
-            "-c",
-            "user.email=a@e",
-            "commit",
-            "-m",
-            "agent edit",
-        )
         return project, conversation_id
 
     async def test_unmerged_work_refuses_the_delete(self, tmp_path, monkeypatch):

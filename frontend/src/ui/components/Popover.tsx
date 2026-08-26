@@ -59,7 +59,21 @@ export function Popover(props: PopoverProps): JSX.Element {
     if (!triggerRef) return;
     // Before the panel has rendered there is no height to flip on, so the first pass
     // places it below and a second (from the panel's own onMount) corrects it.
-    const panel = panelRef?.getBoundingClientRect() ?? null;
+    //
+    // The measurement has to be of the panel's **natural** height, which is why the
+    // inline `max-height` comes off first. Measuring through it feeds the previous
+    // pass's clamp back in: a 400px panel clamped to 200 measures 200 next time, `200 >
+    // 200` is false, the clamp is dropped, the panel springs open off-screen, and the
+    // pass after that clamps it again — a visible flicker on every scroll, with the
+    // flip decision oscillating alongside it because it reads the same height.
+    let panel: { width: number; height: number } | null = null;
+    if (panelRef) {
+      const restore = panelRef.style.maxHeight;
+      panelRef.style.maxHeight = "";
+      const rect = panelRef.getBoundingClientRect();
+      panel = { width: rect.width, height: rect.height };
+      panelRef.style.maxHeight = restore;
+    }
     setPlacement(
       computePlacement({
         anchor: triggerRef.getBoundingClientRect(),

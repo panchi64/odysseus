@@ -812,16 +812,22 @@ export interface BranchState {
   active: boolean;
 }
 
-/** The thread's branch, or null when it isn't a coding thread (a 404 is the
- *  ordinary answer for every chat conversation, not an error worth surfacing). */
+/** The thread's branch, or null when there isn't one to show.
+ *
+ *  A 404 is the ordinary answer for every chat conversation, not an error. Anything
+ *  else degrades to null as well, deliberately: this drives a chip in the conversation
+ *  header, and a project directory the operator moved must cost them the chip, not the
+ *  whole header. */
 export async function fetchBranch(
   conversationId: string,
 ): Promise<BranchState | null> {
   try {
     return await api.get<BranchState>(`/worktrees/${conversationId}`);
   } catch (err) {
-    if (isApiError(err) && err.status === 404) return null;
-    throw err;
+    if (!isApiError(err) || err.status !== 404) {
+      console.warn("branch state unavailable", err);
+    }
+    return null;
   }
 }
 

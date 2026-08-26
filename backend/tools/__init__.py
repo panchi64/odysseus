@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from .builtin import builtin_toolset
 from .deps import InstructionProvider, PromptContextProvider, RunDeps
-from .toolsets import build_agent_toolsets, core_categories
+from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
 
 __all__ = [
     "InstructionProvider",
@@ -20,5 +20,6 @@ __all__ = [
     "RunDeps",
     "builtin_toolset",
     "build_agent_toolsets",
+    "CORE_GATED_TOOLS",
     "core_categories",
 ]

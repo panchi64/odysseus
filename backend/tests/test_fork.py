@@ -225,7 +225,8 @@ class TestTheRoute:
             await _settled(app, created["run_id"])
             source = created["conversation_id"]
 
-            # The source does some work and commits it on its own branch.
+            # The source does some work. It does **not** commit — the agent has no
+            # `git commit`; reading the branch is what snapshots it.
             state = await app.state.worktrees.acquire(
                 project_id=project["id"],
                 root=root,
@@ -233,18 +234,7 @@ class TestTheRoute:
                 conversation_id=source,
             )
             (state.path / "new.txt").write_text("from the source thread\n")
-            await _git(state.path, "git", "add", "-A")
-            await _git(
-                state.path,
-                "git",
-                "-c",
-                "user.name=A",
-                "-c",
-                "user.email=a@e",
-                "commit",
-                "-m",
-                "work",
-            )
+            assert (await client.get(f"/worktrees/{source}")).json()["filesChanged"] == 1
 
             detail = (await client.get(f"/conversations/{source}")).json()
             forked = (

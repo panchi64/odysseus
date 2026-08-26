@@ -292,6 +292,10 @@ async def create_task(body: TaskCreate, request: Request) -> TaskOut:
     is_webhook = body.schedule.type == ScheduleType.WEBHOOK.value
     task = ScheduledTask(
         owner_id=OPERATOR_ID,
+        # Filed under the active project, so a task belongs to the work it was created
+        # beside. Null is unfiled and visible everywhere, which is what an operator with
+        # no project active gets — the app's original behavior.
+        project_id=await deps.active_project(request),
         kind=body.kind,
         title_enc=vault.encrypt_str(body.title),
         prompt_enc=vault.encrypt_str(body.prompt),

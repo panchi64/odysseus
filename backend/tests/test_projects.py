@@ -24,9 +24,13 @@ from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.document import Document
 from models.research import ResearchRun
+from models.task import ScheduledTask
+from research import ResearchPlan
+from routes.research import ClarifyVerdict
 from services.projects import ProjectStore, project_clause, visible_project_ids
+from services.projects.store import SCOPED_MODELS
 from services.settings_store import SettingsStore
-from tests._helpers import client_app
+from tests._helpers import client_app, patch_model_resolution
 
 
 async def _store(tmp_path) -> ProjectStore:
@@ -90,6 +94,58 @@ class TestCatalog:
         view = await store.create("operator", "Work", str(work))
         with pytest.raises(NotFoundError):
             await store.get("someone-else", view.id)
+
+
+class TestDeletingAProject:
+    """Deleting a project deletes a **label**, not the work filed under it."""
+
+    async def test_every_scoped_model_is_listed(self):
+        # The unfiling below walks `SCOPED_MODELS` by hand — there is no shared base
+        # class to derive it from. A sixth scoped entity that forgets to join the tuple
+        # would have its rows orphaned on the next project delete, silently and
+        # permanently, so the list is checked against the live schema instead.
+        from sqlmodel import SQLModel
+
+        scoped = {
+            cls
+            for cls in SQLModel.__subclasses__()
+            if getattr(cls, "__tablename__", None) and "project_id" in cls.model_fields
+        }
+        assert scoped == set(SCOPED_MODELS)
+
+    async def test_its_rows_are_unfiled_rather_than_orphaned(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        project = await store.create("operator", "Work", str(work))
+
+        def seed(session: Session) -> None:
+            session.add(
+                Conversation(id="c-1", owner_id="operator", project_id=project.id)
+            )
+            session.add(
+                Document(
+                    id="d-1",
+                    owner_id="operator",
+                    project_id=project.id,
+                    title_enc="t",
+                    body_enc="b",
+                )
+            )
+            session.commit()
+
+        await in_session(store._db, seed)  # noqa: SLF001 — seeding the store's own engine
+        await store.delete("operator", project.id)
+
+        def read(session: Session) -> list[str | None]:
+            return [
+                session.get(Conversation, "c-1").project_id,  # type: ignore[union-attr]
+                session.get(Document, "d-1").project_id,  # type: ignore[union-attr]
+            ]
+
+        # A deleted id can never be active again, so rows still pointing at it would
+        # drop out of `visible = unfiled ∪ active` forever with no way back from the UI.
+        assert await in_session(store._db, read) == [None, None]  # noqa: SLF001
 
 
 class TestActiveSelection:
@@ -267,6 +323,104 @@ class TestScopedSurfaces:
 
             research = (await client.get("/research", headers=headers)).json()
             assert sorted(r["id"] for r in research["items"]) == ["r-unfiled"]
+
+
+async def _resolved(value):
+    """A ready-made awaitable, so a monkeypatched async collaborator can be a lambda."""
+    return value
+
+
+class TestCreationStampsTheScope:
+    """A filter over a column nothing writes is dead weight that looks like a feature.
+
+    Each of these creates through the **real route** with a project active and asserts
+    the row came back filed. Without them the scope machinery passes every test it has
+    (the seeded rows carry ids by hand) while every surface shows everything.
+    """
+
+    @staticmethod
+    async def _active(client, tmp_path, name: str) -> str:
+        root = tmp_path / name
+        root.mkdir()
+        project = (
+            await client.post("/projects", json={"name": name, "rootPath": str(root)})
+        ).json()
+        await client.post(f"/projects/{project['id']}/activate")
+        return project["id"]
+
+    @staticmethod
+    async def _filed(app, model_cls, row_id: str) -> str | None:
+        def work(session: Session) -> str | None:
+            row = session.get(model_cls, row_id)
+            return None if row is None else row.project_id
+
+        return await in_session(app.state.db_engine, work)
+
+    async def test_a_document_is_filed(self, tmp_path):
+        async with client_app() as (client, app):
+            project_id = await self._active(client, tmp_path, "work")
+            created = (
+                await client.post("/documents", json={"title": "T", "body": "B"})
+            ).json()
+            assert await self._filed(app, Document, created["id"]) == project_id
+
+    async def test_a_task_is_filed(self, tmp_path):
+        async with client_app() as (client, app):
+            project_id = await self._active(client, tmp_path, "work")
+            created = (
+                await client.post(
+                    "/tasks",
+                    json={
+                        "kind": "agent",
+                        "title": "T",
+                        "prompt": "do it",
+                        "output": "notification",
+                        "schedule": {"type": "interval", "everySeconds": 3600},
+                    },
+                )
+            ).json()
+            assert await self._filed(app, ScheduledTask, created["id"]) == project_id
+
+    async def test_a_research_run_is_filed(self, tmp_path, monkeypatch):
+        patch_model_resolution(monkeypatch)
+        # Skip the clarify/plan model calls — the subject here is the stamped column.
+        monkeypatch.setattr(
+            "routes.research.judge_clarification",
+            lambda *a, **k: _resolved(ClarifyVerdict(needs_clarification=False)),
+        )
+        monkeypatch.setattr(
+            "routes.research.produce_plan",
+            lambda *a, **k: _resolved(ResearchPlan(objective="o", angles=["a"])),
+        )
+        async with client_app() as (client, app):
+            project_id = await self._active(client, tmp_path, "work")
+            created = (
+                await client.post("/research/intake", json={"question": "why?"})
+            ).json()
+            assert await self._filed(app, ResearchRun, created["id"]) == project_id
+
+    async def test_a_corpus_folder_is_filed(self, tmp_path):
+        async with client_app() as (client, app):
+            project_id = await self._active(client, tmp_path, "work")
+            folder = tmp_path / "notes"
+            folder.mkdir()
+            created = (
+                await client.post("/corpus/folders", json={"path": str(folder)})
+            ).json()
+            assert await self._filed(app, CorpusSource, created["id"]) == project_id
+
+    async def test_all_projects_files_nothing(self, tmp_path):
+        async with client_app() as (client, app):
+            await self._active(client, tmp_path, "work")
+            created = (
+                await client.post(
+                    "/documents",
+                    json={"title": "T", "body": "B"},
+                    headers={"X-Ody-Project": "all"},
+                )
+            ).json()
+            # Asking to *see* everything is not a statement about where new work goes.
+            assert await self._filed(app, Document, created["id"]) is None
 
 
 class TestCorpusScopeIsAUnion:

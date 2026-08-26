@@ -77,6 +77,10 @@ def document_toolset() -> FunctionToolset[RunDeps]:
             title,
             content,
             conversation_id=ctx.deps.conversation_id,
+            # The thread's project, not the operator's live selection: a run keeps working
+            # in the project it started in, so a document it writes files there too even
+            # if the operator has since switched away.
+            project_id=ctx.deps.project_id,
             origin=DocumentVersionOrigin.AI,
         )
         ctx.deps.run.emit(DocumentCreated(document_id=view.id, title=title))

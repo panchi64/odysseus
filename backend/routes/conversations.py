@@ -504,7 +504,10 @@ async def _settle_coding_branch(
         project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
         root = Path(project.root_path)
         diff = await deps.worktrees(request).diff(
-            root, base_ref=project.base_ref, conversation_id=conversation_id
+            root,
+            base_ref=project.base_ref,
+            conversation_id=conversation_id,
+            project_id=project.id,
         )
     except Exception:  # noqa: BLE001 — no branch, no project, no repo: nothing to lose
         logger.debug("no coding branch to settle for %s", conversation_id, exc_info=True)

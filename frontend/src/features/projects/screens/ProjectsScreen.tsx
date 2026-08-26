@@ -61,7 +61,7 @@ export function ProjectsScreen(): JSX.Element {
     const ok = await confirm({
       title: `Remove ${label}?`,
       detail:
-        "This only removes it from Odysseus. The directory and its files are left exactly as they are.",
+        "This only removes the project. The directory and its files are left exactly as they are, and anything filed under it — conversations, documents, tasks, research — becomes unfiled rather than being deleted.",
       tone: "alert",
     });
     if (!ok) return;

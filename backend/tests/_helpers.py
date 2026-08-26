@@ -84,6 +84,10 @@ async def client_app(*, auth_enabled: bool = False, passphrase: str | None = "te
         settings = Settings(
             db_url="sqlite:///:memory:",
             data_dir=Path(tmp),
+            # Coding-mode worktrees live *outside* `data_dir` by design (the host-command
+            # fence denies reads of the whole data directory), so they need their own
+            # redirect here or a test cuts real git worktrees into the operator's home.
+            worktrees_dir=Path(tmp) / "worktrees",
             auth_enabled=auth_enabled,
             unlock_passphrase=passphrase,
             # No container side effects in tests, regardless of the host: the managed

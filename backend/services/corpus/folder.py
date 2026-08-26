@@ -92,10 +92,19 @@ class FolderAdapter(SourceAdapter):
 
     # --- registry ---------------------------------------------------------
 
-    async def add_folder(self, owner_id: str, path: str) -> CorpusSource:
-        """Register a folder and queue its first crawl (drained while unlocked)."""
+    async def add_folder(
+        self, owner_id: str, path: str, *, project_id: str | None = None
+    ) -> CorpusSource:
+        """Register a folder and queue its first crawl (drained while unlocked).
+
+        ``project_id`` files the source. Null is unfiled — reachable from every scope,
+        which is right for a general reference folder; filed keeps one project's material
+        out of another project's recall."""
         source = CorpusSource(
-            owner_id=owner_id, path_enc=self._vault.encrypt_str(path), status="indexing"
+            owner_id=owner_id,
+            path_enc=self._vault.encrypt_str(path),
+            status="indexing",
+            project_id=project_id,
         )
 
         def work(session: Session) -> CorpusSource:

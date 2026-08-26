@@ -5,7 +5,16 @@ The operator's checkout is never written to. A coding conversation gets a **bran
 edits and runs tests there, and the only thing that ever touches the operator's own tree
 is an explicit merge they ask for.
 
-Three decisions here are load-bearing and none of them is obvious from the code.
+**The chassis commits, because nothing else does.** The agent edits with its file and
+shell tools and has no `git commit` — deliberately: when a body of work becomes a commit
+is not a judgement to hand the model. So `snapshot` stages and commits the worktree onto
+the conversation's branch, and `diff`/`merge` call it before they read. Skip that and
+every downstream step is inert *while looking correct*: a ref-to-ref diff reports nothing
+after a session that rewrote ten files, MERGE lands nothing, and the delete gate never
+fires. The history is one commit per review rather than one per turn — coarse, but honest
+about what it is.
+
+Four more decisions here are load-bearing and none of them is obvious from the code.
 
 **One worktree per project, not per conversation.** A worktree is a full checkout, so
 per-conversation would mean a fresh ``node_modules`` / ``.venv`` / build cache for every
@@ -26,6 +35,11 @@ repository, so it exposes nothing that was not already exposed.
 real, visible side effect. `ensure_repo` performs it, but only when the caller has an
 explicit confirmation from the operator — the Projects UI asks at project-creation time,
 not the agent mid-turn.
+
+**A merge releases the project.** The holder map is what enforces one coding thread per
+checkout, and `discard` used to be the only thing that cleared it — so a merged thread
+kept the project locked forever, and the busy message told the operator to do the very
+thing they had just done. Merging hands the project back.
 
 A last thing worth knowing because it will otherwise be discovered halfway through a
 session: a worktree branches from the project's base ref, so **uncommitted work in the
@@ -79,16 +93,30 @@ class Diff:
     patch: str
 
 
+#: The identity every commit this layer makes is attributed to. It is the chassis
+#: committing on the agent's behalf, and it should read that way in `git log`.
+_AUTHOR = ("-c", "user.name=Odysseus", "-c", "user.email=odysseus@localhost")
+
+
 async def _git(cwd: Path, *args: str) -> tuple[int, str, str]:
     """One git invocation. Fixed argv, no shell — a project path is operator content and
-    must never be word-split or interpolated into a command line."""
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    must never be word-split or interpolated into a command line.
+
+    A missing `cwd` comes back as a failed git call rather than an `OSError`: the
+    operator can move or delete a project directory at any time, and every caller here
+    already knows how to handle "git said no" while none of them expects an exception
+    from a path that existed a moment ago.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, NotADirectoryError) as exc:
+        return 1, "", f"{cwd} is not reachable: {exc}"
     out, err = await proc.communicate()
     return (
         proc.returncode or 0,
@@ -198,7 +226,12 @@ class WorktreeManager:
                 await _git_ok(root, "branch", branch, base_ref)
 
             if (path / ".git").exists():
-                # The worktree exists; just move it onto this conversation's branch.
+                # Commit whatever the previous holder left behind **before** switching.
+                # Nothing else commits (see `snapshot`), so the worktree is dirty far more
+                # often than not — and `git checkout` carries uncommitted files across, so
+                # without this one thread's half-finished work lands on another thread's
+                # branch, or the checkout fails outright with a raw git error.
+                await self._commit_worktree(path, "Agent changes (carried forward)")
                 await _git_ok(path, "checkout", branch)
             else:
                 # A directory left behind by a previous run with no .git is not a
@@ -226,8 +259,57 @@ class WorktreeManager:
             return  # already cut — forking twice must not fail the second time
         await _git_ok(root, "branch", target, branch_for(source_id))
 
-    async def diff(self, root: Path, *, base_ref: str, conversation_id: str) -> Diff:
-        """What this conversation changed, as a patch plus a shortstat."""
+    async def snapshot(self, project_id: str, *, conversation_id: str) -> bool:
+        """Commit whatever the agent has changed in the worktree onto its branch.
+
+        **Nothing else commits.** The agent edits files with its file and shell tools and
+        has no `git commit` of its own — deliberately, because deciding when work is a
+        commit is not something to leave to the model. So the chassis commits, and it does
+        it here, right before anything wants to *read* the branch. Without this the whole
+        chain downstream is inert in a way that looks like it works: `diff` compares two
+        refs, so it would report zero changes after a session that rewrote ten files,
+        MERGE would land nothing, and deleting the thread would silently discard
+        everything the delete gate exists to protect.
+
+        Returns whether it actually committed. Only the conversation that *holds* the
+        checkout may snapshot: committing another thread's leftovers onto this branch
+        would attribute work to the wrong conversation.
+        """
+        if self._holders.get(project_id) != conversation_id:
+            return False
+        return await self._commit_worktree(self.path_for(project_id))
+
+    async def _commit_worktree(self, path: Path, message: str | None = None) -> bool:
+        """Stage and commit everything in ``path``, or return False if it was clean.
+
+        Best-effort by design: a worktree that isn't there, or a git that refuses, must
+        not take down the read that asked for this. `.odysseus/` ignores itself, so the
+        agent's staged attachments and skill bundles never reach the operator's diff.
+        """
+        if not (path / ".git").exists():
+            return False
+        await _git(path, "add", "-A")
+        # `diff --cached --quiet` exits 0 when nothing is staged — the cheapest way to
+        # ask "is there anything to commit" without parsing porcelain.
+        clean, _, _ = await _git(path, "diff", "--cached", "--quiet")
+        if clean == 0:
+            return False
+        code, out, err = await _git(
+            path, *_AUTHOR, "commit", "-m", message or "Agent changes"
+        )
+        if code != 0:
+            logger.warning("worktree: could not commit %s: %s", path, (err or out).strip())
+            return False
+        return True
+
+    async def diff(
+        self, root: Path, *, base_ref: str, conversation_id: str, project_id: str
+    ) -> Diff:
+        """What this conversation changed, as a patch plus a shortstat.
+
+        Snapshots first, so what the operator reviews includes the work the agent has
+        just done rather than only whatever happened to be committed already."""
+        await self.snapshot(project_id, conversation_id=conversation_id)
         branch = branch_for(conversation_id)
         # Three dots: changes on the branch since it diverged, not changes the base has
         # made since — the operator wants to review the agent's work, not their own.
@@ -242,22 +324,52 @@ class WorktreeManager:
             patch=patch,
         )
 
-    async def merge(self, root: Path, *, base_ref: str, conversation_id: str) -> str:
+    async def merge(
+        self, root: Path, *, base_ref: str, conversation_id: str, project_id: str
+    ) -> str:
         """Land the branch on the base ref — the one operation that writes the
-        operator's own tree, and the reason it is approval-gated above this layer."""
+        operator's own tree, and the reason the operator presses it themselves.
+
+        **Refuses when their checkout is not on the base ref.** `git merge` lands on
+        whatever HEAD happens to be, and the diff they just reviewed was computed against
+        `base_ref` — so merging while they sit on some other branch would give them a
+        different result from the one they read and approved. Better to say so.
+
+        Snapshots first for the same reason `diff` does, then releases the project so a
+        second coding conversation can take it: without that, a project stays locked to
+        its first thread forever and the busy message ("finish or merge that one first")
+        names an escape that does not work.
+        """
+        await self.snapshot(project_id, conversation_id=conversation_id)
+        await self._require_base_checked_out(root, base_ref)
         branch = branch_for(conversation_id)
-        return await _git_ok(
-            root,
-            "-c",
-            "user.name=Odysseus",
-            "-c",
-            "user.email=odysseus@localhost",
-            "merge",
-            "--no-ff",
-            branch,
-            "-m",
-            f"Merged {branch}",
+        out = await _git_ok(
+            root, *_AUTHOR, "merge", "--no-ff", branch, "-m", f"Merged {branch}"
         )
+        self.release(project_id, conversation_id)
+        return out
+
+    async def _require_base_checked_out(self, root: Path, base_ref: str) -> None:
+        """Refuse a merge onto a ref the operator is not actually standing on.
+
+        `HEAD` is the base ref for a repository we never learned a branch name for, and
+        it means "wherever you are" — so it always matches. A detached HEAD reports the
+        literal string `HEAD` from `--abbrev-ref`, which is *not* a match for a named
+        base, and refusing there is right: a merge into a detached HEAD is lost work.
+        """
+        if base_ref == "HEAD":
+            return
+        code, current, _ = await _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        if code != 0:
+            return  # not a state we can read; let the merge itself report the problem
+        current = current.strip()
+        if current != base_ref:
+            raise WorktreeError(
+                f"Your working tree is on {current!r}, but this conversation's changes "
+                f"were reviewed against {base_ref!r}. Check out {base_ref!r} first, or "
+                "change the project's base ref — merging here would land a different "
+                "result from the diff you just read."
+            )
 
     async def discard(self, root: Path, *, project_id: str, conversation_id: str) -> None:
         """Throw the branch away. Best-effort and idempotent — this runs when a
@@ -265,6 +377,11 @@ class WorktreeManager:
         branch = branch_for(conversation_id)
         path = self.path_for(project_id)
         if self._holders.get(project_id) == conversation_id:
+            # Throw the working tree away with the branch. Without this the discarded
+            # thread's uncommitted files survive the checkout below and get carried onto
+            # whichever branch is taken up next — the operator said discard, so discard.
+            await _git(path, "reset", "--hard")
+            await _git(path, "clean", "-fd")
             # Park the worktree off the branch so it can be deleted. `--detach` rather
             # than the base ref by name: the base is normally checked out in the *main*
             # working tree, and git refuses to have one branch checked out twice.

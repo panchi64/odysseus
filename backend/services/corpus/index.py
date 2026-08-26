@@ -186,8 +186,10 @@ class CorpusIndex:
 
     # --- folder lifecycle (delegated to the one FolderAdapter) ------------
 
-    async def add_folder(self, owner_id: str, path: str) -> CorpusSource:
-        return await self._folder.add_folder(owner_id, path)
+    async def add_folder(
+        self, owner_id: str, path: str, *, project_id: str | None = None
+    ) -> CorpusSource:
+        return await self._folder.add_folder(owner_id, path, project_id=project_id)
 
     async def remove_folder(self, owner_id: str, source_id: str) -> bool:
         return await self._folder.remove_folder(owner_id, source_id)

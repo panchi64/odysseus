@@ -230,6 +230,9 @@ async def intake_research(body: IntakeIn, request: Request) -> ResearchOut:
     vault = deps.vault(request)
     row = ResearchRun(
         owner_id=OPERATOR_ID,
+        # Filed under the active project, like every other thing the operator starts while
+        # one is active. Null is unfiled, which every scope can see.
+        project_id=await deps.active_project(request),
         question_enc=vault.encrypt_str(question),
         status=ResearchStatus.DRAFT.value,
         clarifying_questions_enc=research_store.encode_list(vault, clarifying_questions),

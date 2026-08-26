@@ -108,16 +108,23 @@ class DocumentStore:
         body: str,
         *,
         conversation_id: str | None = None,
+        project_id: str | None = None,
         origin: str = DocumentVersionOrigin.USER,
     ) -> DocumentView:
         """Create a document and record its first version. ``origin`` stamps that version's
         author (`DOC-2`): the library UI creates USER-authored documents (the default), while
         the agent's ``document_create`` passes ``ai`` so the first version reads as the agent's
-        work — which is what lets the chat layer tell a later operator edit apart from it."""
+        work — which is what lets the chat layer tell a later operator edit apart from it.
+
+        ``project_id`` files it. Null is *unfiled*, which is visible under every scope, so
+        omitting it is safe — but a document written inside a project conversation that
+        came back unfiled would be the one the operator later can't find beside the work it
+        belongs to, which is why the callers resolve it."""
         doc_type, language = detect_type_language(body)
         document = Document(
             owner_id=owner_id,
             conversation_id=conversation_id,
+            project_id=project_id,
             title_enc=self._vault.encrypt_str(title),
             body_enc=self._vault.encrypt_str(body),
             doc_type=doc_type,

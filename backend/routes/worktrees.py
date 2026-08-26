@@ -24,8 +24,7 @@ from core.exceptions import NotFoundError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
-from services.conversations import ConversationBinding
-from services.projects import WorktreeError, branch_for
+from services.projects import ProjectView, WorktreeError, branch_for
 
 router = APIRouter(prefix="/worktrees", tags=["projects"])
 
@@ -50,7 +49,7 @@ class MergedOut(CamelModel):
     detail: str
 
 
-async def _resolve(request: Request, conversation_id: str) -> tuple[ConversationBinding, Path]:
+async def _resolve(request: Request, conversation_id: str) -> tuple[ProjectView, Path]:
     """The thread's project and its root path, or a 4xx explaining which half is missing."""
     binding = await deps.store(request).binding(conversation_id)
     if binding.mode != "coding" or not binding.project_id:
@@ -59,21 +58,24 @@ async def _resolve(request: Request, conversation_id: str) -> tuple[Conversation
         project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return binding, Path(project.root_path)
+    return project, Path(project.root_path)
 
 
 @router.get("/{conversation_id}", response_model=BranchOut)
 async def read_branch(request: Request, conversation_id: str) -> BranchOut:
-    binding, root = await _resolve(request, conversation_id)
-    project = await deps.projects(request).get(OPERATOR_ID, binding.project_id or "")
+    project, root = await _resolve(request, conversation_id)
     worktrees = deps.worktrees(request)
     try:
         diff = await worktrees.diff(
-            root, base_ref=project.base_ref, conversation_id=conversation_id
+            root,
+            base_ref=project.base_ref,
+            conversation_id=conversation_id,
+            project_id=project.id,
         )
     except WorktreeError:
-        # No branch yet — a coding thread that hasn't touched a file. An empty diff is
-        # the honest answer, not an error the UI has to special-case.
+        # No branch yet (a coding thread that hasn't touched a file), or a project
+        # directory that has moved out from under us. An empty diff is the honest answer
+        # for both, and far better than a 500 on every render of the chat header.
         diff = None
     return BranchOut(
         conversation_id=conversation_id,
@@ -90,22 +92,25 @@ async def read_branch(request: Request, conversation_id: str) -> BranchOut:
 
 @router.post("/{conversation_id}/merge", response_model=MergedOut)
 async def merge_branch(request: Request, conversation_id: str) -> MergedOut:
-    binding, root = await _resolve(request, conversation_id)
-    project = await deps.projects(request).get(OPERATOR_ID, binding.project_id or "")
+    project, root = await _resolve(request, conversation_id)
     try:
         detail = await deps.worktrees(request).merge(
-            root, base_ref=project.base_ref, conversation_id=conversation_id
+            root,
+            base_ref=project.base_ref,
+            conversation_id=conversation_id,
+            project_id=project.id,
         )
     except WorktreeError as exc:
-        # A conflict is git's own message and the operator's to resolve — handing it
-        # back verbatim beats paraphrasing it into something less actionable.
+        # A conflict, or a working tree standing on the wrong branch. Both are git's own
+        # message or ours about git, and both are the operator's to resolve — handing the
+        # text back verbatim beats paraphrasing it into something less actionable.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return MergedOut(merged=True, detail=detail.strip())
 
 
 @router.post("/{conversation_id}/discard", status_code=204)
 async def discard_branch(request: Request, conversation_id: str) -> None:
-    binding, root = await _resolve(request, conversation_id)
+    project, root = await _resolve(request, conversation_id)
     await deps.worktrees(request).discard(
-        root, project_id=binding.project_id or "", conversation_id=conversation_id
+        root, project_id=project.id, conversation_id=conversation_id
     )

@@ -221,7 +221,15 @@ async def list_documents(
 async def create_document(body: DocumentCreate, request: Request) -> DocumentOut:
     if not body.title.strip():
         raise HTTPException(status_code=422, detail="title must not be empty")
-    view = await deps.documents(request).create(OPERATOR_ID, body.title, body.body)
+    view = await deps.documents(request).create(
+        OPERATOR_ID,
+        body.title,
+        body.body,
+        # Filed under whatever the request scope resolved — a document written while a
+        # project is active belongs beside that project's other work, not in a global
+        # pile the scope then hides it from.
+        project_id=await deps.active_project(request),
+    )
     return _out(view)
 
 

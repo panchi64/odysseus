@@ -54,7 +54,12 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_confinement
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
-from tools import InstructionProvider, PromptContextProvider, core_categories
+from tools import (
+    CORE_GATED_TOOLS,
+    InstructionProvider,
+    PromptContextProvider,
+    core_categories,
+)
 from tools.agents import delegate_instructions
 from tools.plan import plan_context
 from tools.repo import repo_instructions
@@ -362,7 +367,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # and the operator-facing catalog routes all read these same objects, so the
     # listing and the agent's own stack cannot diverge.
     tool_categories = core_categories()
-    gated_tools: set[str] = set()
+    # The core categories have no manifest to declare their conditionally-gated names,
+    # so they seed the set here. `shell` matters: it raises `ApprovalRequired` from
+    # inside the call, which parks the run either way — but a name missing from this
+    # union is missing from the *scope vocabulary*, so the operator could never grant
+    # it for the conversation and would be asked again on every single command.
+    gated_tools: set[str] = set(CORE_GATED_TOOLS)
     # Which tools can't work without internet — each feature declares its own, and offline
     # mode enforces the union. The feature that suspends them is not the feature that
     # ships them, so the declaration travels rather than being restated at the gate.

@@ -15,6 +15,7 @@
  *  them. Another project's items are what stay invisible. */
 
 import {
+  createEffect,
   createResource,
   createRoot,
   createSignal,
@@ -70,6 +71,19 @@ const store = createRoot(() => {
   // "nothing is active": the backend reads an absent header as "use the stored
   // selection", so saying *unscoped* takes a literal.
   const [unscoped, setUnscoped] = createSignal(false);
+
+  // Seed the echo from every listing the backend returns — not just from the writes
+  // that happen to return one. Without this the echo stays null across a reload while
+  // the backend is still scoped to its stored selection, so the switcher reads
+  // "UNFILED ONLY" and no project row looks selected while the operator is in fact
+  // inside a project. Worse, toggling ALL PROJECTS and back would then write that null
+  // into the request header and genuinely change the scope to match the wrong label.
+  createEffect(() => {
+    const dto = data.latest;
+    if (!dto || unscoped()) return;
+    setActiveId(dto.activeId);
+    setProjectScope(dto.activeId);
+  });
 
   return { data, tick, setTick, activeId, setActiveId, unscoped, setUnscoped };
 });

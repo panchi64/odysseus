@@ -62,6 +62,15 @@ _MAX_OUTPUT_CHARS = 2_000_000
 #: process that was already approved into existence, so re-asking would be noise.
 EXECUTING_TOOLS = frozenset({"run_command", "start_command"})
 
+#: The same two, namespaced — the conditionally-gated names this category contributes to
+#: the approval-scope vocabulary. **This declaration is what makes the gate usable.** The
+#: raise below parks the run either way, but a name absent from `app.state.gated_tools`
+#: never reaches `tools/catalog.approval_scopes`, so the operator could not grant it for
+#: the conversation (nor pre-authorize it on a scheduled task) and would be asked again on
+#: every single command — which would make the approval gate the nuisance an allowlist was
+#: rejected for being.
+GATED_TOOLS = frozenset(f"shell_{name}" for name in EXECUTING_TOOLS)
+
 _WRONG_MODE = (
     "Shell commands are only available in a coding conversation, which runs in a "
     "project's git worktree. This is a chat conversation — use `code_execute` instead."

@@ -9,7 +9,6 @@ through the bag like any other capability.
 from __future__ import annotations
 
 from core.api_scopes import ScopeClaim
-from core.config import get_settings
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from routes import projects as project_routes
 from routes import worktrees as worktree_routes
@@ -23,7 +22,11 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     # Outside `data_dir` on purpose — an approved host command is fenced against reads of
     # the whole data directory, so a worktree beneath it would be unreadable by the very
     # shell that has to build and test in it (`services/projects/worktree.py`).
-    worktrees = WorktreeManager(get_settings().worktrees_dir)
+    #
+    # From `ctx.settings`, never `get_settings()`: this app has its own Settings (a test
+    # app's are a throwaway temp dir), and reading the process-global here had every test
+    # cutting real worktrees into the operator's own home directory.
+    worktrees = WorktreeManager(ctx.settings.worktrees_dir)
     return FeatureRuntime(
         services=(store, worktrees),
         capabilities=(store, worktrees),

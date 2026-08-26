@@ -87,7 +87,9 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
 
     def __init__(self, template: AbstractToolset[RunDeps]) -> None:
         self._template = template
-        self._bound: OrderedDict[tuple[str, str], AbstractToolset[RunDeps]] = OrderedDict()
+        self._bound: OrderedDict[
+            tuple[str, str, str], AbstractToolset[RunDeps]
+        ] = OrderedDict()
 
     @property
     def id(self) -> str:
@@ -137,7 +139,14 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
     def _bind(
         self, workspace: str, background: Any, ctx: RunContext[RunDeps]
     ) -> AbstractToolset[RunDeps]:
-        key = (workspace, str(background.model))
+        # Keyed by the **run**, not just the workspace and model, because the event
+        # handler below closes over this `ctx`. A key that outlived the run would hand
+        # the next delegation a handler pointed at a finished `Run` and a stale
+        # `tool_call_id` — sub-agent progress would vanish from every delegation after
+        # the first, and in coding mode (one worktree per project) from another
+        # conversation's entirely. A run makes several delegations, so the cache still
+        # earns its keep within one.
+        key = (workspace, str(background.model), ctx.deps.run.id)
         cached = self._bound.get(key)
         if cached is not None:
             self._bound.move_to_end(key)

@@ -10,6 +10,7 @@ rooted at the same directory, which is precisely the bug.
 from __future__ import annotations
 
 from core.container import ServiceContainer
+from runs import Run, RunStream
 from tests._helpers import client_app
 from tools.agents import EXPLORER, agents_toolset, delegate_instructions
 from tools.deps import RunDeps
@@ -46,10 +47,13 @@ class _FakeRegistry:
         return _FakeResolved("test")
 
 
-def _ctx(caps: ServiceContainer, conversation_id: str):
+def _ctx(caps: ServiceContainer, conversation_id: str, run_id: str = "run-1"):
+    """A stand-in RunContext. The `Run` is real because the binding is keyed on its id —
+    a fake without one would let the run-scoping regression back in unnoticed."""
+
     class _Ctx:
         deps = RunDeps(
-            run=None,  # type: ignore[arg-type]
+            run=Run(id=run_id, kind="chat", owner_id="operator", stream=RunStream()),
             owner_id="operator",
             caps=caps,
             conversation_id=conversation_id,
@@ -91,14 +95,31 @@ class TestBinding:
         # per call would be a real cost on a hot path.
         assert first is second
 
+    async def test_a_second_run_gets_a_fresh_binding(self, tmp_path):
+        from services.registry import ModelRegistry
+        from services.sandbox import SandboxSessionManager
 
-def _bind_for(toolset, caps, tmp_path, conversation_id: str):
+        caps = ServiceContainer()
+        caps.add(_FakeRegistry(), as_type=ModelRegistry)
+        caps.add(_FakeSessions(tmp_path), as_type=SandboxSessionManager)
+
+        toolset = agents_toolset()
+        first = _bind_for(toolset, caps, tmp_path, "conv-a", run_id="run-1")
+        second = _bind_for(toolset, caps, tmp_path, "conv-a", run_id="run-2")
+        # The binding captures the run's event-stream handler, so reusing it across runs
+        # would emit turn 2's sub-agent progress onto turn 1's finished Run — the
+        # delegation would look silent from the second turn onward. Same workspace, same
+        # model, different run ⇒ different binding.
+        assert first is not second
+
+
+def _bind_for(toolset, caps, tmp_path, conversation_id: str, run_id: str = "run-1"):
     """The binding is what's under test, so it is reached directly rather than through
     a full delegate call (which would run a real sub-agent)."""
     return toolset._bind(  # noqa: SLF001
         str(tmp_path / conversation_id),
         _FakeResolved("test"),
-        _ctx(caps, conversation_id),
+        _ctx(caps, conversation_id, run_id),
     )
 
 

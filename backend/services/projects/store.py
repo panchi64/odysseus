@@ -33,15 +33,33 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Engine, or_
-from sqlmodel import Session, select
+from sqlalchemy import Engine, or_, update
+from sqlmodel import Session, SQLModel, select
 
 from core.db import in_session
 from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models._fields import utcnow
+from models.conversation import Conversation
+from models.corpus import CorpusSource
+from models.document import Document
 from models.project import Project
+from models.research import ResearchRun
+from models.task import ScheduledTask
 from services.settings_store import ACTIVE_PROJECT_KEY, SettingsStore
+
+#: Every entity that carries a `project_id`. Written out because there is no shared base
+#: class — each model declares `owner_id` inline too — and because deleting a project has
+#: to unfile *all* of them or the ones it misses vanish from every listing forever.
+#: `tests/test_projects.py` pins this against the live schema, so a sixth scoped entity
+#: fails there rather than silently losing its rows on the next project delete.
+SCOPED_MODELS: tuple[type[SQLModel], ...] = (
+    Conversation,
+    Document,
+    ScheduledTask,
+    ResearchRun,
+    CorpusSource,
+)
 
 
 def visible_project_ids(active: str | None) -> tuple[str | None, ...]:
@@ -225,13 +243,27 @@ class ProjectStore:
         return await self._view(await in_session(self._db, work))
 
     async def delete(self, owner_id: str, project_id: str) -> None:
+        """Remove the project and **unfile everything that was in it**.
+
+        Unfiling is the whole point. The scope rule is `visible = unfiled ∪ active`, and a
+        deleted id can never be active again — so rows left pointing at it would drop out
+        of every listing permanently, with no way back from the UI. The operator deleted a
+        *label*, not a year of conversations. Returning them to unfiled makes them visible
+        everywhere again, which is exactly where they were before projects existed.
+        """
         row = await self._row(owner_id, project_id)
 
         def work(session: Session) -> None:
+            for model_cls in SCOPED_MODELS:
+                session.execute(
+                    update(model_cls)
+                    .where(model_cls.project_id == row.id)  # type: ignore[arg-type]
+                    .values(project_id=None)
+                )
             stored = session.get(Project, row.id)
             if stored is not None:
                 session.delete(stored)
-                session.commit()
+            session.commit()
 
         await in_session(self._db, work)
         # Deleting the active project leaves nothing active rather than a dangling id.
