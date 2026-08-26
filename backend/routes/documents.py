@@ -210,7 +210,9 @@ async def list_documents(
     request: Request, include_archived: bool = False
 ) -> list[DocumentSummaryOut]:
     views = await deps.documents(request).list_documents(
-        OPERATOR_ID, include_archived=include_archived
+        OPERATOR_ID,
+        include_archived=include_archived,
+        visible_projects=await deps.project_scope(request),
     )
     return [_summary_out(v) for v in views]
 

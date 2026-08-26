@@ -21,6 +21,9 @@ from core.db import in_session, init_db, make_engine
 from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.conversation import Conversation
+from models.corpus import CorpusSource
+from models.document import Document
+from models.research import ResearchRun
 from services.projects import ProjectStore, project_clause, visible_project_ids
 from services.settings_store import SettingsStore
 from tests._helpers import client_app
@@ -240,3 +243,63 @@ class TestScopedSurfaces:
         async with client_app() as (client, app):
             await self._seed(app)
             assert await self._listed(client, "all") == ["c-a", "c-b", "c-unfiled"]
+
+    async def test_documents_tasks_and_research_scope_the_same_way(self):
+        async with client_app() as (client, app):
+            # Sealed with the app's own vault: these rows are read back through the
+            # routes, which decrypt, so a placeholder string is not a valid fixture.
+            seal = app.state.vault.encrypt_str
+
+            def work(session: Session) -> None:
+                for did, pid in (("d-unfiled", None), ("d-b", "proj-b")):
+                    session.add(Document(id=did, owner_id="operator", project_id=pid,
+                                         title_enc=seal("T"), body_enc=seal("B")))
+                for rid, pid in (("r-unfiled", None), ("r-b", "proj-b")):
+                    session.add(ResearchRun(id=rid, owner_id="operator", project_id=pid,
+                                            question_enc=seal("Q")))
+                session.commit()
+
+            await in_session(app.state.db_engine, work)
+            headers = {"X-Ody-Project": "proj-a"}
+
+            docs = (await client.get("/documents", headers=headers)).json()
+            assert sorted(d["id"] for d in docs) == ["d-unfiled"]
+
+            research = (await client.get("/research", headers=headers)).json()
+            assert sorted(r["id"] for r in research["items"]) == ["r-unfiled"]
+
+
+class TestCorpusScopeIsAUnion:
+    """Recall applies the scope as a union, and that difference is deliberate.
+
+    A list narrows to what you are looking at. Recall must not, or a project chat
+    loses access to everything the operator ever learned. What it *does* exclude is
+    the other direction — another project's sources.
+    """
+
+    @staticmethod
+    async def _excluded(app, active: str | None) -> frozenset[str]:
+        def work(session: Session) -> None:
+            session.add(CorpusSource(id="s-unfiled", owner_id="operator", kind="folder",
+                                     project_id=None, path_enc="p"))
+            session.add(CorpusSource(id="s-a", owner_id="operator", kind="folder",
+                                     project_id="proj-a", path_enc="p"))
+            session.add(CorpusSource(id="s-b", owner_id="operator", kind="folder",
+                                     project_id="proj-b", path_enc="p"))
+            session.commit()
+
+        await in_session(app.state.db_engine, work)
+        return await app.state.corpus._out_of_scope_source_ids(
+            "operator", visible_project_ids(active)
+        )
+
+    async def test_unfiled_sources_stay_reachable_from_inside_a_project(self):
+        async with client_app() as (_client, app):
+            excluded = await self._excluded(app, "proj-a")
+            # The union: the operator's general knowledge is still readable, and so is
+            # this project's own. Only the other project is cut out.
+            assert excluded == frozenset({"s-b"})
+
+    async def test_nothing_is_excluded_when_unscoped(self):
+        async with client_app() as (_client, app):
+            assert await self._excluded(app, None) == frozenset({"s-a", "s-b"})

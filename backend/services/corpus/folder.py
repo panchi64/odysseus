@@ -70,6 +70,14 @@ class FolderAdapter(SourceAdapter):
             self._index, name="corpus-folder", unlocked=unlocked
         )
 
+    @property
+    def engine(self) -> Engine:
+        """The DB engine backing the source registry. Exposed so ``CorpusIndex`` can
+        read ``CorpusSource`` rows (the project scope) without being handed a second
+        engine of its own — this adapter is already the owner of that table, mirroring
+        how ``CorpusChunkStore`` exposes its ``vault``."""
+        return self._engine
+
     def _path_of(self, source: CorpusSource) -> str:
         """A source's host path, sealed or (until the backfill reaches it) legacy
         cleartext. A registry row always has one, so the empty string is unreachable —

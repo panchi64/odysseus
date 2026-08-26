@@ -41,6 +41,7 @@ from models.task import (
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
+from services.projects import project_clause
 from services.scheduler import compute_next_run
 from tools.catalog import approval_scopes
 
@@ -258,15 +259,16 @@ async def _get_owned_task(engine, owner_id: str, task_id: str) -> ScheduledTask 
 async def list_tasks(request: Request) -> TaskListOut:
     engine = deps.db_engine(request)
     vault = deps.vault(request)
+    # Only the *listing* is scoped. The scheduler's tick loop is deliberately not
+    # (services/scheduler.py) — it fires everyone's due tasks regardless of what the
+    # operator happens to be looking at, and filtering it would silently stop automation.
+    scope = project_clause(ScheduledTask.project_id, await deps.project_scope(request))
 
     def work(session: Session) -> list[ScheduledTask]:
-        return list(
-            session.exec(
-                select(ScheduledTask)
-                .where(ScheduledTask.owner_id == OPERATOR_ID)
-                .order_by(ScheduledTask.created_at)
-            ).all()
-        )
+        query = select(ScheduledTask).where(ScheduledTask.owner_id == OPERATOR_ID)
+        if scope is not None:
+            query = query.where(scope)
+        return list(session.exec(query.order_by(ScheduledTask.created_at)).all())
 
     rows = await in_session(engine, work)
     return TaskListOut(items=[_task_out(row, vault) for row in rows])

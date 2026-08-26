@@ -18,6 +18,7 @@ from pydantic_ai import FunctionToolset, RunContext
 
 from core.untrusted import wrap_untrusted
 from services.corpus import CorpusIndex
+from services.projects import visible_project_ids
 
 from .deps import RunDeps
 from .recall_gate import gate_global_recall
@@ -50,8 +51,15 @@ def corpus_toolset() -> FunctionToolset[RunDeps]:
         index = ctx.deps.caps.get_optional(CorpusIndex)
         if index is None:
             return [{"error": "The knowledge corpus is unavailable."}]
+        # The run's own project, not the operator's live selection: a turn keeps reading
+        # from the project it started in even if they switch away mid-answer. Unfiled
+        # sources stay reachable either way — only another project's are excluded.
         hits = await index.retrieve(
-            ctx.deps.owner_id, query, source_ids=source_ids or None, limit=limit
+            ctx.deps.owner_id,
+            query,
+            source_ids=source_ids or None,
+            limit=limit,
+            visible_projects=visible_project_ids(ctx.deps.project_id),
         )
         return [
             {

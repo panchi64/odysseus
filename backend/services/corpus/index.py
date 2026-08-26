@@ -19,6 +19,9 @@ import asyncio
 import logging
 from dataclasses import dataclass, replace
 
+from sqlmodel import Session, select
+
+from core.db import in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from models.corpus import CorpusSource
 from services import ranking
@@ -47,6 +50,31 @@ class CorpusIndex:
         # the "surface" kind, so keying by kind would drop all but the last.
         self._adapters: list[SourceAdapter] = []
 
+    async def _out_of_scope_source_ids(
+        self, owner_id: str, visible_projects: tuple[str | None, ...] | None
+    ) -> frozenset[str]:
+        """Sources belonging to a project the caller may **not** see.
+
+        Expressed as an exclusion rather than an inclusion on purpose: only a source
+        explicitly filed under a project is ever hidden, so an adapter that knows nothing
+        about projects (memory, conversation search) keeps working untouched and every
+        unfiled source stays reachable. Empty — and therefore free — whenever the caller
+        is unscoped or nothing has been filed yet.
+        """
+        if visible_projects is None:
+            return frozenset()
+        visible = set(visible_projects)
+
+        def work(session: Session) -> frozenset[str]:
+            rows = session.exec(
+                select(CorpusSource.id, CorpusSource.project_id)
+                .where(CorpusSource.owner_id == owner_id)
+                .where(CorpusSource.project_id.is_not(None))
+            ).all()
+            return frozenset(sid for sid, pid in rows if pid not in visible)
+
+        return await in_session(self._folder.engine, work)
+
     def register(self, adapter: SourceAdapter) -> None:
         self._adapters.append(adapter)
 
@@ -60,6 +88,7 @@ class CorpusIndex:
         sources: list[str] | None = None,
         source_ids: list[str] | None = None,
         limit: int = 8,
+        visible_projects: tuple[str | None, ...] | None = None,
     ) -> list[CorpusHit]:
         """Fan the query out to the selected sources and RRF-fuse the results.
 
@@ -69,15 +98,25 @@ class CorpusIndex:
         chunk store across kinds — no adapter fan-out or cross-source fusion needed for a
         single logical group — and still honors ``kb_excluded``, so an excluded file is
         unreachable even by id. A degraded embedder collapses every source to keyword-only
-        — the same fallback memory and conversation recall already use."""
+        — the same fallback memory and conversation recall already use.
+
+        ``visible_projects`` is the project scope (``services.projects``), and note that
+        recall applies it **as a union, not a narrowing**: unfiled sources — which is
+        every source that is not explicitly filed under a project — stay reachable from
+        inside a project, because a project chat that could not reach the operator's
+        general knowledge would be a worse assistant. What it excludes is the other
+        direction: another project's sources, which is the contamination rule.
+        """
         query_vec, query_model = await embed_query(self._embedder, owner_id, query)
         query_tokens = ranking.tokens(query)
+        excluded = await self._out_of_scope_source_ids(owner_id, visible_projects)
 
         if source_ids:
-            return await self._chunks.retrieve(
+            hits = await self._chunks.retrieve(
                 owner_id, None, query_vec, query_model, query_tokens,
                 limit=limit, source_ids=source_ids,
             )
+            return [hit for hit in hits if hit.source_id not in excluded]
 
         selected = [
             adapter
@@ -92,6 +131,10 @@ class CorpusIndex:
                 for adapter in selected
             )
         )
+        if excluded:
+            per_source = [
+                [hit for hit in hits if hit.source_id not in excluded] for hits in per_source
+            ]
 
         # Each adapter already ranked its own hits; fuse the sources by rank (RRF over
         # position). Rank-based fusion is the only sound way to combine results whose

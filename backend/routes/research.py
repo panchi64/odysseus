@@ -71,6 +71,7 @@ from routes import deps, research_launch, research_store
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
 from routes.research_store import find_by_run
+from services.projects import project_clause
 
 __all__ = ["ClarifyVerdict", "find_by_run", "router"]
 
@@ -201,14 +202,13 @@ async def list_research(request: Request) -> ResearchListOut:
     engine = deps.db_engine(request)
     vault = deps.vault(request)
 
+    scope = project_clause(ResearchRun.project_id, await deps.project_scope(request))
+
     def work(session: Session) -> list[ResearchRun]:
-        return list(
-            session.exec(
-                select(ResearchRun)
-                .where(ResearchRun.owner_id == OPERATOR_ID)
-                .order_by(ResearchRun.created_at.desc())
-            ).all()
-        )
+        query = select(ResearchRun).where(ResearchRun.owner_id == OPERATOR_ID)
+        if scope is not None:
+            query = query.where(scope)
+        return list(session.exec(query.order_by(ResearchRun.created_at.desc())).all())
 
     rows = await in_session(engine, work)
     return ResearchListOut(

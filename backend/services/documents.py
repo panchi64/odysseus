@@ -37,6 +37,7 @@ from core.text import replace_unique
 from core.vault import Vault
 from models.document import Document, DocumentVersion, DocumentVersionOrigin
 from services.corpus.documents import DocumentsAdapter
+from services.projects import project_clause
 
 
 @dataclass(frozen=True)
@@ -299,15 +300,25 @@ class DocumentStore:
     # --- read path --------------------------------------------------------
 
     async def list_documents(
-        self, owner_id: str, *, include_archived: bool = False
+        self,
+        owner_id: str,
+        *,
+        include_archived: bool = False,
+        visible_projects: tuple[str | None, ...] | None = None,
     ) -> list[DocumentSummaryView]:
         """The library, newest first — summaries only (no full body). Active unless
-        ``include_archived``."""
+        ``include_archived``.
+
+        ``visible_projects`` is the project scope (``services.projects``); ``None`` —
+        the default — means no filtering, which is what every non-route caller wants."""
 
         def work(session: Session) -> list[DocumentSummaryView]:
             query = select(Document).where(Document.owner_id == owner_id)
             if not include_archived:
                 query = query.where(Document.archived == False)  # noqa: E712
+            scope = project_clause(Document.project_id, visible_projects)
+            if scope is not None:
+                query = query.where(scope)
             rows = session.exec(
                 query.order_by(Document.updated_at.desc())  # type: ignore[attr-defined]
             ).all()
