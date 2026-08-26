@@ -2,6 +2,7 @@ import { createEffect, createSignal, For, Show, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import { AREAS, type NavArea } from "../nav";
 import { AreaSection } from "./AreaSection";
+import { ProjectSwitcher } from "./ProjectSwitcher";
 import { railSlotFor } from "./railSlots";
 
 /** The rail body: whatever live panel the current route contributes (RECENTS
@@ -35,6 +36,7 @@ export function AreaNav(props: { active: NavArea | undefined }): JSX.Element {
 
   return (
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <ProjectSwitcher />
       <Show when={slot()}>
         {(match) => <div class="min-h-0">{match().render()}</div>}
       </Show>

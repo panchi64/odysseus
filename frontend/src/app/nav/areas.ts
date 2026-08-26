@@ -112,6 +112,14 @@ export const AREAS: NavArea[] = [
         description: "Manage Model Context Protocol tool servers",
       },
       {
+        label: "Projects",
+        href: "/projects",
+        icon: "archive",
+        connected: true,
+        description:
+          "The directories you work in, and which one scopes your work",
+      },
+      {
         label: "Code Runner",
         href: "/code",
         icon: "code",

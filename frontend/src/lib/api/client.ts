@@ -9,6 +9,7 @@
  */
 import { API_BASE } from "~/lib/config";
 import { setBackendReachable } from "~/lib/stores/connectivity";
+import { getProjectScope } from "./projectScope";
 import { clearToken, getToken } from "./token";
 
 /** `fetch` wrapped to echo backend reachability. A received response — even a 4xx/5xx —
@@ -70,6 +71,11 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  // The one place the project scope is attached. It only ever *relays* the operator's
+  // selection — the backend resolves its own stored active project when this is
+  // absent, and decides what the scope means either way.
+  const scope = getProjectScope();
+  if (scope) headers["X-Ody-Project"] = scope;
   return headers;
 }
 
