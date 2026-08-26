@@ -156,14 +156,9 @@ export const AREAS: NavArea[] = [
         connected: true,
         description: "The guided flow for connecting your first model",
       },
-      {
-        label: "Local Models",
-        href: "/models/cookbook/local",
-        icon: "cpu",
-        connected: true,
-        description:
-          "Hardware fit, inference engines, and the download / serve lifecycle",
-      },
+      // No LOCAL MODELS row: local-versus-external stopped being two pages. The
+      // MODELS entry below is the one model list — the role cards, then every
+      // model, served on this host or reached over an API.
       {
         label: "Embedding",
         href: "/models/cookbook/embedding",
@@ -184,7 +179,7 @@ export const AREAS: NavArea[] = [
         icon: "reticle",
         connected: true,
         description:
-          "Which model answers chat, runs background work, and powers recall — plus the endpoints they're reached through",
+          "Which model answers chat, runs background work, and powers recall — plus hardware fit, the serve lifecycle, and the endpoints they're reached through",
       },
     ],
   },

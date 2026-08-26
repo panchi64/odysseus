@@ -1,6 +1,7 @@
 import { type JSX } from "solid-js";
-import { Disclosure, PageHeader, Stack, toast } from "~/ui";
+import { Disclosure, Divider, PageHeader, Stack, toast } from "~/ui";
 import { isApiError } from "~/lib/api";
+import { HardwareBand, LocalModelsPanel } from "~/features/cookbook";
 import {
   decodeModelValue,
   effectiveSelection,
@@ -29,6 +30,14 @@ import { ModelRoleCard } from "../components/ModelRoleCard";
  *  discovery groups the top-bar picker reads, so the two surfaces cannot
  *  disagree about what's selected, and each writes through the store's existing
  *  role actions — no role call is issued here.
+ *
+ *  Below the role cards is the **one** model list. Local-versus-external stopped
+ *  being two pages here: a model the operator serves on this host and a model
+ *  they reach over an API are the same kind of thing to the picker above, and
+ *  splitting them meant configuring "which model answers me" in one place and
+ *  "which models exist" in two. The serving controls live in `features/cookbook`
+ *  because the Cookbook's other tabs (embedding, compare, get-started) drive the
+ *  same lifecycle; this screen renders them rather than owning a second copy.
  *
  *  Endpoint plumbing (which providers exist) and fallback ordering (where a
  *  request goes when the primary is down) are real but rare, so they sit behind
@@ -170,6 +179,10 @@ export function ModelsScreen(): JSX.Element {
           bound={roleEndpoint("embedding") !== undefined}
         />
       </ModelRoleCard>
+
+      <Divider />
+      <HardwareBand />
+      <LocalModelsPanel />
 
       <Disclosure label="ADVANCED">
         <Stack gap={6} class="pt-3">
