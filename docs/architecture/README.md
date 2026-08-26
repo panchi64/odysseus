@@ -1,8 +1,10 @@
 # Odysseus — Backend Architecture
 
-> **Status: proposal / living design.** This describes *how* the backend is built — the structure, abstractions, and seams that realize the black-box spec in `docs/spec/`. The spec says *what* the system must do; this says *how*. Where the spec is silent (it is, deliberately, on all implementation), the choices here are ours to make and revise.
+> **Status: living design.** This describes *how* the backend is built — the structure, abstractions, and seams.
 >
-> **Greenfield.** Nothing here references any prior implementation. It is derived from three inputs only: the spec (`docs/spec/`), the capabilities of our chosen libraries (**FastAPI** + **Pydantic AI**), and the deployment profile (single operator, one powerful local host, models with native tool-calling).
+> **The black-box spec that seeded this design has been retired.** It did its job keeping a greenfield rebuild on track and the build has outgrown it; the requirement ids still cited in places below and in the code are historical, and where one disagrees with the code, the code is right. What remains authoritative is this document, [`decisions.md`](./decisions.md), and the capabilities of **FastAPI** + **Pydantic AI**.
+>
+> **Greenfield.** Nothing here references any prior implementation. It is derived from the deployment profile (single operator, one powerful local host, models with native tool-calling) and the two libraries above.
 >
 > Decisions that have real trade-offs are **not settled here** — they live in [`decisions.md`](./decisions.md) with their angles, and are flagged inline as **⟦OPEN: Dn⟧**.
 
@@ -155,4 +157,4 @@ All decisions with real trade-offs are tracked in **[`decisions.md`](./decisions
 
 **Deferred to when their feature is in scope** (not blocking the foundation): **D21** document streaming & auto-promotion (`AE-6.2/6.4`, `DOC-3`) · **D22** attachment/upload ingestion (`CHAT-2`, `UP-*`).
 
-The foundation is fully specified **and built** — Pillars I–III, approval, memory, auth, at-rest encryption, the model registry, and the code-execution sandbox (in flight) live under `backend/`. Detail docs written so far: [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md) (the gating stack + D20/D23/D24/D25). What's built vs. pending against every spec requirement is tracked in the coverage matrix, [`70-spec-coverage.md`](./70-spec-coverage.md). Remaining detail docs (`10-run-substrate.md`, `20-event-protocol.md`, `30-agent-engine.md`, `50-capabilities.md`, `60-data-model.md`) are still to be written.
+The foundation is built — Pillars I–III, approval, memory, auth, at-rest encryption, the model registry, and the code-execution sandbox live under `backend/`. Detail docs written so far: [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md) (the gating stack + D20/D23/D24/D25). The spec-coverage matrix is gone with the spec — what is built is what `backend/CLAUDE.md` describes and what the tests hold. Remaining detail docs (`10-run-substrate.md`, `20-event-protocol.md`, `30-agent-engine.md`, `50-capabilities.md`, `60-data-model.md`) are still to be written.

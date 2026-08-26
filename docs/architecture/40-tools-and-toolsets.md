@@ -203,4 +203,4 @@ The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` 
 | D25 external-tool gating + trusted allowlist | ⬜ designed, lands with `MCP-*` / `INTEG-*` |
 | `search` / `mail` / `documents` / … categories | ⬜ land with their `services/` capability |
 
-→ related detail: [`30-agent-engine.md`](./30-agent-engine.md) (the meta-loop and event translation), [`50-capabilities.md`](./50-capabilities.md) (the `services/` implementations tools adapt over), and the coverage matrix in [`70-spec-coverage.md`](./70-spec-coverage.md).
+→ related detail: [`30-agent-engine.md`](./30-agent-engine.md) (the meta-loop and event translation), [`50-capabilities.md`](./50-capabilities.md) (the `services/` implementations tools adapt over).
