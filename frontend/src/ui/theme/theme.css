@@ -108,6 +108,35 @@ body {
   cursor: not-allowed;
 }
 
+/* The house scroll affordance for a strip or panel that scrolls inside the layout
+   rather than being the page — a version rail, a tab strip, a dropdown panel. The
+   platform default is a chunky light-mode bar that reads as chrome from another
+   application; this is a thin, token-backed one that re-colors with the theme like
+   everything else. Reach for it instead of hiding overflow: a strip that scrolls
+   with no visible bar gives the operator nothing to tell them there is more. */
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--line);
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background: var(--text-dim);
+  }
+  /* Without this the two bars of a both-axes scroller meet in an opaque square. */
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
 /* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
 @keyframes ody-blink {
   0%,

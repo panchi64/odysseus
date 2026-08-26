@@ -40,7 +40,7 @@ export function ViewTimelineRail(props: {
       <div
         role="listbox"
         aria-label="Version timeline"
-        class="flex shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface"
+        class="scrollbar-thin flex shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface"
       >
         <For each={props.items}>
           {(item) => {

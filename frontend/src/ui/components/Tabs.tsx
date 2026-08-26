@@ -20,7 +20,13 @@ export function Tabs(props: TabsProps): JSX.Element {
   const [local] = splitProps(props, ["items", "value", "onChange", "class"]);
   return (
     <div
-      class={cx("flex items-stretch border-b border-line", local.class)}
+      class={cx(
+        // Scrolls rather than wrapping or clipping when the labels outgrow the
+        // container — a tab strip that silently hides its last tab is worse than one
+        // with a scrollbar.
+        "scrollbar-thin flex items-stretch overflow-x-auto border-b border-line",
+        local.class,
+      )}
       role="tablist"
     >
       <For each={local.items}>

@@ -1,4 +1,12 @@
-import { For, Match, Show, Switch, createSignal, type JSX } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createSignal,
+  onMount,
+  type JSX,
+} from "solid-js";
 import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
 import { relativeTime } from "~/lib/format";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
@@ -187,6 +195,70 @@ function BlockedFooter(props: {
   );
 }
 
+/** Longer than this and the turn collapses behind a SHOW MORE. Twelve lines is
+ *  roughly a screenful of composer: enough that a normal question is never clipped,
+ *  low enough that a pasted log or spec doesn't cost the whole scrollback. */
+const USER_TURN_CLAMP_LINES = 12;
+
+/** A user turn's text: placed right, read left.
+ *
+ *  The bubble stays right-aligned — that is what marks it as the operator's — but the
+ *  text inside is `text-left`, because right-aligned prose with any internal structure
+ *  (a list, a pasted snippet, anything with leading indentation) reads as ragged and
+ *  wrong. Alignment of the block and alignment of the words are separate decisions and
+ *  only the first one carries meaning here.
+ *
+ *  A long turn clamps to a fixed height with a fade and a SHOW MORE. Presentation-only
+ *  state, deliberately not persisted: it is a way of skimming *this* scrollback right
+ *  now, not a preference about the message. */
+function UserText(props: { text: string }): JSX.Element {
+  const [expanded, setExpanded] = createSignal(false);
+  const [clampable, setClampable] = createSignal(false);
+  let ref: HTMLDivElement | undefined;
+
+  // Measured, not counted: a wrapped long line takes more rows than its newlines
+  // suggest, so counting "\n" would leave a wall of text unclamped.
+  onMount(() => {
+    if (ref) setClampable(ref.scrollHeight > ref.clientHeight + 1);
+  });
+
+  return (
+    <div class="flex w-full max-w-[80%] flex-col items-end gap-1 self-end">
+      <div
+        ref={ref}
+        class="relative w-full overflow-hidden"
+        style={{
+          "max-height": expanded()
+            ? undefined
+            : `calc(${USER_TURN_CLAMP_LINES} * 1.5em)`,
+        }}
+      >
+        <Text
+          variant="body"
+          tone="bright"
+          class="whitespace-pre-wrap break-words text-left"
+        >
+          {props.text}
+        </Text>
+        {/* Only while clamped, and only when there is genuinely more below. */}
+        <Show when={clampable() && !expanded()}>
+          <div class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-surface to-transparent" />
+        </Show>
+      </div>
+      <Show when={clampable()}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded()}
+        >
+          {expanded() ? "SHOW LESS" : "SHOW MORE"}
+        </Button>
+      </Show>
+    </div>
+  );
+}
+
 function UserTurn(props: {
   message: ChatMessage;
   onEditMessage?: (id: string, text: string) => void;
@@ -281,13 +353,7 @@ function UserTurn(props: {
         fallback={
           <>
             <Show when={m().content}>
-              <Text
-                variant="body"
-                tone="bright"
-                class="max-w-[80%] whitespace-pre-wrap break-words text-right"
-              >
-                {m().content}
-              </Text>
+              <UserText text={m().content} />
             </Show>
             <Show when={m().attachmentIds?.length}>
               <MessageAttachments ids={m().attachmentIds!} />
