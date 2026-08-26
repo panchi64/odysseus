@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 from sqlmodel import Session, select
 
-from core.db import init_db, make_engine
+from core.db import in_session, init_db, make_engine
 from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.conversation import Conversation
@@ -194,3 +194,49 @@ class TestRoutes:
             # Registered as an ordinary category, so it appears in the operator's
             # tool settings and can be toggled like every other tool.
             assert "project" in app.state.tool_categories
+
+
+class TestScopedSurfaces:
+    """A *surface* actually applies the scope rule, not just the helper in isolation.
+
+    Seeds rows straight into the booted app's engine rather than driving real chat
+    turns: what is under test is the filtering, and a turn would drag a model into it.
+    """
+
+    @staticmethod
+    async def _seed(app) -> None:
+        # Ids are fixed so the assertions can name *which* rows came back, not just how
+        # many — a count would pass while the wrong project's threads were returned.
+        # Written through `in_session` like every other writer: a booted app's in-memory
+        # engine shares one connection, and its drainers are already using it.
+        def work(session: Session) -> None:
+            session.add(Conversation(id="c-unfiled", owner_id="operator", project_id=None))
+            session.add(Conversation(id="c-a", owner_id="operator", project_id="proj-a"))
+            session.add(Conversation(id="c-b", owner_id="operator", project_id="proj-b"))
+            session.commit()
+
+        await in_session(app.state.db_engine, work)
+
+    @staticmethod
+    async def _listed(client, header: str | None) -> list[str]:
+        headers = {"X-Ody-Project": header} if header is not None else {}
+        resp = await client.get("/conversations", headers=headers)
+        assert resp.status_code == 200, resp.text
+        return sorted(c["id"] for c in resp.json())
+
+    async def test_no_active_project_shows_only_unfiled(self):
+        async with client_app() as (client, app):
+            await self._seed(app)
+            assert await self._listed(client, None) == ["c-unfiled"]
+
+    async def test_an_active_project_adds_to_unfiled_and_hides_the_other(self):
+        async with client_app() as (client, app):
+            await self._seed(app)
+            # The header names the scope directly, which is what the frontend sends.
+            # `c-unfiled` surviving is the point: a pre-projects thread must not vanish.
+            assert await self._listed(client, "proj-a") == ["c-a", "c-unfiled"]
+
+    async def test_all_disables_scoping(self):
+        async with client_app() as (client, app):
+            await self._seed(app)
+            assert await self._listed(client, "all") == ["c-a", "c-b", "c-unfiled"]

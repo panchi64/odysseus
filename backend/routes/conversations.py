@@ -345,7 +345,9 @@ async def _detail(
 
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(request: Request) -> list[ConversationSummary]:
-    views = await deps.store(request).list_conversations(OPERATOR_ID)
+    views = await deps.store(request).list_conversations(
+        OPERATOR_ID, visible_projects=await deps.project_scope(request)
+    )
     return [_summary(v, activity=_activity(request, v.id)) for v in views]
 
 

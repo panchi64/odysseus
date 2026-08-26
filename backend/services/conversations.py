@@ -65,6 +65,7 @@ from models._fields import new_id
 from models.conversation import Conversation, Message
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
+from services.projects import project_clause
 from services.sealing import open_sealed
 
 logger = logging.getLogger(__name__)
@@ -858,18 +859,29 @@ class ConversationStore:
             model=model,
         )
 
-    async def list_conversations(self, owner_id: str) -> list[ConversationSummaryView]:
+    async def list_conversations(
+        self,
+        owner_id: str,
+        *,
+        visible_projects: tuple[str | None, ...] | None = None,
+    ) -> list[ConversationSummaryView]:
         """Owner's conversations, newest-updated first, with a derived count +
         preview. The durable rows are the base; an active conversation's in-memory
-        tree overrides count/preview so a just-sent turn shows immediately."""
+        tree overrides count/preview so a just-sent turn shows immediately.
+
+        ``visible_projects`` is the project scope (``services.projects``); ``None`` — the
+        default — means no filtering, which is what every non-route caller wants."""
 
         def work(session: Session) -> list[tuple[Conversation, int, str | None]]:
-            conversations = session.exec(
+            query = (
                 select(Conversation)
                 .where(Conversation.owner_id == owner_id)
                 .where(Conversation.ephemeral == False)  # noqa: E712 — SQL boolean compare
-                .order_by(Conversation.updated_at.desc())
-            ).all()
+            )
+            scope = project_clause(Conversation.project_id, visible_projects)
+            if scope is not None:
+                query = query.where(scope)
+            conversations = session.exec(query.order_by(Conversation.updated_at.desc())).all()
             stats = _db_stats(session, [c.id for c in conversations])
             return [(c, *stats.get(c.id, (0, None))) for c in conversations]
 
