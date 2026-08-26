@@ -38,6 +38,8 @@ export interface MessageItemProps {
   onDelete?: () => void;
   /** Rewind the thread to (and including) this turn. */
   onRewind?: () => void;
+  /** Open a new conversation carrying history up to this turn. */
+  onFork?: () => void;
   /** Switch this turn to a sibling version (branch). */
   onSwitchVersion?: (id: string, index: number) => void;
   /** Pin/unpin this turn (backend-owned flag). */
@@ -87,6 +89,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
             onRegenerate={props.onRegenerate}
             onDelete={props.onDelete}
             onRewind={props.onRewind}
+            onFork={props.onFork}
             onSwitchVersion={props.onSwitchVersion}
             onTogglePin={props.onTogglePin}
             onOpenInView={props.onOpenInView}
@@ -105,6 +108,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
             message={props.message}
             onEditMessage={props.onEditMessage}
             onDelete={props.onDelete}
+            onFork={props.onFork}
             onSwitchVersion={props.onSwitchVersion}
             onTogglePin={props.onTogglePin}
             onWithdraw={props.onWithdraw}
@@ -263,6 +267,7 @@ function UserTurn(props: {
   message: ChatMessage;
   onEditMessage?: (id: string, text: string) => void;
   onDelete?: () => void;
+  onFork?: () => void;
   onSwitchVersion?: (id: string, index: number) => void;
   onTogglePin?: () => void;
   onWithdraw?: () => void;
@@ -300,6 +305,7 @@ function UserTurn(props: {
             <MessageActions
               message={m()}
               onEdit={startEdit}
+              onFork={props.onFork}
               onDelete={props.onDelete}
               onTogglePin={props.onTogglePin}
             />
@@ -468,6 +474,7 @@ function AssistantTurn(props: {
   onRegenerate?: MessageItemProps["onRegenerate"];
   onDelete?: MessageItemProps["onDelete"];
   onRewind?: MessageItemProps["onRewind"];
+  onFork?: MessageItemProps["onFork"];
   onSwitchVersion?: MessageItemProps["onSwitchVersion"];
   onTogglePin?: MessageItemProps["onTogglePin"];
   onOpenInView?: MessageItemProps["onOpenInView"];
@@ -507,6 +514,7 @@ function AssistantTurn(props: {
             message={m()}
             onRegenerate={props.onRegenerate}
             onRewind={props.onRewind}
+            onFork={props.onFork}
             onDelete={props.onDelete}
             onTogglePin={props.onTogglePin}
             extraItems={

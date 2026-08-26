@@ -77,6 +77,7 @@ export type IconName =
   | "library"
   | "pen"
   | "compare"
+  | "branch"
   | "research"
   | "copy"
   | "pin"
@@ -94,6 +95,17 @@ export const icons: Record<IconName, IconEntry> = {
     </>
   ),
   dot: () => <circle cx="8" cy="8" r="2" />,
+  // A trunk with one line breaking off it — a forked conversation and a git
+  // branch are the same shape, so they share the glyph.
+  branch: () => (
+    <>
+      <circle cx="5" cy="4" r="1.6" />
+      <circle cx="5" cy="13" r="1.6" />
+      <circle cx="12" cy="7" r="1.6" />
+      <path d="M5 5.6v5.8" />
+      <path d="M5 10c4 0 7 0 7-1.4" />
+    </>
+  ),
   stop: () => <rect x="4" y="4" width="8" height="8" />,
   layers: () => <path d="M8 2L2 5l6 3 6-3zM2 9l6 3 6-3M2 12l6 3 6-3" />,
   plug: () => (

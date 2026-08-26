@@ -771,10 +771,70 @@ export async function regenerateTitle(id: string): Promise<void> {
 export async function deleteConversation(
   id: string,
   purgeImages = false,
+  discardBranch = false,
 ): Promise<void> {
-  const q = purgeImages ? "?purgeImages=true" : "";
+  const params = [
+    purgeImages ? "purgeImages=true" : "",
+    // A coding thread with unmerged commits is refused unless this says so —
+    // the backend decides, this only relays the operator's answer.
+    discardBranch ? "discardBranch=true" : "",
+  ].filter(Boolean);
+  const q = params.length ? `?${params.join("&")}` : "";
   await api.del(`/conversations/${id}${q}`);
   refreshSessions();
+}
+
+/** Copy a thread's history up to `messageId` into a new conversation and return
+ *  its id. The backend returns the *fork's* detail, so the caller navigates in one
+ *  round-trip; the source thread is untouched. */
+export async function forkConversation(
+  conversationId: string,
+  messageId: string,
+): Promise<string> {
+  const detail = await api.post<ConversationDetailDTO>(
+    `/conversations/${conversationId}/messages/${messageId}/fork`,
+    {},
+  );
+  refreshSessions();
+  return detail.id;
+}
+
+/** What a coding thread has changed against its project's base ref. */
+export interface BranchState {
+  conversationId: string;
+  projectId: string;
+  branch: string;
+  baseRef: string;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  patch: string;
+  active: boolean;
+}
+
+/** The thread's branch, or null when it isn't a coding thread (a 404 is the
+ *  ordinary answer for every chat conversation, not an error worth surfacing). */
+export async function fetchBranch(
+  conversationId: string,
+): Promise<BranchState | null> {
+  try {
+    return await api.get<BranchState>(`/worktrees/${conversationId}`);
+  } catch (err) {
+    if (isApiError(err) && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export async function mergeBranch(conversationId: string): Promise<string> {
+  const res = await api.post<{ merged: boolean; detail: string }>(
+    `/worktrees/${conversationId}/merge`,
+    {},
+  );
+  return res.detail;
+}
+
+export async function discardBranch(conversationId: string): Promise<void> {
+  await api.post(`/worktrees/${conversationId}/discard`, {});
 }
 
 interface OrphanImageAttachmentsDTO {
@@ -887,6 +947,12 @@ export interface ChatStreamOptions {
   /** Mark a freshly-created conversation as scratch (hidden from the sidebar
    *  listing). Used by compare panes — throwaway threads, not saved history. */
   ephemeral?: boolean;
+  /** What kind of thread the *next new* conversation should be: an ordinary chat,
+   *  or a coding thread working in `projectId`'s git worktree. Read only when a
+   *  send creates the conversation — the binding is immutable afterwards, and the
+   *  backend owns it from then on. */
+  mode?: () => "chat" | "coding";
+  projectId?: () => string | undefined;
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
   initialContext?: () => ContextUsage | null | undefined;
@@ -2039,6 +2105,11 @@ export function createChatStream(
         // Only meaningful when this turn creates the conversation; the backend
         // ignores it when continuing one.
         ephemeral: wasNew && options.ephemeral ? true : undefined,
+        // Likewise: a thread's mode and project are set once, at creation. The
+        // backend re-reads them off the conversation for every later turn, so
+        // sending them again would be a second source for one fact.
+        mode: wasNew ? options.mode?.() : undefined,
+        project_id: wasNew ? options.projectId?.() : undefined,
       });
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
@@ -2677,6 +2748,14 @@ export interface MainChat {
    *  flag is part of the singleton so it survives navigation — see the screen. */
   warmResolved: Accessor<boolean>;
   markWarmResolved: () => void;
+  /** What the *next new* conversation will be. Lives on the singleton rather than
+   *  the screen because the send path reads it, and because a composer draft that
+   *  survives navigation should keep the mode it was written for. Read only when a
+   *  send creates the thread; the binding is the backend's from then on. */
+  mode: Accessor<"chat" | "coding">;
+  setMode: (mode: "chat" | "coding") => void;
+  codingProjectId: Accessor<string | undefined>;
+  setCodingProjectId: (id: string | undefined) => void;
 }
 
 let _mainChat: MainChat | undefined;
@@ -2686,6 +2765,10 @@ export function mainChat(): MainChat {
   if (_mainChat) return _mainChat;
   return (_mainChat = createRoot(() => {
     const [currentId, setCurrentId] = createSignal<string | null>(null);
+    const [mode, setMode] = createSignal<"chat" | "coding">("chat");
+    const [codingProjectId, setCodingProjectId] = createSignal<
+      string | undefined
+    >(undefined);
     const session = useChatSession(currentId);
     const stream = createChatStream(
       // Withhold the source while history loads — the resource still reports the
@@ -2709,6 +2792,9 @@ export function mainChat(): MainChat {
         // Same lockstep: the loaded thread's document version history.
         initialDocuments: () =>
           session.loading ? undefined : session()?.documents,
+        // Read only when a send creates the conversation.
+        mode,
+        projectId: codingProjectId,
       },
     );
     // Reattach when the tab returns to the foreground or the network comes back.
@@ -2770,6 +2856,10 @@ export function mainChat(): MainChat {
       stream,
       warmResolved,
       markWarmResolved: () => setWarmResolved(true),
+      mode,
+      setMode,
+      codingProjectId,
+      setCodingProjectId,
     } satisfies MainChat;
   }));
 }

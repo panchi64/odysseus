@@ -54,6 +54,8 @@ export function MessageActions(props: {
   onEdit?: () => void;
   /** Rewind the thread to (and including) this turn. */
   onRewind?: () => void;
+  /** Open a new conversation carrying history up to this turn. */
+  onFork?: () => void;
   /** Delete this turn and everything after it. */
   onDelete?: () => void;
   /** Pin/unpin this turn (backend-owned flag). */
@@ -107,6 +109,18 @@ export function MessageActions(props: {
             label: "REWIND TO HERE",
             icon: "chevron-up",
             onSelect: () => props.onRewind?.(),
+          } satisfies MenuItem,
+        ]
+      : []),
+    // Distinct from REWIND, which moves this thread's tip: a fork leaves this
+    // conversation exactly as it is and opens a second one carrying the history
+    // up to here, so a promising tangent doesn't cost the thread it came from.
+    ...(props.onFork
+      ? [
+          {
+            label: "FORK FROM HERE",
+            icon: "branch",
+            onSelect: () => props.onFork?.(),
           } satisfies MenuItem,
         ]
       : []),

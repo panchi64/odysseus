@@ -38,6 +38,7 @@ import {
   deleteConversation,
   entrySessionId,
   fetchOrphanImageAttachments,
+  forkConversation,
   mainChat,
   refreshSessions,
   renameConversation,
@@ -45,9 +46,12 @@ import {
   titleReveals,
   useChatSessions,
 } from "../data";
+import { isApiError } from "~/lib/api";
 import { setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
+import { BranchChip } from "../components/BranchChip";
+import { ModeControl } from "../components/ModeControl";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
 import { assembleTranscript } from "../blocks";
 import type { ChatMessage } from "../model";
@@ -97,8 +101,17 @@ export function ChatRoomScreen(): JSX.Element {
   // The room's stream, selected conversation (null = new, unsaved), and loaded
   // history live in a persistent module-level controller — not in this component
   // — so navigating away mid-turn and back doesn't tear down the in-flight run.
-  const { currentId, setCurrentId, stream, warmResolved, markWarmResolved } =
-    mainChat();
+  const {
+    currentId,
+    setCurrentId,
+    stream,
+    warmResolved,
+    markWarmResolved,
+    mode,
+    setMode,
+    codingProjectId,
+    setCodingProjectId,
+  } = mainChat();
 
   // Follow the stream: keep the transcript pinned to the bottom while the answer
   // arrives, yield the moment the operator scrolls up to read back, and re-attach
@@ -528,6 +541,25 @@ export function ChatRoomScreen(): JSX.Element {
     }
   };
 
+  /** Open a new conversation carrying history up to this turn.
+   *
+   *  The backend returns the *fork's* detail, so this reseats the room onto the
+   *  new id rather than reloading the source and hunting for it. The source
+   *  thread is untouched, which is the whole point — a tangent shouldn't cost the
+   *  conversation it came from. */
+  const forkFromHere = async (messageId: string): Promise<void> => {
+    const id = currentId();
+    if (!id) return;
+    try {
+      setCurrentId(await forkConversation(id, messageId));
+      toast.success("Forked into a new conversation.");
+    } catch (err) {
+      toast.error(
+        isApiError(err) ? err.detail : "Unable to fork this conversation.",
+      );
+    }
+  };
+
   // Gate a delete that may strand image attachments. Probes the backend for the
   // images this delete would orphan; if any, raises the 3-way keep/purge prompt,
   // otherwise the plain confirm. Returns the chosen `purgeImages`, or null to
@@ -663,6 +695,18 @@ export function ChatRoomScreen(): JSX.Element {
             </Show>
           </span>
           <div class="flex shrink-0 items-center gap-2">
+            {/* A coding thread's branch and diffstat. Renders nothing for a chat
+                thread — the backend answers 404 for one, which is the ordinary
+                case. Re-reads when a turn settles, since that is when the agent
+                has just changed something. */}
+            <Show when={currentId()}>
+              {(id) => (
+                <BranchChip
+                  conversationId={id()}
+                  revision={() => (stream.sending() ? 0 : 1)}
+                />
+              )}
+            </Show>
             <Tooltip label="VIEWPORT" side="bottom">
               <Button
                 ref={(el) => (sheetTrigger = el)}
@@ -802,6 +846,7 @@ export function ChatRoomScreen(): JSX.Element {
                       onRewind={() => {
                         void stream.rewind(message.id);
                       }}
+                      onFork={() => void forkFromHere(message.id)}
                       onDelete={async () => {
                         const id = currentId();
                         if (!id) return;
@@ -844,6 +889,19 @@ export function ChatRoomScreen(): JSX.Element {
             storageKey={composerKey()}
             prefill={stream.undeliveredDraft()}
             onPrefillConsumed={stream.clearUndeliveredDraft}
+            controls={
+              // Only while the thread is still unsaved: the binding is set once,
+              // at creation, and an existing coding thread shows its branch in the
+              // status strip instead.
+              <Show when={currentId() === null}>
+                <ModeControl
+                  mode={mode()}
+                  onModeChange={setMode}
+                  projectId={codingProjectId()}
+                  onProjectChange={setCodingProjectId}
+                />
+              </Show>
+            }
           />
         </div>
       </section>
