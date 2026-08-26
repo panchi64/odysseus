@@ -57,6 +57,7 @@ from services.settings_store import SettingsStore
 from tools import InstructionProvider, PromptContextProvider, core_categories
 from tools.agents import delegate_instructions
 from tools.plan import plan_context
+from tools.repo import repo_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +371,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # reminder below is: the `agents` category ships with the harness core categories.
     # It is small and static, so the prompt *head* is the right home — it stays in the
     # cached prefix rather than churning per turn.
-    instruction_providers: list[InstructionProvider] = [delegate_instructions]
+    # `repo_instructions` joins it for the same reason and returns "" outside coding
+    # mode, so a chat thread pays nothing for it.
+    instruction_providers: list[InstructionProvider] = [
+        delegate_instructions,
+        repo_instructions,
+    ]
     # The plan reminder is core, not a manifest's: the `plan` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
     prompt_context_providers: list[PromptContextProvider] = [plan_context]

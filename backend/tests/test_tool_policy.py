@@ -25,6 +25,7 @@ from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 from services.tool_policy import (
     effective_disabled_tools,
     get_disabled_tools,
+    mode_disabled_tools,
     set_tool_enabled,
 )
 from tools import RunDeps, build_agent_toolsets
@@ -116,8 +117,13 @@ _PINNED_CATALOG = {
     "plan_write_plan",
     "project_active",
     "project_list",
+    "repo_inventory_agent_context",
     "research_read",
     "research_start",
+    "shell_check_command",
+    "shell_run_command",
+    "shell_start_command",
+    "shell_stop_command",
     "skills_create",
     "skills_edit",
     "skills_open",
@@ -195,11 +201,15 @@ class _StubOffline:
         return self._disabled
 
 
+# The third source — the run's mode — is covered by `test_mode_tools.py`; these two
+# assert the other two compose, so they subtract the mode's contribution rather than
+# restate it (which would make them fail on every new mode-scoped tool).
 async def test_operator_and_offline_sets_union_rather_than_overwrite():
     store = _store()
     await set_tool_enabled(store, OWNER, "builtin_now", False)
     offline = _StubOffline(frozenset({"web_search", "web_fetch"}))
-    assert await effective_disabled_tools(store, offline, OWNER) == {
+    disabled = await effective_disabled_tools(store, offline, OWNER)
+    assert disabled - mode_disabled_tools("chat") == {
         "builtin_now",
         "web_search",
         "web_fetch",
@@ -209,7 +219,8 @@ async def test_operator_and_offline_sets_union_rather_than_overwrite():
 async def test_offline_alone_still_applies_with_no_operator_choices():
     store = _store()
     offline = _StubOffline(frozenset({"web_search"}))
-    assert await effective_disabled_tools(store, offline, OWNER) == {"web_search"}
+    disabled = await effective_disabled_tools(store, offline, OWNER)
+    assert disabled - mode_disabled_tools("chat") == {"web_search"}
 
 
 def _force_offline(monkeypatch, app, *names: str) -> None:
@@ -261,7 +272,10 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
         patch_model_resolution(monkeypatch)
         await client.post("/chat", json={"prompt": "hi"})
 
-    assert captured["disabled"] == {"builtin_now", "web_search"}
+    assert captured["disabled"] - mode_disabled_tools("chat") == {
+        "builtin_now",
+        "web_search",
+    }
 
 
 # --- the approval-resume path, specifically ------------------------------------------
@@ -330,4 +344,7 @@ async def test_resume_applies_the_operator_set_and_the_offline_set(monkeypatch):
         )
         assert resp.status_code == 202
 
-    assert captured["disabled"] == {"danger_safe_thing", "web_search"}
+    assert captured["disabled"] - mode_disabled_tools("chat") == {
+        "danger_safe_thing",
+        "web_search",
+    }

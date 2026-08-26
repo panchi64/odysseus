@@ -20,7 +20,7 @@ run-submission path.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,7 +36,7 @@ from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ConversationBusyError, RunRegistry
 from runs.registry import _UNSET
-from services.conversations import ConversationStore
+from services.conversations import ConversationBinding, ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
@@ -70,6 +70,16 @@ class ChatCreate(BaseModel):
     # hides (the side-by-side compare panes set this). Ignored when continuing an
     # existing conversation.
     ephemeral: bool = False
+    # Where a *new* thread's file work happens: "chat" is its own sandbox container,
+    # "coding" is a git worktree of `project_id`'s repository on the host. Both are
+    # ignored when continuing an existing conversation — the binding is set once, at
+    # creation, and a thread's branch would be stranded if it could move.
+    #
+    # Deliberately **not** `code_mode`: `pydantic_ai_harness` ships a capability called
+    # `CodeMode`, and it is an unrelated thing (a context-saving trick where the model
+    # writes one script that calls many tools). This is a mode of the chat.
+    mode: Literal["chat", "coding"] = "chat"
+    project_id: str | None = None
 
 
 class RegenerateCreate(BaseModel):
@@ -200,6 +210,7 @@ def compose_turn(
     instruction_providers: Sequence[InstructionProvider] = (),
     prompt_context_providers: Sequence[PromptContextProvider] = (),
     disabled_tools: frozenset[str] = frozenset(),
+    binding: ConversationBinding | None = None,
     owner_id: str = OPERATOR_ID,
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
@@ -244,6 +255,9 @@ def compose_turn(
         # While offline mode is active the web containers are down, so hide the web
         # tools from the agent rather than let it discover they're unavailable.
         disabled_tools=disabled_tools,
+        # The thread's mode and project. Absent ⇒ an unfiled chat thread, which is what
+        # a stateless or unattended turn is.
+        binding=binding or ConversationBinding(),
     )
     try:
         run = registry.submit(
@@ -277,6 +291,9 @@ async def _submit_turn(
     Async only because the enabled-tool policy is a persisted read; every other resource
     here is an `app.state` handle. `compose_turn` itself stays synchronous, so the
     submit remains a single uninterrupted step after the caller's conversation mutation."""
+    # Read once and used twice — the mode decides which tools belong in this run as well
+    # as where its file work happens, and the two must never be resolved separately.
+    binding = await deps.store(request).binding(conversation_id)
     return compose_turn(
         prompt=prompt,
         conversation_id=conversation_id,
@@ -292,7 +309,8 @@ async def _submit_turn(
         categories=deps.tool_categories(request),
         instruction_providers=deps.instruction_providers(request),
         prompt_context_providers=deps.prompt_context_providers(request),
-        disabled_tools=await deps.disabled_tools(request),
+        disabled_tools=await deps.disabled_tools(request, binding.mode),
+        binding=binding,
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,
         # Resolved here, not at each caller, for the same reason as the request limit
@@ -368,6 +386,33 @@ def _enqueue_steering(
     )
 
 
+async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> None:
+    """Reject a coding thread that could not work, before anything is created.
+
+    Coding mode needs a real project the operator owns, because that is what supplies the
+    repository a worktree is cut from. And an **ephemeral** thread cannot code: the
+    compare panes are throwaway scratch threads, and each one would mint a git branch
+    nobody ever looks at.
+    """
+    if body.project_id is not None:
+        # 404 rather than a silent unfiled thread: filing work under a project that
+        # doesn't exist would put it somewhere the operator will never look for it.
+        try:
+            await deps.projects(request).get(OPERATOR_ID, body.project_id)
+        except NotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+    if body.mode != "coding":
+        return
+    if body.ephemeral:
+        raise HTTPException(
+            status_code=422, detail="an ephemeral conversation cannot use coding mode"
+        )
+    if body.project_id is None:
+        raise HTTPException(
+            status_code=422, detail="coding mode requires a project_id"
+        )
+
+
 @router.post("", status_code=202, response_model=ChatCreated)
 async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     # A turn needs *something* to act on: text, or at least one attached file ("here,
@@ -375,6 +420,8 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     if not body.prompt.strip() and not body.attachment_ids:
         raise HTTPException(status_code=422, detail="prompt must not be empty")
     await _validate_attachments(request, body.attachment_ids)
+    if body.conversation_id is None:
+        await _validate_new_thread_binding(request, body)
 
     # Resolve before creating/continuing — a model failure shouldn't leave an
     # empty orphan conversation behind.
@@ -389,7 +436,13 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         conversation_id = body.conversation_id
     else:
         conversation_id = await store.create_conversation(
-            OPERATOR_ID, ephemeral=body.ephemeral
+            OPERATOR_ID,
+            ephemeral=body.ephemeral,
+            mode=body.mode,
+            # A thread files itself under whatever the request scope resolved — the
+            # explicit `project_id` when the client sent one (coding mode always does),
+            # else the operator's active project, else unfiled.
+            project_id=body.project_id or await deps.active_project(request),
         )
 
     # Claim now, before the remaining awaits (the auto-compaction policy resolve) and

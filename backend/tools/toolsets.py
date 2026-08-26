@@ -30,6 +30,8 @@ from .code import code_toolset
 from .deps import RunDeps
 from .files import files_toolset
 from .plan import plan_toolset
+from .repo import repo_toolset
+from .shell import shell_toolset
 
 
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
@@ -47,6 +49,12 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
         # Core rather than a manifest's, for the same reason `plan` and `files` are: it
         # is bound to the run's own workspace, which no feature owns.
         "agents": agents_toolset(),
+        # Coding mode's two categories. Registered unconditionally like every other, and
+        # withheld from a chat run by `mode_disabled_tools` rather than by assembling a
+        # different mapping — one catalog, so the operator's settings list and the
+        # agent's real stack cannot diverge (`services/tool_policy.py`).
+        "shell": shell_toolset(),
+        "repo": repo_toolset(),
     }
 
 

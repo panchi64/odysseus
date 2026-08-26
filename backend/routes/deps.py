@@ -41,7 +41,7 @@ from services.memory import MemoryStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.plans import ConversationPlans
-from services.projects import ProjectStore, visible_project_ids
+from services.projects import ProjectStore, WorktreeManager, visible_project_ids
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
 from services.sandbox import SandboxSessionManager
@@ -199,14 +199,14 @@ def offline(request: Request) -> OfflineModeService:
     return request.app.state.offline
 
 
-async def disabled_tools(request: Request) -> frozenset[str]:
+async def disabled_tools(request: Request, mode: str = "chat") -> frozenset[str]:
     """Everything withheld from the agent on this run — the operator's own disabled set
-    (`AE-3.3`) unioned with offline mode's automatic web suspension. Every route that
-    fills ``RunDeps.disabled_tools`` resolves it here, so a run path can't apply one
-    source and drop the other; ``app.py``'s task executor calls the service directly
-    (it has no ``Request``)."""
+    (`AE-3.3`) unioned with offline mode's automatic web suspension and the tools that
+    don't belong in ``mode``. Every route that fills ``RunDeps.disabled_tools`` resolves
+    it here, so a run path can't apply one source and drop the others; ``app.py``'s task
+    executor calls the service directly (it has no ``Request``)."""
     return await effective_disabled_tools(
-        settings_store(request), offline(request), OPERATOR_ID
+        settings_store(request), offline(request), OPERATOR_ID, mode=mode
     )
 
 
@@ -233,6 +233,10 @@ def projects(request: Request) -> ProjectStore:
     return request.app.state.projects
 
 
+def worktrees(request: Request) -> WorktreeManager:
+    return request.app.state.worktrees
+
+
 #: What ``X-Ody-Project`` must be to mean "show me everything, unscoped". A literal
 #: rather than an absent header, because absent means "use whatever is active" — the two
 #: are different requests and a client must be able to say either.
@@ -257,6 +261,19 @@ async def project_scope(request: Request) -> tuple[str | None, ...] | None:
         return None
     active = header or await projects(request).active_id(OPERATOR_ID)
     return visible_project_ids(active)
+
+
+async def active_project(request: Request) -> str | None:
+    """The single project a *newly created* thing files itself under.
+
+    The scope above answers "what may I see"; this answers "where does a new row go",
+    which is one id, never a set. ``all`` files nothing — asking to see everything is not
+    a statement about where new work belongs.
+    """
+    header = request.headers.get("X-Ody-Project")
+    if header == PROJECT_SCOPE_ALL:
+        return None
+    return header or await projects(request).active_id(OPERATOR_ID)
 
 
 def cookbook(request: Request) -> CookbookService:

@@ -209,6 +209,23 @@ class WorktreeManager:
             self._holders[project_id] = conversation_id
             return WorktreeState(path=path, branch=branch, base_ref=base_ref)
 
+    async def branch_from(self, root: Path, *, source_id: str, conversation_id: str) -> None:
+        """Cut this conversation's branch from **another conversation's**, for a fork.
+
+        A forked coding thread inherits a transcript describing files as they are on the
+        source's branch, so branching it from the project's base ref instead would hand it
+        a tree that contradicts its own history. Raises when the source has no branch —
+        the caller treats that as "nothing to inherit" and lets the fork cut its own
+        branch from the base ref on its first coding turn, which is correct: there was
+        nothing there to preserve.
+        """
+        await _git_ok(root, "rev-parse", "--verify", branch_for(source_id))
+        target = branch_for(conversation_id)
+        code, _, _ = await _git(root, "rev-parse", "--verify", target)
+        if code == 0:
+            return  # already cut — forking twice must not fail the second time
+        await _git_ok(root, "branch", target, branch_for(source_id))
+
     async def diff(self, root: Path, *, base_ref: str, conversation_id: str) -> Diff:
         """What this conversation changed, as a patch plus a shortstat."""
         branch = branch_for(conversation_id)

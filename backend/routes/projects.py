@@ -20,6 +20,7 @@ seams were built against.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -27,7 +28,7 @@ from core.exceptions import InvalidInputError, NotFoundError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
-from services.projects import ProjectView
+from services.projects import ProjectView, WorktreeError
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -136,6 +137,30 @@ async def delete_project(request: Request, project_id: str) -> None:
         await deps.projects(request).delete(OPERATOR_ID, project_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/init-repo", response_model=ProjectOut)
+async def init_repo(request: Request, project_id: str) -> ProjectOut:
+    """Make the project's directory a git repository, with the operator's explicit yes.
+
+    Coding mode needs one — a worktree is cut from it — but running `git init` and
+    committing someone's whole directory is a real, visible side effect, so it is never
+    implicit. This route *is* the confirmation: the UI asks, the operator answers, and
+    only then does anything happen. The agent has no path to it.
+    """
+    store = deps.projects(request)
+    try:
+        project = await store.get(OPERATOR_ID, project_id)
+        created = await deps.worktrees(request).ensure_repo(
+            Path(project.root_path), confirmed=True
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (InvalidInputError, WorktreeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if created:
+        await store.update(OPERATOR_ID, project_id, git_initialized=True)
+    return _out(await store.get(OPERATOR_ID, project_id))
 
 
 @router.post("/{project_id}/activate", response_model=ProjectsOut)

@@ -250,7 +250,9 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         # on resume. This is the only path an approval-gated tool ever actually runs on,
         # so a gate missing here would be a gate that never applies to the calls that
         # matter most.
-        disabled_tools=await deps.disabled_tools(request),
+        # ...and the mode the parked turn ran in, read off the payload rather than the
+        # conversation, so the resumed turn is offered the same tools it parked with.
+        disabled_tools=await deps.disabled_tools(request, parked.binding.mode),
     )
     # Record grants *before* resuming: resume only schedules the turn (it doesn't await
     # it), and the resumed turn's inline grant check must see them, or a tool re-called

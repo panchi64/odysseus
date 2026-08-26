@@ -5,18 +5,26 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Two independent sources feed one set:
+Three independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
   so it stays in the clear like every other app preference;
 - **offline mode's automatic web-tool suspension** (``services/offline``), derived from
-  connectivity rather than chosen.
+  connectivity rather than chosen;
+- **the run's mode** — whether a tool belongs in a chat thread or a coding one.
 
 They **union**: :func:`effective_disabled_tools` is the one place that rule lives, so no
-run path can apply one source and silently drop the other. Every site that fills
+run path can apply one source and silently drop the others. Every site that fills
 ``RunDeps.disabled_tools`` calls it — the live chat turn, the approval-resume path, and
 the scheduler's unattended task executor.
+
+**Mode is a filter, not a second catalog.** ``app.state.tool_categories`` is assembled
+once at startup and ``tools/catalog.py`` derives the operator's settings list from it;
+building a different mapping per mode would let the settings page and the agent's real
+stack disagree, which is the exact failure the namespacing was built to prevent. So the
+`shell` and `repo` categories are registered like every other, listed like every other,
+and simply withheld from a run that is not in their mode.
 """
 
 from __future__ import annotations
@@ -79,14 +87,54 @@ async def _store(settings: SettingsStore, owner_id: str, names: Iterable[str]) -
     await settings.set(owner_id, DISABLED_TOOLS_KEY, json.dumps(sorted(names)))
 
 
+# The tools that belong to one mode and not the other, by namespaced name. Written out
+# rather than derived from the category mapping because `tools/` sits *above* this layer
+# and importing the catalog here would invert the dependency order. The literal set is
+# checked against the real catalog by `tests/test_mode_tools.py`, so a renamed or dropped
+# tool fails there rather than silently ceasing to be filtered.
+CODING_ONLY_TOOLS = frozenset(
+    {
+        "shell_run_command",
+        "shell_start_command",
+        "shell_check_command",
+        "shell_stop_command",
+        "repo_inventory_agent_context",
+    }
+)
+
+# Coding mode has exactly one way to run something — the shell, in the worktree the file
+# tools are rooted at. Leaving `code_execute` alongside it would offer the model a second
+# filesystem it could edit in and never ship from, which is the failure the one-workspace
+# rule exists to prevent; `code_run_host_command` goes with it because its own sandboxed
+# fence is a different (and, in a worktree, redundant) boundary.
+CHAT_ONLY_TOOLS = frozenset({"code_execute", "code_run_host_command"})
+
+
+def mode_disabled_tools(mode: str) -> frozenset[str]:
+    """The tools that do not belong in ``mode``.
+
+    An unrecognised mode is treated as chat — the conservative answer, since chat mode is
+    the one that never reaches the host.
+    """
+    return CHAT_ONLY_TOOLS if mode == "coding" else CODING_ONLY_TOOLS
+
+
 async def effective_disabled_tools(
-    settings: SettingsStore, offline: OfflineModeService, owner_id: str
+    settings: SettingsStore,
+    offline: OfflineModeService,
+    owner_id: str,
+    *,
+    mode: str = "chat",
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with
-    offline mode's automatic web suspension.
+    offline mode's automatic web suspension and the tools that don't belong in ``mode``.
 
-    A union, never a replacement — the two answer different questions ("the operator does
-    not want this tool" vs "this tool cannot work right now"), and either one alone is
-    enough to withhold a tool.
+    A union, never a replacement — the three answer different questions ("the operator
+    does not want this tool", "this tool cannot work right now", "this tool is not part
+    of this kind of thread"), and any one of them alone is enough to withhold a tool.
     """
-    return await get_disabled_tools(settings, owner_id) | offline.web_tools_disabled()
+    return (
+        await get_disabled_tools(settings, owner_id)
+        | offline.web_tools_disabled()
+        | mode_disabled_tools(mode)
+    )
