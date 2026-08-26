@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -486,14 +487,57 @@ async def orphan_image_attachments(
     return OrphanImageAttachments(upload_ids=upload_ids)
 
 
+async def _settle_coding_branch(
+    request: Request, conversation_id: str, *, discard: bool
+) -> None:
+    """Refuse to delete a coding thread that still holds unmerged commits, or throw its
+    branch away when the operator said to.
+
+    Best-effort about *everything except the refusal*: a project that has since been
+    deleted, or a repository that has moved, leaves nothing to protect and must not block
+    the delete. Only a real, countable diff stops it.
+    """
+    binding = await deps.store(request).binding(conversation_id)
+    if binding.mode != "coding" or not binding.project_id:
+        return
+    try:
+        project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
+        root = Path(project.root_path)
+        diff = await deps.worktrees(request).diff(
+            root, base_ref=project.base_ref, conversation_id=conversation_id
+        )
+    except Exception:  # noqa: BLE001 — no branch, no project, no repo: nothing to lose
+        logger.debug("no coding branch to settle for %s", conversation_id, exc_info=True)
+        return
+    if diff.files_changed and not discard:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This coding conversation has unmerged work on {diff.branch}: "
+                f"{diff.files_changed} file(s), +{diff.insertions} −{diff.deletions}. "
+                "Merge it first, or delete with discardBranch=true to throw it away."
+            ),
+        )
+    await deps.worktrees(request).discard(
+        root, project_id=binding.project_id, conversation_id=conversation_id
+    )
+
+
 @router.delete("/{conversation_id}", status_code=204)
 async def delete_conversation(
     conversation_id: str,
     request: Request,
     purge_images: bool = Query(default=False, alias="purgeImages"),
+    discard_branch: bool = Query(default=False, alias="discardBranch"),
 ) -> None:
     """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
-    the image attachments this would orphan; the default keeps them in the gallery."""
+    the image attachments this would orphan; the default keeps them in the gallery.
+
+    A **coding** thread with unmerged commits is refused (409) unless
+    ``discardBranch=true``. Merging a branch is a deliberate act the operator has to take;
+    destroying one must be at least as deliberate, and deleting the thread would otherwise
+    be the quiet way to lose work that the merge gate exists to protect.
+    """
     store = deps.store(request)
     # The purging delete `routes/deps.claim_conversation` names, and the one mutator here
     # that was not taking the claim. Deleting under a live run tears the tree, the sandbox
@@ -504,6 +548,7 @@ async def delete_conversation(
     try:
         if await store.get_summary(conversation_id, OPERATOR_ID) is None:
             raise HTTPException(status_code=404, detail="conversation not found")
+        await _settle_coding_branch(request, conversation_id, discard=discard_branch)
         orphans = (
             await _image_orphans(request, conversation_id, message_id=None)
             if purge_images
@@ -619,6 +664,55 @@ async def rewind(conversation_id: str, message_id: str, request: Request) -> Con
     finally:
         deps.release_conversation(request, conversation_id)
     return await _detail(request, conversation_id, summary)
+
+
+@router.post("/{conversation_id}/messages/{message_id}/fork", response_model=ConversationDetail)
+async def fork(conversation_id: str, message_id: str, request: Request) -> ConversationDetail:
+    """Start a **new** conversation carrying this thread's history up to this turn.
+
+    Unlike rewind/regenerate/edit — which move the active tip inside one thread's tree —
+    this leaves the source thread untouched and returns the *new* conversation, so the
+    client navigates to it in one round-trip.
+
+    The source is claimed for the duration of the walk: a run appending to it mid-copy
+    would produce a fork of a history that never existed.
+    """
+    await _require_owned(request, conversation_id)
+    store = deps.store(request)
+    deps.claim_conversation(request, conversation_id)
+    try:
+        forked_id = await store.fork(conversation_id, message_id, OPERATOR_ID)
+    finally:
+        deps.release_conversation(request, conversation_id)
+    if forked_id is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    await _branch_the_fork(request, conversation_id, forked_id)
+    summary = await store.get_summary(forked_id, OPERATOR_ID)
+    if summary is None:  # pragma: no cover — just created above
+        raise HTTPException(status_code=404, detail="conversation not found")
+    return await _detail(request, forked_id, summary)
+
+
+async def _branch_the_fork(request: Request, source_id: str, forked_id: str) -> None:
+    """Give a forked **coding** thread a branch cut from the source's, not from the
+    project's base ref.
+
+    The copied transcript describes files as they are on the source conversation's branch.
+    Branching the fork from `base_ref` — what a first coding turn would otherwise do —
+    would hand it a tree that does not match the history it was given, which is precisely
+    what forking is supposed to preserve. Best-effort: a source that never cut a branch
+    leaves the fork to create one normally on its first coding turn.
+    """
+    binding = await deps.store(request).binding(forked_id)
+    if binding.mode != "coding" or not binding.project_id:
+        return
+    try:
+        project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
+        await deps.worktrees(request).branch_from(
+            Path(project.root_path), source_id=source_id, conversation_id=forked_id
+        )
+    except Exception:  # noqa: BLE001 — no source branch yet; the fork cuts its own later
+        logger.debug("fork %s: no source branch to base on", forked_id, exc_info=True)
 
 
 class ApprovalGrantOut(BaseModel):
