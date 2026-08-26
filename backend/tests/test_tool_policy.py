@@ -115,6 +115,8 @@ _PINNED_CATALOG = {
     "plan_write_plan",
     "project_active",
     "project_list",
+    "research_read",
+    "research_start",
     "skills_create",
     "skills_edit",
     "skills_open",

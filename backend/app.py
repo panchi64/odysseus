@@ -303,7 +303,14 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
         for service in runtime.services:
             container.add(service)
         for capability in runtime.capabilities:
-            agent_capabilities.add(capability)
+            # A bare instance keys by its own type; an `(instance, as_type)` pair keys
+            # by an abstraction, so a capability living above `tools/` stays reachable
+            # from one. See `FeatureRuntime.capabilities`.
+            if isinstance(capability, tuple):
+                instance, as_type = capability
+                agent_capabilities.add(instance, as_type=as_type)
+            else:
+                agent_capabilities.add(capability)
         for name, value in runtime.state.items():
             setattr(app.state, name, value)
         for sync_hook in runtime.run_terminal_sync:

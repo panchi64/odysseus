@@ -72,7 +72,16 @@ class FeatureRuntime:
     # The subset of those instances the *agent's tools* may reach through
     # ``RunDeps.caps`` — the curated agent-facing boundary. A service not exported
     # here is invisible to every tool (the shell exports nothing, by design).
-    capabilities: tuple[object, ...] = ()
+    #
+    # An entry may be a bare instance (keyed by its concrete type, the common case) or
+    # an ``(instance, as_type)`` pair, which keys it by an abstract type instead. That
+    # exists for a specific structural reason: a tool resolves capabilities *by type*,
+    # so a capability implemented in a layer **above** ``tools/`` — an orchestrator like
+    # deep research — could not otherwise be reached, because naming its concrete class
+    # in a tool would invert the dependency order. Declaring the abstraction in
+    # ``services/`` and registering the implementation under it keeps the arrow pointing
+    # down.
+    capabilities: tuple[object | tuple[object, type], ...] = ()
     # Names hung on ``app.state`` — the transitional seam ``routes/deps.py``'s
     # accessors read; shrinks as those accessors move onto the container.
     state: Mapping[str, object] = field(default_factory=dict)
