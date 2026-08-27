@@ -52,6 +52,35 @@ def test_build_model_dispatches_to_the_native_classes():
         assert isinstance(llm.build_model(spec), model_cls), provider_id
 
 
+async def test_openai_wire_carries_one_leading_system_message():
+    """The standing prompt and the per-turn instructions both ride the OpenAI wire as
+    system messages at the head. Hosted APIs take two; a local engine hands the list to
+    the model's own chat template, and the Qwen family's raises "System message must be
+    at the beginning." on the second — so the adapter merges them into one. Asserted on
+    the mapped wire messages (the library's private mapper) because the profile flag
+    alone wouldn't catch the day the library renames or re-scopes it."""
+    from pydantic_ai import ModelRequest, SystemPromptPart, UserPromptPart
+    from pydantic_ai.models import ModelRequestParameters
+
+    history = [
+        ModelRequest(
+            parts=[SystemPromptPart(content="IDENTITY"), UserPromptPart(content="hi")],
+            instructions="RULES",
+        )
+    ]
+    for provider_id in ("openai-compatible", "local"):
+        spec = llm.EndpointSpec(
+            base_url="http://127.0.0.1:8080/v1",
+            model="mlx-community/Qwen3-30B",
+            provider=provider_id,
+            api_key=None,
+        )
+        model = llm.build_model(spec)
+        mapped = await model._map_messages(history, ModelRequestParameters())
+        assert [m["role"] for m in mapped] == ["system", "user"], provider_id
+        assert mapped[0]["content"] == "IDENTITY\n\nRULES", provider_id
+
+
 def test_reasoning_off_is_provider_shaped():
     from services.reasoning import ModelDescriptor
 

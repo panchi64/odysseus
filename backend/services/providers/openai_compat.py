@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
@@ -30,12 +31,24 @@ class OpenAICompatProvider:
         docs_url=None,
     )
 
+    # We send a standing prompt *and* per-turn instructions, which the OpenAI wire
+    # format carries as two system messages at the head. Hosted APIs accept that; a
+    # local engine hands the messages to the model's own chat template, and the Qwen
+    # family's (among others) raises "System message must be at the beginning." on
+    # any system message that is not the first. Declaring the endpoint strict makes
+    # Pydantic AI merge the leading system messages into one at wire-prep — the
+    # instructions still come from the live agent, never from history, so nothing
+    # about their authority changes. Harmless where multiples were fine.
+    _profile = OpenAIModelProfile(openai_chat_supports_multiple_system_messages=False)
+
     def build_model(self, spec: EndpointSpec) -> Model:
         # The OpenAI client refuses a None key outright, so a keyless local server
         # gets a placeholder — an auth header the server ignores. The placeholder is
         # an adapter-boundary quirk, never a value other layers see or store.
         provider = OpenAIProvider(base_url=spec.base_url, api_key=spec.api_key or "unused")
-        return OpenAIChatModel(spec.model, provider=provider)
+        # A partial profile: merged over whatever the model name resolves to, so this
+        # overrides one flag and leaves every inferred capability intact.
+        return OpenAIChatModel(spec.model, provider=provider, profile=self._profile)
 
     # Reached through the module (not from-imports) so a test that monkeypatches
     # `services.llm` still intercepts the adapter's calls.
