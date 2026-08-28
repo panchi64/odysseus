@@ -265,12 +265,17 @@ export function Composer(props: ComposerProps): JSX.Element {
   // The attach affordance: a button that opens the picker plus the hidden input
   // the file-drop hook clicks. Only mounted when an attachments controller is
   // wired, so non-attachment surfaces are unchanged.
+  //
+  // A plus, not a paperclip. The button opens the picker, but what it *means* in
+  // the action row is "add something to this message" — and a `+` says that at a
+  // glance where a clip says "there is a file convention here". The glyph stops
+  // naming the action, so `aria-label` is now the only thing that does; it stays.
   const attachBtn = (
     <Show when={props.attachments}>
       <Button
         variant="ghost"
         size={lg() ? "lg" : "md"}
-        leading="attach"
+        leading="plus"
         iconSize={lg() ? 28 : 22}
         aria-label="Attach files"
         disabled={props.disabled || props.streaming}
