@@ -887,12 +887,16 @@ export function ChatRoomScreen(): JSX.Element {
           </Show>
         </div>
 
-        {/* The composer is a floating card now, not a bar welded to the bottom
-            edge, so the sticky wrapper carries the page background: the
-            transcript scrolls out of sight behind it instead of showing through
-            the gap around the card. No rule and no gradient — just the ground. */}
+        {/* The composer docks on the page background, so the transcript scrolls
+            out of sight behind it instead of showing through the gap around the
+            card. No rule and no gradient — just the ground, and the LED strip on
+            the composer's own top edge doing the separating with light. That is
+            why the wrapper's top padding stays thin: the glow needs to reach
+            past it onto the transcript to read as a strip light rather than as a
+            line. */}
         <div class="sticky bottom-0 bg-bg pt-2 pb-1">
           <Composer
+            edge="led"
             autofocus
             streaming={stream.sending()}
             onStop={() => void stopRun()}

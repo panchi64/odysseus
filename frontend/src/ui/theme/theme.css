@@ -354,19 +354,46 @@ body {
    the panel around it.
 
    Built as a pseudo-element rather than a `border-left` so the glow can be
-   directional. Three layers, each with a NEGATIVE x-offset and a growing blur,
-   so the light falls to the left and fades — a symmetric glow would read as a
-   halo around a line, which is not what an LED does.
+   directional. Four layers, each pushed further along ONE axis with a growing
+   blur, so the light falls away from the strip and fades — a symmetric glow
+   would read as a halo around a line, which is not what an LED does.
 
    The colour comes from `--led` rather than `currentColor`: the rail wraps the
    block's content, and `currentColor` would mean tinting every word inside it
-   just to colour a 2px strip.
+   just to colour a 1px strip.
+
+   Direction and intensity are BOTH custom properties, so a side modifier and a
+   tone modifier compose instead of multiplying: `--led-x`/`--led-y` aim the
+   falloff, `--led-a1..4` set its opacity curve, and the four `box-shadow`
+   layers are written exactly once below.
    ========================================================================== */
 .ody-led {
   position: relative;
   /* Set here rather than inline in every shadow layer. Override it on the
      element (or from a later rule) to light the rail a different colour. */
   --led: var(--accent-info);
+  /* WHICH WAY the light falls, kept separate from WHICH EDGE the strip is on:
+     -1 throws away from the container (the rail beside a running block), 1
+     throws into it, under the container's own content (a list row that lights
+     up from its leading edge). The side modifier picks the axis and reads the
+     direction off this, so side and spill compose. */
+  --led-dir: -1;
+  --led-x: var(--led-dir);
+  --led-y: 0;
+  /* Intensity, as two knobs a caller can turn (`LedEdge intensity`) WITHOUT
+     touching the shared curve — brightness and distance are per-instance, not
+     per-tone, because how far a given fixture has to throw light is a fact about
+     where it is mounted, not about what colour it is.
+       --led-reach scales offset, blur and spread together, so the falloff keeps
+       its shape as it grows; raising opacity alone would only brighten the
+       strip's immediate surround.
+       --led-gain scales the whole opacity curve. */
+  --led-reach: 1;
+  --led-gain: 1;
+  --led-a1: 60%;
+  --led-a2: 42%;
+  --led-a3: 26%;
+  --led-a4: 12%;
 }
 .ody-led::before {
   content: "";
@@ -378,15 +405,82 @@ body {
      which the light is already saying. */
   width: var(--line-w);
   background: var(--led);
-  /* Four layers, each pushed further left with a wider blur and a little spread,
-     opacity falling 60% -> 12%. The reach is the whole point: a tight glow just
-     reads as a coloured border with soft edges, and only a long falloff reads as
-     light actually spilling onto the surface beside it. */
+  /* The reach is the whole point: a tight glow just reads as a coloured border
+     with soft edges, and only a long falloff reads as light actually spilling
+     onto the surface beside it. */
   box-shadow:
-    -2px 0 10px 0 color-mix(in oklab, var(--led) 60%, transparent),
-    -6px 0 24px 1px color-mix(in oklab, var(--led) 42%, transparent),
-    -14px 0 52px 2px color-mix(in oklab, var(--led) 26%, transparent),
-    -26px 0 96px 4px color-mix(in oklab, var(--led) 12%, transparent);
+    calc(2px * var(--led-x) * var(--led-reach))
+      calc(2px * var(--led-y) * var(--led-reach)) calc(10px * var(--led-reach))
+      0
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a1) * var(--led-gain)),
+        transparent
+      ),
+    calc(6px * var(--led-x) * var(--led-reach))
+      calc(6px * var(--led-y) * var(--led-reach)) calc(24px * var(--led-reach))
+      calc(1px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a2) * var(--led-gain)),
+        transparent
+      ),
+    calc(14px * var(--led-x) * var(--led-reach))
+      calc(14px * var(--led-y) * var(--led-reach)) calc(52px * var(--led-reach))
+      calc(2px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a3) * var(--led-gain)),
+        transparent
+      ),
+    calc(26px * var(--led-x) * var(--led-reach))
+      calc(26px * var(--led-y) * var(--led-reach)) calc(96px * var(--led-reach))
+      calc(4px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a4) * var(--led-gain)),
+        transparent
+      );
+  /* The strip's COLOUR is ambient state — a fixture changing what it reports,
+     with nothing waiting on it — so it fades rather than cutting, at the human
+     register's ceiling (§8). A light that snaps to a new colour reads as a
+     different light switching on, not as the same one changing. Only colour is
+     animated in practice: reach and gain are fixed per instance. */
+  transition:
+    background var(--motion-slow) var(--ease),
+    box-shadow var(--motion-slow) var(--ease);
+}
+
+/* Side modifier. Declared AFTER `.ody-led::before` so it wins the geometry at
+   equal specificity. Only the strip's box and the falloff axis change — the
+   shadow stack itself is never restated. */
+.ody-led-top::before {
+  inset: 0 0 auto;
+  width: auto;
+  height: var(--line-w);
+}
+.ody-led-top {
+  --led-x: 0;
+  --led-y: var(--led-dir);
+}
+
+/* Spill modifier — the light falls INTO the container instead of away from it,
+   landing under the container's own content.
+
+   The z-index pair is what makes that legible rather than a wash over the top:
+   `z-index: 0` gives this element a stacking context, and the emitter at -1 then
+   paints ABOVE the element's own fill but BELOW its text. Without the context
+   the -1 would escape and hide behind whatever surface the element sits on.
+
+   An inward spill almost always wants clipping too — the glow blooms on every
+   axis, so on a short element it bleeds onto its neighbours. Give the container
+   `overflow-hidden` and the light fills the element and stops at its edges. */
+.ody-led-in {
+  --led-dir: 1;
+  z-index: 0;
+}
+.ody-led-in::before {
+  z-index: -1;
 }
 
 /* Tone modifiers. Declared AFTER `.ody-led` so that at equal specificity these
@@ -403,6 +497,18 @@ body {
 }
 .ody-led-accent {
   --led: var(--accent);
+}
+/* Neutral white light. A tone, and ONLY a tone — it sets no reach and no gain,
+   so brightening one surface's strip cannot brighten every other neutral one.
+   It does carry its own opacity curve, because white reads far brighter than a
+   saturated hue at the same alpha; that is compensation for the colour, not an
+   intensity choice. */
+.ody-led-neutral {
+  --led: var(--text-bright);
+  --led-a1: 34%;
+  --led-a2: 22%;
+  --led-a3: 13%;
+  --led-a4: 6%;
 }
 
 /* ==========================================================================

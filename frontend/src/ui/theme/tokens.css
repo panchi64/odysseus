@@ -75,6 +75,10 @@
      exceeds 240ms. */
   --motion-fast: 120ms;
   --motion-base: 180ms;
+  /* The register's ceiling, and the only thing it is for: AMBIENT state, where
+     nothing is waiting on the change. A light changing colour, not a control
+     answering a click — a control at this duration feels sluggish. */
+  --motion-slow: 240ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* ---- motion, MACHINE register (§8) — mono elements snap ----

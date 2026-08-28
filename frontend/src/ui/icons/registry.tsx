@@ -56,6 +56,7 @@ export type IconName =
   | "refresh"
   | "download"
   | "upload"
+  | "attach"
   | "send"
   | "chat"
   | "play"
@@ -252,19 +253,45 @@ export const icons: Record<IconName, IconEntry> = {
       </g>
     </>
   )),
+  /* A matched pair, and they only work as one — redraw both or neither.
+     Iconoir's stock version hangs the arrow over a bare floating dash, which at
+     our weight reads as an underline rather than a destination. These give it a
+     tray instead: a bracket with the house 0.6-unit corner (§7 — smoothed, not
+     rounded), the same idiom `file` and `archive` already use. The arrowhead is
+     narrowed from 7 units to 6.2 so it reads as a point rather than a wedge.
+     Mind the gap between shaft and tray: stroke is 2.25 units on this grid, so
+     anything under ~2.5 units of clearance closes up at 16px. */
   download: g24(() => (
     <>
-      <path d="M6 20h12M12 4v12m0 0l3.5-3.5M12 16l-3.5-3.5" />
+      <path d="M12 3.6v9.9m-3.1-3.1L12 13.5l3.1-3.1M4.5 16v4.4a.6.6 0 0 0 .6.6h13.8a.6.6 0 0 0 .6-.6V16" />
     </>
   )),
   upload: g24(() => (
     <>
-      <path d="M6 20h12m-6-4V4m0 0l3.5 3.5M12 4L8.5 7.5" />
+      <path d="M12 13.5V3.6M8.9 6.7L12 3.6l3.1 3.1M4.5 16v4.4a.6.6 0 0 0 .6.6h13.8a.6.6 0 0 0 .6-.6V16" />
     </>
   )),
+  /* Attaching a file to a message is not uploading one. `upload` says "this
+     goes to the server"; here the operator is adding a document to what they
+     are about to say, and an arrow-into-a-tray reads as the former. Built on
+     `file`'s exact body so it is a member of that family rather than a new
+     shape, with `plus` in the page instead of the text rules. */
+  attach: g24(() => (
+    <>
+      <g>
+        <path d="M4 21.4V2.6a.6.6 0 0 1 .6-.6h11.652a.6.6 0 0 1 .424.176l3.148 3.148A.6.6 0 0 1 20 5.75V21.4a.6.6 0 0 1-.6.6H4.6a.6.6 0 0 1-.6-.6" />
+        <path d="M16 2v3.4a.6.6 0 0 0 .6.6H20" />
+        <path d="M12 11.5v6M9 14.5h6" />
+      </g>
+    </>
+  )),
+  /* A departure arrow, not a paper plane. The plane is the single most generic
+     mark in messaging UI — the thing this system is trying not to look like —
+     and its interior fold made it the busiest glyph in the set at 16px. The
+     diagonal says "off it goes" with three straight lines. */
   send: g24(() => (
     <>
-      <path d="M22.153 3.553L11.176 21.004l-1.67-8.596L2 7.898zM9.456 12.444l12.696-8.89" />
+      <path d="M6.5 17.5L17.5 6.5M10 6.5h7.5V14" />
     </>
   )),
   chat: g24(() => (

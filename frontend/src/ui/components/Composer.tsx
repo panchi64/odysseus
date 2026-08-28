@@ -13,6 +13,7 @@ import { Text } from "../primitives/Text";
 import { HIDDEN_FILE_INPUT, useFileDrop } from "../primitives/useFileDrop";
 import { AttachmentChip, type ComposerAttachment } from "./AttachmentChip";
 import { Button } from "./Button";
+import { LedEdge } from "./LedEdge";
 
 // Self-contained guarded storage: the design system does not depend on ~/lib, so
 // the Composer keeps its own best-effort draft persistence rather than importing
@@ -22,6 +23,16 @@ const DRAFT_PREFIX = "ody.draft.";
 // The docked field grows with its content up to this many lines, then scrolls —
 // long prompts stay readable without the bar swallowing the conversation.
 const MAX_ROWS = 6;
+
+/* The strip light's two dials, for `edge="led"` only (§10.9). They live here,
+   named, because this is the one surface that wants a stronger LED than the
+   system default and the pair is meant to be tuned by eye — turning them up in
+   `theme.css` instead would brighten every rail in the product.
+     INTENSITY multiplies the opacity curve; REACH multiplies how far the light
+   throws (1 ~= 90px). The composer sits under a whole transcript, so both run
+   above 1: at the default the glow dies inside the card's own top padding. */
+const LED_INTENSITY = 1.35;
+const LED_REACH = 1.7;
 
 function loadDraft(key?: string): string {
   if (!key) return "";
@@ -95,6 +106,15 @@ export interface ComposerProps {
    *  reads as a grey slab. The bloom is not part of that problem — it is light,
    *  not a surface, and it is the thing that says "type here". */
   bare?: boolean;
+  /** How the composer marks itself as the point of action.
+   *
+   *  `bloom` (default) is the wide ambient aura — right where the composer is
+   *  the whole screen, floating in space (the home launchpad, the research
+   *  intake). `led` swaps it for a lit strip across the **top** edge: inside a
+   *  live conversation the aura had ~90px of upward reach and washed over the
+   *  last thing the model said, and a rail says "the input starts here" without
+   *  spilling onto the transcript. */
+  edge?: "bloom" | "led";
   /** File-attachment controller. When supplied, the Composer shows an attach
    *  button + drag-drop and renders the attachment chips; omit to hide them. */
   attachments?: ComposerAttachmentsApi;
@@ -193,6 +213,7 @@ export function Composer(props: ComposerProps): JSX.Element {
   };
 
   const lg = () => props.size === "lg";
+  const led = () => props.edge === "led";
 
   // Grow the docked field to fit its content, capped at MAX_ROWS (then scroll).
   // The hero (`lg`) variant keeps its fixed rows. Runs on every text change —
@@ -249,7 +270,7 @@ export function Composer(props: ComposerProps): JSX.Element {
       <Button
         variant="ghost"
         size={lg() ? "lg" : "md"}
-        leading="upload"
+        leading="attach"
         iconSize={lg() ? 28 : 22}
         aria-label="Attach files"
         disabled={props.disabled || props.streaming}
@@ -319,10 +340,17 @@ export function Composer(props: ComposerProps): JSX.Element {
   // target reads clearly without a separate dashed zone.
   const dropOverlay = (
     <Show when={props.attachments && drop.isDragging()}>
-      <div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-panel border border-dashed border-info bg-info/10">
+      {/* Follows the card's corners, which square off at the top under a strip
+          light — an inset overlay with its own radius reads as a second box. */}
+      <div
+        class={cx(
+          "pointer-events-none absolute inset-0 z-10 flex items-center justify-center border border-dashed border-info bg-info/10",
+          led() ? "rounded-b-panel" : "rounded-panel",
+        )}
+      >
         <Text variant="label" tone="info">
           <span class="inline-flex items-center gap-2">
-            <Icon name="upload" size={16} />
+            <Icon name="attach" size={16} />
             Drop to attach
           </span>
         </Text>
@@ -345,17 +373,16 @@ export function Composer(props: ComposerProps): JSX.Element {
      you no longer need to know.
 
      `shadow-bloom`, not `shadow-accent`: the tight control-sized shadow reads as
-     an edge cutout around something this large. */
-  return (
-    <div
-      class={cx(
-        "relative flex flex-col gap-2 rounded-panel shadow-bloom",
-        !props.bare && "bg-surface",
-        lg() ? "p-4" : "p-3",
-        props.class,
-      )}
-      {...(props.attachments ? drop.dropHandlers : {})}
-    >
+     an edge cutout around something this large.
+
+     `edge="led"` is the other way of saying the same thing — a lit strip on the
+     top edge instead of an aura, for the docked case where the composer has a
+     transcript directly above it to keep legible. Its corners square off at the
+     top so the strip meets the card's own edges instead of overhanging them, and
+     it keeps `shadow-1`: the bloom's hairline ring went with it, and in Paper
+     that ring is the only thing separating a white card from a white page. */
+  const body = (
+    <>
       {dropOverlay}
       <Show when={props.title}>
         <Text variant="label" tone="dim">
@@ -371,6 +398,50 @@ export function Composer(props: ComposerProps): JSX.Element {
         </div>
         {actionBtn}
       </div>
-    </div>
+    </>
+  );
+
+  const rootClass = () =>
+    cx(
+      "relative flex flex-col gap-2",
+      // One class per case rather than `rounded-panel` + `rounded-t-none`: the
+      // override only works if Tailwind emits the corner utility after the
+      // shorthand, and a silent cascade dependency is not worth the shared word.
+      led() ? "rounded-b-panel shadow-1" : "rounded-panel shadow-bloom",
+      !props.bare && "bg-surface",
+      lg() ? "p-4" : "p-3",
+      props.class,
+    );
+
+  const dropAttrs = () => (props.attachments ? drop.dropHandlers : {});
+
+  return (
+    <Show
+      when={led()}
+      fallback={
+        <div class={rootClass()} {...dropAttrs()}>
+          {body}
+        </div>
+      }
+    >
+      {/* The strip reports the run. At rest it is neutral white — it is not
+          claiming anything is happening, only marking where the operator acts,
+          which §6 draws with luminance rather than hue. While the model is
+          working it fades to `info`, the same blue the live rail uses beside a
+          streaming block, so the composer joins the conversation's live state
+          instead of announcing a second vocabulary for it. The fade itself is in
+          `.ody-led::before` (§8, ambient). */}
+      <LedEdge
+        lit
+        side="top"
+        tone={props.streaming ? "info" : "neutral"}
+        intensity={LED_INTENSITY}
+        reach={LED_REACH}
+        class={rootClass()}
+        {...dropAttrs()}
+      >
+        {body}
+      </LedEdge>
+    </Show>
   );
 }

@@ -343,6 +343,8 @@ Bouncing, springs, overshoot, staggered cascades, eased *decorative* spinners, p
 - **Corners are smoothed, not square.** A rect-based glyph carries `rx="1"` on the 16px grid, so an icon's corners speak the same 3px/6px language as the controls and panels around it (§7). Hard corners survive only where the shape *is* a hard corner — a registration mark, a crosshair.
 - **Every glyph fills ~75% of its box.** That is where the Iconoir set sits; a bespoke glyph drawn edge-to-edge reads a full size step larger than its neighbours even though both render at 16px. Optical size, not nominal size, is what the eye compares.
 - **Colour comes from `currentColor`**, so an icon takes the tone of the text beside it and re-colours with the theme. Never hardcode a fill or stroke colour.
+- **The glyph names the action, not the metaphor everyone else uses.** A paper plane for send and an upload tray for attach are the two most generic marks in messaging UI — the exact look this system is trying not to have, and both were also the busiest shapes in the set at 16px. Send is a **departure arrow** (a diagonal, three straight lines); attaching a document is the **`file` body carrying a `plus`**, because attaching is not uploading — `upload`/`download` keep the arrow-and-tray, and they mean the server.
+- **Redraw a pair, or neither.** `upload`/`download` are read as mirrors of each other; changing one alone is how a set starts to drift.
 - No emoji, ever.
 - **Registration marks are retained** — corner `+` crosshairs, reticles, diamond nodes — and they are one of the system's signatures. Use them at `text-dim` and at `micro` scale so they frame without competing.
 - **A registration mark must bracket an object, not the window.** They belong on `PageHeader`, framing the plate that holds the asset id, title, subtitle and status badge; on a hero card; on a lightbox. They do **not** go on the shell's content region — that put two crosses just above the page and two in the bottom corners of the screen, framing the viewport rather than anything in it, which is the one job a registration mark has. Whatever they bracket needs enough inset (~20px) that the marks never collide with the content.
@@ -408,17 +410,25 @@ Single line, `radius-0`, hairline beneath, sans label left, mono meta right. Hov
 
 ### 10.9 LED edge — "this region is live"
 
-A container whose **left hairline can be lit**: an emitter spilling light onto the surface beside it, rather than a border that merely changes colour. `LedEdge`, `lit` + `tone`.
+A container whose **hairline edge can be lit**: an emitter spilling light onto the surface beside it, rather than a border that merely changes colour. `LedEdge`, `lit` + `tone` + `side`.
 
 This is how the system says *a region is running right now* — a streaming block in the chat timeline, an active task, a live pane. It reads as an LED because three things hold:
 
-1. **The glow is directional.** Four shadow layers pushed *left* with a long falloff (`-2px` through `-26px`, blur 10→96px, opacity 60%→12%). A symmetric glow reads as a halo around a line; only a one-sided falloff reads as light landing on a surface.
+1. **The glow is directional.** Four shadow layers pushed along *one* axis with a long falloff (`2px` through `26px`, blur 10→96px, opacity 60%→12%). A symmetric glow reads as a halo around a line; only a one-sided falloff reads as light landing on a surface.
 2. **The reach is long.** A tight glow is just a coloured border with soft edges. The bloom carries ~90px.
 3. **The rule never changes width.** Lit and unlit are both `line-w`, and the border stays in the box model while lit (transparent, with the emitter's own bar painted over it). Lighting a region shifts nothing — the glow is a shadow, so it costs no layout.
 
-**The one thing that breaks it:** any ancestor with `overflow` other than `visible` clips the bloom at its padding box. A lit region inside a scroll container needs horizontal padding on that container for the light to spill into, or the glow is cut off flush against the rule and you are back to a hard coloured band.
+**The one thing that breaks it:** any ancestor with `overflow` other than `visible` clips the bloom at its padding box. A lit region inside a scroll container needs padding on that container for the light to spill into, or the glow is cut off flush against the rule and you are back to a hard coloured band.
 
-Tones map to the semantic accents (`info` by default — "live data / in flight"). Colour here is doing real work, so it is exempt from the neutral-attention rule in §6: the light *is* the state.
+**Sides.** `left` is the process rail — light falling across the page beside a running block. `top` is a **strip light**: a rule across a surface's upper edge, throwing light up over whatever sits above it. It marks a docked surface as the live one where the ambient bloom of §6.2 would reach too far — the composer in a conversation is the case (§10.12). A surface lit on the top edge squares its top corners, so the strip meets the card's own edges instead of overhanging the curve.
+
+**Spill** — which way the light falls — is separate from which edge it is mounted on, and the two compose. `out` throws away from the container, onto the page beside it. `in` throws **into** it, so the light lands under the container's own content: the element reads as the thing that is running, rather than as an element wearing a coloured border. That is the recents rail's live thread (§10.13) — the row glows from its leading edge, under the title.
+
+An inward spill needs two things the outward one doesn't. The emitter takes a **negative z-index inside a stacking context the container establishes**, so it paints above the container's fill but below its text — without the context it would slide behind whatever surface the container sits on and vanish. And the container needs **`overflow-hidden`**: the glow blooms on every axis, not only the one it travels, so on a short element it bleeds onto its neighbours and a list of them looks smudged rather than lit.
+
+**Tones** map to the semantic accents (`info` by default — "live data / in flight"). Where the light reports *state*, colour is doing real work and is exempt from the neutral-attention rule in §6: the light *is* the state. Where it only says *"act here"* — the composer's strip — the tone is `neutral` white and §6 holds unbroken. White carries its own opacity curve (30%→5%), because at the accent curve it washes out what it should only be grazing.
+
+Direction and intensity are both custom properties (`--led-x`/`--led-y`, `--led-a1..4`), so a side and a tone compose. The four-layer shadow is declared once; a new side or tone sets variables and never restates it.
 
 ### 10.10 Reasoning stream
 
@@ -461,7 +471,12 @@ Anatomy, top to bottom, inside one `surface` card on `radius-2` with `shadow-1`:
 
 **The card is the control.** The field carries no chrome because the card around it already is the input; a bordered box inside a bordered box is two lines where one object exists.
 
-**The composer carries `shadow-accent` at rest.** On a chat screen or the home launchpad the composer *is* the operator's point of action, so it wears the accent drop shadow permanently — phosphor green in Ink, cerulean in Paper — and "start typing" is the obvious move the moment the screen appears. It is not gated on focus or hover (§6). Nothing else on those screens may claim the accent.
+**The composer is always marked, at rest.** It *is* the operator's point of action, so "start typing" must be the obvious move the moment the screen appears — never gated on focus or hover (§6), because a cue that only arrives once you have committed to typing is telling you something you no longer need. The mark is neutral, not accented: luminance, not hue.
+
+It takes one of two forms, and the difference is what sits above it (`edge`):
+
+- **`bloom` — the wide ambient aura (§6.2).** For a composer that is the screen: the home launchpad, the research intake. Nothing is behind it for the light to fall on, and the aura reads as the field floating in space.
+- **`led` — a strip light on the top edge (§10.9, `side="top"`, `tone="neutral"`).** For the composer docked under a live transcript. The bloom's ~90px of upward reach lands squarely on the last thing the model said and washes it out; a rule of light does the same job in one line and separates the input from the conversation instead of bleeding into it. The card squares its top corners to meet the strip, and keeps `shadow-1` — the bloom's hairline ring goes with the bloom, and in Paper that ring is the only thing between a white card and a white page.
 
 **Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background so the transcript scrolls out of sight behind a card that sits above it. No gradient scrim: the ground colour does the job.
 
