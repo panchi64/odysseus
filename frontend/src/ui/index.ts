@@ -153,6 +153,7 @@ export {
   type ExpandableTextProps,
 } from "./components/ExpandableText";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
+export { MetaAction, type MetaActionProps } from "./components/MetaAction";
 export {
   Popover,
   type PopoverProps,

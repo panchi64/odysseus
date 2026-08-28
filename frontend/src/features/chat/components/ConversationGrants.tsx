@@ -1,12 +1,21 @@
 import { createResource, For, Show, type JSX } from "solid-js";
-import { Chip, confirm, Icon, Row, Text, toast } from "~/ui";
+import { Chip, confirm, Icon, MetaAction, Popover, Text, toast } from "~/ui";
 import { fetchGrants, revokeGrant } from "../data";
+import { MetaSep } from "./MetaSep";
 import type { ApprovalGrant } from "../model";
 
-/** The conversation's active tool auto-approval grants — a visible, revocable run of
- *  chips showing what the operator allowed to skip the per-call approval prompt for the
- *  rest of this thread. Renders nothing when there are none, and carries no band of its
- *  own: it is one segment of `ConversationStatusStrip`, which owns the layout.
+/** The conversation's active tool auto-approval grants — what the operator allowed to
+ *  skip the per-call approval prompt for the rest of this thread. Renders nothing when
+ *  there are none, and carries no band of its own: it is one segment of the composer's
+ *  readout line, which owns the layout.
+ *
+ *  In the line it is a **count**; the revocable chips live one click away in a popover.
+ *  They used to sit inline, and a run of chips is the single widest thing the old status
+ *  band carried — in a line of telemetry under the composer it would push everything
+ *  after it onto a second row as soon as the agent earned a second grant. The count is
+ *  the part that belongs in a readout ("am I still auto-approving anything?"); the list
+ *  is what you open when the answer matters.
+ *
  *  Refetches when the thread changes or the `revalidate` accessor ticks (e.g. a grant
  *  was just recorded). */
 export function ConversationGrants(props: {
@@ -68,21 +77,40 @@ export function ConversationGrants(props: {
 
   return (
     <Show when={items().length > 0}>
-      <Row gap={2} align="center" class="flex-wrap">
-        <Text variant="label" tone="dim">
-          Auto-approved
-        </Text>
-        <For each={items()}>
-          {(g) => (
-            <Chip leading="check" onClick={() => revoke(g.toolName)}>
-              <span class="inline-flex items-center gap-1">
-                {g.toolName}
-                <Icon name="close" size={12} />
-              </span>
-            </Chip>
-          )}
-        </For>
-      </Row>
+      <MetaSep />
+      <Popover
+        align="left"
+        panelClass="max-w-64 p-2"
+        trigger={({ open, setOpen }) => (
+          <MetaAction
+            active={open()}
+            aria-expanded={open()}
+            aria-label="Show the tools this conversation auto-approves"
+            onClick={() => setOpen(!open())}
+          >
+            {items().length} auto-approved
+          </MetaAction>
+        )}
+        panel={() => (
+          <div class="flex flex-col gap-2">
+            <Text variant="meta" tone="dim">
+              Auto-approved
+            </Text>
+            <div class="flex flex-wrap gap-2">
+              <For each={items()}>
+                {(g) => (
+                  <Chip leading="check" onClick={() => revoke(g.toolName)}>
+                    <span class="inline-flex items-center gap-1">
+                      {g.toolName}
+                      <Icon name="close" size={12} />
+                    </span>
+                  </Chip>
+                )}
+              </For>
+            </div>
+          </div>
+        )}
+      />
     </Show>
   );
 }

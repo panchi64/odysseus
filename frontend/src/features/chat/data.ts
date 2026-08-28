@@ -42,6 +42,7 @@ import type {
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
+  RunCounters,
   SnapshotDiff,
   SnapshotFile,
   TokenUsage,
@@ -1030,6 +1031,10 @@ export function createChatStream(
   // The latest run's token counts (`run.metrics.input_tokens`/`output_tokens`),
   // shown beside the context gauge. Null until a run reports usage.
   const [tokenUsage, setTokenUsage] = createSignal<TokenUsage | null>(null);
+  // How much work the latest run did (`run.metrics.steps`/`tool_calls`), for the
+  // composer's readout line. Live-run-only for the same reason `tokenUsage` is:
+  // the counters ride the stream, and a thread loaded from history carries none.
+  const [counters, setCounters] = createSignal<RunCounters | null>(null);
   // The agent's task list for this thread. Conversation-level rather than a message
   // block: one list belongs to the thread and is rewritten in place as work proceeds,
   // so pinning it to the turn that happened to create it would strand it. `plan.updated`
@@ -1131,6 +1136,7 @@ export function createChatStream(
     // conversation, or one whose usage/window couldn't be determined).
     setUsage(k === null ? null : (options.initialContext?.() ?? null));
     setTokenUsage(null); // token counts are live-run-only, not reconstructed on load
+    setCounters(null); // so are the step/tool-call counters
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
@@ -1652,6 +1658,7 @@ export function createChatStream(
         // model, or reported no usage) clears a stale reading rather than keeping it.
         setUsage(ev.context);
         setTokenUsage({ input: ev.input_tokens, output: ev.output_tokens });
+        setCounters({ steps: ev.steps, toolCalls: ev.tool_calls });
         break;
       case "citation.added":
         patchById(assistantId, (m) => {
@@ -2705,6 +2712,7 @@ export function createChatStream(
     reattaching,
     usage,
     tokenUsage,
+    counters,
     plan,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => activeRunId,

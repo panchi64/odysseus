@@ -777,20 +777,6 @@ export function ChatRoomScreen(): JSX.Element {
           </div>
         </header>
 
-        {/* Above the transcript rather than inside it: none of this belongs to the
-            turn that last touched it, and it stays put while the messages below
-            scroll. */}
-        <ConversationStatusStrip
-          conversationId={currentId}
-          streaming={stream.sending}
-          reattaching={stream.reattaching}
-          detached={stream.detached}
-          usage={stream.usage}
-          tokenUsage={stream.tokenUsage}
-          plan={stream.plan}
-          grantsRevalidate={conversationGrantsRevision}
-        />
-
         <div class="relative flex min-h-0 flex-1 flex-col">
           <div
             ref={scrollEl}
@@ -923,6 +909,23 @@ export function ChatRoomScreen(): JSX.Element {
                 />
               </Show>
             }
+          />
+          {/* The conversation's readouts sit UNDER the input, not above the
+              transcript where they used to. Two reasons, and the second is the
+              one that matters: after typing, this is where the operator's eye
+              already is — and docked here the line stays put while the
+              conversation scrolls behind it, so nothing it says ever belongs to
+              the turn that happens to be passing behind it. */}
+          <ConversationStatusStrip
+            conversationId={currentId}
+            streaming={stream.sending}
+            reattaching={stream.reattaching}
+            detached={stream.detached}
+            usage={stream.usage}
+            tokenUsage={stream.tokenUsage}
+            counters={stream.counters}
+            plan={stream.plan}
+            grantsRevalidate={conversationGrantsRevision}
           />
         </div>
       </section>

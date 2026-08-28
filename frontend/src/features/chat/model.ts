@@ -16,6 +16,16 @@ export interface TokenUsage {
   output: number | null;
 }
 
+/** How much work the last run did — the backend's own `run.metrics` counters,
+ *  rendered in the composer's readout line. Purely a carrier, like `ContextUsage`
+ *  above: the backend counts, the UI shows the number. */
+export interface RunCounters {
+  /** Agent steps the run took (`run.metrics.steps`). */
+  steps: number;
+  /** Tool calls made across those steps (`run.metrics.tool_calls`). */
+  toolCalls: number;
+}
+
 /** "compaction" is not a turn either party took — it is the chassis marking where the
  *  thread's earlier turns were folded into a summary. Rendered as a full-width divider,
  *  not a bubble; it carries the summary in `content` and has no actions. */
