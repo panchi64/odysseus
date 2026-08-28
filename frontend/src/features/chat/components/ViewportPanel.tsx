@@ -153,6 +153,7 @@ export function ViewportPanel(props: {
         }
         flush
         fill
+        glass
         class="h-full"
       >
         <Show

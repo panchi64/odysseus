@@ -1,13 +1,6 @@
-import {
-  Show,
-  createEffect,
-  createSignal,
-  onCleanup,
-  splitProps,
-  untrack,
-  type JSX,
-} from "solid-js";
+import { Show, splitProps, type JSX } from "solid-js";
 import { cx } from "../cx";
+import { useGatedMount } from "./useGatedMount";
 
 /** How the content arrives. `fade` is opacity alone — for something appearing
  *  in place, where movement would imply it came from somewhere. `rise` adds a
@@ -108,61 +101,26 @@ export function Reveal(props: RevealProps): JSX.Element {
     ...(local.blur === undefined ? {} : { "--reveal-blur": `${local.blur}px` }),
   });
 
-  // A gated reveal stays mounted through its exit so the animation has something
-  // to run on; an ungated one is simply always there.
-  const gated = (): boolean => local.when !== undefined;
-  const [mounted, setMounted] = createSignal(local.when ?? true);
-  const closing = (): boolean => gated() && !local.when;
-
-  /* Whether the entry animation may start. Ungated reveals start at mount, as
-     they always have — they wrap content that is already cheap to render.
-     A *gated* one waits a frame, because it is opening a whole region: if that
-     region's first render is expensive (an iframe, a highlighter, a document
-     viewer), the main thread can stay blocked for longer than the animation
-     lasts, and the first frame to paint is the last one — the region simply
-     appears. Waiting costs nothing, since an animation carries its own start and
-     plays in full whenever it begins.
-
-     Two frames, not one: the first lands in the same batch as the render that
-     mounted us, so the work has not necessarily finished by then. */
-  const [ready, setReady] = createSignal(!gated());
-  let frame = 0;
-  const start = (): void => {
-    cancelAnimationFrame(frame);
-    frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => setReady(true));
-    });
-  };
-  createEffect(() => {
-    if (!(local.when ?? true)) return;
-    setMounted(true);
-    if (!untrack(ready)) start();
-  });
-  onCleanup(() => cancelAnimationFrame(frame));
+  /* The mount/exit lifecycle — staying mounted through the exit, the two-frame
+     settle before the entry starts, and unmounting only on this element's own
+     animation — lives in `useGatedMount`, which `ConstructionReveal` shares.
+     See that file for why each of those four behaviours is there. */
+  const gate = useGatedMount(() => local.when);
 
   return (
-    <Show when={mounted()}>
+    <Show when={gate.mounted()}>
       <div
         class={cx(
           // Held invisible until the tree has settled, then the motion class
           // arrives and its animation plays from there.
-          ready() ? motionClass[local.motion ?? "fade"] : "ody-reveal-hold",
+          gate.ready()
+            ? motionClass[local.motion ?? "fade"]
+            : "ody-reveal-hold",
           local.class,
         )}
         style={style()}
-        data-closed={closing() ? "" : undefined}
-        onAnimationEnd={(e) => {
-          // Only this element's own exit unmounts. Animations inside the revealed
-          // content bubble up here too — a streamed token, a nested reveal — and
-          // any of them would otherwise tear the region out mid-exit. `closing()`
-          // is read as the event fires, so a region reopened part-way through
-          // stays put.
-          if (e.target !== e.currentTarget || !closing()) return;
-          setMounted(false);
-          // Re-arm, so reopening waits for its own settled frame rather than
-          // animating against whatever the next mount is busy building.
-          setReady(false);
-        }}
+        data-closed={gate.closing() ? "" : undefined}
+        onAnimationEnd={gate.onAnimationEnd}
       >
         {local.children}
       </div>

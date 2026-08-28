@@ -180,6 +180,11 @@ export {
   type ExpandableTextProps,
 } from "./components/ExpandableText";
 export { ColorField, type ColorFieldProps } from "./components/ColorField";
+export {
+  ConstructionReveal,
+  type ConstructionRevealProps,
+} from "./components/ConstructionReveal";
+export { useGatedMount, type GatedMount } from "./components/useGatedMount";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
 export { MetaAction, type MetaActionProps } from "./components/MetaAction";
 export {

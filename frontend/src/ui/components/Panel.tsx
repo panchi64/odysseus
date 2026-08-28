@@ -34,6 +34,17 @@ export interface PanelProps extends JSX.HTMLAttributes<HTMLElement> {
    *  one surface that matters (the composer). Structure still comes from the
    *  label and the spacing — it just stops being a container. */
   bare?: boolean;
+  /** Swap the opaque fill for the translucent glass surface (`--glass-bg` +
+   *  `--glass-filter`), for a panel that should read as sitting *over* the page
+   *  rather than beside it — the View.
+   *
+   *  Worth knowing what the blur actually buys: over a flat ground, nothing —
+   *  blurring a uniform field returns that field. The translucency and the
+   *  value shift are what make it read as a material at all; the blur only
+   *  shows where there is genuinely something behind, which here means the
+   *  full-screen sheet over the transcript. Ignored when `bare`: a panel with no
+   *  surface has nothing to make translucent. */
+  glass?: boolean;
 }
 
 /* State is carried entirely by box-shadow, never by a border width, so
@@ -58,6 +69,7 @@ export function Panel(props: PanelProps): JSX.Element {
     "fill",
     "bordered",
     "bare",
+    "glass",
     "class",
     "children",
   ]);
@@ -76,7 +88,10 @@ export function Panel(props: PanelProps): JSX.Element {
                 local.state !== "default" &&
                 stateShadow[local.state],
             )
-          : cx("bg-surface", stateShadow[local.state ?? "default"]),
+          : cx(
+              local.glass ? "ody-glass" : "bg-surface",
+              stateShadow[local.state ?? "default"],
+            ),
         local.bordered && "border border-line",
         local.fill && "flex flex-col",
         local.class,

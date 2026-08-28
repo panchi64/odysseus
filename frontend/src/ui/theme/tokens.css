@@ -121,6 +121,25 @@
   --accent-alert: #ff5c5c;
   --accent-info: #5aa2ff;
 
+  /* ---- glass (§10) ----
+     A translucent surface for a panel that should read as sitting OVER the page
+     rather than beside it — the View.
+
+     Be honest about what the blur does here: `backdrop-filter: blur()` over a
+     uniform field returns that field, so on the flat page ground it contributes
+     nothing. What makes this read as a material is the pair below it — the fill
+     is translucent, so the surface value shifts with whatever is behind it, and
+     `brightness` lifts it clear of the ground so the panel still reads as an
+     object. The blur earns its keep exactly where there IS something behind:
+     the full-screen sheet over the transcript, and the few pixels either side
+     of the resize handle.
+       Ink lifts (1.5) because a 72%-opaque near-black over pure black would be
+     indistinguishable from it. Paper barely dims (0.985): its surfaces already
+     sit level with the page by design, and anything stronger turns the panel
+     grey, which is the one thing Paper must not do. */
+  --glass-bg: color-mix(in oklab, var(--surface) 72%, transparent);
+  --glass-filter: blur(12px) saturate(1.15) brightness(1.5);
+
   /* ---- elevation (§6) ----
      Ink elevates with surface VALUE — a black shadow on a black background is
      invisible — so `shadow-1` carries a faint light ring instead. The ring is
@@ -177,6 +196,11 @@
   --accent-warn: #9a6510;
   --accent-alert: #c0342b;
   --accent-info: #0f5fa8;
+
+  /* Glass, for Paper — see the note on the Ink definition. Slightly more opaque
+     and it *dims* rather than lifts, because there is nowhere above white to go. */
+  --glass-bg: color-mix(in oklab, var(--surface) 78%, transparent);
+  --glass-filter: blur(12px) saturate(0.92) brightness(0.985);
 
   /* Paper elevates with SHADOW, since its surfaces are level with the page —
      pure white on pure white. The leading ring is the hairline, folded into the

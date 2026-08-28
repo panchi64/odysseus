@@ -13,6 +13,7 @@ import { Portal } from "solid-js/web";
 import {
   Button,
   Composer,
+  ConstructionReveal,
   EmptyState,
   ErrorBoundary,
   Frames,
@@ -20,7 +21,6 @@ import {
   Menu,
   Modal,
   ResizeHandle,
-  Reveal,
   Stack,
   Text,
   Tooltip,
@@ -964,23 +964,31 @@ export function ChatRoomScreen(): JSX.Element {
           content. Above `lg` it's a resizable aside; below `lg` (or in
           fullscreen at any width) the same panel renders in a full-screen sheet
           instead. */}
-      {/* The panel gives its WIDTH back on the way out rather than vanishing, so
-          the conversation grows into the space instead of snapping into it — and
-          the content dissolves as it goes (`Collapse` carries the same blur fade
-          everything in the human voice arrives with). The handle is inside the
-          collapse so it leaves with the panel rather than hanging in the gap. */}
       {/* The whole panel resolves in and dissolves out at its full width — it
-          does not grow or shrink. `Reveal`, not `Collapse`, and the difference is
-          the mechanism rather than taste: a transition needs a previous computed
-          value, and a region that mounts the instant it is opened has none, so it
-          appears at its end state. An animation has its own start, so it plays
-          on mount. That is the whole reason the sheet always faded correctly and
-          the aside never did.
+          does not grow or shrink. An *animation*, not a transition, and the
+          difference is the mechanism rather than taste: a transition needs a
+          previous computed value, and a region that mounts the instant it is
+          opened has none, so it appears at its end state. An animation has its
+          own start, so it plays on mount. That is the whole reason the sheet
+          always faded correctly and the aside never did.
+
+          `ConstructionReveal` rather than `Reveal`: the View is a region the
+          operator deliberately opens, so it is *built* — a `+` splits, travels
+          the top edge, drops down the sides, and the glass resolves inside the
+          frame it just described. A fade would say the panel had always been
+          there and the light had merely come up.
 
           The breakpoint lives on a wrapper so the `lg:contents` leaves the
-          Reveal as a direct flex child of the row. */}
+          reveal as a direct flex child of the row. */}
       <div class="hidden lg:contents">
-        <Reveal when={asideOpen()} class="flex h-full shrink-0">
+        <ConstructionReveal
+          when={asideOpen()}
+          class="h-full shrink-0"
+          // The handle and the aside are laid out side by side, and they are
+          // children of the surface element rather than of the wrapper — so the
+          // flex belongs here.
+          contentClass="flex h-full"
+        >
           <ResizeHandle
             aria-label="Resize viewport panel"
             onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
@@ -989,21 +997,30 @@ export function ChatRoomScreen(): JSX.Element {
           <aside class="min-w-0 shrink-0" style={{ width: `${liveWidth()}px` }}>
             {renderPanel(toggleViewport)}
           </aside>
-        </Reveal>
+        </ConstructionReveal>
       </div>
 
-      {/* The sheet is an overlay, so it has no space to give back — it resolves
-          in and dissolves out in place. `when` is what gives `Reveal` an exit:
-          this is a region the operator opens and closes, not content that
-          arrived somewhere and stays. */}
+      {/* The sheet is an overlay, so it has no space to give back — it is built
+          and taken apart in place, on the same choreography as the aside.
+
+          This is the one place the backdrop blur genuinely earns itself: the
+          sheet sits directly over the transcript, so there is real content
+          behind it to frost. The dialog carries the glass rather than an opaque
+          `bg-bg`, which is what lets the conversation stay faintly legible
+          underneath — the panel inside it is on the same surface and needs no
+          fill of its own. */}
       <Portal>
-        <Reveal when={sheetOpen()} class="fixed inset-0 z-50">
+        <ConstructionReveal
+          when={sheetOpen()}
+          class="fixed inset-0 z-50"
+          contentClass="h-full"
+        >
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="view-sheet-title"
             data-view-sheet
-            class="flex h-full flex-col bg-bg"
+            class="ody-glass flex h-full flex-col"
           >
             <header class="flex items-center gap-3 px-4 py-3">
               <Button
@@ -1022,7 +1039,7 @@ export function ChatRoomScreen(): JSX.Element {
             </header>
             <div class="min-h-0 flex-1">{renderPanel(closeSheet)}</div>
           </div>
-        </Reveal>
+        </ConstructionReveal>
       </Portal>
 
       <Modal
