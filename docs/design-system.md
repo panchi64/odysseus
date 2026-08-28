@@ -201,6 +201,12 @@ The base is pure neutral. Both modes are built on true black and true white — 
 
 > **The signature accent is mode-dependent and that is intentional.** Phosphor green is the product's lineage and it belongs on black; on white it turns acidic and illegible. Cerulean is the same idea executed for a light substrate — cool, precise, instrument-like. `accent-nominal` stays green in both modes because green *means* "OK" independently of the theme.
 
+> **These five hexes are defaults, not constants.** The operator can set any of them, per mode, from Settings → Appearance (`ui/theme/accent-store.ts`, which overrides the raw `--accent*` custom properties through one scoped stylesheet — so every utility, `shadow-accent`, and every `LedEdge` tone follows without knowing the feature exists).
+>
+> **What that does and does not relax.** The *set* of accents is closed and the meaning of each is fixed — rules 1–5 below are untouched, because they govern the token, not the hue. An operator choosing a different red for `accent-alert` has restyled "error"; they have not made `accent-alert` available for decoration.
+>
+> **§12's 4.5:1 floor stops being a guarantee and becomes a warning.** The shipped values are tuned to pass and a test asserts they still do (`ui/theme/contrast.test.ts`), but a chosen value is the operator's call: the editor reports the ratio and says when it is below the floor, and then honours it. Blocking would be the wrong trade — it is their interface, and a contrast ratio is information, not a permission.
+
 ### Usage rules
 
 1. **A screen at rest is grayscale.** If nothing is running, failing, or awaiting the operator, no hue appears.
@@ -545,7 +551,7 @@ Keep:
 ## 12. Accessibility
 
 - **Never encode meaning in hue alone.** Every accent is paired with a label, glyph, or position change — already required by §5.
-- **Contrast floors:** `text` on `bg` ≥ 7:1, `text-bright` on `bg` ≥ 15:1, `text-dim` on `bg` ≥ 3:1, every accent on `bg` ≥ 4.5:1. The tokens in §5 are tuned to pass; re-verify after any hue change.
+- **Contrast floors:** `text` on `bg` ≥ 7:1, `text-bright` on `bg` ≥ 15:1, `text-dim` on `bg` ≥ 3:1, every accent on `bg` ≥ 4.5:1. The tokens in §5 are tuned to pass; re-verify after any hue change. The accent half of that is now automated — `ui/theme/contrast.test.ts` asserts every shipped accent clears 4.5:1 in its own mode, so retuning one and forgetting to check fails the suite. **A user-set accent (§5) is warned about, never blocked**, and the warning is judged on the *displayed* (one-decimal) ratio so the verdict and the figure beside it can never contradict each other.
 - **Focus is always visible.** `shadow-focus` is neutral and high-contrast in both modes; never suppress the ring without an equally visible replacement.
 - **Mono is small by design** — so it is never the only carrier of essential information. Anything the operator must read to act is sans at `body` or larger.
 - **Reduced motion** collapses the human register (§8).
