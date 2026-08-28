@@ -21,6 +21,7 @@ import {
   Menu,
   Modal,
   ResizeHandle,
+  Reveal,
   Stack,
   Text,
   Tooltip,
@@ -981,19 +982,25 @@ export function ChatRoomScreen(): JSX.Element {
           The breakpoint lives on a wrapper so the `lg:contents` leaves the
           reveal as a direct flex child of the row. */}
       <div class="hidden lg:contents">
-        <ConstructionReveal
-          when={asideOpen()}
-          class="h-full shrink-0"
-          // The handle and the aside are laid out side by side, and they are
-          // children of the surface element rather than of the wrapper — so the
-          // flex belongs here.
-          contentClass="flex h-full"
-        >
+        {/* The handle sits OUTSIDE the construction reveal, on its own gate.
+            It rides the same signal so the two arrive and leave together, but
+            keeping it out is what lets the frame track the panel: inside, the
+            marks measured from the handle's outer edge and the left pair landed
+            a few pixels from the handle's own divider, which read as a doubled
+            border rather than as a corner mark. A hairline splitter has no
+            frame to draw, so a plain reveal is the whole of what it needs. */}
+        <Reveal when={asideOpen()} class="flex h-full shrink-0">
           <ResizeHandle
             aria-label="Resize viewport panel"
             onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
             onResizeEnd={() => setViewerWidth(liveWidth())}
           />
+        </Reveal>
+        <ConstructionReveal
+          when={asideOpen()}
+          class="h-full shrink-0"
+          contentClass="h-full"
+        >
           <aside class="min-w-0 shrink-0" style={{ width: `${liveWidth()}px` }}>
             {renderPanel(toggleViewport)}
           </aside>

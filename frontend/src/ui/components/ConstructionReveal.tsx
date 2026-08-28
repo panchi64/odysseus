@@ -20,6 +20,26 @@ export interface ConstructionRevealProps {
   children: JSX.Element;
 }
 
+/** The four straddle offsets, in one place so they cannot drift apart — 6px is
+ *  half the 12px mark, which is what puts a mark's centre exactly on its corner.
+ *
+ *  A table rather than four literals scattered through the markup, because that
+ *  is precisely how this broke once: the vertical pair was moved to `-1.5` and
+ *  the horizontal pair left at `-1`, so every mark straddled 6px on one axis and
+ *  4px on the other. Nothing failed — it just looked very slightly wrong, which
+ *  is the hardest kind of bug to see.
+ *
+ *  They must also stay **literal class names**. Tailwind generates a utility only
+ *  if it can see the whole string in the source, so composing one by template
+ *  (`` `-${side}-1.5` ``) would silently emit nothing and drop every mark to its
+ *  static position in the corner it came from. */
+const OFFSET = {
+  top: "-top-1.5",
+  bottom: "-bottom-1.5",
+  left: "-left-1.5",
+  right: "-right-1.5",
+} as const;
+
 /** One corner mark: two hairlines crossing.
  *
  *  Spans rather than a glyph, so the stroke is exactly one device hairline at
@@ -28,15 +48,20 @@ export interface ConstructionRevealProps {
  *  need `preserveAspectRatio="none"`, which scales the two strokes by different
  *  factors and gives the `+` visibly unequal arms.
  *
- *  Offset by `-1` (4px) against a 9px mark, so it straddles the corner it names
- *  rather than sitting inside it. Positioning is by inset, never by
- *  `-translate-x-1/2`: the carriers below animate `transform`, and a centring
+ *  `bg-dim`, not `bg-line`: a mark is not a border. `--line` is tuned to be the
+ *  faintest thing that still separates two surfaces, and at 1px on a dark panel
+ *  it disappears — a thin stroke reads dimmer than a filled area of the same
+ *  colour. These are registration marks and are meant to be seen.
+ *
+ *  12px against the `-1.5` (6px) offsets below, so the mark straddles the corner
+ *  it names with its centre exactly on it. Positioning is by inset, never by
+ *  `-translate-x-1/2`: the carriers animate `transform`, and a centring
  *  transform here would be overwritten by the travel. */
 function Mark(props: { class?: string }): JSX.Element {
   return (
-    <span class={cx("absolute block h-[9px] w-[9px]", props.class)}>
-      <span class="absolute top-1/2 left-0 h-px w-full -translate-y-1/2 bg-line-strong" />
-      <span class="absolute top-0 left-1/2 h-full w-px -translate-x-1/2 bg-line-strong" />
+    <span class={cx("absolute block h-3 w-3", props.class)}>
+      <span class="absolute top-1/2 left-0 h-px w-full -translate-y-1/2 bg-dim" />
+      <span class="absolute top-0 left-1/2 h-full w-px -translate-x-1/2 bg-dim" />
     </span>
   );
 }
@@ -44,10 +69,10 @@ function Mark(props: { class?: string }): JSX.Element {
 /**
  * **A region that draws its own frame before it fills.** The View panel's
  * arrival: a single `+` at the origin corner splits, one half travelling along
- * the top edge with a rule drawn between them, then both drop down the sides
- * with a rule closing the bottom — and the glass surface resolves inside the
- * frame that has just been described. Closing runs the gesture in reverse, so
- * the panel is taken apart rather than switched off.
+ * the top edge with a rule drawn between them, then both drop to the bottom with
+ * a rule closing behind them — and the glass surface resolves inside the frame
+ * that has just been described. Closing runs the gesture in reverse, so the
+ * panel is taken apart rather than switched off.
  *
  * It is a sibling of `Reveal`, not a variant of it. `Reveal` says *content
  * materialized here*; this says *a place was made, and then filled*. That is
@@ -69,7 +94,7 @@ function Mark(props: { class?: string }): JSX.Element {
  *
  * **Every moving part rides a full-size carrier, not the mark itself.** A
  * percentage `translate` resolves against the *animated element's own* border
- * box, so translating a 9px mark by 100% moves it 9px — not across the panel.
+ * box, so translating a 12px mark by 100% moves it 12px — not across the panel.
  * Each mark therefore sits at its destination inside an `inset-0` carrier, and
  * the carrier is what travels: 100% of the carrier is 100% of the panel, which
  * is the distance actually wanted, at any width the resize handle produces.
@@ -98,8 +123,8 @@ export function ConstructionReveal(
   });
 
   /** The corner the gesture starts at, and the one it travels to. */
-  const near = () => (leftOrigin() ? "-left-1" : "-right-1");
-  const far = () => (leftOrigin() ? "-right-1" : "-left-1");
+  const near = () => (leftOrigin() ? OFFSET.left : OFFSET.right);
+  const far = () => (leftOrigin() ? OFFSET.right : OFFSET.left);
 
   return (
     <Show when={gate.mounted()}>
@@ -122,29 +147,49 @@ export function ConstructionReveal(
            finish first. See the note in theme.css. */
         onAnimationEnd={gate.onAnimationEnd}
       >
-        {/* The frame. Decorative and never interactive, in the wrapper's own
-            stacking context so it can overhang the panel's edge without
-            escaping into the page or swallowing a click meant for the content. */}
+        {/* The frame, INSET 6px into the region rather than drawn on its edge.
+            Two things fall out of that, and both were bugs when it sat flush:
+
+            A frame on the edge duplicates whatever edge is already there — the
+            panel's own hairline ring, and on the View's open side the resize
+            handle's divider three pixels further out. Two rules that close
+            together do not read as a frame, they read as a mistake. Inset, the
+            marks are unmistakably *on* the panel rather than *of* it, and can
+            never line up with something else.
+
+            It also stops the marks being clipped. They straddle their corners,
+            so flush against a region pinned to the viewport — the full-screen
+            sheet — their outer halves fell off the screen entirely. At `inset-1.5`
+            with `-1.5` offsets the outer edge lands exactly on the region's own
+            edge: as far out as it can go and still be whole.
+
+            Never interactive, and in the wrapper's own stacking context so it
+            cannot escape into the page or swallow a click meant for content. */}
         <div
-          class="pointer-events-none absolute inset-0 z-10"
+          class="pointer-events-none absolute inset-1.5 z-10"
           aria-hidden="true"
         >
           {/* Phase 1 — the origin mark is simply there; its twin travels the
               top edge with a rule drawn between them. */}
-          <Mark class={cx("-top-1", near())} />
+          <Mark class={cx(OFFSET.top, near())} />
           <div class="ody-frame-mark-a absolute inset-0">
-            <Mark class={cx("-top-1", far())} />
+            <Mark class={cx(OFFSET.top, far())} />
           </div>
           <span class="ody-frame-rule-top absolute top-0 right-0 left-0 h-px bg-line" />
 
-          {/* Phase 2 — both marks drop to the bottom edge, the sides close
-              behind them, and the bottom rule completes the frame. */}
+          {/* Phase 2 — both marks drop to the bottom edge and the bottom rule
+              closes the frame.
+
+              There are no SIDE rules, deliberately. The brief drew a connecting
+              line for the horizontal travel and none for the drop, and it was
+              right to: four rules around a panel that already carries a hairline
+              ring is the box-in-a-box §7 exists to stop. Four corner marks and
+              two rules bracket the region; a full box encloses it, which is a
+              louder claim than a View panel should make. */}
           <div class="ody-frame-mark-b absolute inset-0">
-            <Mark class={cx("-bottom-1", near())} />
-            <Mark class={cx("-bottom-1", far())} />
+            <Mark class={cx(OFFSET.bottom, near())} />
+            <Mark class={cx(OFFSET.bottom, far())} />
           </div>
-          <span class="ody-frame-rule-side absolute top-0 bottom-0 left-0 w-px bg-line" />
-          <span class="ody-frame-rule-side absolute top-0 right-0 bottom-0 w-px bg-line" />
           <span class="ody-frame-rule-bottom absolute right-0 bottom-0 left-0 h-px bg-line" />
         </div>
 

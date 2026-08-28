@@ -510,14 +510,6 @@ body {
     transform: translateY(0);
   }
 }
-@keyframes ody-frame-close {
-  from {
-    transform: scaleY(0);
-  }
-  to {
-    transform: scaleY(1);
-  }
-}
 
 /* The surface, resolving inside the frame the marks have just described. It
    carries the content with it — ONE fade for the whole region, no per-child
@@ -562,14 +554,6 @@ body {
   to {
     opacity: 0;
     transform: translateY(var(--frame-from-y, -100%));
-  }
-}
-@keyframes ody-frame-close-out {
-  from {
-    transform: scaleY(1);
-  }
-  to {
-    transform: scaleY(0);
   }
 }
 @keyframes ody-frame-surface-out {
@@ -654,9 +638,6 @@ body {
 .ody-frame[data-ready] .ody-frame-mark-b {
   animation: ody-frame-drop 150ms var(--frame-ease) 150ms both;
 }
-.ody-frame[data-ready] .ody-frame-rule-side {
-  animation: ody-frame-close 150ms var(--frame-ease) 150ms both;
-}
 .ody-frame[data-ready] .ody-frame-rule-bottom {
   animation: ody-frame-draw 130ms var(--frame-ease) 190ms both;
 }
@@ -669,9 +650,6 @@ body {
 .ody-frame-rule-top,
 .ody-frame-rule-bottom {
   transform-origin: var(--frame-origin-x, right) center;
-}
-.ody-frame-rule-side {
-  transform-origin: center top;
 }
 
 /* The exits. Declared AFTER the entries and at equal specificity, so source
@@ -694,9 +672,6 @@ body {
 }
 .ody-frame[data-closed] .ody-frame-mark-b {
   animation: ody-frame-drop-out 150ms var(--frame-ease) both;
-}
-.ody-frame[data-closed] .ody-frame-rule-side {
-  animation: ody-frame-close-out 150ms var(--frame-ease) both;
 }
 .ody-frame[data-closed] .ody-frame-rule-bottom {
   animation: ody-frame-draw-out 120ms var(--frame-ease) both;
