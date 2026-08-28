@@ -1,0 +1,103 @@
+"""Anthropic — native adapter over Pydantic AI's ``AnthropicModel``.
+
+Speaks the Messages API directly (system prompts, tool use, and thinking blocks in
+their native shape) instead of squeezing Claude through an OpenAI-compat gateway.
+``base_url`` is honored, so an Anthropic-compatible proxy still works.
+"""
+
+from __future__ import annotations
+
+import httpx
+from pydantic_ai.models import Model
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.anthropic import AnthropicProvider as _SdkProvider
+from pydantic_ai.settings import ModelSettings
+
+from core.exceptions import DegradedCapabilityError
+from services.llm import EndpointSpec
+from services.providers.base import ProviderPreset
+from services.reasoning import ModelDescriptor
+
+_DEFAULT_BASE_URL = "https://api.anthropic.com"
+# The Messages API demands a pinned version header on every request.
+_API_VERSION = "2023-06-01"
+_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
+
+
+def _headers(api_key: str | None) -> dict[str, str]:
+    headers = {"anthropic-version": _API_VERSION}
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
+
+
+def _models_url(base_url: str) -> str:
+    root = base_url.rstrip("/")
+    # The operator may paste the root or the versioned URL; normalize to /v1/models.
+    if not root.endswith("/v1"):
+        root += "/v1"
+    return root + "/models"
+
+
+class AnthropicNativeProvider:
+    id = "anthropic"
+    display_name = "Anthropic"
+    requires_key = True
+    preset = ProviderPreset(
+        default_base_url=_DEFAULT_BASE_URL,
+        key_hint="sk-ant-…",
+        docs_url="https://console.anthropic.com/settings/keys",
+        vision=True,
+    )
+
+    def build_model(self, spec: EndpointSpec) -> Model:
+        provider = _SdkProvider(api_key=spec.api_key, base_url=spec.base_url)
+        return AnthropicModel(spec.model, provider=provider)
+
+    async def discover(
+        self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+    ) -> list[str]:
+        try:
+            payload = await self._list_models(base_url, api_key, client=client)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise DegradedCapabilityError(
+                f"could not list models from {base_url!r}: {exc}"
+            ) from exc
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise DegradedCapabilityError(
+                f"{base_url!r} returned an unrecognized models payload"
+            )
+        ids = [
+            row["id"]
+            for row in data
+            if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
+        ]
+        return sorted(dict.fromkeys(ids))
+
+    async def probe(
+        self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+    ) -> None:
+        await self._list_models(base_url, api_key, client=client)
+
+    async def _list_models(
+        self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+    ) -> object:
+        http = client or httpx.AsyncClient(follow_redirects=True)
+        try:
+            response = await http.get(
+                _models_url(base_url), headers=_headers(api_key), timeout=_TIMEOUT
+            )
+            response.raise_for_status()
+            return response.json()
+        finally:
+            if client is None:
+                await http.aclose()
+
+    def reasoning_off(self, descriptor: ModelDescriptor) -> ModelSettings:
+        # Claude's extended thinking is opt-in per request — a background call that
+        # asks for nothing gets nothing, so there is no lever to pull here.
+        return {}
+
+
+PROVIDER = AnthropicNativeProvider()

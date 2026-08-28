@@ -1,0 +1,168 @@
+import { Show, splitProps, type JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import { cx } from "../cx";
+import { Text } from "../primitives/Text";
+import { Icon, type IconProps } from "../primitives/Icon";
+
+export interface ListRowProps {
+  /** Primary label, left-aligned. A plain string renders through the row's
+   *  own label typography; pass JSX when the label needs a composite look
+   *  (e.g. a secondary tone/size alongside the main text). */
+  label: string | JSX.Element;
+  /** Leading icon. */
+  leading?: IconProps["name"];
+  /** Right-aligned content: status flag, meta, icon. */
+  right?: JSX.Element;
+  /** Secondary line under the label (§6.1 — a dim `micro` value beneath its
+   *  label). Turns the single-line row into a two-line one; use it where the
+   *  label alone doesn't say what the row is. */
+  description?: string;
+  selected?: boolean;
+  /** Render a leading selection checkbox (driven by `selected`). The row's
+   *  `onClick` should toggle selection. Replaces the `leading` icon. */
+  selectable?: boolean;
+  /** Listbox semantics, for a row inside a keyboard-driven result list whose
+   *  focus lives on a search field (a command palette). The row becomes
+   *  `role="option"` with `aria-selected` from `selected`, and is deliberately
+   *  **not** tab-focusable: the field keeps focus and points here via
+   *  `aria-activedescendant`, so pass `id` too. Clicks still work. */
+  option?: boolean;
+  /** For an `option` row that carries a two-state value rather than a
+   *  destination — it announces as checked/unchecked instead of as a link. */
+  checked?: boolean;
+  /** DOM id — the handle `aria-activedescendant` needs. */
+  id?: string;
+  locked?: boolean;
+  href?: string;
+  onClick?: () => void;
+  /** Drop the bottom hairline (e.g. the last row in a group). */
+  flush?: boolean;
+  class?: string;
+}
+
+/** Single-line row: label left, optional status/icon right, hairline below
+ *  (§6.7). Locked rows are dim with a lock glyph. */
+export function ListRow(props: ListRowProps): JSX.Element {
+  const [local] = splitProps(props, [
+    "label",
+    "leading",
+    "right",
+    "description",
+    "selected",
+    "selectable",
+    "option",
+    "checked",
+    "id",
+    "locked",
+    "href",
+    "onClick",
+    "flush",
+    "class",
+  ]);
+  const interactive = () => !local.locked && (local.href || local.onClick);
+  // Selectable and option rows stay a <div> (with the matching semantics) so
+  // their `right` slot can hold real interactive content — a Menu, a copy
+  // button, a palette row's inline field — without nesting a <button> inside a
+  // <button> (invalid HTML / hydration warnings).
+  const tag = () =>
+    local.locked || local.selectable || local.option
+      ? "div"
+      : local.href
+        ? "a"
+        : local.onClick
+          ? "button"
+          : "div";
+  return (
+    <Dynamic
+      component={tag()}
+      id={local.id}
+      href={!local.locked && !local.option ? local.href : undefined}
+      onClick={!local.locked ? local.onClick : undefined}
+      role={local.option ? "option" : local.selectable ? "button" : undefined}
+      aria-selected={local.option ? local.selected || false : undefined}
+      aria-checked={
+        local.option && local.checked !== undefined ? local.checked : undefined
+      }
+      aria-pressed={local.selectable ? local.selected || false : undefined}
+      tabindex={local.selectable && !local.locked ? 0 : undefined}
+      onKeyDown={
+        local.selectable && !local.locked
+          ? (e: KeyboardEvent & { currentTarget: HTMLElement }) => {
+              // Only the row itself toggles — keys aimed at a nested control
+              // in the `right` slot (Menu, copy button) must not double-fire.
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                local.onClick?.();
+              }
+            }
+          : undefined
+      }
+      aria-disabled={local.locked || undefined}
+      class={cx(
+        "flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors",
+        !local.flush && "border-b border-line",
+        local.selected && "bg-raised",
+        interactive() && "hover:bg-raised",
+        (local.selectable || local.option) && !local.locked && "cursor-pointer",
+        local.locked && "cursor-not-allowed",
+        local.class,
+      )}
+    >
+      <span class="flex min-w-0 items-center gap-2">
+        <Show when={local.selectable}>
+          <span
+            class={cx(
+              "flex size-4 shrink-0 items-center justify-center rounded-ctl border transition-colors",
+              local.selected
+                ? "border-bright text-bright"
+                : "border-line text-transparent",
+            )}
+            aria-hidden="true"
+          >
+            <Show when={local.selected}>
+              <Icon name="check" size={12} />
+            </Show>
+          </span>
+        </Show>
+        <Show when={local.leading && !local.selectable}>
+          <Icon name={local.leading!} class="text-dim" />
+        </Show>
+        <span class="flex min-w-0 flex-col gap-1">
+          <Text
+            variant="label"
+            tone={local.locked ? "dim" : local.selected ? "bright" : "default"}
+            class="truncate"
+          >
+            {local.label}
+          </Text>
+          <Show when={local.description}>
+            <Text variant="micro" tone="dim" class="truncate">
+              {local.description}
+            </Text>
+          </Show>
+        </span>
+      </span>
+      <span
+        class="flex shrink-0 items-center gap-2"
+        onClick={
+          // The right slot can hold its own controls (Menu, copy). On any
+          // interactive row their clicks must not trigger the row itself —
+          // stop the bubble so a selectable row doesn't toggle, and cancel the
+          // default so a link row doesn't navigate out from under an open menu.
+          interactive()
+            ? (e) => {
+                e.stopPropagation();
+                if (local.href) e.preventDefault();
+              }
+            : undefined
+        }
+      >
+        <Show when={local.right}>{local.right}</Show>
+        <Show when={local.locked}>
+          <Icon name="lock" size={12} class="text-dim" />
+        </Show>
+      </span>
+    </Dynamic>
+  );
+}

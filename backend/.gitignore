@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime data — never committed (mirrors the repo-root rule).
+data/
+*.db
+*.db-journal
+*.db-wal
+.env

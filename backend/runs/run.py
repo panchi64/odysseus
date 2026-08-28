@@ -1,0 +1,258 @@
+"""Pillar I — the Run: one identified, background-executing unit of work.
+
+Chat turns, agent tasks, and research jobs are all Runs; they differ only in
+the orchestrator that drives them. A Run owns its id/owner/status, its event
+stream (buffer + broker), and — once running — the asyncio task executing it.
+Status follows ``queued → running → {done | blocked | error | cancelled}``,
+with a parked ``awaiting_input`` when a sensitive action needs approval.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from uuid import uuid4
+
+from pydantic import BaseModel
+
+from .events import (
+    Event,
+    MessageEdited,
+    MessageInjected,
+    MessageQueued,
+    MessageWithdrawn,
+    RunMetrics,
+    now_utc,
+)
+from .stream import RunStream
+
+# How often :meth:`Run.keepalive` touches the activity clock while a long, silent call is
+# in flight. A ceiling, not a fixed rate: a run held to a shorter inactivity bound beats
+# proportionally faster (see ``Run._beat``).
+_KEEPALIVE_INTERVAL_S = 20.0
+
+
+class RunStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    awaiting_input = "awaiting_input"
+    done = "done"
+    blocked = "blocked"
+    error = "error"
+    cancelled = "cancelled"
+
+
+TERMINAL_STATUSES = {
+    RunStatus.done,
+    RunStatus.blocked,
+    RunStatus.error,
+    RunStatus.cancelled,
+}
+
+
+@dataclass(frozen=True)
+class QueuedMessage:
+    """An operator message sent while the run was still executing, waiting to be
+    handed to the model at the next model-request boundary."""
+
+    id: str
+    text: str
+    queued_at: datetime
+
+
+@dataclass
+class Run:
+    id: str
+    kind: str
+    owner_id: str
+    stream: RunStream
+    # The conversation this run drives, when it is a chat turn. Lets a client that
+    # has only a conversation id (e.g. after a page reload) find the in-flight run
+    # to reattach to — see ``RunRegistry.active_run_for``.
+    conversation_id: str | None = None
+    status: RunStatus = RunStatus.queued
+    detail: str | None = None
+    error: str | None = None
+    created_at: datetime = field(default_factory=now_utc)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    last_activity_mono: float = 0.0
+    # The inactivity bound this run is actually being supervised under (None ⇒ unbounded),
+    # stamped by the registry when it starts supervising. Read by ``keepalive`` so a
+    # heartbeat can't drift slower than the bound it exists to stay inside.
+    inactivity_timeout_s: float | None = None
+    task: asyncio.Task[None] | None = None
+    cancel_requested: bool = False
+    metrics: RunMetrics | None = None
+    # The active model's context window, when known — set by the orchestrator so
+    # emitted metrics can report how full the window is. None leaves the derived
+    # context fields null (no ceiling to measure against).
+    context_window: int | None = None
+    # Set once the first answer token has streamed. The AE-5.3 rule — never
+    # switch endpoints after answer text has begun — is enforced against this:
+    # the orchestrator refuses to re-drive a turn onto another endpoint once it
+    # is set (FallbackModel only falls back pre-stream; this guards the rest).
+    answer_started: bool = False
+    # Opaque continuation payload for a parked run (set by the orchestrator
+    # layer when awaiting approval). The substrate never interprets it.
+    parked_payload: object | None = None
+    # Operator messages sent while this run was still executing, waiting for the
+    # orchestrator to drain them at its next model-request boundary. Lives on the
+    # Run (like `parked_payload`) so it survives a park/resume cycle; anything
+    # still here at terminal is dropped — the client rebuilds undelivered text
+    # from the event replay (`message.queued` with no matching `injected`).
+    pending_messages: list[QueuedMessage] = field(default_factory=list)
+    # Opaque hook the orchestrator may set to flush whatever partial state it holds
+    # before the registry force-cancels this run's task for a wall-clock/inactivity
+    # bound — called synchronously with the bound's operator-legible message, from
+    # inside the still-running task's own event-loop turn (safe to read the task's
+    # local state). The substrate never interprets it beyond calling it; a raising
+    # hook is swallowed by the caller.
+    on_timeout: Callable[[str], None] | None = None
+    # The cancel counterpart of ``on_timeout`` — set by the orchestrator to persist
+    # whatever partial turn it holds before the registry cancels this run's task for
+    # an operator-requested cancel. Called synchronously from the *registry's own*
+    # coroutine (not this run's task), before ``task.cancel()``: under single-threaded
+    # asyncio, this run's task is necessarily suspended while a different coroutine is
+    # running, so reading its state here is race-free. Unlike ``on_timeout`` it must
+    # never set ``run.status``/outcome — the registry's own cancellation handling sets
+    # the terminal ``cancelled`` status once the cancellation actually lands, so this
+    # hook is finalize-only. A raising hook is swallowed by the caller.
+    on_cancel: Callable[[], None] | None = None
+    # The parked counterpart of ``on_cancel``: set by the orchestrator once a turn has
+    # parked (``awaiting_input``) awaiting an approval decision, so cancelling the
+    # *parked* run — there is no task left to interrupt, see ``RunRegistry.cancel``'s
+    # parked branch — still persists the parked turn instead of silently dropping it
+    # (including the operator's own prompt). Called synchronously from the registry's
+    # own coroutine, after ``run.status`` has already been set to the terminal
+    # ``cancelled`` value. A raising hook is swallowed by the caller.
+    on_park_cancel: Callable[[], None] | None = None
+
+    def touch(self) -> None:
+        """Mark activity now — feeds the inactivity watchdog."""
+        self.last_activity_mono = asyncio.get_running_loop().time()
+
+    @asynccontextmanager
+    async def keepalive(self) -> AsyncIterator[None]:
+        """Hold the inactivity clock open across a single long call that streams nothing.
+
+        The watchdog reads activity from the event stream, which is the right signal
+        almost everywhere: a run that has emitted nothing for minutes has stalled. The
+        exception is one awaited call that is known to be slow and known to produce no
+        frames until it finishes — a non-streaming model call generating a long report,
+        say. Between two step boundaries there is no activity to observe even while real
+        work is happening, and the run would be stopped for idling.
+
+        This belongs to the substrate, not to whichever feature hit it first: the clock is
+        the substrate's, and a heartbeat loop reimplemented per long call is a heartbeat
+        loop that drifts out of step with the operator's configured bound.
+
+        The bargain is explicit: inside this scope the inactivity bound no longer applies,
+        so a call that truly wedges is bounded only by the run's wall clock. Wrap the one
+        awaited call, never a whole orchestration.
+        """
+        task = asyncio.create_task(self._beat())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            self.touch()  # the call returned — that is real activity
+
+    async def _beat(self) -> None:
+        interval = _KEEPALIVE_INTERVAL_S
+        if self.inactivity_timeout_s:
+            # Comfortably inside whatever bound this run is actually being held to, so a
+            # shortened timeout can't outpace a fixed interval chosen against the default.
+            # The small floor is only to keep a nonsensical bound from spinning; at any
+            # realistic timeout the ceiling above is what applies.
+            interval = min(interval, max(self.inactivity_timeout_s / 3, 0.01))
+        while True:
+            await asyncio.sleep(interval)
+            self.touch()
+
+    def emit(self, body: BaseModel) -> Event:
+        self.touch()
+        return self.stream.emit(body)
+
+    def block(self, detail: str | None = None) -> None:
+        """Orchestrator declares it cannot proceed."""
+        self.status = RunStatus.blocked
+        self.detail = detail
+
+    def park(self, payload: object | None = None) -> None:
+        """Park awaiting operator input (approval); not a terminal state.
+
+        The orchestrator returns after parking; the registry leaves the stream
+        open and the slot free until the run is resumed or cancelled.
+        """
+        self.status = RunStatus.awaiting_input
+        self.parked_payload = payload
+
+    def enqueue_message(self, text: str) -> QueuedMessage:
+        """Queue an operator message for injection at the next model-request
+        boundary. Synchronous (no ``await`` between append and emit), so under
+        single-threaded asyncio it can never interleave with a concurrent
+        ``drain_messages`` and lose the message."""
+        message = QueuedMessage(id=uuid4().hex, text=text, queued_at=now_utc())
+        self.pending_messages.append(message)
+        self.emit(MessageQueued(message_id=message.id, text=message.text))
+        return message
+
+    def edit_message(self, message_id: str, text: str) -> bool:
+        """Rewrite a queued message's text before the run consumes it, keeping its
+        id and place in the queue. False when the id is unknown — already injected,
+        already withdrawn, or never queued. Synchronous for the same reason as
+        ``enqueue_message``: it can never interleave with a concurrent drain."""
+        for i, message in enumerate(self.pending_messages):
+            if message.id == message_id:
+                self.pending_messages[i] = QueuedMessage(
+                    id=message.id, text=text, queued_at=message.queued_at
+                )
+                self.emit(MessageEdited(message_id=message_id, text=text))
+                return True
+        return False
+
+    def withdraw_message(self, message_id: str) -> bool:
+        """Remove a queued message before the run consumes it. False when the
+        id is unknown — already injected, already withdrawn, or never queued."""
+        for i, message in enumerate(self.pending_messages):
+            if message.id == message_id:
+                del self.pending_messages[i]
+                self.emit(MessageWithdrawn(message_id=message_id))
+                return True
+        return False
+
+    def drain_messages(self) -> list[QueuedMessage]:
+        """Take every pending message (in queue order), emitting ``message.injected``
+        for each — the caller is committing to hand them to the model."""
+        drained, self.pending_messages = self.pending_messages, []
+        for message in drained:
+            self.emit(MessageInjected(message_id=message.id))
+        return drained
+
+    def set_metrics(self, metrics: RunMetrics) -> None:
+        """Stash final metrics; the registry emits them at terminal."""
+        self.metrics = metrics
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in TERMINAL_STATUSES
+
+    async def wait(self) -> None:
+        """Await the executing task — it ends when the Run settles, which means either a
+        terminal status **or** ``awaiting_input``: parking returns the orchestrator, so
+        the task finishes there too and the run continues on a fresh task if it resumes.
+        Callers that need "finished for good" must check ``is_terminal`` afterwards."""
+        if self.task is not None:
+            await asyncio.shield(self.task)
+
+
+# An orchestrator drives one Run: it emits events and may call ``run.block()``
+# or raise. Normal return ⇒ done; raise ⇒ error; cancellation ⇒ cancelled.
+Orchestrator = Callable[[Run], Awaitable[None]]

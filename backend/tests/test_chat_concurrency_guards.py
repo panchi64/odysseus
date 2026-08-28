@@ -1,0 +1,441 @@
+"""Backend guards against a live run racing a second submission or a branch-tree
+mutation on the same conversation (chat-03, chat-04, resume-02 backend half).
+
+A live (queued/running/awaiting_input) run on a conversation must block every
+leaf-moving branch op and a second ``/chat/regenerate``/``/chat/edit`` submission
+with a clear 409 raised **before** any store mutation. A second plain-text
+``/chat`` POST is the exception: it queues into the live run (mid-run steering)
+instead of being rejected — only an attachment-carrying send still 409s.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from pydantic_ai.models.function import FunctionModel
+
+from routes.deps import OPERATOR_ID
+from services.registry import ModelRegistry, ResolvedModel
+
+from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
+from .test_approval_routes import _await_parked, _install_sensitive_tool, danger_categories
+
+
+def _patch_hanging_model(monkeypatch, hang: asyncio.Event, started: asyncio.Event) -> None:
+    """Point model resolution at a model whose answer hangs until ``hang`` is set —
+    keeps the run ``running`` (never terminal) so a guard test can submit a second
+    request while the first is still live. ``started`` fires once the model call has
+    actually begun, so the test can wait past the request/response round-trip and the
+    background task's own startup before asserting on registry/store state."""
+
+    async def stream_fn(messages, info):
+        started.set()
+        await hang.wait()
+        yield "done"
+
+    def _model() -> FunctionModel:
+        return FunctionModel(stream_function=stream_fn)
+
+    async def resolve_detailed(self, role, **kwargs):
+        return ResolvedModel(model=_model(), reasoning_off={})
+
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
+
+
+async def _complete_first_turn(client, prompt: str = "hello") -> tuple[str, dict]:
+    """Run one normal (fast ``TestModel``) turn to completion and return
+    ``(conversation_id, assistant_message)`` — the fixture every guard test builds on."""
+    created = await client.post("/chat", json={"prompt": prompt})
+    conv_id = created.json()["conversation_id"]
+    run_id = created.json()["run_id"]
+    async with client.stream("GET", f"/runs/{run_id}/events") as resp:
+        async for _ in resp.aiter_lines():
+            pass  # drain to run.ended so the turn is persisted
+    detail = (await client.get(f"/conversations/{conv_id}")).json()
+    assistant = next(m for m in detail["messages"] if m["role"] == "assistant")
+    return conv_id, assistant
+
+
+async def test_second_chat_post_queues_into_live_run(monkeypatch):
+    hang, started = asyncio.Event(), asyncio.Event()
+    _patch_hanging_model(monkeypatch, hang, started)
+
+    async with client_app() as (client, app):
+        first = await client.post("/chat", json={"prompt": "hello"})
+        assert first.status_code == 202
+        conv_id = first.json()["conversation_id"]
+        await started.wait()
+
+        before = await client.get(f"/conversations/{conv_id}")
+
+        second = await client.post(
+            "/chat", json={"prompt": "again", "conversation_id": conv_id}
+        )
+        # Steering: the send is accepted into the live run — same run id, a queued
+        # message id, and no second Run object ever created for the conversation.
+        assert second.status_code == 202
+        assert second.json()["run_id"] == first.json()["run_id"]
+        assert second.json()["queued_message_id"]
+
+        # No store mutation until the run itself persists the turn (the live run's
+        # `last_seq` does advance — queueing emits `message.queued` on its stream).
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json()["messages"] == after.json()["messages"]
+        assert app.state.runs.active_run_for(conv_id, OPERATOR_ID).id == first.json()["run_id"]
+
+        hang.set()
+        await app.state.runs.get(first.json()["run_id"]).wait()
+
+
+async def test_attachment_send_still_rejected_while_run_live(monkeypatch):
+    # Steering is text-only: a send carrying attachments can't ride an existing
+    # run's request, so the busy conversation still answers 409 for it.
+    hang, started = asyncio.Event(), asyncio.Event()
+    _patch_hanging_model(monkeypatch, hang, started)
+
+    async with client_app() as (client, app):
+        upload = await client.post(
+            "/uploads", files={"file": ("note.txt", b"look at this", "text/plain")}
+        )
+        upload_id = upload.json()["id"]
+
+        first = await client.post("/chat", json={"prompt": "hello"})
+        conv_id = first.json()["conversation_id"]
+        await started.wait()
+
+        second = await client.post(
+            "/chat",
+            json={
+                "prompt": "again",
+                "conversation_id": conv_id,
+                "attachment_ids": [upload_id],
+            },
+        )
+        assert second.status_code == 409
+        assert "already in progress" in second.json()["detail"]
+        # Nothing was queued into the run either.
+        assert app.state.runs.get(first.json()["run_id"]).pending_messages == []
+
+        hang.set()
+        await app.state.runs.get(first.json()["run_id"]).wait()
+
+
+async def test_guard_releases_once_run_reaches_terminal(monkeypatch):
+    hang, started = asyncio.Event(), asyncio.Event()
+    _patch_hanging_model(monkeypatch, hang, started)
+
+    async with client_app() as (client, app):
+        first = await client.post("/chat", json={"prompt": "hello"})
+        conv_id = first.json()["conversation_id"]
+        await started.wait()
+
+        queued = await client.post(
+            "/chat", json={"prompt": "again", "conversation_id": conv_id}
+        )
+        assert queued.status_code == 202
+        assert queued.json()["queued_message_id"]
+
+        hang.set()
+        await app.state.runs.get(first.json()["run_id"]).wait()
+
+        # Once the run is terminal a new send starts a fresh run (no queueing).
+        accepted = await client.post(
+            "/chat", json={"prompt": "now", "conversation_id": conv_id}
+        )
+        assert accepted.status_code == 202
+        assert accepted.json()["run_id"] != first.json()["run_id"]
+        assert accepted.json()["queued_message_id"] is None
+        await app.state.runs.get(accepted.json()["run_id"]).wait()
+
+
+async def test_regenerate_rejected_while_run_live_and_leaf_unmoved(monkeypatch):
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, assistant = await _complete_first_turn(client)
+
+        hang, started = asyncio.Event(), asyncio.Event()
+        _patch_hanging_model(monkeypatch, hang, started)
+
+        regen1 = await client.post(
+            "/chat/regenerate",
+            json={"conversation_id": conv_id, "message_id": assistant["id"]},
+        )
+        assert regen1.status_code == 202
+        await started.wait()
+
+        before = await client.get(f"/conversations/{conv_id}")
+
+        regen2 = await client.post(
+            "/chat/regenerate",
+            json={"conversation_id": conv_id, "message_id": assistant["id"]},
+        )
+        assert regen2.status_code == 409
+
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json() == after.json()  # the rejected regenerate moved nothing
+
+        hang.set()
+        await app.state.runs.get(regen1.json()["run_id"]).wait()
+
+
+async def test_edit_rejected_while_run_live_and_leaf_unmoved(monkeypatch):
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, _assistant = await _complete_first_turn(client)
+        detail = (await client.get(f"/conversations/{conv_id}")).json()
+        user_msg = next(m for m in detail["messages"] if m["role"] == "user")
+
+        hang, started = asyncio.Event(), asyncio.Event()
+        _patch_hanging_model(monkeypatch, hang, started)
+
+        edit1 = await client.post(
+            "/chat/edit",
+            json={
+                "conversation_id": conv_id,
+                "message_id": user_msg["id"],
+                "prompt": "hello v2",
+            },
+        )
+        assert edit1.status_code == 202
+        await started.wait()
+
+        before = await client.get(f"/conversations/{conv_id}")
+
+        edit2 = await client.post(
+            "/chat/edit",
+            json={
+                "conversation_id": conv_id,
+                "message_id": user_msg["id"],
+                "prompt": "hello v3",
+            },
+        )
+        assert edit2.status_code == 409
+
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json() == after.json()  # the rejected edit moved nothing
+
+        hang.set()
+        await app.state.runs.get(edit1.json()["run_id"]).wait()
+
+
+async def test_branch_ops_rejected_while_run_live(monkeypatch):
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, assistant = await _complete_first_turn(client)
+
+        hang, started = asyncio.Event(), asyncio.Event()
+        _patch_hanging_model(monkeypatch, hang, started)
+
+        live = await client.post(
+            "/chat", json={"prompt": "again", "conversation_id": conv_id}
+        )
+        assert live.status_code == 202
+        await started.wait()
+
+        before = await client.get(f"/conversations/{conv_id}")
+
+        version_resp = await client.post(
+            f"/conversations/{conv_id}/messages/{assistant['id']}/version",
+            json={"index": 0},
+        )
+        assert version_resp.status_code == 409
+
+        rewind_resp = await client.post(
+            f"/conversations/{conv_id}/messages/{assistant['id']}/rewind"
+        )
+        assert rewind_resp.status_code == 409
+
+        pin_resp = await client.post(
+            f"/conversations/{conv_id}/messages/{assistant['id']}/pin",
+            json={"pinned": True},
+        )
+        assert pin_resp.status_code == 409
+
+        delete_resp = await client.delete(
+            f"/conversations/{conv_id}/messages/{assistant['id']}"
+        )
+        assert delete_resp.status_code == 409
+
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json() == after.json()  # none of the rejected ops mutated the tree
+
+        hang.set()
+        await app.state.runs.get(live.json()["run_id"]).wait()
+
+
+def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Event) -> None:
+    """Model *resolution* (not the answer stream) hangs on ``gate`` until released —
+    unlike ``_patch_hanging_model`` (which hangs the streamed answer, long after a
+    regenerate/edit has already repositioned the active leaf and submitted), this hangs
+    inside ``_resolve_models`` itself, the real `await` a second near-simultaneous
+    regenerate/edit could otherwise slip through during. ``entered`` fires once the
+    first caller is parked here, so a test can assert a second request is rejected
+    without ever reaching (or needing to release) this gate."""
+    from services.registry import ModelRegistry, ResolvedModel
+
+    def _model() -> FunctionModel:
+        async def stream_fn(messages, info):
+            yield "hi"
+
+        return FunctionModel(stream_function=stream_fn)
+
+    async def resolve_detailed(self, role, **kwargs):
+        entered.set()
+        await gate.wait()
+        return ResolvedModel(model=_model(), reasoning_off={})
+
+    # Patched separately rather than left to delegate: the gate above would otherwise
+    # also stall every background resolution this test isn't trying to hold.
+    async def resolve_background(self, *, owner_id, **kwargs):
+        return ResolvedModel(model=_model(), reasoning_off={})
+
+    monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
+    monkeypatch.setattr(ModelRegistry, "resolve_background", resolve_background)
+
+
+async def test_concurrent_regenerates_only_one_proceeds_past_model_resolve(monkeypatch):
+    # chat-03 (regenerate half): the guard must close the gap between its own check and
+    # `store.regenerate_point` moving the leaf, not just the gap before `submit`. Two
+    # near-simultaneous regenerates on the same conversation must not both pass the
+    # guard and both reposition the leaf before either registers a run.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, assistant = await _complete_first_turn(client)
+
+        gate, entered = asyncio.Event(), asyncio.Event()
+        _patch_hanging_resolve(monkeypatch, gate, entered)
+
+        before = await client.get(f"/conversations/{conv_id}")
+
+        first_task = asyncio.ensure_future(
+            client.post(
+                "/chat/regenerate",
+                json={"conversation_id": conv_id, "message_id": assistant["id"]},
+            )
+        )
+        await entered.wait()  # the first request is now parked inside `_resolve_models`
+
+        # A second regenerate while the first still holds the claim (mid-resolve, no
+        # run registered yet) — must be rejected immediately, without ever reaching
+        # (or needing) the still-hanging resolver.
+        second = await client.post(
+            "/chat/regenerate",
+            json={"conversation_id": conv_id, "message_id": assistant["id"]},
+        )
+        assert second.status_code == 409
+        assert not first_task.done()
+
+        # Nothing mutated from the rejected request.
+        after = await client.get(f"/conversations/{conv_id}")
+        assert before.json() == after.json()
+
+        gate.set()
+        first = await first_task
+        assert first.status_code == 202
+        await app.state.runs.get(first.json()["run_id"]).wait()
+
+
+async def test_concurrent_edit_and_regenerate_only_one_proceeds(monkeypatch):
+    # Same race, cross-endpoint: an edit and a regenerate targeting the same
+    # conversation from two different requests must not both reposition the leaf.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, assistant = await _complete_first_turn(client)
+        detail = (await client.get(f"/conversations/{conv_id}")).json()
+        user_msg = next(m for m in detail["messages"] if m["role"] == "user")
+
+        gate, entered = asyncio.Event(), asyncio.Event()
+        _patch_hanging_resolve(monkeypatch, gate, entered)
+
+        regen_task = asyncio.ensure_future(
+            client.post(
+                "/chat/regenerate",
+                json={"conversation_id": conv_id, "message_id": assistant["id"]},
+            )
+        )
+        await entered.wait()
+
+        edit_resp = await client.post(
+            "/chat/edit",
+            json={
+                "conversation_id": conv_id,
+                "message_id": user_msg["id"],
+                "prompt": "hello v2",
+            },
+        )
+        assert edit_resp.status_code == 409
+        assert not regen_task.done()
+
+        gate.set()
+        regen = await regen_task
+        assert regen.status_code == 202
+        await app.state.runs.get(regen.json()["run_id"]).wait()
+
+
+async def test_delete_message_purge_claims_against_a_concurrent_chat_submission(monkeypatch):
+    # chat-04 (delete_message purgeImages half): `_image_orphans` awaits real DB round
+    # trips before the leaf-moving `store.delete_message` runs — a concurrent /chat
+    # submission landing in that window must not be allowed to register a run that the
+    # delete then proceeds to mutate the tree underneath.
+    patch_model_resolution(monkeypatch)
+    async with client_app() as (client, app):
+        conv_id, assistant = await _complete_first_turn(client)
+
+        import routes.conversations as conversations_route
+
+        gate, entered = asyncio.Event(), asyncio.Event()
+        original = conversations_route._image_orphans
+
+        async def _hanging_image_orphans(request, conversation_id, *, message_id):
+            entered.set()
+            await gate.wait()
+            return await original(request, conversation_id, message_id=message_id)
+
+        monkeypatch.setattr(conversations_route, "_image_orphans", _hanging_image_orphans)
+
+        delete_task = asyncio.ensure_future(
+            client.delete(
+                f"/conversations/{conv_id}/messages/{assistant['id']}",
+                params={"purgeImages": "true"},
+            )
+        )
+        await entered.wait()  # the delete is now parked inside `_image_orphans`
+
+        concurrent_chat = await client.post(
+            "/chat", json={"prompt": "again", "conversation_id": conv_id}
+        )
+        assert concurrent_chat.status_code == 409
+
+        gate.set()
+        delete_resp = await delete_task
+        assert delete_resp.status_code == 200
+
+        # The claim is released once the delete's own mutation is done — a fresh
+        # submission is accepted again.
+        accepted = await client.post(
+            "/chat", json={"prompt": "now", "conversation_id": conv_id}
+        )
+        assert accepted.status_code == 202
+        await app.state.runs.get(accepted.json()["run_id"]).wait()
+
+
+async def test_awaiting_input_run_queues_a_new_chat_submission(monkeypatch):
+    # A parked (awaiting_input) run is not terminal — `active_run_for` still reports
+    # it, so a new plain-text send queues into it (injected on resume) rather than
+    # starting a second run; the run itself stays parked.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
+        first = await client.post("/chat", json={"prompt": "delete it"})
+        conv_id = first.json()["conversation_id"]
+        run = await _await_parked(app, first.json()["run_id"])
+        assert run.status == "awaiting_input"
+
+        queued = await client.post(
+            "/chat", json={"prompt": "again", "conversation_id": conv_id}
+        )
+        assert queued.status_code == 202
+        assert queued.json()["run_id"] == first.json()["run_id"]
+        assert queued.json()["queued_message_id"]
+        assert run.status == "awaiting_input"
+        assert [m.text for m in run.pending_messages] == ["again"]

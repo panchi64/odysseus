@@ -1,0 +1,31 @@
+"""Long-term memory (`MEM-*`) — hybrid recall over an encrypted store.
+
+Embeds via the shared registry embedder; degrades to keyword recall when no
+embedding endpoint is configured.
+"""
+
+from __future__ import annotations
+
+from core.api_scopes import ScopeClaim
+from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
+from routes import memory as memory_routes
+from services.embeddings import RegistryEmbedder
+from services.memory import MemoryStore
+from tools.memory import memory_toolset
+
+
+async def _build(ctx: HarnessContext) -> FeatureRuntime:
+    memory = MemoryStore(ctx.engine, ctx.vault, ctx.services.get(RegistryEmbedder))
+    return FeatureRuntime(services=(memory,), capabilities=(memory,), state={"memory": memory})
+
+
+MANIFEST = FeatureManifest(
+    name="memory",
+    routers=(memory_routes.router,),
+    api_scopes=(ScopeClaim("memory", ("/memory",)),),
+    toolsets=(("memory", memory_toolset),),
+    # Global relevance-ranked recall is approval-gated at call time (the recall gate),
+    # so the scope vocabulary must carry the name explicitly.
+    gated_tools=frozenset({"memory_recall"}),
+    build=_build,
+)

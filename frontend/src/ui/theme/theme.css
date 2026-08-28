@@ -1,0 +1,375 @@
+/* ============================================================================
+   TAILWIND v4 THEME MAPPING.
+
+   `@theme inline` makes each generated utility reference our own token variable
+   (e.g. `bg-surface` -> `background: var(--surface)`) instead of freezing the
+   value at build time. That is what lets a single [data-theme] swap on <html>
+   re-color the entire app at runtime — the utilities resolve the live token.
+
+   tokens.css owns the values; this file only wires them to utility names.
+   ========================================================================== */
+
+@theme inline {
+  /* ---- colors -> bg-*, text-*, border-* ---- */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--surface-raised);
+  --color-line: var(--line);
+  --color-dim: var(--text-dim);
+  --color-text: var(--text);
+  --color-bright: var(--text-bright);
+  --color-nominal: var(--accent-nominal);
+  --color-warn: var(--accent-warn);
+  --color-alert: var(--accent-alert);
+  --color-info: var(--accent-info);
+
+  /* ---- spacing base (p-1=4px, p-2=8px, p-4=16px, p-6=24px, p-8=32px) ---- */
+  --spacing: var(--space-1);
+
+  /* ---- radius -> rounded-ctl (controls only; panels stay square) ---- */
+  --radius-ctl: var(--radius-1);
+
+  /* ---- fonts -> font-mono / font-display ---- */
+  --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
+
+  /* ---- letter spacing -> tracking-label ---- */
+  --tracking-label: var(--tracking-label);
+
+  /* ---- type scale -> text-micro / text-label / ... (size + line-height) ---- */
+  --text-micro: var(--type-micro-size);
+  --text-micro--line-height: var(--type-micro-lh);
+  --text-label: var(--type-label-size);
+  --text-label--line-height: var(--type-label-lh);
+  --text-body: var(--type-body-size);
+  --text-body--line-height: var(--type-body-lh);
+  --text-readout: var(--type-readout-size);
+  --text-readout--line-height: var(--type-readout-lh);
+  --text-readout-lg: var(--type-readout-lg-size);
+  --text-readout-lg--line-height: var(--type-readout-lg-lh);
+  --text-display: var(--type-display-size);
+  --text-display--line-height: var(--type-display-lh);
+}
+
+/* ==========================================================================
+   RESTING-STATE DEFAULTS. A screen at rest is monochrome mono on bg.
+   ========================================================================== */
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  /* tabular + lining figures so every number aligns in columns */
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+  font-variant-numeric: tabular-nums lining-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-lh);
+}
+
+/* Text selection — a terminal-style inverted block, not the browser's blue.
+   Monochrome (§4): a `text-dim` highlight with the text knocked out to `bg`,
+   reading like an inverted CRT cell rather than a colored wash. */
+::selection {
+  background: var(--text-dim);
+  color: var(--bg);
+}
+
+/* Mechanical motion: no decorative transitions slower than the base tempo.
+   The timing function is pinned to linear — §8 permits instant or linear only,
+   and Tailwind's `transition-*` utilities otherwise carry an eased default. */
+:where(button, a, [role="button"], input, select, textarea) {
+  transition-duration: var(--motion-fast);
+  transition-timing-function: linear;
+}
+
+/* Shared utility for non-interactive elements that need the same ≤120ms,
+   no-easing motion (§8) as the rule above but sit outside its selector list
+   (e.g. a plain progress-bar fill). Pair with a `transition-*` property
+   utility (e.g. `transition-colors`). */
+.transition-fast {
+  transition-duration: var(--motion-fast);
+  transition-timing-function: linear;
+}
+
+/* Clickable affordance. Tailwind v4's preflight drops the legacy
+   `cursor: pointer` on buttons (browser default is now the arrow), so restore it
+   for every interactive control. Disabled controls fall back to `not-allowed`. */
+:where(button, [role="button"], select, label[for]):not(:disabled) {
+  cursor: pointer;
+}
+:where(button, [role="button"], select):disabled,
+:where(button, [role="button"])[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+/* The house scroll affordance for a strip or panel that scrolls inside the layout
+   rather than being the page — a version rail, a tab strip, a dropdown panel. The
+   platform default is a chunky light-mode bar that reads as chrome from another
+   application; this is a thin, token-backed one that re-colors with the theme like
+   everything else. Reach for it instead of hiding overflow: a strip that scrolls
+   with no visible bar gives the operator nothing to tell them there is more. */
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--line);
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background: var(--text-dim);
+  }
+  /* Without this the two bars of a both-axes scroller meet in an opaque square. */
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
+@keyframes ody-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.ody-caret {
+  animation: ody-blink 1s steps(1, end) infinite;
+}
+
+/* Search "found-it" pulse — a brief attention flash on the located nav row when
+   a query resolves to a single match. Hard-stepped brightness, not a decorative
+   fade (§8). */
+@keyframes ody-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: var(--surface-raised);
+  }
+}
+.ody-flash {
+  /* ~0.5s on/off cycle, six times ≈ 3s of pulsing. */
+  animation: ody-flash 0.5s steps(1, end) 6;
+}
+
+/* Live-activity pulse — a stepped blink on a state dot while a stream is in
+   flight. Functional (signals "live"), hard-stepped like the caret, not a
+   decorative fade (§8). */
+@keyframes ody-pulse {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.3;
+  }
+}
+.ody-pulse {
+  animation: ody-pulse 1s steps(1, end) infinite;
+}
+
+/* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
+   in a dense row), not decoration. It ping-pongs the overflow distance set in
+   --mq-shift, pausing at each end. Only applied (via a motion-safe utility)
+   when the content actually overflows; reduced-motion users get static clip. */
+@keyframes ody-marquee {
+  0%,
+  8% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(var(--mq-shift, 0));
+  }
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* Rendered prose (markdown) — structured assistant/report/doc text. Styled from
+   tokens so it inherits the mono, monochrome, grid-aligned look. */
+.ody-prose {
+  font-size: var(--type-body-size);
+  /* Looser than data line-height (16px) — prose needs room to breathe. */
+  line-height: 20px;
+  color: var(--text);
+}
+/* Default rhythm between blocks. */
+.ody-prose > * + * {
+  margin-top: var(--space-4);
+}
+.ody-prose > :first-child {
+  margin-top: 0;
+}
+.ody-prose h1,
+.ody-prose h2,
+.ody-prose h3,
+.ody-prose h4 {
+  color: var(--text-bright);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+}
+/* Headings are section breaks: extra space above, tight to the content below. */
+.ody-prose h1 {
+  font-size: var(--type-readout-size);
+  line-height: var(--type-readout-lh);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.ody-prose :is(h1, h2, h3, h4) + * {
+  margin-top: var(--space-2);
+}
+.ody-prose * + h1 {
+  margin-top: var(--space-8);
+}
+.ody-prose * + h2 {
+  margin-top: var(--space-6);
+}
+.ody-prose * + :is(h3, h4) {
+  margin-top: var(--space-6);
+}
+.ody-prose h2 {
+  font-size: var(--type-body-size);
+}
+.ody-prose h3,
+.ody-prose h4 {
+  font-size: var(--type-label-size);
+  color: var(--text-dim);
+}
+.ody-prose strong {
+  color: var(--text-bright);
+  font-weight: 700;
+}
+.ody-prose em {
+  font-style: italic;
+}
+.ody-prose a {
+  color: var(--accent-info);
+  text-decoration: underline;
+}
+.ody-prose ul,
+.ody-prose ol {
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ody-prose li {
+  padding-left: var(--space-1);
+}
+.ody-prose ul {
+  list-style: square;
+}
+.ody-prose ol {
+  list-style: decimal;
+}
+.ody-prose li::marker {
+  color: var(--text-dim);
+}
+.ody-prose code {
+  font-family: var(--font-mono);
+  background: var(--surface-raised);
+  border: var(--line-w) solid var(--line);
+  padding: 0 var(--space-1);
+  color: var(--text-bright);
+}
+.ody-prose pre {
+  background: var(--surface-raised);
+  border: var(--line-w) solid var(--line);
+  padding: var(--space-3);
+  overflow-x: auto;
+}
+.ody-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.ody-prose blockquote {
+  border-left: var(--line-emphasis) solid var(--line);
+  padding-left: var(--space-3);
+  color: var(--text-dim);
+}
+
+/* Rendered math (KaTeX). Math notation is the one place mono is deliberately not
+   used: real typesetting (radicals, large operators, stretchy delimiters) needs
+   KaTeX's bundled glyph metrics, which a monospace face can't provide. Everything
+   else is held to the system: monochrome (color inherited from prose, never
+   KaTeX's own), errors carried in the alert token, and spacing on the 4px grid.
+
+   Display math sits on its own line and scrolls horizontally — like code blocks
+   and tables — instead of bursting the message bubble. Its block rhythm comes
+   from the prose `* + *` rule (space-4), so KaTeX's own 1em margin is dropped.
+   It reads as a standalone readout, so it takes `text-bright`; inline math stays
+   the surrounding body tone. */
+.ody-prose .ody-math-block {
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--text-bright);
+}
+.ody-prose .katex-display {
+  margin: 0;
+}
+.ody-prose .katex-error {
+  color: var(--accent-alert);
+}
+
+/* Tables read as dense data panels: a hairline grid, square corners, tabular
+   figures, and an uppercase label-styled header band. No zebra striping or
+   accent fills — hierarchy comes from the header's brightness/weight alone. The
+   scroll host (injected post-render, like code blocks) lets a wide table scroll
+   horizontally instead of bursting its message bubble. */
+.ody-prose [data-table-host] {
+  overflow-x: auto;
+}
+.ody-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  border: var(--line-w) solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.ody-prose th,
+.ody-prose td {
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+  vertical-align: baseline;
+}
+/* Hairline grid: cell separators on every internal edge. */
+.ody-prose th + th,
+.ody-prose td + td {
+  border-left: var(--line-w) solid var(--line);
+}
+.ody-prose tbody tr {
+  border-top: var(--line-w) solid var(--line);
+}
+.ody-prose thead th {
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-lh);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--text-dim);
+  background: var(--surface-raised);
+  border-bottom: var(--line-w) solid var(--line);
+}
+.ody-prose tbody td {
+  color: var(--text);
+}

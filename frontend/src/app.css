@@ -1,0 +1,9 @@
+/* Composition root for global styles. Order matters:
+   1. Tailwind (utilities engine)
+   2. fonts (@font-face)
+   3. tokens (the values)
+   4. theme (token -> utility mapping + resting defaults) */
+@import "tailwindcss";
+@import "./ui/theme/fonts.css";
+@import "./ui/theme/tokens.css";
+@import "./ui/theme/theme.css";

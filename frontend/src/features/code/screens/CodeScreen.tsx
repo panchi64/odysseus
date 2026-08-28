@@ -1,0 +1,272 @@
+import { For, Show, Suspense, type JSX } from "solid-js";
+import {
+  Button,
+  EmptyState,
+  ListRow,
+  LoadingText,
+  PageHeader,
+  Panel,
+  Row,
+  Select,
+  Stack,
+  StatusFlag,
+  Text,
+  Textarea,
+  toast,
+  Tooltip,
+} from "~/ui";
+import { relativeTime, pad } from "~/lib/format";
+import { SandboxedFrame } from "~/features/chat/components/SandboxedFrame";
+import { useCodeRuns, createCodeRunner, useCodePreview } from "../data";
+
+const LANGUAGE_OPTIONS = [
+  { value: "python", label: "Python 3" },
+  { value: "javascript", label: "JavaScript" },
+  { value: "html", label: "HTML" },
+];
+
+export function CodeScreen(): JSX.Element {
+  const runs = useCodeRuns();
+  const {
+    language,
+    setLanguage,
+    source,
+    setSource,
+    running,
+    outputLines,
+    lastStatus,
+    lastDuration,
+    history,
+    runCode,
+    cancelRun,
+    resetToTemplate,
+  } = createCodeRunner(runs);
+  const previewSrc = useCodePreview();
+
+  function onEditorKeyDown(e: KeyboardEvent) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      if (!running()) runCode();
+    }
+  }
+
+  function handleCopyError() {
+    const errorText = outputLines()
+      .map((line) => line.text)
+      .join("\n");
+    void navigator.clipboard.writeText(errorText).then(() => {
+      toast.success("Error copied to clipboard");
+    });
+  }
+
+  function handleReset() {
+    resetToTemplate();
+    toast.info("Editor reset to template");
+  }
+
+  function handleCancel() {
+    cancelRun();
+    toast.warn("Execution cancelled");
+  }
+
+  return (
+    <Stack gap={6}>
+      <PageHeader
+        title="CODE RUNNER"
+        subtitle="Execute scripts in-browser. Runs in-browser, not on host."
+        assetId="ODY-CODE-01.0"
+        actions={
+          <Text variant="micro" tone="dim" class="border border-line px-2 py-1">
+            SANDBOXED · IN-BROWSER
+          </Text>
+        }
+      />
+
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Editor + output */}
+        <div class="flex flex-col gap-4 lg:col-span-2">
+          <Panel
+            label="EDITOR"
+            meta={
+              <Row gap={2} align="center">
+                <Select
+                  options={LANGUAGE_OPTIONS}
+                  value={language()}
+                  onChange={setLanguage}
+                />
+                <Tooltip label="Reset editor to the starter template for this language">
+                  <Button
+                    variant="ghost"
+                    leading="refresh"
+                    disabled={running()}
+                    onClick={handleReset}
+                  >
+                    RESET
+                  </Button>
+                </Tooltip>
+                <Show
+                  when={running()}
+                  fallback={
+                    <Row gap={2} align="center">
+                      <Text variant="micro" tone="dim">
+                        ⌘↵ to run
+                      </Text>
+                      <Button
+                        variant="primary"
+                        leading="play"
+                        onClick={runCode}
+                      >
+                        RUN
+                      </Button>
+                    </Row>
+                  }
+                >
+                  <Button
+                    variant="danger"
+                    leading="stop"
+                    onClick={handleCancel}
+                  >
+                    CANCEL
+                  </Button>
+                </Show>
+              </Row>
+            }
+          >
+            <Textarea
+              rows={14}
+              value={source()}
+              onInput={(e) => setSource(e.currentTarget.value)}
+              onKeyDown={onEditorKeyDown}
+            />
+          </Panel>
+
+          <Panel
+            label="OUTPUT"
+            state={lastStatus() === "error" ? "alert" : undefined}
+            meta={
+              <Show when={lastStatus()}>
+                <Row gap={2} align="center">
+                  <StatusFlag
+                    status={lastStatus() === "ok" ? "nominal" : "alert"}
+                  >
+                    {lastStatus()?.toUpperCase() ?? ""}
+                  </StatusFlag>
+                  <Show when={lastDuration() !== null}>
+                    <Text variant="micro" tone="dim">
+                      {lastDuration()} MS
+                    </Text>
+                  </Show>
+                  <Show when={lastStatus() === "error"}>
+                    <Button variant="ghost" onClick={handleCopyError}>
+                      COPY ERROR
+                    </Button>
+                  </Show>
+                </Row>
+              </Show>
+            }
+          >
+            {/* HTML runs render their live document here — the actual visual
+                output. JS runs mount the same sandboxed vehicle off-screen
+                (a script needs an attached frame to execute) purely to
+                capture console output; it has no visual output of its own. */}
+            <Show when={language() === "html" && previewSrc()}>
+              <div class="h-72 border border-line mb-3">
+                <SandboxedFrame src={previewSrc()!} title="HTML preview" />
+              </div>
+            </Show>
+            <Show when={language() === "javascript" && previewSrc()}>
+              <div class="sr-only">
+                <SandboxedFrame
+                  src={previewSrc()!}
+                  title="JavaScript sandbox"
+                />
+              </div>
+            </Show>
+            <Show
+              when={running() || outputLines().length > 0}
+              fallback={
+                <EmptyState
+                  icon="terminal"
+                  message="NO OUTPUT"
+                  hint="Press RUN to execute the script."
+                />
+              }
+            >
+              <div class="bg-bg border border-line p-3 min-h-24 whitespace-pre-wrap">
+                <For each={outputLines()}>
+                  {(line) => (
+                    <Text
+                      as="div"
+                      variant="micro"
+                      tone={line.stream === "stderr" ? "alert" : "nominal"}
+                    >
+                      {line.text}
+                    </Text>
+                  )}
+                </For>
+                <Show when={running()}>
+                  <LoadingText label="EXECUTING" />
+                </Show>
+              </div>
+              <Show when={lastStatus() === "error"}>
+                <Text variant="micro" tone="dim" class="pt-2">
+                  Fix your code above and press RUN to try again.
+                </Text>
+              </Show>
+            </Show>
+          </Panel>
+
+          <Text variant="micro" tone="dim" class="text-center">
+            Runs in-browser (Pyodide / native JS) — code does not execute on the
+            Odysseus host server.
+          </Text>
+        </div>
+
+        {/* Run history */}
+        <div class="lg:col-span-1">
+          <Panel label="RUN HISTORY" flush>
+            <Suspense
+              fallback={
+                <div class="p-3">
+                  <LoadingText />
+                </div>
+              }
+            >
+              <Show
+                when={history().length > 0}
+                fallback={
+                  <EmptyState
+                    icon="clock"
+                    message="NO HISTORY"
+                    hint="Past runs appear here."
+                  />
+                }
+              >
+                <For each={history()}>
+                  {(run) => (
+                    <ListRow
+                      label={`${run.language.toUpperCase()} · ${pad(run.durationMs, 4)} MS`}
+                      leading={run.status === "ok" ? "check" : "warning"}
+                      right={
+                        <Row gap={2} align="center">
+                          <StatusFlag
+                            status={run.status === "ok" ? "nominal" : "alert"}
+                          >
+                            {run.status.toUpperCase()}
+                          </StatusFlag>
+                          <Text variant="micro" tone="dim">
+                            {relativeTime(run.ranAt)}
+                          </Text>
+                        </Row>
+                      }
+                    />
+                  )}
+                </For>
+              </Show>
+            </Suspense>
+          </Panel>
+        </div>
+      </div>
+    </Stack>
+  );
+}

@@ -1,0 +1,185 @@
+"""POST /chat creates a Run that streams over the substrate SSE surface."""
+
+from __future__ import annotations
+
+from core.config import get_settings
+
+from ._helpers import client_app, collect_sse_events, patch_model_resolution
+
+
+async def test_chat_creates_run_and_streams_answer(monkeypatch):
+    # The route resolves the `main` role through the registry; point that at a
+    # TestModel so the turn runs without a live model server.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, _app):
+        resp = await client.post("/chat", json={"prompt": "say hi"})
+        assert resp.status_code == 202
+        run_id = resp.json()["run_id"]
+
+        events = await collect_sse_events(client, run_id)
+
+    types = [e["type"] for e in events]
+    assert types[0] == "run.started"
+    assert types[-1] == "run.ended"
+    answer = "".join(e["text"] for e in events if e["type"] == "answer.delta")
+    assert answer == "hi"
+
+
+async def test_ephemeral_chat_is_not_titled(monkeypatch):
+    # Ephemeral (compare) threads are hidden from the listing and show no title, so
+    # auto-titling them is invisible work that only holds the run open after the
+    # answer — the route disables it. A normal first turn is still named.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, _app):
+        eph = await client.post("/chat", json={"prompt": "hi", "ephemeral": True})
+        eph_events = await collect_sse_events(client, eph.json()["run_id"])
+
+        normal = await client.post("/chat", json={"prompt": "hi"})
+        normal_events = await collect_sse_events(client, normal.json()["run_id"])
+
+    assert not any(e["type"] == "conversation.titled" for e in eph_events)
+    assert any(e["type"] == "conversation.titled" for e in normal_events)
+
+
+async def test_chat_requires_prompt():
+    async with client_app() as (client, _app):
+        resp = await client.post("/chat", json={})
+        assert resp.status_code == 422
+
+
+async def test_chat_rejects_unknown_conversation(monkeypatch):
+    # A client-supplied conversation_id that doesn't exist must 404, not silently
+    # spawn orphan messages under a phantom conversation.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, _app):
+        resp = await client.post(
+            "/chat", json={"prompt": "hello", "conversation_id": "does-not-exist"}
+        )
+        assert resp.status_code == 404
+
+
+async def test_chat_settings_round_trip():
+    # The auto-compaction preferences are operator settings: GET reports the config
+    # defaults until set, PUT overrides them, and the override persists.
+    async with client_app() as (client, _app):
+        got = await client.get("/chat/settings")
+        assert got.status_code == 200
+        assert got.json()["auto_compact_threshold"] == get_settings().auto_compact_threshold
+
+        put = await client.put("/chat/settings", json={"auto_compact_threshold": 0.5})
+        assert put.status_code == 200
+        assert put.json()["auto_compact_threshold"] == 0.5
+
+        again = await client.get("/chat/settings")
+        assert again.json()["auto_compact_threshold"] == 0.5
+
+
+async def test_chat_settings_rejects_an_out_of_range_threshold():
+    # A fraction in (0, 1]: 0 would fire on an empty thread, above 1 could never fire.
+    async with client_app() as (client, _app):
+        for bad in (0, -0.5, 1.5):
+            resp = await client.put("/chat/settings", json={"auto_compact_threshold": bad})
+            assert resp.status_code == 422
+
+
+async def test_chat_settings_rejects_a_retired_field():
+    # The tool-result compaction settings are gone. A client still sending them must get a
+    # 422, not a 200 that silently discards the write.
+    async with client_app() as (client, _app):
+        retired = (
+            "compaction_enabled",
+            "compaction_keep_recent",
+            "compaction_min_tokens",
+            "attachment_inline_max_tokens",
+        )
+        for field in retired:
+            resp = await client.put("/chat/settings", json={field: 5})
+            assert resp.status_code == 422
+
+
+async def test_chat_settings_rejects_an_unknown_field():
+    # With every field optional (omitted ⇒ unchanged), a mistyped key must 422 rather than
+    # silently no-op with a 200 — otherwise a client believes a write landed that never did.
+    async with client_app() as (client, _app):
+        resp = await client.put(
+            "/chat/settings", json={"agent_request_limi": 15}  # typo: missing 't'
+        )
+        assert resp.status_code == 422
+
+
+async def test_agent_request_limit_round_trip():
+    # The per-turn model-request ceiling is an operator setting: GET reports the config
+    # default until set, PUT overrides it, and the override persists.
+    async with client_app() as (client, _app):
+        got = (await client.get("/chat/settings")).json()
+        assert got["agent_request_limit"] == get_settings().agent_request_limit
+
+        put = await client.put("/chat/settings", json={"agent_request_limit": 60})
+        assert put.status_code == 200
+        assert put.json()["agent_request_limit"] == 60
+
+        again = (await client.get("/chat/settings")).json()
+        assert again["agent_request_limit"] == 60
+
+
+async def test_agent_request_limit_rejects_zero_and_negative():
+    # Floored at 1, unlike the token caps: a turn allowed zero model requests could
+    # never produce an answer, so 0 is nonsensical rather than merely minimal.
+    async with client_app() as (client, _app):
+        for bad in (0, -1):
+            resp = await client.put("/chat/settings", json={"agent_request_limit": bad})
+            assert resp.status_code == 422
+
+
+async def test_agent_request_limit_partial_update_leaves_others_unchanged():
+    # Tuning the step limit alone must not reset the auto-compaction overrides.
+    async with client_app() as (client, _app):
+        await client.put(
+            "/chat/settings",
+            json={"auto_compact_enabled": False, "auto_compact_threshold": 0.6},
+        )
+        await client.put("/chat/settings", json={"agent_request_limit": 40})
+        again = (await client.get("/chat/settings")).json()
+        assert again["agent_request_limit"] == 40
+        assert again["auto_compact_enabled"] is False
+        assert again["auto_compact_threshold"] == 0.6
+
+
+async def test_auto_compact_settings_partial_update_leaves_others_unchanged():
+    # Tuning one half of the pair must not reset the other, set earlier.
+    async with client_app() as (client, _app):
+        await client.put(
+            "/chat/settings",
+            json={"auto_compact_enabled": False, "auto_compact_threshold": 0.6},
+        )
+        await client.put("/chat/settings", json={"auto_compact_threshold": 0.8})
+        again = (await client.get("/chat/settings")).json()
+        assert again["auto_compact_enabled"] is False  # preserved across the threshold-only PUT
+        assert again["auto_compact_threshold"] == 0.8
+
+
+async def test_inactivity_timeout_round_trip():
+    # The inactivity bound is an operator setting: GET reports the config default until
+    # set, PUT overrides it, and the override persists.
+    async with client_app() as (client, _app):
+        got = (await client.get("/chat/settings")).json()
+        assert got["inactivity_timeout_s"] == get_settings().run_inactivity_timeout_s
+
+        put = await client.put("/chat/settings", json={"inactivity_timeout_s": 300})
+        assert put.status_code == 200
+        assert put.json()["inactivity_timeout_s"] == 300
+
+        again = (await client.get("/chat/settings")).json()
+        assert again["inactivity_timeout_s"] == 300
+
+
+async def test_inactivity_timeout_rejects_zero_and_negative():
+    # A 0 bound would stop every turn immediately, and a negative one is nonsensical —
+    # both are rejected rather than silently disabling the watchdog.
+    async with client_app() as (client, _app):
+        for bad in (0, -1):
+            resp = await client.put("/chat/settings", json={"inactivity_timeout_s": bad})
+            assert resp.status_code == 422

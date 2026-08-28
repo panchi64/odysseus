@@ -1,0 +1,350 @@
+"""The unified ``view`` tool — one capability for the conversation's View.
+
+``view_show(file=…)`` mints a version whose preview is the file's bytes and emits
+``view.snapshot``; ``view_show(serve=…, port=…, path=…)`` runs the live head, emits
+``view.live`` with the entry path baked into the url (so a static server's root no
+longer renders a directory listing), and *also* overlays a fresh version
+(``view.snapshot``) so the head has comparable code behind it; ``view_close`` emits
+``view.live.stopped``. Bad arg combinations retry; missing capabilities degrade
+without an event.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+
+from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+from agent import stream_agent_run
+from core.container import ServiceContainer
+from core.db import init_db, make_engine
+from core.vault import Vault
+from runs import Run, RunStream
+from services.artifacts import ArtifactStore
+from services.sandbox import PreviewHandle, SandboxError, SandboxSessionManager
+from services.workspace_history import (
+    SnapshotView,
+    WorkspaceHistoryStore,
+    format_show_result,
+    snapshot_id_from_result,
+)
+from tools import RunDeps, build_agent_toolsets
+from tools.view import view_toolset
+
+
+class FakeSession:
+    """Serves canned workspace bytes; raises like the real session on a miss, and
+    hands the same bytes back as the captured workspace tree."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self._files = files
+
+    def read_file(self, path: str) -> bytes:
+        if path not in self._files:
+            raise SandboxError(f"no such file: {path!r}")
+        return self._files[path]
+
+    def collect_text_files(
+        self, *, max_file_bytes: int = 262_144, max_files: int = 2000
+    ) -> dict[str, bytes]:
+        return dict(self._files)
+
+
+class FakeManager:
+    """Stands in for the sandbox session manager — files + a live-head launcher."""
+
+    def __init__(self, files: dict[str, bytes] | None = None, *, fail: bool = False) -> None:
+        self._session = FakeSession(files or {})
+        self.fail = fail
+        self.started: list[tuple] = []
+        self.stopped: list[str] = []
+
+    async def acquire(self, key: str) -> FakeSession:
+        return self._session
+
+    async def start_preview(self, key: str, command: list[str], port: int) -> PreviewHandle:
+        self.started.append((key, tuple(command), port))
+        if self.fail:
+            raise SandboxError("address already in use")
+        return PreviewHandle(
+            token="tok", container="c", host_port=5000,
+            container_port=port, command=tuple(command),
+        )
+
+    async def stop_preview(self, key: str) -> None:
+        self.stopped.append(key)
+
+
+async def _stores(tmp_path) -> tuple[ArtifactStore, WorkspaceHistoryStore]:
+    """An artifact store (preview bytes) and a workspace-history store (versions)
+    over one in-memory engine + vault, wired into the run like the real engine does."""
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "keyfile.json")
+    await vault.setup("pw")
+    return ArtifactStore(engine, vault), WorkspaceHistoryStore(engine, vault)
+
+
+def _call_then_finish(args: dict):
+    """A model that calls ``view_show`` once with ``args``, then answers with text.
+    Ends the loop on either a tool return or a validation retry, so a rejected call
+    doesn't spin forever."""
+
+    def _settled(messages) -> bool:
+        return any(
+            type(part).__name__ in ("ToolReturnPart", "RetryPromptPart")
+            for message in messages
+            for part in message.parts
+        )
+
+    async def stream_fn(messages, info):
+        if _settled(messages):
+            yield "done"
+        else:
+            yield {0: DeltaToolCall(name="view_show", json_args=json.dumps(args))}
+
+    return stream_fn
+
+
+def _close_then_finish():
+    def _settled(messages) -> bool:
+        return any(
+            type(part).__name__ == "ToolReturnPart"
+            for message in messages
+            for part in message.parts
+        )
+
+    async def stream_fn(messages, info):
+        if _settled(messages):
+            yield "done"
+        else:
+            yield {0: DeltaToolCall(name="view_close", json_args="{}")}
+
+    return stream_fn
+
+
+def _run(stream_fn, *, manager, store=None, history=None, conversation_id="conv-1"):
+    agent = Agent(
+        FunctionModel(stream_function=stream_fn),
+        deps_type=RunDeps,
+        toolsets=build_agent_toolsets({"view": view_toolset()}),
+        output_type=[str, DeferredToolRequests],
+    )
+    run = Run(id="r1", kind="chat", owner_id="operator", stream=RunStream())
+    caps = ServiceContainer()
+    if manager is not None:
+        # The fake manager registers under the class the view tools resolve.
+        caps.add(manager, as_type=SandboxSessionManager)
+    if store is not None:
+        caps.add(store)
+    if history is not None:
+        caps.add(history)
+    deps = RunDeps(
+        run=run,
+        owner_id="operator",
+        caps=caps,
+        conversation_id=conversation_id,
+    )
+    return agent, run, deps
+
+
+def _bodies(run: Run):
+    return [e.body for e in run.stream.replay()]
+
+
+async def _drive(agent, run, deps, prompt="go"):
+    async with agent.iter(prompt, deps=deps) as agent_run:
+        await stream_agent_run(agent_run, run)
+
+
+# --- static versions (file=) -------------------------------------------------
+async def test_show_file_captures_and_emits_snapshot(tmp_path):
+    store, history = await _stores(tmp_path)
+    manager = FakeManager({"chart.png": b"\x89PNG\r\n"})
+    agent, run, deps = _run(
+        _call_then_finish({"file": "chart.png", "title": "My Chart"}),
+        manager=manager,
+        store=store,
+        history=history,
+    )
+    await _drive(agent, run, deps, "make a chart")
+
+    snap = next(b for b in _bodies(run) if b.type == "view.snapshot")
+    assert snap.title == "My Chart"
+    # A file-show stamps how it previews: the captured-bytes artifact + its render kind.
+    assert snap.preview_kind == "image"
+    assert snap.preview_artifact_id is not None
+    blob = await store.content("operator", snap.preview_artifact_id)
+    assert blob.content == b"\x89PNG\r\n"
+    listed = await history.list("operator", "conv-1")
+    assert [s.id for s in listed] == [snap.snapshot_id]
+
+
+async def test_show_missing_file_reports_and_stores_nothing(tmp_path):
+    store, history = await _stores(tmp_path)
+    manager = FakeManager({})
+    agent, run, deps = _run(
+        _call_then_finish({"file": "absent.html"}),
+        manager=manager,
+        store=store,
+        history=history,
+    )
+    await _drive(agent, run, deps)
+    assert "view.snapshot" not in [b.type for b in _bodies(run)]
+    assert await history.list("operator", "conv-1") == []
+
+
+async def test_show_file_unavailable_without_store():
+    manager = FakeManager({"x.txt": b"x"})
+    agent, run, deps = _run(
+        _call_then_finish({"file": "x.txt"}), manager=manager, store=None, history=None
+    )
+    await _drive(agent, run, deps)
+    assert "view.snapshot" not in [b.type for b in _bodies(run)]
+
+
+# --- live head (serve=) ------------------------------------------------------
+async def test_show_live_emits_live_with_entry_path(tmp_path):
+    _store, history = await _stores(tmp_path)
+    manager = FakeManager()
+    agent, run, deps = _run(
+        _call_then_finish(
+            {
+                "serve": ["python", "-m", "http.server", "8000"],
+                "port": 8000,
+                "path": "index.html",
+                "title": "Site",
+            }
+        ),
+        manager=manager,
+        history=history,
+    )
+    await _drive(agent, run, deps, "serve it")
+
+    live = next(b for b in _bodies(run) if b.type == "view.live")
+    # The entry path is baked into the url — this is the directory-listing fix.
+    assert live.url == "/previews/tok/index.html"
+    assert live.port == 8000
+    assert live.command == "python -m http.server 8000"
+    assert live.title == "Site"
+    assert live.conversation_id == "conv-1"
+    assert manager.started == [("conv-1", ("python", "-m", "http.server", "8000"), 8000)]
+
+    # The live head now also overlays a fresh version (auto preview — no artifact bytes).
+    snap = next(b for b in _bodies(run) if b.type == "view.snapshot")
+    assert snap.title == "Site"
+    assert snap.preview_artifact_id is None and snap.preview_kind is None
+    assert [s.id for s in await history.list("operator", "conv-1")] == [snap.snapshot_id]
+
+
+async def test_show_live_without_path_points_at_root():
+    manager = FakeManager()
+    agent, run, deps = _run(
+        _call_then_finish({"serve": ["npm", "run", "dev"], "port": 5173}),
+        manager=manager,
+    )
+    await _drive(agent, run, deps, "serve it")
+    live = next(b for b in _bodies(run) if b.type == "view.live")
+    assert live.url == "/previews/tok/"
+
+
+async def test_show_live_failure_feeds_back_without_event():
+    manager = FakeManager(fail=True)
+    agent, run, deps = _run(
+        _call_then_finish({"serve": ["bad"], "port": 8000}), manager=manager
+    )
+    await _drive(agent, run, deps, "serve it")
+    assert "view.live" not in [b.type for b in _bodies(run)]
+    assert manager.started  # it tried; the error went back to the model as text
+
+
+class BrokenHistory:
+    """A version store whose capture always fails — to prove history is best-effort."""
+
+    async def capture(self, *args, **kwargs):
+        raise RuntimeError("vault locked")
+
+
+async def test_show_live_emits_head_even_when_version_capture_fails():
+    # A capture failure must never orphan the already-running server: the live event
+    # still fires (and the turn doesn't error), the snapshot just doesn't get recorded.
+    manager = FakeManager()
+    agent, run, deps = _run(
+        _call_then_finish({"serve": ["python", "-m", "http.server", "8000"], "port": 8000}),
+        manager=manager,
+        history=BrokenHistory(),
+    )
+    await _drive(agent, run, deps, "serve it")
+    types = [b.type for b in _bodies(run)]
+    assert "view.live" in types
+    assert "view.snapshot" not in types
+
+
+async def test_show_file_degrades_when_version_capture_fails(tmp_path):
+    # The artifact bytes are published, but a capture failure degrades to a message
+    # instead of breaking the turn — and emits no half-formed version event.
+    store, _ = await _stores(tmp_path)
+    manager = FakeManager({"chart.png": b"\x89PNG\r\n"})
+    agent, run, deps = _run(
+        _call_then_finish({"file": "chart.png"}),
+        manager=manager,
+        store=store,
+        history=BrokenHistory(),
+    )
+    await _drive(agent, run, deps, "make a chart")
+    assert "view.snapshot" not in [b.type for b in _bodies(run)]
+
+
+async def test_show_live_unavailable_without_sandbox():
+    agent, run, deps = _run(
+        _call_then_finish({"serve": ["x"], "port": 8000}), manager=None
+    )
+    await _drive(agent, run, deps, "serve it")
+    assert "view.live" not in [b.type for b in _bodies(run)]
+
+
+# --- close + validation ------------------------------------------------------
+async def test_close_emits_live_stopped():
+    manager = FakeManager()
+    agent, run, deps = _run(_close_then_finish(), manager=manager)
+    await _drive(agent, run, deps, "stop it")
+    assert any(b.type == "view.live.stopped" for b in _bodies(run))
+    assert manager.stopped == ["conv-1"]
+
+
+async def test_show_both_modes_retries_without_showing_anything(tmp_path):
+    # file AND serve is ambiguous → ModelRetry, no view event either way.
+    store, history = await _stores(tmp_path)
+    manager = FakeManager({"x.html": b"<p>x</p>"})
+    agent, run, deps = _run(
+        _call_then_finish({"file": "x.html", "serve": ["x"], "port": 8000}),
+        manager=manager,
+        store=store,
+        history=history,
+    )
+    await _drive(agent, run, deps)
+    types = [b.type for b in _bodies(run)]
+    assert "view.snapshot" not in types and "view.live" not in types
+
+
+# --- result round-trip (cold-read re-attach contract) ------------------------
+def test_show_result_round_trips_the_version_id():
+    snap = SnapshotView(
+        id="deadbeef01",
+        conversation_id="conv-1",
+        title="My Chart",
+        created_at=datetime.now(UTC),
+        files_changed=1,
+        summary="+1 ~0 -0",
+        stats={"added": 1, "modified": 0, "removed": 0},
+        preview_artifact_id="a1",
+        preview_kind="image",
+        keeper=False,
+    )
+    assert snapshot_id_from_result(format_show_result(snap, "image")) == "deadbeef01"
+
+
+def test_version_id_from_unrelated_result_is_none():
+    assert snapshot_id_from_result("Could not read 'x.html': no such file") is None

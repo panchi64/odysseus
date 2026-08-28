@@ -1,0 +1,92 @@
+"""The meta-loop — what we own *around* the agent's within-turn reasoning.
+
+Two independent mechanisms:
+
+- :class:`LoopBreaker` is **always on**. It watches the tool calls a turn makes
+  and aborts when the agent repeats an identical call instead of converging — a
+  no-progress guard the model can't talk its way past.
+- The **verifier** is opt-in. After a turn produces an answer, a judge (the
+  utility model, or an injected stub) decides whether the request was actually
+  satisfied; if not, the engine makes a single bounded corrective re-attempt.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.models import Model
+from pydantic_ai.settings import ModelSettings
+
+from prompts.utility import JUDGE_INSTRUCTIONS
+
+
+def make_utility_agent(
+    model: Model, *, output_type: Any = str, instructions: str
+) -> Agent:
+    """Build a one-shot agent on the cheap utility model for background work — a
+    judge, a namer, a summarizer. Centralizes the bare ``Agent`` construction so
+    every utility caller picks up the same shape (and any future default:
+    instrumentation tag, retries) from one place. Per-call knobs like reasoning-off
+    ``model_settings`` are passed to ``agent.run(...)``, not baked in here."""
+    return Agent(model, output_type=output_type, instructions=instructions)
+
+
+class LoopDetected(Exception):
+    """Raised when a turn repeats an identical tool call without progressing."""
+
+    def __init__(self, tool_name: str) -> None:
+        super().__init__(f"repeated the same call to {tool_name!r} without progress")
+        self.tool_name = tool_name
+
+
+class LoopBreaker:
+    """Counts identical tool calls within a turn; trips at a repeat threshold."""
+
+    def __init__(self, *, repeat_threshold: int = 3) -> None:
+        self._counts: dict[tuple[str, str], int] = {}
+        self._threshold = repeat_threshold
+
+    def check(self, name: str, args: dict[str, Any]) -> None:
+        """Record a tool call; raise :class:`LoopDetected` once it repeats too often."""
+        signature = (name, json.dumps(args, sort_keys=True, default=str))
+        self._counts[signature] = self._counts.get(signature, 0) + 1
+        if self._counts[signature] >= self._threshold:
+            raise LoopDetected(name)
+
+
+class Verdict(BaseModel):
+    """A judge's call on whether a response satisfied the request."""
+
+    ok: bool
+    reason: str = ""
+
+
+# A judge inspects (request, answer) and rules on whether the task was done.
+Judge = Callable[[str, str], Awaitable[Verdict]]
+
+
+def make_utility_judge(
+    model: Model, *, model_settings: ModelSettings | None = None
+) -> Judge:
+    """The default judge — asks the given utility model whether the task was
+    satisfied. The model is resolved from the registry's ``utility`` role by the
+    caller, so the judge itself carries no resolution dependency. ``model_settings``
+    carries that model's reasoning-off settings (best-effort, like the namer's): the
+    judge is background work that needn't reason, so request it off — a runtime that
+    honors the lever answers faster, and the structured ``Verdict`` output is parsed
+    from the tool call regardless of any reasoning the model emits anyway."""
+
+    async def judge(request: str, answer: str) -> Verdict:
+        agent = make_utility_agent(
+            model, output_type=Verdict, instructions=JUDGE_INSTRUCTIONS
+        )
+        result = await agent.run(
+            f"Request:\n{request}\n\nResponse:\n{answer}", model_settings=model_settings
+        )
+        return result.output
+
+    return judge

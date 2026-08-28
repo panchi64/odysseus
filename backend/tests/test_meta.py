@@ -1,0 +1,172 @@
+"""The meta-loop: the no-progress loop-breaker and the optional verifier."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
+
+import agent.engine as engine
+from agent.meta import LoopBreaker, LoopDetected, Verdict, make_utility_judge
+from core.config import Settings
+from runs import RunRegistry, RunStatus
+
+
+# --- LoopBreaker (unit) ------------------------------------------------------
+def test_loop_breaker_trips_on_identical_repeats():
+    breaker = LoopBreaker(repeat_threshold=3)
+    breaker.check("search", {"q": "x"})
+    breaker.check("search", {"q": "x"})
+    with pytest.raises(LoopDetected):
+        breaker.check("search", {"q": "x"})
+
+
+def test_loop_breaker_ignores_varied_calls():
+    breaker = LoopBreaker(repeat_threshold=2)
+    breaker.check("search", {"q": "a"})
+    breaker.check("search", {"q": "b"})  # different args → no trip
+    breaker.check("other", {"q": "a"})  # different tool → no trip
+
+
+# --- Loop-breaker wired into a run -------------------------------------------
+async def test_run_blocks_when_loop_detected(monkeypatch):
+    # threshold=1 trips on the first tool call — exercises the wiring end to end.
+    monkeypatch.setattr(engine, "get_settings", lambda: Settings(loop_repeat_threshold=1))
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator("use a tool", model=TestModel(custom_output_text="x"))
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.blocked
+    types = [e.body.type for e in run.stream.replay()]
+    assert "limit.notice" in types
+    loop_notice = next(e.body for e in run.stream.replay() if e.body.type == "limit.notice")
+    assert loop_notice.limit == "loop"
+
+
+# --- Verifier ----------------------------------------------------------------
+async def test_utility_judge_forwards_reasoning_off_settings():
+    # The judge is background work that needn't reason: its model_settings (the
+    # utility model's reasoning-off settings) must reach the model call.
+    captured: dict = {}
+
+    async def capture(messages, info):
+        captured["settings"] = dict(info.model_settings or {})
+        tool = info.output_tools[0].name
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool, args={"ok": True})])
+
+    judge = make_utility_judge(
+        FunctionModel(capture),
+        model_settings={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    )
+    verdict = await judge("the request", "the answer")
+    assert verdict.ok is True
+    assert captured["settings"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+
+
+async def test_verifier_disabled_by_default():
+    calls = []
+
+    async def judge(request, answer):
+        calls.append((request, answer))
+        return Verdict(ok=False, reason="should not run")
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hello", model=TestModel(custom_output_text="hi"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert calls == []  # verify_enabled is False by default
+
+
+async def test_verifier_makes_one_corrective_attempt(monkeypatch):
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
+    verdicts = [Verdict(ok=False, reason="missing the summary")]
+    seen = []
+
+    async def judge(request, answer):
+        seen.append(answer)
+        return verdicts.pop(0) if verdicts else Verdict(ok=True)
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "summarize it", model=TestModel(custom_output_text="here"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert len(seen) == 1  # judged once; one bounded re-attempt, no re-judge
+    types = [e.body.type for e in run.stream.replay()]
+    assert "limit.notice" in types
+    notice = next(e.body for e in run.stream.replay() if e.body.type == "limit.notice")
+    assert notice.limit == "verify"
+
+
+async def test_verifier_accepts_a_good_answer(monkeypatch):
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
+
+    async def judge(request, answer):
+        return Verdict(ok=True)
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hello", model=TestModel(custom_output_text="hi"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    types = [e.body.type for e in run.stream.replay()]
+    assert "limit.notice" not in types  # no re-attempt
+
+
+async def test_verifier_heuristic_skips_toolless_turn(monkeypatch):
+    # Default heuristic on: a chitchat turn that called no tools isn't judged.
+    monkeypatch.setattr(engine, "get_settings", lambda: Settings(verify_enabled=True))
+    judged = []
+
+    async def judge(request, answer):
+        judged.append(answer)
+        return Verdict(ok=False, reason="should not run")
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hi", model=TestModel(custom_output_text="hello"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert judged == []  # no checkable artifact (no tool call) → judge skipped
+
+
+async def test_verifier_heuristic_off_judges_every_turn(monkeypatch):
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(verify_enabled=True, verify_heuristic=False)
+    )
+    judged = []
+
+    async def judge(request, answer):
+        judged.append(answer)
+        return Verdict(ok=True)
+
+    reg = RunRegistry()
+    orch = engine.build_chat_orchestrator(
+        "hi", model=TestModel(custom_output_text="hello"), categories={}, judge=judge
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert judged == ["hello"]  # judged even with no tools when the heuristic is off

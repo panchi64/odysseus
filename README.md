@@ -1,203 +1,137 @@
 # Odysseus
 ───────────────────────────────────────────────
- ⊹ ࣪ ˖ ૮( ˶ᵔ ᵕ ᵔ˶ )っ  Odysseus vers. 1.0
+
+ ⊹ ࣪ ˖ ૮( ˶ᵔ ᵕ ᵔ˶ )っ  Odysseus (Revamped)
+
 ───────────────────────────────────────────────
 
-![Odysseus](docs/odysseus.jpg)
+A self-hosted AI workspace that runs on your own hardware against your own data. Local-first, encrypted at rest, built for personal use (1 user).
 
-A self-hosted AI workspace -- meant to be the self-hosted version of the UI experience you get from ChatGPT and Claude. But with more jank and fun. Running on your own hardware, with your own data -- local-first, privacy-first, and no trojan.
+![Odysseus — the agent working through a task, with its work log, tool calls, and a published artifact inline](md-assets/odysseus-screenshot.png)
 
-## Features
-  - **Chat** -- chat with any local model or API; adding them is super simple.<br>　<sub>vLLM · llama.cpp · Ollama · OpenRouter · OpenAI</sub>
-  - **Agent** -- hand it tools and let it run the whole task itself.<br>　<sub>built on [opencode](https://github.com/anomalyco/opencode) · MCP · web · files · shell · skills · memory</sub>
-  - **Cookbook** -- Scans your hardware, recommends models, click to download and serve.. easy!<br>　<sub>built on [llmfit](https://github.com/AlexsJones/llmfit) · VRAM-aware · GGUF / FP8 / AWQ · fit scoring · vLLM / llama.cpp serving</sub>
-  - **Deep Research** -- multi-step runs that gather, read, and synthesize sources into a nice visual report.<br>　<sub>adapted from [Tongyi DeepResearch](https://github.com/Alibaba-NLP/DeepResearch)</sub>
-  - **Compare** -- a fun tool to compare models side by side. Test completely blind, no bias!<br>　<sub>multi-model · blind test · synthesis</sub>
-  - **Documents** -- YOU write the text, AI is there to assist, not the opposite.<br>　<sub>multi-tab editor · markdown · HTML · CSV · syntax highlighting · AI edits · suggestions</sub>
-  - **Memory / Skills** -- Persistent memory and skills, your agent evolves over time as it better understands you and your tasks!<br>　<sub>ChromaDB · fastembed (ONNX) · vector + keyword retrieval · import/export</sub>
-  - **Email** -- IMAP/SMTP inbox with AI triage built in: urgency reminders, auto-tag, auto-summary, auto-reply drafts, auto-spam.<br>　<sub>IMAP · SMTP · per-account routing · CalDAV-aware</sub>
-  - **Notes & Tasks** -- Quick notes with reminders, a todo list, and scheduled tasks the agent can act on.<br>　<sub>note pings · checklist · cron-style tasks · ntfy / browser / email channels</sub>
-  - **Calendar** -- Local-first calendar with CalDAV sync to Radicale / Nextcloud / Apple / Fastmail.<br>　<sub>CalDAV pull · .ics import/export · per-calendar colors · agent-aware</sub>
-  - **Works on mobile** -- looks and runs great on your phone, not just desktop.<br>　<sub>responsive · installable (PWA) · touch gestures</sub>
-  - **Extras** -- more to explore, happy if you give it a go!<br>　<sub>image editor · theme editor · file uploads (vision + PDF) · web search · presets · sessions · 2FA</sub>
+I rebuilt the entire platform on top of **Pydantic AI + FastAPI**, and it's still in progress. The core is done, though: you can chat, and the full agent loop is implemented — tools, sandboxed code, web search, memory, approval gates, resumable runs, and encryption at rest. The rest of the nice-to-have features (research, email, calendar, the model Cookbook, documents, and more) are specified but not built yet. The sections below separate what runs today from what's planned.
 
-## Demo
-A full, hover-to-play tour lives on the landing page (`docs/index.html`). A few looks:
+## The idea
 
-### Chat & Agents
-![Chat & Agents](docs/chat.gif)
-### Deep Research
-![Deep Research](docs/research.gif)
-### Compare
-![Compare](docs/compare.gif)
-### Documents
-![Documents](docs/document.gif)
-### Notes & Tasks
-![Notes & Tasks](docs/notes.gif)
+**Pydantic AI is the engine; the code I wrote around it is the chassis.** All agentic reasoning — the model call, tool selection, typed-arg validation, the within-turn tool→observe→continue loop, retries, fallback, output validation, history processing — runs *through* Pydantic AI. Everything that turns one model run into a durable, observable, resumable product — run lifecycle, the event stream, disconnect-survival and resume, cancellation, timeouts, persistence, access policy, the verifier/loop-break meta-loop — is what I built. Like I said up top, Odysseus assumes one powerful local host, a single operator, and models capable of native tool calling.
 
-## Quick Start
+## What runs today
 
-Defaults work out of the box — clone, run, configure inside the app.
-Open the **Settings** panel after first login to point Odysseus at your LLM
-server, search provider, email account, etc. Only touch `.env` if you need
-to override deployment-level things like `AUTH_ENABLED`, `DATABASE_URL`,
-or pre-seed `ODYSSEUS_ADMIN_PASSWORD` (otherwise an initial password is
-generated and printed on first boot).
+Here's what already works, built and tested in `backend/`:
 
-### Option 1: Docker (recommended)
-```bash
-git clone <your-odysseus-repo-url>
-cd odysseus
-cp .env.example .env       # optional, but recommended for explicit defaults
-docker compose up -d --build
-```
-Compose starts Odysseus, ChromaDB, SearXNG, and ntfy. First run does a full
-image build. Open `http://localhost:7000` after the containers are healthy.
+- **Chat.** Every message runs the full agent path rather than a pre-classified route: the model sees the whole permitted tool catalog and decides what to call. Replies stream incrementally, survive a disconnect, and resume on reconnect. Conversations branch through regenerate, edit, and rewind. Works against local models and API providers (vLLM, llama.cpp, Ollama, OpenAI-compatible).
+- **The agent engine.** A Pydantic AI `Agent` driven node by node, wrapped in a meta-loop — an always-on no-progress guard plus an opt-in post-turn verifier — with first-turn auto-titling.
+- **Sensitive-action approval.** A powerful tool call parks the run and asks before it executes; approving or denying resumes it.
+- **Sandboxed code, artifacts, and previews.** The agent runs code in a host-isolated, per-conversation container that fails closed and never touches the host, publishes artifacts into an encrypted store, and serves live previews through a token-gated reverse proxy.
+- **Web search and fetch.** A managed SearXNG instance with no operator setup, SSRF-guarded page fetch, and untrusted content marked as data.
+- **Long-term memory.** Store, view, edit, and delete entries, with hybrid semantic-plus-keyword recall that degrades to keyword-only when the vector store is unavailable.
+- **Model registry.** Named roles (`main`, `utility`, `embedding`) map to ordered fallback chains; endpoints discover their served models at runtime; conversations can override the model; API keys are encrypted at rest.
+- **Embeddings.** Selectable model behind semantic search and recall.
+- **Health.** Per-capability status for the operator covering model, embeddings, sandbox, and search.
+- **Auth and at-rest encryption.** A global auth gate (cookie or bearer); all user data AES-256 encrypted under a password-derived, memory-only, lock-until-unlocked key.
 
-Cookbook remote servers use an Odysseus-owned SSH key from `./data/ssh`
-inside Docker. In **Cookbook -> Settings -> Servers**, generate/copy the
-public key and add it to the remote server's `~/.ssh/authorized_keys`.
-After generating the key, you can also install it from the host with:
-```bash
-ssh-copy-id -i data/ssh/id_ed25519.pub user@server
-```
-Cookbook local downloads are stored in `./data/huggingface`, mounted as
-`~/.cache/huggingface` inside the Odysseus container.
+The spec-to-build ledger is in [`docs/architecture/70-spec-coverage.md`](docs/architecture/70-spec-coverage.md).
 
-Useful checks:
-```bash
-docker compose ps
-docker compose logs --tail=120 odysseus
-docker compose logs odysseus | grep -E 'ChromaDB|MemoryVectorStore|DEGRADED'
-docker compose exec odysseus python -c "from services.hwfit.models import get_models; print(len(get_models()))"
-```
+## What's planned
 
-Expected vector-memory startup lines in Docker:
-```text
-ChromaDB connected: chromadb:8000
-MemoryVectorStore initialized
-```
+These are all specified in [`docs/spec/`](docs/spec/README.md), and they reuse the same run substrate that already powers chat:
 
-The Cookbook model catalog check should print a non-zero count. If it prints
-`0`, rebuild the Odysseus image with `docker compose build --no-cache odysseus`.
-
-### Option 2: Manual install — Linux / macOS
-**Requirements:** Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-(`curl -LsSf https://astral.sh/uv/install.sh | sh`). On Linux/Termux, Cookbook also
-requires `tmux` for background model downloads and serves.
-
-> Optional features are extras: `uv sync --extra search-ddg --extra pdf-forms`
-> (PyMuPDF is AGPL-3.0 — see ACKNOWLEDGMENTS.md).
-
-Install system packages first:
-```bash
-# Debian/Ubuntu
-sudo apt install tmux
-
-# Arch
-sudo pacman -S tmux
-
-# Fedora
-sudo dnf install tmux
-```
-
-Then install Odysseus:
-```bash
-git clone <your-odysseus-repo-url>
-cd odysseus
-uv sync                    # creates .venv and installs dependencies
-uv run python setup.py     # creates data dirs and prints an initial admin password
-uv run uvicorn app:app --host 0.0.0.0 --port 7000
-```
-
-### Option 3: Manual install — Windows (PowerShell)
-```powershell
-git clone <your-odysseus-repo-url>
-cd odysseus
-uv sync
-uv run python setup.py
-uv run uvicorn app:app --host 0.0.0.0 --port 7000
-```
-
-Open `http://localhost:7000`, log in with the generated admin password,
-and configure everything else inside **Settings**.
-
-## Security Notes
-Odysseus is a self-hosted workspace with powerful local tools: shell access, file uploads, model downloads, web research, email/calendar integrations, and API tokens. Treat it like an admin console.
-
-- Keep `AUTH_ENABLED=true` for any network-accessible deployment.
-- Do not expose it directly to the public internet without HTTPS and a trusted reverse proxy.
-- Keep `data/`, `.env`, logs, databases, and uploaded/generated media out of Git. They are ignored by default.
-- Review `data/auth.json` after first boot: disable open signup unless you intentionally want it, make only your own account admin, and keep demo/test accounts non-admin.
-- Non-admin users do not get shell/Python/file read/write by default, and admin-only routes/tools such as MCP management, API tokens, webhooks, model/cookbook serving, backup/vault, and app settings are admin-gated. Other features are controlled by per-user privileges, so review each user's privileges before exposing a deployment.
-- Rotate any API keys or tokens that were ever pasted into a shared chat, demo, screenshot, or log.
-- If you enable API tokens or webhooks, create separate tokens per integration and delete unused ones.
-- Prefer binding manual development runs to `127.0.0.1`; bind to `0.0.0.0` only when you intentionally want LAN/reverse-proxy access.
-- Before publishing a fork, run `git status --short` and confirm no private files from `.env`, `data/`, `logs/`, uploads, backups, or local databases are staged.
-
-### Putting it behind HTTPS
-Odysseus serves plain HTTP on its port. That's fine for `localhost` and trusted LAN/VPN use, but browsers will warn ("Password fields present on an insecure page") and the login + API tokens travel in cleartext. For anything reachable outside your machine — including a Tailscale IP shared with other devices — put a TLS-terminating reverse proxy in front.
-
-Shortest path with [Caddy](https://caddyserver.com/) (auto-renews Let's Encrypt certs):
-
-```caddy
-odysseus.example.com {
-  reverse_proxy localhost:7000
-}
-```
-
-For a LAN-only Tailscale deployment, Caddy + [tailscale-cert](https://caddyserver.com/docs/caddyfile/options#auto-https) or the built-in MagicDNS HTTPS feature both work. nginx/Traefik configs are similar — proxy `localhost:7000`, terminate TLS at the proxy. Once that's in place, the browser warning goes away and your login is encrypted.
-
-## Contributing
-Help is welcome. The best entry points are fresh-install testing, provider setup
-bugs, mobile/editor polish, docs, and small focused refactors. See
-[ROADMAP.md](ROADMAP.md) for the current help-wanted list.
-
-## Configuration
-Most setup is done inside the app with `/setup` or **Settings**. Use `.env`
-for deployment-level defaults and secrets you want present before first boot.
-Key settings:
-
-| Variable | Default | Description |
-|---|---|---|
-| `LLM_HOST` | `localhost` | Your LLM server (e.g. `llm-host.local:8000`) |
-| `LLM_HOSTS` | -- | Comma-separated list for model discovery |
-| `OPENAI_API_KEY` | -- | Optional OpenAI key. Prefer adding providers in the app unless pre-seeding. |
-| `SEARXNG_INSTANCE` | `http://localhost:8080` | SearXNG URL. Docker overrides this to `http://searxng:8080`. |
-| `AUTH_ENABLED` | `true` | Enable/disable login |
-| `LOCALHOST_BYPASS` | `false` | Development-only auth bypass for loopback requests. Keep false for shared/network deployments. |
-| `DATABASE_URL` | `sqlite:///./data/app.db` | Database connection string |
-| `CHROMADB_HOST` | `localhost` | ChromaDB host for vector memory. Docker overrides this to `chromadb`. |
-| `CHROMADB_PORT` | `8100` | ChromaDB port for manual host runs. Docker overrides this to `8000`. |
-| `EMBEDDING_URL` | -- | OpenAI-compatible embeddings endpoint |
-
-### Bundled services
-Docker Compose includes these by default:
-
-  - **ChromaDB** → vector store for semantic memory. In Docker, Odysseus connects to `chromadb:8000`; from the host it is exposed as `localhost:8100`.
-  - **SearXNG** → meta search for web search. In Docker, Odysseus connects to `searxng:8080`; from the host it is exposed only on `127.0.0.1:8080`.
-  - **ntfy** → local notification service, exposed as `localhost:8091`.
-
-### Optional external services
-  - **Ollama** → local LLM server -- [ollama.ai](https://ollama.ai)
+- **Deep Research** — multi-round runs that plan, search, read, analyze, and write a cited report, bounded by rounds and time, reusing the run substrate.
+- **Documents** — a multi-tab editor where you write and the agent assists with rewrites, targeted edits, reviewable suggestions, and versioning.
+- **Skills** — reusable know-how the agent accumulates and applies to later tasks.
+- **Gallery** — an image and video library: albums, tagging, favorites, and provenance for everything you've uploaded or attached to a chat.
+- **Uploads** — files as context, including text extraction from scanned PDFs.
+- **Knowledge Base** — point it at a folder of your own documents and retrieve from them by meaning (RAG).
+- **Code Runner** — run Python, JS, and HTML snippets in the browser, never on the host.
+- **Email** — IMAP/SMTP across accounts with AI triage: urgency, tagging, summaries, reply drafts, spam handling.
+- **Calendar** — a local-first calendar with CalDAV sync and `.ics` import/export.
+- **Tasks** — scheduled and event-triggered jobs the agent runs unattended within a pre-authorized scope.
+- **Cookbook** — scans your hardware, recommends models that fit, then downloads and serves them (VRAM-aware; GGUF, FP8, AWQ; llama.cpp and MLX).
+- **Compare** — send one prompt to two models and read their answers side by side, attributed, each a real conversation you can keep going.
+- **MCP** — register external tool servers; their tools are sensitive by default until you trust them.
+- **Integrations** — preset connectors to third-party HTTP services, with encrypted credentials.
+- **API tokens** — scoped tokens and inbound webhooks for programmatic access.
+- **Vault** — a password manager layered on the at-rest encryption; agent access is approval-gated.
+- **Host shell** — the operator's own terminal behind a re-authenticated host mode, never reachable by the agent.
+- **Backup and restore** — encrypted export under a separate backup secret, with merge-import that avoids duplicates.
 
 ## Architecture
+
+There are two halves, kept cleanly separate: the frontend renders and captures intent, and **all the logic lives in the backend.** See [`docs/architecture/`](docs/architecture/README.md) for the full design, and [`docs/architecture/decisions.md`](docs/architecture/decisions.md) for every decision and its trade-offs.
+
 ```
-app.py                   # FastAPI entry point
-core/      auth, database, middleware, constants
-src/       llm_core, agent_loop, agent_tools, chat_processor, search/
-routes/    chat, session, document, memory, model … endpoints
-services/  docs, memory, search, hwfit (Cookbook) …
-static/    index.html + app.js + style.css + js/ (modular front-end)
-docs/      landing page (index.html) + preview clips
+frontend/     SolidJS / SolidStart SPA · TypeScript · Tailwind v4 · Vite
+              terminal-HUD design system (Phosphor / Paper) · typed mock-data seam;
+              home · chat · memory · settings wired to the real backend, the rest on mocks
+
+backend/      Pydantic AI + FastAPI  (Python 3.14, uv-managed)
+  app.py        FastAPI assembly: middleware, auth gate, router registration, shared singletons
+  core/         foundation: config · db · crypto/vault (at-rest encryption) · auth · write-behind
+                worker · untrusted-content marking · SSRF guard · exceptions
+  models/       SQLModel entities + schema (owner seam · per-column encryption · branch tree)
+  runs/         Pillars I+II — the Run substrate + the frozen v1 event protocol
+  agent/        Pillar III — the engine: orchestrator · node→event translator · meta-loop · namer
+  prompts/      the prompt library, split by durability (system_prompt vs instructions)
+  tools/        Pillar III — the agent's tool catalog: namespacing + enable gate + thin adapters
+  services/     capabilities: llm/registry · memory · conversations · sandbox · search · artifacts
+  routes/       thin FastAPI routers, one per surface (overview is the home aggregate)
+  research/     deep-research orchestrator on the Run substrate (stub)
+  migrations/   Alembic — schema auto-upgraded to head on startup
+
+docs/spec/          black-box spec — WHAT the system must do (based on PewDiePie's original idea, minus the vibe-coded features that seemed redundant or unnecessary)
+docs/architecture/  backend design — HOW it's built, the decision register, the spec-coverage ledger
 ```
+
+The central abstraction is a **Run**: one server-side, background-executing unit of work for a single request. Chat turns, agent tasks, and research jobs are all Runs, so I only have to write continuity, resume, cancellation, timeouts, and metrics **once** — everything inherits them. The backend is an **origin-agnostic API**: it makes no assumption about who serves the frontend. The whole thing rests on three pillars — the Run substrate, the event protocol, and the agent engine plus tools — detailed in [`docs/architecture/README.md`](docs/architecture/README.md).
+
+## Running it
+
+**Backend** (requires [uv](https://docs.astral.sh/uv/)) — platform-agnostic (Linux / macOS / POSIX), no OS-specific dependency:
+```bash
+cd backend
+uv sync                                       # creates .venv (Python 3.14), installs deps
+uv run python dev.py                          # http://localhost:8000  (/health to check)
+uv run pytest                                 # the test suite
+uv run ruff check .                           # lint
+```
+`dev.py` is `uvicorn app:app` with auto-reload, minus the directories that hold runtime state rather than source — without that, installing an inference engine on the first serve restarts the server in the middle of the serve that triggered it. To run without reload (production), use `uv run uvicorn app:app` directly.
+
+On first run, create the operator account via the frontend (the password you choose also derives the at-rest encryption key). A container runtime (Docker/Podman) is needed for the code sandbox and managed web search; without one, those capabilities report unavailable rather than falling back to the host.
+
+**Frontend** (requires [bun](https://bun.sh)):
+```bash
+cd frontend
+bun install
+bun run dev         # http://localhost:5173
+bun run typecheck   # tsc --noEmit (scoped to src/)
+bun run lint        # eslint + prettier --check
+bun run build       # static SPA build
+```
+Screens not yet wired to the backend render on typed mock data behind a stable seam; swapping in real calls doesn't move any logic into the frontend, because none lives there.
+
+> **NOTE — fonts.** UI typography is fully self-hosted: **JetBrains Mono** is served as a Nerd Font build (subset to the ranges the UI uses plus Braille Patterns), so the spinners' **Braille** glyphs render natively — nothing to install. The mono font is regenerated by `bun run build:fonts` in `frontend/` (needs `python3` with `fonttools` + `brotli`).
+
+## Security & privacy
+
+Odysseus can do powerful things on your machine — sandboxed and (with approval) host code execution, file writes, model serving, email, web research — so I don't treat security as an afterthought. The full details are in [SECURITY.md](SECURITY.md).
+
+- **Single operator.** All data and features belong to *you* — the sole user. Every request is authenticated before any feature is reached; every record is owner-stamped against a future multi-user seam.
+- **Sensitive actions require approval.** The agent pauses and asks before anything powerful or hard to reverse (host shell/code, file writes, sending email, serving models, configuration, vault) takes effect. Sandboxed code is *not* sensitive — it's isolated and containerized from the host.
+- **Encrypted at rest.** All user data is AES-256 encrypted; auth secrets are one-way hashed. The key is derived from your password and lives only in memory — no OS keystore, nothing readable on disk, re-locked on restart.
+- **Untrusted content is data, not instructions.** External content (web pages, fetched URLs, files) is wrapped and marked so the model treats it as data before it enters a prompt.
+- **Local-first.** Nothing leaves the machine unless you configure an external provider or integration.
+- Serve plain HTTP only on `localhost`/trusted LAN; put a TLS-terminating reverse proxy in front for anything reachable beyond your machine.
 
 ## Data
-All user data lives in `data/` (gitignored): `app.db` (sessions, messages, documents),
-`memory.json`, `presets.json`, `uploads/`, `personal_docs/`, `chroma/`, `settings.json`.
+
+All user data lives under `data/` and is **gitignored** — databases, uploads, keys, generated media. Never commit anything from `data/`, `.env`, or `logs/`.
+
+## Contributing
+
+It's still early days, but help is more than welcome. There are exactly three authoritative inputs: the [spec](docs/spec/README.md) (the *what*), the [architecture & decisions](docs/architecture/README.md) (the *how*), and the capabilities of FastAPI + Pydantic AI. I don't use the deleted pre-reset code as a reference — PewDiePie's original was vibe-coded. The [spec-coverage matrix](docs/architecture/70-spec-coverage.md) is the live "what's done vs. next" view.
 
 ## License
-MIT -- see [LICENSE](LICENSE) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
+MIT — see [LICENSE](LICENSE) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
 
 ```
                                   |
