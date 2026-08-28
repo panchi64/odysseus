@@ -791,7 +791,15 @@ export function ChatRoomScreen(): JSX.Element {
             ref={scrollEl}
             tabindex={-1}
             onScroll={onScroll}
-            class="min-h-0 flex-1 overflow-y-auto py-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
+            /* `px-4` is not cosmetic: a scroll container clips at its padding
+               box, so this is the room the live rail's LED bloom spills into.
+               Without it the glow is cut off a few pixels from the rule and
+               reads as a hard-edged coloured border again.
+
+               The bright focus outline is gone — the shell's neutral focus halo
+               covers this, and a white rule around the transcript was exactly
+               the kind of border the system dropped. */
+            class="min-h-0 flex-1 overflow-y-auto px-4 py-2 outline-none transition-colors"
           >
             {/* One malformed block must not cost the operator the composer, the
                 thread list, or the text they were typing — scope a throw in the

@@ -6,21 +6,22 @@ import {
   onCleanup,
   type JSX,
 } from "solid-js";
-import { Disclosure, Frames, Text, cx } from "~/ui";
+import { Disclosure, Text, cx } from "~/ui";
 
 /** How long the live trace takes to fade off the stage once the model stops
  *  reasoning. Matches `.ody-reasoning-done` in theme.css. */
 const FADE_MS = 320;
 
-/** The reasoning stream (design §10.9) — the model's thought process, in the
+/** The reasoning stream (design §10.10) — the model's thought process, in the
  *  two states the machine voice implies.
  *
  *  **Live.** While tokens are arriving, the trace is not a message: it is the
  *  computer working *behind* the response area. It renders as a clipped
- *  background layer — mono, barely tinted, masked top and bottom so it runs out
- *  of frame rather than ending — bottom-anchored so the newest line is always
- *  the most visible one. It never eases: this is the machine register (§8), so
- *  tokens land hard as they arrive.
+ *  background layer — mono, uniformly and barely tinted, with no gradient: a
+ *  faded edge would make it a decorated panel, and this is meant to read as a
+ *  flat wall of machine text. Bottom-anchored, so new tokens push older lines up
+ *  and out of frame and the newest is always at the bottom. It never eases:
+ *  this is the machine register (§8), so tokens land hard as they arrive.
  *
  *  **Resolved.** The layer fades out (the human register — the interface
  *  clearing the stage, not a control responding) and what remains is a collapsed
@@ -87,20 +88,18 @@ export function ReasoningBlock(props: {
         </Disclosure>
       }
     >
-      {/* A fixed-height stage, tall enough that the trace reads as a wall
-          rather than a ticker. The height is deliberately constant so the
-          transcript does not reflow line-by-line as tokens arrive — the text
-          cascades *inside* the clip instead of growing the page. */}
+      {/* A fixed-height stage, tall enough that the trace reads as a wall rather
+          than a ticker. The height is deliberately constant so the transcript
+          does not reflow line-by-line as tokens arrive — the text cascades
+          *inside* the clip instead of growing the page.
+
+          Nothing sits in the foreground. The wall is its own indicator: text
+          arriving is the most direct signal there is that the model is working,
+          and the live rail beside it already says so in light. A label and a
+          throbber on top were both restating it. */}
       <div class="relative h-36 overflow-hidden" aria-hidden="true">
         <div class={cx("ody-reasoning", fading() && "ody-reasoning-done")}>
           <div class="ody-reasoning-tail">{props.reasoning}</div>
-        </div>
-        {/* The only thing in the foreground: the machine saying it is working. */}
-        <div class="relative z-10 flex items-center gap-2 pt-1">
-          <Text variant="meta" tone="dim">
-            Thinking
-          </Text>
-          <Frames class="text-dim" />
         </div>
       </div>
       {/* The live layer is decorative texture, so it is aria-hidden above; the

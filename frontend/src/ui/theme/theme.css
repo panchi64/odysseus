@@ -346,6 +346,66 @@ body {
 }
 
 /* ==========================================================================
+   THE LIVE RAIL — an LED, not a border.
+
+   A process timeline's left edge is one of the few borders the system keeps
+   (§7), and while a block is live it should read as an *emitter*: a 2px strip
+   with light spilling leftward onto the page, the way a status LED bleeds onto
+   the panel around it.
+
+   Built as a pseudo-element rather than a `border-left` so the glow can be
+   directional. Three layers, each with a NEGATIVE x-offset and a growing blur,
+   so the light falls to the left and fades — a symmetric glow would read as a
+   halo around a line, which is not what an LED does.
+
+   The colour comes from `--led` rather than `currentColor`: the rail wraps the
+   block's content, and `currentColor` would mean tinting every word inside it
+   just to colour a 2px strip.
+   ========================================================================== */
+.ody-led {
+  position: relative;
+  /* Set here rather than inline in every shadow layer. Override it on the
+     element (or from a later rule) to light the rail a different colour. */
+  --led: var(--accent-info);
+}
+.ody-led::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  /* Exactly the hairline's width — the LED *is* the rail's rule, lit. Making it
+     thicker would change the timeline's structure to say something about state,
+     which the light is already saying. */
+  width: var(--line-w);
+  background: var(--led);
+  /* Four layers, each pushed further left with a wider blur and a little spread,
+     opacity falling 60% -> 12%. The reach is the whole point: a tight glow just
+     reads as a coloured border with soft edges, and only a long falloff reads as
+     light actually spilling onto the surface beside it. */
+  box-shadow:
+    -2px 0 10px 0 color-mix(in oklab, var(--led) 60%, transparent),
+    -6px 0 24px 1px color-mix(in oklab, var(--led) 42%, transparent),
+    -14px 0 52px 2px color-mix(in oklab, var(--led) 26%, transparent),
+    -26px 0 96px 4px color-mix(in oklab, var(--led) 12%, transparent);
+}
+
+/* Tone modifiers. Declared AFTER `.ody-led` so that at equal specificity these
+   win the `--led` assignment. Prefer the `LedEdge` component over hand-writing
+   the pair. */
+.ody-led-nominal {
+  --led: var(--accent-nominal);
+}
+.ody-led-warn {
+  --led: var(--accent-warn);
+}
+.ody-led-alert {
+  --led: var(--accent-alert);
+}
+.ody-led-accent {
+  --led: var(--accent);
+}
+
+/* ==========================================================================
    THE REASONING STREAM (§10.9). While the model reasons, its trace streams as
    mono text CLIPPED INTO THE BACKGROUND of the response area — the machine
    working behind the message, not a message itself. It is barely tinted, sits

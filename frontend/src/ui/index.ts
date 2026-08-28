@@ -73,6 +73,7 @@ export {
   type ComposerAttachment,
   type AttachmentStatus,
 } from "./components/AttachmentChip";
+export { LedEdge, type LedEdgeProps, type LedTone } from "./components/LedEdge";
 export { ListRow, type ListRowProps } from "./components/ListRow";
 export {
   ListGroupHeader,

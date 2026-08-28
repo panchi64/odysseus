@@ -9,7 +9,7 @@ import {
   on,
   type JSX,
 } from "solid-js";
-import { Caret, Disclosure, Markdown, Text, cx } from "~/ui";
+import { Caret, Disclosure, LedEdge, Markdown, Text, cx } from "~/ui";
 import type {
   ApprovalBlock,
   ApprovalDecision,
@@ -89,9 +89,14 @@ const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
 ]);
 
 /** The left rail that turns a stack of process blocks into a legible, ordered
- *  timeline. A 1px hairline — the workhorse divider that enforces structure
- *  (§2) — coloured to mark the live block (brightness/hue, not width, so the
- *  block never reflows when it goes active, §1). When `top="connect"` the gap
+ *  timeline — one of the few borders the system keeps, because an unbroken
+ *  vertical line is the thing being communicated (§7).
+ *
+ *  At rest it is a hairline. While a block is live `LedEdge` lights it — the
+ *  same rule, emitting, with the glow spilling leftward onto the page. That says
+ *  "this is running" far more directly than a colour swap, and shifts nothing,
+ *  since the rule keeps its width and the glow is a shadow. When `top="connect"`
+ *  the gap
  *  above is *padding inside the border*, so the hairline joins the rail block
  *  above into one unbroken line; "gap" keeps the spacing outside the border so
  *  the line stops at a run boundary. Answer/artifact/preview render full-width
@@ -102,16 +107,16 @@ function Rail(props: {
   children: JSX.Element;
 }): JSX.Element {
   return (
-    <div
+    <LedEdge
+      lit={props.active}
       class={cx(
-        "border-l pl-3 transition-colors",
-        props.active ? "border-info" : "border-line",
+        "pl-3 transition-colors",
         props.top === "connect" && "pt-3",
         props.top === "gap" && "mt-3",
       )}
     >
       {props.children}
-    </div>
+    </LedEdge>
   );
 }
 

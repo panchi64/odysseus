@@ -406,7 +406,21 @@ Single line, `radius-0`, hairline beneath, sans label left, mono meta right. Hov
 
 `radius-1`, hairline border, `space-2`/`space-3` padding, sans label. Focus is `shadow-focus`, always neutral. A **primary** button — one per view — is the sole carrier of `shadow-accent`.
 
-### 10.9 Reasoning stream
+### 10.9 LED edge — "this region is live"
+
+A container whose **left hairline can be lit**: an emitter spilling light onto the surface beside it, rather than a border that merely changes colour. `LedEdge`, `lit` + `tone`.
+
+This is how the system says *a region is running right now* — a streaming block in the chat timeline, an active task, a live pane. It reads as an LED because three things hold:
+
+1. **The glow is directional.** Four shadow layers pushed *left* with a long falloff (`-2px` through `-26px`, blur 10→96px, opacity 60%→12%). A symmetric glow reads as a halo around a line; only a one-sided falloff reads as light landing on a surface.
+2. **The reach is long.** A tight glow is just a coloured border with soft edges. The bloom carries ~90px.
+3. **The rule never changes width.** Lit and unlit are both `line-w`, and the border stays in the box model while lit (transparent, with the emitter's own bar painted over it). Lighting a region shifts nothing — the glow is a shadow, so it costs no layout.
+
+**The one thing that breaks it:** any ancestor with `overflow` other than `visible` clips the bloom at its padding box. A lit region inside a scroll container needs horizontal padding on that container for the light to spill into, or the glow is cut off flush against the rule and you are back to a hard coloured band.
+
+Tones map to the semantic accents (`info` by default — "live data / in flight"). Colour here is doing real work, so it is exempt from the neutral-attention rule in §6: the light *is* the state.
+
+### 10.10 Reasoning stream
 
 The clearest expression of the two voices in the product, and the reference for how any "the machine is working" surface should behave.
 
@@ -418,13 +432,13 @@ While the model reasons, its trace is **not a message**. It is the computer work
 - **Cascading and bottom-anchored**, so new tokens push older lines up and out of frame. The wall stays filled to its top edge with older reasoning, and the newest line sits at the bottom where the eye already is.
 - **Fixed-height stage**, so the transcript does not reflow line-by-line while the trace streams.
 - **Machine register (§8)** — tokens land hard as they arrive. No easing, no fade-in per token.
-- The only foreground element is a mono `meta` label and the braille throbber: the machine saying it is working.
+- **Nothing sits in the foreground.** No label, no throbber. Text arriving *is* the signal that the model is working — the most direct one available — and the live rail beside it already says so in light. Both a "THINKING" label and a spinner on top were restating what the wall and the rail were already communicating, which is the clutter this system exists to remove.
 
 **The handoff.** When the turn resolves, the wall **fades to the background over ~320ms** in the human register — that is the interface clearing the stage, not a control responding — and the **collapsed reasoning accordion fades in where it stood**, above the response. Two fades in the same place, so it reads as one movement rather than as a block being swapped out. The accordion holds the full trace, still mono and dim: available, out of the way.
 
 The live layer is `aria-hidden` (it is texture, and a token-by-token live region would be unusable); a polite live region announces that the model is reasoning, and the settled accordion carries the real content.
 
-### 10.10 The answer stream
+### 10.11 The answer stream
 
 The counterpart to §10.9, and the other half of the same idea.
 
@@ -434,7 +448,7 @@ Put the two side by side and the system explains itself without a word being rea
 
 Markdown structure must survive the stream — blocks that have settled keep their DOM across deltas, so only the trailing block re-parses. A streaming answer that renders as plain text and then pops into formatting when it finishes is not acceptable.
 
-### 10.11 The composer
+### 10.12 The composer
 
 **One component, one layout, two sizes.** The docked input bar and the home page's hero field are the same card — `size` changes padding and the field's resting height, and nothing else. They used to be separate branches (a bordered field nested inside a bordered bar; a 2px box) and that fork was the clearest case of the box-in-a-box §7 exists to stop.
 
@@ -451,7 +465,7 @@ Anatomy, top to bottom, inside one `surface` card on `radius-2` with `shadow-1`:
 
 **Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background so the transcript scrolls out of sight behind a card that sits above it. No gradient scrim: the ground colour does the job.
 
-### 10.12 The operator's turn
+### 10.13 The operator’s turn
 
 The operator's own message is **right-aligned and shrink-to-fit, capped at 80%** of the column.
 
