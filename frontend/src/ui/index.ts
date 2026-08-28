@@ -196,6 +196,7 @@ export {
   type RevealProps,
   type RevealMotion,
 } from "./components/Reveal";
+export { Collapse, type CollapseProps } from "./components/Collapse";
 export { Divider, type DividerProps } from "./components/Divider";
 export {
   ResizeHandle,

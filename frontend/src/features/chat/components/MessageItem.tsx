@@ -144,7 +144,13 @@ function VersionCycler(props: {
   };
   return (
     <Show when={count() > 1}>
-      <span class="flex items-center gap-0.5">
+      {/* `ody-fade-in` rather than a `Reveal` wrapper: this sits in a row of
+          inline controls, and a block wrapper would change how it lays out. The
+          fade matters because version metadata arrives a round-trip *after* the
+          answer settles — the cycler would otherwise pop into a header the
+          operator has already started reading. On a turn that mounts with
+          siblings it just runs alongside the turn's own entry. */}
+      <span class="ody-fade-in flex items-center gap-0.5">
         <Button
           variant="ghost"
           size="sm"

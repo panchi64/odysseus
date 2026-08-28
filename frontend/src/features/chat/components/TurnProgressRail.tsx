@@ -1,5 +1,5 @@
 import { Show, createMemo, type JSX } from "solid-js";
-import { Frames, Row, Text } from "~/ui";
+import { Collapse, Frames, Reveal, Row, Text } from "~/ui";
 import type { AssistantBlock } from "../model";
 import { workCounts } from "../blocks";
 
@@ -56,33 +56,47 @@ export function TurnProgressRail(props: {
   const counts = createMemo(() => workCounts(props.blocks));
   const hasWork = () => counts().thinks > 0 || counts().tools > 0;
 
+  /* The line has something to say while the turn runs, and afterwards only if
+     there was work worth counting. For a plain answer — the common case — that
+     means it goes from "Thinking" to nothing at all, and everything below it
+     jumps up by the height of the line plus its stack gap the instant the run
+     ends. `Collapse` turns that into the region closing, which is a movement the
+     eye can follow rather than a jump it has to recover from. */
+  const showing = () =>
+    Boolean(props.streaming) || (hasWork() && Boolean(props.collapsed));
+
   return (
-    <Show
-      when={props.streaming}
-      fallback={
-        <Show when={hasWork() && props.collapsed}>
-          <Text variant="micro" tone="dim">
-            {counts().tools} {counts().tools === 1 ? "Tool" : "Tools"} ·{" "}
-            {counts().thinks} {counts().thinks === 1 ? "Think" : "Thinks"}
-          </Text>
-        </Show>
-      }
-    >
-      <Row gap={2} align="center" aria-live="polite">
-        <Show
-          when={!props.queued}
-          fallback={
-            <Text variant="label" tone="dim">
-              Queued
+    <Collapse open={showing()}>
+      <Show
+        when={props.streaming}
+        fallback={
+          /* The settled summary is machine output — counts a process emitted,
+             not a sentence anyone wrote (§2) — so it stays mono and it
+             materializes rather than replacing the live label in place. */
+          <Reveal>
+            <Text variant="micro" tone="dim">
+              {counts().tools} {counts().tools === 1 ? "Tool" : "Tools"} ·{" "}
+              {counts().thinks} {counts().thinks === 1 ? "Think" : "Thinks"}
             </Text>
-          }
-        >
-          <Frames class="text-info" />
-          <Text variant="label" tone="info">
-            {activeLabel(props.blocks)}
-          </Text>
-        </Show>
-      </Row>
-    </Show>
+          </Reveal>
+        }
+      >
+        <Row gap={2} align="center" aria-live="polite">
+          <Show
+            when={!props.queued}
+            fallback={
+              <Text variant="label" tone="dim">
+                Queued
+              </Text>
+            }
+          >
+            <Frames class="text-info" />
+            <Text variant="label" tone="info">
+              {activeLabel(props.blocks)}
+            </Text>
+          </Show>
+        </Row>
+      </Show>
+    </Collapse>
   );
 }

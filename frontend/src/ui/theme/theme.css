@@ -434,7 +434,13 @@ body {
   content: "";
   position: absolute;
   inset-block: 0;
-  left: 0;
+  /* ON the border, not beside it. An absolutely positioned box is placed against
+     the PADDING box, so `left: 0` puts the emitter one hairline *inside* the
+     rule it is meant to be — leaving the border showing alongside the light
+     rather than under it. Pulling it out by the border width makes the lit bar
+     and the resting hairline the same pixels, which is what lets one fade into
+     the other. */
+  left: calc(-1 * var(--line-w));
   /* Exactly the hairline's width — the LED *is* the rail's rule, lit. Making it
      thicker would change the timeline's structure to say something about state,
      which the light is already saying. */
@@ -476,21 +482,35 @@ body {
         var(--led) calc(var(--led-a4) * var(--led-gain)),
         transparent
       );
-  /* The strip's COLOUR is ambient state — a fixture changing what it reports,
-     with nothing waiting on it — so it fades rather than cutting, at the human
-     register's ceiling (§8). A light that snaps to a new colour reads as a
-     different light switching on, not as the same one changing. Only colour is
-     animated in practice: reach and gain are fixed per instance. */
+  /* The emitter is ALWAYS present, and lighting it is an opacity change rather
+     than the class appearing. Toggling `.ody-led` itself would mean the
+     pseudo-element blinking in and out of existence, which no transition can
+     smooth — and a run ending would kill the rail's light mid-frame instead of
+     letting it dim. Unlit, this fades to nothing and reveals whatever border
+     sits underneath it. */
+  opacity: var(--led-lit, 1);
+  /* All three are ambient state — a fixture changing what it reports, with
+     nothing waiting on it — so they fade rather than cut, at the human
+     register's ceiling (§8). A light that snaps reads as a different light
+     switching on, not as the same one changing. */
   transition:
+    opacity var(--motion-slow) var(--ease),
     background var(--motion-slow) var(--ease),
     box-shadow var(--motion-slow) var(--ease);
+}
+
+/* Dark. The rule underneath stays exactly where it was, so nothing moves. */
+.ody-led-off {
+  --led-lit: 0;
 }
 
 /* Side modifier. Declared AFTER `.ody-led::before` so it wins the geometry at
    equal specificity. Only the strip's box and the falloff axis change — the
    shadow stack itself is never restated. */
 .ody-led-top::before {
-  inset: 0 0 auto;
+  /* Same correction as the left edge, on the other axis: out by the border
+     width so the strip sits on the rule rather than under it. */
+  inset: calc(-1 * var(--line-w)) 0 auto;
   width: auto;
   height: var(--line-w);
 }
@@ -587,11 +607,71 @@ body {
   bottom: 0;
 }
 
-/* Fade-out on resolve. Human register — slower than an interaction, because it
-   is the stage clearing rather than a control responding. */
-.ody-reasoning-done {
-  opacity: 0;
-  transition: opacity 320ms var(--ease);
+/* COLLAPSE — a region that closes to nothing and back without anyone having to
+   know its height.
+
+   The grid row is the whole trick: `1fr` -> `0fr` is animatable where the
+   `auto` -> `0` everyone reaches for first is not. The child clips, so its
+   content is revealed rather than squashed on the way through.
+
+   Transitions do not run on initial render, so a region that mounts already open
+   simply is open — no animation on load, which is what keeps a long transcript
+   still. */
+.ody-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--motion-stage) var(--ease);
+}
+.ody-collapse[data-closed] {
+  grid-template-rows: 0fr;
+}
+.ody-collapse > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* THE STAGE the wall plays on, and the two states it moves between.
+
+   Height is `--reasoning-h` and the region *travels* that distance rather than
+   appearing and vanishing at it: opening, the transcript makes room; clearing,
+   it closes the space back up as the wall fades. A region this large popping in
+   and out is a jump the reader has to absorb twice per turn.
+
+   Both directions are one token each — `--reasoning-h` for the distance and
+   `--motion-stage` for the time — so retiming or resizing the state change is a
+   token edit, and nothing has to be kept in sync with it. In particular the
+   component does NOT hold a matching duration: it waits for `animationend`, so
+   there is no second copy of this number to drift. */
+.ody-reasoning-stage {
+  position: relative;
+  height: var(--reasoning-h);
+  overflow: hidden;
+  animation: ody-stage-open var(--motion-stage) var(--ease) both;
+}
+/* Swapping the NAME (rather than adding a class with its own animation) is what
+   lets the close start cleanly from the open state's end. */
+.ody-reasoning-stage[data-clearing] {
+  animation-name: ody-stage-clear;
+}
+@keyframes ody-stage-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--reasoning-h);
+    opacity: 1;
+  }
+}
+@keyframes ody-stage-clear {
+  from {
+    height: var(--reasoning-h);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
 }
 
 /* ==========================================================================

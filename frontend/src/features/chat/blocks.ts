@@ -165,6 +165,26 @@ export type LayoutItem =
   | { type: "group"; group: BlockGroup }
   | { type: "worklog"; groups: BlockGroup[] };
 
+/**
+ * A stable identity for a layout item, across every recompute of the plan.
+ *
+ * `planTurnLayout` mints fresh objects each call, so a reference-keyed `<For>`
+ * treats the whole turn as new every time the plan is rebuilt — on each new
+ * block, and again when `streaming` flips at the end of a run. That tears down
+ * and re-renders every row in the turn, which is a visible redraw at exactly the
+ * moment the operator starts reading. Keying on this instead means a row is
+ * created once and only genuinely new or regrouped rows move.
+ *
+ * The first block's id anchors both kinds: a group keeps its id as it grows, and
+ * a work-log run is named by where it starts, so a run absorbing another group
+ * stays the same item rather than becoming a different one.
+ */
+export function layoutItemKey(item: LayoutItem): string {
+  return item.type === "worklog"
+    ? `w:${item.groups[0]?.id ?? ""}`
+    : `g:${item.group.id}`;
+}
+
 export function planTurnLayout(
   groups: BlockGroup[],
   opts: { streaming?: boolean } = {},

@@ -35,6 +35,13 @@
      surface-raised + text-bright + shadow-focus, which does not shift layout. */
   --line-emphasis: 2px;
 
+  /* ---- stages ----
+     How tall the reasoning wall stands (§10.10). Tall enough to read as a wall
+     of machine text rather than a ticker, and a token because it is also the
+     distance the region travels opening and closing — the number belongs in one
+     place, not split between a height and an animation that has to match it. */
+  --reasoning-h: 9rem;
+
   /* ---- the two voices (§2) ----
      Sans is the interface speaking to the operator; mono is the machine showing
      its work. Helvetica Neue is not licensable for self-hosting and is present
@@ -79,6 +86,11 @@
      nothing is waiting on the change. A light changing colour, not a control
      answering a click — a control at this duration feels sluggish. */
   --motion-slow: 240ms;
+  /* Clearing or setting a STAGE — a whole region arriving or leaving, not a
+     control responding. Over the ceiling for the same reason the answer's
+     reveal is (§8): nothing waits on it, and a region this large cut short
+     reads as a jump rather than a movement. */
+  --motion-stage: 320ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* ---- motion, MACHINE register (§8) — mono elements snap ----

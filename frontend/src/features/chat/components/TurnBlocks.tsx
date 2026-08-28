@@ -7,9 +7,10 @@ import {
   createMemo,
   createSignal,
   on,
+  untrack,
   type JSX,
 } from "solid-js";
-import { Caret, Disclosure, LedEdge, Markdown, Text, cx } from "~/ui";
+import { Caret, Disclosure, LedEdge, Markdown, Reveal, Text, cx } from "~/ui";
 import type {
   ApprovalBlock,
   ApprovalDecision,
@@ -25,6 +26,7 @@ import type {
 } from "../model";
 import {
   groupBlocks,
+  layoutItemKey,
   peekLatestTool,
   planTurnLayout,
   type BlockGroup,
@@ -323,11 +325,19 @@ function AnswerText(props: {
   return (
     <div>
       <div ref={host} class="inline">
-        <Markdown
-          class="inline"
-          copyCode={!live()}
-          streamStable={streamStable()}
-        >
+        {/* `copyCode` stays on THROUGHOUT, including while streaming. It used to
+            be gated on `!live()` to save a DOM scan per delta, but that gate was
+            paid for at the worst moment: flipping it on completion ran the
+            enhancement pass over a finished answer, and that pass *physically
+            moves* every `pre` and `table` — out of the tree and back inside a
+            wrapper. Re-laying-out and re-rasterizing every code block the
+            instant the answer settles is a redraw the operator sees.
+
+            Enhancing as we go does the same work incrementally on the trailing
+            block instead, and leaves nothing to do at the end. The buttons are
+            hidden until their block is hovered, so nothing appears mid-stream
+            either. */}
+        <Markdown class="inline" streamStable={streamStable()}>
           {props.text}
         </Markdown>
       </div>
@@ -568,6 +578,27 @@ export function TurnBlocks(
   const layout = createMemo(() =>
     planTurnLayout(groups(), { streaming: props.streaming }),
   );
+
+  /* `<For>` is REFERENCE-keyed, and `planTurnLayout` mints fresh objects on
+     every call — so iterating it directly made every row of the turn new on
+     every recompute, and the whole turn was torn down and re-rendered. That
+     happened on each new block, and again when `streaming` flipped at the end of
+     a run (the plan reads it, to keep the live tail out of a work log). The
+     second one is a full redraw of the turn at the moment the operator starts
+     reading it.
+
+     So iterate stable KEYS — strings compare by value, so an unchanged row is
+     unchanged — and look the item up through a memo, which keeps the row's props
+     live. A row is now created once and only genuinely new or regrouped rows
+     move. */
+  const keys = createMemo(() => layout().map(layoutItemKey));
+  const byKey = createMemo(
+    () =>
+      new Map<string, LayoutItem>(
+        layout().map((item) => [layoutItemKey(item), item] as const),
+      ),
+  );
+  const indexOfKey = (key: string): number => keys().indexOf(key);
   // One key -> {item, index} lookup for the turn's inline chips, built once per
   // View-list change (not per chip) — mirrors `ViewTimelineRail`'s own use of
   // `classifyViewItem`/`viewItemVersionLabel`/`viewItemTimeLabel` for the same
@@ -608,37 +639,79 @@ export function TurnBlocks(
     setOpenLogs({ ...openLogs(), [id]: !logOpen(id) });
   };
 
+  /* Whether a row should materialize as it arrives.
+
+     Latched at mount, and deliberately NOT reactive. A live turn's blocks appear
+     one at a time — reasoning, then a tool call, then the answer — and each one
+     popping into place is the jolt between the operator's message and the
+     model's reply. A turn read from history mounts all of its rows at once, and
+     animating those would be a whole transcript moving on load, which §8
+     forbids. Reading `streaming` reactively would be worse still: the wrapper
+     element would change when the run ended and flash the entire turn, which is
+     the bug just fixed one component over. */
+  const revealRows = untrack(() => Boolean(props.streaming));
+
   return (
     <div>
-      <For each={layout()}>
-        {(item, i) =>
-          item.type === "worklog" ? (
-            <WorkLogAccordion
-              groups={item.groups}
-              open={logOpen(item.groups[0].id)}
-              onToggle={() => toggleLog(item.groups[0].id)}
-              top={topSpacing(layout(), i())}
-              forceOpen={props.forceOpen}
-              onResolveApproval={props.onResolveApproval}
-              onResolveHostCommands={props.onResolveHostCommands}
-              chipLookup={chipLookup()}
-              seenIndex={seenIndex()}
-            />
-          ) : (
-            <BlockRow
-              group={item.group}
-              active={item.group.id === activeId()}
-              streaming={props.streaming}
-              top={topSpacing(layout(), i())}
-              forceOpen={props.forceOpen}
-              onResolveApproval={props.onResolveApproval}
-              onResolveHostCommands={props.onResolveHostCommands}
-              onOpenInView={props.onOpenInView}
-              chipLookup={chipLookup()}
-              seenIndex={seenIndex()}
-            />
-          )
-        }
+      <For each={keys()}>
+        {(key) => {
+          // Narrowed per kind, so each arm reads its own shape without casts.
+          // Both stay live: the item object behind a key is replaced on every
+          // recompute, and reading it through these is what lets the row update
+          // in place instead of being rebuilt.
+          const item = () => byKey().get(key);
+          const log = () => {
+            const it = item();
+            return it?.type === "worklog" ? it : undefined;
+          };
+          const group = () => {
+            const it = item();
+            return it?.type === "group" ? it.group : undefined;
+          };
+          const top = () => topSpacing(layout(), indexOfKey(key));
+          const row = (
+            <Show
+              when={log()}
+              fallback={
+                <Show when={group()}>
+                  {(g) => (
+                    <BlockRow
+                      group={g()}
+                      active={g().id === activeId()}
+                      streaming={props.streaming}
+                      top={top()}
+                      forceOpen={props.forceOpen}
+                      onResolveApproval={props.onResolveApproval}
+                      onResolveHostCommands={props.onResolveHostCommands}
+                      onOpenInView={props.onOpenInView}
+                      chipLookup={chipLookup()}
+                      seenIndex={seenIndex()}
+                    />
+                  )}
+                </Show>
+              }
+            >
+              {(l) => (
+                <WorkLogAccordion
+                  groups={l().groups}
+                  open={logOpen(l().groups[0].id)}
+                  onToggle={() => toggleLog(l().groups[0].id)}
+                  top={top()}
+                  forceOpen={props.forceOpen}
+                  onResolveApproval={props.onResolveApproval}
+                  onResolveHostCommands={props.onResolveHostCommands}
+                  chipLookup={chipLookup()}
+                  seenIndex={seenIndex()}
+                />
+              )}
+            </Show>
+          );
+          /* A plain fade, not a rise: these rows sit against a continuous
+             timeline rail, and anything that moved would drag the rail's
+             hairline with it. Materializing in place says "this arrived"
+             without disturbing the structure it arrived into. */
+          return revealRows ? <Reveal>{row}</Reveal> : row;
+        }}
       </For>
     </div>
   );

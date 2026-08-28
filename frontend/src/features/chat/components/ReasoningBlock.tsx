@@ -1,16 +1,11 @@
-import {
-  Show,
-  createEffect,
-  createSignal,
-  on,
-  onCleanup,
-  type JSX,
-} from "solid-js";
-import { Disclosure, Text, cx } from "~/ui";
+import { Show, createEffect, createSignal, on, type JSX } from "solid-js";
+import { Disclosure, Text } from "~/ui";
 
-/** How long the live trace takes to fade off the stage once the model stops
- *  reasoning. Matches `.ody-reasoning-done` in theme.css. */
-const FADE_MS = 320;
+/** The animation that plays when the stage clears. The component waits for this
+ *  by name rather than holding a duration of its own — the timing lives in
+ *  `--motion-stage`, and a copy here would be a second number to keep in sync
+ *  with a token that exists precisely so there is only one. */
+const CLEAR_ANIMATION = "ody-stage-clear";
 
 /** The reasoning stream (design §10.10) — the model's thought process, in the
  *  two states the machine voice implies.
@@ -48,13 +43,12 @@ export function ReasoningBlock(props: {
     if (props.open !== undefined) setOpen(props.open);
   });
 
-  // Run the fade exactly on the live -> settled edge.
+  // Clear the stage exactly on the live -> settled edge. The layer stays mounted
+  // until the animation reports itself finished (see `onAnimationEnd` below).
   createEffect(
     on(live, (now, prev) => {
       if (!prev || now) return;
       setFading(true);
-      const timer = setTimeout(() => setFading(false), FADE_MS);
-      onCleanup(() => clearTimeout(timer));
     }),
   );
 
@@ -97,8 +91,15 @@ export function ReasoningBlock(props: {
           arriving is the most direct signal there is that the model is working,
           and the live rail beside it already says so in light. A label and a
           throbber on top were both restating it. */}
-      <div class="relative h-36 overflow-hidden" aria-hidden="true">
-        <div class={cx("ody-reasoning", fading() && "ody-reasoning-done")}>
+      <div
+        class="ody-reasoning-stage"
+        data-clearing={fading() ? "" : undefined}
+        aria-hidden="true"
+        onAnimationEnd={(e) => {
+          if (e.animationName === CLEAR_ANIMATION) setFading(false);
+        }}
+      >
+        <div class="ody-reasoning">
           <div class="ody-reasoning-tail">{props.reasoning}</div>
         </div>
       </div>

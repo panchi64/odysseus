@@ -457,6 +457,7 @@ While the model reasons, its trace is **not a message**. It is the computer work
 - **Mono, `micro` size, barely tinted** — `accent` mixed at ~25% into `text-dim`, held at ~30% opacity. It reads as machine texture, not as content, and never competes with the answer.
 - **A flat wall, not an effect.** The subtlety lives entirely in the *color*: one uniform value across the whole block. **No gradient and no mask.** A faded edge would make it a decorated panel; this is meant to be a surface — a dense wall of machine text sitting behind the response.
 - **Clipped into the background** of the response area, behind the content, `pointer-events: none`.
+- **The stage travels; it does not appear.** The wall's height is a token (`--reasoning-h`), and the region opens and closes over that distance in `--motion-stage` rather than popping in and out at it — a region this large arriving instantly is a jump the reader absorbs twice per turn. Both directions are one token each, so retiming or resizing the state change is a token edit; nothing holds a matching copy, and the component waits on `animationend` rather than a duration of its own.
 - **Cascading and bottom-anchored**, so new tokens push older lines up and out of frame. The wall stays filled to its top edge with older reasoning, and the newest line sits at the bottom where the eye already is.
 - **Fixed-height stage**, so the transcript does not reflow line-by-line while the trace streams.
 - **Machine register (§8)** — tokens land hard as they arrive. No easing, no fade-in per token.

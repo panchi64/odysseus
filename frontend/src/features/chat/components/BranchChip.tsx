@@ -80,7 +80,13 @@ export function BranchChip(props: {
   };
 
   return (
-    <Show when={branch()}>
+    /* `.latest`, not `branch()`. The caller bumps `revision` the moment a turn
+       settles, and a plain resource read goes undefined for the length of that
+       refetch — so the chip blinked out of the header and back in at exactly the
+       moment the operator looks up from a finished answer. `.latest` holds the
+       previous diffstat until the new one lands, which is also the more honest
+       thing to show: the branch did not stop existing while we asked about it. */
+    <Show when={branch.latest}>
       {(b) => (
         <>
           <Button

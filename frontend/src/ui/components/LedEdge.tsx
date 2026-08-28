@@ -89,11 +89,15 @@ export interface LedEdgeProps extends JSX.HTMLAttributes<HTMLDivElement> {
  * symmetric glow would read as a halo around a line, which is not what an LED
  * does.
  *
- * Two properties make it safe to toggle on live content:
+ * Three properties make it safe to toggle on live content:
  * - **The rule never changes width.** Lit and unlit are both `--line-w`; the
- *   border stays in the box model while lit (transparent, with the LED's own bar
- *   painted over it), so lighting a region shifts nothing around it.
+ *   border sits underneath in both states, with the emitter painted over it, so
+ *   lighting a region shifts nothing around it.
  * - **The glow is a shadow**, so it costs no layout and cannot push siblings.
+ * - **It dims rather than disappearing.** The emitter is always mounted and
+ *   `lit` only drives its opacity, so a region going quiet fades its light out
+ *   over the border underneath instead of the light being cut mid-frame. That
+ *   matters most exactly where it is most visible: the moment a run finishes.
  *
  * One caveat worth knowing: the bloom reaches ~90px past the strip, and **any
  * ancestor with `overflow` other than `visible` clips it at its padding box**.
@@ -116,6 +120,17 @@ export function LedEdge(props: LedEdgeProps): JSX.Element {
   ]);
   const side = (): LedSide => local.side ?? "left";
 
+  /* The tone is held through an unlit transition. A caller usually drops `tone`
+     in the same update that drops `lit` — the row's activity is simply gone —
+     and reverting to the default would swing the colour across the dying fade,
+     so an amber "needs you" light would flick blue on its way out. Holding the
+     last colour means it just goes dark. */
+  let held: LedTone = "info";
+  const tone = (): LedTone => {
+    if (local.tone) held = local.tone;
+    return held;
+  };
+
   // Brightness and distance ride on the element itself rather than on a tone or
   // side class, so they are scoped to this one instance. `style` is merged
   // rather than replaced — a caller positioning the element keeps its own.
@@ -129,20 +144,20 @@ export function LedEdge(props: LedEdgeProps): JSX.Element {
     <div
       style={style()}
       class={cx(
-        // The border stays in the box model in BOTH states — transparent while
-        // lit, where the LED's own bar paints over it. Without that the element
-        // would lose its border on lighting up and nudge its contents over.
+        // The border is constant across both states, sitting under the emitter,
+        // so lighting up shifts nothing and going dark reveals it rather than
+        // swapping to it. `clear` is for a list where a rule per row would be
+        // clutter (§7) and the light is the only thing that should ever show.
         sideBorder[side()],
-        local.lit
-          ? cx(
-              "ody-led border-transparent",
-              sideClass[side()],
-              spillClass[local.spill ?? "out"],
-              toneClass[local.tone ?? "info"],
-            )
-          : local.unlit === "clear"
-            ? "border-transparent"
-            : "border-line",
+        local.unlit === "clear" ? "border-transparent" : "border-line",
+        // The emitter is always mounted; `lit` only dims it. Toggling `.ody-led`
+        // would mean the pseudo-element blinking in and out of existence, which
+        // no transition can smooth.
+        "ody-led",
+        sideClass[side()],
+        spillClass[local.spill ?? "out"],
+        toneClass[tone()],
+        !local.lit && "ody-led-off",
         local.class,
       )}
       {...rest}
