@@ -33,7 +33,7 @@ export function ModeControl(props: {
 
   const groups = createMemo(() => [
     {
-      label: "PROJECTS",
+      label: "Projects",
       options: codeable().map((p) => ({ value: p.id, label: p.name })),
     },
   ]);
@@ -49,8 +49,8 @@ export function ModeControl(props: {
         value={props.mode}
         onChange={(v) => props.onModeChange(v === "coding" ? "coding" : "chat")}
         options={[
-          { value: "chat", label: "CHAT" },
-          { value: "coding", label: "CODING" },
+          { value: "chat", label: "Chat" },
+          { value: "coding", label: "Coding" },
         ]}
         aria-label="Conversation mode"
       />
@@ -60,9 +60,9 @@ export function ModeControl(props: {
           value={props.projectId ?? ""}
           onChange={(v) => props.onProjectChange(v || undefined)}
           leading="library"
-          placeholder="PICK A PROJECT"
+          placeholder="Pick a project"
           searchPlaceholder="Search projects…"
-          emptyHint="NO GIT PROJECTS — ADD ONE UNDER PROJECTS"
+          emptyHint="No git projects — add one under projects"
           aria-label="Project"
         />
         {/* The one thing that will surprise someone: a worktree branches from the

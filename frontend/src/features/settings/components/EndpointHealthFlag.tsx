@@ -16,8 +16,8 @@ export function healthStatus(
 
 function healthLabel(s: EndpointStatus | null): string {
   if (s === "ok") return "OK";
-  if (s === "error") return "ERROR";
-  return "UNTESTED";
+  if (s === "error") return "Error";
+  return "Untested";
 }
 
 /** The endpoint health badge: a dotted StatusFlag rendering an endpoint's last

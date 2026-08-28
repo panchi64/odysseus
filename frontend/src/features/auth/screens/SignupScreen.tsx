@@ -61,7 +61,7 @@ export function SignupScreen(): JSX.Element {
         <Stack gap={3}>
           <Stack gap={1}>
             <StatusFlag status="info" dot>
-              FIRST-RUN SETUP
+              First-run setup
             </StatusFlag>
             <Text variant="micro" tone="dim">
               Choose the operator password. It derives the encryption key for
@@ -69,7 +69,7 @@ export function SignupScreen(): JSX.Element {
             </Text>
           </Stack>
           <Input
-            label="PASSWORD"
+            label="Password"
             type="password"
             value={password()}
             onInput={(e) => {
@@ -81,7 +81,7 @@ export function SignupScreen(): JSX.Element {
             autocomplete="new-password"
           />
           <Input
-            label="CONFIRM PASSWORD"
+            label="Confirm password"
             type="password"
             value={confirm()}
             onInput={(e) => {
@@ -103,7 +103,7 @@ export function SignupScreen(): JSX.Element {
             type="submit"
             disabled={loading() || mismatch()}
           >
-            {loading() ? "INITIALIZING…" : "INITIALIZE WORKSPACE"}
+            {loading() ? "Initializing…" : "Initialize workspace"}
           </Button>
         </Stack>
       </form>

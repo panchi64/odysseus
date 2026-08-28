@@ -21,17 +21,17 @@ import { Terminal } from "../components/Terminal";
 function flagFor(phase: SessionPhase): { status: Status; label: string } {
   switch (phase) {
     case "authenticating":
-      return { status: "info", label: "AUTHENTICATING" };
+      return { status: "info", label: "Authenticating" };
     case "connecting":
-      return { status: "warn", label: "CONNECTING" };
+      return { status: "warn", label: "Connecting" };
     case "live":
-      return { status: "warn", label: "SESSION LIVE" };
+      return { status: "warn", label: "Session live" };
     case "ended":
-      return { status: "idle", label: "SESSION ENDED" };
+      return { status: "idle", label: "Session ended" };
     case "denied":
-      return { status: "alert", label: "ACCESS DENIED" };
+      return { status: "alert", label: "Access denied" };
     default:
-      return { status: "idle", label: "HOST MODE" };
+      return { status: "idle", label: "Host mode" };
   }
 }
 
@@ -106,7 +106,7 @@ export function ShellScreen(): JSX.Element {
   return (
     <Stack gap={6} class="flex h-full min-h-0 flex-col">
       <PageHeader
-        title="OPERATOR SHELL"
+        title="Operator shell"
         subtitle="Live terminal on the server host. Re-authentication required every session."
         assetId="ODY-ADM-07.0 EDITION 02"
         actions={
@@ -117,7 +117,7 @@ export function ShellScreen(): JSX.Element {
       />
 
       <Show when={showPrompt()}>
-        <Panel label="HOST MODE" class="max-w-md">
+        <Panel label="Host mode" class="max-w-md">
           <Stack gap={4}>
             <div class="flex items-center gap-2 border border-alert px-3 py-2">
               <Icon name="warning" size={12} class="text-alert shrink-0" />
@@ -129,7 +129,7 @@ export function ShellScreen(): JSX.Element {
             <form onSubmit={(e) => void handleSubmit(e)}>
               <Stack gap={3}>
                 <Input
-                  label="OPERATOR PASSWORD"
+                  label="Operator password"
                   type="password"
                   value={password()}
                   onInput={(e) => {
@@ -148,8 +148,8 @@ export function ShellScreen(): JSX.Element {
                   disabled={phase() === "authenticating" || !password()}
                 >
                   {phase() === "authenticating"
-                    ? "AUTHENTICATING…"
-                    : "ENTER HOST MODE"}
+                    ? "Authenticating…"
+                    : "Enter host mode"}
                 </Button>
               </Stack>
             </form>
@@ -159,7 +159,7 @@ export function ShellScreen(): JSX.Element {
 
       <Show when={showTerminal() && grant()}>
         {(g) => (
-          <Panel label="TERMINAL" flush fill class="h-full">
+          <Panel label="Terminal" flush fill class="h-full">
             <div class="flex h-full min-h-0 flex-col">
               <Terminal
                 token={g().token}
@@ -174,10 +174,10 @@ export function ShellScreen(): JSX.Element {
       </Show>
 
       <Show when={phase() === "ended"}>
-        <Panel label="SESSION ENDED" class="max-w-md">
+        <Panel label="Session ended" class="max-w-md">
           <Stack gap={4}>
             <Readout
-              label="EXIT CODE"
+              label="Exit code"
               value={end()?.exitCode ?? "—"}
               tone={end()?.exitCode === 0 ? "nominal" : "alert"}
             />
@@ -185,7 +185,7 @@ export function ShellScreen(): JSX.Element {
               {end()?.reason}
             </Text>
             <Button variant="primary" leading="refresh" onClick={reconnect}>
-              RECONNECT
+              Reconnect
             </Button>
           </Stack>
         </Panel>

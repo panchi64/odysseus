@@ -24,7 +24,7 @@ export interface ConfirmOptions {
 
 export interface ConfirmChoiceOptions extends ConfirmOptions {
   /** When set, a third (middle) button offering an alternative to the primary
-   *  action — e.g. "KEEP IMAGES" beside a "DELETE IMAGES" primary. */
+   *  action — e.g. "Keep images" beside a "Delete images" primary. */
   secondaryLabel: string;
 }
 
@@ -44,8 +44,8 @@ export function confirm(opts: ConfirmOptions): Promise<boolean> {
 }
 
 /** Three-way variant: a destructive primary, an alternative secondary, and
- *  cancel. `await confirmChoice({ ..., confirmLabel: "DELETE IMAGES",
- *  secondaryLabel: "KEEP IMAGES" })` ⇒ "primary" | "secondary" | "cancel".
+ *  cancel. `await confirmChoice({ ..., confirmLabel: "Delete images",
+ *  secondaryLabel: "Keep images" })` ⇒ "primary" | "secondary" | "cancel".
  *  Cancel / X / backdrop / Escape resolve "cancel". Same outlet as confirm. */
 export function confirmChoice(
   opts: ConfirmChoiceOptions,
@@ -81,7 +81,7 @@ export function ConfirmHost(): JSX.Element {
       footer={
         <>
           <Button variant="ghost" onClick={() => settle("cancel")}>
-            {current()?.cancelLabel ?? "CANCEL"}
+            {current()?.cancelLabel ?? "Cancel"}
           </Button>
           <Show when={current()?.secondaryLabel}>
             {(label) => (
@@ -94,7 +94,7 @@ export function ConfirmHost(): JSX.Element {
             variant={current()?.tone === "alert" ? "danger" : "primary"}
             onClick={() => settle("primary")}
           >
-            {current()?.confirmLabel ?? "CONFIRM"}
+            {current()?.confirmLabel ?? "Confirm"}
           </Button>
         </>
       }

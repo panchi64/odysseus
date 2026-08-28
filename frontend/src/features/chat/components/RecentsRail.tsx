@@ -51,15 +51,19 @@ export function RecentsRail(): JSX.Element {
     <div class="mb-2">
       <div class="flex items-center justify-between px-3 py-1">
         <Text variant="label" tone="dim">
-          RECENTS
+          Recents
         </Text>
         <Button variant="ghost" size="sm" leading="plus" onClick={startNew}>
-          NEW
+          New
         </Button>
       </div>
-      {/* Cap the height so a long history scrolls within RECENTS instead of
-          pushing the rest of the nav off-screen. */}
-      <div class="max-h-80 overflow-y-auto border-t border-line">
+      {/* Cap the height so a long history scrolls within Recents instead of
+          pushing the rest of the nav off-screen.
+
+          No rule above the list (§7): a hairline here sat directly on top of the
+          first row and read as a border belonging to *that item* rather than as
+          a divider under the header. The header's own spacing separates them. */}
+      <div class="scrollbar-thin max-h-80 overflow-y-auto">
         <SessionList
           sessions={sessions}
           currentId={currentId()}

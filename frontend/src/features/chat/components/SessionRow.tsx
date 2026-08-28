@@ -47,7 +47,10 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
   return (
     <div
       class={cx(
-        "group flex items-center border-b border-l-2 border-line transition-colors hover:bg-raised",
+        // No rule between rows (§7) — the hover fill and the rhythm are what
+        // make this read as a list. The 2px left edge stays: it is the ambient
+        // activity signal, and it is doing work no fill can.
+        "group flex items-center rounded-ctl border-l-2 transition-colors hover:bg-raised",
         props.selected && "bg-raised",
         // Exactly one border-left-color class is ever emitted — two would leave the
         // winner to stylesheet order rather than intent.

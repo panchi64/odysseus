@@ -30,7 +30,7 @@ export function OfflineSection(): JSX.Element {
   });
   const offlineLabel = (s: OfflineState): string =>
     !s.effectiveOffline
-      ? "ONLINE"
+      ? "Online"
       : s.manualOffline
         ? "OFFLINE · MANUAL"
         : "OFFLINE · NO CONNECTIVITY";
@@ -43,14 +43,14 @@ export function OfflineSection(): JSX.Element {
   };
 
   return (
-    <Panel label="OFFLINE MODE">
+    <Panel label="Offline mode">
       <Show when={offline()} fallback={<LoadingText />}>
         {(state) => (
           <Stack gap={3}>
             <Row align="center" justify="between">
               <Stack gap={1}>
                 <Text variant="label" tone="default">
-                  STATUS
+                  Status
                 </Text>
                 <Text variant="micro" tone="dim">
                   When connectivity is lost the web search + fetch containers
@@ -64,14 +64,10 @@ export function OfflineSection(): JSX.Element {
                 {offlineLabel(state())}
               </StatusFlag>
             </Row>
-            <Row
-              align="center"
-              justify="between"
-              class="border-t border-line pt-3"
-            >
+            <Row align="center" justify="between" class="pt-3">
               <Stack gap={1}>
                 <Text variant="label" tone="default">
-                  OFFLINE NOW
+                  Offline now
                 </Text>
                 <Text variant="micro" tone="dim">
                   Force offline immediately — tears down the web containers
@@ -91,7 +87,7 @@ export function OfflineSection(): JSX.Element {
             <Row align="center" justify="between">
               <Stack gap={1}>
                 <Text variant="label" tone="default">
-                  AUTO-DETECT
+                  Auto-detect
                 </Text>
                 <Text variant="micro" tone="dim">
                   Go offline on its own when the internet connection drops, and

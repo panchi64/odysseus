@@ -41,12 +41,12 @@ export function ModelsDirSection(): JSX.Element {
   }
 
   return (
-    <Panel label="MODELS DIRECTORY">
+    <Panel label="Models directory">
       <Stack gap={3}>
         <Row gap={3} align="end" class="flex-wrap">
           <div class="min-w-0 flex-1">
             <PathInput
-              label="DIRECTORY"
+              label="Directory"
               placeholder="/path/to/models"
               value={value()}
               onChange={setValue}
@@ -59,7 +59,7 @@ export function ModelsDirSection(): JSX.Element {
             />
           </div>
           <Button leading="check" disabled={!canSave()} onClick={save}>
-            {saving() ? "SAVING…" : "SAVE"}
+            {saving() ? "Saving…" : "Save"}
           </Button>
         </Row>
         <Text variant="micro" tone="dim">

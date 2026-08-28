@@ -22,14 +22,11 @@ function PinRow(props: { item: NavItem; active: boolean }): JSX.Element {
         leading={props.item.icon}
         href={props.item.href}
         selected={props.active}
-        flush
         right={navMeta(props.item)}
-        // §6 States — selection is marked by a 2px emphasis rule, not by color
-        // alone.
-        class={cx(
-          "border-l-2",
-          props.active ? "border-bright" : "border-transparent",
-        )}
+        // Selection is a raised fill on a smoothed corner (§10 States), not the
+        // old 2px left rule — a rail of vertical bars was reading as chrome, and
+        // the fill says "you are here" without adding a line to the page.
+        class={cx("rounded-ctl", props.active && "bg-raised")}
       />
     </Tooltip>
   );
@@ -51,13 +48,16 @@ export function Sidebar(): JSX.Element {
   return (
     <nav class="flex min-h-full flex-col bg-surface">
       <div class="sticky top-0 z-30 bg-surface">
-        <div class="flex items-center justify-between gap-2 border-b border-line pr-2">
+        <div class="flex items-center justify-between gap-2 pr-2">
           <a
             href="/"
-            class="flex min-w-0 flex-1 flex-col gap-1 px-3 py-3 transition-colors hover:bg-raised"
+            class="mx-1 flex min-w-0 flex-1 flex-col gap-1 rounded-ctl px-2 py-3 transition-colors hover:bg-raised"
           >
-            <Text variant="readout" tone="bright" class="font-display">
-              ODYSSEUS
+            {/* A wordmark is neither the interface talking nor the machine
+                reporting — it is a name. Sans with the display tracking reads
+                as a logotype; the old uppercase read as one more HUD label. */}
+            <Text variant="readout" tone="bright" class="tracking-tight">
+              Odysseus
             </Text>
             <Text variant="micro" tone="dim">
               ODY-WORKSPACE-02.1
@@ -74,7 +74,7 @@ export function Sidebar(): JSX.Element {
           </Tooltip>
         </div>
 
-        <div class="border-b border-line">
+        <div class="pb-2">
           <For each={TOP_PINS}>
             {(item) => <PinRow item={item} active={isActive(item.href)} />}
           </For>
@@ -83,7 +83,7 @@ export function Sidebar(): JSX.Element {
 
       <AreaNav active={activeArea()} />
 
-      <div class="sticky bottom-0 border-t border-line bg-surface">
+      <div class="sticky bottom-0 mt-2 bg-surface pt-2">
         <For each={FOOTER_PINS}>
           {(item) => <PinRow item={item} active={isActive(item.href)} />}
         </For>
@@ -91,7 +91,7 @@ export function Sidebar(): JSX.Element {
           <span class="flex items-center gap-2">
             <Icon name="user" size={16} class="text-dim" />
             <Text variant="label" tone="dim">
-              OPERATOR
+              Operator
             </Text>
           </span>
           <Button
@@ -100,7 +100,7 @@ export function Sidebar(): JSX.Element {
             leading="lock"
             onClick={() => void session.lock()}
           >
-            LOCK
+            Lock
           </Button>
         </div>
       </div>

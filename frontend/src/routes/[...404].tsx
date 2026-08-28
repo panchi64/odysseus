@@ -11,13 +11,13 @@ export default function NotFound() {
           404
         </Text>
         <Text variant="label" tone="dim">
-          NO SUCH ROUTE
+          No such route
         </Text>
         <Text variant="body" tone="dim">
           The requested surface does not exist or has been decommissioned.
         </Text>
         <Button variant="default" href="/" leading="arrow-right" class="mt-2">
-          RETURN TO OVERVIEW
+          Return to overview
         </Button>
       </RegistrationFrame>
     </div>

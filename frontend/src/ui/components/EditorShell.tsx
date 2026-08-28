@@ -22,7 +22,7 @@ export interface EditorShellProps {
   /** Right-hand tools column. A thunk so it can render in both the desktop
    *  column and the mobile drawer. */
   aside?: () => JSX.Element;
-  /** Mobile drawer title + trigger label. Default "TOOLS". */
+  /** Mobile drawer title + trigger label. Default "Tools". */
   asideLabel?: string;
   /** The editor body (e.g. a Textarea). */
   children: JSX.Element;
@@ -34,7 +34,7 @@ export interface EditorShellProps {
  *  and Skill editors both compose this, so the two surfaces stay identical. */
 export function EditorShell(props: EditorShellProps): JSX.Element {
   const [asideOpen, setAsideOpen] = createSignal(false);
-  const asideLabel = () => props.asideLabel ?? "TOOLS";
+  const asideLabel = () => props.asideLabel ?? "Tools";
 
   // Unsaved-changes guard — owned here so every editor gets it for free.
   onMount(() => {

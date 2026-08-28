@@ -27,7 +27,7 @@ export function DownloadProgress(props: {
           when={props.progress.file}
           fallback={
             <Text variant="micro" tone="dim">
-              {determinate() ? "DOWNLOADING" : "PREPARING"}
+              {determinate() ? "Downloading" : "Preparing"}
             </Text>
           }
         >

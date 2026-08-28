@@ -107,12 +107,12 @@ export function ChatSection(): JSX.Element {
   };
 
   return (
-    <Panel label="CHAT">
+    <Panel label="Chat">
       <Show when={chatSettings()} fallback={<LoadingText />}>
         <Stack gap={3}>
           <Stack gap={1}>
             <Text variant="label" tone="default">
-              STEP LIMIT PER TURN
+              Step limit per turn
             </Text>
             <Text variant="micro" tone="dim">
               How many times the model may be called within a single turn. Every
@@ -138,7 +138,7 @@ export function ChatSection(): JSX.Element {
               disabled={savingSteps()}
               onClick={() => void saveSteps()}
             >
-              {savingSteps() ? "SAVING…" : "SAVE"}
+              {savingSteps() ? "Saving…" : "Save"}
             </Button>
           </Row>
 
@@ -146,7 +146,7 @@ export function ChatSection(): JSX.Element {
 
           <Stack gap={1}>
             <Text variant="label" tone="default">
-              INACTIVITY TIMEOUT
+              Inactivity timeout
             </Text>
             <Text variant="micro" tone="dim">
               How long a run may go without producing anything before it is
@@ -171,7 +171,7 @@ export function ChatSection(): JSX.Element {
               disabled={savingTimeout()}
               onClick={() => void saveTimeout()}
             >
-              {savingTimeout() ? "SAVING…" : "SAVE"}
+              {savingTimeout() ? "Saving…" : "Save"}
             </Button>
           </Row>
 
@@ -179,7 +179,7 @@ export function ChatSection(): JSX.Element {
 
           <Stack gap={1}>
             <Text variant="label" tone="default">
-              AUTO-COMPACT CONVERSATIONS
+              Auto-compact conversations
             </Text>
             <Text variant="micro" tone="dim">
               When a conversation nears the model's context limit, its earlier
@@ -218,7 +218,7 @@ export function ChatSection(): JSX.Element {
               disabled={savingAutoCompact()}
               onClick={() => void saveAutoCompact()}
             >
-              {savingAutoCompact() ? "SAVING…" : "SAVE"}
+              {savingAutoCompact() ? "Saving…" : "Save"}
             </Button>
           </Row>
         </Stack>

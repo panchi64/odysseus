@@ -9,35 +9,35 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
   const last = blocks?.[blocks.length - 1];
   // No blocks yet = the run was created but nothing has streamed back: the backend
   // is still preparing (context assembly, model spin-up). Say so rather than
-  // "WORKING", which implies the agent is already mid-task.
-  if (!last) return "STARTING";
+  // "Working", which implies the agent is already mid-task.
+  if (!last) return "Starting";
   switch (last.kind) {
     case "thinking":
-      return "THINKING";
+      return "Thinking";
     case "text":
-      return "WRITING";
+      return "Writing";
     case "tool":
       return last.tool.status === "running"
         ? `RUNNING ${last.tool.name}`
-        : "WORKING";
+        : "Working";
     case "host_command":
       return last.command.phase === "pending"
-        ? "AWAITING APPROVAL"
+        ? "Awaiting approval"
         : last.command.phase === "running"
-          ? "RUNNING ON HOST"
-          : "WORKING";
+          ? "Running on host"
+          : "Working";
     case "approval":
-      return "AWAITING APPROVAL";
+      return "Awaiting approval";
     case "view_version":
     case "view_document":
-      return "UPDATING VIEW";
+      return "Updating view";
     case "view_live":
-      return "STARTING LIVE VIEW";
+      return "Starting live view";
   }
 }
 
 /** The turn's tempo line: while streaming, a hard-stepped throbber + a label for
- *  the live phase ("THINKING", "RUNNING web_search", "WRITING"). Once settled, a
+ *  the live phase ("Thinking", "RUNNING web_search", "Writing"). Once settled, a
  *  compact count of the work it took (the per-step rhythm lives in the block
  *  rail). Renders nothing for a plain turn with no work. */
 export function TurnProgressRail(props: {
@@ -49,7 +49,7 @@ export function TurnProgressRail(props: {
   collapsed?: boolean;
   /** True until the run's first event arrives — waiting behind the backend's
    *  concurrency limit, not yet actually executing. Rendered as an explicit
-   *  "QUEUED" state instead of the throbber, which would otherwise look
+   *  "Queued" state instead of the throbber, which would otherwise look
    *  identical to a model that's just slow to produce its first token. */
   queued?: boolean;
 }): JSX.Element {
@@ -62,8 +62,8 @@ export function TurnProgressRail(props: {
       fallback={
         <Show when={hasWork() && props.collapsed}>
           <Text variant="micro" tone="dim">
-            {counts().tools} {counts().tools === 1 ? "TOOL" : "TOOLS"} ·{" "}
-            {counts().thinks} {counts().thinks === 1 ? "THINK" : "THINKS"}
+            {counts().tools} {counts().tools === 1 ? "Tool" : "Tools"} ·{" "}
+            {counts().thinks} {counts().thinks === 1 ? "Think" : "Thinks"}
           </Text>
         </Show>
       }
@@ -73,7 +73,7 @@ export function TurnProgressRail(props: {
           when={!props.queued}
           fallback={
             <Text variant="label" tone="dim">
-              QUEUED
+              Queued
             </Text>
           }
         >

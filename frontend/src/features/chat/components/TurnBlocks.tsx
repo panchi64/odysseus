@@ -121,19 +121,77 @@ function fullWidthTop(top?: TopSpacing): string | undefined {
   return top && top !== "none" ? "mt-3" : undefined;
 }
 
+/** Wrap every character past `seen` in a span that fades itself in, and report
+ *  the new total. Text nodes are collected before any mutation, since splitting
+ *  one mid-walk would invalidate the walker.
+ *
+ *  Older text is left as plain, unwrapped nodes, so it carries no animation even
+ *  when Markdown replaces the block's DOM on the next delta — only the newly
+ *  arrived run ever animates. A run whose animation is interrupted by the next
+ *  delta simply lands at full opacity, which is the intended effect: the token
+ *  at the head of the stream is the one that fades. */
+function fadeInTextPast(root: HTMLElement, seen: number): number {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const pending: { node: Text; offset: number }[] = [];
+  let count = 0;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const node = n as Text;
+    const len = node.data.length;
+    if (count + len > seen) {
+      pending.push({ node, offset: Math.max(0, seen - count) });
+    }
+    count += len;
+  }
+  for (const { node, offset } of pending) {
+    const tail = offset > 0 ? node.splitText(offset) : node;
+    if (!tail.parentNode || !tail.data) continue;
+    const span = document.createElement("span");
+    span.className = "ody-token-in";
+    tail.parentNode.insertBefore(span, tail);
+    span.appendChild(tail);
+  }
+  return count;
+}
+
 /** A passage of the answer — full-width and bright. The active, still-streaming
- *  passage carries the caret and defers code-copy enhancement until it settles. */
+ *  passage carries the caret, fades in each arriving run of text (§8, human
+ *  register), and defers code-copy enhancement until it settles.
+ *
+ *  `streamStable` while live keeps the DOM of every settled block, so only the
+ *  trailing block re-parses per delta — which is both what stops KaTeX/markdown
+ *  flicker and what keeps the fade confined to genuinely new text. */
 function AnswerText(props: {
   text: string;
   active?: boolean;
   streaming?: boolean;
 }): JSX.Element {
   const live = () => Boolean(props.active && props.streaming);
+  let host: HTMLDivElement | undefined;
+  // Characters already on screen. A message that arrives complete (history,
+  // a settled turn) starts fully "seen" so it renders without animating.
+  let seen = live() ? 0 : Infinity;
+
+  createEffect(() => {
+    // Track the source so this re-runs on every delta.
+    const text = props.text;
+    if (!host || !live()) {
+      seen = Infinity;
+      return;
+    }
+    // Let Markdown commit its own DOM for this delta first.
+    queueMicrotask(() => {
+      if (!host) return;
+      seen = fadeInTextPast(host, seen === Infinity ? text.length : seen);
+    });
+  });
+
   return (
     <div>
-      <Markdown class="inline" copyCode={!live()}>
-        {props.text}
-      </Markdown>
+      <div ref={host} class="inline">
+        <Markdown class="inline" copyCode={!live()} streamStable={live()}>
+          {props.text}
+        </Markdown>
+      </div>
       <Show when={live()}>
         {" "}
         <Caret class="text-bright" />
@@ -312,7 +370,7 @@ function WorkLogAccordion(
     <div class={fullWidthTop(props.top)}>
       <Disclosure
         label={`WORK LOG · ${props.groups.length} ${
-          props.groups.length === 1 ? "STEP" : "STEPS"
+          props.groups.length === 1 ? "Step" : "Steps"
         }`}
         open={props.open}
         onToggle={() => props.onToggle()}

@@ -37,14 +37,14 @@ export function Drawer(props: DrawerProps): JSX.Element {
             role="dialog"
             aria-modal="true"
             class={cx(
-              "flex h-full w-full max-w-sm flex-col border-line bg-surface",
-              local.side === "left" ? "mr-auto border-r" : "ml-auto border-l",
+              "flex h-full w-full max-w-sm flex-col bg-surface shadow-2",
+              local.side === "left" ? "mr-auto" : "ml-auto",
               local.class,
             )}
             onClick={(e) => e.stopPropagation()}
           >
             <Show when={local.title}>
-              <header class="flex items-center justify-between border-b border-line px-4 py-2">
+              <header class="flex items-center justify-between gap-4 px-4 pt-4 pb-2">
                 <Text variant="label" tone="bright">
                   {local.title}
                 </Text>
@@ -63,7 +63,7 @@ export function Drawer(props: DrawerProps): JSX.Element {
             </Show>
             <div class="min-h-0 flex-1 overflow-auto p-4">{local.children}</div>
             <Show when={local.footer}>
-              <footer class="flex items-center justify-end gap-2 border-t border-line px-4 py-2">
+              <footer class="flex items-center justify-end gap-2 px-4 pt-2 pb-4">
                 {local.footer}
               </footer>
             </Show>

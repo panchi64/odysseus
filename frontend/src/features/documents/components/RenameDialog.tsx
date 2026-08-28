@@ -35,11 +35,11 @@ export function RenameDialog(props: {
     <Modal
       open={props.open}
       onClose={props.onClose}
-      title="RENAME DOCUMENT"
+      title="Rename document"
       footer={
         <>
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button
             variant="primary"
@@ -47,13 +47,13 @@ export function RenameDialog(props: {
             disabled={!trimmed() || busy()}
             onClick={() => void submit()}
           >
-            SAVE
+            Save
           </Button>
         </>
       }
     >
       <Input
-        label="TITLE"
+        label="Title"
         value={value()}
         autofocus
         invalid={!trimmed()}

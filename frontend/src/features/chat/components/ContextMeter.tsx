@@ -32,7 +32,7 @@ export function ContextMeter(props: ContextMeterProps): JSX.Element {
       >
         <span class="flex items-center gap-1.5">
           <Text variant="label" tone="dim">
-            CTX
+            Ctx
           </Text>
           <ProgressBar
             value={percent()}

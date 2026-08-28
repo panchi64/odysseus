@@ -116,7 +116,7 @@ export function ViewLiveContent(props: {
       fallback={
         <EmptyState
           icon="warning"
-          message="LIVE PREVIEW STOPPED"
+          message="Live preview stopped"
           hint="Live preview stopped (sandbox went idle) — ask the assistant to serve it again."
         />
       }
@@ -124,7 +124,7 @@ export function ViewLiveContent(props: {
       <div class="flex h-full min-h-0 flex-col">
         <Show when={unreachable()}>
           {(t) => (
-            <div class="shrink-0 border-b border-line px-2 py-1">
+            <div class="shrink-0 px-2 py-1">
               <Text variant="micro" tone="dim">
                 LIVE PREVIEW UNREACHABLE — LAST CHECKED {t()}
               </Text>

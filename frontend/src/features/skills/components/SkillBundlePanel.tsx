@@ -54,7 +54,7 @@ export function SkillBundlePanel(props: {
     const ok = await confirm({
       title: `Remove "${file.relpath}"?`,
       detail: "The file is deleted from this skill's bundle.",
-      confirmLabel: "REMOVE",
+      confirmLabel: "Remove",
       tone: "alert",
     });
     if (!ok) return;
@@ -76,7 +76,7 @@ export function SkillBundlePanel(props: {
 
   return (
     <Panel
-      label="BUNDLE FILES"
+      label="Bundle files"
       flush
       meta={
         <Text variant="micro" tone="dim" class="tabular-nums">
@@ -89,7 +89,7 @@ export function SkillBundlePanel(props: {
         fallback={
           <EmptyState
             icon="file"
-            message="NO FILES"
+            message="No files"
             hint="Scripts, templates, and references shipped with this skill appear here."
           />
         }
@@ -110,7 +110,7 @@ export function SkillBundlePanel(props: {
                     leading="download"
                     onClick={() => void download(file)}
                   >
-                    GET
+                    Get
                   </Button>
                   <Button
                     variant="ghost"
@@ -118,7 +118,7 @@ export function SkillBundlePanel(props: {
                     leading="trash"
                     onClick={() => void remove(file)}
                   >
-                    REMOVE
+                    Remove
                   </Button>
                 </span>
               }
@@ -127,7 +127,7 @@ export function SkillBundlePanel(props: {
         </For>
       </Show>
 
-      <div class="border-t border-line p-3">
+      <div class="p-3">
         <input
           ref={picker.bindInput}
           {...HIDDEN_FILE_INPUT}
@@ -141,7 +141,7 @@ export function SkillBundlePanel(props: {
           disabled={busy()}
           onClick={picker.openPicker}
         >
-          {busy() ? "ADDING…" : "ADD FILE"}
+          {busy() ? "Adding…" : "Add file"}
         </Button>
       </div>
     </Panel>

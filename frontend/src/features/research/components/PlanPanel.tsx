@@ -23,7 +23,7 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
 
   return (
     <Panel
-      label="RESEARCH PLAN"
+      label="Research plan"
       meta={
         <Text variant="micro" tone="dim">
           {props.plan.angles.length} ANGLES
@@ -33,14 +33,14 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
       <Stack gap={4}>
         <Stack gap={1}>
           <Text variant="label" tone="dim">
-            OBJECTIVE
+            Objective
           </Text>
           <Text variant="body">{props.plan.objective}</Text>
         </Stack>
 
         <Stack gap={1}>
           <Text variant="label" tone="dim">
-            ANGLES
+            Angles
           </Text>
           <ul class="flex flex-col gap-1 list-disc pl-5">
             <For each={props.plan.angles}>
@@ -56,7 +56,7 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
         <Show when={props.plan.notes}>
           <Stack gap={1}>
             <Text variant="label" tone="dim">
-              NOTES
+              Notes
             </Text>
             <Text variant="body" tone="dim">
               {props.plan.notes}
@@ -68,7 +68,7 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
 
         <Stack gap={2}>
           <Text variant="label" tone="dim">
-            REFINE WITH FEEDBACK (OPTIONAL)
+            Refine with feedback (optional)
           </Text>
           <Textarea
             rows={3}
@@ -87,7 +87,7 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
                 props.onRefine(text);
               }}
             >
-              REFINE PLAN
+              Refine plan
             </Button>
             <Button
               variant="primary"
@@ -95,7 +95,7 @@ export function PlanPanel(props: PlanPanelProps): JSX.Element {
               disabled={busy()}
               onClick={props.onStart}
             >
-              START RESEARCH
+              Start research
             </Button>
           </Row>
         </Stack>

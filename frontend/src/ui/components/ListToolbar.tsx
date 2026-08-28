@@ -77,7 +77,7 @@ export function ListToolbar(props: ListToolbarProps): JSX.Element {
           <Checkbox
             checked={local.allSelected}
             onChange={() => local.onToggleAll!()}
-            label="ALL"
+            label="All"
           />
         </Show>
         <div class="min-w-[12rem] flex-1">
@@ -108,7 +108,7 @@ export function ListToolbar(props: ListToolbarProps): JSX.Element {
                   local.dir === "asc" ? "Sort ascending" : "Sort descending"
                 }
                 title={local.dir === "asc" ? "Ascending" : "Descending"}
-                class="flex size-8 items-center justify-center rounded-ctl border border-line text-dim transition-colors hover:border-bright hover:text-bright"
+                class="flex size-8 items-center justify-center rounded-ctl text-dim transition-colors hover:bg-raised hover:text-bright"
               >
                 <Icon
                   name="chevron-down"
@@ -145,7 +145,7 @@ export function ListToolbar(props: ListToolbarProps): JSX.Element {
               class="flex items-center gap-1 text-dim transition-colors hover:text-bright"
             >
               <Icon name="close" size={12} />
-              <Text variant="micro">CLEAR</Text>
+              <Text variant="label">Clear</Text>
             </button>
           </Show>
         </div>

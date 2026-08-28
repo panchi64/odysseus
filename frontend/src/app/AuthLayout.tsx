@@ -9,7 +9,7 @@ export function AuthLayout(props: { children: JSX.Element }): JSX.Element {
       <RegistrationFrame class="w-full max-w-sm p-8" assetId="ODY-AUTH-01.0">
         <div class="mb-6 flex flex-col gap-0.5">
           <Text variant="display" tone="bright" class="font-display">
-            ODYSSEUS
+            Odysseus
           </Text>
           <Text variant="micro" tone="dim">
             SECURE WORKSPACE · AUTHORIZED ACCESS ONLY

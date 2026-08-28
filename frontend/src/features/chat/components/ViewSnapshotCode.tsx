@@ -168,7 +168,7 @@ export function ViewSnapshotCode(props: {
     <div class="flex h-full min-h-0">
       {/* File tree — pick a file; its change status reads through tone. */}
       <div class="flex w-56 shrink-0 flex-col border-r border-line">
-        <div class="border-b border-line px-3 py-2">
+        <div class="px-3 py-2">
           <Text variant="micro" tone="dim">
             {props.snapshot.summary}
           </Text>
@@ -177,9 +177,9 @@ export function ViewSnapshotCode(props: {
           <ResourceView
             data={toId() === id() ? props.files : toFiles}
             onRetry={toId() === id() ? props.onRetryFiles : refetchToFiles}
-            loadingLabel="LOADING FILES…"
+            loadingLabel="Loading files…"
             isEmpty={(rows) => rows.length === 0}
-            emptyMessage="NO FILES"
+            emptyMessage="No files"
           >
             {(rows) => (
               <For each={rows()}>
@@ -204,9 +204,9 @@ export function ViewSnapshotCode(props: {
 
       {/* Content — full code or a diff against the chosen FROM. */}
       <div class="flex min-w-0 flex-1 flex-col">
-        <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+        <div class="flex items-center gap-2 px-3 py-2">
           <Text variant="micro" tone="dim" class="shrink-0">
-            TO
+            To
           </Text>
           <Select
             aria-label="Compare TO version"
@@ -216,7 +216,7 @@ export function ViewSnapshotCode(props: {
             onChange={setTo}
           />
           <Text variant="micro" tone="dim" class="shrink-0">
-            FROM
+            From
           </Text>
           <Select
             aria-label="Compare FROM version"
@@ -231,7 +231,7 @@ export function ViewSnapshotCode(props: {
             when={props.selectedPath}
             fallback={
               <EmptyState
-                message="NO FILE SELECTED"
+                message="No file selected"
                 hint="Pick a file to view."
               />
             }
@@ -253,7 +253,7 @@ export function ViewSnapshotCode(props: {
                   <Switch>
                     {/* Full code. */}
                     <Match when={fromId() === NO_DIFF}>
-                      <Switch fallback={<LoadingText label="LOADING FILE…" />}>
+                      <Switch fallback={<LoadingText label="Loading file…" />}>
                         <Match when={text.error}>
                           <ErrorState
                             message="Could not load this file."
@@ -274,7 +274,7 @@ export function ViewSnapshotCode(props: {
 
                     {/* Diff against the chosen FROM. */}
                     <Match when={fromId() !== NO_DIFF}>
-                      <Switch fallback={<LoadingText label="LOADING DIFF…" />}>
+                      <Switch fallback={<LoadingText label="Loading diff…" />}>
                         <Match when={diffs.error}>
                           <ErrorState
                             message="Could not load this diff."
@@ -291,7 +291,7 @@ export function ViewSnapshotCode(props: {
                         </Match>
                         <Match when={diffs() && !selectedDiff()?.diff}>
                           <EmptyState
-                            message="NO DIFF"
+                            message="No diff"
                             hint="This file is unchanged between the selected versions (or its diff is empty)."
                           />
                         </Match>

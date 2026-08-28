@@ -138,7 +138,7 @@ export function EndpointFormDialog(props: {
     <Modal
       open={props.open}
       onClose={props.onClose}
-      title={props.endpoint ? "EDIT ENDPOINT" : "ADD ENDPOINT"}
+      title={props.endpoint ? "Edit endpoint" : "Add endpoint"}
       class="max-w-lg"
     >
       <Stack gap={3}>
@@ -155,14 +155,14 @@ export function EndpointFormDialog(props: {
         />
         <div class="flex justify-end gap-2">
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button
             variant="primary"
             disabled={!valid() || saving()}
             onClick={save}
           >
-            {saving() ? "SAVING…" : "SAVE"}
+            {saving() ? "Saving…" : "Save"}
           </Button>
         </div>
       </Stack>

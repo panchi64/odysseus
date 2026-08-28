@@ -1,0 +1,579 @@
+# Odysseus Design System — **Instrument**
+
+*A quiet, high-precision interface language: Swiss neo-grotesque structure, pure-neutral surfaces, and a monospaced second voice reserved for the machine.*
+
+**Version 1.0** · Status: Foundation spec · Supersedes *Terminal-HUD 0.1*
+
+---
+
+## 0. Reading this document
+
+This is a foundation spec, not a component catalogue. It defines the *rules* and the *tokens* — the atomic decisions everything else inherits from. Someone should be able to open an empty CSS file and reproduce the look from the values below without guessing.
+
+Two surface modes are defined throughout: **Ink** (dark, default) and **Paper** (light). They share structure, grid, type, and motion — only color and elevation differ. Build a component once; it works in both by swapping the token set.
+
+If this document and the code disagree, this document is wrong and should be fixed. It leads the implementation in `frontend/src/ui/theme/`, and nowhere else declares a raw value.
+
+### What changed from Terminal-HUD 0.1, and why
+
+The previous system was a faithful terminal/FUI pastiche: everything monospaced, everything uppercase, every corner square, no shadows, no easing. It was distinctive and it was *loud* — the density that made a cockpit readout legible made a 19-surface workspace feel like clutter, because every element shouted at the same volume and nothing could recede.
+
+Instrument keeps the skeleton and changes the voice:
+
+| | Terminal-HUD 0.1 | Instrument 1.0 |
+|---|---|---|
+| Type | Mono everywhere | **Sans for the interface, mono for the machine** (§2) |
+| Labels | `UPPERCASE` + tracking, always | Sentence case; uppercase mono reserved for telemetry |
+| Color | Green-tinted near-blacks, off-whites | **Pure `#000` / pure `#FFF`**, true neutral grays |
+| Accent | Phosphor green, both modes | Green in Ink, **cerulean in Paper** — and rationed harder |
+| Elevation | Forbidden (no shadows) | **Subtle shadow**, plus an accent shadow for primary focus |
+| Corners | Square, always | Square for data grids; **3px controls, 6px panels** |
+| Borders | "Free ink" — everywhere | **The exception** (§7); space and surface value separate first |
+| Motion | Hard-cut steps only | **Two registers** — eased for the interface, instant for the machine (§8) |
+
+What deliberately survived, because it was the good part: the 4px grid, the hairline data grid, tabular figures, semantic-only color, registration marks, and diegetic microcopy.
+
+---
+
+## 1. Design principles
+
+1. **Volume is hierarchy.** The old system's failure was that everything was equally loud. Most of the interface should sit at a *low* volume — recessive, neutral, unhurried — so the one thing that matters can be the only thing that is bright, elevated, or colored. If two things on a screen are both shouting, one of them is wrong.
+2. **Two voices, never blurred.** The interface speaks in sans. The machine speaks in mono. This is a semantic distinction, not a decorative one (§2).
+3. **Precision without density theater.** Numbers align, fields don't reflow, state is always visible rather than implied. But density is no longer a goal in itself — whitespace is a legitimate tool, and an empty region is not wasted ink.
+4. **Semantic color only.** The resting palette is pure neutral. Color appears to *mean* something — nominal, warning, alert, info — or to mark the single element holding primary focus. A screen with nothing happening is grayscale.
+5. **Systematic, not bespoke.** Spacing, naming, iconography, and microcopy follow consistent rules, so a screen the operator has never seen still reads as familiar.
+6. **Not a generic AI app.** The signature devices — the hairline grid, registration marks, diegetic telemetry, the mono/sans split, hard-cut machine motion — are what keep this from resolving into another rounded-card chat interface. Restraint is the goal; anonymity is not.
+
+---
+
+## 2. The two voices
+
+**This is the central idea of the system.** Everything else is in service of it.
+
+### Sans — the interface speaking to the operator
+
+`Helvetica Neue`. Everything the *product* says: page titles, field labels, body copy, button text, menu items, prose, empty states, explanations, errors written for a human.
+
+Sans is what the operator's attention lands on. It is calm, sentence-cased, generously spaced, and it animates smoothly (§8).
+
+### Mono — the machine showing its work
+
+`JetBrains Mono`. Everything the *system* emits: identifiers, hashes, timestamps, durations, token counts, model names, file paths, shell output, code, diffs, coordinates, run states, latency figures, version strings.
+
+Mono is deliberately **used sparingly and sized down**. It is ambient — the texture of a machine calculating in the background, not something to read first. It is often dim, often uppercase, always tabular, and it **never animates smoothly** (§8): mono state changes are instantaneous, because a computer does not ease.
+
+### The test
+
+> Would a person have written this sentence, or did a process emit this value?
+
+Person → sans. Process → mono. A model *name* (`qwen3-30b-a3b`) is emitted by a process: mono. The word "Model" labelling it is the interface talking: sans.
+
+When genuinely ambiguous, choose sans — the failure mode of too much mono is the cluttered terminal look this system exists to leave behind.
+
+```
+┌──────────────────────────────────────────┐
+│  Active model                     ← sans │
+│  Qwen3 30B A3B                    ← sans │
+│  QWEN3-30B-A3B-Q4 · 18.2 GB       ← mono │
+│                                          │
+│  Context used                     ← sans │
+│  48%                              ← sans │
+│  63,104 / 131,072 TOK             ← mono │
+└──────────────────────────────────────────┘
+```
+
+---
+
+## 3. Grid & spacing
+
+### Base unit
+
+**4px.** All spacing, sizing, and positioning are multiples of 4. This is unchanged and non-negotiable — it is what makes the layout feel engineered rather than arranged.
+
+### Spacing scale
+
+| Token | px | Typical use |
+|---|---|---|
+| `space-0` | 0 | Flush elements |
+| `space-1` | 4 | Label-to-value gaps, intra-control padding |
+| `space-2` | 8 | Padding inside dense cells, icon-to-text |
+| `space-3` | 12 | Control padding, group separation |
+| `space-4` | 16 | Panel padding (default) |
+| `space-5` | 20 | Panel padding, roomy |
+| `space-6` | 24 | Section separation |
+| `space-8` | 32 | Major region separation |
+| `space-12` | 48 | Page-level separation, above a display title |
+
+### Density
+
+Instrument runs at **one step less dense** than Terminal-HUD. Where the old system reached for `space-1`/`space-2` inside a panel, reach for `space-2`/`space-3`. Where a page used `space-4` between sections, use `space-6`.
+
+The exception is **tabular data** — tables, instrument bands, log output, list rows. Density is a virtue there because scanning many rows is the task. Keep those at `space-1`/`space-2` vertical.
+
+### Margins & gutters
+
+- **Gutters:** `space-4` default; `space-2` inside dense tabular regions.
+- **Viewport margins:** `space-6` minimum, `space-8` on wide layouts.
+- **Reading measure:** prose caps at ~72ch. Nothing forces the operator to track a line across a 2560px display.
+
+---
+
+## 4. Typography
+
+### Typefaces
+
+| Role | Stack | Notes |
+|---|---|---|
+| **Sans** | `"Helvetica Neue", Helvetica, Arial, system-ui, sans-serif` | The interface voice. Not self-hosted — Helvetica Neue is not licensable for web serving, and it is present on the target machine. Arial/Liberation are metric-compatible enough that the fallback degrades gracefully rather than reflowing. |
+| **Mono** | `"JetBrains Mono", ui-monospace, SFMono-Regular, monospace` | The machine voice. Self-hosted woff2, subset (see `fonts.css`), including Braille Patterns for throbbers. |
+| **Display** | *= Sans* | There is no separate display face. Oswald is retired: a heavy condensed grotesque was the loudest thing on any screen it appeared on, which §1.1 forbids. Display size is Helvetica at 40px with negative tracking. |
+
+### Type scale
+
+Sizes in px, line-heights snapped to the 4px grid.
+
+| Token | Size/LH | Family | Weight | Case | Use |
+|---|---|---|---|---|---|
+| `micro` | 10 / 14 | Mono | 400 | as-is | Ambient telemetry, fine print, precision coordinates |
+| `meta` | 11 / 16 | Mono | 500 | UPPER, +0.08em | Machine labels & state: `RUN-0341`, `LIVE`, `QUEUED` |
+| `label` | 12 / 16 | Sans | 500 | Sentence | Field labels, column headers, section eyebrows |
+| `body` | 13 / 20 | Sans | 400 | Sentence | Default interface text |
+| `readout` | 20 / 28 | Sans | 500 | Sentence | Primary values, panel figures |
+| `readout-lg` | 32 / 40 | Sans | 500 | Sentence | Hero value — one per screen, tabular figures |
+| `display` | 40 / 44 | Sans | 600 | Sentence | Page/section titles, −0.02em tracking |
+
+### Rules
+
+- **Labels are sentence case.** "Context used", not "CONTEXT USED". Uppercase is now a *signal* (it means "machine"), and a signal used everywhere signals nothing.
+- **Uppercase belongs to `meta` and `micro` only**, always in mono, always with +0.08em tracking, usually dimmed.
+- **Display type takes negative tracking** (−0.02em). Helvetica at 40px set at 0 looks loose; this is the single most recognizable Swiss-modernist tell.
+- **Tabular figures for anything that changes or aligns.** Set globally; never turn it off in a table or a counter.
+- **Left-align, ragged right.** No justification. Centering only for an isolated hero readout.
+- Hierarchy is **size → weight → brightness**, in that order. Reach for color last, and usually not at all.
+
+---
+
+## 5. Color
+
+The base is pure neutral. Both modes are built on true black and true white — no green tint, no warm paper, no off-white. The old tints read as a *theme*; pure neutrals read as a *material*.
+
+### 5.1 Ink (dark — default)
+
+| Token | Hex | Use |
+|---|---|---|
+| `bg` | `#000000` | App background — pure black |
+| `surface` | `#0A0A0A` | Panels, cards |
+| `surface-raised` | `#161616` | Hover, selected, nested surfaces |
+| `line` | `#212121` | Hairline borders (the default rule) |
+| `line-strong` | `#333333` | Emphasized borders, active control outlines |
+| `text-dim` | `#6E6E6E` | Ambient telemetry, inactive labels (3.9:1) |
+| `text` | `#A8A8A8` | Default text (8.3:1) |
+| `text-bright` | `#FFFFFF` | Primary values, active state — pure white |
+
+| Accent | Hex | Meaning |
+|---|---|---|
+| `accent` | `#34D67F` | **Signature / primary focus.** Phosphor green, retuned off the CRT glow |
+| `accent-nominal` | `#34D67F` | Active, healthy, OK |
+| `accent-warn` | `#F2A93B` | Caution, degraded |
+| `accent-alert` | `#FF5C5C` | Error, critical, destructive |
+| `accent-info` | `#5AA2FF` | Live data, secondary signal |
+
+### 5.2 Paper (light)
+
+| Token | Hex | Use |
+|---|---|---|
+| `bg` | `#FFFFFF` | App background — pure white |
+| `surface` | `#FFFFFF` | Panels sit *level* with the page; a hairline and a shadow separate them, not a fill (§6) |
+| `surface-raised` | `#F5F5F4` | Hover, selected, nested surfaces |
+| `line` | `#E4E4E1` | Hairline borders |
+| `line-strong` | `#CFCFCB` | Emphasized borders |
+| `text-dim` | `#8A8A85` | Ambient telemetry (3.5:1) |
+| `text` | `#3D3D3A` | Default text (10.9:1) |
+| `text-bright` | `#000000` | Primary values — pure black |
+
+| Accent | Hex | Meaning |
+|---|---|---|
+| `accent` | `#0077B6` | **Signature / primary focus.** Cerulean (4.9:1 on white) |
+| `accent-nominal` | `#0E7A46` | Active, healthy, OK |
+| `accent-warn` | `#9A6510` | Caution, degraded |
+| `accent-alert` | `#C0342B` | Error, critical, destructive |
+| `accent-info` | `#0F5FA8` | Live data, secondary signal |
+
+> **The signature accent is mode-dependent and that is intentional.** Phosphor green is the product's lineage and it belongs on black; on white it turns acidic and illegible. Cerulean is the same idea executed for a light substrate — cool, precise, instrument-like. `accent-nominal` stays green in both modes because green *means* "OK" independently of the theme.
+
+### Usage rules
+
+1. **A screen at rest is grayscale.** If nothing is running, failing, or awaiting the operator, no hue appears.
+2. **One meaning per accent, system-wide.** `accent-warn` is never a brand color, a chart series, or a highlight.
+3. **Brightness separates active from inactive**, not hue (`text-bright` vs `text` vs `text-dim`).
+4. **At most two accents visible in a region.** Three reads as decoration.
+5. **`accent` marks primary focus, and there is at most one per screen** — the primary action, the live run, the awaiting-approval card. It is the only place an accent-tinted shadow is permitted (§6).
+
+---
+
+## 6. Elevation & shadow
+
+Terminal-HUD banned shadows outright. Instrument uses them, sparingly, and for one purpose: **saying what is on top and what needs attention.** Never for mood, never for a card that is merely present.
+
+The two modes model elevation differently, because they physically must:
+
+- **Paper elevates with shadow.** Surfaces are pure white and level with the background, so a hairline plus a soft shadow is the only thing that lifts them.
+- **Ink elevates with surface value.** A black shadow on a black background is invisible. Depth in Ink comes from `surface` → `surface-raised` and the hairline; shadow is added only for true overlays, where it darkens the content beneath.
+
+| Token | Ink | Paper | Use |
+|---|---|---|---|
+| `shadow-1` | `0 1px 2px rgba(0,0,0,.60)` | `0 1px 2px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.04)` | Resting elevation: cards, popovers, sticky headers |
+| `shadow-2` | `0 8px 32px rgba(0,0,0,.80)` | `0 12px 32px -8px rgba(0,0,0,.16), 0 2px 6px rgba(0,0,0,.06)` | Overlays: modals, drawers, menus, lightbox |
+| `shadow-focus` | soft white halo, `0 0 8px 1px @22%` + `0 0 22px 5px @11%` | same shape, dark | **Keyboard focus.** A halo, never an outline |
+| `shadow-bloom` | wide white aura, blur 24→220px, opacity 10%→3% | same shape, dark | **The screen's primary surface** — the composer |
+| `shadow-accent` | `0 2px 12px -2px accent@55%, 0 10px 36px -10px accent@38%` | same formula | Semantic emphasis on a panel: a live run, a blocking approval |
+| `shadow-alert` | same shape, `accent-alert` | same formula | A panel whose state is genuinely wrong |
+
+### No zero-blur layers, anywhere
+
+**A shadow layer with no blur is a border.** `0 0 0 1px <color>` does not read as light coming off an element; it reads as an outline drawn around it, and against smoothed corners it reads as a cutout. Every attention shadow in this system — `shadow-focus`, `shadow-bloom`, `shadow-accent`, `shadow-alert` — is built from blurred layers only.
+
+The single exception is the **hairline ring** carried inside `shadow-1`/`shadow-2`/`shadow-bloom` at 5–7% opacity. That is not an attention signal; it is the surface's edge definition, folded into the shadow so it costs no layout (§7). In Paper it is load-bearing: a white card on a white page has no other edge.
+
+### Attention is drawn by luminance, not hue
+
+**`shadow-bloom` is neutral** — white in Ink, dark in Paper — and it is the aura that marks the screen's primary surface. This is not a concession; it is §1.3 and §5 applied honestly. Hierarchy comes from brightness, and hue is reserved for meaning. A *colored* bloom grabs attention using the one channel that is supposed to carry semantics, and it competes with every semantic accent on the same screen. A neutral bloom pulls the eye just as hard and costs the palette nothing.
+
+It follows that the **primary button carries no halo either**. An inverted bright slab is already the brightest thing in its region, and that is the whole signal.
+
+**Wide and faint beats tight and strong.** Blur ramps 24→220px while opacity falls to 3%, and the outer layers carry *positive* spread so the aura grows outward. A tight, strong glow around a large card reads as an edge cutout; a wide, barely-there one reads as light. (Note that any ancestor with `overflow` other than `visible` clips a bloom this wide — its faintness is what keeps that clip from showing as a hard line.)
+
+### Rules
+
+1. **Keyboard focus is a neutral halo, never an outline** — and **text-entry fields get nothing at all.** `input` and `textarea` announce focus with a blinking caret, an unambiguous native indicator no other control has; a shadow on top of it is decoration around the thing the operator is already looking at. Everything else (button, link, select, summary, anything tabbable) keeps the halo, and it must stay *visible*: a focused button has no caret, and a keyboard user who cannot see where they are is the accessibility failure this rule exists to prevent.
+2. **`shadow-bloom` is rationed to one surface per screen** — the operator's point of action, which on chat and the home launchpad is the composer. It is applied **at rest**, never behind `hover:` or `focus-within:`: that surface is the point of the screen whether or not the cursor is on it, and a glow that appears only once the operator has committed to acting tells them something they no longer need to know.
+3. **`shadow-accent` is for semantic state, not for attention.** It marks a panel that is genuinely *doing* something — a live run, an approval that is blocking. It is not the composer's and not the primary button's.
+4. **No shadow on a data grid.** Tables, instrument bands, and list rows sit flat. Shadows separate *layers*, and rows are not layers.
+5. **Shadows never replace a surface's hairline.** Every elevated surface keeps the ring folded into its shadow so it stays defined against any backdrop.
+
+---
+
+## 7. Corners & borders
+
+Corners are **smoothed, not rounded.** The intent is a machined edge — a chamfer — not a soft pill.
+
+| Token | px | Applies to |
+|---|---|---|
+| `radius-0` | 0 | Table cells, instrument bands, list rows, full-bleed regions, anything in a hairline grid |
+| `radius-1` | 3 | Controls: buttons, inputs, chips, checkboxes, tabs, menu items |
+| `radius-2` | 6 | Containers: panels, cards, modals, drawers, popovers, toasts |
+| `radius-full` | 9999 | Status dots and count pills only |
+
+**The grid stays square.** Anything that participates in a shared hairline grid takes `radius-0` — rounding a table cell breaks the ruled structure that makes tabular data scannable, and that structure is a keeper.
+
+### Borders — the exception, not the default
+
+Terminal-HUD called the hairline "free ink" and used it everywhere. It is not free. A border is a line the eye must resolve, and a screen of bordered panels inside a bordered layout beside a bordered rail is the specific thing that made the old interface feel cluttered: **every region announced its own edge, whether or not anything needed dividing there.**
+
+The order of preference for separating two things:
+
+1. **Space.** If a gap says "these are different", that is the whole job. Most separation is this.
+2. **Surface value.** A panel one step lighter than the page is an object without being a box.
+3. **The shadow's own ring.** `shadow-1` and `shadow-2` carry a 1px hairline ring as part of the shadow, so an elevated surface stays defined without a border in layout — this is what lets panels, tiles, popovers, modals, and toasts drop their borders and still read as distinct.
+4. **A real border — last.** Only where a line does work nothing else can.
+
+**A border is justified when:**
+
+- it is a cell edge in a **ruled data grid** — a table, an instrument band, a genuinely tabular list, where the rule aligns values across rows and is doing structural work;
+- it is a **control's own edge**, where the border *is* the affordance (a secondary button, a text field's resting state);
+- it is a **process timeline** rail, where an unbroken vertical line is the thing being communicated.
+
+**A border is not justified** under a page title, under a tab strip, around every panel, under every list row, between a panel's header and its body, around a chip, or down the side of a nav rail. All of those were borders drawn where the eye had already found the break.
+
+- **Hairline (1px, `line`)** for the justified cases above.
+- **`line-strong`** marks an emphasized or hovered edge.
+- **2px emphasis borders are deprecated.** Selection is now `surface-raised` + `text-bright` + `shadow-focus`. A 2px border shifts layout by a pixel on state change and reads heavy against smoothed corners.
+
+---
+
+## 8. Motion — the two registers
+
+Motion follows the two voices (§2), and this is the most distinctive rule in the system.
+
+### Human register — sans surfaces
+
+Anything the interface does on the operator's behalf moves **smoothly**: panels, menus, drawers, modals, toasts, hovers, focus rings, disclosure, tab changes, color transitions on sans elements.
+
+```
+--motion-fast:  120ms
+--motion-base:  180ms
+--ease:         cubic-bezier(0.2, 0, 0, 1)   /* decelerate */
+```
+
+Short, decelerating, never bouncing. The feel is *refined and settled* — a well-damped mechanism, not a spring. Nothing exceeds 240ms; nothing overshoots.
+
+### Machine register — mono elements
+
+Anything rendered in mono changes **instantly**. No transition, no fade, no interpolation.
+
+```
+--motion-machine: 0ms
+--ease-machine:   steps(1, end)
+```
+
+A token counter ticking, a run state flipping `QUEUED` → `RUNNING`, a latency figure updating, a log line appending, a hash resolving — these snap. The operator should feel the computer acting at machine speed while the interface around it moves at human speed.
+
+**This contrast is the effect.** A mono value that eases into place reads as decoration and undercuts the premise; a sans panel that hard-cuts reads as broken. Match the register to the voice.
+
+### Permitted animations
+
+- Eased (human): opacity/transform on overlays, hover and focus transitions, height on disclosure, toast entry, **a turn arriving in the transcript** (a 10px glide up over 200ms, fired once on mount — see §10.12), **per-token arrival of the answer** (§10.10).
+- Stepped (machine): caret blink, the braille throbber (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) as a "working now" indicator, live-state pulse, value tick-over, **the reasoning wall** (§10.9).
+
+The chat transcript is where the two registers are visible at once, and it is the reference implementation: the mono reasoning wall lands hard, the sans answer beneath it eases in token by token.
+
+### Forbidden
+
+Bouncing, springs, overshoot, staggered cascades, eased *decorative* spinners, parallax, anything over 240ms, and any animation that runs while the operator is not looking at it.
+
+### Reduced motion
+
+`prefers-reduced-motion: reduce` collapses the human register to 0ms. The machine register is already 0ms, so it is unaffected — the throbber is the one exception and is retained as a functional live indicator.
+
+---
+
+## 9. Iconography
+
+- **Stroke-based, 1.5px visual weight**, geometric, never friendly or filled. Two source grids (16px bespoke, 24px Iconoir) are normalized to a uniform stroke by the `Icon` primitive, which also supplies round caps and joins.
+- **Corners are smoothed, not square.** A rect-based glyph carries `rx="1"` on the 16px grid, so an icon's corners speak the same 3px/6px language as the controls and panels around it (§7). Hard corners survive only where the shape *is* a hard corner — a registration mark, a crosshair.
+- **Every glyph fills ~75% of its box.** That is where the Iconoir set sits; a bespoke glyph drawn edge-to-edge reads a full size step larger than its neighbours even though both render at 16px. Optical size, not nominal size, is what the eye compares.
+- **Colour comes from `currentColor`**, so an icon takes the tone of the text beside it and re-colours with the theme. Never hardcode a fill or stroke colour.
+- No emoji, ever.
+- **Registration marks are retained** — corner `+` crosshairs, reticles, diamond nodes — and they are one of the system's signatures. Use them at `text-dim` and at `micro` scale so they frame without competing.
+- **A registration mark must bracket an object, not the window.** They belong on `PageHeader`, framing the plate that holds the asset id, title, subtitle and status badge; on a hero card; on a lightbox. They do **not** go on the shell's content region — that put two crosses just above the page and two in the bottom corners of the screen, framing the viewport rather than anything in it, which is the one job a registration mark has. Whatever they bracket needs enough inset (~20px) that the marks never collide with the content.
+- Icons inherit `currentColor` and follow the text tone they sit beside.
+
+---
+
+## 10. Components
+
+Anatomy plus tokens. These map directly onto `frontend/src/ui/`.
+
+### 10.1 Field — label + value
+
+The atomic unit. A sans `label` (sentence case, `text-dim`) above or beside a `body`/`readout` value (`text-bright`). An optional `meta` line beneath carries the machine detail.
+
+```
+Active model                  ← label,   sans 12, dim
+Qwen3 30B A3B                 ← readout, sans 20, bright
+QWEN3-30B-A3B-Q4 · 18.2 GB    ← meta,    mono 11, dim, uppercase
+```
+
+### 10.2 Panel
+
+`surface` fill, `radius-2`, `space-4` padding, `shadow-1` (which carries its own hairline ring). No border. Optional header: sans `label` left, meta/status right. Selected state lifts to `surface-raised` — never a 2px border.
+
+`Composer` takes a `bare` prop too, but it means something narrower: **it drops the fill and keeps the bloom.** For a composer sitting inside another surface (the research intake, in a `Panel`), a fill on a fill is the box-in-a-box §7 exists to stop, and it reads as a grey slab. The bloom is not part of that problem — it is *light, not a surface*, and it is the thing that says "type here". A bare `Panel` around a bare `Composer` leaves exactly one thing on the page: the aura.
+
+A `bare` panel also keeps its **state** shadow (`active`/`alert`) while dropping the resting `shadow-1`. `shadow-1` exists to define a surface and there isn't one; a live or failing state is semantics, and a panel that drops its fill shouldn't go silent about being live.
+
+**`bare` drops the surface entirely** — no fill, no shadow, no ring, no card padding. The panel becomes its label and its content, sitting directly on the page.
+
+This is for regions that should read as *behind* the interface rather than as objects on it: the home page's recent-threads and in-flight lists, the system strip. They are things the operator glances past on the way to the composer, and giving each one a card turned the launchpad into a wall of boxes competing with the single surface that matters. Structure still comes from the label and the spacing — it just stops being a container.
+
+The rule generalizes: **a card is a claim on attention.** Anything ambient — telemetry, recent items, background activity — should be bare, so the operator can look past it to what is live.
+
+### 10.3 Instrument band
+
+Full-width strip of densely packed machine fields, hairline-separated, `radius-0`, `space-2` padding, mono throughout. This is where density stays aggressive and where mono is at its densest — it is explicitly the machine's own readout.
+
+### 10.4 Readout
+
+The hero value: `readout-lg`, sans, `text-bright`, tabular, with a dim sans `label`. One per screen. Its supporting machine detail goes in a `meta` line, not in the readout itself.
+
+### 10.5 Status flag
+
+A small `meta` label — uppercase mono, no fill, no border. This is machine state, so it snaps between values with no transition.
+
+**The dot carries the hue; the label stays dim.** A status flag reports, it does not ask. A whole word in an accent colour reads as a demand for attention wherever it appears, and a screen with a dozen flags then makes a dozen demands — which is how an accent budget (§5.4) gets spent on nothing.
+
+The exception is `warn` and `alert`, which keep the accent on the label too. Those are the two states that genuinely need to interrupt, and a failure the operator can miss is worse than one more colour on the page. That exception is what makes the rule worth having: when only real problems are coloured, a coloured word means something.
+
+### 10.6 Tile / nav card
+
+`surface`, `radius-2`, `shadow-1`, a geometric glyph and a sans `label`. Hover lifts to `surface-raised` with an eased transition. Selected adds `text-bright` and `shadow-focus`.
+
+### 10.7 List row
+
+Single line, `radius-0`, hairline beneath, sans label left, mono meta right. Hover fills `surface-raised`. Disabled drops to `text-dim` with a lock glyph.
+
+### 10.8 Controls (button, input, select, chip, toggle)
+
+`radius-1`, hairline border, `space-2`/`space-3` padding, sans label. Focus is `shadow-focus`, always neutral. A **primary** button — one per view — is the sole carrier of `shadow-accent`.
+
+### 10.9 Reasoning stream
+
+The clearest expression of the two voices in the product, and the reference for how any "the machine is working" surface should behave.
+
+While the model reasons, its trace is **not a message**. It is the computer working *behind* the response area:
+
+- **Mono, `micro` size, barely tinted** — `accent` mixed at ~25% into `text-dim`, held at ~30% opacity. It reads as machine texture, not as content, and never competes with the answer.
+- **A flat wall, not an effect.** The subtlety lives entirely in the *color*: one uniform value across the whole block. **No gradient and no mask.** A faded edge would make it a decorated panel; this is meant to be a surface — a dense wall of machine text sitting behind the response.
+- **Clipped into the background** of the response area, behind the content, `pointer-events: none`.
+- **Cascading and bottom-anchored**, so new tokens push older lines up and out of frame. The wall stays filled to its top edge with older reasoning, and the newest line sits at the bottom where the eye already is.
+- **Fixed-height stage**, so the transcript does not reflow line-by-line while the trace streams.
+- **Machine register (§8)** — tokens land hard as they arrive. No easing, no fade-in per token.
+- The only foreground element is a mono `meta` label and the braille throbber: the machine saying it is working.
+
+**The handoff.** When the turn resolves, the wall **fades to the background over ~320ms** in the human register — that is the interface clearing the stage, not a control responding — and the **collapsed reasoning accordion fades in where it stood**, above the response. Two fades in the same place, so it reads as one movement rather than as a block being swapped out. The accordion holds the full trace, still mono and dim: available, out of the way.
+
+The live layer is `aria-hidden` (it is texture, and a token-by-token live region would be unusable); a polite live region announces that the model is reasoning, and the settled accordion carries the real content.
+
+### 10.10 The answer stream
+
+The counterpart to §10.9, and the other half of the same idea.
+
+The answer is **the interface speaking**, so it belongs to the human register: **each newly arrived run of text fades in over ~220ms**, eased, while everything already on screen stays put. Only genuinely new characters animate — settled text carries no animation even as the markdown block around it re-renders — and a run whose fade is interrupted by the next delta simply lands at full opacity, so the token at the head of the stream is the one that visibly arrives.
+
+Put the two side by side and the system explains itself without a word being read: **the reasoning wall lands hard because it is mono and the machine is thinking; the answer eases in because it is sans and the interface is replying.**
+
+Markdown structure must survive the stream — blocks that have settled keep their DOM across deltas, so only the trailing block re-parses. A streaming answer that renders as plain text and then pops into formatting when it finishes is not acceptable.
+
+### 10.11 The composer
+
+**One component, one layout, two sizes.** The docked input bar and the home page's hero field are the same card — `size` changes padding and the field's resting height, and nothing else. They used to be separate branches (a bordered field nested inside a bordered bar; a 2px box) and that fork was the clearest case of the box-in-a-box §7 exists to stop.
+
+Anatomy, top to bottom, inside one `surface` card on `radius-2` with `shadow-1`:
+
+1. an optional sans `label` title,
+2. attachment chips,
+3. the field — **transparent, borderless, no focus ring of its own**,
+4. an action row: attach and inline controls left, send/stop right.
+
+**The card is the control.** The field carries no chrome because the card around it already is the input; a bordered box inside a bordered box is two lines where one object exists.
+
+**The composer carries `shadow-accent` at rest.** On a chat screen or the home launchpad the composer *is* the operator's point of action, so it wears the accent drop shadow permanently — phosphor green in Ink, cerulean in Paper — and "start typing" is the obvious move the moment the screen appears. It is not gated on focus or hover (§6). Nothing else on those screens may claim the accent.
+
+**Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background so the transcript scrolls out of sight behind a card that sits above it. No gradient scrim: the ground colour does the job.
+
+### 10.12 The operator's turn
+
+The operator's own message is **right-aligned and shrink-to-fit, capped at 80%** of the column.
+
+Width follows content: a three-word prompt is a three-word bubble. A fixed-width block would leave a short turn floating in the middle of an empty region, which reads as a layout error rather than as a message. The cap is what keeps a long paste from spanning the full measure.
+
+Alignment of the *block* and alignment of the *words* are separate decisions: the block sits right (that is what marks it as the operator's), the text inside is left-aligned, because right-ragged prose with any internal structure reads as broken.
+
+**Turns glide in.** Every turn — the operator's on send, the assistant's as it opens — fades up 10px over 200ms in the human register. Fast enough to read as a response rather than a reveal, and it fires once on mount, so a streaming turn never re-animates as deltas land. Opening a thread mounts its turns together, so the transcript settles in as one movement rather than a staggered cascade.
+
+One implementation note that is easy to get wrong: the entry animation runs with `animation-fill-mode: both`, and an animated `opacity` outranks a utility class. A turn that is also *dimmed* (above a compaction divider) therefore needs two nodes — one owning the dim, one owning the movement — or the animation silently cancels the dim.
+
+### States — all components
+
+| State | Treatment |
+|---|---|
+| Default | `text` on `surface`, hairline `line` |
+| Hover | `surface-raised`, eased (`motion-fast`) |
+| Inactive | drop to `text-dim` |
+| Selected | `surface-raised` + `text-bright` |
+| Focus (keyboard) | `shadow-focus` — neutral, both modes |
+| Primary focus | `shadow-accent` — one per screen |
+| Alert | `accent-alert` on the value or border, never a fill |
+| Loading | sans "Loading…" or a mono braille throbber — never an eased spinner |
+| Empty | sans "No data" / a written sentence explaining what would appear here |
+
+---
+
+## 11. Diegetic detail
+
+The sense that this is a real instrument comes mostly from *content*, not styling — and it now has a natural home, because all of it is machine output and therefore mono, dim, and small (§2). That is what lets it stay without becoming clutter.
+
+Keep:
+
+- **Asset & version IDs** — `RUN-0341-A7`, `IDX-v3.2.1`
+- **Precision values** — coordinates, byte counts, token counts, latencies to the millisecond
+- **Plausible telemetry** — uplink latency, queue depth, cache hit rate
+- **Consistent naming** — pick a scheme (`[DOMAIN]-[SUBSYSTEM]-[SEQ]`) and hold to it
+
+**The budget:** at most one diegetic detail per panel, and it lives at the panel's edge — a footer line, a header's right slot — never between a label and its value. Terminal-HUD's mistake was letting atmosphere sit in the reading path. Set at `micro`/`meta` in `text-dim`, it becomes texture the eye skips until it wants it, which is exactly the intent.
+
+---
+
+## 12. Accessibility
+
+- **Never encode meaning in hue alone.** Every accent is paired with a label, glyph, or position change — already required by §5.
+- **Contrast floors:** `text` on `bg` ≥ 7:1, `text-bright` on `bg` ≥ 15:1, `text-dim` on `bg` ≥ 3:1, every accent on `bg` ≥ 4.5:1. The tokens in §5 are tuned to pass; re-verify after any hue change.
+- **Focus is always visible.** `shadow-focus` is neutral and high-contrast in both modes; never suppress the ring without an equally visible replacement.
+- **Mono is small by design** — so it is never the only carrier of essential information. Anything the operator must read to act is sans at `body` or larger.
+- **Reduced motion** collapses the human register (§8).
+- Tabular figures and consistent alignment aid low-vision scanning; keep them.
+
+---
+
+## 13. Token summary
+
+```css
+:root {
+  /* ---- grid ---- */
+  --space-0: 0;    --space-1: 4px;   --space-2: 8px;   --space-3: 12px;
+  --space-4: 16px; --space-5: 20px;  --space-6: 24px;  --space-8: 32px;
+  --space-12: 48px;
+
+  /* ---- corners & borders ---- */
+  --radius-0: 0;   --radius-1: 3px;  --radius-2: 6px;  --radius-full: 9999px;
+  --line-w: 1px;
+
+  /* ---- the two voices ---- */
+  --font-sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* ---- type scale ---- */
+  --type-micro-size: 10px;      --type-micro-lh: 14px;
+  --type-meta-size: 11px;       --type-meta-lh: 16px;
+  --type-label-size: 12px;      --type-label-lh: 16px;
+  --type-body-size: 13px;       --type-body-lh: 20px;
+  --type-readout-size: 20px;    --type-readout-lh: 28px;
+  --type-readout-lg-size: 32px; --type-readout-lg-lh: 40px;
+  --type-display-size: 40px;    --type-display-lh: 44px;
+  --tracking-label: 0.08em;   /* uppercase mono meta only */
+  --tracking-tight: -0.02em;  /* display */
+
+  /* ---- motion: human register ---- */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* ---- motion: machine register ---- */
+  --motion-machine: 0ms;
+  --ease-machine: steps(1, end);
+
+  /* ---- INK (dark, default) ---- */
+  --bg: #000000;         --surface: #0a0a0a;      --surface-raised: #161616;
+  --line: #212121;       --line-strong: #333333;
+  --text-dim: #6e6e6e;   --text: #a8a8a8;         --text-bright: #ffffff;
+  --accent: #34d67f;
+  --accent-nominal: #34d67f;  --accent-warn: #f2a93b;
+  --accent-alert: #ff5c5c;    --accent-info: #5aa2ff;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.6);
+  --shadow-2: 0 8px 32px rgb(0 0 0 / 0.8);
+}
+
+[data-theme="paper"] {
+  --bg: #ffffff;         --surface: #ffffff;      --surface-raised: #f5f5f4;
+  --line: #e4e4e1;       --line-strong: #cfcfcb;
+  --text-dim: #8a8a85;   --text: #3d3d3a;         --text-bright: #000000;
+  --accent: #0077b6;
+  --accent-nominal: #0e7a46;  --accent-warn: #9a6510;
+  --accent-alert: #c0342b;    --accent-info: #0f5fa8;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.05), 0 1px 1px rgb(0 0 0 / 0.04);
+  --shadow-2: 0 12px 32px -8px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.06);
+}
+
+/* mode-invariant, derived */
+:root, [data-theme="paper"] {
+  --shadow-focus: 0 0 0 1px var(--text-bright);
+  --shadow-accent:
+    0 0 0 1px var(--accent),
+    0 2px 14px -2px color-mix(in oklab, var(--accent) 36%, transparent);
+}
+```
+
+---
+
+## Appendix A — One-line brief
+
+> A quiet, pure-neutral interface on a strict 4px grid, set in Helvetica with a monospaced second voice reserved strictly for machine output; hierarchy from size, weight, and brightness, with color rationed to semantic state and a single mode-dependent accent — phosphor green on black, cerulean on white — marking the one thing that needs attention; separation carried by space and surface value rather than by borders, which survive only inside a ruled data grid; marginally smoothed corners; subtle elevation used only to say what is on top; and motion split into two registers, smooth and decelerating for the interface, instantaneous for anything the computer is doing.

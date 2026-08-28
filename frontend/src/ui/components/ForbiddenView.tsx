@@ -25,7 +25,7 @@ export function ForbiddenView(props: ForbiddenViewProps): JSX.Element {
     >
       <Icon name="lock" size={32} class="text-alert" />
       <Text variant="readout" tone="alert">
-        ACCESS DENIED
+        Access denied
       </Text>
       <Text variant="body" tone="dim">
         {local.reason ??

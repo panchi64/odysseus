@@ -62,7 +62,7 @@ export function ConversationCompactionToggle(props: {
                 variant="label"
                 tone={s().override === null ? "dim" : "bright"}
               >
-                FOLD
+                Fold
               </Text>
               <Toggle checked={s().effective} onChange={(v) => void apply(v)} />
             </span>

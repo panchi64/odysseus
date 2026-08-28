@@ -16,7 +16,11 @@ export interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
 }
 
 const fieldClass =
-  "w-full bg-surface border px-2 h-8 rounded-ctl text-body font-mono text-bright placeholder:text-dim outline-none transition-colors focus:border-bright disabled:opacity-40 disabled:cursor-not-allowed";
+  /* A field the operator types into is the interface's, so it is sans (§2) —
+     the old mono made every form read as a terminal prompt. The resting look is
+     a filled surface with a hairline; focus is the neutral ring from theme.css,
+     which sits outside the box and so shifts nothing. */
+  "w-full bg-raised border px-3 h-8 rounded-ctl text-body font-sans text-bright placeholder:text-dim outline-none transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
 
 /** Single-line text control. */
 export function Input(props: InputProps): JSX.Element {
@@ -46,7 +50,7 @@ export function Input(props: InputProps): JSX.Element {
           class={cx(
             fieldClass,
             local.leading && "pl-8",
-            local.invalid ? "border-alert" : "border-line",
+            local.invalid ? "border-alert" : "border-transparent",
             local.class,
           )}
           aria-invalid={local.invalid || undefined}

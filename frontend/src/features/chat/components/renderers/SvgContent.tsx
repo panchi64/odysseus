@@ -50,7 +50,7 @@ export function SvgContent(props: {
               type="button"
               onClick={() => setLightboxOpen(true)}
               aria-label={`View ${props.name}`}
-              class="flex h-full w-full items-center justify-center border border-line bg-surface"
+              class="flex h-full w-full items-center justify-center rounded-panel bg-surface shadow-1"
             >
               <img
                 src={u()}

@@ -1,9 +1,18 @@
 import type { JSX } from "solid-js";
 
 /**
- * Geometric, stroke-based icons (design system §5). Each entry returns the inner
+ * Geometric, stroke-based icons (design system §9). Each entry returns the inner
  * SVG markup; the Icon primitive supplies the <svg> wrapper, sizing, stroke,
- * currentColor, and round joins. No filled, rounded, or skeuomorphic glyphs.
+ * currentColor, and round caps/joins. No fills, no skeuomorphism, no emoji.
+ *
+ * Two rules keep a hand-authored glyph consistent with the Iconoir set:
+ * - **Corners are smoothed, not square.** A rect-based glyph carries `rx="1"` on
+ *   the 16px grid, so an icon's corners match the 3px/6px language of the
+ *   controls and panels it sits inside (§7). Hard corners survive only where the
+ *   shape *is* a hard corner — a registration mark, a crosshair.
+ * - **Every glyph fills ~75% of its box.** That is where the Iconoir set sits, so
+ *   a bespoke glyph drawn edge-to-edge reads a full size step larger than its
+ *   neighbours even though both render at 16px.
  *
  * Two grids coexist behind one uniform look:
  * - **Bespoke HUD glyphs** (reticle, cross, diff panels, …) are hand-authored on
@@ -88,10 +97,13 @@ export type IconName =
 export const icons: Record<IconName, IconEntry> = {
   // ── Bespoke HUD glyphs (native 16px grid) ─────────────────────────────
   cross: () => <path d="M8 3v10M3 8h10" />,
+  // A registration mark, and one of the system's signatures — kept, but pulled
+  // in to the shared ~75% optical box. At 1..15 it filled 87% of the frame and
+  // read a full step larger than every Iconoir glyph beside it.
   reticle: () => (
     <>
-      <circle cx="8" cy="8" r="5" />
-      <path d="M8 1v3M8 12v3M1 8h3M12 8h3" />
+      <circle cx="8" cy="8" r="4.5" />
+      <path d="M8 2v1.5M8 12.5v1.5M2 8h1.5M12.5 8h1.5" />
     </>
   ),
   dot: () => <circle cx="8" cy="8" r="2" />,
@@ -106,7 +118,7 @@ export const icons: Record<IconName, IconEntry> = {
       <path d="M5 10c4 0 7 0 7-1.4" />
     </>
   ),
-  stop: () => <rect x="4" y="4" width="8" height="8" />,
+  stop: () => <rect x="3.5" y="3.5" width="9" height="9" rx="1" />,
   layers: () => <path d="M8 2L2 5l6 3 6-3zM2 9l6 3 6-3M2 12l6 3 6-3" />,
   plug: () => (
     <>
@@ -117,14 +129,14 @@ export const icons: Record<IconName, IconEntry> = {
   ),
   "panel-right": () => (
     <>
-      <rect x="2" y="3" width="12" height="10" />
+      <rect x="2" y="3" width="12" height="10" rx="1" />
       <path d="M10 3v10" />
     </>
   ),
   compare: () => (
     <>
-      <rect x="2" y="3" width="5" height="10" />
-      <rect x="9" y="3" width="5" height="10" />
+      <rect x="2" y="3" width="5" height="10" rx="1" />
+      <rect x="9" y="3" width="5" height="10" rx="1" />
     </>
   ),
   research: () => (

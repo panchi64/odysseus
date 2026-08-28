@@ -60,7 +60,7 @@ export function BranchChip(props: {
       title: "Discard this branch?",
       detail:
         "Everything the agent changed in this conversation is thrown away. Your own working tree is untouched either way.",
-      confirmLabel: "DISCARD",
+      confirmLabel: "Discard",
       tone: "alert",
     });
     if (!ok) return;
@@ -115,7 +115,7 @@ export function BranchChip(props: {
               >
                 {/* The patch can be very wide; it scrolls inside its own box so
                     the dialog never scrolls sideways. */}
-                <pre class="scrollbar-thin max-h-96 overflow-auto border border-line p-3 text-xs">
+                <pre class="scrollbar-thin max-h-96 overflow-auto rounded-panel bg-raised p-3 text-xs">
                   {b().patch}
                 </pre>
               </Show>
@@ -124,14 +124,14 @@ export function BranchChip(props: {
                   onClick={() => void merge()}
                   disabled={busy() || !b().filesChanged}
                 >
-                  MERGE
+                  Merge
                 </Button>
                 <Button
                   variant="danger"
                   onClick={() => void discard()}
                   disabled={busy()}
                 >
-                  DISCARD
+                  Discard
                 </Button>
                 <Text variant="micro" tone="dim">
                   MERGE is the only thing that writes your own working tree.

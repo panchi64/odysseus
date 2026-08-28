@@ -5,7 +5,6 @@ import {
   Combobox,
   ErrorBoundary,
   NotConnectedOverlay,
-  RegistrationFrame,
   ResizeHandle,
   StatusFlag,
   ThemeToggle,
@@ -28,8 +27,8 @@ import { NotificationBell } from "./NotificationBell";
 import { Sidebar, useSidebarWidth } from "./sidebar";
 import { isConnectedRoute } from "./nav";
 
-/** The authenticated app chrome: sidebar rail + top status bar + framed main
- *  content. Composed entirely from ~/ui. */
+/** The authenticated app chrome: sidebar rail + top status bar + the routed
+ *  content region. Composed entirely from ~/ui. */
 export function AppShell(props: { children: JSX.Element }): JSX.Element {
   const location = useLocation();
   const connected = () => isConnectedRoute(location.pathname);
@@ -61,13 +60,16 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
       />
 
       <div class="flex min-w-0 flex-1 flex-col">
-        <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-2">
+        {/* No rule under the top bar (§7). It is already a distinct region by
+            position and by what it holds; a full-width hairline across every
+            screen was chrome drawn where the eye had found the break. */}
+        <header class="flex shrink-0 items-center justify-between gap-3 px-4 py-2">
           <div class="flex items-center gap-3">
             <StatusFlag status="live" dot>
-              LINK
+              Link
             </StatusFlag>
             <Text variant="micro" tone="dim">
-              LOCAL
+              Local
             </Text>
           </div>
           <div class="flex items-center gap-3">
@@ -78,12 +80,12 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
                 onChange={selectModelByValue}
                 leading="cpu"
                 align="right"
-                placeholder="NO MODEL"
+                placeholder="No model"
                 searchPlaceholder="Search models…"
-                emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
+                emptyHint="No models — add an endpoint in settings"
                 aria-label="Active model"
               />
-              <Tooltip label="REFRESH MODELS" side="bottom">
+              <Tooltip label="Refresh models" side="bottom">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -101,22 +103,25 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
           </div>
         </header>
 
-        <RegistrationFrame class="min-h-0 flex-1">
-          <div class="relative h-full">
-            {/* Scopes a suspending *or throwing* screen to the content region;
-                without them the root blanks the shell too, taking the rail and
-                the status bar with it. The path is the reset key, so navigating
-                away from a broken screen clears the error. */}
-            <main class="h-full overflow-y-auto p-6">
-              <ErrorBoundary resetKey={() => location.pathname}>
-                <Suspense>{props.children}</Suspense>
-              </ErrorBoundary>
-            </main>
-            <Show when={!connected()}>
-              <NotConnectedOverlay />
-            </Show>
-          </div>
-        </RegistrationFrame>
+        {/* The registration marks moved off the shell and onto `PageHeader`
+            (§9). Framing the content region put two crosses just above the page
+            and two in the bottom corners of the screen — bracketing the window
+            rather than anything in it. They now frame the header row, which is
+            an actual object. */}
+        <div class="relative min-h-0 flex-1">
+          {/* Scopes a suspending *or throwing* screen to the content region;
+              without them the root blanks the shell too, taking the rail and
+              the status bar with it. The path is the reset key, so navigating
+              away from a broken screen clears the error. */}
+          <main class="h-full overflow-y-auto p-6">
+            <ErrorBoundary resetKey={() => location.pathname}>
+              <Suspense>{props.children}</Suspense>
+            </ErrorBoundary>
+          </main>
+          <Show when={!connected()}>
+            <NotConnectedOverlay />
+          </Show>
+        </div>
       </div>
     </div>
   );

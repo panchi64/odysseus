@@ -16,9 +16,9 @@ export function EndpointDiscoveryFlag(props: {
   const label = (): string => {
     const { status: s, discovered } = props.discovery;
     if (s === "live")
-      return `${discovered} ${discovered === 1 ? "MODEL" : "MODELS"}`;
-    if (s === "default-only") return "DEFAULT ONLY";
-    return "NO MODELS";
+      return `${discovered} ${discovered === 1 ? "Model" : "Models"}`;
+    if (s === "default-only") return "Default only";
+    return "No models";
   };
   return <StatusFlag status={status()}>{label()}</StatusFlag>;
 }

@@ -24,8 +24,8 @@ import { ViewTimelineRail } from "./ViewTimelineRail";
 type Mode = "preview" | "code";
 
 const MODE_TABS: TabItem[] = [
-  { value: "preview", label: "PREVIEW" },
-  { value: "code", label: "CODE" },
+  { value: "preview", label: "Preview" },
+  { value: "code", label: "Code" },
 ];
 
 /** The chat workspace's viewport — the conversation's **View** rendered beside the
@@ -130,7 +130,7 @@ export function ViewportPanel(props: {
       class="h-full outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
     >
       <Panel
-        label="VIEW"
+        label="View"
         meta={
           <ViewActionRow
             keeper={selected()?.keeper}
@@ -160,7 +160,7 @@ export function ViewportPanel(props: {
           fallback={
             <EmptyState
               icon="eye"
-              message="NOTHING TO SHOW YET"
+              message="Nothing to show yet"
               hint="Pages, charts, files, and live servers from this conversation appear here."
             />
           }
@@ -169,9 +169,9 @@ export function ViewportPanel(props: {
             {/* Unsaved-edit guard: blocks a pin/tab change that would navigate away
                 from the item currently being edited inline. Hard-cut, no dialog. */}
             <Show when={props.pendingNav}>
-              <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+              <div class="flex items-center justify-between gap-2 px-3 py-2">
                 <Text variant="label" tone="bright">
-                  UNSAVED EDITS
+                  Unsaved edits
                 </Text>
                 <div class="flex items-center gap-2">
                   <Button
@@ -179,14 +179,14 @@ export function ViewportPanel(props: {
                     size="sm"
                     onClick={props.onKeepEditing}
                   >
-                    KEEP EDITING
+                    Keep editing
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={props.onDiscardEdits}
                   >
-                    DISCARD EDITS
+                    Discard edits
                   </Button>
                 </div>
               </div>
@@ -194,7 +194,7 @@ export function ViewportPanel(props: {
 
             {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
                 dropdown collapses to its label. */}
-            <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+            <div class="flex items-center gap-2 px-3 py-2">
               <Show
                 when={props.items.length > 1}
                 fallback={

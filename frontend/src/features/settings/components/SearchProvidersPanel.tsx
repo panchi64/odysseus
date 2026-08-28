@@ -147,7 +147,7 @@ export function SearchProvidersPanel(): JSX.Element {
         title: `Delete provider "${p.name}"?`,
         detail:
           "Web search falls back to the next enabled provider, or becomes unavailable if none remain.",
-        confirmLabel: "DELETE",
+        confirmLabel: "Delete",
         tone: "alert",
       }))
     )
@@ -162,10 +162,10 @@ export function SearchProvidersPanel(): JSX.Element {
 
   return (
     <Panel
-      label="WEB SEARCH"
+      label="Web search"
       meta={
         <Button variant="primary" size="sm" leading="plus" onClick={openCreate}>
-          ADD PROVIDER
+          Add provider
         </Button>
       }
     >
@@ -181,7 +181,7 @@ export function SearchProvidersPanel(): JSX.Element {
             fallback={
               <EmptyState
                 icon="search"
-                message="NO PROVIDERS"
+                message="No providers"
                 hint="Add a SearXNG instance to give the agent web search."
               />
             }
@@ -189,12 +189,7 @@ export function SearchProvidersPanel(): JSX.Element {
             <Stack gap={0}>
               <For each={providers.latest ?? []}>
                 {(p) => (
-                  <Row
-                    align="center"
-                    justify="between"
-                    gap={3}
-                    class="border-b border-line py-2 last:border-0"
-                  >
+                  <Row align="center" justify="between" gap={3} class="py-2">
                     <Stack gap={1} class="min-w-0">
                       <Row gap={2} align="center">
                         <Text
@@ -204,7 +199,7 @@ export function SearchProvidersPanel(): JSX.Element {
                           {p.name}
                         </Text>
                         <Show when={p.hasApiKey}>
-                          <StatusFlag status="nominal">KEY</StatusFlag>
+                          <StatusFlag status="nominal">Key</StatusFlag>
                         </Show>
                       </Row>
                       <Text variant="micro" tone="dim" class="truncate">
@@ -224,7 +219,7 @@ export function SearchProvidersPanel(): JSX.Element {
                         leading="edit"
                         onClick={() => openEdit(p)}
                       >
-                        EDIT
+                        Edit
                       </Button>
                       <Button
                         variant="ghost"
@@ -232,7 +227,7 @@ export function SearchProvidersPanel(): JSX.Element {
                         leading="trash"
                         onClick={() => remove(p)}
                       >
-                        DELETE
+                        Delete
                       </Button>
                     </span>
                   </Row>
@@ -246,18 +241,18 @@ export function SearchProvidersPanel(): JSX.Element {
       <Modal
         open={formOpen()}
         onClose={() => setFormOpen(false)}
-        title={editing() ? "EDIT PROVIDER" : "ADD PROVIDER"}
+        title={editing() ? "Edit provider" : "Add provider"}
         class="max-w-lg"
       >
         <Stack gap={3}>
           <Input
-            label="NAME"
+            label="Name"
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
             placeholder="e.g. searxng"
           />
           <Input
-            label="BASE URL"
+            label="Base URL"
             value={baseUrl()}
             onInput={(e) => setBaseUrl(e.currentTarget.value)}
             placeholder="http://localhost:8080"
@@ -287,19 +282,19 @@ export function SearchProvidersPanel(): JSX.Element {
             rows={3}
           />
           <Row gap={4} align="center" justify="between">
-            <Field label="ENABLED" orientation="row" value="" />
+            <Field label="Enabled" orientation="row" value="" />
             <Toggle checked={enabled()} onChange={setEnabled} />
           </Row>
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setFormOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!valid() || saving()}
               onClick={save}
             >
-              {saving() ? "SAVING…" : "SAVE"}
+              {saving() ? "Saving…" : "Save"}
             </Button>
           </div>
         </Stack>

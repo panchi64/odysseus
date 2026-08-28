@@ -58,12 +58,12 @@ export function EmbeddingRoleControls(
 
   const statusLine = createMemo<string>(() => {
     const r = reindex();
-    if (r?.state === "running") return "RE-INDEXING…";
+    if (r?.state === "running") return "Re-indexing…";
     if (r?.state === "done")
       return `RE-EMBEDDED ${r.memories} MEMORIES · ${r.messages} MESSAGES`;
     if (r?.state === "degraded")
       return (r.detail ?? "no embedding model configured").toUpperCase();
-    if (r?.state === "error") return "RE-EMBED FAILED";
+    if (r?.state === "error") return "Re-embed failed";
     return "Re-embed after changing the embedding model.";
   });
 
@@ -94,7 +94,7 @@ export function EmbeddingRoleControls(
           disabled={running() || !props.bound}
           onClick={() => void reembed()}
         >
-          RE-EMBED
+          Re-embed
         </Button>
       </Row>
     </Stack>

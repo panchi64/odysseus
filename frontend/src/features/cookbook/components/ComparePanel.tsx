@@ -31,14 +31,14 @@ export function ComparePanel(): JSX.Element {
         </Text>
         <Show when={compare.started()}>
           <Button variant="ghost" size="sm" leading="refresh" onClick={reset}>
-            NEW COMPARISON
+            New comparison
           </Button>
         </Show>
       </div>
 
       <div class="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-        <ComparePaneView pane={compare.panes[0]} label="MODEL A" />
-        <ComparePaneView pane={compare.panes[1]} label="MODEL B" />
+        <ComparePaneView pane={compare.panes[0]} label="Model a" />
+        <ComparePaneView pane={compare.panes[1]} label="Model b" />
       </div>
 
       <Composer

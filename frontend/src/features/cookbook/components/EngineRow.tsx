@@ -26,7 +26,7 @@ export function EngineRow(props: {
       disabled={!available()}
       onClick={() => props.onSelect(props.rec.engine)}
       class={cx(
-        "block w-full border-b border-line text-left transition-colors last:border-0",
+        "block w-full text-left transition-colors",
         available()
           ? props.selected
             ? "bg-raised"
@@ -48,11 +48,11 @@ export function EngineRow(props: {
                 {props.rec.engine}
               </Text>
               <Show when={props.rec.rank === 1}>
-                <StatusFlag status="info">RECOMMENDED</StatusFlag>
+                <StatusFlag status="info">Recommended</StatusFlag>
               </Show>
             </Row>
             <StatusFlag status={available() ? "nominal" : "idle"} dot>
-              {available() ? "AVAILABLE" : "UNAVAILABLE"}
+              {available() ? "Available" : "Unavailable"}
             </StatusFlag>
           </Row>
           <Text variant="micro" tone="dim">

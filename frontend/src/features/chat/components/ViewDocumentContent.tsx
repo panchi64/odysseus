@@ -188,7 +188,7 @@ export function ViewDocumentContent(props: {
   return (
     <div class="flex h-full min-h-0 flex-col">
       <Show when={props.editable}>
-        <div class="flex items-center justify-end gap-2 border-b border-line px-3 py-2">
+        <div class="flex items-center justify-end gap-2 px-3 py-2">
           <Show
             when={editing()}
             fallback={
@@ -198,7 +198,7 @@ export function ViewDocumentContent(props: {
                 leading="edit"
                 onClick={startEdit}
               >
-                EDIT
+                Edit
               </Button>
             }
           >
@@ -208,7 +208,7 @@ export function ViewDocumentContent(props: {
               onClick={cancel}
               disabled={saving()}
             >
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
@@ -217,7 +217,7 @@ export function ViewDocumentContent(props: {
               onClick={() => void save()}
               disabled={saving()}
             >
-              SAVE
+              Save
             </Button>
           </Show>
         </div>

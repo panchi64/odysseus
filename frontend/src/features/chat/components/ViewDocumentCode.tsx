@@ -122,9 +122,9 @@ function DocumentCodeStage(props: {
 
   return (
     <div class="flex h-full min-h-0 flex-col">
-      <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+      <div class="flex items-center gap-2 px-3 py-2">
         <Text variant="micro" tone="dim" class="shrink-0">
-          TO
+          To
         </Text>
         <Select
           aria-label="Compare TO version"
@@ -134,7 +134,7 @@ function DocumentCodeStage(props: {
           onChange={setTo}
         />
         <Text variant="micro" tone="dim" class="shrink-0">
-          FROM
+          From
         </Text>
         <Select
           aria-label="Compare FROM version"

@@ -22,8 +22,8 @@ export function MediaTile(props: MediaTileProps): JSX.Element {
 
   return (
     <div
-      class="group relative flex flex-col gap-2 border border-line bg-surface p-2 transition-colors hover:border-dim hover:bg-raised cursor-pointer"
-      classList={{ "border-bright bg-raised": props.selected }}
+      class="group relative flex cursor-pointer flex-col gap-2 rounded-panel bg-surface p-2 shadow-1 transition-colors hover:bg-raised"
+      classList={{ "bg-raised": props.selected }}
       onClick={props.onSelect}
     >
       <div class="relative">

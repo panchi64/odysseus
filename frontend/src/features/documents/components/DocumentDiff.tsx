@@ -65,12 +65,12 @@ export function DocumentDiff(props: { result: DiffResult }): JSX.Element {
       fallback={
         <EmptyState
           icon="check"
-          message="NO CHANGES"
+          message="No changes"
           hint="This version made no changes to the document body."
         />
       }
     >
-      <div class="overflow-x-auto border border-line bg-surface py-1">
+      <div class="overflow-x-auto rounded-panel bg-surface py-1 shadow-1">
         <For each={props.result.lines}>{(line) => <DiffRow line={line} />}</For>
       </div>
     </Show>

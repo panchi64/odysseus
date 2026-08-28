@@ -109,7 +109,7 @@ export function GetStartedPanel(): JSX.Element {
 
   return (
     <Stack gap={6}>
-      <Panel label="GET STARTED">
+      <Panel label="Get started">
         <Stack gap={4}>
           <Text variant="micro" tone="dim">
             Connect a model and start chatting — bring your own remote API, or
@@ -123,11 +123,11 @@ export function GetStartedPanel(): JSX.Element {
               <button
                 type="button"
                 onClick={() => setMode("remote")}
-                class="flex-1 border border-line bg-surface p-4 text-left transition-colors hover:border-bright"
+                class="flex-1 rounded-panel bg-surface p-4 text-left shadow-1 transition-colors hover:bg-raised"
               >
                 <Stack gap={1}>
                   <Text variant="label" tone="bright">
-                    USE A REMOTE API
+                    Use a remote API
                   </Text>
                   <Text variant="micro" tone="dim">
                     Anthropic, Google, or any OpenAI-compatible server.
@@ -137,11 +137,11 @@ export function GetStartedPanel(): JSX.Element {
               <button
                 type="button"
                 onClick={() => setMode("local")}
-                class="flex-1 border border-line bg-surface p-4 text-left transition-colors hover:border-bright"
+                class="flex-1 rounded-panel bg-surface p-4 text-left shadow-1 transition-colors hover:bg-raised"
               >
                 <Stack gap={1}>
                   <Text variant="label" tone="bright">
-                    RUN LOCALLY
+                    Run locally
                   </Text>
                   <Text variant="micro" tone="dim">
                     Download and serve a model on this machine.
@@ -162,7 +162,7 @@ export function GetStartedPanel(): JSX.Element {
               {(p) => (
                 <Stack gap={3}>
                   <Select
-                    label="PROVIDER"
+                    label="Provider"
                     options={presetOptions()}
                     value={p().id}
                     onChange={(v) => {
@@ -201,14 +201,14 @@ export function GetStartedPanel(): JSX.Element {
                         setTypedBaseUrl("");
                       }}
                     >
-                      CANCEL
+                      Cancel
                     </Button>
                     <Button
                       variant="primary"
                       disabled={!canConnect()}
                       onClick={connect}
                     >
-                      {connecting() ? "CONNECTING…" : "CONNECT & USE THIS"}
+                      {connecting() ? "Connecting…" : "Connect & use this"}
                     </Button>
                   </Row>
                 </Stack>
@@ -220,7 +220,7 @@ export function GetStartedPanel(): JSX.Element {
 
       {/* What's already connected — read off the shared store (the same endpoints
           the top-bar picker and Settings use). */}
-      <Panel label="CONNECTED PROVIDERS" flush>
+      <Panel label="Connected providers" flush>
         <Show
           when={endpoints.latest}
           fallback={
@@ -234,7 +234,7 @@ export function GetStartedPanel(): JSX.Element {
             fallback={
               <EmptyState
                 icon="link"
-                message="NOTHING CONNECTED YET"
+                message="Nothing connected yet"
                 hint="Connect a provider above to start chatting."
               />
             }
@@ -246,7 +246,7 @@ export function GetStartedPanel(): JSX.Element {
                     align="center"
                     justify="between"
                     gap={3}
-                    class="border-b border-line px-3 py-2 last:border-0"
+                    class="px-3 py-2"
                   >
                     <Stack
                       gap={1}
@@ -261,7 +261,7 @@ export function GetStartedPanel(): JSX.Element {
                     </Stack>
                     <Row gap={2} align="center" class="shrink-0">
                       <Show when={ep.hasApiKey}>
-                        <StatusFlag status="nominal">KEY</StatusFlag>
+                        <StatusFlag status="nominal">Key</StatusFlag>
                       </Show>
                       {/* A managed engine's liveness is its process state, not
                           its enabled switch or a probe verdict. */}
@@ -271,7 +271,7 @@ export function GetStartedPanel(): JSX.Element {
                             ep.liveStatus === "running" ? "nominal" : "warn"
                           }
                         >
-                          {ep.liveStatus === "running" ? "RUNNING" : "STOPPED"}
+                          {ep.liveStatus === "running" ? "Running" : "Stopped"}
                         </StatusFlag>
                       </Show>
                       <EndpointHealthFlag status={ep.lastStatus} />

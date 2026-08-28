@@ -38,7 +38,7 @@ export function RepoDownloadForm(props: {
       <Row gap={3} align="end" class="flex-wrap">
         <div class="min-w-0 flex-1">
           <Input
-            label="HUGGING FACE REPO"
+            label="Hugging Face repo"
             placeholder="org/model"
             value={repo()}
             onInput={(e) => setRepo(e.currentTarget.value)}
@@ -52,8 +52,8 @@ export function RepoDownloadForm(props: {
         />
         <Button type="submit" leading="download" disabled={!canSubmit()}>
           {busy()
-            ? (props.busyLabel ?? "DOWNLOADING")
-            : (props.submitLabel ?? "DOWNLOAD")}
+            ? (props.busyLabel ?? "Downloading")
+            : (props.submitLabel ?? "Download")}
         </Button>
       </Row>
       <Show when={!props.engine}>

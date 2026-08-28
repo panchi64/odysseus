@@ -112,12 +112,12 @@ export function GalleryScreen(): JSX.Element {
     search: (m) => `${m.title} ${m.tags.join(" ")}`,
     sorts: {
       recent: {
-        label: "DATE",
+        label: "Date",
         compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
       },
-      size: { label: "SIZE", compare: (a, b) => a.sizeBytes - b.sizeBytes },
+      size: { label: "Size", compare: (a, b) => a.sizeBytes - b.sizeBytes },
       name: {
-        label: "NAME",
+        label: "Name",
         compare: (a, b) => a.title.localeCompare(b.title),
       },
     },
@@ -227,7 +227,7 @@ export function GalleryScreen(): JSX.Element {
     const ok = await confirm({
       title: "Delete image?",
       detail: deleteDetail,
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -249,7 +249,7 @@ export function GalleryScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete ${targets.length} image${plural}?`,
       detail: deleteDetail,
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -343,7 +343,7 @@ export function GalleryScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete album "${album.name}"?`,
       detail: "The album is removed; the images in it are not deleted.",
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -361,7 +361,7 @@ export function GalleryScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="GALLERY"
+        title="Gallery"
         subtitle="Images from chat attachments and knowledge-base uploads."
         assetId="ODY-GAL-01.0"
         actions={
@@ -371,7 +371,7 @@ export function GalleryScreen(): JSX.Element {
             disabled={importing()}
             onClick={() => fileInput?.click()}
           >
-            {importing() ? "IMPORTING…" : "IMPORT"}
+            {importing() ? "Importing…" : "Import"}
           </Button>
         }
       />
@@ -391,14 +391,14 @@ export function GalleryScreen(): JSX.Element {
       <Show when={media()}>
         <InstrumentBand
           items={[
-            { label: "TOTAL", value: String(items.length) },
-            { label: "STORAGE", value: bytes(stats().bytes), tone: "info" },
+            { label: "Total", value: String(items.length) },
+            { label: "Storage", value: bytes(stats().bytes), tone: "info" },
             {
-              label: "FAVORITES",
+              label: "Favorites",
               value: String(stats().favorites),
               tone: "warn",
             },
-            { label: "KB-EXCLUDED", value: String(stats().excluded) },
+            { label: "KB-excluded", value: String(stats().excluded) },
           ]}
         />
       </Show>
@@ -406,13 +406,13 @@ export function GalleryScreen(): JSX.Element {
       <div class="flex gap-4 min-h-0">
         {/* Album sidebar */}
         <aside class="hidden w-44 shrink-0 lg:block">
-          <Panel label="ALBUMS" flush>
+          <Panel label="Albums" flush>
             <Show
               when={!albums.error}
               fallback={
                 <div class="p-3">
                   <ErrorState
-                    message="ALBUMS UNAVAILABLE"
+                    message="Albums unavailable"
                     onRetry={refetchAlbums}
                   />
                 </div>
@@ -429,7 +429,7 @@ export function GalleryScreen(): JSX.Element {
                 <For each={albumList()}>
                   {(album) => (
                     <div
-                      class="flex items-stretch border-b border-line last:border-b-0"
+                      class="flex items-stretch"
                       classList={{ "bg-raised": selectedAlbum() === album.id }}
                     >
                       <button
@@ -458,13 +458,13 @@ export function GalleryScreen(): JSX.Element {
                           }
                           items={[
                             {
-                              label: "RENAME",
+                              label: "Rename",
                               icon: "edit",
                               onSelect: () =>
                                 setAlbumDialog({ mode: "rename", album }),
                             },
                             {
-                              label: "DELETE",
+                              label: "Delete",
                               icon: "trash",
                               danger: true,
                               onSelect: () => void handleDeleteAlbum(album),
@@ -478,11 +478,11 @@ export function GalleryScreen(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => setAlbumDialog({ mode: "create" })}
-                  class="flex w-full items-center gap-2 border-t border-line px-3 py-2 text-left transition-colors hover:bg-raised"
+                  class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-raised"
                 >
                   <Icon name="plus" size={12} class="text-dim" />
                   <Text variant="label" tone="dim">
-                    NEW ALBUM
+                    New album
                   </Text>
                 </button>
               </Show>
@@ -529,7 +529,7 @@ export function GalleryScreen(): JSX.Element {
                         align="right"
                         trigger={
                           <Button variant="default" size="sm" leading="library">
-                            ADD TO ALBUM
+                            Add to album
                           </Button>
                         }
                         items={
@@ -541,7 +541,7 @@ export function GalleryScreen(): JSX.Element {
                               }))
                             : [
                                 {
-                                  label: "NO ALBUMS YET",
+                                  label: "No albums yet",
                                   onSelect: () => {},
                                   disabled: true,
                                 },
@@ -554,7 +554,7 @@ export function GalleryScreen(): JSX.Element {
                         leading="trash"
                         onClick={() => void handleBulkDelete()}
                       >
-                        DELETE
+                        Delete
                       </Button>
                     </Row>
                   }
@@ -566,13 +566,13 @@ export function GalleryScreen(): JSX.Element {
                 leading="check"
                 onClick={toggleSelectMode}
               >
-                {selectMode() ? "DONE" : "SELECT"}
+                {selectMode() ? "Done" : "Select"}
               </Button>
             </div>
 
             <Resource
               data={media}
-              loadingLabel="LOADING MEDIA"
+              loadingLabel="Loading media"
               onRetry={refetchMedia}
             >
               {() => (
@@ -581,7 +581,7 @@ export function GalleryScreen(): JSX.Element {
                   fallback={
                     <EmptyState
                       icon="image"
-                      message={view.isFiltered() ? "NO MATCHES" : "NO MEDIA"}
+                      message={view.isFiltered() ? "No matches" : "No media"}
                       hint={
                         view.isFiltered()
                           ? "No media matches your search."
@@ -643,8 +643,8 @@ export function GalleryScreen(): JSX.Element {
 
       <AlbumNameDialog
         open={albumDialog() !== null}
-        title={albumDialog()?.mode === "rename" ? "RENAME ALBUM" : "NEW ALBUM"}
-        submitLabel={albumDialog()?.mode === "rename" ? "SAVE" : "CREATE"}
+        title={albumDialog()?.mode === "rename" ? "Rename album" : "New album"}
+        submitLabel={albumDialog()?.mode === "rename" ? "Save" : "Create"}
         initialName={
           albumDialog()?.mode === "rename"
             ? (albumDialog() as { album: Album }).album.name

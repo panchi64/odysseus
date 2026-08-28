@@ -40,7 +40,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
     <Drawer
       open={props.open}
       onClose={props.onClose}
-      title="MEDIA DETAIL"
+      title="Media detail"
       side="right"
     >
       <Show
@@ -62,24 +62,24 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
                 {item().title}
               </Text>
               <Row gap={2} wrap>
-                <StatusFlag status="nominal">IMAGE</StatusFlag>
+                <StatusFlag status="nominal">Image</StatusFlag>
                 <Show when={item().favorite}>
-                  <StatusFlag status="warn">FAVORITE</StatusFlag>
+                  <StatusFlag status="warn">Favorite</StatusFlag>
                 </Show>
                 <Show when={item().kbExcluded}>
-                  <StatusFlag>KB-EXCLUDED</StatusFlag>
+                  <StatusFlag>KB-excluded</StatusFlag>
                 </Show>
               </Row>
             </Stack>
 
             <Stack gap={1}>
               <Field
-                label="SIZE"
+                label="Size"
                 value={bytes(item().sizeBytes)}
                 orientation="row"
               />
               <Field
-                label="CREATED"
+                label="Created"
                 value={date(item().createdAt)}
                 orientation="row"
               />
@@ -91,7 +91,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
             <Stack gap={2}>
               <Row align="center" justify="between" gap={2}>
                 <Text variant="label" tone="dim">
-                  FAVORITE
+                  Favorite
                 </Text>
                 <Toggle
                   checked={item().favorite}
@@ -101,7 +101,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
               <Row align="center" justify="between" gap={2}>
                 <Stack gap={1} class="min-w-0">
                   <Text variant="label" tone="dim">
-                    EXCLUDE FROM KB
+                    Exclude from KB
                   </Text>
                   <Text variant="micro" tone="dim">
                     Keep this image out of the retrieval corpus.
@@ -119,7 +119,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
             {/* Album membership */}
             <Stack gap={2}>
               <Text variant="label" tone="dim">
-                ALBUMS
+                Albums
               </Text>
               <Show
                 when={props.albums.length}
@@ -167,7 +167,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
                 leading="download"
                 onClick={() => props.onDownload(item())}
               >
-                DOWNLOAD
+                Download
               </Button>
               <Button
                 variant="danger"
@@ -175,7 +175,7 @@ export function MediaDetailDrawer(props: MediaDetailDrawerProps): JSX.Element {
                 leading="trash"
                 onClick={() => props.onDelete(item())}
               >
-                DELETE
+                Delete
               </Button>
             </Row>
           </Stack>

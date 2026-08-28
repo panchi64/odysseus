@@ -20,9 +20,9 @@ export function RequireAuth(props: { children: JSX.Element }): JSX.Element {
         <div class="flex h-screen items-center justify-center bg-bg">
           <Stack gap={1} class="items-center">
             <Text variant="display" tone="bright" class="font-display">
-              ODYSSEUS
+              Odysseus
             </Text>
-            <LoadingText label="ESTABLISHING LINK…" />
+            <LoadingText label="Establishing link…" />
           </Stack>
         </div>
       }

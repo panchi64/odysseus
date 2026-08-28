@@ -51,9 +51,9 @@ function passphraseStrength(
   if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++;
   if (/\d/.test(pw)) score++;
   if (/[^A-Za-z0-9]/.test(pw)) score++;
-  if (score <= 2) return { label: "WEAK", status: "alert" };
-  if (score <= 3) return { label: "FAIR", status: "warn" };
-  return { label: "STRONG", status: "nominal" };
+  if (score <= 2) return { label: "Weak", status: "alert" };
+  if (score <= 3) return { label: "Fair", status: "warn" };
+  return { label: "Strong", status: "nominal" };
 }
 
 function errorText(err: unknown, fallback: string): string {
@@ -100,10 +100,10 @@ export function VaultScreen(): JSX.Element {
     try {
       if (configured()) {
         await unlockVault(pw);
-        toast.success("VAULT UNLOCKED");
+        toast.success("Vault unlocked");
       } else {
         await configureVault(pw);
-        toast.success("VAULT CREATED");
+        toast.success("Vault created");
       }
       resetPassphraseField();
     } catch (err) {
@@ -122,7 +122,7 @@ export function VaultScreen(): JSX.Element {
     try {
       await lockVault();
       resetPassphraseField();
-      toast.success("VAULT LOCKED");
+      toast.success("Vault locked");
     } catch (err) {
       toast.error(errorText(err, "Could not lock the vault."));
     }
@@ -136,13 +136,13 @@ export function VaultScreen(): JSX.Element {
   function copyPassword(entry: VaultEntry) {
     void navigator.clipboard.writeText(entry.password);
     markCopied(entry.id);
-    toast.success("PASSWORD COPIED TO CLIPBOARD");
+    toast.success("Password copied to clipboard");
   }
 
   function copyUsername(entry: VaultEntry) {
     void navigator.clipboard.writeText(entry.username);
     markCopied(`usr-${entry.id}`);
-    toast.success("USERNAME COPIED TO CLIPBOARD");
+    toast.success("Username copied to clipboard");
   }
 
   async function submitEntry() {
@@ -170,8 +170,8 @@ export function VaultScreen(): JSX.Element {
       title: `DELETE "${entry.name}"?`,
       detail:
         "This credential will be permanently removed from the vault. This action cannot be undone.",
-      confirmLabel: "DELETE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -187,7 +187,7 @@ export function VaultScreen(): JSX.Element {
     source: () => entries() ?? [],
     search: (e) => `${e.name} ${e.url} ${e.username}`,
     sorts: {
-      name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
+      name: { label: "Name", compare: (a, b) => a.name.localeCompare(b.name) },
       url: { label: "URL", compare: (a, b) => a.url.localeCompare(b.url) },
     },
     initialSort: "name",
@@ -197,13 +197,13 @@ export function VaultScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="PASSWORD VAULT"
+        title="Password vault"
         subtitle="Encrypted credential store. Agent reads require explicit approval."
         assetId="ODY-VLT-05.0 EDITION 01"
         actions={
           <Row gap={2} align="center">
             <StatusFlag status={locked() ? "alert" : "nominal"} dot>
-              {locked() ? "LOCKED" : "UNLOCKED"}
+              {locked() ? "Locked" : "Unlocked"}
             </StatusFlag>
             <Show when={!locked()}>
               <Button
@@ -211,7 +211,7 @@ export function VaultScreen(): JSX.Element {
                 leading="lock"
                 onClick={() => void lock()}
               >
-                LOCK
+                Lock
               </Button>
             </Show>
           </Row>
@@ -222,7 +222,7 @@ export function VaultScreen(): JSX.Element {
         {/* ── LOCKED / UNCONFIGURED STATE ────────────────────── */}
         <Show when={locked()}>
           <Panel
-            label={configured() ? "VAULT LOCKED" : "VAULT NOT SET UP"}
+            label={configured() ? "Vault locked" : "Vault not set up"}
             state="alert"
           >
             <Stack gap={4}>
@@ -232,8 +232,8 @@ export function VaultScreen(): JSX.Element {
                   <Row gap={2} align="center">
                     <Text variant="readout" tone="bright">
                       {configured()
-                        ? "VAULT PASSPHRASE REQUIRED"
-                        : "CHOOSE A VAULT PASSPHRASE"}
+                        ? "Vault passphrase required"
+                        : "Choose a vault passphrase"}
                     </Text>
                     <InfoHint label="Credentials are sealed with a key derived from this passphrase, which is never stored and never leaves memory. It is separate from your login password: unlocking the app does not unlock the vault, and restarting re-locks it." />
                   </Row>
@@ -246,7 +246,7 @@ export function VaultScreen(): JSX.Element {
               </Row>
               <Input
                 label={
-                  configured() ? "VAULT PASSPHRASE" : "NEW VAULT PASSPHRASE"
+                  configured() ? "Vault passphrase" : "New vault passphrase"
                 }
                 type="password"
                 value={passphrase()}
@@ -265,7 +265,7 @@ export function VaultScreen(): JSX.Element {
                 {(s) => (
                   <Row gap={2} align="center">
                     <Text variant="micro" tone="dim">
-                      STRENGTH
+                      Strength
                     </Text>
                     <StatusFlag status={s().status} dot>
                       {s().label}
@@ -282,7 +282,7 @@ export function VaultScreen(): JSX.Element {
                 disabled={busy()}
                 onClick={() => void submitPassphrase()}
               >
-                {configured() ? "UNLOCK VAULT" : "CREATE VAULT"}
+                {configured() ? "Unlock vault" : "Create vault"}
               </Button>
               <Text variant="micro" tone="dim">
                 Agent access to vault credentials pauses for your approval on
@@ -294,8 +294,8 @@ export function VaultScreen(): JSX.Element {
 
         {/* ── UNLOCKED STATE ───────────────────────────────────── */}
         <Show when={!locked()}>
-          <Panel label="CREDENTIALS" flush>
-            <div class="border-b border-line p-3">
+          <Panel label="Credentials" flush>
+            <div class="p-3">
               <Row gap={3} align="center" justify="between">
                 <ListToolbar
                   query={view.query()}
@@ -319,13 +319,13 @@ export function VaultScreen(): JSX.Element {
                     setAddOpen(true);
                   }}
                 >
-                  ADD
+                  Add
                 </Button>
               </Row>
             </div>
             <For each={view.items()}>
               {(entry) => (
-                <div class="border-b border-line last:border-b-0">
+                <div>
                   <div class="flex items-start justify-between gap-3 px-3 py-3">
                     <Stack gap={1} class="min-w-0 flex-1">
                       <Row gap={2} align="center">
@@ -367,7 +367,7 @@ export function VaultScreen(): JSX.Element {
                     </Stack>
                     <Row gap={2} align="center" class="shrink-0">
                       {/* Password field — copy-only; no plaintext render in DOM */}
-                      <div class="flex items-center gap-2 border border-line bg-raised px-2 py-1">
+                      <div class="flex items-center gap-2 rounded-ctl bg-raised px-2 py-1">
                         <Text
                           variant="micro"
                           tone="dim"
@@ -400,7 +400,7 @@ export function VaultScreen(): JSX.Element {
                         }
                         items={[
                           {
-                            label: "DELETE ENTRY",
+                            label: "Delete entry",
                             icon: "trash",
                             danger: true,
                             onSelect: () => void handleDeleteEntry(entry),
@@ -416,7 +416,7 @@ export function VaultScreen(): JSX.Element {
             <Show when={view.items().length === 0}>
               <EmptyState
                 icon="key"
-                message="NO CREDENTIALS"
+                message="No credentials"
                 hint={
                   view.isFiltered()
                     ? "No entries match your search."
@@ -432,25 +432,25 @@ export function VaultScreen(): JSX.Element {
       <Modal
         open={addOpen()}
         onClose={() => setAddOpen(false)}
-        title="ADD CREDENTIAL"
+        title="Add credential"
         footer={
           <>
             <Button variant="ghost" onClick={() => setAddOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={busy()}
               onClick={() => void submitEntry()}
             >
-              SAVE
+              Save
             </Button>
           </>
         }
       >
         <Stack gap={3}>
           <Input
-            label="NAME"
+            label="Name"
             value={draft().name}
             onInput={(e) => {
               setDraft({ ...draft(), name: e.currentTarget.value });
@@ -469,14 +469,14 @@ export function VaultScreen(): JSX.Element {
             placeholder="https://…"
           />
           <Input
-            label="USERNAME"
+            label="Username"
             value={draft().username}
             onInput={(e) =>
               setDraft({ ...draft(), username: e.currentTarget.value })
             }
           />
           <Input
-            label="PASSWORD"
+            label="Password"
             type="password"
             value={draft().password}
             onInput={(e) =>

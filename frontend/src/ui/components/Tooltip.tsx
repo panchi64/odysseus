@@ -13,8 +13,8 @@ export interface TooltipProps {
   /** Render the tip in a portal with fixed positioning so it escapes
    *  overflow-clipping ancestors (e.g. a scrolling sidebar). Enables `delay`. */
   float?: boolean;
-  /** Render the label as normal-case prose instead of the default uppercase
-   *  HUD label — for full-sentence explanations (see `InfoHint`). */
+  /** Let the tip wrap as a sentence (capped width) instead of staying on one
+   *  line — for full explanations rather than short labels (see `InfoHint`). */
   prose?: boolean;
   class?: string;
   children: JSX.Element;
@@ -27,10 +27,13 @@ const sideClass = {
   right: "left-full top-1/2 -translate-y-1/2 ml-1",
 } as const;
 
+/* A tooltip explains something to the operator, so it is the interface voice
+   (§2): sans, sentence case, on a raised surface with the shadow's own hairline
+   rather than a border of its own. */
 const tipChrome =
-  "pointer-events-none border border-line bg-raised px-2 py-1 text-micro text-bright";
+  "pointer-events-none rounded-ctl bg-raised px-2 py-1 text-label font-sans text-bright shadow-1";
 const tipCase = (prose?: boolean) =>
-  prose ? "tracking-normal" : "uppercase tracking-label";
+  prose ? "max-w-64 whitespace-normal" : "whitespace-nowrap";
 
 /** Hover/focus tooltip. Default is a CSS-only instant reveal positioned
  *  relative to the trigger. `float` switches to a portaled, fixed-positioned

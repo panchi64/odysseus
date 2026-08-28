@@ -86,16 +86,16 @@ export function ProjectsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="PROJECTS"
+        title="Projects"
         subtitle="Directories you work in. The active one scopes what you see."
       />
 
       <Stack gap={3}>
         <Text variant="label" tone="dim">
-          ADD A PROJECT
+          Add a project
         </Text>
         <PathInput
-          label="DIRECTORY"
+          label="Directory"
           value={path()}
           onChange={setPath}
           onBrowse={
@@ -110,7 +110,7 @@ export function ProjectsScreen(): JSX.Element {
           hint="An absolute path on this machine."
         />
         <Input
-          label="NAME"
+          label="Name"
           value={name()}
           onChange={setName}
           placeholder="Defaults to the folder name"
@@ -121,7 +121,7 @@ export function ProjectsScreen(): JSX.Element {
             onClick={() => void add()}
             disabled={adding()}
           >
-            {adding() ? "ADDING…" : "ADD PROJECT"}
+            {adding() ? "Adding…" : "Add project"}
           </Button>
         </Row>
       </Stack>
@@ -131,7 +131,7 @@ export function ProjectsScreen(): JSX.Element {
         isEmpty={(d) => d.projects.length === 0}
         empty={
           <EmptyState
-            message="NO PROJECTS"
+            message="No projects"
             hint="Add a directory above to scope your work by project."
           />
         }
@@ -139,7 +139,7 @@ export function ProjectsScreen(): JSX.Element {
         {(data) => (
           <Stack gap={2}>
             <Text variant="label" tone="dim">
-              YOUR PROJECTS
+              Your projects
             </Text>
             <For each={data().projects}>
               {(project) => (
@@ -152,7 +152,7 @@ export function ProjectsScreen(): JSX.Element {
                       <RepoStatus repo={project.repo} />
                       <Show when={project.id !== activeProjectId()}>
                         <Button size="sm" onClick={() => activate(project.id)}>
-                          OPEN
+                          Open
                         </Button>
                       </Show>
                       <Button
@@ -160,7 +160,7 @@ export function ProjectsScreen(): JSX.Element {
                         variant="danger"
                         onClick={() => void remove(project.id, project.name)}
                       >
-                        REMOVE
+                        Remove
                       </Button>
                     </Row>
                   }

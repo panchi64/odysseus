@@ -129,7 +129,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
 
   return (
     <div onKeyDown={onKeyDown}>
-      <div class="border-b border-line p-2">
+      <div class="p-2">
         <Input
           ref={field}
           value={query()}
@@ -141,7 +141,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
             actions.cancel();
           }}
           leading="search"
-          placeholder="GO TO OR CHANGE…"
+          placeholder="Go to or change…"
           aria-label="Search pages and settings"
           role="combobox"
           aria-expanded={hits().length > 0}
@@ -164,7 +164,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
           fallback={
             <div class="px-3 py-4">
               <Text variant="micro" tone="dim">
-                NO MATCH
+                No match
               </Text>
             </div>
           }
@@ -212,7 +212,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
         </Show>
       </div>
 
-      <div class="border-t border-line px-3 py-1.5">
+      <div class="px-3 py-1.5">
         <Text variant="micro" tone="dim">
           ↑↓ MOVE · ENTER OPEN / CHANGE · ESC CLOSE
         </Text>

@@ -14,9 +14,9 @@ const statusFlag: Record<
   ToolInvocation["status"],
   { status: Status; label: string }
 > = {
-  running: { status: "info", label: "RUNNING" },
+  running: { status: "info", label: "Running" },
   ok: { status: "nominal", label: "OK" },
-  error: { status: "alert", label: "ERROR" },
+  error: { status: "alert", label: "Error" },
 };
 
 /** Inline record of a single tool invocation inside an assistant message.
@@ -41,7 +41,7 @@ export function ToolCallCard(props: {
     );
   };
   return (
-    <div class="group/tool border border-line bg-bg">
+    <div class="group/tool overflow-hidden rounded-panel bg-surface shadow-1">
       <div class="flex w-full items-center justify-between gap-2 pr-1.5 transition-colors hover:bg-raised">
         <button
           type="button"
@@ -91,7 +91,7 @@ export function ToolCallCard(props: {
         </span>
       </div>
       <Show when={open() && (props.tool.result || props.tool.error)}>
-        <div class="border-t border-line px-2 py-1.5">
+        <div class="px-2 py-1.5">
           <Show
             when={props.tool.status === "error" && props.tool.error}
             fallback={
@@ -122,7 +122,7 @@ export function ToolCallCard(props: {
           !props.tool.result
         }
       >
-        <div class="border-t border-line px-2 py-1.5">
+        <div class="px-2 py-1.5">
           <Text variant="micro" tone="alert">
             Tool failed with no additional detail.
           </Text>

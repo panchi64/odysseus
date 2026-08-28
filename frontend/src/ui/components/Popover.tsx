@@ -154,7 +154,7 @@ function PopoverPanel(props: {
     <div
       ref={props.ref}
       class={cx(
-        "fixed z-50 border border-line bg-surface",
+        "ody-rise fixed z-50 rounded-panel bg-surface shadow-2",
         // Scrolling is added only when we actually clamp; Select already scrolls
         // itself and Combobox scrolls an inner element, and nesting a second
         // overflow-auto around either gives the panel two scrollbars.

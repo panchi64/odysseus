@@ -23,12 +23,7 @@ export function EndpointRow(props: {
     [props.providerName, ep().model, ep().baseUrl].filter(Boolean).join(" · ");
 
   return (
-    <Row
-      align="center"
-      justify="between"
-      gap={3}
-      class="border-b border-line py-2 last:border-0"
-    >
+    <Row align="center" justify="between" gap={3} class="py-2">
       <Stack gap={1} class={`min-w-0 ${ep().enabled ? "" : "opacity-40"}`}>
         <Row gap={2} align="center">
           <Text variant="label" tone="bright">
@@ -37,16 +32,16 @@ export function EndpointRow(props: {
           <EndpointHealthFlag status={ep().lastStatus} />
           <EndpointLiveFlag endpoint={ep()} />
           <Show when={!ep().enabled}>
-            <StatusFlag status="warn">DISABLED</StatusFlag>
+            <StatusFlag status="warn">Disabled</StatusFlag>
           </Show>
           <Show when={ep().hasApiKey}>
-            <StatusFlag status="nominal">KEY</StatusFlag>
+            <StatusFlag status="nominal">Key</StatusFlag>
           </Show>
           <Show when={ep().vision}>
-            <StatusFlag status="info">VIS</StatusFlag>
+            <StatusFlag status="info">Vis</StatusFlag>
           </Show>
           <Show when={ep().thinking}>
-            <StatusFlag status="info">THINK</StatusFlag>
+            <StatusFlag status="info">Think</StatusFlag>
           </Show>
           <Show when={props.discovery}>
             {(d) => <EndpointDiscoveryFlag discovery={d()} />}
@@ -71,10 +66,10 @@ export function EndpointRow(props: {
           disabled={props.testing}
           onClick={props.onTest}
         >
-          {props.testing ? "TESTING…" : "TEST"}
+          {props.testing ? "Testing…" : "Test"}
         </Button>
         <Button variant="ghost" size="sm" leading="edit" onClick={props.onEdit}>
-          EDIT
+          Edit
         </Button>
         <Button
           variant="ghost"
@@ -82,7 +77,7 @@ export function EndpointRow(props: {
           leading="trash"
           onClick={props.onDelete}
         >
-          DELETE
+          Delete
         </Button>
       </span>
     </Row>

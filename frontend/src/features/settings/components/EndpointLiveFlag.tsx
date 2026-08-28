@@ -14,7 +14,7 @@ export function EndpointLiveFlag(props: {
   return (
     <Show when={props.endpoint.managed}>
       <StatusFlag status={running() ? "nominal" : "warn"}>
-        {running() ? "RUNNING" : "STOPPED"}
+        {running() ? "Running" : "Stopped"}
       </StatusFlag>
     </Show>
   );

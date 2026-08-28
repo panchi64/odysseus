@@ -31,10 +31,10 @@ export function SessionList(props: SessionListProps): JSX.Element {
         </div>
       }
     >
-      <div class="border-b border-line p-2">
+      <div class="p-2">
         <Input
           leading="search"
-          placeholder="SEARCH THREADS"
+          placeholder="Search threads"
           value={view.query()}
           onInput={(e) => view.setQuery(e.currentTarget.value)}
         />
@@ -43,7 +43,7 @@ export function SessionList(props: SessionListProps): JSX.Element {
         when={ordered().length}
         fallback={
           <EmptyState
-            message={view.isFiltered() ? "NO MATCHES" : "NO THREADS"}
+            message={view.isFiltered() ? "No matches" : "No threads"}
           />
         }
       >

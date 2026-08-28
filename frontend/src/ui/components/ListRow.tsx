@@ -35,13 +35,17 @@ export interface ListRowProps {
   locked?: boolean;
   href?: string;
   onClick?: () => void;
-  /** Drop the bottom hairline (e.g. the last row in a group). */
-  flush?: boolean;
+  /** Draw a bottom hairline. Off by default (§7): a list is already read as a
+   *  list by its rhythm and its hover fill, and a rule under every row is the
+   *  single largest source of line-noise in a dense screen. Turn it on only for
+   *  a genuine ruled data grid, where the rule aligns columns across rows. */
+  divided?: boolean;
   class?: string;
 }
 
-/** Single-line row: label left, optional status/icon right, hairline below
- *  (§6.7). Locked rows are dim with a lock glyph. */
+/** Single-line row: label left, optional status/icon right (§10.7). Separation
+ *  comes from rhythm and the hover fill, not from a rule. Locked rows are dim
+ *  with a lock glyph. */
 export function ListRow(props: ListRowProps): JSX.Element {
   const [local] = splitProps(props, [
     "label",
@@ -56,7 +60,7 @@ export function ListRow(props: ListRowProps): JSX.Element {
     "locked",
     "href",
     "onClick",
-    "flush",
+    "divided",
     "class",
   ]);
   const interactive = () => !local.locked && (local.href || local.onClick);
@@ -101,7 +105,7 @@ export function ListRow(props: ListRowProps): JSX.Element {
       aria-disabled={local.locked || undefined}
       class={cx(
         "flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors",
-        !local.flush && "border-b border-line",
+        local.divided && "border-b border-line",
         local.selected && "bg-raised",
         interactive() && "hover:bg-raised",
         (local.selectable || local.option) && !local.locked && "cursor-pointer",

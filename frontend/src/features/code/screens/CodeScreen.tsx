@@ -72,11 +72,15 @@ export function CodeScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="CODE RUNNER"
+        title="Code runner"
         subtitle="Execute scripts in-browser. Runs in-browser, not on host."
         assetId="ODY-CODE-01.0"
         actions={
-          <Text variant="micro" tone="dim" class="border border-line px-2 py-1">
+          <Text
+            variant="micro"
+            tone="dim"
+            class="rounded-ctl bg-raised px-2 py-1"
+          >
             SANDBOXED · IN-BROWSER
           </Text>
         }
@@ -86,7 +90,7 @@ export function CodeScreen(): JSX.Element {
         {/* Editor + output */}
         <div class="flex flex-col gap-4 lg:col-span-2">
           <Panel
-            label="EDITOR"
+            label="Editor"
             meta={
               <Row gap={2} align="center">
                 <Select
@@ -101,7 +105,7 @@ export function CodeScreen(): JSX.Element {
                     disabled={running()}
                     onClick={handleReset}
                   >
-                    RESET
+                    Reset
                   </Button>
                 </Tooltip>
                 <Show
@@ -116,7 +120,7 @@ export function CodeScreen(): JSX.Element {
                         leading="play"
                         onClick={runCode}
                       >
-                        RUN
+                        Run
                       </Button>
                     </Row>
                   }
@@ -126,7 +130,7 @@ export function CodeScreen(): JSX.Element {
                     leading="stop"
                     onClick={handleCancel}
                   >
-                    CANCEL
+                    Cancel
                   </Button>
                 </Show>
               </Row>
@@ -141,7 +145,7 @@ export function CodeScreen(): JSX.Element {
           </Panel>
 
           <Panel
-            label="OUTPUT"
+            label="Output"
             state={lastStatus() === "error" ? "alert" : undefined}
             meta={
               <Show when={lastStatus()}>
@@ -158,7 +162,7 @@ export function CodeScreen(): JSX.Element {
                   </Show>
                   <Show when={lastStatus() === "error"}>
                     <Button variant="ghost" onClick={handleCopyError}>
-                      COPY ERROR
+                      Copy error
                     </Button>
                   </Show>
                 </Row>
@@ -170,7 +174,7 @@ export function CodeScreen(): JSX.Element {
                 (a script needs an attached frame to execute) purely to
                 capture console output; it has no visual output of its own. */}
             <Show when={language() === "html" && previewSrc()}>
-              <div class="h-72 border border-line mb-3">
+              <div class="h-72 overflow-hidden rounded-panel shadow-1 mb-3">
                 <SandboxedFrame src={previewSrc()!} title="HTML preview" />
               </div>
             </Show>
@@ -187,12 +191,12 @@ export function CodeScreen(): JSX.Element {
               fallback={
                 <EmptyState
                   icon="terminal"
-                  message="NO OUTPUT"
+                  message="No output"
                   hint="Press RUN to execute the script."
                 />
               }
             >
-              <div class="bg-bg border border-line p-3 min-h-24 whitespace-pre-wrap">
+              <div class="bg-raised rounded-panel p-3 min-h-24 whitespace-pre-wrap">
                 <For each={outputLines()}>
                   {(line) => (
                     <Text
@@ -205,7 +209,7 @@ export function CodeScreen(): JSX.Element {
                   )}
                 </For>
                 <Show when={running()}>
-                  <LoadingText label="EXECUTING" />
+                  <LoadingText label="Executing" />
                 </Show>
               </div>
               <Show when={lastStatus() === "error"}>
@@ -224,7 +228,7 @@ export function CodeScreen(): JSX.Element {
 
         {/* Run history */}
         <div class="lg:col-span-1">
-          <Panel label="RUN HISTORY" flush>
+          <Panel label="Run history" flush>
             <Suspense
               fallback={
                 <div class="p-3">
@@ -237,7 +241,7 @@ export function CodeScreen(): JSX.Element {
                 fallback={
                   <EmptyState
                     icon="clock"
-                    message="NO HISTORY"
+                    message="No history"
                     hint="Past runs appear here."
                   />
                 }

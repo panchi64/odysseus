@@ -31,7 +31,7 @@ import {
 } from "../data";
 import type { CalendarEvent, RecurrenceChoice } from "../model";
 
-const DAYS_OF_WEEK = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+const DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /** The repetitions the picker offers. `custom` is absent by construction — it is a rule
  *  the backend holds that this control can't express, so it can be shown but never chosen. */
@@ -110,18 +110,18 @@ function sameDay(a: Date, b: Date): boolean {
 }
 
 const MONTH_NAMES = [
-  "JANUARY",
-  "FEBRUARY",
-  "MARCH",
-  "APRIL",
-  "MAY",
-  "JUNE",
-  "JULY",
-  "AUGUST",
-  "SEPTEMBER",
-  "OCTOBER",
-  "NOVEMBER",
-  "DECEMBER",
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
 ];
 
 /** The span the grid needs loaded: the displayed month, padded a month either side so the
@@ -176,18 +176,18 @@ export function CalendarScreen(): JSX.Element {
   const calendarForEvent = (evt: CalendarEvent) =>
     (calendars() ?? []).find((c) => c.id === evt.calendarId);
 
-  // Derived once, read twice (label + tone). "ALL SYNCED" over an empty list would be a
+  // Derived once, read twice (label + tone). "All synced" over an empty list would be a
   // reassuring lie, so no calendars reads as exactly that.
   const syncStatus = (): {
     label: string;
     tone: "info" | "nominal" | "warn";
   } => {
-    if (syncing()) return { label: "SYNCING…", tone: "info" };
+    if (syncing()) return { label: "Syncing…", tone: "info" };
     const rows = calendars() ?? [];
-    if (rows.length === 0) return { label: "NO CALENDARS", tone: "warn" };
+    if (rows.length === 0) return { label: "No calendars", tone: "warn" };
     return rows.every((c) => c.synced)
-      ? { label: "ALL SYNCED", tone: "nominal" }
-      : { label: "PARTIAL", tone: "warn" };
+      ? { label: "All synced", tone: "nominal" }
+      : { label: "Partial", tone: "warn" };
   };
 
   const eventsThisMonth = () =>
@@ -233,18 +233,18 @@ export function CalendarScreen(): JSX.Element {
     try {
       const { calendars: count, changed, failed } = await syncCalendars();
       if (count === 0) {
-        toast.info("NO REMOTE CALENDARS TO SYNC");
+        toast.info("No remote calendars to sync");
       } else if (failed.length > 0) {
         toast.error(`SYNC FAILED FOR ${failed.join(", ").toUpperCase()}`);
       } else {
         toast.success(
           changed > 0
             ? `SYNC COMPLETE — ${changed} CHANGE${changed === 1 ? "" : "S"}`
-            : "SYNC COMPLETE — ALREADY UP TO DATE",
+            : "Sync complete — already up to date",
         );
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "SYNC FAILED");
+      toast.error(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncing(false);
     }
@@ -263,8 +263,8 @@ export function CalendarScreen(): JSX.Element {
       detail: repeats
         ? "The rest of the series is left in place. This cannot be undone."
         : "This cannot be undone.",
-      confirmLabel: repeats ? "CANCEL OCCURRENCE" : "DELETE",
-      cancelLabel: "KEEP",
+      confirmLabel: repeats ? "Cancel occurrence" : "Delete",
+      cancelLabel: "Keep",
       tone: "alert",
     });
     if (!ok) return;
@@ -274,7 +274,7 @@ export function CalendarScreen(): JSX.Element {
       setSelectedEvent(null);
       toast.success(repeats ? "Occurrence cancelled" : "Event deleted");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "DELETE FAILED");
+      toast.error(err instanceof Error ? err.message : "Delete failed");
     }
   }
 
@@ -299,7 +299,7 @@ export function CalendarScreen(): JSX.Element {
    *  the editor refuses instead of quietly rewriting what it can't represent. */
   function openEditEvent(evt: CalendarEvent) {
     if (evt.recurrence === "custom") {
-      toast.error("THIS SERIES' REPEAT RULE CAN'T BE EDITED HERE");
+      toast.error("This series' repeat rule can't be edited here");
       return;
     }
     setEditing(evt);
@@ -317,12 +317,12 @@ export function CalendarScreen(): JSX.Element {
   async function handleSaveEvent() {
     const title = newTitle().trim();
     if (!title) {
-      setNewTitleError("TITLE IS REQUIRED");
+      setNewTitleError("Title is required");
       return;
     }
     const calId = resolvedCalendarId();
     if (!calId) {
-      setNewTitleError("NO CALENDAR TO ADD TO");
+      setNewTitleError("No calendar to add to");
       return;
     }
     setNewTitleError("");
@@ -353,8 +353,8 @@ export function CalendarScreen(): JSX.Element {
         err instanceof Error
           ? err.message
           : target
-            ? "COULD NOT SAVE EVENT"
-            : "COULD NOT CREATE EVENT",
+            ? "Could not save event"
+            : "Could not create event",
       );
       return;
     }
@@ -374,7 +374,7 @@ export function CalendarScreen(): JSX.Element {
     }
     const calId = resolvedCalendarId();
     if (!calId) {
-      toast.error("NO CALENDAR TO ADD TO");
+      toast.error("No calendar to add to");
       return;
     }
     setParsing(true);
@@ -385,7 +385,7 @@ export function CalendarScreen(): JSX.Element {
       toast.success(`Event "${draft.title}" created`);
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : "COULD NOT READ THAT PHRASE",
+        err instanceof Error ? err.message : "Could not read that phrase",
       );
     } finally {
       setParsing(false);
@@ -399,7 +399,7 @@ export function CalendarScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="CALENDAR"
+        title="Calendar"
         subtitle="Events, scheduling, and CalDAV sync."
         assetId="COMM-CAL-01.0"
         actions={
@@ -411,26 +411,26 @@ export function CalendarScreen(): JSX.Element {
               disabled={syncing()}
               onClick={handleSync}
             >
-              {syncing() ? "SYNCING…" : "SYNC"}
+              {syncing() ? "Syncing…" : "Sync"}
             </Button>
             <Button variant="primary" leading="plus" onClick={openCreateEvent}>
-              NEW EVENT
+              New event
             </Button>
           </Row>
         }
       />
 
-      <Suspense fallback={<LoadingText label="LOADING CALENDARS" />}>
+      <Suspense fallback={<LoadingText label="Loading calendars" />}>
         <InstrumentBand
           items={[
             {
-              label: "MONTH",
+              label: "Month",
               value: `${MONTH_NAMES[viewMonth()]} ${viewYear()}`,
             },
-            { label: "EVENTS THIS MONTH", value: String(eventsThisMonth()) },
-            { label: "CALENDARS", value: String(calendars()?.length ?? 0) },
+            { label: "Events this month", value: String(eventsThisMonth()) },
+            { label: "Calendars", value: String(calendars()?.length ?? 0) },
             {
-              label: "SYNC STATUS",
+              label: "Sync status",
               value: syncStatus().label,
               tone: syncStatus().tone,
             },
@@ -441,7 +441,7 @@ export function CalendarScreen(): JSX.Element {
       <div class="flex min-h-0 gap-4">
         {/* Sidebar: calendars list */}
         <aside class="hidden w-48 shrink-0 flex-col gap-4 lg:flex">
-          <Panel label="CALENDARS" flush>
+          <Panel label="Calendars" flush>
             <Suspense
               fallback={
                 <div class="p-3">
@@ -454,7 +454,7 @@ export function CalendarScreen(): JSX.Element {
                 fallback={
                   <div class="p-3">
                     <EmptyState
-                      message="NO CALENDARS CONNECTED"
+                      message="No calendars connected"
                       hint="Link or sync a calendar to get started."
                     />
                   </div>
@@ -469,7 +469,7 @@ export function CalendarScreen(): JSX.Element {
                           status={cal.synced ? TONE_STATUS[cal.tone] : "warn"}
                           dot={cal.synced}
                         >
-                          {cal.synced ? "SYNC" : "LOCAL"}
+                          {cal.synced ? "Sync" : "Local"}
                         </StatusFlag>
                       }
                     />
@@ -480,7 +480,7 @@ export function CalendarScreen(): JSX.Element {
           </Panel>
 
           {/* Upcoming events */}
-          <Panel label="UPCOMING" flush>
+          <Panel label="Upcoming" flush>
             <Suspense
               fallback={
                 <div class="p-3">
@@ -498,7 +498,7 @@ export function CalendarScreen(): JSX.Element {
                   .slice(0, 5)}
                 fallback={
                   <div class="p-3">
-                    <EmptyState message="NO UPCOMING EVENTS" />
+                    <EmptyState message="No upcoming events" />
                   </div>
                 }
               >
@@ -538,7 +538,7 @@ export function CalendarScreen(): JSX.Element {
                 onClick={nextMonth}
               />
               <Button variant="default" size="sm" onClick={goToday}>
-                TODAY
+                Today
               </Button>
             </Row>
             {/* WEEK and DAY tabs lived here while the screen was mock-backed; they
@@ -564,12 +564,12 @@ export function CalendarScreen(): JSX.Element {
               disabled={parsing()}
               onClick={handleQuickAdd}
             >
-              {parsing() ? "READING…" : "ADD"}
+              {parsing() ? "Reading…" : "Add"}
             </Button>
           </Row>
 
           {/* Month grid */}
-          <Suspense fallback={<LoadingText label="LOADING EVENTS" />}>
+          <Suspense fallback={<LoadingText label="Loading events" />}>
             <Panel flush>
               {/* Day-of-week headers */}
               <div class="grid grid-cols-7 border-b border-line">
@@ -620,7 +620,7 @@ export function CalendarScreen(): JSX.Element {
                     </For>
                     <div class="col-span-7 py-8">
                       <EmptyState
-                        message="NO EVENTS THIS MONTH"
+                        message="No events this month"
                         hint="Use NEW EVENT to schedule something."
                       />
                     </div>
@@ -663,7 +663,7 @@ export function CalendarScreen(): JSX.Element {
                                 return (
                                   <button
                                     type="button"
-                                    class="mb-0.5 w-full truncate px-1 py-0.5 text-left text-label font-mono uppercase tracking-label transition-colors hover:bg-raised"
+                                    class="mb-0.5 w-full truncate rounded-ctl px-1 py-0.5 text-left text-label font-sans transition-colors hover:bg-raised"
                                     classList={{
                                       "text-nominal": cal()?.tone === "nominal",
                                       "text-info": cal()?.tone === "info",
@@ -701,58 +701,58 @@ export function CalendarScreen(): JSX.Element {
           <Modal
             open={eventModalOpen()}
             onClose={() => setEventModalOpen(false)}
-            title="EVENT DETAIL"
+            title="Event detail"
             footer={
               <Row gap={2}>
                 <Button
                   variant="ghost"
                   onClick={() => setEventModalOpen(false)}
                 >
-                  CLOSE
+                  Close
                 </Button>
                 <Button
                   variant="primary"
                   leading="edit"
                   onClick={() => openEditEvent(evt())}
                 >
-                  EDIT
+                  Edit
                 </Button>
                 <Button
                   variant="danger"
                   leading="trash"
                   onClick={handleDeleteEvent}
                 >
-                  DELETE
+                  Delete
                 </Button>
               </Row>
             }
           >
             <Stack gap={4}>
-              <Field label="TITLE" value={evt().title} />
+              <Field label="Title" value={evt().title} />
               <Row gap={4}>
                 <Field
-                  label="START"
+                  label="Start"
                   value={evt().start.replace("T", " ").replace("Z", " UTC")}
                 />
                 <Field
-                  label="END"
+                  label="End"
                   value={evt().end.replace("T", " ").replace("Z", " UTC")}
                 />
               </Row>
               <Show when={evt().location}>
-                <Field label="LOCATION" value={evt().location!} />
+                <Field label="Location" value={evt().location!} />
               </Show>
               <Field
-                label="RECURRENCE"
+                label="Recurrence"
                 value={(evt().recurrence ?? "none").toUpperCase()}
               />
               <Show when={evt().description}>
-                <Field label="DESCRIPTION" value={evt().description!} />
+                <Field label="Description" value={evt().description!} />
               </Show>
               <Show when={calendarForEvent(evt())}>
                 {(cal) => (
                   <Field
-                    label="CALENDAR"
+                    label="Calendar"
                     value={
                       <StatusFlag status={TONE_STATUS[cal().tone]} dot>
                         {cal().name.toUpperCase()}
@@ -773,7 +773,7 @@ export function CalendarScreen(): JSX.Element {
           setNewEventOpen(false);
           resetEventForm();
         }}
-        title={editing() ? "EDIT EVENT" : "NEW EVENT"}
+        title={editing() ? "Edit event" : "New event"}
         footer={
           <Row gap={2}>
             <Button
@@ -783,14 +783,14 @@ export function CalendarScreen(): JSX.Element {
                 resetEventForm();
               }}
             >
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               leading={editing() ? "check" : "plus"}
               onClick={handleSaveEvent}
             >
-              {editing() ? "SAVE" : "CREATE"}
+              {editing() ? "Save" : "Create"}
             </Button>
           </Row>
         }
@@ -804,7 +804,7 @@ export function CalendarScreen(): JSX.Element {
             </Text>
           </Show>
           <Input
-            label="TITLE"
+            label="Title"
             value={newTitle()}
             onInput={(e) => {
               setNewTitle(e.currentTarget.value);
@@ -815,31 +815,31 @@ export function CalendarScreen(): JSX.Element {
             hint={newTitleError() || undefined}
           />
           <Input
-            label="START"
+            label="Start"
             type="datetime-local"
             value={newStart()}
             onInput={(e) => setNewStart(e.currentTarget.value)}
           />
           <Input
-            label="END"
+            label="End"
             type="datetime-local"
             value={newEnd()}
             onInput={(e) => setNewEnd(e.currentTarget.value)}
           />
           <Input
-            label="LOCATION"
+            label="Location"
             value={newLocation()}
             onInput={(e) => setNewLocation(e.currentTarget.value)}
             placeholder="Optional location"
           />
           <Select
-            label="RECURRENCE"
+            label="Recurrence"
             value={newRecurrence()}
             onChange={(value) => setNewRecurrence(toChoice(value))}
             options={RECURRENCE_OPTIONS}
           />
           <Select
-            label="CALENDAR"
+            label="Calendar"
             value={resolvedCalendarId()}
             onChange={setNewCalendarId}
             options={(calendars() ?? []).map((c) => ({

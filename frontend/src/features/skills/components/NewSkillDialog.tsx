@@ -57,11 +57,11 @@ export function NewSkillDialog(props: {
     <Modal
       open={props.open}
       onClose={props.onClose}
-      title="NEW SKILL"
+      title="New skill"
       footer={
         <>
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button
             variant="primary"
@@ -69,7 +69,7 @@ export function NewSkillDialog(props: {
             disabled={!canSubmit()}
             onClick={() => void submit()}
           >
-            CREATE
+            Create
           </Button>
         </>
       }

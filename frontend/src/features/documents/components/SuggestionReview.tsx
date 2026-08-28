@@ -110,20 +110,20 @@ export function SuggestionReview(props: {
 
   return (
     <Panel
-      label="AI SUGGESTIONS"
+      label="AI suggestions"
       meta={
         <Text variant="micro" tone="dim" class="tabular-nums">
           {total()}
         </Text>
       }
     >
-      <Suspense fallback={<LoadingText label="LOADING SUGGESTIONS" />}>
+      <Suspense fallback={<LoadingText label="Loading suggestions" />}>
         <Show
           when={(sets() ?? []).length}
           fallback={
             <EmptyState
               icon="check"
-              message="NOTHING PROPOSED"
+              message="Nothing proposed"
               hint="Changes the AI proposes in chat show up here to accept or reject."
             />
           }
@@ -134,7 +134,7 @@ export function SuggestionReview(props: {
                 <Stack gap={2}>
                   <Row gap={3} align="center" justify="between">
                     <Text variant="micro" tone="dim">
-                      {set.summary || "PROPOSED CHANGES"} ·{" "}
+                      {set.summary || "Proposed changes"} ·{" "}
                       {timestamp(set.createdAt)}
                     </Text>
                     <Button
@@ -144,7 +144,7 @@ export function SuggestionReview(props: {
                       disabled={isBusy(set.id)}
                       onClick={() => void handleAcceptAll(set)}
                     >
-                      ACCEPT ALL
+                      Accept all
                     </Button>
                   </Row>
                   <For each={set.changes.filter((c) => c.status === "pending")}>
@@ -177,7 +177,7 @@ function ChangeCard(props: {
 }): JSX.Element {
   const result = () => lineDiff(props.change.oldText, props.change.newText);
   return (
-    <Stack gap={2} class="border border-line p-2">
+    <Stack gap={2} class="rounded-panel bg-surface p-2 shadow-1">
       <Show when={props.change.explanation}>
         <Text variant="body" tone="dim">
           {props.change.explanation}
@@ -192,7 +192,7 @@ function ChangeCard(props: {
           disabled={props.busy}
           onClick={props.onAccept}
         >
-          ACCEPT
+          Accept
         </Button>
         <Button
           variant="ghost"
@@ -201,7 +201,7 @@ function ChangeCard(props: {
           disabled={props.busy}
           onClick={props.onReject}
         >
-          REJECT
+          Reject
         </Button>
       </Row>
     </Stack>

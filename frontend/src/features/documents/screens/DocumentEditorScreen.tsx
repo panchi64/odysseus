@@ -101,7 +101,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
     const ok = await confirm({
       title: `Restore "${v.label}"?`,
       detail: "This will replace the current document body with this snapshot.",
-      confirmLabel: "RESTORE",
+      confirmLabel: "Restore",
       tone: "alert",
     });
     if (!ok) return;
@@ -134,7 +134,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
       />
 
       <Panel
-        label="VERSION HISTORY"
+        label="Version history"
         flush
         meta={
           <Text variant="micro" tone="dim" class="tabular-nums">
@@ -163,10 +163,10 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
   );
 
   return (
-    <Suspense fallback={<LoadingText label="LOADING DOCUMENT" />}>
+    <Suspense fallback={<LoadingText label="Loading document" />}>
       <EditorShell
         backHref="/documents"
-        backLabel="BACK TO DOCUMENTS"
+        backLabel="Back to documents"
         title={detail()?.title ?? "—"}
         dirty={isDirty()}
         meta={
@@ -190,7 +190,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
               size="sm"
               onClick={() => setRenameOpen(true)}
             >
-              RENAME
+              Rename
             </Button>
             <Button
               variant={showSaved() ? "default" : "primary"}
@@ -199,7 +199,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
               disabled={!isDirty()}
               onClick={() => void handleSave()}
             >
-              {showSaved() ? "SAVED" : "SAVE"}
+              {showSaved() ? "Saved" : "Save"}
             </Button>
           </>
         }
@@ -238,14 +238,14 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
                     variant="ghost"
                     onClick={() => setPreviewVersion(null)}
                   >
-                    CLOSE
+                    Close
                   </Button>
                   <Button
                     variant="danger"
                     leading="clock"
                     onClick={() => void handleRestoreVersion(v())}
                   >
-                    RESTORE THIS VERSION
+                    Restore this version
                   </Button>
                 </>
               }
@@ -254,7 +254,7 @@ export function DocumentEditorScreen(props: { id: string }): JSX.Element {
                 <Row gap={3} align="center">
                   <Text variant="micro" tone="dim">
                     {v().author} · {timestamp(v().createdAt)} · vs{" "}
-                    {prev()?.label ?? "EMPTY"}
+                    {prev()?.label ?? "Empty"}
                   </Text>
                   <Row gap={2} align="center">
                     <Text variant="micro" tone="nominal" class="tabular-nums">

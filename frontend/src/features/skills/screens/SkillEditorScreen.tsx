@@ -182,7 +182,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
 
   const toolsPanel = () => (
     <>
-      <Panel label="DETAILS">
+      <Panel label="Details">
         <Stack gap={4}>
           <SkillIdentityFields
             name={draft.name}
@@ -196,7 +196,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
         </Stack>
       </Panel>
 
-      <Panel label="ACTIONS">
+      <Panel label="Actions">
         <Stack gap={2}>
           <Button
             variant="default"
@@ -205,7 +205,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
             block
             onClick={() => void handlePublishToggle()}
           >
-            {skill()?.published ? "UNPUBLISH" : "PUBLISH"}
+            {skill()?.published ? "Unpublish" : "Publish"}
           </Button>
           <Button
             variant="default"
@@ -214,7 +214,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
             block
             onClick={() => void handleExport()}
           >
-            EXPORT BUNDLE
+            Export bundle
           </Button>
         </Stack>
       </Panel>
@@ -226,17 +226,17 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
   );
 
   return (
-    <Suspense fallback={<LoadingText label="LOADING SKILL" />}>
+    <Suspense fallback={<LoadingText label="Loading skill" />}>
       <Show
         when={skill()}
         fallback={
           <EmptyState
             icon="layers"
-            message={loadError() ? "SKILL UNAVAILABLE" : "SKILL NOT FOUND"}
+            message={loadError() ? "Skill unavailable" : "Skill not found"}
             hint={loadError() ?? "The requested skill does not exist."}
             action={
               <Button variant="default" leading="chevron-left" href="/skills">
-                BACK TO SKILLS
+                Back to skills
               </Button>
             }
           />
@@ -245,7 +245,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
         {(s) => (
           <EditorShell
             backHref="/skills"
-            backLabel="BACK TO SKILLS"
+            backLabel="Back to skills"
             title={draft.name || "—"}
             dirty={isDirty()}
             meta={
@@ -274,7 +274,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
                 disabled={!isDirty() || busy()}
                 onClick={() => void handleSave()}
               >
-                {showSaved() ? "SAVED" : "SAVE"}
+                {showSaved() ? "Saved" : "Save"}
               </Button>
             }
             aside={toolsPanel}

@@ -113,7 +113,7 @@ export function ManagedModelRow(props: {
   }
 
   return (
-    <Stack gap={2} class="border-b border-line px-3 py-3 last:border-0">
+    <Stack gap={2} class="px-3 py-3">
       <Row align="center" justify="between" gap={3}>
         <Row align="center" gap={2} class="min-w-0">
           <Text variant="label" tone="dim" class="shrink-0">
@@ -123,12 +123,12 @@ export function ManagedModelRow(props: {
             {props.model.hfRepo}
           </Text>
           <Show when={isLocal()}>
-            <Chip>ON DISK</Chip>
+            <Chip>On disk</Chip>
           </Show>
         </Row>
         <Row align="center" gap={2} class="shrink-0">
           <Show when={state() === "running" && isChatModel()}>
-            <StatusFlag status="nominal">CHAT</StatusFlag>
+            <StatusFlag status="nominal">Chat</StatusFlag>
           </Show>
           <Show when={state() === "running" && props.model.port}>
             <Text variant="micro" tone="dim">
@@ -182,7 +182,7 @@ export function ManagedModelRow(props: {
             disabled={busy() || isChatModel() || !servedModel()}
             onClick={run(useForChat)}
           >
-            {isChatModel() ? "IN USE FOR CHAT" : "USE FOR CHAT"}
+            {isChatModel() ? "In use for chat" : "Use for chat"}
           </Button>
         </Show>
         <Show when={state() === "stopped" || state() === "error"}>
@@ -200,7 +200,7 @@ export function ManagedModelRow(props: {
               ),
             )}
           >
-            {state() === "error" ? "RETRY" : "SERVE"}
+            {state() === "error" ? "Retry" : "Serve"}
           </Button>
         </Show>
         <Show when={state() === "running" || inFlight()}>
@@ -211,7 +211,7 @@ export function ManagedModelRow(props: {
             disabled={busy()}
             onClick={run(props.onStop)}
           >
-            {inFlight() ? "CANCEL" : "STOP"}
+            {inFlight() ? "Cancel" : "Stop"}
           </Button>
         </Show>
         <Show when={!inFlight()}>
@@ -222,7 +222,7 @@ export function ManagedModelRow(props: {
             disabled={busy()}
             onClick={run(props.onDelete)}
           >
-            {isLocal() ? "REMOVE" : "DELETE"}
+            {isLocal() ? "Remove" : "Delete"}
           </Button>
         </Show>
       </Row>

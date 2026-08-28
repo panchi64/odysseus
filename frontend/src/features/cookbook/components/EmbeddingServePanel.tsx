@@ -43,7 +43,7 @@ export function EmbeddingServePanel(): JSX.Element {
 
   return (
     <Stack gap={6}>
-      <Panel label="SERVE EMBEDDINGS LOCALLY">
+      <Panel label="Serve embeddings locally">
         <Stack gap={3}>
           <Text variant="micro" tone="dim">
             Run an embedding model on this machine with llama.cpp and bind it to
@@ -54,8 +54,8 @@ export function EmbeddingServePanel(): JSX.Element {
           <RepoFinderHint engine="llama.cpp" workload="embedding" />
           <RepoDownloadForm
             engine="llama.cpp"
-            submitLabel="DOWNLOAD & SERVE"
-            busyLabel="SERVING"
+            submitLabel="Download & serve"
+            busyLabel="Serving"
             onDownload={serveEmbedding}
           />
           <HfTokenNotice />
@@ -63,7 +63,7 @@ export function EmbeddingServePanel(): JSX.Element {
       </Panel>
 
       <Show when={embeddingModels().length}>
-        <Panel label="SERVED EMBEDDING MODELS" flush>
+        <Panel label="Served embedding models" flush>
           <Stack gap={0}>
             <For each={embeddingModels()}>
               {(model) => (

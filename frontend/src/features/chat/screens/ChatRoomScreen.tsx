@@ -81,10 +81,10 @@ function buildConversationTranscript(messages: ChatMessage[]): string {
       // is rather than attributing the summary to the assistant.
       const label =
         m.role === "user"
-          ? "OPERATOR"
+          ? "Operator"
           : m.role === "compaction"
-            ? "CONTEXT COMPACTED"
-            : "ASSISTANT";
+            ? "Context compacted"
+            : "Assistant";
       const body =
         m.role === "assistant" ? assembleTranscript(m.blocks) : m.content;
       return `${label} · ${m.createdAt}\n${body}`;
@@ -581,7 +581,7 @@ export function ChatRoomScreen(): JSX.Element {
       const ok = await confirm({
         title,
         detail: baseDetail,
-        confirmLabel: "DELETE",
+        confirmLabel: "Delete",
         tone: "alert",
       });
       return ok ? false : null;
@@ -592,9 +592,9 @@ export function ChatRoomScreen(): JSX.Element {
       detail: `${baseDetail} ${n} image attachment${
         n > 1 ? "s" : ""
       } would be left unused — delete them too or keep them in the gallery?`,
-      confirmLabel: "DELETE IMAGES",
-      secondaryLabel: "KEEP IMAGES",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Delete images",
+      secondaryLabel: "Keep images",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (choice === "cancel") return null;
@@ -671,7 +671,7 @@ export function ChatRoomScreen(): JSX.Element {
             and picked in the app top bar; a third, read-only copy here was the one
             that read as a control. Everything else that stood in this row is in the
             status strip below it. */}
-        <header class="flex items-center justify-between gap-3 border-b border-line pb-3">
+        <header class="flex items-center justify-between gap-3 pb-3">
           <span class="flex min-w-0 items-center gap-1.5">
             <Show
               when={headerReveal()}
@@ -707,7 +707,7 @@ export function ChatRoomScreen(): JSX.Element {
                 />
               )}
             </Show>
-            <Tooltip label="VIEWPORT" side="bottom">
+            <Tooltip label="Viewport" side="bottom">
               <Button
                 ref={(el) => (sheetTrigger = el)}
                 variant="ghost"
@@ -734,19 +734,19 @@ export function ChatRoomScreen(): JSX.Element {
               items={
                 [
                   {
-                    label: "RENAME CONVERSATION",
+                    label: "Rename conversation",
                     icon: "edit",
                     disabled: !currentId(),
                     onSelect: openRename,
                   },
                   {
-                    label: "REGENERATE TITLE",
+                    label: "Regenerate title",
                     icon: "refresh",
                     disabled: !currentId(),
                     onSelect: handleRegenerateTitle,
                   },
                   {
-                    label: "COMPACT NOW",
+                    label: "Compact now",
                     icon: "layers",
                     // Nothing to fold in an empty or one-turn thread; the backend
                     // refuses those anyway, this just doesn't offer the action.
@@ -754,13 +754,13 @@ export function ChatRoomScreen(): JSX.Element {
                     onSelect: () => void stream.compactNow(),
                   },
                   {
-                    label: "COPY CONVERSATION",
+                    label: "Copy conversation",
                     icon: "copy",
                     disabled: stream.messages.length === 0,
                     onSelect: handleCopyConversation,
                   },
                   {
-                    label: "DELETE CONVERSATION",
+                    label: "Delete conversation",
                     icon: "trash",
                     danger: true,
                     disabled: !currentId(),
@@ -797,7 +797,7 @@ export function ChatRoomScreen(): JSX.Element {
                 thread list, or the text they were typing — scope a throw in the
                 message tree to the scroll region. Switching threads resets it. */}
             <ErrorBoundary
-              message="THIS CONVERSATION FAILED TO RENDER"
+              message="This conversation failed to render"
               resetKey={currentId}
             >
               <Show
@@ -805,7 +805,7 @@ export function ChatRoomScreen(): JSX.Element {
                 fallback={
                   <EmptyState
                     icon="chat"
-                    message="START A CONVERSATION"
+                    message="Start a conversation"
                     hint="Ask a question, request a summary, or describe a task to begin."
                   />
                 }
@@ -874,12 +874,16 @@ export function ChatRoomScreen(): JSX.Element {
               onClick={jumpToLatest}
               class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface"
             >
-              JUMP TO LATEST
+              Jump to latest
             </Button>
           </Show>
         </div>
 
-        <div class="sticky bottom-0 -mx-1">
+        {/* The composer is a floating card now, not a bar welded to the bottom
+            edge, so the sticky wrapper carries the page background: the
+            transcript scrolls out of sight behind it instead of showing through
+            the gap around the card. No rule and no gradient — just the ground. */}
+        <div class="sticky bottom-0 bg-bg pt-2 pb-1">
           <Composer
             autofocus
             streaming={stream.sending()}
@@ -935,18 +939,18 @@ export function ChatRoomScreen(): JSX.Element {
             data-view-sheet
             class="fixed inset-0 z-50 flex flex-col bg-bg"
           >
-            <header class="flex items-center gap-3 border-b border-line px-4 py-3">
+            <header class="flex items-center gap-3 px-4 py-3">
               <Button
                 variant="ghost"
                 size="sm"
                 leading="chevron-left"
                 onClick={closeSheet}
               >
-                BACK TO CHAT
+                Back to chat
               </Button>
               <span id="view-sheet-title">
                 <Text variant="label" tone="bright">
-                  VIEW
+                  View
                 </Text>
               </span>
             </header>
@@ -958,25 +962,25 @@ export function ChatRoomScreen(): JSX.Element {
       <Modal
         open={renameOpen()}
         onClose={() => setRenameOpen(false)}
-        title="RENAME CONVERSATION"
+        title="Rename conversation"
       >
         <Stack gap={3}>
           <Input
-            label="TITLE"
+            label="Title"
             value={renameValue()}
             onInput={(e) => setRenameValue(e.currentTarget.value)}
             placeholder="Conversation title"
           />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRenameOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!renameValue().trim()}
               onClick={submitRename}
             >
-              SAVE
+              Save
             </Button>
           </div>
         </Stack>

@@ -13,16 +13,22 @@ export interface RecentThreadCardProps {
 }
 
 /** A recent-conversation preview tile for the overview launchpad. The warm
- *  thread carries a RESUME marker and a bright border so "where was I" is one
- *  glance and one click. */
+ *  thread — "where was I" — is marked by a faint raised fill and a RESUME flag,
+ *  never by an outline: a bright border on one card in a grid of transparent
+ *  ones was the loudest thing under the composer. */
 export function RecentThreadCard(props: RecentThreadCardProps): JSX.Element {
   return (
     <button
       type="button"
       onClick={() => props.onOpen()}
+      /* No border and no fill at rest — these sit *behind* the interface, on the
+         page itself, and a grid of bordered boxes under the composer was the
+         launchpad's whole clutter problem. The row only materializes on hover,
+         which is the moment it stops being ambient. `warm` (the resumable
+         thread) is marked by brightness, not by an outline. */
       class={cx(
-        "flex w-full flex-col gap-1 border p-3 text-left transition-colors hover:bg-raised",
-        props.warm ? "border-bright" : "border-line",
+        "flex w-full flex-col gap-1 rounded-panel p-3 text-left transition-colors hover:bg-raised",
+        props.warm && "bg-raised/40",
       )}
     >
       <div class="flex items-center justify-between gap-2">
@@ -41,7 +47,7 @@ export function RecentThreadCard(props: RecentThreadCardProps): JSX.Element {
             </Text>
           }
         >
-          <StatusFlag status="info">RESUME</StatusFlag>
+          <StatusFlag status="info">Resume</StatusFlag>
         </Show>
       </div>
       <Show when={props.preview}>

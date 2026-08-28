@@ -35,10 +35,10 @@ export interface AttachmentChipProps {
 }
 
 const STATUS_HINT: Record<AttachmentStatus, string> = {
-  uploading: "UPLOADING…",
-  extracting: "EXTRACTING…",
+  uploading: "Uploading…",
+  extracting: "Extracting…",
   ready: "",
-  error: "FAILED",
+  error: "Failed",
 };
 
 // Accents carry meaning only: in-flight is live `info`, failure is `alert`. A

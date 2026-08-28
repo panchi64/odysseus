@@ -113,14 +113,14 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
     <Drawer
       open={open()}
       onClose={props.onClose}
-      title="CONFIGURE AUTH"
+      title="Configure auth"
       footer={
         <Row gap={2}>
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button variant="primary" onClick={handleSave}>
-            SAVE CREDENTIALS
+            Save credentials
           </Button>
         </Row>
       }
@@ -135,19 +135,19 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
             </Text>
 
             <Select
-              label="AUTH METHOD"
+              label="Auth method"
               value={method()}
               onChange={(v) => setMethod(v as McpAuthCredentials["method"])}
               options={[
-                { value: "api_key", label: "API KEY" },
-                { value: "bearer", label: "BEARER TOKEN" },
-                { value: "basic", label: "BASIC (USER / PASS)" },
+                { value: "api_key", label: "API key" },
+                { value: "bearer", label: "Bearer token" },
+                { value: "basic", label: "Basic (user / pass)" },
               ]}
             />
 
             <Show when={method() === "api_key" || method() === "bearer"}>
               <Input
-                label={method() === "api_key" ? "API KEY" : "TOKEN"}
+                label={method() === "api_key" ? "API key" : "Token"}
                 type="password"
                 value={token()}
                 onInput={(e) => setToken(e.currentTarget.value)}
@@ -157,13 +157,13 @@ function AuthDrawer(props: AuthDrawerProps): JSX.Element {
 
             <Show when={method() === "basic"}>
               <Input
-                label="USERNAME"
+                label="Username"
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 placeholder="e.g. admin"
               />
               <Input
-                label="PASSWORD"
+                label="Password"
                 type="password"
                 value={password()}
                 onInput={(e) => setPassword(e.currentTarget.value)}
@@ -217,7 +217,7 @@ function ServerCard(props: {
       meta={
         <Row gap={2} align="center">
           <Show when={props.server.authRequired}>
-            <StatusFlag status="info">AUTH</StatusFlag>
+            <StatusFlag status="info">Auth</StatusFlag>
           </Show>
 
           {/* Error status with tooltip showing diagnostics */}
@@ -230,7 +230,7 @@ function ServerCard(props: {
             }
           >
             <Tooltip label={errorTooltip()} side="left">
-              <StatusFlag status="alert">ERROR</StatusFlag>
+              <StatusFlag status="alert">Error</StatusFlag>
             </Tooltip>
           </Show>
 
@@ -243,7 +243,7 @@ function ServerCard(props: {
               disabled={props.busy}
               onClick={() => props.onRetry(props.server)}
             >
-              {props.busy ? "CONNECTING…" : "RETRY"}
+              {props.busy ? "Connecting…" : "Retry"}
             </Button>
           </Show>
 
@@ -255,7 +255,7 @@ function ServerCard(props: {
               leading="key"
               onClick={() => props.onConfigureAuth(props.server)}
             >
-              {props.server.hasCredentials ? "UPDATE AUTH" : "CONFIGURE AUTH"}
+              {props.server.hasCredentials ? "Update auth" : "Configure auth"}
             </Button>
           </Show>
 
@@ -264,7 +264,7 @@ function ServerCard(props: {
             fallback={
               <Tooltip label="This server exposes no tools to the agent.">
                 <Button size="sm" variant="ghost" disabled>
-                  0 TOOLS
+                  0 tools
                 </Button>
               </Tooltip>
             }
@@ -287,7 +287,7 @@ function ServerCard(props: {
             }
             items={[
               {
-                label: "DELETE SERVER",
+                label: "Delete server",
                 icon: "trash",
                 danger: true,
                 onSelect: () => props.onDelete(props.server),
@@ -302,7 +302,7 @@ function ServerCard(props: {
         <Stack gap={2}>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              TRANSPORT
+              Transport
             </Text>
             <Text variant="micro" tone="bright">
               {props.server.transport.toUpperCase()}
@@ -311,7 +311,7 @@ function ServerCard(props: {
           </Row>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              ENDPOINT
+              Endpoint
             </Text>
             <Text variant="micro" tone="bright">
               {props.server.url}
@@ -319,7 +319,7 @@ function ServerCard(props: {
           </Row>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              TOOLS ENABLED
+              Tools enabled
             </Text>
             <Text variant="micro" tone="nominal">
               {enabledCount()} / {props.server.tools.length}
@@ -328,7 +328,7 @@ function ServerCard(props: {
               ·
             </Text>
             <Text variant="micro" tone="dim">
-              TRUSTED
+              Trusted
             </Text>
             <Text variant="micro" tone="bright">
               {trustedCount()}
@@ -340,7 +340,7 @@ function ServerCard(props: {
           <Show when={isError() && props.server.errorMessage}>
             <Row gap={2} align="center">
               <Text variant="micro" tone="dim">
-                LAST ERROR
+                Last error
               </Text>
               <Text variant="micro" tone="alert">
                 {props.server.errorMessage}
@@ -371,7 +371,7 @@ function ServerCard(props: {
                         variant="micro"
                         tone={tool.trusted ? "bright" : "dim"}
                       >
-                        {tool.trusted ? "TRUSTED" : "ASKS FIRST"}
+                        {tool.trusted ? "Trusted" : "Asks first"}
                       </Text>
                       <Toggle
                         checked={tool.trusted}
@@ -390,7 +390,7 @@ function ServerCard(props: {
                   >
                     <Row gap={2} align="center">
                       <Text variant="micro" tone="dim">
-                        ENABLED
+                        Enabled
                       </Text>
                       <Toggle
                         checked={tool.enabled}
@@ -410,7 +410,7 @@ function ServerCard(props: {
         <div class="px-3 py-2">
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              TRANSPORT
+              Transport
             </Text>
             <Text variant="micro" tone="bright">
               {props.server.transport.toUpperCase()}
@@ -498,8 +498,8 @@ export function McpScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete server "${server.name}"?`,
       detail: "The agent will lose access to its tools. This cannot be undone.",
-      confirmLabel: "DELETE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -515,9 +515,9 @@ export function McpScreen(): JSX.Element {
     source: () => servers() ?? [],
     search: (s) => s.name,
     sorts: {
-      name: { label: "NAME", compare: (a, b) => a.name.localeCompare(b.name) },
+      name: { label: "Name", compare: (a, b) => a.name.localeCompare(b.name) },
       status: {
-        label: "STATUS",
+        label: "Status",
         compare: (a, b) => a.status.localeCompare(b.status),
       },
     },
@@ -575,7 +575,7 @@ export function McpScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="MCP CONNECTIONS"
+        title="MCP connections"
         subtitle="Model Context Protocol server registration and tool management."
         assetId="SYS-MCP-04.1"
         actions={
@@ -589,23 +589,23 @@ export function McpScreen(): JSX.Element {
               leading="plus"
               onClick={() => setRegisterOpen(true)}
             >
-              REGISTER
+              Register
             </Button>
           </Row>
         }
       />
 
-      <Suspense fallback={<LoadingText label="LOADING SERVERS" />}>
+      <Suspense fallback={<LoadingText label="Loading servers" />}>
         <Show
           when={(servers() ?? []).length}
           fallback={
             <EmptyState
               icon="plug"
-              message="NO SERVERS"
+              message="No servers"
               hint="Model Context Protocol (MCP) lets the agent call external tools — file access, search, custom APIs — exposed by a server. Register one to get started."
               action={
                 <Button onClick={() => setRegisterOpen(true)} leading="plus">
-                  REGISTER SERVER
+                  Register server
                 </Button>
               }
             />
@@ -634,7 +634,7 @@ export function McpScreen(): JSX.Element {
               fallback={
                 <EmptyState
                   icon="search"
-                  message="NO MATCHES"
+                  message="No matches"
                   hint="No servers match your search."
                 />
               }
@@ -660,36 +660,36 @@ export function McpScreen(): JSX.Element {
       <Modal
         open={registerOpen()}
         onClose={() => setRegisterOpen(false)}
-        title="REGISTER MCP SERVER"
+        title="Register MCP server"
         footer={
           <Row gap={2}>
             <Button variant="ghost" onClick={() => setRegisterOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               onClick={registerServer}
               disabled={!canRegister() || registering()}
             >
-              {registering() ? "CONNECTING…" : "REGISTER"}
+              {registering() ? "Connecting…" : "Register"}
             </Button>
           </Row>
         }
       >
         <Stack gap={4}>
           <Input
-            label="SERVER NAME"
+            label="Server name"
             value={regName()}
             onInput={(e) => setRegName(e.currentTarget.value)}
             placeholder="e.g. My Custom MCP"
           />
           <Select
-            label="TRANSPORT"
+            label="Transport"
             value={regTransport()}
             onChange={(v) => setRegTransport(v as McpTransport)}
             options={[
-              { value: "stdio", label: "STDIO (LOCAL SUBPROCESS)" },
-              { value: "http", label: "HTTP (STREAMABLE)" },
+              { value: "stdio", label: "Stdio (local subprocess)" },
+              { value: "http", label: "HTTP (streamable)" },
               { value: "sse", label: "SSE" },
             ]}
           />
@@ -705,7 +705,7 @@ export function McpScreen(): JSX.Element {
             }
           >
             <Input
-              label="COMMAND"
+              label="Command"
               value={regCommand()}
               onInput={(e) => setRegCommand(e.currentTarget.value)}
               placeholder="e.g. npx -y @modelcontextprotocol/server-name"

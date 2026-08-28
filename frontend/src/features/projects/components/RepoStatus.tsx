@@ -16,7 +16,7 @@ export function RepoStatus(props: { repo: ProjectRepo }): JSX.Element {
         when={props.repo.exists}
         fallback={
           <Text variant="micro" tone="alert">
-            PATH MISSING
+            Path missing
           </Text>
         }
       >
@@ -25,7 +25,7 @@ export function RepoStatus(props: { repo: ProjectRepo }): JSX.Element {
           fallback={
             <Tooltip label="Coding mode needs a repository — it will offer to create one">
               <Text variant="micro" tone="warn">
-                NOT A REPO
+                Not a repo
               </Text>
             </Tooltip>
           }
@@ -41,7 +41,7 @@ export function RepoStatus(props: { repo: ProjectRepo }): JSX.Element {
             when={(props.repo.uncommittedChanges ?? 0) > 0}
             fallback={
               <Text variant="micro" tone="nominal">
-                CLEAN
+                Clean
               </Text>
             }
           >

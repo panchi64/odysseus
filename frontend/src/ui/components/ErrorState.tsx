@@ -5,7 +5,7 @@ import { Icon } from "../primitives/Icon";
 import { Button } from "./Button";
 
 export interface ErrorStateProps {
-  /** Primary line. Defaults to "SOMETHING WENT WRONG". */
+  /** Primary line. Defaults to "Something went wrong". */
   message?: string;
   /** Secondary detail — surface the actual error reason here. */
   hint?: string;
@@ -34,7 +34,7 @@ export function ErrorState(props: ErrorStateProps): JSX.Element {
     >
       <Icon name="warning" size={24} class="text-alert" />
       <Text variant="label" tone="alert">
-        {local.message ?? "SOMETHING WENT WRONG"}
+        {local.message ?? "Something went wrong"}
       </Text>
       <Show when={local.hint}>
         <Text variant="micro" tone="dim">
@@ -49,7 +49,7 @@ export function ErrorState(props: ErrorStateProps): JSX.Element {
           class="mt-2"
           onClick={() => local.onRetry!()}
         >
-          {local.retryLabel ?? "RETRY"}
+          {local.retryLabel ?? "Retry"}
         </Button>
       </Show>
     </div>

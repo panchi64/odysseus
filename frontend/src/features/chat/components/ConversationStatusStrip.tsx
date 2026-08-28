@@ -47,13 +47,13 @@ export function ConversationStatusStrip(props: {
     return u && u.fraction >= CTX_VISIBLE_AT ? u : undefined;
   };
   // A fresh, unsaved composer has no thread to report on and no stream running — a
-  // band reading only "IDLE" would be the exact clutter this replaced.
+  // band reading only "Idle" would be the exact clutter this replaced.
   const shown = () =>
     props.conversationId() !== null || props.streaming() || props.detached();
 
   return (
     <Show when={shown()}>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line py-1.5">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 py-1.5">
         <StatusFlag
           status={
             props.detached() ? "alert" : props.streaming() ? "info" : "idle"
@@ -62,12 +62,12 @@ export function ConversationStatusStrip(props: {
           pulse={props.streaming() && !props.detached()}
         >
           {props.detached()
-            ? "DISCONNECTED"
+            ? "Disconnected"
             : props.reattaching()
-              ? "RESYNCING"
+              ? "Resyncing"
               : props.streaming()
-                ? "STREAMING"
-                : "IDLE"}
+                ? "Streaming"
+                : "Idle"}
         </StatusFlag>
 
         <Show when={meter()}>
@@ -93,7 +93,7 @@ export function ConversationStatusStrip(props: {
               class="text-dim"
             />
             <Text variant="label" tone="dim">
-              PLAN
+              Plan
             </Text>
             {/* Tabular figures line up as the count changes mid-turn. */}
             <Text variant="label" tone="bright" class="tabular-nums">
@@ -103,7 +103,7 @@ export function ConversationStatusStrip(props: {
               {/* Info blue, not warn amber: the running task is live data — the same
                   meaning STREAMING carries beside it. */}
               <StatusFlag status="info" dot pulse>
-                ACTIVE
+                Active
               </StatusFlag>
             </Show>
           </button>

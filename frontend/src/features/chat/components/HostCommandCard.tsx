@@ -8,12 +8,12 @@ import {
 } from "./ConversationGrantToggle";
 
 const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
-  pending: { status: "warn", label: "AWAITING APPROVAL" },
-  running: { status: "info", label: "RUNNING" },
+  pending: { status: "warn", label: "Awaiting approval" },
+  running: { status: "info", label: "Running" },
   ok: { status: "nominal", label: "OK" },
-  error: { status: "alert", label: "FAILED" },
-  denied: { status: "alert", label: "DENIED" },
-  stale: { status: "idle", label: "DECIDED ELSEWHERE" },
+  error: { status: "alert", label: "Failed" },
+  denied: { status: "alert", label: "Denied" },
+  stale: { status: "idle", label: "Decided elsewhere" },
 };
 
 /**
@@ -133,7 +133,7 @@ function Terminal(props: {
 
   return (
     <Panel
-      label="HOST COMMAND"
+      label="Host command"
       meta={
         <StatusFlag status={flag().status} dot>
           {flag().label}
@@ -167,7 +167,7 @@ function Terminal(props: {
             when={!decidedPending()}
             fallback={
               <Text variant="micro" tone="dim">
-                {props.decided ? "APPROVED" : "DENIED"} —{" "}
+                {props.decided ? "Approved" : "Denied"} —{" "}
                 {props.held ? "awaiting the other decisions…" : "submitting…"}
               </Text>
             }
@@ -189,7 +189,7 @@ function Terminal(props: {
                   disabled={props.submitting}
                   onClick={() => props.onDecide(c().toolCallId, true)}
                 >
-                  APPROVE & RUN
+                  Approve & run
                 </Button>
                 <Button
                   variant="danger"
@@ -198,7 +198,7 @@ function Terminal(props: {
                   disabled={props.submitting}
                   onClick={() => props.onDecide(c().toolCallId, false)}
                 >
-                  DENY
+                  Deny
                 </Button>
               </Row>
             </Stack>
@@ -208,7 +208,7 @@ function Terminal(props: {
         {/* Approved and executing on the host — text readout, never a spinner. */}
         <Show when={c().phase === "running"}>
           <Text variant="micro" tone="info">
-            RUNNING ON HOST…
+            Running on host…
           </Text>
         </Show>
 
@@ -231,7 +231,7 @@ function Terminal(props: {
 
         {/* Runtime output, once the command has run. */}
         <Show when={hasOutput() && showOutput()}>
-          <div class="border-t border-line" />
+          <div class="mt-2" />
           <Stack gap={1}>
             <Show when={c().stdout}>
               <Text

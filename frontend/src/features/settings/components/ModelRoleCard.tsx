@@ -13,12 +13,12 @@ import { EndpointLiveFlag } from "./EndpointLiveFlag";
  *  what a pick means. Every fact rendered here is a field the backend already
  *  reports on the endpoint — nothing is derived or judged locally. */
 export interface ModelRoleCardProps {
-  /** Uppercase panel label — the job, not the role name (e.g. "CHAT MODEL"). */
+  /** Uppercase panel label — the job, not the role name (e.g. "Chat model"). */
   label: string;
   /** One sentence saying what this model actually does for the operator. */
   description: string;
   /** Grouped picker options, one group per endpoint (plus any caller-local
-   *  option, e.g. "SAME AS CHAT MODEL"). */
+   *  option, e.g. "Same as chat model"). */
   groups: { label: string; options: { value: string; label: string }[] }[];
   value: string;
   onChange: (value: string) => void;
@@ -45,7 +45,7 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
           leading="cpu"
           placeholder={props.placeholder}
           searchPlaceholder="Search models…"
-          emptyHint="NO MODELS — ADD AN ENDPOINT UNDER ADVANCED"
+          emptyHint="No models — add an endpoint under advanced"
           aria-label={props.label}
         />
 
@@ -62,10 +62,10 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
                 {(cw) => <Chip>CTX {num(cw(), 0)}</Chip>}
               </Show>
               <Show when={ep().nativeTools}>
-                <Chip>TOOLS</Chip>
+                <Chip>Tools</Chip>
               </Show>
               <Show when={ep().vision}>
-                <Chip>VISION</Chip>
+                <Chip>Vision</Chip>
               </Show>
             </Row>
           )}

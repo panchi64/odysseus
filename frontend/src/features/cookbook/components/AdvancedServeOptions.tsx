@@ -67,7 +67,7 @@ export function AdvancedServeOptions(props: {
   };
 
   return (
-    <Disclosure label="ADVANCED">
+    <Disclosure label="Advanced">
       <Stack gap={3}>
         <Text variant="micro" tone="dim">
           Leave these blank unless you have a reason. The engine sizes its own
@@ -77,7 +77,7 @@ export function AdvancedServeOptions(props: {
           <Show when={supports("contextSize")}>
             <div class="min-w-0 flex-1">
               <Input
-                label="CONTEXT SIZE"
+                label="Context size"
                 type="number"
                 inputMode="numeric"
                 min="0"
@@ -93,7 +93,7 @@ export function AdvancedServeOptions(props: {
           <Show when={supports("cacheReuse")}>
             <div class="min-w-0 flex-1">
               <Input
-                label="CACHE REUSE"
+                label="Cache reuse"
                 type="number"
                 inputMode="numeric"
                 min="0"
@@ -109,7 +109,7 @@ export function AdvancedServeOptions(props: {
         </Row>
         <Show when={supports("kvCacheType")}>
           <Select
-            label="KV CACHE TYPE"
+            label="KV cache type"
             options={KV_CACHE_OPTIONS}
             value={props.value.kvCacheType ?? ""}
             onChange={(v) =>
@@ -120,7 +120,7 @@ export function AdvancedServeOptions(props: {
         </Show>
         <Show when={supports("speculative")}>
           <Select
-            label="SPECULATIVE DECODING"
+            label="Speculative decoding"
             options={SPECULATIVE_OPTIONS}
             value={props.value.speculative ?? ""}
             onChange={(v) =>
@@ -135,7 +135,7 @@ export function AdvancedServeOptions(props: {
         </Show>
         <Show when={supports("draftModel")}>
           <Input
-            label="DRAFT MODEL"
+            label="Draft model"
             placeholder={
               props.draftPlaceholder ?? "org/model-MTP-4bit or /path/to/drafter"
             }
@@ -147,7 +147,7 @@ export function AdvancedServeOptions(props: {
           />
         </Show>
         <Input
-          label="EXTRA ARGUMENTS"
+          label="Extra arguments"
           placeholder={props.placeholder ?? "--cache-ram 16384"}
           value={rawArgs()}
           onInput={(e) => onArgsInput(e.currentTarget.value)}

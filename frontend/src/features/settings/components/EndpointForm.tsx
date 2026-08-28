@@ -65,7 +65,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
         when={simple()}
         fallback={
           <Input
-            label="NAME"
+            label="Name"
             value={v().name}
             onInput={(e) => props.onChange("name", e.currentTarget.value)}
             placeholder="e.g. local-qwen"
@@ -81,7 +81,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
               {v().name}
             </Text>
             <StatusFlag status={props.requiresKey ? "warn" : "nominal"}>
-              {props.requiresKey ? "NEEDS A KEY" : "NO KEY NEEDED"}
+              {props.requiresKey ? "Needs a key" : "No key needed"}
             </StatusFlag>
           </Row>
           <Show when={!props.baseUrlEditable}>
@@ -95,7 +95,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
       <Show when={!simple() && props.providerOptions}>
         {(options) => (
           <Select
-            label="PROVIDER"
+            label="Provider"
             value={v().provider}
             options={options()}
             onChange={(id) => props.onChange("provider", id)}
@@ -106,7 +106,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
 
       <Show when={!simple() || props.baseUrlEditable}>
         <Input
-          label="BASE URL"
+          label="Base URL"
           value={v().baseUrl}
           onInput={(e) => props.onChange("baseUrl", e.currentTarget.value)}
           placeholder="http://localhost:11434/v1"
@@ -131,7 +131,7 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
             props.editing
               ? "API KEY (blank = unchanged)"
               : simple()
-                ? "API KEY"
+                ? "API key"
                 : "API KEY (optional)"
           }
           type="password"
@@ -151,21 +151,21 @@ export function EndpointForm(props: EndpointFormProps): JSX.Element {
           placeholder="32768"
         />
         <Row gap={4} align="center" justify="between">
-          <Field label="NATIVE TOOLS" orientation="row" value="" />
+          <Field label="Native tools" orientation="row" value="" />
           <Toggle
             checked={v().nativeTools}
             onChange={(c) => props.onChange("nativeTools", c)}
           />
         </Row>
         <Row gap={4} align="center" justify="between">
-          <Field label="VISION" orientation="row" value="" />
+          <Field label="Vision" orientation="row" value="" />
           <Toggle
             checked={v().vision}
             onChange={(c) => props.onChange("vision", c)}
           />
         </Row>
         <Row gap={4} align="center" justify="between">
-          <Field label="THINKING" orientation="row" value="" />
+          <Field label="Thinking" orientation="row" value="" />
           <Toggle
             checked={v().thinking}
             onChange={(c) => props.onChange("thinking", c)}

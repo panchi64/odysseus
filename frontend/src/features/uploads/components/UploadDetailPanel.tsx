@@ -28,9 +28,9 @@ interface UploadDetailPanelProps {
 function extractorFlag(
   extractor: string | undefined,
 ): { label: string; status: "nominal" | "info" | "idle" } | null {
-  if (extractor === "mineru") return { label: "MINERU", status: "nominal" };
-  if (extractor === "manual") return { label: "EDITED", status: "info" };
-  if (extractor === "basic") return { label: "BUILT-IN", status: "idle" };
+  if (extractor === "mineru") return { label: "MinerU", status: "nominal" };
+  if (extractor === "manual") return { label: "Edited", status: "info" };
+  if (extractor === "basic") return { label: "Built-in", status: "idle" };
   return null;
 }
 
@@ -79,11 +79,11 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
 
   return (
     <Panel
-      label="DOCUMENT DETAIL"
+      label="Document detail"
       meta={
         <Row gap={2} align="center">
           <Show when={props.upload.vision}>
-            <StatusFlag status="info">VISION</StatusFlag>
+            <StatusFlag status="info">Vision</StatusFlag>
           </Show>
           <Show when={flag()}>
             {(f) => <StatusFlag status={f().status}>{f().label}</StatusFlag>}
@@ -100,12 +100,12 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
             {props.upload.name}
           </Text>
           <Row gap={2} justify="between" align="center">
-            <Field label="TYPE" value={props.upload.mime} orientation="row" />
+            <Field label="Type" value={props.upload.mime} orientation="row" />
             <Row gap={2} align="center">
               <Toggle
                 checked={!props.upload.kbExcluded}
                 onChange={(inKb) => void handleToggleKb(inKb)}
-                label="IN KNOWLEDGE BASE"
+                label="In knowledge base"
               />
             </Row>
           </Row>
@@ -120,13 +120,13 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
           <Row gap={2} justify="between" align="center">
             <Row gap={2} align="center">
               <Text variant="label" tone="dim">
-                EXTRACTED TEXT
+                Extracted text
               </Text>
               <Text variant="micro" tone="dim">
                 Edit to correct extraction errors
               </Text>
               <Show when={isTextDirty()}>
-                <StatusFlag status="warn">UNSAVED</StatusFlag>
+                <StatusFlag status="warn">Unsaved</StatusFlag>
               </Show>
             </Row>
             <Row gap={2} align="center">
@@ -136,7 +136,7 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
                 leading="download"
                 onClick={() => void handleExport()}
               >
-                EXPORT
+                Export
               </Button>
               <Button
                 variant="primary"
@@ -145,7 +145,7 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
                 disabled={!isTextDirty() || saving()}
                 onClick={() => void handleSaveText()}
               >
-                SAVE
+                Save
               </Button>
             </Row>
           </Row>
@@ -153,7 +153,7 @@ export function UploadDetailPanel(props: UploadDetailPanelProps): JSX.Element {
             rows={14}
             value={extractedText()}
             onInput={(e) => setExtractedText(e.currentTarget.value)}
-            label="EXTRACTED TEXT"
+            label="Extracted text"
           />
         </Stack>
       </Stack>

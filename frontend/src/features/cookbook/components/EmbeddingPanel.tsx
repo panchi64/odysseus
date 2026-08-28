@@ -65,8 +65,8 @@ export function EmbeddingPanel(): JSX.Element {
     const ok = await confirm({
       title: `Swap to ${m.hfRepo}?`,
       detail: `Bind the embedding role to ${m.hfRepo}? Existing memories and chat history re-index into its vector space in the background — recall degrades to keyword-only until it finishes.`,
-      confirmLabel: "CONFIRM SWAP",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Confirm swap",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok || !m.endpointId) return;
@@ -118,20 +118,20 @@ export function EmbeddingPanel(): JSX.Element {
         </Show>
       </Row>
 
-      <Suspense fallback={<LoadingText label="LOADING STATS" />}>
+      <Suspense fallback={<LoadingText label="Loading stats" />}>
         <Show when={reindex()}>
           {(r) => (
             <InstrumentBand
               items={[
                 {
-                  label: "ACTIVE MODEL",
+                  label: "Active model",
                   value: activeManaged()?.hfRepo ?? activeEndpointName() ?? "—",
                 },
-                { label: "STATE", value: r().state.toUpperCase() },
-                { label: "MEMORIES INDEXED", value: String(r().memories) },
-                { label: "MESSAGES INDEXED", value: String(r().messages) },
+                { label: "State", value: r().state.toUpperCase() },
+                { label: "Memories indexed", value: String(r().memories) },
+                { label: "Messages indexed", value: String(r().messages) },
                 {
-                  label: "LAST REINDEX",
+                  label: "Last reindex",
                   value: r().completedAt ? timestamp(r().completedAt!) : "—",
                 },
               ]}
@@ -141,7 +141,7 @@ export function EmbeddingPanel(): JSX.Element {
       </Suspense>
 
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Panel label="ACTIVE MODEL" class="lg:col-span-1">
+        <Panel label="Active model" class="lg:col-span-1">
           <Suspense fallback={<LoadingText />}>
             <Show
               when={activeEndpointId()}
@@ -153,16 +153,16 @@ export function EmbeddingPanel(): JSX.Element {
             >
               <Stack gap={3}>
                 <Field
-                  label="MODEL"
+                  label="Model"
                   value={activeManaged()?.hfRepo ?? role()?.model ?? "default"}
                 />
-                <Field label="ENDPOINT" value={activeEndpointName() ?? "—"} />
+                <Field label="Endpoint" value={activeEndpointName() ?? "—"} />
                 <Show when={activeManaged()}>
                   {(m) => (
                     <>
-                      <Field label="ENGINE" value={m().engine} />
+                      <Field label="Engine" value={m().engine} />
                       <Show when={m().quant}>
-                        <Field label="QUANT" value={m().quant!} />
+                        <Field label="Quant" value={m().quant!} />
                       </Show>
                     </>
                   )}
@@ -173,10 +173,10 @@ export function EmbeddingPanel(): JSX.Element {
         </Panel>
 
         <Panel
-          label="SERVED EMBEDDING MODELS"
+          label="Served embedding models"
           meta={
             <Text variant="micro" tone="dim">
-              SELECT TO ACTIVATE
+              Select to activate
             </Text>
           }
           flush
@@ -186,7 +186,7 @@ export function EmbeddingPanel(): JSX.Element {
             when={!managed.loading()}
             fallback={
               <div class="p-3">
-                <LoadingText label="LOADING MODELS" />
+                <LoadingText label="Loading models" />
               </div>
             }
           >
@@ -196,7 +196,7 @@ export function EmbeddingPanel(): JSX.Element {
                 <div class="p-3">
                   <EmptyState
                     icon="database"
-                    message="NO EMBEDDING MODELS SERVED"
+                    message="No embedding models served"
                   />
                 </div>
               }
@@ -229,11 +229,11 @@ export function EmbeddingPanel(): JSX.Element {
                               variant="default"
                               onClick={() => requestSwap(m)}
                             >
-                              SET ACTIVE
+                              Set active
                             </Button>
                           </Show>
                           <Show when={m.endpointId === activeEndpointId()}>
-                            <StatusFlag status="nominal">ACTIVE</StatusFlag>
+                            <StatusFlag status="nominal">Active</StatusFlag>
                           </Show>
                           <Show
                             when={m.state === "running"}
@@ -251,7 +251,7 @@ export function EmbeddingPanel(): JSX.Element {
                                   })
                                 }
                               >
-                                SERVE
+                                Serve
                               </Button>
                             }
                           >
@@ -260,7 +260,7 @@ export function EmbeddingPanel(): JSX.Element {
                               variant="ghost"
                               onClick={() => actions.stop(m)}
                             >
-                              STOP
+                              Stop
                             </Button>
                           </Show>
                         </Row>
@@ -280,7 +280,7 @@ export function EmbeddingPanel(): JSX.Element {
           onClick={handleReindexNow}
           disabled={reindex()?.state === "running"}
         >
-          REINDEX NOW
+          Reindex now
         </Button>
       </Row>
     </Stack>

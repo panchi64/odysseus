@@ -49,8 +49,8 @@ export function ConversationGrants(props: {
       title: `Stop auto-approving ${toolName}?`,
       detail:
         "The agent will pause and ask for approval the next time it calls this tool in this conversation.",
-      confirmLabel: "REVOKE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Revoke",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -70,7 +70,7 @@ export function ConversationGrants(props: {
     <Show when={items().length > 0}>
       <Row gap={2} align="center" class="flex-wrap">
         <Text variant="label" tone="dim">
-          AUTO-APPROVED
+          Auto-approved
         </Text>
         <For each={items()}>
           {(g) => (

@@ -45,7 +45,7 @@ export function HfTokenNotice(): JSX.Element {
   // Only surface this while a token is genuinely absent (and the status has loaded).
   return (
     <Show when={credentials() && !hasToken()}>
-      <div class="border border-line bg-surface p-3">
+      <div class="rounded-panel bg-surface p-3 shadow-1">
         <Show
           when={open()}
           fallback={
@@ -60,7 +60,7 @@ export function HfTokenNotice(): JSX.Element {
                 leading="key"
                 onClick={() => setOpen(true)}
               >
-                ADD TOKEN
+                Add token
               </Button>
             </Row>
           }
@@ -78,7 +78,7 @@ export function HfTokenNotice(): JSX.Element {
             <Row gap={2} align="end" class="flex-wrap">
               <div class="min-w-0 flex-1">
                 <Input
-                  label="HUGGING FACE TOKEN"
+                  label="Hugging Face token"
                   type="password"
                   placeholder="hf_…"
                   value={token()}
@@ -87,7 +87,7 @@ export function HfTokenNotice(): JSX.Element {
                 />
               </div>
               <Button variant="ghost" disabled={saving()} onClick={close}>
-                CANCEL
+                Cancel
               </Button>
               <Button
                 variant="primary"
@@ -95,7 +95,7 @@ export function HfTokenNotice(): JSX.Element {
                 disabled={!token().trim() || saving()}
                 onClick={() => void save()}
               >
-                {saving() ? "SAVING…" : "SAVE TOKEN"}
+                {saving() ? "Saving…" : "Save token"}
               </Button>
             </Row>
           </Stack>

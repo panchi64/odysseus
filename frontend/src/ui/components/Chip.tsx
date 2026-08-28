@@ -12,11 +12,14 @@ export interface ChipProps {
   class?: string;
 }
 
-/** The bordered micro-pill base — the single source of truth for the chip look.
- *  Shared so richer chip-shaped components (e.g. `AttachmentChip`) inherit a
- *  design-system change here instead of copying the string. */
+/** The micro-pill base — the single source of truth for the chip look. Shared
+ *  so richer chip-shaped components (e.g. `AttachmentChip`) inherit a design
+ *  system change here instead of copying the string.
+ *
+ *  Filled rather than bordered (§7): a page can carry a dozen chips, and a
+ *  dozen hairline rectangles is exactly the clutter this system dropped. */
 export const CHIP_BASE =
-  "inline-flex items-center gap-1 border border-line px-2 py-1 text-micro text-dim";
+  "inline-flex items-center gap-1 rounded-ctl bg-raised px-2 py-1 text-label font-sans text-dim";
 
 /** Compact bordered token for short labels / selectable suggestions. Static by
  *  default; pass `onClick` to make it an interactive button. Centralizes the
@@ -46,7 +49,7 @@ export function Chip(props: ChipProps): JSX.Element {
         onClick={() => local.onClick!()}
         class={cx(
           CHIP_BASE,
-          "text-left transition-colors hover:border-bright hover:text-bright",
+          "text-left transition-colors hover:text-bright",
           local.class,
         )}
       >

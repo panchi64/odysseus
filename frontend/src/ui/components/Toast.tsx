@@ -48,7 +48,7 @@ function push(message: string, opts: ToastOptions = {}): number {
 }
 
 /** Call from anywhere: `toast.success("Saved")`, `toast.error("Send failed")`,
- *  `toast.success("Deleted", { action: { label: "UNDO", onClick } })`.
+ *  `toast.success("Deleted", { action: { label: "Undo", onClick } })`.
  *  Render <Toaster/> once at the app root. */
 export const toast = {
   show: push,
@@ -79,7 +79,7 @@ export function Toaster(): JSX.Element {
               role="status"
               aria-live="polite"
               class={cx(
-                "pointer-events-auto flex items-stretch border border-line bg-surface",
+                "ody-rise pointer-events-auto flex items-stretch rounded-panel bg-surface shadow-2",
                 toneText[t.tone],
               )}
             >
@@ -95,7 +95,7 @@ export function Toaster(): JSX.Element {
                 <Show when={t.action}>
                   <button
                     type="button"
-                    class="shrink-0 font-mono text-label uppercase tracking-label text-current hover:text-bright"
+                    class="shrink-0 text-label font-sans font-medium text-current hover:text-bright"
                     onClick={() => {
                       t.action!.onClick();
                       dismiss(t.id);

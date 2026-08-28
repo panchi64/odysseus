@@ -109,7 +109,7 @@ export function ViewActionRow(props: {
         </Button>
       </Tooltip>
       <ToggleAction
-        label="WRAP"
+        label="Wrap"
         active={props.softWrap}
         ariaLabel="Toggle soft wrap"
         onToggle={props.onToggleWrap}
@@ -126,7 +126,7 @@ export function ViewActionRow(props: {
         </Tooltip>
       </Show>
       <ToggleAction
-        label="EXPAND"
+        label="Expand"
         active={props.fullscreen}
         ariaLabel="Toggle fullscreen"
         onToggle={props.onToggleFullscreen}

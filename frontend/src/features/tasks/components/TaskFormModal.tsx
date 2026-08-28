@@ -204,22 +204,22 @@ export function TaskFormModal(props: {
     <Modal
       open={props.open}
       onClose={props.onClose}
-      title={isEditing() ? "EDIT TASK" : "NEW TASK"}
+      title={isEditing() ? "Edit task" : "New task"}
       class="max-w-lg"
       footer={
         <Row gap={2}>
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button variant="primary" leading="check" onClick={() => void save()}>
-            SAVE
+            Save
           </Button>
         </Row>
       }
     >
       <Stack gap={4}>
         <Select
-          label="KIND"
+          label="Kind"
           value={form.kind}
           onChange={(v) => setForm("kind", v as TaskKind)}
           disabled={isEditing()}
@@ -248,7 +248,7 @@ export function TaskFormModal(props: {
           </Show>
         </Stack>
         <Textarea
-          label={isAgent() ? "PROMPT" : "REMINDER TEXT"}
+          label={isAgent() ? "Prompt" : "Reminder text"}
           rows={4}
           value={form.prompt}
           onInput={(e) => setForm("prompt", e.currentTarget.value)}
@@ -260,7 +260,7 @@ export function TaskFormModal(props: {
         />
 
         <Select
-          label="SCHEDULE TYPE"
+          label="Schedule type"
           value={form.scheduleType}
           onChange={(v) => {
             setForm("scheduleType", v as ScheduleType);
@@ -353,7 +353,7 @@ export function TaskFormModal(props: {
 
         <Show when={isAgent()}>
           <Select
-            label="OUTPUT CHANNEL"
+            label="Output channel"
             value={form.output}
             onChange={(v) => setForm("output", v as OutputChannel)}
             options={[
@@ -367,7 +367,7 @@ export function TaskFormModal(props: {
 
           <Stack gap={2}>
             <Text variant="label" tone="dim">
-              PRE-AUTHORIZED
+              Pre-authorized
             </Text>
             <Text variant="micro" tone="dim">
               Sensitive tool calls in this scope run unattended; anything else

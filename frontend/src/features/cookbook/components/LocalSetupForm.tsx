@@ -34,7 +34,7 @@ import { RepoFinderHint } from "./RepoFinderHint";
 import { HfTokenNotice } from "./HfTokenNotice";
 import { ServeStateFlag } from "./ServeStateFlag";
 
-/** The "RUN LOCALLY" path: the operator picks an inference engine (the recommended one
+/** The "Run locally" path: the operator picks an inference engine (the recommended one
  *  for this host is preselected, so a one-tap accept is the default), pastes any Hugging
  *  Face repo, and presses DOWNLOAD & SERVE. The model downloads and comes up bound to
  *  `main`, with live progress, then it's ready to chat.
@@ -110,7 +110,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
       when={recommendations.latest}
       fallback={
         <div class="p-3">
-          <LoadingText label="READING ENGINES" />
+          <LoadingText label="Reading engines" />
         </div>
       }
     >
@@ -119,7 +119,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
         fallback={
           <EmptyState
             icon="cpu"
-            message="NO LOCAL ENGINE AVAILABLE"
+            message="No local engine available"
             hint="No inference engine can run on this host yet. Use a remote API instead."
           />
         }
@@ -130,9 +130,9 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
             <Stack gap={3}>
               <Stack gap={2}>
                 <Text variant="label" tone="dim">
-                  CHOOSE AN ENGINE
+                  Choose an engine
                 </Text>
-                <div class="border border-line bg-surface">
+                <div class="rounded-panel bg-surface shadow-1">
                   <EnginePicker
                     recs={recommendations.latest!}
                     selected={selected()}
@@ -144,7 +144,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
               <Row gap={3} align="end">
                 <div class="min-w-0 flex-1">
                   <Input
-                    label="HUGGING FACE REPO"
+                    label="Hugging Face repo"
                     placeholder="org/model"
                     value={repo()}
                     onInput={(e) => setRepo(e.currentTarget.value)}
@@ -176,7 +176,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                     disabled={submitting()}
                     onClick={props.onDone}
                   >
-                    CANCEL
+                    Cancel
                   </Button>
                   <Button
                     variant="primary"
@@ -184,7 +184,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                     disabled={!canSubmit()}
                     onClick={downloadAndServe}
                   >
-                    {submitting() ? "STARTING…" : "DOWNLOAD & SERVE"}
+                    {submitting() ? "Starting…" : "Download & serve"}
                   </Button>
                 </Row>
               </Row>
@@ -195,7 +195,7 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
             when={served()}
             fallback={
               <div class="p-3">
-                <LoadingText label="STARTING" />
+                <LoadingText label="Starting" />
               </div>
             }
           >
@@ -229,14 +229,14 @@ export function LocalSetupForm(props: { onDone: () => void }): JSX.Element {
                 <Row gap={2} justify="end">
                   <Show when={m().state === "error"}>
                     <Button variant="ghost" onClick={() => setServedId(null)}>
-                      TRY AGAIN
+                      Try again
                     </Button>
                   </Show>
                   <Button
                     variant={m().state === "running" ? "primary" : "ghost"}
                     onClick={props.onDone}
                   >
-                    {m().state === "running" ? "DONE" : "BACK"}
+                    {m().state === "running" ? "Done" : "Back"}
                   </Button>
                 </Row>
               </Stack>

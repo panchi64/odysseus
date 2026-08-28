@@ -11,11 +11,11 @@ import { ErrorState } from "./ErrorState";
 export interface ResourceProps<T> {
   /** A SolidJS resource (from createResource). */
   data: SolidResource<T>;
-  /** Loading label override (default "LOADING…"). */
+  /** Loading label override (default "Loading…"). */
   loadingLabel?: string;
   /** Replace the default loading affordance entirely. */
   loading?: JSX.Element;
-  /** Error headline (default "SOMETHING WENT WRONG"); reason is auto-filled. */
+  /** Error headline (default "Something went wrong"); reason is auto-filled. */
   errorMessage?: string;
   /** Show a RETRY in the error state — typically `() => data.refetch()`. */
   onRetry?: () => void;

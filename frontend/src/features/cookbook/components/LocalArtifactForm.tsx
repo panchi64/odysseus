@@ -15,13 +15,13 @@ const SHAPE: Record<
 > = {
   "llama.cpp": {
     mode: "file",
-    label: "MODEL FILE",
+    label: "Model file",
     placeholder: "/path/to/model.gguf",
     note: "llama.cpp serves a single .gguf file.",
   },
   mlx: {
     mode: "directory",
-    label: "MODEL FOLDER",
+    label: "Model folder",
     placeholder: "/path/to/mlx-community__Model-4bit",
     note: "MLX serves a snapshot folder — the one holding config.json and the safetensors weights.",
   },
@@ -106,7 +106,7 @@ export function LocalArtifactForm(props: {
           <Row gap={3} align="end" class="flex-wrap">
             <div class="min-w-0 flex-1">
               <Input
-                label="NAME (OPTIONAL)"
+                label="Name (optional)"
                 placeholder="Taken from the file or folder"
                 value={name()}
                 onInput={(e) => setName(e.currentTarget.value)}
@@ -118,7 +118,7 @@ export function LocalArtifactForm(props: {
               disabled={!canAdd()}
               onClick={() => void add()}
             >
-              {busy() ? "ADDING…" : "ADD"}
+              {busy() ? "Adding…" : "Add"}
             </Button>
           </Row>
         </Stack>

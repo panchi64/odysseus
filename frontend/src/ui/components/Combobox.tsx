@@ -78,7 +78,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
             setQuery("");
             setOpen(!open());
           }}
-          class="flex h-8 min-w-32 max-w-56 items-center gap-1.5 rounded-ctl border border-line bg-surface pl-2 pr-2 transition-colors hover:border-bright"
+          class="flex h-8 min-w-32 max-w-56 items-center gap-1.5 rounded-ctl bg-raised pl-2 pr-2 transition-colors hover:text-bright"
         >
           <Show when={props.leading}>
             <Icon name={props.leading!} size={12} class="shrink-0 text-dim" />
@@ -88,7 +88,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
             tone={selectedLabel() ? "bright" : "dim"}
             class="min-w-0 flex-1 truncate text-left"
           >
-            {selectedLabel() ?? props.placeholder ?? "SELECT"}
+            {selectedLabel() ?? props.placeholder ?? "Select"}
           </Text>
           <Icon name="chevron-down" size={12} class="shrink-0 text-dim" />
         </button>
@@ -108,7 +108,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
         return (
           <>
             <Show when={searchable()}>
-              <div class="shrink-0 border-b border-line p-1.5">
+              <div class="shrink-0 p-1.5">
                 <div class="relative">
                   <Icon
                     name="search"
@@ -121,7 +121,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
                     onInput={(e) => setQuery(e.currentTarget.value)}
                     onKeyDown={onSearchKey}
                     placeholder={props.searchPlaceholder ?? "Search…"}
-                    class="h-7 w-full rounded-ctl border border-line bg-bg pl-8 pr-2 font-mono text-body text-bright placeholder:text-dim outline-none transition-colors focus:border-bright"
+                    class="h-7 w-full rounded-ctl bg-raised pl-8 pr-2 font-sans text-body text-bright placeholder:text-dim outline-none transition-colors"
                   />
                 </div>
               </div>
@@ -134,8 +134,8 @@ export function Combobox(props: ComboboxProps): JSX.Element {
                   <div class="px-3 py-2">
                     <Text variant="micro" tone="dim">
                       {props.groups.length === 0
-                        ? (props.emptyHint ?? "NO OPTIONS")
-                        : "NO MATCHES"}
+                        ? (props.emptyHint ?? "No options")
+                        : "No matches"}
                     </Text>
                   </div>
                 }

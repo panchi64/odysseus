@@ -2,7 +2,7 @@ import { createEffect } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import { itemForPath } from "./nav";
 
-const BRAND = "ODYSSEUS";
+const BRAND = "Odysseus";
 
 /** Routes that aren't in the sidebar nav. */
 const STATIC_TITLES: Record<string, string> = {

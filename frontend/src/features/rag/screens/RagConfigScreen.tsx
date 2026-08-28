@@ -104,7 +104,7 @@ export function RagConfigScreen(): JSX.Element {
     const ok = await confirm({
       title: `Remove source?`,
       detail: `"${label}" (${docCount} docs) will be removed from the knowledge base. Indexed data will be lost and retrieval for dependent chats may degrade.`,
-      confirmLabel: "REMOVE",
+      confirmLabel: "Remove",
       tone: "alert",
     });
     if (!ok) return;
@@ -112,7 +112,7 @@ export function RagConfigScreen(): JSX.Element {
       await removeRagSource(id);
       toast.success("Source removed", {
         action: {
-          label: "UNDO",
+          label: "Undo",
           onClick: () => {
             void addRagSource(label)
               .then(() => toast.info("Source restored — reindexing"))
@@ -142,17 +142,17 @@ export function RagConfigScreen(): JSX.Element {
     const href = source.kind === "surface" ? source.href : undefined;
     const folderMenuItems: MenuItem[] = [
       {
-        label: "REINDEX",
+        label: "Reindex",
         icon: "refresh",
         onSelect: () => void handleReindex(source.id, source.label),
       },
       {
-        label: "VIEW DOCS",
+        label: "View docs",
         icon: "library",
         onSelect: () => toast.info("Document browser coming in Phase 2"),
       },
       {
-        label: "REMOVE",
+        label: "Remove",
         icon: "trash",
         danger: true,
         onSelect: () =>
@@ -175,7 +175,7 @@ export function RagConfigScreen(): JSX.Element {
             </Text>
             <StatusFlag status={indexStatusFlag[source.status]}>
               {source.status === "indexing"
-                ? "INDEXING…"
+                ? "Indexing…"
                 : source.status.toUpperCase()}
             </StatusFlag>
             <Show
@@ -210,7 +210,7 @@ export function RagConfigScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="KNOWLEDGE BASE"
+        title="Knowledge base"
         subtitle="The unified retrieval corpus — every source the assistant can search."
         assetId="ODY-RAG-01.0"
         actions={
@@ -224,7 +224,7 @@ export function RagConfigScreen(): JSX.Element {
               onClick={() => void startRebuild()}
               disabled={rebuilding()}
             >
-              {rebuilding() ? "REBUILDING..." : "REBUILD INDEX"}
+              {rebuilding() ? "Rebuilding..." : "Rebuild index"}
             </Button>
           </Row>
         }
@@ -234,29 +234,29 @@ export function RagConfigScreen(): JSX.Element {
         <InstrumentBand
           items={[
             {
-              label: "TOTAL DOCS",
+              label: "Total docs",
               value:
                 stats()?.totalDocs != null ? String(stats()!.totalDocs) : "—",
             },
             {
-              label: "COLLECTIONS",
+              label: "Collections",
               value: String(stats()?.totalCollections ?? "—"),
             },
-            { label: "EMBEDDING MODEL", value: stats()?.embeddingModel ?? "—" },
-            { label: "DIMS", value: String(stats()?.dims ?? "—") },
-            { label: "STORE SIZE", value: stats()?.storeSize ?? "—" },
+            { label: "Embedding model", value: stats()?.embeddingModel ?? "—" },
+            { label: "Dims", value: String(stats()?.dims ?? "—") },
+            { label: "Store size", value: stats()?.storeSize ?? "—" },
           ]}
         />
       </Suspense>
 
       <Suspense fallback={<LoadingText />}>
-        <Panel label="CORPUS SURFACES" flush>
+        <Panel label="Corpus surfaces" flush>
           <Show
             when={surfaces().length > 0}
             fallback={
               <EmptyState
                 icon="library"
-                message="NO SURFACES"
+                message="No surfaces"
                 hint="Documents, uploads, gallery, memory and research index here automatically."
               />
             }
@@ -265,13 +265,13 @@ export function RagConfigScreen(): JSX.Element {
           </Show>
         </Panel>
 
-        <Panel label="INDEXED FOLDERS" flush>
+        <Panel label="Indexed folders" flush>
           <Show
             when={folders().length > 0}
             fallback={
               <EmptyState
                 icon="archive"
-                message="NO FOLDERS"
+                message="No folders"
                 hint="Add a host folder path below to start indexing."
               />
             }
@@ -282,12 +282,12 @@ export function RagConfigScreen(): JSX.Element {
       </Suspense>
 
       {/* Add folder source */}
-      <Panel label="ADD FOLDER">
+      <Panel label="Add folder">
         <Stack gap={3}>
           <Row gap={3} align="end">
             <div class="flex-1">
               <Input
-                label="FOLDER PATH"
+                label="Folder path"
                 placeholder="/home/user/documents"
                 value={newPath()}
                 onInput={(e) => setNewPath(e.currentTarget.value)}
@@ -304,7 +304,7 @@ export function RagConfigScreen(): JSX.Element {
               disabled={!newPath().trim()}
               onClick={() => void handleAddSource()}
             >
-              ADD
+              Add
             </Button>
           </Row>
           <Text variant="micro" tone="dim">
@@ -316,7 +316,7 @@ export function RagConfigScreen(): JSX.Element {
 
       {/* Index health */}
       <Show when={degradedSources().length > 0}>
-        <Panel label="INDEX HEALTH" state="alert">
+        <Panel label="Index health" state="alert">
           <Stack gap={2}>
             <Text variant="body" tone="warn">
               One or more sources are stale or unreachable. Retrieval quality
@@ -351,7 +351,7 @@ export function RagConfigScreen(): JSX.Element {
                           void handleReindex(source.id, source.label)
                         }
                       >
-                        RETRY
+                        Retry
                       </Button>
                     </Tooltip>
                     <Show when={source.kind === "folder"}>
@@ -366,7 +366,7 @@ export function RagConfigScreen(): JSX.Element {
                           )
                         }
                       >
-                        REMOVE
+                        Remove
                       </Button>
                     </Show>
                   </Show>

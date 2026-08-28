@@ -88,7 +88,7 @@ export function ApprovalCard(props: {
 
   return (
     <Panel
-      label="APPROVAL REQUIRED"
+      label="Approval required"
       flush
       ref={cardRef}
       state={flashing() ? "active" : undefined}
@@ -98,14 +98,14 @@ export function ApprovalCard(props: {
           {(approval) => {
             const decision = () => decisions()[approval.toolCallId];
             return (
-              <Stack gap={2} class="border-b border-line pb-3 last:border-0">
+              <Stack gap={2} class="pb-3">
                 <Row gap={2} align="center">
                   <StatusFlag status="warn" dot>
                     {approval.name}
                   </StatusFlag>
                   <Show when={approval.toolCallId in decisions()}>
                     <StatusFlag status={decision() ? "nominal" : "alert"}>
-                      {decision() ? "APPROVED" : "DENIED"}
+                      {decision() ? "Approved" : "Denied"}
                     </StatusFlag>
                   </Show>
                 </Row>
@@ -138,7 +138,7 @@ export function ApprovalCard(props: {
                       leading="check"
                       onClick={() => decide(approval.toolCallId, true)}
                     >
-                      APPROVE
+                      Approve
                     </Button>
                     <Button
                       variant="danger"
@@ -146,7 +146,7 @@ export function ApprovalCard(props: {
                       leading="close"
                       onClick={() => decide(approval.toolCallId, false)}
                     >
-                      DENY
+                      Deny
                     </Button>
                   </Row>
                   <ConversationGrantToggle
@@ -165,7 +165,7 @@ export function ApprovalCard(props: {
               disabled={!allDecided() || submitting()}
               onClick={submit}
             >
-              {submitting() ? "SUBMITTING…" : "SUBMIT DECISION"}
+              {submitting() ? "Submitting…" : "Submit decision"}
             </Button>
           </Row>
         </Show>

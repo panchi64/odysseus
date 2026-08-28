@@ -48,10 +48,10 @@ const statusMap: Record<
     label: string;
   }
 > = {
-  queued: { status: "idle", label: "QUEUED" },
-  extracting: { status: "info", label: "EXTRACTING" },
-  done: { status: "nominal", label: "DONE" },
-  error: { status: "alert", label: "ERROR" },
+  queued: { status: "idle", label: "Queued" },
+  extracting: { status: "info", label: "Extracting" },
+  done: { status: "nominal", label: "Done" },
+  error: { status: "alert", label: "Error" },
 };
 
 export function UploadsScreen(): JSX.Element {
@@ -103,7 +103,7 @@ export function UploadsScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete "${upload.name}"?`,
       detail: "This permanently removes the file and its extracted text.",
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -143,7 +143,7 @@ export function UploadsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="UPLOADS"
+        title="Uploads"
         subtitle="File storage with PDF text + vision extraction."
         assetId="ODY-UPL-01.0"
       />
@@ -151,14 +151,14 @@ export function UploadsScreen(): JSX.Element {
       <Show when={uploads().length > 0}>
         <InstrumentBand
           items={[
-            { label: "TOTAL", value: String(uploads().length) },
-            { label: "DONE", value: String(doneCount()), tone: "nominal" },
+            { label: "Total", value: String(uploads().length) },
+            { label: "Done", value: String(doneCount()), tone: "nominal" },
             {
-              label: "EXTRACTING",
+              label: "Extracting",
               value: String(extractingCount()),
               tone: "info",
             },
-            { label: "ERRORS", value: String(errorCount()), tone: "alert" },
+            { label: "Errors", value: String(errorCount()), tone: "alert" },
           ]}
         />
       </Show>
@@ -168,7 +168,7 @@ export function UploadsScreen(): JSX.Element {
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-5">
         {/* Upload list */}
         <div class="lg:col-span-2">
-          <Panel label="FILES" flush>
+          <Panel label="Files" flush>
             <Suspense
               fallback={
                 <div class="p-4">
@@ -181,7 +181,7 @@ export function UploadsScreen(): JSX.Element {
                 fallback={
                   <EmptyState
                     icon="file"
-                    message="NO UPLOADS"
+                    message="No uploads"
                     hint="Drop files above or click BROWSE FILES."
                   />
                 }
@@ -255,12 +255,12 @@ export function UploadsScreen(): JSX.Element {
             fallback={
               <EmptyState
                 icon="file"
-                message="SELECT A FILE"
+                message="Select a file"
                 hint="Choose a file from the list to view its extracted text."
               />
             }
           >
-            <Suspense fallback={<LoadingText label="LOADING FILE" />}>
+            <Suspense fallback={<LoadingText label="Loading file" />}>
               <Show when={detail()}>
                 {(upload) => (
                   <Show
@@ -273,8 +273,8 @@ export function UploadsScreen(): JSX.Element {
                             icon="clock"
                             message={
                               upload().status === "extracting"
-                                ? "EXTRACTING…"
-                                : "QUEUED"
+                                ? "Extracting…"
+                                : "Queued"
                             }
                             hint="Extraction in progress. This updates automatically."
                           />
@@ -282,7 +282,7 @@ export function UploadsScreen(): JSX.Element {
                       >
                         <EmptyState
                           icon="warning"
-                          message="EXTRACTION FAILED"
+                          message="Extraction failed"
                           hint={
                             upload().note ??
                             "Extraction failed. Retry below or try a different file."
@@ -293,7 +293,7 @@ export function UploadsScreen(): JSX.Element {
                               leading="refresh"
                               onClick={() => void handleRetry(upload())}
                             >
-                              RETRY EXTRACTION
+                              Retry extraction
                             </Button>
                           }
                         />

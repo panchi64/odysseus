@@ -225,7 +225,7 @@ export function JsonTree(props: {
               fallback={
                 <>
                   <Text variant="micro" tone="warn">
-                    INVALID JSON — SHOWING RAW TEXT
+                    Invalid JSON — showing raw text
                   </Text>
                   <pre
                     class={cx(

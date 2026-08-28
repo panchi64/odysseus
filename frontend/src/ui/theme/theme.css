@@ -6,7 +6,8 @@
    value at build time. That is what lets a single [data-theme] swap on <html>
    re-color the entire app at runtime — the utilities resolve the live token.
 
-   tokens.css owns the values; this file only wires them to utility names.
+   tokens.css owns the values; this file only wires them to utility names and
+   sets the resting defaults.
    ========================================================================== */
 
 @theme inline {
@@ -15,9 +16,11 @@
   --color-surface: var(--surface);
   --color-raised: var(--surface-raised);
   --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --color-dim: var(--text-dim);
   --color-text: var(--text);
   --color-bright: var(--text-bright);
+  --color-accent: var(--accent);
   --color-nominal: var(--accent-nominal);
   --color-warn: var(--accent-warn);
   --color-alert: var(--accent-alert);
@@ -26,19 +29,26 @@
   /* ---- spacing base (p-1=4px, p-2=8px, p-4=16px, p-6=24px, p-8=32px) ---- */
   --spacing: var(--space-1);
 
-  /* ---- radius -> rounded-ctl (controls only; panels stay square) ---- */
+  /* ---- radius -> rounded-ctl (3px controls) / rounded-panel (6px containers).
+         The hairline data grid stays square — no radius utility on a table
+         cell, an instrument band, or a list row (§7). ---- */
   --radius-ctl: var(--radius-1);
+  --radius-panel: var(--radius-2);
 
-  /* ---- fonts -> font-mono / font-display ---- */
+  /* ---- fonts -> font-sans / font-mono / font-display ---- */
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
   --font-display: var(--font-display);
 
-  /* ---- letter spacing -> tracking-label ---- */
+  /* ---- letter spacing -> tracking-label (mono uppercase) / tracking-tight ---- */
   --tracking-label: var(--tracking-label);
+  --tracking-tight: var(--tracking-tight);
 
-  /* ---- type scale -> text-micro / text-label / ... (size + line-height) ---- */
+  /* ---- type scale -> text-micro / text-meta / text-label / ... ---- */
   --text-micro: var(--type-micro-size);
   --text-micro--line-height: var(--type-micro-lh);
+  --text-meta: var(--type-meta-size);
+  --text-meta--line-height: var(--type-meta-lh);
   --text-label: var(--type-label-size);
   --text-label--line-height: var(--type-label-lh);
   --text-body: var(--type-body-size);
@@ -49,21 +59,35 @@
   --text-readout-lg--line-height: var(--type-readout-lg-lh);
   --text-display: var(--type-display-size);
   --text-display--line-height: var(--type-display-lh);
+
+  /* ---- elevation -> shadow-1 / shadow-2 / shadow-focus / shadow-accent ---- */
+  --shadow-1: var(--shadow-1);
+  --shadow-2: var(--shadow-2);
+  --shadow-focus: var(--shadow-focus);
+  --shadow-accent: var(--shadow-accent);
+  --shadow-alert: var(--shadow-alert);
+  --shadow-bloom: var(--shadow-bloom);
+
+  /* ---- motion -> ease-out-ody / duration-* ---- */
+  --ease-ody: var(--ease);
 }
 
 /* ==========================================================================
-   RESTING-STATE DEFAULTS. A screen at rest is monochrome mono on bg.
+   RESTING-STATE DEFAULTS. The interface speaks in sans; the machine speaks in
+   mono, and only where mono is asked for explicitly (§2).
    ========================================================================== */
 html {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
-  /* tabular + lining figures so every number aligns in columns */
+  font-family: var(--font-sans);
+  /* tabular + lining figures so every number aligns in columns, in both voices */
   font-feature-settings:
     "tnum" 1,
-    "lnum" 1;
+    "lnum" 1,
+    "kern" 1;
   font-variant-numeric: tabular-nums lining-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
@@ -72,35 +96,67 @@ body {
   line-height: var(--type-body-lh);
 }
 
-/* Text selection — a terminal-style inverted block, not the browser's blue.
-   Monochrome (§4): a `text-dim` highlight with the text knocked out to `bg`,
-   reading like an inverted CRT cell rather than a colored wash. */
+/* Text selection. Neutral and quiet: a low-opacity knock-out of the bright
+   token rather than the browser's blue or the old inverted terminal block. */
 ::selection {
-  background: var(--text-dim);
-  color: var(--bg);
+  background: color-mix(in oklab, var(--text-bright) 22%, transparent);
+  color: var(--text-bright);
 }
 
-/* Mechanical motion: no decorative transitions slower than the base tempo.
-   The timing function is pinned to linear — §8 permits instant or linear only,
-   and Tailwind's `transition-*` utilities otherwise carry an eased default. */
-:where(button, a, [role="button"], input, select, textarea) {
+/* ==========================================================================
+   MOTION — THE TWO REGISTERS (§8).
+
+   1. HUMAN. Anything the interface does on the operator's behalf eases: short,
+      decelerating, well-damped. This is the default for interactive elements.
+   ========================================================================== */
+:where(button, a, [role="button"], input, select, textarea, summary) {
   transition-duration: var(--motion-fast);
-  transition-timing-function: linear;
+  transition-timing-function: var(--ease);
 }
 
-/* Shared utility for non-interactive elements that need the same ≤120ms,
-   no-easing motion (§8) as the rule above but sit outside its selector list
-   (e.g. a plain progress-bar fill). Pair with a `transition-*` property
+/* Shared utility for non-interactive elements that need the human register but
+   sit outside the selector list above. Pair with a `transition-*` property
    utility (e.g. `transition-colors`). */
-.transition-fast {
-  transition-duration: var(--motion-fast);
-  transition-timing-function: linear;
+.transition-human {
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--ease);
+}
+
+/* 2. MACHINE. Anything rendered in mono snaps — no transition, no fade, no
+      interpolation. A run state flipping QUEUED -> RUNNING, a token counter
+      ticking, a latency figure updating: the computer does not ease.
+
+      `:where()` keeps specificity at 0, and this rule is declared AFTER the
+      human-register rule above, so at equal specificity it wins for any mono
+      element — no !important needed. This contrast IS the effect: a mono value
+      that eases into place reads as decoration and undercuts the premise. */
+:where(.font-mono),
+:where(.font-mono) :where(*) {
+  transition-duration: var(--motion-machine);
+  transition-timing-function: var(--ease-machine);
+}
+
+/* Reduced motion collapses the human register. The machine register is already
+   0ms and so is unaffected; the braille throbber is retained deliberately as a
+   functional "working now" indicator. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .ody-frames {
+    animation-iteration-count: infinite !important;
+    animation-duration: 800ms !important;
+  }
 }
 
 /* Clickable affordance. Tailwind v4's preflight drops the legacy
    `cursor: pointer` on buttons (browser default is now the arrow), so restore it
    for every interactive control. Disabled controls fall back to `not-allowed`. */
-:where(button, [role="button"], select, label[for]):not(:disabled) {
+:where(button, [role="button"], select, summary, label[for]):not(:disabled) {
   cursor: pointer;
 }
 :where(button, [role="button"], select):disabled,
@@ -108,15 +164,30 @@ body {
   cursor: not-allowed;
 }
 
-/* The house scroll affordance for a strip or panel that scrolls inside the layout
-   rather than being the page — a version rail, a tab strip, a dropdown panel. The
-   platform default is a chunky light-mode bar that reads as chrome from another
-   application; this is a thin, token-backed one that re-colors with the theme like
-   everything else. Reach for it instead of hiding overflow: a strip that scrolls
-   with no visible bar gives the operator nothing to tell them there is more. */
+/* Keyboard focus: a soft neutral halo, never an outline (§6.1).
+
+   TEXT-ENTRY FIELDS ARE DELIBERATELY EXCLUDED. `input` and `textarea` announce
+   their own focus with a blinking caret — an unambiguous, native indicator that
+   no other control has — so any shadow we add on top is pure decoration around
+   the thing the operator is already looking at. A ring reads as a border drawn
+   on them; a halo reads worse. The caret is the affordance.
+
+   Everything else still needs one: a focused button or link has no caret, and a
+   keyboard user who cannot see where they are is the accessibility failure this
+   rule exists to prevent. */
+:where(button, a, [role="button"], select, summary, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* The house scroll affordance for a strip or panel that scrolls inside the
+   layout rather than being the page. The platform default is a chunky bar that
+   reads as chrome from another application; this is a thin, token-backed one
+   that re-colors with the theme. Reach for it instead of hiding overflow: a
+   strip that scrolls with no visible bar tells the operator nothing. */
 @utility scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
+  scrollbar-color: var(--line-strong) transparent;
 
   &::-webkit-scrollbar {
     width: 6px;
@@ -126,7 +197,8 @@ body {
     background: transparent;
   }
   &::-webkit-scrollbar-thumb {
-    background: var(--line);
+    background: var(--line-strong);
+    border-radius: var(--radius-full);
   }
   &::-webkit-scrollbar-thumb:hover {
     background: var(--text-dim);
@@ -137,7 +209,12 @@ body {
   }
 }
 
-/* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
+/* ==========================================================================
+   MACHINE-REGISTER ANIMATIONS. All hard-stepped — these belong to the mono
+   voice and must not be eased (§8).
+   ========================================================================== */
+
+/* Terminal cursor blink. */
 @keyframes ody-blink {
   0%,
   49% {
@@ -152,9 +229,8 @@ body {
   animation: ody-blink 1s steps(1, end) infinite;
 }
 
-/* Search "found-it" pulse — a brief attention flash on the located nav row when
-   a query resolves to a single match. Hard-stepped brightness, not a decorative
-   fade (§8). */
+/* Search "found-it" flash on the located nav row when a query resolves to a
+   single match. Hard-stepped brightness, not a decorative fade. */
 @keyframes ody-flash {
   0%,
   100% {
@@ -165,13 +241,11 @@ body {
   }
 }
 .ody-flash {
-  /* ~0.5s on/off cycle, six times ≈ 3s of pulsing. */
   animation: ody-flash 0.5s steps(1, end) 6;
 }
 
 /* Live-activity pulse — a stepped blink on a state dot while a stream is in
-   flight. Functional (signals "live"), hard-stepped like the caret, not a
-   decorative fade (§8). */
+   flight. Functional (signals "live"), hard-stepped like the caret. */
 @keyframes ody-pulse {
   0%,
   49% {
@@ -188,8 +262,8 @@ body {
 
 /* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
    in a dense row), not decoration. It ping-pongs the overflow distance set in
-   --mq-shift, pausing at each end. Only applied (via a motion-safe utility)
-   when the content actually overflows; reduced-motion users get static clip. */
+   --mq-shift, pausing at each end. Only applied when the content actually
+   overflows; reduced-motion users get a static clip. */
 @keyframes ody-marquee {
   0%,
   8% {
@@ -204,13 +278,133 @@ body {
   }
 }
 
-/* Rendered prose (markdown) — structured assistant/report/doc text. Styled from
-   tokens so it inherits the mono, monochrome, grid-aligned look. */
+/* ==========================================================================
+   HUMAN-REGISTER ANIMATIONS. Eased, short, decelerating.
+   ========================================================================== */
+
+/* Overlay entry — modals, popovers, menus, toasts. Settles, never bounces. */
+@keyframes ody-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ody-rise {
+  animation: ody-rise var(--motion-base) var(--ease) both;
+}
+
+@keyframes ody-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.ody-fade-in {
+  animation: ody-fade-in var(--motion-base) var(--ease) both;
+}
+
+/* A turn arriving in the transcript — the operator's message on send, and the
+   assistant's block as it opens. Glides up a short distance while fading, fast
+   enough to feel like a response rather than a reveal: this is the human
+   register (§8), so it eases and it settles without bouncing. Fires once, on
+   mount, so a streaming turn does not re-animate on every delta. */
+@keyframes ody-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ody-message-in {
+  animation: ody-message-in 200ms var(--ease) both;
+}
+
+/* Per-token arrival in the ANSWER. The answer is the interface speaking, so it
+   belongs to the human register (§8) and each newly-streamed run of text eases
+   in rather than snapping. This is the deliberate counterpart to the reasoning
+   wall above it, which is mono and therefore lands hard: you can see, without
+   reading a word, which of the two is the machine and which is the reply. */
+@keyframes ody-token-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.ody-token-in {
+  animation: ody-token-in 220ms var(--ease) both;
+}
+
+/* ==========================================================================
+   THE REASONING STREAM (§10.9). While the model reasons, its trace streams as
+   mono text CLIPPED INTO THE BACKGROUND of the response area — the machine
+   working behind the message, not a message itself. It is barely tinted, sits
+   under the content, and never eases (machine register). When the turn resolves
+   it fades out (human register — that is the interface clearing the stage) and
+   the full trace collapses into a disclosure.
+   ========================================================================== */
+.ody-reasoning {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro-size);
+  line-height: var(--type-micro-lh);
+  /* The SUBTLETY IS THE COLOR, not a fade. A uniform, barely-there tint — the
+     accent mixed low into the dim token — held at one value across the whole
+     block, so it reads as a flat wall of machine text sitting behind the
+     response rather than as a decorated panel. No gradient, no mask: a gradient
+     would make it an effect, and this is meant to be a surface. */
+  color: color-mix(in oklab, var(--accent) 25%, var(--text-dim));
+  opacity: 0.3;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Dense, wall-like setting: the lines pack tighter than normal mono so the
+     block reads as texture at a glance and as text only on inspection. */
+  letter-spacing: 0.01em;
+}
+
+/* The trace cascades: it is bottom-anchored inside the clip, so new tokens push
+   older lines up and out of frame. The wall stays full — the block is always
+   filled to its top edge with older reasoning — and the newest line sits at the
+   bottom, where the eye already is. */
+.ody-reasoning-tail {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+}
+
+/* Fade-out on resolve. Human register — slower than an interaction, because it
+   is the stage clearing rather than a control responding. */
+.ody-reasoning-done {
+  opacity: 0;
+  transition: opacity 320ms var(--ease);
+}
+
+/* ==========================================================================
+   RENDERED PROSE (markdown) — assistant messages, reports, documents.
+   This is the interface speaking to the operator, so it is SANS; mono appears
+   only for code, which is machine output.
+   ========================================================================== */
 .ody-prose {
+  font-family: var(--font-sans);
   font-size: var(--type-body-size);
-  /* Looser than data line-height (16px) — prose needs room to breathe. */
   line-height: 20px;
   color: var(--text);
+  /* Nothing forces the operator to track a line across a 2560px display. */
+  max-width: 72ch;
 }
 /* Default rhythm between blocks. */
 .ody-prose > * + * {
@@ -224,16 +418,18 @@ body {
 .ody-prose h3,
 .ody-prose h4 {
   color: var(--text-bright);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  /* Sentence case. Uppercase is now a signal that means "machine" (§4), and a
+     heading is the interface talking. */
+  text-transform: none;
+  letter-spacing: 0;
 }
 /* Headings are section breaks: extra space above, tight to the content below. */
 .ody-prose h1 {
   font-size: var(--type-readout-size);
   line-height: var(--type-readout-lh);
-  text-transform: none;
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-tight);
 }
 .ody-prose :is(h1, h2, h3, h4) + * {
   margin-top: var(--space-2);
@@ -248,16 +444,18 @@ body {
   margin-top: var(--space-6);
 }
 .ody-prose h2 {
-  font-size: var(--type-body-size);
+  font-size: 15px;
+  line-height: 20px;
 }
 .ody-prose h3,
 .ody-prose h4 {
-  font-size: var(--type-label-size);
-  color: var(--text-dim);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-lh);
+  color: var(--text);
 }
 .ody-prose strong {
   color: var(--text-bright);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ody-prose em {
   font-style: italic;
@@ -265,6 +463,7 @@ body {
 .ody-prose a {
   color: var(--accent-info);
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .ody-prose ul,
 .ody-prose ol {
@@ -285,41 +484,43 @@ body {
 .ody-prose li::marker {
   color: var(--text-dim);
 }
+/* Code is machine output: mono, and it snaps rather than eases. */
 .ody-prose code {
   font-family: var(--font-mono);
+  font-size: 12px;
   background: var(--surface-raised);
   border: var(--line-w) solid var(--line);
-  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  padding: 1px var(--space-1);
   color: var(--text-bright);
 }
 .ody-prose pre {
   background: var(--surface-raised);
   border: var(--line-w) solid var(--line);
+  border-radius: var(--radius-2);
   padding: var(--space-3);
   overflow-x: auto;
 }
 .ody-prose pre code {
   background: transparent;
   border: 0;
+  border-radius: 0;
   padding: 0;
 }
 .ody-prose blockquote {
-  border-left: var(--line-emphasis) solid var(--line);
+  border-left: var(--line-emphasis) solid var(--line-strong);
   padding-left: var(--space-3);
   color: var(--text-dim);
 }
 
-/* Rendered math (KaTeX). Math notation is the one place mono is deliberately not
-   used: real typesetting (radicals, large operators, stretchy delimiters) needs
-   KaTeX's bundled glyph metrics, which a monospace face can't provide. Everything
-   else is held to the system: monochrome (color inherited from prose, never
-   KaTeX's own), errors carried in the alert token, and spacing on the 4px grid.
+/* Rendered math (KaTeX). Math is the one place neither voice applies: real
+   typesetting (radicals, large operators, stretchy delimiters) needs KaTeX's
+   bundled glyph metrics. Everything else is held to the system — monochrome,
+   errors in the alert token, spacing on the 4px grid.
 
-   Display math sits on its own line and scrolls horizontally — like code blocks
-   and tables — instead of bursting the message bubble. Its block rhythm comes
-   from the prose `* + *` rule (space-4), so KaTeX's own 1em margin is dropped.
-   It reads as a standalone readout, so it takes `text-bright`; inline math stays
-   the surrounding body tone. */
+   Display math sits on its own line and scrolls horizontally instead of
+   bursting the message bubble; its block rhythm comes from the prose `* + *`
+   rule, so KaTeX's own 1em margin is dropped. */
 .ody-prose .ody-math-block {
   overflow-x: auto;
   overflow-y: hidden;
@@ -332,11 +533,10 @@ body {
   color: var(--accent-alert);
 }
 
-/* Tables read as dense data panels: a hairline grid, square corners, tabular
-   figures, and an uppercase label-styled header band. No zebra striping or
-   accent fills — hierarchy comes from the header's brightness/weight alone. The
-   scroll host (injected post-render, like code blocks) lets a wide table scroll
-   horizontally instead of bursting its message bubble. */
+/* Tables read as dense data panels: a hairline grid, SQUARE corners (§7 — a
+   rounded cell breaks the ruled structure that makes tabular data scannable),
+   tabular figures, and a mono uppercase header band, because a column header
+   names a machine field. No zebra striping or accent fills. */
 .ody-prose [data-table-host] {
   overflow-x: auto;
 }
@@ -348,7 +548,7 @@ body {
 }
 .ody-prose th,
 .ody-prose td {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   text-align: left;
   vertical-align: baseline;
 }
@@ -361,8 +561,9 @@ body {
   border-top: var(--line-w) solid var(--line);
 }
 .ody-prose thead th {
-  font-size: var(--type-label-size);
-  line-height: var(--type-label-lh);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta-size);
+  line-height: var(--type-meta-lh);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: var(--tracking-label);

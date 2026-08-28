@@ -10,7 +10,7 @@ export function CookbookLayout(props: { children: JSX.Element }): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="MODEL COOKBOOK"
+        title="Model cookbook"
         subtitle="Local and remote model serving, hardware fit, embedding configuration, and side-by-side comparison."
         assetId="SYS-MDL-03.1"
         actions={

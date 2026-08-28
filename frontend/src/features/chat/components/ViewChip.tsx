@@ -6,25 +6,25 @@ import { detectContentKind, type ViewItem } from "../viewport";
  *  chip icon (no full `ViewItem`) — e.g. the transcript's inline chips, which
  *  reference a version/document/live block, not the consolidated View list. */
 const ICON_WORD: Partial<Record<IconName, string>> = {
-  play: "LIVE",
-  image: "IMAGE",
-  eye: "SNAPSHOT",
-  file: "FILE",
+  play: "Live",
+  image: "Image",
+  eye: "Snapshot",
+  file: "File",
 };
 
 /** A coarse glyph + short kind word for a View item, so a chip/cell states what
  *  it opens before the click. Live overlays a snapshot's preview but still reads
- *  "LIVE" (the running server); a document reads "DOC"; a snapshot whose stamped
- *  preview is an image reads "IMAGE"; anything else reads "SNAPSHOT". */
+ *  "Live" (the running server); a document reads "Doc"; a snapshot whose stamped
+ *  preview is an image reads "Image"; anything else reads "Snapshot". */
 export function classifyViewItem(item: ViewItem): {
   icon: IconName;
   word: string;
 } {
-  if (item.live) return { icon: "play", word: "LIVE" };
-  if (item.document) return { icon: "file", word: "DOC" };
+  if (item.live) return { icon: "play", word: "Live" };
+  if (item.document) return { icon: "file", word: "Doc" };
   const kind = detectContentKind(null, item.snapshot?.preview?.kind ?? null);
-  if (kind === "image") return { icon: "image", word: "IMAGE" };
-  return { icon: "eye", word: "SNAPSHOT" };
+  if (kind === "image") return { icon: "image", word: "Image" };
+  return { icon: "eye", word: "Snapshot" };
 }
 
 /** The `V{n}` version label baked into `item.label` by `collectViewItems`
@@ -69,14 +69,14 @@ export function ViewChip(props: {
    *  count). Monochrome brightness only, never a color. */
   isNew?: boolean;
 }): JSX.Element {
-  const kindWord = () => props.kindWord ?? ICON_WORD[props.icon] ?? "VIEW";
+  const kindWord = () => props.kindWord ?? ICON_WORD[props.icon] ?? "View";
   return (
     <button
       type="button"
       onClick={() => props.onOpen()}
       class={cx(
-        "group/chip flex w-full items-center gap-2 border border-line bg-surface",
-        "px-3 py-2 text-left transition-colors hover:border-bright",
+        "group/chip flex w-full items-center gap-2 rounded-ctl bg-surface shadow-1",
+        "rounded-ctl px-3 py-2 text-left transition-colors hover:bg-raised",
         props.isNew && "opacity-80",
       )}
     >
@@ -98,12 +98,12 @@ export function ViewChip(props: {
       </Show>
       <Show when={props.isNew}>
         <Text variant="micro" tone="dim" class="tracking-label">
-          NEW
+          New
         </Text>
       </Show>
       <Show when={props.live}>
         <StatusFlag status="live" dot pulse>
-          LIVE
+          Live
         </StatusFlag>
       </Show>
       <Icon

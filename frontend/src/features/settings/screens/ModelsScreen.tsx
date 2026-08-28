@@ -93,8 +93,8 @@ export function ModelsScreen(): JSX.Element {
   const SAME_AS_CHAT = "";
   const backgroundGroups = () => [
     {
-      label: "DEFAULT",
-      options: [{ value: SAME_AS_CHAT, label: "SAME AS CHAT MODEL" }],
+      label: "Default",
+      options: [{ value: SAME_AS_CHAT, label: "Same as chat model" }],
     },
     ...modelPickerGroups(),
   ];
@@ -141,38 +141,38 @@ export function ModelsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="MODELS"
+        title="Models"
         subtitle="Which model does what. Set it here once — every surface follows."
         assetId="ODY-MDL-01.0"
       />
 
       <ModelRoleCard
-        label="CHAT MODEL"
+        label="Chat model"
         description="Answers you in chat, research, and tasks."
         groups={modelPickerGroups()}
         value={effectiveValue()}
         onChange={(v) => void pickChat(v)}
-        placeholder="NO MODEL"
+        placeholder="No model"
         endpoint={chatEndpoint()}
       />
 
       <ModelRoleCard
-        label="BACKGROUND MODEL"
+        label="Background model"
         description="Titles, summaries, verification. A cheaper model is usually the right call."
         groups={backgroundGroups()}
         value={roleValue("utility")}
         onChange={(v) => void pickBackground(v)}
-        placeholder="SAME AS CHAT MODEL"
+        placeholder="Same as chat model"
         endpoint={roleEndpoint("utility")}
       />
 
       <ModelRoleCard
-        label="SEARCH & MEMORY MODEL"
+        label="Search & memory model"
         description="Powers recall across memories and chats. Changing this re-indexes everything."
         groups={modelPickerGroups()}
         value={roleValue("embedding")}
         onChange={(v) => void pickEmbedding(v)}
-        placeholder="NOT SET — RECALL IS KEYWORD-ONLY"
+        placeholder="Not set — recall is keyword-only"
         endpoint={roleEndpoint("embedding")}
       >
         <EmbeddingRoleControls
@@ -184,7 +184,7 @@ export function ModelsScreen(): JSX.Element {
       <HardwareBand />
       <LocalModelsPanel />
 
-      <Disclosure label="ADVANCED">
+      <Disclosure label="Advanced">
         <Stack gap={6} class="pt-3">
           <EndpointsSection />
           <FallbackChainsSection />

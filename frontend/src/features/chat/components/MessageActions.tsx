@@ -73,7 +73,7 @@ export function MessageActions(props: {
     try {
       const id = await createDocument(titleFromText(text), text);
       toast.success("Saved to document", {
-        action: { label: "OPEN", onClick: () => navigate(`/documents/${id}`) },
+        action: { label: "Open", onClick: () => navigate(`/documents/${id}`) },
       });
     } catch (err) {
       toast.error(
@@ -88,7 +88,7 @@ export function MessageActions(props: {
     ...(!isAssistant() && props.onEdit
       ? [
           {
-            label: "EDIT",
+            label: "Edit",
             icon: "pen",
             onSelect: () => props.onEdit?.(),
           } satisfies MenuItem,
@@ -97,7 +97,7 @@ export function MessageActions(props: {
     ...(isAssistant() && props.onRegenerate
       ? [
           {
-            label: "REGENERATE",
+            label: "Regenerate",
             icon: "refresh",
             onSelect: () => props.onRegenerate?.(),
           } satisfies MenuItem,
@@ -106,7 +106,7 @@ export function MessageActions(props: {
     ...(isAssistant() && props.onRewind
       ? [
           {
-            label: "REWIND TO HERE",
+            label: "Rewind to here",
             icon: "chevron-up",
             onSelect: () => props.onRewind?.(),
           } satisfies MenuItem,
@@ -118,19 +118,19 @@ export function MessageActions(props: {
     ...(props.onFork
       ? [
           {
-            label: "FORK FROM HERE",
+            label: "Fork from here",
             icon: "branch",
             onSelect: () => props.onFork?.(),
           } satisfies MenuItem,
         ]
       : []),
     {
-      label: m().pinned ? "UNPIN" : "PIN",
+      label: m().pinned ? "Unpin" : "PIN",
       icon: "pin",
       onSelect: () => props.onTogglePin?.(),
     },
     {
-      label: "SAVE TO DOCUMENT",
+      label: "Save to document",
       icon: "note",
       onSelect: () => void saveToDocument(),
     },
@@ -138,7 +138,7 @@ export function MessageActions(props: {
     ...(props.onDelete
       ? [
           {
-            label: "DELETE",
+            label: "Delete",
             icon: "trash",
             danger: true,
             onSelect: () => props.onDelete?.(),
@@ -162,7 +162,7 @@ export function MessageActions(props: {
             aria-label="Copy message"
             onClick={() => copyToClipboard(m().content, "Answer")}
           >
-            COPY
+            Copy
           </Button>
         }
       >
@@ -175,20 +175,20 @@ export function MessageActions(props: {
             >
               <Icon name="copy" size={12} />
               <Text variant="label" tone="dim">
-                COPY
+                Copy
               </Text>
             </span>
           }
           items={
             [
               {
-                label: "COPY ANSWER",
+                label: "Copy answer",
                 icon: "copy",
                 onSelect: () =>
                   copyToClipboard(answerText(m().blocks), "Answer"),
               },
               {
-                label: "COPY MESSAGE",
+                label: "Copy message",
                 icon: "layers",
                 onSelect: () =>
                   copyToClipboard(assembleTranscript(m().blocks), "Message"),
@@ -196,7 +196,7 @@ export function MessageActions(props: {
               ...(hasReasoning(m().blocks)
                 ? [
                     {
-                      label: "COPY REASONING",
+                      label: "Copy reasoning",
                       icon: "note",
                       onSelect: () =>
                         copyToClipboard(reasoningText(m().blocks), "Reasoning"),

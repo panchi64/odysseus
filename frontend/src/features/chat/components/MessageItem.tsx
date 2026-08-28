@@ -79,44 +79,54 @@ export interface MessageItemProps {
  *  summary, with no actions and no bubble. */
 export function MessageItem(props: MessageItemProps): JSX.Element {
   return (
+    // Two nodes, deliberately: `ody-message-in` runs with `animation-fill-mode:
+    // both`, and an animated opacity outranks a utility class in the cascade —
+    // on one element the entry animation would silently cancel `dimmed`. The
+    // outer node owns the dim state, the inner one owns the movement.
     <div class={cx(props.dimmed && "opacity-50")}>
-      <Switch
-        fallback={
-          <AssistantTurn
-            message={props.message}
-            onResolveApproval={props.onResolveApproval}
-            onResolveHostCommands={props.onResolveHostCommands}
-            onRegenerate={props.onRegenerate}
-            onDelete={props.onDelete}
-            onRewind={props.onRewind}
-            onFork={props.onFork}
-            onSwitchVersion={props.onSwitchVersion}
-            onTogglePin={props.onTogglePin}
-            onOpenInView={props.onOpenInView}
-            onReattach={props.onReattach}
-            onContinue={props.onContinue}
-            viewItems={props.viewItems}
-            seenKey={props.seenKey}
-          />
-        }
-      >
-        <Match when={props.message.role === "compaction"}>
-          <CompactionDivider message={props.message} />
-        </Match>
-        <Match when={props.message.role === "user"}>
-          <UserTurn
-            message={props.message}
-            onEditMessage={props.onEditMessage}
-            onDelete={props.onDelete}
-            onFork={props.onFork}
-            onSwitchVersion={props.onSwitchVersion}
-            onTogglePin={props.onTogglePin}
-            onWithdraw={props.onWithdraw}
-            onEditQueued={props.onEditQueued}
-            onContinue={props.onContinue}
-          />
-        </Match>
-      </Switch>
+      {/* Fires once per mounted turn, so a message glides up as it arrives and a
+          streaming turn never re-animates mid-delta (its root element is not
+          recreated). Opening a thread mounts its turns together, so the
+          transcript settles in as one movement, not a staggered cascade. */}
+      <div class="ody-message-in">
+        <Switch
+          fallback={
+            <AssistantTurn
+              message={props.message}
+              onResolveApproval={props.onResolveApproval}
+              onResolveHostCommands={props.onResolveHostCommands}
+              onRegenerate={props.onRegenerate}
+              onDelete={props.onDelete}
+              onRewind={props.onRewind}
+              onFork={props.onFork}
+              onSwitchVersion={props.onSwitchVersion}
+              onTogglePin={props.onTogglePin}
+              onOpenInView={props.onOpenInView}
+              onReattach={props.onReattach}
+              onContinue={props.onContinue}
+              viewItems={props.viewItems}
+              seenKey={props.seenKey}
+            />
+          }
+        >
+          <Match when={props.message.role === "compaction"}>
+            <CompactionDivider message={props.message} />
+          </Match>
+          <Match when={props.message.role === "user"}>
+            <UserTurn
+              message={props.message}
+              onEditMessage={props.onEditMessage}
+              onDelete={props.onDelete}
+              onFork={props.onFork}
+              onSwitchVersion={props.onSwitchVersion}
+              onTogglePin={props.onTogglePin}
+              onWithdraw={props.onWithdraw}
+              onEditQueued={props.onEditQueued}
+              onContinue={props.onContinue}
+            />
+          </Match>
+        </Switch>
+      </div>
     </div>
   );
 }
@@ -192,7 +202,7 @@ function BlockedFooter(props: {
           leading="play"
           onClick={() => props.onContinue?.()}
         >
-          CONTINUE
+          Continue
         </Button>
       </Show>
     </div>
@@ -227,7 +237,11 @@ function UserText(props: { text: string }): JSX.Element {
   });
 
   return (
-    <div class="flex w-full max-w-[80%] flex-col items-end gap-1 self-end">
+    // `w-fit`, not `w-full`: the bubble shrinks to its content and only stops at
+    // the 80% cap. With `w-full` a three-word prompt still reserved 80% of the
+    // column, so short turns read as text floating in the middle of an empty
+    // block instead of as a compact message pinned to the right.
+    <div class="flex w-fit max-w-[80%] flex-col items-end gap-1 self-end">
       <div
         ref={ref}
         class="relative w-full overflow-hidden"
@@ -256,7 +270,7 @@ function UserText(props: { text: string }): JSX.Element {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded()}
         >
-          {expanded() ? "SHOW LESS" : "SHOW MORE"}
+          {expanded() ? "Show less" : "Show more"}
         </Button>
       </Show>
     </div>
@@ -294,7 +308,7 @@ function UserTurn(props: {
   };
 
   return (
-    <div class="group flex flex-col items-end gap-1 border-b border-line bg-surface px-4 py-3">
+    <div class="group flex flex-col items-end gap-1 bg-surface px-4 py-3">
       <div class="flex w-full items-center justify-between gap-2">
         {/* Left: actions reveal on hover. Right: identity + metadata. */}
         <div class="flex items-center gap-2">
@@ -320,7 +334,7 @@ function UserTurn(props: {
               aria-label="Edit queued message"
               onClick={startEdit}
             >
-              EDIT
+              Edit
             </Button>
             <Button
               variant="ghost"
@@ -329,12 +343,12 @@ function UserTurn(props: {
               aria-label="Withdraw queued message"
               onClick={() => props.onWithdraw?.()}
             >
-              WITHDRAW
+              Withdraw
             </Button>
           </Show>
           <Show when={m().queuedPending}>
             <Text variant="label" tone="warn">
-              QUEUED
+              Queued
             </Text>
           </Show>
           <PinMarker message={m()} />
@@ -349,7 +363,7 @@ function UserTurn(props: {
               {relativeTime(m().createdAt)}
             </Text>
             <Text variant="label" tone="default">
-              OPERATOR
+              Operator
             </Text>
           </span>
         </div>
@@ -396,7 +410,7 @@ function UserTurn(props: {
           />
           <div class="mt-1 flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
@@ -404,7 +418,7 @@ function UserTurn(props: {
               disabled={!draft().trim()}
               onClick={save}
             >
-              SAVE
+              Save
             </Button>
           </div>
         </div>
@@ -442,7 +456,7 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
   return (
     <div class="flex flex-wrap items-center gap-2">
       <Text variant="label" tone="dim">
-        SOURCES
+        Sources
       </Text>
       <For each={shown()}>
         {(c, i) => (
@@ -460,7 +474,7 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
           leading={expanded() ? "chevron-up" : "chevron-down"}
           onClick={() => setExpanded((v) => !v)}
         >
-          {expanded() ? "SHOW LESS" : `+${hidden()} MORE`}
+          {expanded() ? "Show less" : `+${hidden()} MORE`}
         </Button>
       </Show>
     </div>
@@ -494,14 +508,14 @@ function AssistantTurn(props: {
   const toggleAll = () => setForceOpen((v) => !v);
 
   return (
-    <div class="group border-b border-line px-4 py-4">
+    <div class="group px-4 py-4">
       <div class="mb-2 flex items-center gap-2">
         {/* Which model and when: true of every turn, and so rarely the question
             being asked that always-on it reads as chrome. Revealed by the same
             hover/focus gesture as the actions opposite it. */}
         <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
           <Text variant="label" tone="nominal">
-            {m().model ?? "ASSISTANT"}
+            {m().model ?? "Assistant"}
           </Text>
           <Text variant="micro" tone="dim">
             {relativeTime(m().createdAt)}
@@ -521,7 +535,7 @@ function AssistantTurn(props: {
               hasLayers()
                 ? [
                     {
-                      label: forceOpen() ? "COLLAPSE ALL" : "EXPAND ALL",
+                      label: forceOpen() ? "Collapse all" : "Expand all",
                       icon: "layers",
                       onSelect: toggleAll,
                     },
@@ -576,7 +590,7 @@ function AssistantTurn(props: {
               size="sm"
               onClick={() => props.onReattach?.()}
             >
-              RECONNECT
+              Reconnect
             </Button>
           </div>
         </Show>

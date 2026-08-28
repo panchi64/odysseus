@@ -50,7 +50,7 @@ export function AgentToolsPanel(): JSX.Element {
 
   return (
     <Panel
-      label="AGENT TOOLS"
+      label="Agent tools"
       meta={
         <Show when={offCount()}>
           <StatusFlag status="warn">{`${offCount()} OFF`}</StatusFlag>
@@ -60,7 +60,7 @@ export function AgentToolsPanel(): JSX.Element {
       <Show when={tools.latest} fallback={<LoadingText />}>
         <Show
           when={(tools.latest ?? []).length}
-          fallback={<EmptyState icon="cpu" message="NO TOOLS REGISTERED" />}
+          fallback={<EmptyState icon="cpu" message="No tools registered" />}
         >
           <Stack gap={4}>
             <Text variant="micro" tone="dim">
@@ -71,7 +71,7 @@ export function AgentToolsPanel(): JSX.Element {
             </Text>
             <For each={grouped()}>
               {([category, entries]) => (
-                <Stack gap={3} class="border-t border-line pt-3">
+                <Stack gap={3} class="pt-3">
                   <Text variant="label" tone="dim">
                     {category.toUpperCase()}
                   </Text>

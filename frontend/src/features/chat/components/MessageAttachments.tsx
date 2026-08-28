@@ -113,7 +113,7 @@ export function MessageAttachments(
         when={!resolving()}
         fallback={
           <div class="flex max-w-[80%] justify-end">
-            <LoadingText label="LOADING ATTACHMENTS" />
+            <LoadingText label="Loading attachments" />
           </div>
         }
       >

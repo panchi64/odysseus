@@ -110,17 +110,17 @@ export function PdfViewer(props: {
       when={!doc.error}
       fallback={<ErrorState message="Could not load this PDF." />}
     >
-      <Show when={doc()} fallback={<LoadingText label="LOADING VIEW…" />}>
+      <Show when={doc()} fallback={<LoadingText label="Loading view…" />}>
         {(d) => (
           <div class="flex h-full min-h-0 flex-col">
-            <div class="flex shrink-0 items-center justify-center gap-3 border-b border-line px-2 py-1.5">
+            <div class="flex shrink-0 items-center justify-center gap-3 px-2 py-1.5">
               <Button
                 variant="ghost"
                 size="sm"
                 disabled={pageNum() <= 1}
                 onClick={() => setPageNum((n) => Math.max(1, n - 1))}
               >
-                PREV
+                Prev
               </Button>
               <Text variant="micro" tone="dim" class="tabular-nums">
                 PAGE {pageNum()}/{d().numPages}
@@ -131,7 +131,7 @@ export function PdfViewer(props: {
                 disabled={pageNum() >= d().numPages}
                 onClick={() => setPageNum((n) => Math.min(d().numPages, n + 1))}
               >
-                NEXT
+                Next
               </Button>
             </div>
             <div ref={attachContainer} class="h-full min-h-0 overflow-auto p-2">

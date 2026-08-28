@@ -5,16 +5,16 @@ import { useHardware } from "../data";
 export function HardwareBand(): JSX.Element {
   const hardware = useHardware();
   return (
-    <Suspense fallback={<LoadingText label="READING HARDWARE" />}>
+    <Suspense fallback={<LoadingText label="Reading hardware" />}>
       <Show when={hardware()}>
         {(hw) => (
           <InstrumentBand
             items={[
-              { label: "CHIP", value: hw().chip },
+              { label: "Chip", value: hw().chip },
               { label: "RAM", value: hw().ram },
               { label: "VRAM", value: hw().vram },
-              { label: "CORES", value: hw().cores },
-              { label: "BACKEND", value: hw().backend },
+              { label: "Cores", value: hw().cores },
+              { label: "Backend", value: hw().backend },
               ...(hw().runtimes.length
                 ? hw().runtimes.map((r) => ({
                     label: r.name.toUpperCase(),
@@ -22,7 +22,7 @@ export function HardwareBand(): JSX.Element {
                   }))
                 : [
                     {
-                      label: "RUNTIME",
+                      label: "Runtime",
                       value: "none detected",
                       tone: "dim" as const,
                     },

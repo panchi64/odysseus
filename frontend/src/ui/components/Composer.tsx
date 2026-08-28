@@ -78,7 +78,7 @@ export interface ComposerProps {
   placeholder?: string;
   /** `md` = docked input bar (default); `lg` = centered hero field. */
   size?: "md" | "lg";
-  /** Uppercase label shown above the field (hero/`lg` use). */
+  /** Sentence-case label shown above the field (hero/`lg` use). */
   title?: string;
   autofocus?: boolean;
   /** Persists the unsent draft to localStorage under this key, reactively —
@@ -86,6 +86,15 @@ export interface ComposerProps {
   storageKey?: string;
   /** Inline controls placed in the action row, e.g. a model selector. */
   controls?: JSX.Element;
+  /** Drop the surface fill — **the bloom is kept**. The field and its action row
+   *  sit directly on whatever is behind them, with the aura still marking them
+   *  as the point of action.
+   *
+   *  For a composer that sits inside another surface (the research intake, in a
+   *  `Panel`): a fill on a fill is the box-in-a-box §7 exists to stop, and it
+   *  reads as a grey slab. The bloom is not part of that problem — it is light,
+   *  not a surface, and it is the thing that says "type here". */
+  bare?: boolean;
   /** File-attachment controller. When supplied, the Composer shows an attach
    *  button + drag-drop and renders the attachment chips; omit to hide them. */
   attachments?: ComposerAttachmentsApi;
@@ -209,12 +218,13 @@ export function Composer(props: ComposerProps): JSX.Element {
     autosize();
   });
 
+  /* The field carries no chrome of its own — no border, no fill, no focus ring.
+     The card around it is the control, and it is what lights up on focus, so a
+     second bordered box inside it would only add a line (§7). */
   const fieldClass = () =>
     cx(
-      "w-full resize-none font-mono text-bright placeholder:text-dim outline-none transition-colors disabled:opacity-40",
-      lg()
-        ? "min-h-20 bg-transparent border-0 px-1 py-1 text-body"
-        : "min-h-8 flex-1 bg-bg border border-line rounded-ctl px-2 py-1.5 text-body focus:border-bright",
+      "w-full resize-none border-0 bg-transparent px-1 py-1 text-body font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
+      lg() ? "min-h-20" : "min-h-8",
     );
 
   const textarea = (
@@ -287,7 +297,7 @@ export function Composer(props: ComposerProps): JSX.Element {
       disabled={!canSend()}
       onClick={submit}
     >
-      SEND
+      Send
     </Button>
   );
   const actionBtn = (
@@ -299,7 +309,7 @@ export function Composer(props: ComposerProps): JSX.Element {
           leading="stop"
           onClick={() => props.onStop?.()}
         >
-          STOP
+          Stop
         </Button>
       </span>
     </Show>
@@ -309,62 +319,58 @@ export function Composer(props: ComposerProps): JSX.Element {
   // target reads clearly without a separate dashed zone.
   const dropOverlay = (
     <Show when={props.attachments && drop.isDragging()}>
-      <div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-info bg-info/10">
+      <div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-panel border border-dashed border-info bg-info/10">
         <Text variant="label" tone="info">
           <span class="inline-flex items-center gap-2">
             <Icon name="upload" size={16} />
-            DROP TO ATTACH
+            Drop to attach
           </span>
         </Text>
       </div>
     </Show>
   );
 
+  /* ONE layout for both sizes. The docked bar and the hero used to be separate
+     branches — a bordered field nested inside a bordered bar for `md`, a 2px
+     box for `lg` — which is exactly the box-in-a-box the system dropped (§7).
+     Now both are the same card: a raised surface on smoothed corners, the field
+     transparent inside it, and the controls on their own row beneath. Only
+     padding and the field's resting height differ.
+
+     The composer is where the operator's attention belongs on these screens, so
+     it carries `shadow-bloom` — the wide ambient accent aura (§6.2) — AT REST,
+     not on hover or focus. It is not a focus affordance: the composer is the
+     point of the screen whether or not the cursor is in it, and a glow that only
+     appears once you have already committed to typing is telling you something
+     you no longer need to know.
+
+     `shadow-bloom`, not `shadow-accent`: the tight control-sized shadow reads as
+     an edge cutout around something this large. */
   return (
-    <Show
-      when={lg()}
-      fallback={
-        <div
-          class={cx(
-            "relative border-t border-line bg-surface p-3",
-            props.class,
-          )}
-          {...(props.attachments ? drop.dropHandlers : {})}
-        >
-          {dropOverlay}
-          {chips}
-          <div class="flex items-end gap-2">
-            {attachBtn}
-            {textarea}
-            <Show when={props.controls}>{props.controls}</Show>
-            {actionBtn}
-          </div>
-        </div>
-      }
+    <div
+      class={cx(
+        "relative flex flex-col gap-2 rounded-panel shadow-bloom",
+        !props.bare && "bg-surface",
+        lg() ? "p-4" : "p-3",
+        props.class,
+      )}
+      {...(props.attachments ? drop.dropHandlers : {})}
     >
-      <div
-        class={cx(
-          "relative flex flex-col gap-3 border-2 border-line bg-surface p-4 transition-colors focus-within:border-bright",
-          props.class,
-        )}
-        {...(props.attachments ? drop.dropHandlers : {})}
-      >
-        {dropOverlay}
-        <Show when={props.title}>
-          <Text variant="label" tone="dim">
-            {props.title}
-          </Text>
-        </Show>
-        {chips}
-        {textarea}
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-2">
-            {attachBtn}
-            <Show when={props.controls}>{props.controls}</Show>
-          </div>
-          {actionBtn}
+      {dropOverlay}
+      <Show when={props.title}>
+        <Text variant="label" tone="dim">
+          {props.title}
+        </Text>
+      </Show>
+      {chips}
+      {textarea}
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-1">
+          {attachBtn}
+          <Show when={props.controls}>{props.controls}</Show>
         </div>
+        {actionBtn}
       </div>
-    </Show>
+    </div>
   );
 }

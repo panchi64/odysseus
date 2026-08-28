@@ -56,9 +56,11 @@ export function Select(props: SelectProps): JSX.Element {
             aria-invalid={props.invalid || undefined}
             onClick={() => setOpen(!open())}
             class={cx(
-              "flex h-8 w-full items-center gap-2 rounded-ctl border bg-surface px-2 text-left outline-none transition-colors focus:border-bright disabled:opacity-40 disabled:cursor-not-allowed",
-              props.invalid ? "border-alert" : "border-line",
-              open() && !props.invalid && "border-bright",
+              // Matches Input/Combobox: a filled control, no bright edge on
+              // focus or open. Only `invalid` draws a border, because that is
+              // the one state that has to interrupt.
+              "flex h-8 w-full items-center gap-2 rounded-ctl border bg-raised px-3 text-left outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+              props.invalid ? "border-alert" : "border-transparent",
             )}
           >
             <Text

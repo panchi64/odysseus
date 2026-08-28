@@ -62,11 +62,11 @@ export function LocalModelsPanel(): JSX.Element {
 
   return (
     <Stack gap={6}>
-      <Panel label="INFERENCE ENGINES" flush>
+      <Panel label="Inference engines" flush>
         <Resource
           data={recommendations}
-          loadingLabel="READING ENGINES"
-          errorMessage="FAILED TO READ ENGINES"
+          loadingLabel="Reading engines"
+          errorMessage="Failed to read engines"
           isEmpty={(v) => v.length === 0}
           loading={
             <div class="p-3">
@@ -76,7 +76,7 @@ export function LocalModelsPanel(): JSX.Element {
           empty={
             <EmptyState
               icon="cpu"
-              message="NO ENGINES DETECTED"
+              message="No engines detected"
               hint="No local inference engine is available on this host yet."
             />
           }
@@ -91,7 +91,7 @@ export function LocalModelsPanel(): JSX.Element {
         </Resource>
       </Panel>
 
-      <Panel label="DOWNLOAD A MODEL">
+      <Panel label="Download a model">
         <Stack gap={3}>
           <EngineSwitchNote />
           <RepoFinderHint engine={selectedEngine()} workload="chat" />
@@ -107,7 +107,7 @@ export function LocalModelsPanel(): JSX.Element {
         </Stack>
       </Panel>
 
-      <Panel label="USE A MODEL ON DISK">
+      <Panel label="Use a model on disk">
         <LocalArtifactForm
           engine={selectedEngine()}
           picker={picker()}
@@ -139,7 +139,7 @@ function ManagedModelsPanel(props: {
   recommendations: EngineRecommendation[] | undefined;
 }): JSX.Element {
   return (
-    <Panel label="MANAGED MODELS" flush>
+    <Panel label="Managed models" flush>
       <Show
         when={!props.controller.loading() || props.controller.models().length}
         fallback={
@@ -153,7 +153,7 @@ function ManagedModelsPanel(props: {
           fallback={
             <EmptyState
               icon="database"
-              message="NO MANAGED MODELS"
+              message="No managed models"
               hint="Download a model above to start managing it here."
             />
           }

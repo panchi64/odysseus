@@ -30,10 +30,10 @@ export function ProjectSwitcher(): JSX.Element {
   const options = createMemo(() => {
     const rows = (projects.latest?.projects ?? []).filter((p) => !p.archived);
     return [
-      { value: NONE, label: "UNFILED ONLY" },
-      { value: ALL, label: "ALL PROJECTS" },
+      { value: NONE, label: "Unfiled only" },
+      { value: ALL, label: "All projects" },
       ...rows.map((p) => ({ value: p.id, label: p.name.toUpperCase() })),
-      { value: MANAGE, label: "MANAGE PROJECTS…" },
+      { value: MANAGE, label: "Manage projects…" },
     ];
   });
 
@@ -59,9 +59,9 @@ export function ProjectSwitcher(): JSX.Element {
 
   return (
     <Show when={(projects.latest?.projects ?? []).length > 0}>
-      <div class="border-b border-line px-3 py-2">
+      <div class="px-3 py-2">
         <Text variant="label" tone="dim">
-          PROJECT
+          Project
         </Text>
         <Select
           options={options()}

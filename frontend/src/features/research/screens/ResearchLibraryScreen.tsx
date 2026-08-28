@@ -23,11 +23,11 @@ import { deleteResearch, intakeResearch, useResearchList } from "../data";
 import type { ResearchListItem, ResearchStatus } from "../model";
 
 const STATUS_MAP: Record<ResearchStatus, { status: Status; label: string }> = {
-  draft: { status: "idle", label: "DRAFT" },
-  running: { status: "info", label: "RUNNING" },
-  done: { status: "nominal", label: "DONE" },
-  error: { status: "alert", label: "ERROR" },
-  cancelled: { status: "idle", label: "CANCELLED" },
+  draft: { status: "idle", label: "Draft" },
+  running: { status: "info", label: "Running" },
+  done: { status: "nominal", label: "Done" },
+  error: { status: "alert", label: "Error" },
+  cancelled: { status: "idle", label: "Cancelled" },
 };
 
 const EXAMPLE_QUERIES = [
@@ -49,11 +49,11 @@ export function ResearchLibraryScreen(): JSX.Element {
     search: (r: ResearchListItem) => r.question,
     sorts: {
       recent: {
-        label: "DATE",
+        label: "Date",
         compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
       },
       status: {
-        label: "STATUS",
+        label: "Status",
         compare: (a, b) => a.status.localeCompare(b.status),
       },
     },
@@ -80,8 +80,8 @@ export function ResearchLibraryScreen(): JSX.Element {
       title: `Delete "${r.question}"?`,
       detail:
         "This research entry and its report (if any) will be permanently removed. This cannot be undone.",
-      confirmLabel: "DELETE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -96,16 +96,22 @@ export function ResearchLibraryScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="DEEP RESEARCH"
+        title="Deep research"
         subtitle="Multi-round synthesis engine. Plan → search → read → analyze → write."
         assetId="ODY-RES-01.0"
       />
 
-      <Panel label="NEW RESEARCH" state={starting() ? "active" : "default"}>
+      {/* Bare: the composer inside carries the bloom, so a grey card around it
+          would be a second surface competing with the one that matters. */}
+      <Panel
+        label="New research"
+        bare
+        state={starting() ? "active" : "default"}
+      >
         <Stack gap={3}>
           <Stack gap={2}>
             <Text variant="micro" tone="dim">
-              TRY AN EXAMPLE
+              Try an example
             </Text>
             <div class="flex flex-wrap gap-2">
               <For each={EXAMPLE_QUERIES}>
@@ -117,6 +123,7 @@ export function ResearchLibraryScreen(): JSX.Element {
           </Stack>
           <Composer
             size="md"
+            bare
             disabled={starting()}
             storageKey="research:query"
             placeholder="What do you want to research? Be specific — the engine will plan, search, read, and synthesize."
@@ -125,8 +132,8 @@ export function ResearchLibraryScreen(): JSX.Element {
         </Stack>
       </Panel>
 
-      <Panel label="LIBRARY" flush>
-        <div class="border-b border-line p-3">
+      <Panel label="Library" flush>
+        <div class="p-3">
           <ListToolbar
             query={view.query()}
             onQueryChange={view.setQuery}
@@ -142,7 +149,7 @@ export function ResearchLibraryScreen(): JSX.Element {
         </div>
         <Resource
           data={list}
-          emptyMessage="NO RESEARCH YET"
+          emptyMessage="No research yet"
           emptyHint="Ask a question above to generate your first report."
           isEmpty={(items) => items.length === 0}
         >

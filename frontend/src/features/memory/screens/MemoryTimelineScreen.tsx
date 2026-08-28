@@ -45,7 +45,7 @@ export function MemoryTimelineScreen(): JSX.Element {
     search: (m) => m.content,
     sorts: {
       recent: {
-        label: "NEWEST",
+        label: "Newest",
         compare: (a, b) => a.createdAt.localeCompare(b.createdAt),
       },
     },
@@ -120,7 +120,7 @@ export function MemoryTimelineScreen(): JSX.Element {
       !(await confirm({
         title: "Delete memory?",
         detail: `"${preview}" — this cannot be undone.`,
-        confirmLabel: "DELETE",
+        confirmLabel: "Delete",
         tone: "alert",
       }))
     )
@@ -187,7 +187,7 @@ export function MemoryTimelineScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="MEMORY"
+        title="Memory"
         subtitle="Persistent facts, preferences, and context the system has learned."
         assetId="ODY-MEM-01.0"
         actions={
@@ -201,13 +201,13 @@ export function MemoryTimelineScreen(): JSX.Element {
                 setRecallOpen(true);
               }}
             >
-              RECALL
+              Recall
             </Button>
             <Button variant="default" leading="copy" onClick={openDedup}>
-              DEDUP AUDIT
+              Dedup audit
             </Button>
             <Button variant="primary" leading="plus" onClick={openAdd}>
-              ADD MEMORY
+              Add memory
             </Button>
           </Row>
         }
@@ -215,10 +215,10 @@ export function MemoryTimelineScreen(): JSX.Element {
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String(counts().total) },
-          { label: "PINNED", value: String(counts().pinned), tone: "nominal" },
+          { label: "Total", value: String(counts().total) },
+          { label: "Pinned", value: String(counts().pinned), tone: "nominal" },
           {
-            label: "EMBEDDED",
+            label: "Embedded",
             value: String(counts().embedded),
             tone: "info",
           },
@@ -226,7 +226,7 @@ export function MemoryTimelineScreen(): JSX.Element {
       />
 
       <Panel flush>
-        <div class="border-b border-line p-3">
+        <div class="p-3">
           <ListToolbar
             query={view.query()}
             onQueryChange={view.setQuery}
@@ -256,7 +256,7 @@ export function MemoryTimelineScreen(): JSX.Element {
             fallback={
               <EmptyState
                 icon="database"
-                message="NO MEMORIES"
+                message="No memories"
                 hint={
                   view.isFiltered()
                     ? "No memories match your filter."
@@ -273,7 +273,7 @@ export function MemoryTimelineScreen(): JSX.Element {
                   right={
                     <span class="flex shrink-0 items-center gap-3">
                       <Show when={mem.hasEmbedding}>
-                        <StatusFlag status="info">EMB</StatusFlag>
+                        <StatusFlag status="info">Emb</StatusFlag>
                       </Show>
                       <Text variant="micro" tone="dim">
                         {relativeTime(mem.createdAt)}
@@ -286,17 +286,17 @@ export function MemoryTimelineScreen(): JSX.Element {
                         }
                         items={[
                           {
-                            label: mem.pinned ? "UNPIN" : "PIN",
+                            label: mem.pinned ? "Unpin" : "PIN",
                             icon: "lock",
                             onSelect: () => handlePin(mem),
                           },
                           {
-                            label: "EDIT",
+                            label: "Edit",
                             icon: "edit",
                             onSelect: () => openEdit(mem),
                           },
                           {
-                            label: "DELETE",
+                            label: "Delete",
                             icon: "trash",
                             danger: true,
                             onSelect: () => handleDelete(mem),
@@ -316,11 +316,11 @@ export function MemoryTimelineScreen(): JSX.Element {
       <Modal
         open={composeOpen()}
         onClose={() => setComposeOpen(false)}
-        title={editing() ? "EDIT MEMORY" : "ADD MEMORY"}
+        title={editing() ? "Edit memory" : "Add memory"}
       >
         <Stack gap={3}>
           <Textarea
-            label="CONTENT"
+            label="Content"
             value={draft()}
             onInput={(e) => setDraft(e.currentTarget.value)}
             placeholder="A fact, preference, or piece of context to remember…"
@@ -333,14 +333,14 @@ export function MemoryTimelineScreen(): JSX.Element {
           />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setComposeOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!draft().trim() || saving()}
               onClick={saveDraft}
             >
-              {saving() ? "SAVING…" : "SAVE"}
+              {saving() ? "Saving…" : "Save"}
             </Button>
           </div>
         </Stack>
@@ -350,14 +350,14 @@ export function MemoryTimelineScreen(): JSX.Element {
       <Modal
         open={recallOpen()}
         onClose={() => setRecallOpen(false)}
-        title="RECALL"
+        title="Recall"
         class="max-w-2xl"
       >
         <Stack gap={4}>
           <Row gap={2} align="end">
             <div class="flex-1">
               <Input
-                label="QUERY"
+                label="Query"
                 value={recallQuery()}
                 onInput={(e) => setRecallQuery(e.currentTarget.value)}
                 onKeyDown={(e) => {
@@ -371,7 +371,7 @@ export function MemoryTimelineScreen(): JSX.Element {
               disabled={!recallQuery().trim() || recalling()}
               onClick={runRecall}
             >
-              {recalling() ? "RECALLING…" : "RECALL"}
+              {recalling() ? "Recalling…" : "Recall"}
             </Button>
           </Row>
           <Show when={recallHits()}>
@@ -380,7 +380,7 @@ export function MemoryTimelineScreen(): JSX.Element {
               fallback={
                 <EmptyState
                   icon="search"
-                  message="NO HITS"
+                  message="No hits"
                   hint="Nothing recalled for that query."
                 />
               }
@@ -388,7 +388,7 @@ export function MemoryTimelineScreen(): JSX.Element {
               <Stack gap={2}>
                 <For each={recallHits()!}>
                   {(hit) => (
-                    <div class="border border-line p-3">
+                    <div class="rounded-panel bg-surface p-3 shadow-1">
                       <Row justify="between" align="center">
                         <StatusFlag status="info">
                           {hit.matchedBy.toUpperCase()}
@@ -413,11 +413,11 @@ export function MemoryTimelineScreen(): JSX.Element {
       <Modal
         open={dedupOpen()}
         onClose={() => setDedupOpen(false)}
-        title="DEDUP AUDIT"
+        title="Dedup audit"
         class="max-w-2xl"
         footer={
           <Button variant="ghost" onClick={() => setDedupOpen(false)}>
-            CLOSE
+            Close
           </Button>
         }
       >
@@ -425,7 +425,7 @@ export function MemoryTimelineScreen(): JSX.Element {
           when={!auditing()}
           fallback={
             <div class="p-4">
-              <LoadingText label="AUDITING…" />
+              <LoadingText label="Auditing…" />
             </div>
           }
         >
@@ -434,7 +434,7 @@ export function MemoryTimelineScreen(): JSX.Element {
             fallback={
               <EmptyState
                 icon="check"
-                message="NO DUPLICATES FOUND"
+                message="No duplicates found"
                 hint="All memories appear distinct."
               />
             }
@@ -446,10 +446,10 @@ export function MemoryTimelineScreen(): JSX.Element {
               </Text>
               <For each={groups() ?? []}>
                 {(group) => (
-                  <div class="border border-line">
-                    <div class="flex items-center justify-between border-b border-line bg-raised px-4 py-2">
+                  <div class="overflow-hidden rounded-panel bg-surface shadow-1">
+                    <div class="flex items-center justify-between bg-raised px-4 py-2">
                       <Text variant="label" tone="dim">
-                        SIMILARITY
+                        Similarity
                       </Text>
                       <Text variant="readout" tone="warn">
                         {num(group.similarity * 100, 0)}%
@@ -472,7 +472,7 @@ export function MemoryTimelineScreen(): JSX.Element {
                                 leading="trash"
                                 onClick={() => deleteFromGroup(m)}
                               >
-                                DELETE
+                                Delete
                               </Button>
                             </Row>
                           </>

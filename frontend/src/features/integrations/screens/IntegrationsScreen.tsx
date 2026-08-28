@@ -77,7 +77,7 @@ function ConnectorCard(props: {
           <StatusFlag
             status={props.integration.configured ? "nominal" : "idle"}
           >
-            {props.integration.configured ? "CONFIGURED" : "NOT SET"}
+            {props.integration.configured ? "Configured" : "Not set"}
           </StatusFlag>
           <Show
             when={props.integration.status === "error"}
@@ -91,7 +91,7 @@ function ConnectorCard(props: {
               label={props.integration.errorMessage ?? "Unknown error"}
               side="left"
             >
-              <StatusFlag status="alert">ERROR</StatusFlag>
+              <StatusFlag status="alert">Error</StatusFlag>
             </Tooltip>
           </Show>
 
@@ -102,7 +102,7 @@ function ConnectorCard(props: {
             disabled={props.busy}
             onClick={() => props.onTest(props.integration)}
           >
-            {props.busy ? "TESTING…" : "TEST"}
+            {props.busy ? "Testing…" : "Test"}
           </Button>
           <Button
             size="sm"
@@ -110,7 +110,7 @@ function ConnectorCard(props: {
             leading="settings"
             onClick={() => props.onConfigure(props.integration)}
           >
-            CONFIGURE
+            Configure
           </Button>
           <Show when={actions().length}>
             <Button
@@ -131,7 +131,7 @@ function ConnectorCard(props: {
             }
             items={[
               {
-                label: "REMOVE CONNECTOR",
+                label: "Remove connector",
                 icon: "trash",
                 danger: true,
                 onSelect: () => props.onDelete(props.integration),
@@ -146,7 +146,7 @@ function ConnectorCard(props: {
         <Stack gap={2}>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              BASE URL
+              Base URL
             </Text>
             <Text variant="micro" tone="bright">
               {props.integration.baseUrl}
@@ -154,7 +154,7 @@ function ConnectorCard(props: {
           </Row>
           <Row gap={2} align="center">
             <Text variant="micro" tone="dim">
-              ACTIONS TRUSTED
+              Actions trusted
             </Text>
             <Text variant="micro" tone="nominal">
               {trustedCount()} / {actions().length}
@@ -164,7 +164,7 @@ function ConnectorCard(props: {
           <Show when={props.integration.lastTestedAt}>
             <Row gap={2} align="center">
               <Text variant="micro" tone="dim">
-                LAST TESTED
+                Last tested
               </Text>
               <Text variant="micro" tone="bright">
                 {timestamp(props.integration.lastTestedAt!)}
@@ -174,7 +174,7 @@ function ConnectorCard(props: {
           <Show when={props.integration.errorMessage}>
             <Row gap={2} align="center">
               <Text variant="micro" tone="dim">
-                LAST ERROR
+                Last error
               </Text>
               <Text variant="micro" tone="alert">
                 {props.integration.errorMessage}
@@ -208,7 +208,7 @@ function ConnectorCard(props: {
                         variant="micro"
                         tone={action.trusted ? "bright" : "dim"}
                       >
-                        {action.trusted ? "TRUSTED" : "ASKS FIRST"}
+                        {action.trusted ? "Trusted" : "Asks first"}
                       </Text>
                       <Toggle
                         checked={action.trusted}
@@ -229,7 +229,7 @@ function ConnectorCard(props: {
                   >
                     <Row gap={2} align="center">
                       <Text variant="micro" tone="dim">
-                        ENABLED
+                        Enabled
                       </Text>
                       <Toggle
                         checked={action.enabled}
@@ -379,8 +379,8 @@ export function IntegrationsScreen(): JSX.Element {
       title: `Remove "${integration.name}"?`,
       detail:
         "Its stored credential is deleted and the agent loses its actions. This cannot be undone.",
-      confirmLabel: "REMOVE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Remove",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -400,30 +400,30 @@ export function IntegrationsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="INTEGRATIONS"
+        title="Integrations"
         subtitle="HTTP service connectors. Credentials are encrypted at rest."
         assetId="SYS-INT-05.1"
         actions={
           <Row gap={2} align="center">
             <StatusFlag status="nominal">{`${configuredCount()} CONFIGURED`}</StatusFlag>
             <Button variant="default" leading="plus" onClick={openAdd}>
-              ADD CONNECTOR
+              Add connector
             </Button>
           </Row>
         }
       />
 
-      <Suspense fallback={<LoadingText label="LOADING INTEGRATIONS" />}>
+      <Suspense fallback={<LoadingText label="Loading integrations" />}>
         <Show
           when={(integrations() ?? []).length}
           fallback={
             <EmptyState
               icon="plug"
-              message="NO INTEGRATIONS"
+              message="No integrations"
               hint="Connectors let the agent reach a third-party service — GitHub, Jira, Slack — with a credential you store here. Add one to get started."
               action={
                 <Button onClick={openAdd} leading="plus">
-                  ADD CONNECTOR
+                  Add connector
                 </Button>
               }
             />
@@ -454,25 +454,25 @@ export function IntegrationsScreen(): JSX.Element {
       <Modal
         open={addOpen()}
         onClose={() => setAddOpen(false)}
-        title="ADD CONNECTOR"
+        title="Add connector"
         footer={
           <Row gap={2}>
             <Button variant="ghost" onClick={() => setAddOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               onClick={saveNew}
               disabled={!chosenPreset() || saving()}
             >
-              {saving() ? "SAVING…" : "ADD"}
+              {saving() ? "Saving…" : "Add"}
             </Button>
           </Row>
         }
       >
         <Stack gap={4}>
           <Select
-            label="SERVICE"
+            label="Service"
             value={addPreset()}
             onChange={setAddPreset}
             options={(presets() ?? []).map((p) => ({
@@ -487,13 +487,13 @@ export function IntegrationsScreen(): JSX.Element {
                   {preset().description}
                 </Text>
                 <Input
-                  label="NAME (OPTIONAL)"
+                  label="Name (optional)"
                   value={addName()}
                   onInput={(e) => setAddName(e.currentTarget.value)}
                   placeholder={preset().name}
                 />
                 <Input
-                  label="BASE URL (OPTIONAL — FOR A SELF-HOSTED INSTANCE)"
+                  label="Base URL (optional — for a self-hosted instance)"
                   value={addUrl()}
                   onInput={(e) => setAddUrl(e.currentTarget.value)}
                   placeholder={preset().baseUrl}
@@ -501,8 +501,8 @@ export function IntegrationsScreen(): JSX.Element {
                 <Input
                   label={
                     preset().credentialRequired
-                      ? "API KEY / TOKEN (REQUIRED)"
-                      : "API KEY / TOKEN (OPTIONAL)"
+                      ? "API key / token (required)"
+                      : "API key / token (optional)"
                   }
                   type="password"
                   value={addKey()}
@@ -531,10 +531,10 @@ export function IntegrationsScreen(): JSX.Element {
         footer={
           <Row gap={2}>
             <Button variant="ghost" onClick={() => setEditing(null)}>
-              CANCEL
+              Cancel
             </Button>
             <Button variant="primary" onClick={saveConfig} disabled={saving()}>
-              {saving() ? "SAVING…" : "SAVE"}
+              {saving() ? "Saving…" : "Save"}
             </Button>
           </Row>
         }
@@ -549,12 +549,12 @@ export function IntegrationsScreen(): JSX.Element {
               </Show>
 
               <Row gap={4} align="center">
-                <Field label="TYPE" value={int().type} />
+                <Field label="Type" value={int().type} />
                 <Field label="ID" value={int().id} />
               </Row>
 
               <Input
-                label="BASE URL"
+                label="Base URL"
                 value={editUrl()}
                 onInput={(e) => setEditUrl(e.currentTarget.value)}
                 placeholder="https://api.example.com"
@@ -562,8 +562,8 @@ export function IntegrationsScreen(): JSX.Element {
               <Input
                 label={
                   int().credentialRequired
-                    ? "API KEY / CREDENTIAL (REQUIRED)"
-                    : "API KEY / CREDENTIAL (OPTIONAL)"
+                    ? "API key / credential (required)"
+                    : "API key / credential (optional)"
                 }
                 type="password"
                 value={editKey()}
@@ -577,7 +577,7 @@ export function IntegrationsScreen(): JSX.Element {
 
               <Show when={int().lastTestedAt}>
                 <Field
-                  label="LAST TESTED"
+                  label="Last tested"
                   value={timestamp(int().lastTestedAt!)}
                 />
               </Show>

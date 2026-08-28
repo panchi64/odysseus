@@ -3,7 +3,7 @@ import { cx } from "../cx";
 import { Text, type TextTone } from "../primitives/Text";
 
 export interface ProgressBarProps {
-  /** 0–100. Omit for an indeterminate "UPDATING…" band (still no spinner). */
+  /** 0–100. Omit for an indeterminate "Updating…" band (still no spinner). */
   value?: number;
   label?: string;
   /** Accent of the fill. Defaults to nominal. */

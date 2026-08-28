@@ -22,11 +22,11 @@ interface ProgressPanelProps {
  *  documents it streams (DR-5.1) — plus cancel and a reattach affordance for
  *  a dropped transport (mirrors chat's detached state). */
 export function ProgressPanel(props: ProgressPanelProps): JSX.Element {
-  const phaseLabel = () => props.state.phase?.toUpperCase() ?? "STARTING…";
+  const phaseLabel = () => props.state.phase?.toUpperCase() ?? "Starting…";
 
   return (
     <Panel
-      label="LIVE PROGRESS"
+      label="Live progress"
       state="active"
       meta={
         <Text variant="micro" tone="dim">
@@ -38,10 +38,10 @@ export function ProgressPanel(props: ProgressPanelProps): JSX.Element {
         <PhaseTrack current={props.state.phase} />
         <InstrumentBand
           items={[
-            { label: "ROUND", value: String(Math.max(props.state.round, 1)) },
-            { label: "SOURCES", value: String(props.state.sources) },
-            { label: "FINDINGS", value: String(props.state.findings) },
-            { label: "PHASE", value: phaseLabel(), tone: "info" },
+            { label: "Round", value: String(Math.max(props.state.round, 1)) },
+            { label: "Sources", value: String(props.state.sources) },
+            { label: "Findings", value: String(props.state.findings) },
+            { label: "Phase", value: phaseLabel(), tone: "info" },
           ]}
         />
 
@@ -60,7 +60,7 @@ export function ProgressPanel(props: ProgressPanelProps): JSX.Element {
               leading="refresh"
               onClick={props.onReattach}
             >
-              RECONNECT
+              Reconnect
             </Button>
           </Row>
         </Show>
@@ -68,7 +68,7 @@ export function ProgressPanel(props: ProgressPanelProps): JSX.Element {
         <Row justify="between" align="center" gap={2}>
           <LoadingText label={phaseLabel()} />
           <Button variant="danger" leading="stop" onClick={props.onCancel}>
-            CANCEL
+            Cancel
           </Button>
         </Row>
       </Stack>

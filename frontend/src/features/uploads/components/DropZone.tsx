@@ -35,7 +35,7 @@ export function DropZone(props: DropZoneProps): JSX.Element {
       />
       <Stack gap={1} class="items-center">
         <Text variant="label" tone={drop.isDragging() ? "info" : "dim"}>
-          {drop.isDragging() ? "DROP TO UPLOAD" : "DROP FILES HERE"}
+          {drop.isDragging() ? "Drop to upload" : "Drop files here"}
         </Text>
         <Text variant="micro" tone="dim">
           PDF, image, and document formats accepted · max 50 MB
@@ -47,7 +47,7 @@ export function DropZone(props: DropZoneProps): JSX.Element {
         {...drop.inputHandlers}
       />
       <Button variant="default" leading="upload" onClick={drop.openPicker}>
-        BROWSE FILES
+        Browse files
       </Button>
     </Box>
   );

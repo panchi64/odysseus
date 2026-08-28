@@ -64,11 +64,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
     search: (d) => `${d.title} ${d.snippet}`,
     sorts: {
       recent: {
-        label: "NEWEST",
+        label: "Newest",
         compare: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
       },
       name: {
-        label: "NAME",
+        label: "Name",
         compare: (a, b) => a.title.localeCompare(b.title),
       },
     },
@@ -97,7 +97,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete "${doc.title}"?`,
       detail: "This action cannot be undone.",
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -115,7 +115,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
     const ok = await confirm({
       title: `Delete ${docs.length} document${docs.length > 1 ? "s" : ""}?`,
       detail: "This action cannot be undone.",
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -149,7 +149,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
     }
     toast.success(`${toArchived ? "Archived" : "Restored"} "${doc.title}"`, {
       action: {
-        label: "UNDO",
+        label: "Undo",
         onClick: () => {
           apply(!toArchived).catch(() => toast.error("Could not undo"));
         },
@@ -172,7 +172,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="DOCUMENTS"
+        title="Documents"
         subtitle="Personal knowledge base and working notes."
         assetId="ODY-DOC-01.0"
         actions={
@@ -181,25 +181,25 @@ export function DocumentsLibraryScreen(): JSX.Element {
             leading="plus"
             onClick={() => void handleNew()}
           >
-            NEW DOCUMENT
+            New document
           </Button>
         }
       />
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String(documents().length) },
-          { label: "ACTIVE", value: String(totalActive()), tone: "nominal" },
-          { label: "ARCHIVED", value: String(totalArchived()), tone: "dim" },
+          { label: "Total", value: String(documents().length) },
+          { label: "Active", value: String(totalActive()), tone: "nominal" },
+          { label: "Archived", value: String(totalArchived()), tone: "dim" },
         ]}
       />
 
       <Panel flush>
-        <div class="flex items-center gap-3 border-b border-line px-4 py-2">
+        <div class="flex items-center gap-3 px-4 py-2">
           <Tabs
             items={[
-              { value: "active", label: "ACTIVE" },
-              { value: "archived", label: "ARCHIVED" },
+              { value: "active", label: "Active" },
+              { value: "archived", label: "Archived" },
             ]}
             value={tab()}
             onChange={(v) => setTab(v as DocStatus)}
@@ -212,11 +212,11 @@ export function DocumentsLibraryScreen(): JSX.Element {
             leading="check"
             onClick={toggleSelectMode}
           >
-            {selectMode() ? "DONE" : "SELECT"}
+            {selectMode() ? "Done" : "Select"}
           </Button>
         </div>
 
-        <div class="border-b border-line p-3">
+        <div class="p-3">
           <ListToolbar
             query={view.query()}
             onQueryChange={view.setQuery}
@@ -239,7 +239,7 @@ export function DocumentsLibraryScreen(): JSX.Element {
                 leading="trash"
                 onClick={() => void handleBulkDelete()}
               >
-                DELETE
+                Delete
               </Button>
             }
           />
@@ -259,10 +259,10 @@ export function DocumentsLibraryScreen(): JSX.Element {
                 icon="file"
                 message={
                   view.isFiltered()
-                    ? "NO MATCHES"
+                    ? "No matches"
                     : tab() === "active"
-                      ? "NO ACTIVE DOCUMENTS"
-                      : "NO ARCHIVED DOCUMENTS"
+                      ? "No active documents"
+                      : "No archived documents"
                 }
                 hint={
                   view.isFiltered()
@@ -303,18 +303,18 @@ export function DocumentsLibraryScreen(): JSX.Element {
                           }
                           items={[
                             {
-                              label: "RENAME",
+                              label: "Rename",
                               icon: "pen",
                               onSelect: () => setRenaming(doc),
                             },
                             {
                               label:
-                                doc.status === "active" ? "ARCHIVE" : "RESTORE",
+                                doc.status === "active" ? "Archive" : "Restore",
                               icon: "archive",
                               onSelect: () => void handleArchive(doc),
                             },
                             {
-                              label: "DELETE",
+                              label: "Delete",
                               icon: "trash",
                               danger: true,
                               onSelect: () => void handleDelete(doc),

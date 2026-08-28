@@ -42,7 +42,7 @@ export function AlbumNameDialog(props: {
       footer={
         <>
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button
             variant="primary"
@@ -56,7 +56,7 @@ export function AlbumNameDialog(props: {
       }
     >
       <Input
-        label="NAME"
+        label="Name"
         value={value()}
         autofocus
         invalid={!trimmed()}

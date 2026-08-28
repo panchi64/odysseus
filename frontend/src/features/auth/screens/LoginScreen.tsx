@@ -54,14 +54,14 @@ export function LoginScreen(): JSX.Element {
         <Stack gap={3}>
           <Stack gap={1}>
             <StatusFlag status="idle" dot>
-              WORKSPACE LOCKED
+              Workspace locked
             </StatusFlag>
             <Text variant="micro" tone="dim">
               Enter the operator password to unlock encrypted storage.
             </Text>
           </Stack>
           <Input
-            label="PASSWORD"
+            label="Password"
             type="password"
             value={password()}
             onInput={(e) => {
@@ -77,7 +77,7 @@ export function LoginScreen(): JSX.Element {
             </Text>
           </Show>
           <Button variant="primary" type="submit" disabled={loading()}>
-            {loading() ? "UNLOCKING…" : "UNLOCK"}
+            {loading() ? "Unlocking…" : "Unlock"}
           </Button>
         </Stack>
       </form>

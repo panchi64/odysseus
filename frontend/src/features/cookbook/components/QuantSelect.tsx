@@ -76,10 +76,10 @@ export function QuantSelect(props: {
   return (
     <Show when={reading() || ready()}>
       <Select
-        label="QUANT"
+        label="Quant"
         class="w-40 shrink-0"
         disabled={reading()}
-        placeholder={reading() ? "READING…" : "Auto"}
+        placeholder={reading() ? "Reading…" : "Auto"}
         value={props.value}
         onChange={props.onChange}
         options={

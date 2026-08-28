@@ -102,8 +102,8 @@ export function ComparePaneView(props: {
   const [wide, setWide] = createSignal(false);
 
   return (
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col rounded-ctl border border-line">
-      <header class="flex items-center justify-between gap-2 border-b border-line p-2">
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col rounded-panel bg-surface shadow-1">
+      <header class="flex items-center justify-between gap-2 p-2">
         <div class="flex min-w-0 items-center gap-2">
           <Text variant="label" tone="dim">
             {props.label}
@@ -113,9 +113,9 @@ export function ComparePaneView(props: {
             value={value()}
             onChange={(v) => props.pane.setSelection(decodeModelValue(v))}
             leading="cpu"
-            placeholder="NO MODEL"
+            placeholder="No model"
             searchPlaceholder="Search models…"
-            emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
+            emptyHint="No models — add an endpoint in settings"
             aria-label={`Model for ${props.label}`}
           />
         </div>
@@ -124,7 +124,7 @@ export function ComparePaneView(props: {
           dot={stream().sending()}
           pulse={stream().sending()}
         >
-          {stream().sending() ? "STREAMING" : "IDLE"}
+          {stream().sending() ? "Streaming" : "Idle"}
         </StatusFlag>
       </header>
 
@@ -138,7 +138,7 @@ export function ComparePaneView(props: {
           fallback={
             <EmptyState
               icon="compare"
-              message="NO RESPONSE YET"
+              message="No response yet"
               hint="Send a message below to compare this model."
             />
           }
@@ -167,7 +167,7 @@ export function ComparePaneView(props: {
                     await confirm({
                       title: "Delete this message?",
                       detail: "This removes it and everything after it.",
-                      confirmLabel: "DELETE",
+                      confirmLabel: "Delete",
                       tone: "alert",
                     })
                   ) {

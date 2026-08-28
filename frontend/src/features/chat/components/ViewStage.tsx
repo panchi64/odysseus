@@ -131,7 +131,7 @@ export function ViewStage(props: {
       {/* CODE for a standalone live head with no captured version yet. */}
       <Match when={props.mode === "code" && props.entry.live}>
         <EmptyState
-          message="NO SOURCE"
+          message="No source"
           hint="The live server has no captured version yet."
         />
       </Match>

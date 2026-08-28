@@ -36,7 +36,7 @@ export function ClarifyForm(props: ClarifyFormProps): JSX.Element {
   const busy = () => props.submitting || props.skipping;
 
   return (
-    <Panel label="A FEW QUESTIONS FIRST">
+    <Panel label="A few questions first">
       <Stack gap={4}>
         <For each={props.questions}>
           {(q, i) => (
@@ -55,7 +55,7 @@ export function ClarifyForm(props: ClarifyFormProps): JSX.Element {
         </For>
         <Row justify="between" align="center" gap={2}>
           <Button variant="default" disabled={busy()} onClick={props.onSkip}>
-            SKIP QUESTIONS
+            Skip questions
           </Button>
           <Button
             variant="primary"
@@ -63,7 +63,7 @@ export function ClarifyForm(props: ClarifyFormProps): JSX.Element {
             disabled={busy()}
             onClick={() => props.onSubmit(answers())}
           >
-            SUBMIT ANSWERS
+            Submit answers
           </Button>
         </Row>
       </Stack>

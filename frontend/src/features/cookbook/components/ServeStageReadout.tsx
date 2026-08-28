@@ -3,8 +3,8 @@ import { ProgressBar, Row, Stack, Text } from "~/ui";
 import type { ServeStage, ServeStageInfo } from "../model";
 
 const STAGE_LABEL: Record<ServeStage, string> = {
-  installing_engine: "INSTALLING ENGINE RUNTIME",
-  loading_model: "LOADING MODEL",
+  installing_engine: "Installing engine runtime",
+  loading_model: "Loading model",
 };
 
 const STAGE_HINT: Record<ServeStage, string> = {
