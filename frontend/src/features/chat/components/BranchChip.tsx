@@ -89,9 +89,11 @@ export function BranchChip(props: {
     <Show when={branch.latest}>
       {(b) => (
         <>
+          {/* Sized to the chat header's other actions rather than to a toolbar
+              chip — it is the third control in that row, and a shorter one
+              beside them reads as a different kind of thing. */}
           <Button
             variant="ghost"
-            size="sm"
             leading="branch"
             onClick={() => setOpen(true)}
             aria-label="Review this conversation's branch"

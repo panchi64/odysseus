@@ -708,11 +708,15 @@ export function ChatRoomScreen(): JSX.Element {
                 />
               )}
             </Show>
+            {/* `md`, matching the session-actions trigger beside it — these are
+                peer controls in the same row and the two most-reached-for things
+                in the header, so they get the same target. The rest of the
+                product's ghost icon buttons stay `sm`; this row is deliberately
+                the exception, not the new default. */}
             <Tooltip label="Viewport" side="bottom">
               <Button
                 ref={(el) => (sheetTrigger = el)}
                 variant="ghost"
-                size="sm"
                 leading="eye"
                 aria-label="Toggle viewport panel"
                 onClick={toggleViewport}
