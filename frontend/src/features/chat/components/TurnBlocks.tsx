@@ -261,6 +261,27 @@ function AnswerText(props: {
   streaming?: boolean;
 }): JSX.Element {
   const live = () => Boolean(props.active && props.streaming);
+
+  /* Latched, and this is what stops the screen flashing when a run finishes.
+     `Markdown` renders a *different element* for `streamStable` than for its
+     default path — it has to, since Solid's `innerHTML` prop can't coexist with
+     rendered children on one node. Passing `live()` straight through therefore
+     flipped that flag at the exact moment the answer completed, and Solid tore
+     down the entire rendered answer and rebuilt it: a full re-parse, a fresh
+     DOM, KaTeX re-rendered, every `pre` and `table` re-wrapped. On a long answer
+     that is a visible flash at the worst possible moment — the instant the
+     operator starts reading.
+
+     Once a passage has streamed it keeps the block path forever. The two paths
+     render the same content (the block path exists to replicate the prose
+     cascade at the block-wrapper level), so there is nothing to switch back
+     for. A message that never streamed — history, a settled turn — never takes
+     the block path at all, which is the cheaper read for a long transcript. */
+  const [streamStable, setStreamStable] = createSignal(live());
+  createEffect(() => {
+    if (live()) setStreamStable(true);
+  });
+
   let host: HTMLDivElement | undefined;
   // Absolute start time per animatable character. Empty until the passage goes
   // live; a message that arrives complete (history, a settled turn) never
@@ -276,7 +297,13 @@ function AnswerText(props: {
     // Read the source so this effect re-runs on every delta (the value itself
     // is not needed — the DOM Markdown just committed is what gets walked).
     void props.text;
-    if (!host || !live()) return;
+    // A passage that never streamed (history, a settled turn) schedules nothing
+    // and renders instantly. One that has streamed keeps going for a final pass
+    // after `live()` drops: the run's last characters land in the same tick the
+    // stream closes, and bailing here made them the one part of the answer that
+    // appeared without resolving — a pop right at the end of an otherwise smooth
+    // reveal.
+    if (!host || (!live() && starts.length === 0)) return;
     // Let Markdown commit its own DOM for this delta first.
     queueMicrotask(() => {
       if (!host) return;
@@ -296,7 +323,11 @@ function AnswerText(props: {
   return (
     <div>
       <div ref={host} class="inline">
-        <Markdown class="inline" copyCode={!live()} streamStable={live()}>
+        <Markdown
+          class="inline"
+          copyCode={!live()}
+          streamStable={streamStable()}
+        >
           {props.text}
         </Markdown>
       </div>
