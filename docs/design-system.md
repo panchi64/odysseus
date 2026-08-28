@@ -320,9 +320,23 @@ A token counter ticking, a run state flipping `QUEUED` → `RUNNING`, a latency 
 
 **This contrast is the effect.** A mono value that eases into place reads as decoration and undercuts the premise; a sans panel that hard-cuts reads as broken. Match the register to the voice.
 
+### The reveal — how anything in the human voice arrives
+
+One motion, one component (`Reveal`), used for everything the interface puts on screen on the operator's behalf: an overlay opening, a panel revealing, a turn landing in the transcript, a run of answer text arriving.
+
+**It is a blur fade.** Content resolves out of a blur as it fades, and with `rise`, settles the last few pixels into place while it does — so it reads as *materializing into position* rather than as a light being turned up on something that was already sitting there. That distinction is most of the refinement; opacity alone is the generic version of this.
+
+Three parameters, no variants: `distance` (0 for a fade, 4px for an overlay settling, 10px for a turn arriving — beyond that the movement starts reading as decoration), `duration` (180ms default, 240ms ceiling), and `blur` (3px default; `0` opts a very large surface out, where blurring the whole raster costs more than the effect returns).
+
+Two things it deliberately does not do. **It never exits** — an exit animation delays the operator getting what they asked for. **It does not replay on update** — the animation fires on mount, so a streaming block does not re-animate on every delta.
+
+**It must never reach the machine's voice.** The per-character reveal in the answer skips code, samples, **tables** and math outright: a code block or a data grid landing hard *inside* an answer that eases in around it is the two registers visible in a single paragraph, and blurring it in would erase the one contrast the transcript is built on.
+
+A table earns that exclusion three times over — its header band is already mono because a column header names a machine field, its cells are values a process emitted rather than sentences a person wrote (§2), and a grid is read in two dimensions, so a reveal sweeping left-to-right through cells reads as flicker rather than as arrival.
+
 ### Permitted animations
 
-- Eased (human): opacity/transform on overlays, hover and focus transitions, height on disclosure, toast entry, **a turn arriving in the transcript** (a 10px glide up over 200ms, fired once on mount — see §10.12), **per-token arrival of the answer** (§10.10).
+- Eased (human): the reveal above, hover and focus transitions, height on disclosure, ambient state colour (240ms, §10.9).
 - Stepped (machine): caret blink, the braille throbber (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) as a "working now" indicator, live-state pulse, value tick-over, **the reasoning wall** (§10.9).
 
 The chat transcript is where the two registers are visible at once, and it is the reference implementation: the mono reasoning wall lands hard, the sans answer beneath it eases in token by token.
@@ -330,6 +344,10 @@ The chat transcript is where the two registers are visible at once, and it is th
 ### Forbidden
 
 Bouncing, springs, overshoot, staggered cascades, eased *decorative* spinners, parallax, anything over 240ms, and any animation that runs while the operator is not looking at it.
+
+**One stated exception to the 240ms ceiling: the answer's per-character reveal (320ms).** The ceiling governs anything the operator is *waiting on* — a control answering a click, an overlay opening — where a long duration reads as lag. Nothing waits on this one: it is paced to a stream that already takes seconds, and a character is legible well before it finishes settling. Under the ceiling the resolve is over before the eye reaches it. If a second case ever wants this exemption, it has to clear the same bar — nothing is waiting.
+
+**And the reveal's stagger is paced to the arrival rate, not fixed.** A fixed per-character step cannot serve both ends of the range: fast enough for 300 characters a second and it is invisible at 30; slow enough to see at 30 and each run is still resolving when the next three have landed, which puts later characters ahead of earlier ones and scrambles the order outright. Each run is instead spread over roughly the measured gap until the next one, so the reveal front travels at whatever speed the model is producing and looks the same at any of them. A burst too large to stagger inside that gap resolves its overflow together, which bounds how far the reveal can trail the text — the caret sits at the true end, and a reveal that lagged would strand it ahead of anything visible.
 
 ### Reduced motion
 

@@ -191,6 +191,11 @@ export {
   type ForbiddenViewProps,
 } from "./components/ForbiddenView";
 export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
+export {
+  Reveal,
+  type RevealProps,
+  type RevealMotion,
+} from "./components/Reveal";
 export { Divider, type DividerProps } from "./components/Divider";
 export {
   ResizeHandle,

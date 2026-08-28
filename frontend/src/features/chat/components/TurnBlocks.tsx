@@ -42,6 +42,14 @@ import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
 import {
+  INTERVAL_SEED,
+  REVEAL_MS,
+  extendSchedule,
+  firstLiveIndex,
+  nextInterval,
+  revealDelay,
+} from "../streamReveal";
+import {
   classifyViewItem,
   viewItemTimeLabel,
   viewItemVersionLabel,
@@ -126,45 +134,127 @@ function fullWidthTop(top?: TopSpacing): string | undefined {
   return top && top !== "none" ? "mt-3" : undefined;
 }
 
-/** Wrap every character past `seen` in a span that fades itself in, and report
- *  the new total. Text nodes are collected before any mutation, since splitting
- *  one mid-walk would invalidate the walker.
+/** Subtrees the fade must not enter, because their contents are the machine's
+ *  voice and the machine does not ease (§8). Code and samples are mono by
+ *  element; `.katex` is neither voice, and threading spans through KaTeX's
+ *  markup would be meddling with a layout we don't own. `.font-mono` catches
+ *  anything that opted in by class.
  *
- *  Older text is left as plain, unwrapped nodes, so it carries no animation even
- *  when Markdown replaces the block's DOM on the next delta — only the newly
- *  arrived run ever animates. A run whose animation is interrupted by the next
- *  delta simply lands at full opacity, which is the intended effect: the token
- *  at the head of the stream is the one that fades. */
-function fadeInTextPast(root: HTMLElement, seen: number): number {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const pending: { node: Text; offset: number }[] = [];
+ *  `table` is here for three reasons that agree. A table is a dense data panel
+ *  (§10) whose header band is already mono because a column header names a
+ *  machine field — and it is mono by `font-family`, not by a class, so nothing
+ *  else in this list would have caught it. Its cells are emitted values, which
+ *  is the §2 test for the machine voice. And the eye reads a grid in two
+ *  dimensions, so a reveal sweeping left-to-right through cells reads as
+ *  flicker rather than as arrival — on top of the column widths still
+ *  reflowing as rows stream in. */
+const MACHINE_VOICE = "code, pre, kbd, samp, table, .katex, .font-mono";
+
+/** Every animatable text node under `root`, in document order, with the absolute
+ *  character index each one starts at. Machine-voice subtrees are rejected
+ *  outright, so their characters are neither wrapped nor counted — the index
+ *  space is *animatable* characters, which is what keeps it stable between
+ *  passes, and it is what makes a code block land hard inside an answer that is
+ *  easing in around it. Collected before any mutation, since splitting a node
+ *  mid-walk would invalidate the walker. */
+function animatableText(root: HTMLElement): {
+  nodes: { node: Text; base: number }[];
+  count: number;
+} {
+  const walker = document.createTreeWalker(
+    root,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        if (node.nodeType !== Node.ELEMENT_NODE)
+          return NodeFilter.FILTER_ACCEPT;
+        // REJECT prunes the whole subtree; SKIP passes over the element itself
+        // and keeps descending, which is what every other element wants.
+        return (node as Element).matches(MACHINE_VOICE)
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_SKIP;
+      },
+    },
+  );
+  const nodes: { node: Text; base: number }[] = [];
   let count = 0;
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     const node = n as Text;
+    nodes.push({ node, base: count });
+    count += node.data.length;
+  }
+  return { nodes, count };
+}
+
+/** One character, wrapped so it resolves in on its own schedule. */
+function revealSpan(char: string, delay: number): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.className = "ody-token-in";
+  // Duration comes from the same constant the schedule reasons about, so the
+  // two can't drift; the delay is what carries this character's phase across a
+  // re-render.
+  span.style.setProperty("--reveal-ms", `${REVEAL_MS}ms`);
+  span.style.animationDelay = `${delay}ms`;
+  span.textContent = char;
+  return span;
+}
+
+/**
+ * Apply `starts` to the answer's DOM: every character still inside its reveal
+ * window becomes a span carrying its own delay, and everything settled is left
+ * as plain text. Extends the schedule to cover any newly-arrived characters and
+ * returns it.
+ *
+ * Rebuilding the wrappers wholesale on each delta is deliberate — the trailing
+ * block's DOM is new anyway, and re-deriving each character's delay from its
+ * *absolute* start is exactly what lets a fade continue across that rebuild
+ * rather than restarting. The work is bounded by the live window (roughly
+ * `REVEAL_MS` worth of characters), not by the length of the answer.
+ */
+function applyReveal(
+  root: HTMLElement,
+  starts: number[],
+  now: number,
+  interval: number,
+): number[] {
+  const { nodes, count } = animatableText(root);
+  starts = extendSchedule(starts, count, now, interval);
+  const from = firstLiveIndex(starts, now);
+  if (from >= count) return starts;
+
+  for (const { node, base } of nodes) {
     const len = node.data.length;
-    if (count + len > seen) {
-      pending.push({ node, offset: Math.max(0, seen - count) });
+    if (base + len <= from || !node.parentNode) continue;
+    // Split the node once into "settled" and "still resolving", then rebuild
+    // only the second half a character at a time.
+    const cut = Math.max(0, from - base);
+    const frag = document.createDocumentFragment();
+    if (cut > 0)
+      frag.appendChild(document.createTextNode(node.data.slice(0, cut)));
+    for (let i = cut; i < len; i++) {
+      const delay = revealDelay(starts[base + i], now);
+      frag.appendChild(
+        delay === null
+          ? document.createTextNode(node.data[i])
+          : revealSpan(node.data[i], delay),
+      );
     }
-    count += len;
+    node.parentNode.replaceChild(frag, node);
   }
-  for (const { node, offset } of pending) {
-    const tail = offset > 0 ? node.splitText(offset) : node;
-    if (!tail.parentNode || !tail.data) continue;
-    const span = document.createElement("span");
-    span.className = "ody-token-in";
-    tail.parentNode.insertBefore(span, tail);
-    span.appendChild(tail);
-  }
-  return count;
+  return starts;
 }
 
 /** A passage of the answer — full-width and bright. The active, still-streaming
- *  passage carries the caret, fades in each arriving run of text (§8, human
- *  register), and defers code-copy enhancement until it settles.
+ *  passage carries the caret, resolves each arriving character in on its own
+ *  schedule (§8, human register), and defers code-copy enhancement until it
+ *  settles.
  *
  *  `streamStable` while live keeps the DOM of every settled block, so only the
- *  trailing block re-parses per delta — which is both what stops KaTeX/markdown
- *  flicker and what keeps the fade confined to genuinely new text. */
+ *  trailing block re-parses per delta — which is what stops KaTeX/markdown
+ *  flicker. It is also why the reveal is scheduled in absolute time: that
+ *  re-parse destroys anything mid-animation, and only a character that knows
+ *  when it *started* can pick its fade back up rather than restarting it. See
+ *  `streamReveal.ts`. */
 function AnswerText(props: {
   text: string;
   active?: boolean;
@@ -172,21 +262,34 @@ function AnswerText(props: {
 }): JSX.Element {
   const live = () => Boolean(props.active && props.streaming);
   let host: HTMLDivElement | undefined;
-  // Characters already on screen. A message that arrives complete (history,
-  // a settled turn) starts fully "seen" so it renders without animating.
-  let seen = live() ? 0 : Infinity;
+  // Absolute start time per animatable character. Empty until the passage goes
+  // live; a message that arrives complete (history, a settled turn) never
+  // schedules anything and so renders without animating.
+  let starts: number[] = [];
+  // Running estimate of the gap between deltas, which is what the stagger is
+  // paced against — see `streamReveal.ts`. Seeded rather than measured from the
+  // first delta, since there is nothing to measure against yet.
+  let interval = INTERVAL_SEED;
+  let lastDelta = 0;
 
   createEffect(() => {
-    // Track the source so this re-runs on every delta.
-    const text = props.text;
-    if (!host || !live()) {
-      seen = Infinity;
-      return;
-    }
+    // Read the source so this effect re-runs on every delta (the value itself
+    // is not needed — the DOM Markdown just committed is what gets walked).
+    void props.text;
+    if (!host || !live()) return;
     // Let Markdown commit its own DOM for this delta first.
     queueMicrotask(() => {
       if (!host) return;
-      seen = fadeInTextPast(host, seen === Infinity ? text.length : seen);
+      const now = performance.now();
+      // Attaching to a passage that already has text (a resumed stream): treat
+      // what is on screen as settled rather than animating the whole thing in.
+      if (starts.length === 0) {
+        const existing = host.textContent?.length ?? 0;
+        starts = Array.from({ length: existing }, () => now - REVEAL_MS);
+      }
+      if (lastDelta) interval = nextInterval(interval, now - lastDelta);
+      lastDelta = now;
+      starts = applyReveal(host, starts, now, interval);
     });
   });
 
