@@ -71,6 +71,20 @@ import { registerKeymap } from "~/lib/keymap";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
 import { MessageItem } from "../components/MessageItem";
 
+/** The conversation's reading measure. A line of text on a 27" display is
+ *  unreadable at full width long before it is uncomfortable, and the composer
+ *  spanning the whole bottom of the screen made the input read as a page
+ *  element rather than as a thing to type into.
+ *
+ *  It is deliberately ONE constant applied to both the transcript's content and
+ *  the composer dock. They are the same column and must agree: an input
+ *  narrower than the messages above it looks like a mistake, and an input wider
+ *  than them looks like two layouts. The scroll container and the dock's
+ *  background still span the full width — only their contents are centred — so
+ *  the scrollbar stays at the edge of the pane and the transcript still
+ *  disappears behind the dock rather than beside it. */
+const MEASURE = "mx-auto w-full max-w-4xl";
+
 /** Flatten the whole thread to plain text for COPY CONVERSATION — each turn's
  *  role and content in order, assistant turns including their tool calls/
  *  results via `assembleTranscript` (same shaping as per-message COPY
@@ -792,78 +806,88 @@ export function ChatRoomScreen(): JSX.Element {
                the kind of border the system dropped. */
             class="min-h-0 flex-1 overflow-y-auto px-4 py-2 outline-none transition-colors"
           >
-            {/* One malformed block must not cost the operator the composer, the
-                thread list, or the text they were typing — scope a throw in the
-                message tree to the scroll region. Switching threads resets it. */}
-            <ErrorBoundary
-              message="This conversation failed to render"
-              resetKey={currentId}
-            >
-              <Show
-                when={stream.messages.length}
-                fallback={
-                  <EmptyState
-                    icon="chat"
-                    message="Start a conversation"
-                    hint="Ask a question, request a summary, or describe a task to begin."
-                  />
-                }
+            {/* The measure goes on the CONTENT, not on the scroll container:
+                the container has to keep its full width so its scrollbar sits
+                at the edge of the pane and its `px-4` still gives the live
+                rail's LED bloom somewhere to spill. */}
+            <div class={MEASURE}>
+              {/* One malformed block must not cost the operator the composer,
+                  the thread list, or the text they were typing — scope a throw
+                  in the message tree to the scroll region. Switching threads
+                  resets it. */}
+              <ErrorBoundary
+                message="This conversation failed to render"
+                resetKey={currentId}
               >
-                <For each={stream.messages}>
-                  {(message, index) => (
-                    <MessageItem
-                      message={message}
-                      dimmed={index() < foldedThrough()}
-                      onResolveApproval={stream.resolveApproval}
-                      onResolveHostCommands={stream.resolveHostCommands}
-                      onRegenerate={() => void stream.regenerate(message.id)}
-                      onContinue={() => void stream.continueTurn()}
-                      onEditMessage={(id, text) => void stream.edit(id, text)}
-                      onSwitchVersion={(id, i) =>
-                        void stream.switchVersion(id, i)
-                      }
-                      onTogglePin={() =>
-                        void stream.toggleMessagePin(message.id)
-                      }
-                      onWithdraw={() => {
-                        if (message.queuedMessageId)
-                          void stream.withdrawQueued(message.queuedMessageId);
-                      }}
-                      onEditQueued={(text) => {
-                        if (message.queuedMessageId)
-                          void stream.editQueued(message.queuedMessageId, text);
-                      }}
-                      onOpenInView={openViewTo}
-                      viewItems={viewItems}
-                      seenKey={() => state().seenKey}
-                      onReattach={() => {
-                        if (message.runId)
-                          void stream.reattachRun(message.runId, {
-                            fromSeq: stream.lastSeq(),
-                          });
-                      }}
-                      onRewind={() => {
-                        void stream.rewind(message.id);
-                      }}
-                      onFork={() => void forkFromHere(message.id)}
-                      onDelete={async () => {
-                        const id = currentId();
-                        if (!id) return;
-                        const purgeImages = await resolveDeleteChoice(
-                          id,
-                          "Delete this message?",
-                          "This removes it and everything after it.",
-                          message.id,
-                        );
-                        if (purgeImages === null) return;
-                        await stream.removeMessage(message.id, purgeImages);
-                        toast.success("Message deleted");
-                      }}
+                <Show
+                  when={stream.messages.length}
+                  fallback={
+                    <EmptyState
+                      icon="chat"
+                      message="Start a conversation"
+                      hint="Ask a question, request a summary, or describe a task to begin."
                     />
-                  )}
-                </For>
-              </Show>
-            </ErrorBoundary>
+                  }
+                >
+                  <For each={stream.messages}>
+                    {(message, index) => (
+                      <MessageItem
+                        message={message}
+                        dimmed={index() < foldedThrough()}
+                        onResolveApproval={stream.resolveApproval}
+                        onResolveHostCommands={stream.resolveHostCommands}
+                        onRegenerate={() => void stream.regenerate(message.id)}
+                        onContinue={() => void stream.continueTurn()}
+                        onEditMessage={(id, text) => void stream.edit(id, text)}
+                        onSwitchVersion={(id, i) =>
+                          void stream.switchVersion(id, i)
+                        }
+                        onTogglePin={() =>
+                          void stream.toggleMessagePin(message.id)
+                        }
+                        onWithdraw={() => {
+                          if (message.queuedMessageId)
+                            void stream.withdrawQueued(message.queuedMessageId);
+                        }}
+                        onEditQueued={(text) => {
+                          if (message.queuedMessageId)
+                            void stream.editQueued(
+                              message.queuedMessageId,
+                              text,
+                            );
+                        }}
+                        onOpenInView={openViewTo}
+                        viewItems={viewItems}
+                        seenKey={() => state().seenKey}
+                        onReattach={() => {
+                          if (message.runId)
+                            void stream.reattachRun(message.runId, {
+                              fromSeq: stream.lastSeq(),
+                            });
+                        }}
+                        onRewind={() => {
+                          void stream.rewind(message.id);
+                        }}
+                        onFork={() => void forkFromHere(message.id)}
+                        onDelete={async () => {
+                          const id = currentId();
+                          if (!id) return;
+                          const purgeImages = await resolveDeleteChoice(
+                            id,
+                            "Delete this message?",
+                            "This removes it and everything after it.",
+                            message.id,
+                          );
+                          if (purgeImages === null) return;
+                          await stream.removeMessage(message.id, purgeImages);
+                          toast.success("Message deleted");
+                        }}
+                      />
+                    )}
+                  </For>
+                </Show>
+              </ErrorBoundary>
+            </div>
           </div>
           <Show when={showJump()}>
             <Button
@@ -885,48 +909,53 @@ export function ChatRoomScreen(): JSX.Element {
             why the wrapper's top padding stays thin: the glow needs to reach
             past it onto the transcript to read as a strip light rather than as a
             line. */}
-        <div class="sticky bottom-0 bg-bg pt-2 pb-1">
-          <Composer
-            edge="led"
-            autofocus
-            streaming={stream.sending()}
-            onStop={() => void stopRun()}
-            onSend={(text, ids) => void stream.send(text, ids)}
-            attachments={attachments}
-            storageKey={composerKey()}
-            prefill={stream.undeliveredDraft()}
-            onPrefillConsumed={stream.clearUndeliveredDraft}
-            controls={
-              // Only while the thread is still unsaved: the binding is set once,
-              // at creation, and an existing coding thread shows its branch in the
-              // status strip instead.
-              <Show when={currentId() === null}>
-                <ModeControl
-                  mode={mode()}
-                  onModeChange={setMode}
-                  projectId={codingProjectId()}
-                  onProjectChange={setCodingProjectId}
-                />
-              </Show>
-            }
-          />
-          {/* The conversation's readouts sit UNDER the input, not above the
+        {/* The dock's own background spans the full width — it is what the
+            transcript scrolls out of sight behind — while its contents take the
+            same measure as the transcript above. */}
+        <div class="sticky bottom-0 bg-bg px-4 pt-2 pb-1">
+          <div class={MEASURE}>
+            <Composer
+              edge="led"
+              autofocus
+              streaming={stream.sending()}
+              onStop={() => void stopRun()}
+              onSend={(text, ids) => void stream.send(text, ids)}
+              attachments={attachments}
+              storageKey={composerKey()}
+              prefill={stream.undeliveredDraft()}
+              onPrefillConsumed={stream.clearUndeliveredDraft}
+              controls={
+                // Only while the thread is still unsaved: the binding is set once,
+                // at creation, and an existing coding thread shows its branch in the
+                // status strip instead.
+                <Show when={currentId() === null}>
+                  <ModeControl
+                    mode={mode()}
+                    onModeChange={setMode}
+                    projectId={codingProjectId()}
+                    onProjectChange={setCodingProjectId}
+                  />
+                </Show>
+              }
+            />
+            {/* The conversation's readouts sit UNDER the input, not above the
               transcript where they used to. Two reasons, and the second is the
               one that matters: after typing, this is where the operator's eye
               already is — and docked here the line stays put while the
               conversation scrolls behind it, so nothing it says ever belongs to
               the turn that happens to be passing behind it. */}
-          <ConversationStatusStrip
-            conversationId={currentId}
-            streaming={stream.sending}
-            reattaching={stream.reattaching}
-            detached={stream.detached}
-            usage={stream.usage}
-            tokenUsage={stream.tokenUsage}
-            counters={stream.counters}
-            plan={stream.plan}
-            grantsRevalidate={conversationGrantsRevision}
-          />
+            <ConversationStatusStrip
+              conversationId={currentId}
+              streaming={stream.sending}
+              reattaching={stream.reattaching}
+              detached={stream.detached}
+              usage={stream.usage}
+              tokenUsage={stream.tokenUsage}
+              counters={stream.counters}
+              plan={stream.plan}
+              grantsRevalidate={conversationGrantsRevision}
+            />
+          </div>
         </div>
       </section>
 
