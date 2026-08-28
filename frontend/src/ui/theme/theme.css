@@ -343,6 +343,64 @@ body {
     both;
 }
 
+/* LEAVING. Only a *gated* reveal ever does this — one whose caller says when the
+   content should be there — and it is the same motion run backwards, so the
+   region dissolves the way it resolved.
+
+   Swapping the animation NAME rather than adding a competing rule is what lets
+   the exit start cleanly from wherever the entry left off; two animations on one
+   element would be settled by fill-mode instead of by intent. */
+@keyframes ody-reveal-fade-out {
+  from {
+    opacity: 1;
+    filter: none;
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+  }
+}
+@keyframes ody-reveal-rise-out {
+  from {
+    opacity: 1;
+    filter: none;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+    transform: translateY(var(--reveal-y, 4px));
+  }
+}
+.ody-fade-in[data-closed] {
+  animation-name: ody-reveal-fade-out;
+}
+.ody-rise[data-closed] {
+  animation-name: ody-reveal-rise-out;
+}
+/* Held before its entry plays: mounted, laid out, and invisible.
+   A gated reveal starts its animation a frame AFTER mount rather than at mount,
+   and this is the state it waits in. Starting at mount is only safe when
+   whatever is being revealed renders cheaply: a region whose first render builds
+   an iframe, a highlighter or a document viewer can spend the animation's whole
+   duration blocked on the main thread, so the first frame that actually paints
+   is the last one — the region appears fully formed and the fade is spent on
+   nothing. Starting late costs nothing, because an animation carries its own
+   start value and plays in full whenever it begins. */
+.ody-reveal-hold {
+  opacity: 0;
+}
+
+/* A region on its way out must stop taking clicks the moment it is dismissed,
+   not when it finishes leaving. Otherwise a full-screen overlay keeps swallowing
+   input for the length of its own exit — the operator dismisses it, clicks what
+   was behind it, and hits the ghost instead. */
+.ody-fade-in[data-closed],
+.ody-rise[data-closed],
+.ody-collapse[data-closed] > * {
+  pointer-events: none;
+}
+
 /* A turn arriving in the transcript — the operator's message on send, and the
    assistant's block as it opens. Travels further than an overlay and moves
    faster, so it reads as a response rather than as a reveal. Fires once, on
@@ -628,6 +686,20 @@ body {
 .ody-collapse > * {
   overflow: hidden;
   min-height: 0;
+  min-width: 0;
+  /* The content dissolves as the region closes rather than being squashed into
+     a slit — the same blur fade everything else in the human voice arrives
+     with, run backwards (§8). Without it the collapse reads as the content
+     being crushed, which is a different and worse idea. */
+  opacity: 1;
+  filter: none;
+  transition:
+    opacity var(--motion-stage) var(--ease),
+    filter var(--motion-stage) var(--ease);
+}
+.ody-collapse[data-closed] > * {
+  opacity: 0;
+  filter: blur(var(--reveal-blur, 3px));
 }
 
 /* THE STAGE the wall plays on, and the two states it moves between.
