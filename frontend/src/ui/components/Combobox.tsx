@@ -33,6 +33,17 @@ export interface ComboboxProps {
   align?: "left" | "right";
   /** Message when discovery returned nothing. */
   emptyHint?: string;
+  /** Drop the trigger's fill and its minimum width, so it reads as a line of text
+   *  with a chevron rather than a control.
+   *
+   *  For a trigger that already sits on a raised surface — the composer's action row
+   *  — where the default fill would be a fill on a fill (§7). The min-width goes with
+   *  it because a bare trigger has no box whose edges need to stay put: it is sized
+   *  by the model name it is showing. */
+  bare?: boolean;
+  /** Fired when the option list opens — for a caller whose options are worth
+   *  re-fetching at the moment they're about to be looked at. */
+  onOpen?: () => void;
   "aria-label"?: string;
   class?: string;
 }
@@ -67,6 +78,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
     <Popover
       class={props.class}
       align={props.align}
+      onOpen={props.onOpen}
       panelClass="flex max-h-80 w-64 flex-col"
       trigger={({ open, setOpen }) => (
         <button
@@ -78,7 +90,10 @@ export function Combobox(props: ComboboxProps): JSX.Element {
             setQuery("");
             setOpen(!open());
           }}
-          class="flex h-8 min-w-32 max-w-56 items-center gap-1.5 rounded-ctl bg-raised pl-2 pr-2 transition-colors hover:text-bright"
+          class={cx(
+            "flex h-8 max-w-56 items-center gap-1.5 rounded-ctl px-2 transition-colors hover:text-bright",
+            props.bare ? "min-w-0" : "min-w-32 bg-raised",
+          )}
         >
           <Show when={props.leading}>
             <Icon name={props.leading!} size={12} class="shrink-0 text-dim" />

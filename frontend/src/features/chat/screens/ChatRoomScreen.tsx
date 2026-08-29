@@ -54,6 +54,8 @@ import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { BranchChip } from "../components/BranchChip";
 import { ModeControl } from "../components/ModeControl";
+import { ContextRing } from "../components/ContextRing";
+import { ModelPicker } from "~/app/ModelPicker";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
 import { assembleTranscript } from "../blocks";
 import type { ChatMessage } from "../model";
@@ -938,6 +940,16 @@ export function ChatRoomScreen(): JSX.Element {
                   />
                 </Show>
               }
+              trailing={
+                <>
+                  {/* Where the message is going, then how full the thread it's
+                      going into is — both read on the way to SEND. */}
+                  <ModelPicker />
+                  <Show when={stream.usage()}>
+                    {(usage) => <ContextRing usage={usage()} />}
+                  </Show>
+                </>
+              }
             />
             {/* The conversation's readouts sit UNDER the input, not above the
               transcript where they used to. Two reasons, and the second is the
@@ -950,9 +962,7 @@ export function ChatRoomScreen(): JSX.Element {
               streaming={stream.sending}
               reattaching={stream.reattaching}
               detached={stream.detached}
-              usage={stream.usage}
-              tokenUsage={stream.tokenUsage}
-              counters={stream.counters}
+              stats={stream.stats}
               plan={stream.plan}
               grantsRevalidate={conversationGrantsRevision}
             />

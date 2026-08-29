@@ -4,6 +4,7 @@ export {
   type ContextWindow,
   type PlanItem,
   type RunEvent,
+  type RunMetrics,
 } from "./events";
 export {
   streamRun,

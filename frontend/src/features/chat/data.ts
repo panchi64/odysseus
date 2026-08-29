@@ -23,6 +23,7 @@ import {
   StreamDetachedError,
   streamRun,
   type ContextWindow,
+  type RunMetrics,
   type PlanItem,
   type RunEvent,
 } from "~/lib/stream";
@@ -39,13 +40,12 @@ import type {
   Citation,
   CompactionState,
   ContextUsage,
+  ConversationStats,
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
-  RunCounters,
   SnapshotDiff,
   SnapshotFile,
-  TokenUsage,
   ToolBlock,
   ToolInvocation,
   ViewDocumentBlock,
@@ -291,11 +291,19 @@ interface ActiveRunDTO {
   last_seq: number;
 }
 
+/** The metric fields shared by the live `run.metrics` frame and the conversation
+ *  load's `stats` — the same model server-side, so this is the event type minus its
+ *  stream envelope rather than a second declaration that could drift from it. */
+type RunMetricsDTO = Omit<RunMetrics, "type" | "seq" | "ts">;
+
 interface ConversationDetailDTO extends ConversationSummaryDTO {
   messages: MessageDTO[];
   /** Context-window state reconstructed from the last turn's usage; null when
    *  unavailable. Seeds the meter so an existing thread shows fullness on load. */
   context: ContextWindow | null;
+  /** The thread's cumulative readout, rebuilt from the stored messages; null for a
+   *  thread that has never run. Seeds the line under the composer on load. */
+  stats?: RunMetricsDTO | null;
   /** The in-flight run driving this thread, if a turn is still streaming
    *  server-side; absent/null otherwise. Lets a cold read reattach to it. */
   active_run?: ActiveRunDTO | null;
@@ -309,6 +317,33 @@ interface ConversationDetailDTO extends ConversationSummaryDTO {
 
 function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
   return dto ? { id: dto.id, status: dto.status, lastSeq: dto.last_seq } : null;
+}
+
+/** The composer's readout, from the backend's metrics payload.
+ *
+ *  One mapper for both sources on purpose: the live `run.metrics` frame and the
+ *  conversation load's `stats` are the *same* shape server-side, so mapping them in
+ *  one place is what guarantees a reload can't quietly report something different
+ *  from what the stream reported a moment earlier.
+ *
+ *  A pure rename — no arithmetic. The averages, the rate and the ratio all arrive
+ *  derived, because deriving them here would mean two implementations of the same
+ *  formula and a second answer to a question the backend already answered. Nulls
+ *  pass through untouched: they mean unmeasured, and coercing one to 0 would turn
+ *  "nobody reported this" into a measurement. */
+function toStats(dto: RunMetricsDTO): ConversationStats {
+  return {
+    turns: dto.turns,
+    steps: dto.steps,
+    toolCalls: dto.tool_calls,
+    inputTokens: dto.input_tokens,
+    outputTokens: dto.output_tokens,
+    cacheHitRatio: dto.cache_hit_ratio,
+    llmMs: dto.llm_ms,
+    toolMs: dto.tool_ms,
+    ttftAvgMs: dto.ttft_avg_ms,
+    tokensPerSecond: dto.output_tokens_per_second,
+  };
 }
 
 /** A readable one-line title for a thread that the operator hasn't named. */
@@ -678,6 +713,7 @@ async function fetchSession(id: string): Promise<ChatSession> {
     title: deriveTitle(dto),
     messages: dto.messages.map((m) => toMessage(m, documents)),
     context: dto.context,
+    stats: dto.stats ? toStats(dto.stats) : null,
     activeRun: toActiveRun(dto.active_run),
     snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
     documents,
@@ -963,6 +999,10 @@ export interface ChatStreamOptions {
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
   initialContext?: () => ContextUsage | null | undefined;
+  /** The loaded conversation's cumulative readout, seeded the same way. The backend
+   *  rebuilds it from the stored messages, so the line under the composer says the
+   *  same thing after a reload as it did while the thread was live. */
+  initialStats?: () => ConversationStats | null | undefined;
   /** The loaded conversation's in-flight run, if a turn is still streaming
    *  server-side. Seeds a reattach on a cold read (e.g. a page reload mid-stream)
    *  so the live answer continues instead of the thread rendering reply-less. */
@@ -1028,13 +1068,12 @@ export function createChatStream(
   // a run reports it against a known window (loaded history carries none), which
   // is when the context meter first appears.
   const [usage, setUsage] = createSignal<ContextUsage | null>(null);
-  // The latest run's token counts (`run.metrics.input_tokens`/`output_tokens`),
-  // shown beside the context gauge. Null until a run reports usage.
-  const [tokenUsage, setTokenUsage] = createSignal<TokenUsage | null>(null);
-  // How much work the latest run did (`run.metrics.steps`/`tool_calls`), for the
-  // composer's readout line. Live-run-only for the same reason `tokenUsage` is:
-  // the counters ride the stream, and a thread loaded from history carries none.
-  const [counters, setCounters] = createSignal<RunCounters | null>(null);
+  // What the thread has cost — the composer's readout line. One signal, because the
+  // backend sends one shape: the live `run.metrics` frame and the conversation load's
+  // `stats` are the same payload, so a reload continues the same numbers rather than
+  // blanking them. (This was three signals off one event; the counts and the token
+  // counts were never separate facts.)
+  const [stats, setStats] = createSignal<ConversationStats | null>(null);
   // The agent's task list for this thread. Conversation-level rather than a message
   // block: one list belongs to the thread and is rewritten in place as work proceeds,
   // so pinning it to the turn that happened to create it would strand it. `plan.updated`
@@ -1135,8 +1174,10 @@ export function createChatStream(
     // Seed the meter from the loaded thread's reconstructed state (null for a new
     // conversation, or one whose usage/window couldn't be determined).
     setUsage(k === null ? null : (options.initialContext?.() ?? null));
-    setTokenUsage(null); // token counts are live-run-only, not reconstructed on load
-    setCounters(null); // so are the step/tool-call counters
+    // Seeded from the loaded thread, not cleared: the backend rebuilds the readout
+    // from the stored messages, so an existing conversation reports what it has spent
+    // before its next turn runs rather than starting the line blank.
+    setStats(k === null ? null : (options.initialStats?.() ?? null));
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
@@ -1657,8 +1698,7 @@ export function createChatStream(
         // Authoritative either way: a null context (this turn ran on a windowless
         // model, or reported no usage) clears a stale reading rather than keeping it.
         setUsage(ev.context);
-        setTokenUsage({ input: ev.input_tokens, output: ev.output_tokens });
-        setCounters({ steps: ev.steps, toolCalls: ev.tool_calls });
+        setStats(toStats(ev));
         break;
       case "citation.added":
         patchById(assistantId, (m) => {
@@ -2711,8 +2751,7 @@ export function createChatStream(
     titlePending,
     reattaching,
     usage,
-    tokenUsage,
-    counters,
+    stats,
     plan,
     /** The run currently streaming into this store, or null. */
     activeRunId: () => activeRunId,
@@ -2797,6 +2836,8 @@ export function mainChat(): MainChat {
         // loaded thread rather than the retained value of the one just left.
         initialContext: () =>
           session.loading ? undefined : session()?.context,
+        // Same lockstep: the loaded thread's cumulative readout.
+        initialStats: () => (session.loading ? undefined : session()?.stats),
         // Same lockstep: the in-flight run of the loaded thread, for a cold-read
         // reattach (a page reload mid-stream).
         activeRun: () => (session.loading ? undefined : session()?.activeRun),

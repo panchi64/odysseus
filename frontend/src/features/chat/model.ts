@@ -9,21 +9,38 @@ import type { ContextWindow } from "~/lib/stream";
  *  UI renders it, it does not compute it. */
 export type ContextUsage = ContextWindow;
 
-/** A run's token counts (`run.metrics.input_tokens`/`output_tokens`), shown
- *  beside the context gauge. Null fields mean the run reported no usage. */
-export interface TokenUsage {
-  input: number | null;
-  output: number | null;
-}
-
-/** How much work the last run did — the backend's own `run.metrics` counters,
- *  rendered in the composer's readout line. Purely a carrier, like `ContextUsage`
- *  above: the backend counts, the UI shows the number. */
-export interface RunCounters {
-  /** Agent steps the run took (`run.metrics.steps`). */
+/** What the thread has cost so far — the readout line under the composer.
+ *
+ *  **Cumulative over the conversation, not the last run**, and every figure is the
+ *  backend's: it counts the active path and measures its own wall-clock, and this is
+ *  a carrier for the result. Nothing here is derived in the UI — not the averages,
+ *  not the rates, not the ratio. Two sources fill it with the identical shape (the
+ *  live `run.metrics` frame and the conversation load's `stats`), so a reload changes
+ *  nothing about what the line says.
+ *
+ *  **`null` means unmeasured, and is not the same as `0`.** A provider that reports
+ *  no cache figure, a thread whose turns predate the stopwatch, an endpoint that
+ *  leaves token counts at zero — all report null, and the strip omits that segment
+ *  rather than printing a number that would read as a measurement. */
+export interface ConversationStats {
+  /** Completed operator exchanges on the active path. */
+  turns: number;
+  /** Model round-trips those turns took between them — always ≥ `turns`. */
   steps: number;
-  /** Tool calls made across those steps (`run.metrics.tool_calls`). */
   toolCalls: number;
+  /** Prompt and generation tokens summed across the path. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  /** Prompt tokens served from the provider's cache, 0–1. Provider-reported, so
+   *  null on the many endpoints that don't send one. */
+  cacheHitRatio: number | null;
+  /** Wall-clock the model was working, and the tools were running, in ms. */
+  llmMs: number | null;
+  toolMs: number | null;
+  /** Mean time to first content, in ms, over the responses that produced any. */
+  ttftAvgMs: number | null;
+  /** Generation throughput, output tokens per second of model time. */
+  tokensPerSecond: number | null;
 }
 
 /** "compaction" is not a turn either party took — it is the chassis marking where the
@@ -343,6 +360,10 @@ export interface ChatSession {
   /** Context-window state reconstructed from the thread's last turn, or null
    *  when unavailable. Seeds the header meter on load. */
   context: ContextUsage | null;
+  /** The thread's cumulative readout, rebuilt by the backend from the stored
+   *  messages; null for a thread that has never run. Seeds the composer's readout
+   *  line on load, so it reports the same totals it did live. */
+  stats: ConversationStats | null;
   /** Set only while a turn is still streaming server-side; null otherwise. */
   activeRun: ActiveRun | null;
   /** Workspace snapshots captured across the thread (newest last), seeding the

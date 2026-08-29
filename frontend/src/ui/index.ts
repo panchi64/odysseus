@@ -226,6 +226,10 @@ export {
 } from "./components/ForbiddenView";
 export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
 export {
+  ProgressRing,
+  type ProgressRingProps,
+} from "./components/ProgressRing";
+export {
   Reveal,
   type RevealProps,
   type RevealMotion,

@@ -22,6 +22,9 @@ export interface ModelRoleCardProps {
   groups: { label: string; options: { value: string; label: string }[] }[];
   value: string;
   onChange: (value: string) => void;
+  /** Fired when the picker opens — the caller re-asks its endpoints what they serve,
+   *  so a model that appeared since the page loaded is in the list being looked at. */
+  onOpen?: () => void;
   /** Trigger text when nothing is chosen. */
   placeholder: string;
   /** The endpoint backing the current choice — the source of the facts row. */
@@ -42,6 +45,7 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
           groups={props.groups}
           value={props.value}
           onChange={props.onChange}
+          onOpen={props.onOpen}
           leading="cpu"
           placeholder={props.placeholder}
           searchPlaceholder="Search models…"

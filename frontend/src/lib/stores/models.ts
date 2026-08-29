@@ -357,9 +357,26 @@ const store = createRoot(() => {
       },
     },
   );
-  const [discovery] = createResource(
-    () => (session.isAuthenticated ? liveEndpoints() : false),
-    fetchDiscovery,
+  // Discovery re-runs when the endpoints that feed it change — and when something
+  // explicitly asks it to.
+  //
+  // The tick is not redundant with `endpointsTick`. The memo above deliberately keeps
+  // its identity through a catalog re-read that didn't move any discovery-relevant
+  // field, which is what stops a health probe re-fetching every endpoint's model list.
+  // But *the set of models an endpoint serves is not one of those fields* — a local
+  // engine that just started, or a provider that added a model, changes nothing in the
+  // endpoint row, so re-reading the catalog can never surface it. Only asking the
+  // endpoint again can, and this is how a caller asks.
+  const [discoveryTick, setDiscoveryTick] = createSignal(1);
+  const discoverySource = createMemo(() => {
+    if (!session.isAuthenticated) return false;
+    const live = liveEndpoints();
+    // A fresh tuple per change is the point: its identity is what the resource keys
+    // on, so it refetches on a tick even when the endpoint list is untouched.
+    return live === false ? false : ([discoveryTick(), live] as const);
+  });
+  const [discovery] = createResource(discoverySource, ([, live]) =>
+    fetchDiscovery(live),
   );
 
   const results = createMemo<EndpointResult[]>(() => discovery.latest ?? []);
@@ -424,6 +441,8 @@ const store = createRoot(() => {
     providers,
     endpoints,
     setEndpointsTick,
+    setDiscoveryTick,
+    discovery,
     groups,
     pickerGroups,
     discoveries,
@@ -535,6 +554,29 @@ export function useProviders(): Resource<ModelProvider[]> {
 /** Re-read the catalog (after a create/update/delete); cascades to discovery. */
 export function refreshEndpoints(): void {
   store.setEndpointsTick((t) => t + 1);
+}
+
+/** Re-ask every live endpoint what models it serves.
+ *
+ *  Distinct from `refreshEndpoints`, which re-reads our own catalog: this is the only
+ *  call that can surface a model that already existed on the provider's side — a local
+ *  engine started since the app loaded, or a model added upstream. Nothing about the
+ *  stored endpoint row changes in either case, so no catalog re-read would notice.
+ *
+ *  Wired to the moment a model dropdown *opens*, rather than to a refresh button beside
+ *  it. Opening the list is already the operator saying "show me what I can pick" — the
+ *  button was asking them to say it twice, and to know that the first list might be
+ *  stale. It refetches in the background: the current options stay on screen and are
+ *  replaced when the answer lands, so the menu never opens empty or jumps under the
+ *  cursor. */
+export function refreshModels(): void {
+  store.setDiscoveryTick((t) => t + 1);
+}
+
+/** Whether a discovery refetch is in flight — for a quiet inline note in a dropdown
+ *  that is showing the previous answer while it waits. */
+export function modelsRefreshing(): boolean {
+  return store.discovery.loading;
 }
 
 /** Probe an endpoint now. The backend persists the verdict, so we re-read the

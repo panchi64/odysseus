@@ -1,7 +1,6 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import {
-  Combobox,
   Composer,
   EmptyState,
   ListRow,
@@ -19,7 +18,8 @@ import { RecentThreadCard } from "../components/RecentThreadCard";
 import { SystemStrip } from "../components/SystemStrip";
 // The overview is a launchpad INTO chat, so it reads the chat feature's data
 // seam directly (one source of truth for threads and entry intents). The model
-// selection is global app state, shared with the top-bar picker.
+// selection is global app state — the picker itself is the shared `ModelPicker`,
+// so this screen reads the selection but never renders its own control for it.
 import {
   entrySessionId,
   openConversation,
@@ -29,11 +29,9 @@ import {
 import {
   effectiveContextWindow,
   effectiveSelection,
-  effectiveValue,
-  modelPickerGroups,
-  selectModelByValue,
   selectedModelLabel,
 } from "~/lib/stores/models";
+import { ModelPicker } from "~/app/ModelPicker";
 import { createComposerAttachments } from "~/features/uploads/data";
 
 /** Overall status for the header flag. Any down capability is an alert; a
@@ -152,18 +150,10 @@ export function DashboardScreen(): JSX.Element {
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
             attachments={attachments}
-            controls={
-              <Combobox
-                groups={modelPickerGroups()}
-                value={effectiveValue()}
-                onChange={selectModelByValue}
-                leading="cpu"
-                placeholder="No model"
-                searchPlaceholder="Search models…"
-                emptyHint="No models — add an endpoint in settings"
-                aria-label="Model"
-              />
-            }
+            // Same slot, same component as the docked composer in a room: the
+            // launchpad's picker was a second inline copy of the shared one, and two
+            // copies of a control bound to one backend value is how they drift.
+            trailing={<ModelPicker />}
           />
         </div>
       </div>

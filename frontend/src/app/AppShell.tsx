@@ -1,23 +1,13 @@
 import { createEffect, onCleanup, Show, Suspense, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
-  Button,
-  Combobox,
   ErrorBoundary,
   NotConnectedOverlay,
   ResizeHandle,
   StatusFlag,
   ThemeToggle,
   Text,
-  Tooltip,
-  toast,
 } from "~/ui";
-import {
-  effectiveValue,
-  modelPickerGroups,
-  refreshEndpoints,
-  selectModelByValue,
-} from "~/lib/stores/models";
 import { useSession } from "~/lib/stores/session";
 import {
   startNotifications,
@@ -72,32 +62,11 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
               Local
             </Text>
           </div>
+          {/* No model picker here any more — it moved to the composer's action row
+              (`~/app/ModelPicker`). The model is a property of the message being
+              sent, not of the application, and a persistent global control sat on
+              every screen including the many with nothing to send. */}
           <div class="flex items-center gap-3">
-            <div class="flex items-center gap-1">
-              <Combobox
-                groups={modelPickerGroups()}
-                value={effectiveValue()}
-                onChange={selectModelByValue}
-                leading="cpu"
-                align="right"
-                placeholder="No model"
-                searchPlaceholder="Search models…"
-                emptyHint="No models — add an endpoint in settings"
-                aria-label="Active model"
-              />
-              <Tooltip label="Refresh models" side="bottom">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leading="refresh"
-                  aria-label="Refresh model list"
-                  onClick={() => {
-                    refreshEndpoints();
-                    toast.info("Refreshing model list…");
-                  }}
-                />
-              </Tooltip>
-            </div>
             <NotificationBell />
             <ThemeToggle />
           </div>

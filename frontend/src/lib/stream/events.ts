@@ -34,12 +34,33 @@ export interface ContextWindow {
   level: "nominal" | "warn" | "alert";
 }
 
+/** What the thread has cost so far — **cumulative over the conversation**, not the
+ *  run. The backend counts the active path and measures its own wall-clock; every
+ *  derived figure below (the ratio, the average, the rate) is computed server-side.
+ *  Null means unmeasured and is never interchangeable with 0 — see `RunMetrics` in
+ *  `backend/runs/events.py`. */
 export interface RunMetrics extends Base {
   type: "run.metrics";
   steps: number;
   tool_calls: number;
+  /** Completed operator exchanges, where `steps` counts the model round-trips. */
+  turns: number;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** Provider-reported cached prompt tokens; null when the endpoint reports none. */
+  cache_read_tokens: number | null;
+  /** Wall-clock measured by the backend around its own streaming, so it means the
+   *  same on every provider. `llm_ms` is the full round-trip, connect and queue
+   *  included — the wait the operator actually sat through. */
+  llm_ms: number | null;
+  tool_ms: number | null;
+  ttft_ms_total: number | null;
+  ttft_samples: number;
+  /** Backend-derived: cached share of prompt tokens (0–1), mean time to first
+   *  content, and generation throughput against model time. */
+  cache_hit_ratio: number | null;
+  ttft_avg_ms: number | null;
+  output_tokens_per_second: number | null;
   /** The model's context window, when known — the ceiling `context` measures
    *  against. Mirror completeness; the gauge renders the derived `context` field. */
   context_window: number | null;

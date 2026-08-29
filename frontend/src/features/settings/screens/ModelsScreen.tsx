@@ -8,6 +8,8 @@ import {
   effectiveValue,
   encodeModelValue,
   modelPickerGroups,
+  refreshEndpoints,
+  refreshModels,
   type ModelEndpoint,
 } from "~/lib/stores/models";
 import {
@@ -48,6 +50,16 @@ export function ModelsScreen(): JSX.Element {
 
   const endpointById = (id: string | undefined): ModelEndpoint | undefined =>
     id ? (endpoints.latest ?? []).find((e) => e.id === id) : undefined;
+
+  /** Re-ask the endpoints what they serve, whenever one of the pickers below is
+   *  opened. This page is where an operator lands *after* starting a local engine
+   *  or adding a key elsewhere, so the list it shows is the one most likely to be
+   *  out of date — and nothing about the stored endpoint rows changes when a
+   *  provider gains a model, so only asking again can find it. */
+  const rediscover = () => {
+    refreshEndpoints();
+    refreshModels();
+  };
 
   /* ── CHAT ──────────────────────────────────────────────────────────────────
      Read and written through exactly the accessors the top-bar picker uses, so
@@ -152,6 +164,7 @@ export function ModelsScreen(): JSX.Element {
         groups={modelPickerGroups()}
         value={effectiveValue()}
         onChange={(v) => void pickChat(v)}
+        onOpen={rediscover}
         placeholder="No model"
         endpoint={chatEndpoint()}
       />
@@ -162,6 +175,7 @@ export function ModelsScreen(): JSX.Element {
         groups={backgroundGroups()}
         value={roleValue("utility")}
         onChange={(v) => void pickBackground(v)}
+        onOpen={rediscover}
         placeholder="Same as chat model"
         endpoint={roleEndpoint("utility")}
       />
@@ -172,6 +186,7 @@ export function ModelsScreen(): JSX.Element {
         groups={modelPickerGroups()}
         value={roleValue("embedding")}
         onChange={(v) => void pickEmbedding(v)}
+        onOpen={rediscover}
         placeholder="Not set — recall is keyword-only"
         endpoint={roleEndpoint("embedding")}
       >

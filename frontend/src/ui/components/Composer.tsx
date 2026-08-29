@@ -95,8 +95,18 @@ export interface ComposerProps {
   /** Persists the unsent draft to localStorage under this key, reactively —
    *  switching keys (e.g. between conversations) loads that key's draft. */
   storageKey?: string;
-  /** Inline controls placed in the action row, e.g. a model selector. */
+  /** Inline controls placed at the **start** of the action row, beside ATTACH —
+   *  the settings that describe what this message *is* (its mode, its project). */
   controls?: JSX.Element;
+  /** Inline controls placed at the **end** of the action row, immediately before
+   *  SEND — what the message is about to be sent *to*, and the state of the thread
+   *  it is going into (the model, the context gauge).
+   *
+   *  Two slots rather than one because the row reads as a sentence toward the send
+   *  button: what this is, then the field, then where it's going, then go. A model
+   *  picker parked at the left margin next to ATTACH is the same information in the
+   *  place the eye leaves rather than the place it arrives. */
+  trailing?: JSX.Element;
   /** Drop the surface fill — **the bloom is kept**. The field and its action row
    *  sit directly on whatever is behind them, with the aura still marking them
    *  as the point of action.
@@ -401,7 +411,10 @@ export function Composer(props: ComposerProps): JSX.Element {
           {attachBtn}
           <Show when={props.controls}>{props.controls}</Show>
         </div>
-        {actionBtn}
+        <div class="flex min-w-0 items-center gap-2">
+          <Show when={props.trailing}>{props.trailing}</Show>
+          {actionBtn}
+        </div>
       </div>
     </>
   );

@@ -29,6 +29,9 @@ export interface PopoverProps {
   block?: boolean;
   /** Extra classes for the panel (width, max-height, layout). */
   panelClass?: string;
+  /** Fired on the closed→open edge only, so a caller can refresh what the panel is
+   *  about to show. Not fired on close, and never twice for one opening. */
+  onOpen?: () => void;
   class?: string;
 }
 
@@ -50,6 +53,16 @@ export interface PopoverProps {
 export function Popover(props: PopoverProps): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const close = () => setOpen(false);
+
+  // The open edge, fired from the state change rather than the trigger's click
+  // handler — the trigger is only one of the ways this opens, and a caller asking
+  // "refresh when the panel appears" means whenever it appears.
+  let wasOpen = false;
+  createEffect(() => {
+    const isOpen = open();
+    if (isOpen && !wasOpen) props.onOpen?.();
+    wasOpen = isOpen;
+  });
 
   let triggerRef: HTMLDivElement | undefined;
   let panelRef: HTMLDivElement | undefined;
