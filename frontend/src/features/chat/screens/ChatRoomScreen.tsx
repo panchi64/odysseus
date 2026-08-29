@@ -960,7 +960,6 @@ export function ChatRoomScreen(): JSX.Element {
             <ConversationStatusStrip
               conversationId={currentId}
               streaming={stream.sending}
-              reattaching={stream.reattaching}
               detached={stream.detached}
               stats={stream.stats}
               plan={stream.plan}

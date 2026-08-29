@@ -39,7 +39,12 @@ export interface ComboboxProps {
    *  For a trigger that already sits on a raised surface — the composer's action row
    *  — where the default fill would be a fill on a fill (§7). The min-width goes with
    *  it because a bare trigger has no box whose edges need to stay put: it is sized
-   *  by the model name it is showing. */
+   *  by the model name it is showing.
+   *
+   *  The label drops to `dim` with the fill, for the same reason: with no box to
+   *  separate it, a `bright` value reads as a heading over whatever sits beneath it.
+   *  A bare trigger is a setting the operator glances at and rarely changes, not a
+   *  thing to announce. */
   bare?: boolean;
   /** Fired when the option list opens — for a caller whose options are worth
    *  re-fetching at the moment they're about to be looked at. */
@@ -100,7 +105,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
           </Show>
           <Text
             variant="label"
-            tone={selectedLabel() ? "bright" : "dim"}
+            tone={selectedLabel() && !props.bare ? "bright" : "dim"}
             class="min-w-0 flex-1 truncate text-left"
           >
             {selectedLabel() ?? props.placeholder ?? "Select"}

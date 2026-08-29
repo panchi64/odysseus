@@ -26,10 +26,17 @@ function Segment(props: { hint: string; children: JSX.Element }): JSX.Element {
   );
 }
 
-/** The conversation's live state, in one quiet line **under the composer**: what the
- *  stream is doing, what the thread has cost so far, how far the agent's plan has got,
- *  which tools it may call without asking again, and the thread's auto-compaction
- *  setting.
+/** What the thread has cost, in one quiet line **under the composer**, plus how far the
+ *  agent's plan has got, which tools it may call without asking again, and the thread's
+ *  auto-compaction setting.
+ *
+ *  It does **not** report what the stream is doing. It used to lead with a transport
+ *  word — Streaming, Idle, Resyncing — and that was the line's worst inch: the
+ *  transcript already shows a run in flight, in the place the operator is looking, so
+ *  the readout was restating it, and doing so in the brightest tone on the line. A
+ *  status that repeats what is visible a few pixels above earns none of the attention
+ *  its colour was taking. Only `Disconnected` survives, because a dead stream is the
+ *  one state the transcript can't show by animating.
  *
  *  Three moves got it here. It began as a cluster in the page header plus two stacked
  *  panels; it became one horizontal band above the transcript; and it is now a line of
@@ -61,9 +68,12 @@ function Segment(props: { hint: string; children: JSX.Element }): JSX.Element {
  *  averages and rates arrive already computed for exactly that reason. */
 export function ConversationStatusStrip(props: {
   conversationId: () => string | null;
-  /** Live transport state, straight from the run stream. */
+  /** Whether a run is live. Not rendered — the transcript says that far better than
+   *  a word here could. It only decides whether a not-yet-saved thread has anything
+   *  to show a line for at all. */
   streaming: () => boolean;
-  reattaching: () => boolean;
+  /** The stream gave up reconnecting. The one transport state that still appears
+   *  here, because it is not "what's happening" but "nothing is happening any more". */
   detached: () => boolean;
   /** What the thread has cost — cumulative, backend-derived. */
   stats: () => ConversationStats | null | undefined;
@@ -81,40 +91,42 @@ export function ConversationStatusStrip(props: {
     return s && s.steps > 0 ? s : undefined;
   });
 
-  // A fresh, unsaved composer has no thread to report on and no stream running — a
-  // line reading only "Idle" would be the exact clutter this replaced.
+  // A fresh, unsaved composer has no thread to report on and no stream running.
   const shown = () =>
     props.conversationId() !== null || props.streaming() || props.detached();
 
-  const transport = () =>
-    props.detached()
-      ? "Disconnected"
-      : props.reattaching()
-        ? "Resyncing"
-        : props.streaming()
-          ? "Streaming"
-          : "Idle";
-
   return (
     <Show when={shown()}>
-      <div class="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-2 pt-1.5">
-        {/* Transport state leads, and it is the one segment that is always present —
-            it is what the rest of the line is qualifying. Toned, not flagged: a
-            `StatusFlag`'s dot and pulse are a badge, and a badge at the head of a run
-            of text is the chrome this line dropped. */}
-        <Text
-          variant="micro"
-          tone={props.detached() ? "alert" : props.streaming() ? "info" : "dim"}
-        >
-          {transport()}
-        </Text>
+      {/* Held below `dim` — the floor of the tone ramp — by dimming the row itself.
+          A tone token would be a global addition for a single consumer, and this line
+          is the one place in the product that wants to sit *under* the quietest thing
+          the system otherwise draws. It is a footer of measurements, legible when
+          looked at and texture when not; every value in it also has a tooltip, so
+          nothing here is the only copy of anything. */}
+      <div class="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-2 pt-1.5 opacity-70">
+        {/* No live transport state. "Streaming"/"Idle" restated what the transcript
+            already shows — the live rail beside the answer, the composer's own LED
+            strip — and did it in `info` blue, so the loudest thing on the line was
+            the one word carrying no information the operator didn't have.
+            `Disconnected` stays: it is not a phase of normal operation, it is the
+            absence of one, and red for a stream that has actually stopped is not
+            competing for attention, it is the point. */}
+        <Show when={props.detached()}>
+          <Text variant="micro" tone="alert">
+            Disconnected
+          </Text>
+        </Show>
 
         <Show when={stats()}>
           {(s) => (
             <>
               {/* Shape of the work: how many times the operator asked, and how much
-                  the model did between asks. */}
-              <MetaSep />
+                  the model did between asks. Its leading separator is conditional
+                  now that nothing reliably precedes it — with the transport state
+                  gone, an unconditional one would open the line with a bare rule. */}
+              <Show when={props.detached()}>
+                <MetaSep />
+              </Show>
               <Segment hint="Exchanges you've had, and the model round-trips they took. A high step count per turn means the agent is doing a lot of tool work per question.">
                 {s().turns} {s().turns === 1 ? "turn" : "turns"} · {s().steps}{" "}
                 {s().steps === 1 ? "step" : "steps"}
