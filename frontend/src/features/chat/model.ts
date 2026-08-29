@@ -147,25 +147,6 @@ export interface ViewSnapshotRef {
   keeper?: boolean;
 }
 
-/** One **committed version** of a document the agent authored during the thread —
- *  folded into the same versioned View as workspace snapshots. `version` 0 marks an
- *  in-progress/live body (a `document.delta` still streaming before its commit); a
- *  version ≥ 1 is a real, committed version. `origin` records who minted it. */
-export interface ViewDocumentRef {
-  documentId: string;
-  version: number;
-  title?: string;
-  origin: "user" | "ai" | "extraction";
-  body: string;
-  /** When this version was minted (ISO), so the View can order document versions and
-   *  workspace snapshots into one timeline instead of concatenating them. */
-  createdAt: string;
-  /** Whether the operator has pinned this version as a "keeper" (backend-owned;
-   *  `POST /documents/{id}/versions/{version}/keeper`). Optional — absent until
-   *  wired. */
-  keeper?: boolean;
-}
-
 /** One file in a workspace snapshot's tree, with its change status vs. the prior
  *  snapshot. */
 export interface SnapshotFile {
@@ -194,8 +175,7 @@ export type AssistantBlock =
   | HostCommandBlock
   | ApprovalBlock
   | ViewVersionBlock
-  | ViewLiveBlock
-  | ViewDocumentBlock;
+  | ViewLiveBlock;
 
 export type BlockKind = AssistantBlock["kind"];
 
@@ -248,18 +228,6 @@ export interface ViewLiveBlock {
   id: string;
   live: ViewLiveRef;
 }
-/** An inline chip marking a document version the agent committed during the turn
- *  (`document.committed`) — rendered like `ViewVersionBlock`, mirroring the
- *  discoverability workspace snapshots already have. References the
- *  conversation-scoped document version by id + version; the chip only labels it. */
-export interface ViewDocumentBlock {
-  kind: "view_document";
-  id: string;
-  documentId: string;
-  version: number;
-  title?: string;
-}
-
 /** A web source the turn's `web_search`/`web_fetch` calls surfaced
  *  (`citation.added`), rendered as a compact Sources row beneath the answer. Its display
  *  number is its position in that deduped row, so no per-source index is carried. */
@@ -369,9 +337,6 @@ export interface ChatSession {
   /** Workspace snapshots captured across the thread (newest last), seeding the
    *  viewport's git-style history on load. */
   snapshots: ViewSnapshotRef[];
-  /** Documents the agent authored across the thread, flattened to one entry per
-   *  committed version (oldest first), seeding the viewport alongside the snapshots. */
-  documents: ViewDocumentRef[];
 }
 
 /** The backend's status for the run driving a thread, when one is live. The

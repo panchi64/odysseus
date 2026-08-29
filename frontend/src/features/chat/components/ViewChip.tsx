@@ -21,7 +21,6 @@ export function classifyViewItem(item: ViewItem): {
   word: string;
 } {
   if (item.live) return { icon: "play", word: "Live" };
-  if (item.document) return { icon: "file", word: "Doc" };
   const kind = detectContentKind(null, item.snapshot?.preview?.kind ?? null);
   if (kind === "image") return { icon: "image", word: "Image" };
   return { icon: "eye", word: "Snapshot" };
@@ -35,10 +34,10 @@ export function viewItemVersionLabel(item: ViewItem): string | undefined {
   return m ? `V${m[1]}` : undefined;
 }
 
-/** `HH:MM` (operator-local) the item was minted, when its snapshot/document
- *  carries a `createdAt` — absent for a standalone live head. */
+/** `HH:MM` (operator-local) the item was minted, when its snapshot carries a
+ *  `createdAt` — absent for a standalone live head. */
 export function viewItemTimeLabel(item: ViewItem): string | undefined {
-  const iso = item.snapshot?.createdAt ?? item.document?.createdAt;
+  const iso = item.snapshot?.createdAt;
   if (!iso) return undefined;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return undefined;

@@ -150,27 +150,6 @@ export interface ToolFailed extends Base {
   error: string;
 }
 
-// --- Documents -------------------------------------------------------------
-export interface DocumentCreated extends Base {
-  type: "document.created";
-  document_id: string;
-  title: string | null;
-}
-export interface DocumentDelta extends Base {
-  type: "document.delta";
-  document_id: string;
-  text: string;
-}
-export interface DocumentCommitted extends Base {
-  type: "document.committed";
-  document_id: string;
-  version: number;
-  // The committed version's authoritative mint time (the same `created_at` the cold
-  // read serves). Order the View's versions by this so a version minted live sorts
-  // identically to one read back on refresh.
-  created_at: string;
-}
-
 // --- View (the conversation's one versioned output surface) ----------------
 // The View's live head — a running server reverse-proxied at `url`. `url` already
 // carries the entry path when one was given, so it renders the page, not a listing.
@@ -327,9 +306,6 @@ export type RunEvent =
   | ToolProgress
   | ToolCompleted
   | ToolFailed
-  | DocumentCreated
-  | DocumentDelta
-  | DocumentCommitted
   | ViewLive
   | ViewLiveStopped
   | ViewSnapshot

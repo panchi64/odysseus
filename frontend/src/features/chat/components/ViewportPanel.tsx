@@ -1,7 +1,5 @@
 import { Show, createMemo, createSignal, type JSX } from "solid-js";
-import { useIsDesktop } from "~/lib/useMediaQuery";
 import {
-  Button,
   EmptyState,
   Panel,
   Select,
@@ -10,13 +8,7 @@ import {
   type SelectOption,
   type TabItem,
 } from "~/ui";
-import type { ViewDocumentRef } from "../model";
-import {
-  priorDocumentVersions,
-  priorSnapshots,
-  type PriorVersion,
-  type ViewItem,
-} from "../viewport";
+import { priorSnapshots, type PriorVersion, type ViewItem } from "../viewport";
 import { ViewActionRow } from "./ViewActionRow";
 import { ViewStage } from "./ViewStage";
 import { ViewTimelineRail } from "./ViewTimelineRail";
@@ -52,19 +44,6 @@ export function ViewportPanel(props: {
   onClose: () => void;
   /** Rendered only when provided — P5 wires the backend keeper flip. */
   onKeeper?: (item: ViewItem) => void;
-  /** Relays an inline document edit to the backend (SAVE mints a new version). */
-  onSaveDocument: (documentId: string, body: string) => Promise<void>;
-  /** Fold in a version minted outside the run stream — an accepted AI suggestion
-   *  (`DOC-3`) applies through the documents surface, so the View is told. */
-  onDocumentVersion: (
-    documentId: string,
-    body: string,
-    version: number | null,
-  ) => void;
-  /** A navigation (pin/tab change) is blocked on an unsaved document edit. */
-  pendingNav?: boolean;
-  onDiscardEdits?: () => void;
-  onKeepEditing?: () => void;
   /** Captures the focusable panel container for the global keymap's focus-jump
    *  and focus-visible ring. */
   panelRef?: (el: HTMLDivElement) => void;
@@ -93,35 +72,13 @@ export function ViewportPanel(props: {
     const sel = selected();
     return sel ? priorSnapshots(props.items, sel.key) : [];
   });
-  // Prior document versions the selected document's CODE can diff against.
-  const priorDocuments = createMemo<ViewDocumentRef[]>(() => {
-    const sel = selected();
-    return sel ? priorDocumentVersions(props.items, sel.key) : [];
-  });
-
   // PREVIEW-only refresh, same condition the old loose header button used.
   const refreshVisible = () =>
     Boolean(selected()) && props.activeTab === "preview";
 
-  // Whether the panel currently owns the whole screen rather than sharing it
-  // with the transcript — the condition the caller mounts the fullscreen sheet
-  // on. `fullscreen` alone is only half of it: below `lg` the panel is *always*
-  // the sheet and the flag stays off, so a stage arm that needs room (the
-  // suggestion review) would go unreachable on a narrow viewport if it read the
-  // flag directly.
-  const isDesktop = useIsDesktop();
-  const expanded = (): boolean => props.fullscreen || !isDesktop();
-
-  // Keeper only makes sense for a version the backend can actually bookmark: a
-  // captured snapshot, or a *committed* document version (not the in-progress
-  // version-0 head still streaming, and not a standalone live entry with neither).
-  const keeperEligible = (): boolean => {
-    const item = selected();
-    return (
-      Boolean(item?.snapshot) ||
-      Boolean(item?.document && item.document.version >= 1)
-    );
-  };
+  // Keeper only makes sense for a version the backend can actually bookmark — a
+  // captured snapshot, not a standalone live entry with none.
+  const keeperEligible = (): boolean => Boolean(selected()?.snapshot);
 
   return (
     <div
@@ -175,32 +132,6 @@ export function ViewportPanel(props: {
           }
         >
           <div class="flex h-full min-h-0 flex-col">
-            {/* Unsaved-edit guard: blocks a pin/tab change that would navigate away
-                from the item currently being edited inline. Hard-cut, no dialog. */}
-            <Show when={props.pendingNav}>
-              <div class="flex items-center justify-between gap-2 px-3 py-2">
-                <Text variant="label" tone="bright">
-                  Unsaved edits
-                </Text>
-                <div class="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={props.onKeepEditing}
-                  >
-                    Keep editing
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={props.onDiscardEdits}
-                  >
-                    Discard edits
-                  </Button>
-                </div>
-              </div>
-            </Show>
-
             {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
                 dropdown collapses to its label. */}
             <div class="flex items-center gap-2 px-3 py-2">
@@ -250,12 +181,8 @@ export function ViewportPanel(props: {
                     mode={props.activeTab}
                     reloadKey={reloadKey()}
                     priorVersions={priorVersions()}
-                    priorDocuments={priorDocuments()}
-                    onSaveDocument={props.onSaveDocument}
-                    onDocumentVersion={props.onDocumentVersion}
                     fontStep={props.fontStep}
                     softWrap={props.softWrap}
-                    expanded={expanded()}
                   />
                 )}
               </Show>

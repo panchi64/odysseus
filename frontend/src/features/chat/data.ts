@@ -48,12 +48,9 @@ import type {
   SnapshotFile,
   ToolBlock,
   ToolInvocation,
-  ViewDocumentBlock,
-  ViewDocumentRef,
   ViewSnapshotRef,
   ViewVersionBlock,
 } from "./model";
-import { saveDocument } from "~/features/documents/data";
 
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
  *  approval + execution render as a single persistent terminal, never a generic
@@ -235,23 +232,6 @@ interface ViewSnapshotDTO {
   keeper?: boolean;
 }
 
-interface ConversationDocumentVersionDTO {
-  version: number;
-  origin: string;
-  created_at: string;
-  body: string;
-  /** The operator's durable bookmark on this version. Optional on the wire —
-   *  older/mocked payloads may omit it. */
-  keeper?: boolean;
-}
-
-interface ConversationDocumentDTO {
-  document_id: string;
-  title: string;
-  /** Oldest-first, mirroring the snapshots list. */
-  versions: ConversationDocumentVersionDTO[];
-}
-
 interface MessageDTO {
   id: string;
   /** "compaction" is a chassis-authored divider, not a turn — the summary the
@@ -310,9 +290,6 @@ interface ConversationDetailDTO extends ConversationSummaryDTO {
   /** Workspace snapshots captured across the thread (newest last). Conversation-
    *  scoped — not folded onto a message — so the viewport seeds them separately. */
   snapshots?: ViewSnapshotDTO[];
-  /** Documents the agent authored across the thread, each with its version history
-   *  (oldest first). Conversation-scoped, seeded into the viewport like snapshots. */
-  documents?: ConversationDocumentDTO[];
 }
 
 function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
@@ -457,26 +434,6 @@ function toViewSnapshotRef(dto: ViewSnapshotDTO): ViewSnapshotRef {
   };
 }
 
-/** Flatten a document DTO into one `ViewDocumentRef` per version — the shape the
- *  viewport folds into its versioned list beside the snapshots. */
-function toViewDocumentRefs(dto: ConversationDocumentDTO): ViewDocumentRef[] {
-  return dto.versions.map((v) => ({
-    documentId: dto.document_id,
-    version: v.version,
-    title: dto.title,
-    origin: v.origin as ViewDocumentRef["origin"],
-    body: v.body,
-    createdAt: v.created_at,
-    keeper: v.keeper ?? false,
-  }));
-}
-
-/** The document versions across a conversation detail, flattened + ordered
- *  (oldest first, mirroring how the DTO nests them). */
-function toViewDocumentRefList(dto: ConversationDetailDTO): ViewDocumentRef[] {
-  return (dto.documents ?? []).flatMap(toViewDocumentRefs);
-}
-
 /** The inline transcript chip for a version the agent `show`ed — references the
  *  conversation-scoped version by id. Shared by the cold read and the warm stream. */
 function toVersionChipBlock(
@@ -494,65 +451,6 @@ function toVersionChipBlock(
     title: ref.title,
     previewKind: ref.previewKind,
   };
-}
-
-/** The inline transcript chip for a document version the agent committed
- *  (`document.committed`) — references the conversation-scoped version by id +
- *  version, mirroring `toVersionChipBlock`. Shared by the cold read and the warm
- *  stream, so a document gets the same in-transcript discoverability a snapshot
- *  already has. */
-function toDocumentChipBlock(
-  messageId: string,
-  ref: { documentId: string; version: number; title?: string },
-): ViewDocumentBlock {
-  return {
-    kind: "view_document",
-    id: `${messageId}-doc-${ref.documentId}-v${ref.version}`,
-    documentId: ref.documentId,
-    version: ref.version,
-    title: ref.title,
-  };
-}
-
-/** The document version(s) committed within this turn, recovered from its
- *  `document_create`/`document_edit` tool calls — the cold-read counterpart to
- *  `toVersionChipBlock`'s live fold, mirroring how `_message_versions` on the
- *  backend recovers a snapshot chip from its `view_show` tool result. A
- *  `document_create` call always commits version 1 (the tool's own return embeds
- *  the new document's id: `"...(id: {id}). ..."`); a `document_edit` call carries
- *  its target id directly in `args.document_id` and states the resulting version
- *  in its result text (`"...(now version {n})."`). Denied/errored calls (no
- *  matching text) are silently skipped. */
-function documentChipsFromTools(
-  dto: MessageDTO,
-  documents: ViewDocumentRef[],
-): ViewDocumentBlock[] {
-  const chips: ViewDocumentBlock[] = [];
-  for (const t of dto.tools) {
-    if (t.status === "error" || typeof t.result !== "string") continue;
-    let documentId: string | undefined;
-    let version: number | undefined;
-    if (t.name === "document_create") {
-      documentId = /\(id:\s*([^)]+)\)/.exec(t.result)?.[1];
-      version = 1;
-    } else if (t.name === "document_edit") {
-      documentId =
-        typeof t.args.document_id === "string" ? t.args.document_id : undefined;
-      const m = /version\s+(\d+)/i.exec(t.result);
-      version = m ? Number(m[1]) : undefined;
-    } else {
-      continue;
-    }
-    if (!documentId || !version || Number.isNaN(version)) continue;
-    chips.push(
-      toDocumentChipBlock(dto.id, {
-        documentId,
-        version,
-        title: documents.find((d) => d.documentId === documentId)?.title,
-      }),
-    );
-  }
-  return chips;
 }
 
 /** Derive the citations a completed `web_search`/`web_fetch` tool call surfaced, in
@@ -604,10 +502,7 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
   };
 }
 
-function toMessage(
-  dto: MessageDTO,
-  documents: ViewDocumentRef[] = [],
-): ChatMessage {
+function toMessage(dto: MessageDTO): ChatMessage {
   const base: ChatMessage = {
     id: dto.id,
     role: dto.role,
@@ -655,7 +550,6 @@ function toMessage(
         previewKind: v.preview_kind,
       }),
     );
-  blocks.push(...documentChipsFromTools(dto, documents));
   if (dto.content)
     blocks.push({ kind: "text", id: `${dto.id}-text`, text: dto.content });
   // The answer lives in the text block(s); keep `content` empty for assistant
@@ -707,16 +601,14 @@ export function refreshSessions(): void {
 
 async function fetchSession(id: string): Promise<ChatSession> {
   const dto = await api.get<ConversationDetailDTO>(`/conversations/${id}`);
-  const documents = toViewDocumentRefList(dto);
   return {
     id: dto.id,
     title: deriveTitle(dto),
-    messages: dto.messages.map((m) => toMessage(m, documents)),
+    messages: dto.messages.map(toMessage),
     context: dto.context,
     stats: dto.stats ? toStats(dto.stats) : null,
     activeRun: toActiveRun(dto.active_run),
     snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
-    documents,
   };
 }
 
@@ -1010,9 +902,6 @@ export interface ChatStreamOptions {
   /** The loaded conversation's workspace snapshots (git-style history), seeded
    *  alongside its messages so the viewport shows them before the next turn. */
   initialSnapshots?: () => ViewSnapshotRef[] | undefined;
-  /** The loaded conversation's documents (version history), seeded alongside its
-   *  messages so the viewport shows them before the next turn. */
-  initialDocuments?: () => ViewDocumentRef[] | undefined;
 }
 
 export function createChatStream(
@@ -1025,10 +914,6 @@ export function createChatStream(
   // live (which fold onto message blocks), snapshots are conversation-scoped, so
   // they live here beside the messages rather than in the transcript.
   const [snapshots, setSnapshots] = createSignal<ViewSnapshotRef[]>([]);
-  // Conversation-level documents the agent authored, flattened to one entry per
-  // version. Like snapshots, they're conversation-scoped (not folded onto a message
-  // block), so they live here beside the messages and seed the same viewport list.
-  const [documents, setDocuments] = createSignal<ViewDocumentRef[]>([]);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
   // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
@@ -1181,9 +1066,6 @@ export function createChatStream(
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
-    // Same for the conversation-level document history; the live `document.*` events
-    // upsert into it from here.
-    setDocuments(k === null ? [] : (options.initialDocuments?.() ?? []));
     // The plan is owned by the backend and survives reloads, so a thread switch clears
     // the old one and refetches rather than carrying the previous thread's list over.
     setPlan([]);
@@ -1446,106 +1328,6 @@ export function createChatStream(
             if (!blocks.some((b) => b.id === chip.id)) blocks.push(chip);
           });
         }
-        break;
-      }
-      case "document.created": {
-        // Seed a pending (version 0) entry for the new document; its body streams in
-        // via `document.delta` and it's promoted to a committed version on commit.
-        // Replace any existing pending for this id (only one at a time).
-        const ref: ViewDocumentRef = {
-          documentId: ev.document_id,
-          version: 0,
-          title: ev.title ?? undefined,
-          origin: "ai",
-          body: "",
-          createdAt: new Date().toISOString(),
-        };
-        setDocuments((prev) => [
-          ...prev.filter(
-            (d) => !(d.documentId === ev.document_id && d.version === 0),
-          ),
-          ref,
-        ]);
-        break;
-      }
-      case "document.delta": {
-        // The delta carries the FULL new body each time — replace, don't append.
-        // Upsert the pending entry, carrying its title forward from the newest known
-        // entry for this id (an edit streams deltas with no prior `document.created`).
-        setDocuments((prev) => {
-          // Carry the title + first-seen time forward from the existing pending (or the
-          // doc's newest known entry — an edit streams deltas with no prior `created`), so
-          // a streaming body doesn't reset its identity across deltas.
-          const prior =
-            prev.find(
-              (d) => d.documentId === ev.document_id && d.version === 0,
-            ) ??
-            [...prev].reverse().find((d) => d.documentId === ev.document_id);
-          return [
-            ...prev.filter(
-              (d) => !(d.documentId === ev.document_id && d.version === 0),
-            ),
-            {
-              documentId: ev.document_id,
-              version: 0,
-              title: prior?.title,
-              origin: "ai",
-              body: ev.text,
-              createdAt: prior?.createdAt ?? new Date().toISOString(),
-            },
-          ];
-        });
-        break;
-      }
-      case "document.committed": {
-        // Promote the pending entry to a real committed version. If none exists (e.g.
-        // a reattach replayed past the deltas), append one from the last known body.
-        // Captured (not just derived from `prev`) so the chip folded below carries
-        // the same title, whichever branch actually ran.
-        let title: string | undefined;
-        setDocuments((prev) => {
-          const pending = prev.find(
-            (d) => d.documentId === ev.document_id && d.version === 0,
-          );
-          if (pending) {
-            title = pending.title;
-            // Stamp the backend's authoritative mint time (not the pending entry's
-            // fabricated/inherited one), so this version orders in the timeline exactly
-            // as the cold read would — the fix for live-vs-refresh version reordering.
-            return prev.map((d) =>
-              d === pending
-                ? { ...d, version: ev.version, createdAt: ev.created_at }
-                : d,
-            );
-          }
-          const last = [...prev]
-            .reverse()
-            .find((d) => d.documentId === ev.document_id);
-          title = last?.title;
-          return [
-            ...prev,
-            {
-              documentId: ev.document_id,
-              version: ev.version,
-              title: last?.title,
-              origin: "ai",
-              body: last?.body ?? "",
-              createdAt: ev.created_at,
-            },
-          ];
-        });
-        // Fold an inline transcript chip, mirroring `view.snapshot` — otherwise a
-        // document create/edit leaves zero in-conversation signal once the viewport
-        // is closed (only the header's item-count badge).
-        const chip = toDocumentChipBlock(assistantId, {
-          documentId: ev.document_id,
-          version: ev.version,
-          title,
-        });
-        patchById(assistantId, (m) => {
-          const blocks = m.blocks ?? (m.blocks = []);
-          if (!blocks.some((b) => b.id === chip.id)) blocks.push(chip);
-        });
         break;
       }
       case "message.queued":
@@ -2385,15 +2167,12 @@ export function createChatStream(
      All guard on a persisted conversation and surface failures via toast. */
 
   function reseatFromDetail(detail: ConversationDetailDTO): void {
-    const documents = toViewDocumentRefList(detail);
-    setMessages(reconcile(detail.messages.map((m) => toMessage(m, documents))));
+    setMessages(reconcile(detail.messages.map(toMessage)));
     // The active path moved (version switch / rewind / delete), so the window
     // state moves with it.
     setUsage(detail.context);
     // Re-seed the conversation-level snapshot history from the same detail.
     setSnapshots((detail.snapshots ?? []).map(toViewSnapshotRef));
-    // Same for the document history.
-    setDocuments(documents);
   }
 
   function toastError(err: unknown, fallback: string): void {
@@ -2617,63 +2396,6 @@ export function createChatStream(
     void reattachRun(ar.id, { fromSeq: 0 });
   });
 
-  /** Fold a version the backend has already minted into the viewport's
-   *  conversation-scoped list, so its dropdown updates in place. The **version number
-   *  comes from the backend** — the frontend never invents an authoritative value —
-   *  falling back to "one past the highest we know" only when the response omits it.
-   *  One implementation for both non-SSE producers below. */
-  function appendDocumentVersion(
-    documentId: string,
-    body: string,
-    origin: ViewDocumentRef["origin"],
-    version: number | null | undefined,
-  ): void {
-    setDocuments((prev) => {
-      const title = [...prev]
-        .reverse()
-        .find((d) => d.documentId === documentId)?.title;
-      const next =
-        version ??
-        prev.reduce(
-          (m, d) => (d.documentId === documentId ? Math.max(m, d.version) : m),
-          0,
-        ) + 1;
-      return [
-        ...prev,
-        {
-          documentId,
-          version: next,
-          title,
-          origin,
-          body,
-          createdAt: new Date().toISOString(),
-        },
-      ];
-    });
-  }
-
-  /** Save an inline edit to a document: PATCH the backend (which stamps origin=user
-   *  and mints a new version), then append that new user-origin version. Throws on
-   *  failure so the caller can surface it. */
-  async function saveDocumentEdit(
-    documentId: string,
-    body: string,
-  ): Promise<void> {
-    const saved = await saveDocument(documentId, { body });
-    appendDocumentVersion(documentId, body, "user", saved.version);
-  }
-
-  /** Reflect a version minted by accepting an AI suggestion (`DOC-3`). Accepting goes
-   *  through the documents surface rather than the run's event stream, so nothing tells
-   *  the View about it — the review UI hands the backend's resulting body straight here. */
-  function noteDocumentVersion(
-    documentId: string,
-    body: string,
-    version: number | null,
-  ): void {
-    appendDocumentVersion(documentId, body, "ai", version);
-  }
-
   /** Flip a snapshot's keeper bookmark: optimistically replace the array element
    *  (a spread copy — never mutate the stored ref in place), then confirm against
    *  the backend, reverting the same way on failure. */
@@ -2696,48 +2418,13 @@ export function createChatStream(
     }
   }
 
-  /** Same optimistic-replace/revert pattern as `toggleSnapshotKeeper`, for one
-   *  committed document version (matched by document id + version number). */
-  async function toggleDocumentKeeper(
-    documentId: string,
-    version: number,
-    keeper: boolean,
-  ): Promise<void> {
-    setDocuments((prev) =>
-      prev.map((d) =>
-        d.documentId === documentId && d.version === version
-          ? { ...d, keeper }
-          : d,
-      ),
-    );
-    try {
-      await api.post(`/documents/${documentId}/versions/${version}/keeper`, {
-        keeper,
-      });
-    } catch (err) {
-      setDocuments((prev) =>
-        prev.map((d) =>
-          d.documentId === documentId && d.version === version
-            ? { ...d, keeper: !keeper }
-            : d,
-        ),
-      );
-      toastError(err, "Unable to update the keeper flag.");
-    }
-  }
-
   onCleanup(() => controller?.abort());
 
   return {
     messages,
     /** The conversation's workspace snapshots (git-style history), newest last. */
     snapshots,
-    /** The conversation's documents, flattened to one entry per committed version. */
-    documents,
-    saveDocumentEdit,
-    noteDocumentVersion,
     toggleSnapshotKeeper,
-    toggleDocumentKeeper,
     sending,
     errored,
     /** True while the live run's transport is detached (reconnect budget
@@ -2844,9 +2531,6 @@ export function mainChat(): MainChat {
         // Same lockstep: the loaded thread's git-style snapshot history.
         initialSnapshots: () =>
           session.loading ? undefined : session()?.snapshots,
-        // Same lockstep: the loaded thread's document version history.
-        initialDocuments: () =>
-          session.loading ? undefined : session()?.documents,
         // Read only when a send creates the conversation.
         mode,
         projectId: codingProjectId,

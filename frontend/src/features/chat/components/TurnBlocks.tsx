@@ -20,7 +20,6 @@ import type {
   TextBlock,
   ThinkingBlock,
   ToolBlock,
-  ViewDocumentBlock,
   ViewLiveBlock,
   ViewVersionBlock,
 } from "../model";
@@ -32,13 +31,7 @@ import {
   type BlockGroup,
   type LayoutItem,
 } from "../blocks";
-import {
-  LIVE_KEY,
-  documentKey,
-  snapshotKey,
-  versionIcon,
-  type ViewItem,
-} from "../viewport";
+import { LIVE_KEY, snapshotKey, versionIcon, type ViewItem } from "../viewport";
 import { ApprovalCard } from "./ApprovalCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -425,25 +418,6 @@ function BlockRow(
                 meta={chip().meta}
                 isNew={chip().isNew}
                 onOpen={() => props.onOpenInView?.(LIVE_KEY)}
-              />
-            </div>
-          );
-        })()}
-      </Match>
-      <Match when={g().kind === "view_document"}>
-        {(() => {
-          const b = g().blocks[0] as ViewDocumentBlock;
-          const key = documentKey(b.documentId, b.version);
-          const chip = () => chipMeta(props.chipLookup, props.seenIndex, key);
-          return (
-            <div class={fullWidthTop(props.top)}>
-              <ViewChip
-                icon="file"
-                label={b.title || "Document"}
-                kindWord={chip().kindWord}
-                meta={chip().meta}
-                isNew={chip().isNew}
-                onOpen={() => props.onOpenInView?.(key)}
               />
             </div>
           );

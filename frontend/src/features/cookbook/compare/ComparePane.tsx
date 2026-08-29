@@ -87,11 +87,7 @@ export function ComparePaneView(props: {
   // pane's own conversation. Opening is chip-driven — there is no persistent panel to
   // auto-open into, and no per-thread persistence, because a compare thread is scratch.
   const viewItems = createMemo(() =>
-    collectViewItems(
-      stream().messages,
-      stream().snapshots(),
-      stream().documents(),
-    ),
+    collectViewItems(stream().messages, stream().snapshots()),
   );
   const [openKey, setOpenKey] = createSignal<string | null>(null);
   const [tab, setTab] = createSignal<"preview" | "code">("preview");
@@ -201,11 +197,6 @@ export function ComparePaneView(props: {
             fullscreen={wide()}
             onToggleFullscreen={() => setWide((on) => !on)}
             onClose={() => setOpenKey(null)}
-            onSaveDocument={stream().saveDocumentEdit}
-            // Accepting a document suggestion lands over REST, not the run stream, so the
-            // pane has to be told about the version it minted or it keeps showing the old
-            // body. Same controller as chat's, so a compare pane behaves identically.
-            onDocumentVersion={stream().noteDocumentVersion}
           />
         </div>
       </Modal>

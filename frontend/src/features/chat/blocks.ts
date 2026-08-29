@@ -77,9 +77,6 @@ export function assembleTranscript(
       case "view_live":
         parts.push(`[live view: ${b.live.url}]`);
         break;
-      case "view_document":
-        parts.push(`[document: ${b.title ?? "document"} v${b.version}]`);
-        break;
     }
   }
   return parts.join("\n\n");
@@ -142,12 +139,7 @@ function hasLiveHost(group: BlockGroup): boolean {
  *  Everything else folds into one continuously growing log. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking" || group.kind === "tool") return true;
-  if (
-    group.kind === "view_version" ||
-    group.kind === "view_live" ||
-    group.kind === "view_document"
-  )
-    return true;
+  if (group.kind === "view_version" || group.kind === "view_live") return true;
   if (group.kind === "host_command") return !hasLiveHost(group);
   return false;
 }

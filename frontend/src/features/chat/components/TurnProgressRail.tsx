@@ -29,7 +29,6 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
     case "approval":
       return "Awaiting approval";
     case "view_version":
-    case "view_document":
       return "Updating view";
     case "view_live":
       return "Starting live view";

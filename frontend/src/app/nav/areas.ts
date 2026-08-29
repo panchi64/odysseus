@@ -26,27 +26,6 @@ export const AREAS: NavArea[] = [
           "The unified retrieval corpus — every source the assistant can search (RAG)",
       },
       {
-        label: "Documents",
-        href: "/documents",
-        icon: "file",
-        description: "Write and edit documents with AI assistance",
-        connected: true,
-      },
-      {
-        label: "Uploads",
-        href: "/uploads",
-        icon: "upload",
-        description: "Files you've uploaded for the assistant to use",
-        connected: true,
-      },
-      {
-        label: "Gallery",
-        href: "/gallery",
-        icon: "image",
-        connected: true,
-        description: "Images from chat attachments and knowledge-base uploads",
-      },
-      {
         label: "Memory",
         href: "/memory",
         icon: "database",
@@ -118,20 +97,6 @@ export const AREAS: NavArea[] = [
         connected: true,
         description:
           "The directories you work in, and which one scopes your work",
-      },
-      {
-        label: "Code Runner",
-        href: "/code",
-        icon: "code",
-        connected: true,
-        description: "Run code snippets in a sandbox",
-      },
-      {
-        label: "Shell",
-        href: "/shell",
-        icon: "terminal",
-        connected: true,
-        description: "Run shell commands on the host",
       },
       {
         label: "Tools",

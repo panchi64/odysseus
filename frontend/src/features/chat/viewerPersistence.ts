@@ -205,35 +205,8 @@ export function rememberScroll(el: HTMLElement, key: () => string): void {
 // Single panel instance exists app-wide, so module-level signals are the correct
 // scope (mirrors `claimAutoOpen` in `viewport.ts`).
 
-const [dirtyKeySignal, setDirtyKeySignal] = createSignal<string | null>(null);
-
-/** The key of the view item with unsaved edits, or null. */
-export function setViewerDirty(key: string | null): void {
-  setDirtyKeySignal(key);
-}
-export function viewerDirty(): string | null {
-  return dirtyKeySignal();
-}
-
-/** Pending scroll-to-first-change requests, keyed by item — consumed exactly once
- *  each. A plain module-level Set (non-reactive intent, not render state), like
- *  `claimAutoOpen`'s `autoOpened`. */
-const pendingAnchors = new Set<string>();
-
-export function requestAnchor(itemKey: string): void {
-  pendingAnchors.add(itemKey);
-}
-
-/** True exactly once per `requestAnchor` call for this key. */
-export function consumeAnchor(itemKey: string): boolean {
-  if (!pendingAnchors.has(itemKey)) return false;
-  pendingAnchors.delete(itemKey);
-  return true;
-}
-
 /** How long a "you came for this" highlight lingers before it hard-cuts off (no
- *  fade — design §8). Shared by the document passage-anchor and the approval
- *  deep-link focus so both read as the same mechanical emphasis. */
+ *  fade — design §8). Used by the approval deep-link focus. */
 export const HIGHLIGHT_MS = 2000;
 
 /** A pending "focus the approval card" intent, set when an `approval_needed`

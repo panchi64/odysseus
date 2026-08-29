@@ -76,7 +76,7 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
   // `.latest` rather than the resource call: the palette isn't inside a `Suspense`, and
   // reading a pending resource would suspend the overlay. `.latest` avoids *suspending*
   // but still re-throws a failed fetch, so it is guarded by `.error` — the same shape
-  // `GalleryScreen`/`SkillsDirectoryScreen` use. A settings endpoint that is down must
+  // `SkillsDirectoryScreen` use. A settings endpoint that is down must
   // cost the palette its rows, not blank the whole content region.
   const chat = (): ChatSettings | undefined =>
     chatSaved() ?? (chatResource.error ? undefined : chatResource.latest);

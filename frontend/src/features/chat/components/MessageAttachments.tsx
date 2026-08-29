@@ -124,7 +124,6 @@ export function MessageAttachments(
               return (
                 <AttachmentChip
                   name={u()?.name ?? id}
-                  href={`/uploads/${id}`}
                   status={u() ? undefined : "error"}
                   kbExcluded={u()?.kbExcluded ?? false}
                 />

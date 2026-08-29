@@ -63,11 +63,8 @@ import {
   activeDownload,
   clampWidth,
   downloadBlob,
-  requestAnchor,
-  setViewerDirty,
   setViewerWidth,
   useViewerPersistence,
-  viewerDirty,
   viewerWidth,
 } from "../viewerPersistence";
 import { registerKeymap } from "~/lib/keymap";
@@ -289,23 +286,14 @@ export function ChatRoomScreen(): JSX.Element {
   // (presentation-only, so it's automatically thread-scoped). The viewport renders
   // these; the transcript shows compact chips that open them here.
   const viewItems = createMemo(() =>
-    collectViewItems(stream.messages, stream.snapshots(), stream.documents()),
+    collectViewItems(stream.messages, stream.snapshots()),
   );
   // The viewport only makes sense with something to show. Gate the effective open
   // state on having items so a persisted-open thread that's since lost its items
   // (or a fresh chat that never had any) never shows an empty panel.
   const viewportShown = () => state().open && viewItems().length > 0;
-  // Closing (the false-going transition) is routed through the same unsaved-edit
-  // guard as requestPin/requestTab below — an operator mid-edit shouldn't lose a
-  // draft just because they hit the panel's own Collapse, the header eye, or
-  // mod+shift+v.
   const toggleViewport = () => {
-    const nextOpen = !state().open;
-    if (!nextOpen && viewerDirty() !== null) {
-      setPendingNav(() => () => patch({ open: false }));
-      return;
-    }
-    patch({ open: nextOpen });
+    patch({ open: !state().open });
   };
   const openViewport = () => {
     if (!state().open) patch({ open: true });
@@ -324,41 +312,14 @@ export function ChatRoomScreen(): JSX.Element {
   const resolvedViewKey = (): string | null =>
     state().pinnedKey ?? latestViewKey();
 
-  // Unsaved-edit guard: a pin/tab change that would navigate away from the item
-  // the operator is mid-edit on (`viewerDirty()`) is deferred behind an inline
-  // confirm bar in the panel instead of applied immediately.
-  const [pendingNav, setPendingNav] = createSignal<(() => void) | null>(null);
-  const discardEdits = () => {
-    const run = pendingNav();
-    setPendingNav(null);
-    setViewerDirty(null);
-    run?.();
-  };
-  const keepEditing = () => setPendingNav(null);
-  const requestPin = (key: string | null) => {
-    const dirty = viewerDirty();
-    if (dirty !== null && dirty !== key) {
-      setPendingNav(() => () => patch({ pinnedKey: key }));
-      return;
-    }
-    patch({ pinnedKey: key });
-  };
-  const requestTab = (tab: "preview" | "code") => {
-    const dirty = viewerDirty();
-    if (dirty !== null && dirty === resolvedViewKey()) {
-      setPendingNav(() => () => patch({ activeTab: tab }));
-      return;
-    }
-    patch({ activeTab: tab });
-  };
+  const requestPin = (key: string | null) => patch({ pinnedKey: key });
+  const requestTab = (tab: "preview" | "code") => patch({ activeTab: tab });
   // Pin a version — except picking the current latest clears the pin (null), so the
   // viewport resumes following new versions as the agent mints them.
   const selectView = (key: string) =>
     requestPin(key === latestViewKey() ? null : key);
   // Open a View item in the viewport — from a transcript chip or a timeline tab.
-  // Opening a document hands the renderer a scroll-to-first-change request.
   const openViewTo = (key: string) => {
-    if (viewItems().find((i) => i.key === key)?.document) requestAnchor(key);
     selectView(key);
     openViewport();
   };
@@ -407,16 +368,9 @@ export function ChatRoomScreen(): JSX.Element {
   const asideOpen = () => viewportShown() && !sheetOpen();
   let sheetTrigger: HTMLButtonElement | undefined;
   const closeSheet = () => {
-    const run = () => {
-      if (isDesktop()) patch({ fullscreen: false });
-      else patch({ fullscreen: false, open: false });
-      sheetTrigger?.focus();
-    };
-    if (viewerDirty() !== null) {
-      setPendingNav(() => run);
-      return;
-    }
-    run();
+    if (isDesktop()) patch({ fullscreen: false });
+    else patch({ fullscreen: false, open: false });
+    sheetTrigger?.focus();
   };
 
   // Focus: the panel container (either mount) and the transcript scroll
@@ -457,19 +411,11 @@ export function ChatRoomScreen(): JSX.Element {
     if (!d) return;
     void (async () => downloadBlob(d.name, await d.getBlob()))();
   };
-  // Flip the shown item's keeper bookmark — a snapshot version or a committed
-  // document version, whichever backs the entry. Relays to the backend; the
-  // stream store applies the optimistic update and reverts on failure.
+  // Flip the shown snapshot's keeper bookmark. Relays to the backend; the stream
+  // store applies the optimistic update and reverts on failure.
   const toggleKeeper = (item: ViewItem) => {
-    const next = !item.keeper;
     if (item.snapshot)
-      void stream.toggleSnapshotKeeper(item.snapshot.snapshotId, next);
-    else if (item.document)
-      void stream.toggleDocumentKeeper(
-        item.document.documentId,
-        item.document.version,
-        next,
-      );
+      void stream.toggleSnapshotKeeper(item.snapshot.snapshotId, !item.keeper);
   };
 
   registerKeymap(() => [
@@ -609,7 +555,7 @@ export function ChatRoomScreen(): JSX.Element {
       title,
       detail: `${baseDetail} ${n} image attachment${
         n > 1 ? "s" : ""
-      } would be left unused — delete them too or keep them in the gallery?`,
+      } would be left unused — delete them too, or keep them?`,
       confirmLabel: "Delete images",
       secondaryLabel: "Keep images",
       cancelLabel: "Cancel",
@@ -671,11 +617,6 @@ export function ChatRoomScreen(): JSX.Element {
       onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
       onClose={onClose}
       onKeeper={toggleKeeper}
-      onSaveDocument={stream.saveDocumentEdit}
-      onDocumentVersion={stream.noteDocumentVersion}
-      pendingNav={pendingNav() !== null}
-      onDiscardEdits={discardEdits}
-      onKeepEditing={keepEditing}
       panelRef={setPanelEl}
     />
   );

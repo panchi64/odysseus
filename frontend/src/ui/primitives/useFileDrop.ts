@@ -21,8 +21,8 @@ export interface FileDropApi {
 }
 
 /**
- * The single drag/drop/pick/paste implementation shared by the uploads DropZone
- * and the Composer's attach affordance. Owns the drag-highlight state and funnels
+ * The single drag/drop/pick/paste implementation behind the Composer's attach
+ * affordance. Owns the drag-highlight state and funnels
  * dropped, picked, and pasted files through one `onFiles` callback — the consumer
  * decides what to do with them (upload, validate, etc.). No styling: it's a
  * behavior hook, so each surface renders its own chrome.

@@ -23,7 +23,7 @@ export type NotificationKind =
 
 /** `NotificationOut` from the REST/SSE wire contract. Both `GET /notifications`
  *  items and the SSE envelope's `notification` field use this exact shape
- *  (camelCase, like the documents/gallery routes). */
+ *  (camelCase). */
 export interface Notification {
   id: string;
   kind: NotificationKind;
