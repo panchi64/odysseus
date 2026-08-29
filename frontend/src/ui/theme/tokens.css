@@ -149,6 +149,23 @@
   --bg: #000000;
   --surface: #0a0a0a;
   --surface-raised: #161616;
+  /* A fill that reads as *set into* the page rather than lifted off it — the
+     operator's own turn in a transcript, where the two voices have to be
+     distinguishable at a glance and neither is a panel. On Ink there is nowhere
+     below black to go, so it steps UP instead.
+
+     MATCHED TO PAPER PERCEPTUALLY, NOT BY HEX DELTA. Paper separates its bubble
+     from the page by ΔL* ≈ 4.2 (#ffffff -> #f4f3f0, 11 raw units). The same raw
+     step off black lands at ΔL* ≈ 2.7 — sRGB's gamma curve puts far less
+     perceived lightness in the first few units above #000 than in the last few
+     below #fff — which is why this sat visibly fainter than its Paper twin at
+     #0a0a0a. #0f0f0f is ΔL* ≈ 4.3, the closest step to Paper's separation.
+
+     It therefore reads a hair lighter than `--surface`, which is fine: what this
+     has to be told apart from is the transcript ground (`--bg`), since the
+     model's turn carries no fill at all. It stays well under `--line` so the
+     bubble is still quieter than the rules around it. */
+  --surface-sunken: #0f0f0f;
   --line: #212121;
   --line-strong: #333333;
   --text-dim: #6e6e6e; /* 3.9:1 on bg */
@@ -223,6 +240,22 @@
      a fill. That is what "pure white" costs, and it is worth it. */
   --surface: #ffffff;
   --surface-raised: #f5f5f4;
+  /* The one place Paper cannot hold "panels are level with the page". A chat
+     transcript alternates two voices, and on Ink the operator's turn is told
+     apart from the model's by its fill — `surface` over `bg`. Paper sets both to
+     pure white, so that distinction simply vanished: the whole thread read as
+     one undifferentiated column of text.
+
+     So this steps DOWN instead of up. Deeper than `surface-raised`, which is the
+     hover/inset value and would read as a row waiting to be clicked, and lighter
+     than `line`, so the bubble stays quieter than the rules around it — a tint
+     the eye groups by, not a box it has to look at.
+
+     Pulled back a notch from #f0efec, which had crossed from "tint" into a
+     visible panel behind every operator turn — the thing the paragraph above
+     says it must not become. Still ~2/3 of the separation from the page, so the
+     two voices stay tellable apart. */
+  --surface-sunken: #f4f3f0;
   --line: #e4e4e1;
   --line-strong: #cfcfcb;
   --text-dim: #8a8a85; /* 3.5:1 on bg */

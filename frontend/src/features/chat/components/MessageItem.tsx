@@ -9,6 +9,7 @@ import {
 } from "solid-js";
 import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
 import { relativeTime } from "~/lib/format";
+import { selectedModelLabel } from "~/lib/stores/models";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
 import type { ViewItem } from "../viewport";
@@ -269,7 +270,7 @@ function UserText(props: { text: string }): JSX.Element {
         </Text>
         {/* Only while clamped, and only when there is genuinely more below. */}
         <Show when={clampable() && !expanded()}>
-          <div class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-surface to-transparent" />
+          <div class="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-sunken to-transparent" />
         </Show>
       </div>
       <Show when={clampable()}>
@@ -317,7 +318,12 @@ function UserTurn(props: {
   };
 
   return (
-    <div class="group flex flex-col items-end gap-1 bg-surface px-4 py-3">
+    // `bg-sunken`, not `bg-surface`. The operator's turn is told apart from the
+    // model's by its fill, and `surface` is pure white on Paper — the same value
+    // as the page — so on light the two voices were indistinguishable while on
+    // dark they read fine. `sunken` is the token that carries a *transcript
+    // fill* in both modes rather than a panel's.
+    <div class="group flex flex-col items-end gap-1 bg-sunken px-4 py-3">
       <div class="flex w-full items-center justify-between gap-2">
         {/* Left: actions reveal on hover. Right: identity + metadata. */}
         <div class="flex items-center gap-2">
@@ -365,16 +371,18 @@ function UserTurn(props: {
             message={m()}
             onSwitchVersion={props.onSwitchVersion}
           />
-          {/* Same reveal as the assistant turn's model/time line: the bubble's
-              own alignment and surface already say whose turn this is. */}
+          {/* The TIME reveals; the NAME stays. The row is already there holding
+              the state markers, so hiding the name buys back no space — it just
+              makes the operator hover to learn who said what. It is set `dim` at
+              `label` size so it labels the turn without competing with it. */}
           <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
             <Text variant="micro" tone="dim">
               {relativeTime(m().createdAt)}
             </Text>
-            <Text variant="label" tone="default">
-              Operator
-            </Text>
           </span>
+          <Text variant="label" tone="dim">
+            Operator
+          </Text>
         </div>
       </div>
       <Show
@@ -516,16 +524,44 @@ function AssistantTurn(props: {
   const hasLayers = () => turnHasLayers(m().blocks);
   const toggleAll = () => setForceOpen((v) => !v);
 
+  /** Who is speaking: the model that produced the turn.
+   *
+   *  A turn records its own model, and once the run settles the backend's is
+   *  adopted, so that is the answer almost always. The gap is the *first* turn of
+   *  a session: the optimistic bubble is stamped from the `main` binding, and if
+   *  the operator types and sends before `/models/roles` has resolved there is
+   *  nothing to stamp it with — the turn streamed in labelled "Assistant" and
+   *  only became the model's name once it ended.
+   *
+   *  So a streaming turn with no recorded model falls back to the live binding,
+   *  which is *what is running* — the same fact from the same source, arriving a
+   *  beat later. A settled turn never does: an old turn whose model the backend
+   *  didn't record was not necessarily run on today's pick, and naming it would
+   *  be a guess wearing the same type as a fact.
+   *
+   *  Last resort is `LLM`, not `Assistant`. "Assistant" is the wire role, and
+   *  putting a protocol word where a model name goes reads as the product not
+   *  knowing what it is running. */
+  const modelLabel = (): string => {
+    const recorded = m().model;
+    if (recorded) return recorded;
+    return (m().streaming ? selectedModelLabel() : "") || "LLM";
+  };
+
   return (
     <div class="group px-4 py-4">
       <div class="mb-2 flex items-center gap-2">
-        {/* Which model and when: true of every turn, and so rarely the question
-            being asked that always-on it reads as chrome. Revealed by the same
-            hover/focus gesture as the actions opposite it. */}
+        {/* WHICH MODEL stays; WHEN reveals. Which model answered is the one
+            piece of turn metadata that changes between turns and changes how the
+            answer should be read, so it is worth a permanent line — and this row
+            already exists to hold the state markers, so keeping it costs no
+            space. It is `dim`, not `nominal`: the accent made a label louder
+            than the answer under it, and green here means nothing (§5 — color
+            carries meaning or stays away). */}
+        <Text variant="label" tone="dim">
+          {modelLabel()}
+        </Text>
         <span class={cx("flex items-center gap-2", TURN_REVEAL_CLASS)}>
-          <Text variant="label" tone="nominal">
-            {m().model ?? "Assistant"}
-          </Text>
           <Text variant="micro" tone="dim">
             {relativeTime(m().createdAt)}
           </Text>

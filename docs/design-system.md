@@ -209,6 +209,7 @@ The base is pure neutral. Both modes are built on true black and true white — 
 | `bg` | `#000000` | App background — pure black |
 | `surface` | `#0A0A0A` | Panels, cards |
 | `surface-raised` | `#161616` | Hover, selected, nested surfaces |
+| `surface-sunken` | `#0F0F0F` | A fill *set into* the page, not lifted off it — one speaker's turn in a transcript. Nowhere below black to go, so it steps up. **Matched to Paper perceptually, not by hex delta:** the same raw step off `#000` carries far less perceived lightness than off `#FFF`, so a mirrored value read visibly fainter than its Paper twin. ΔL\* ≈ 4.3 from `bg`, against Paper's ≈ 4.2 |
 | `line` | `#212121` | Hairline borders (the default rule) |
 | `line-strong` | `#333333` | Emphasized borders, active control outlines |
 | `text-dim` | `#6E6E6E` | Ambient telemetry, inactive labels (3.9:1) |
@@ -230,6 +231,7 @@ The base is pure neutral. Both modes are built on true black and true white — 
 | `bg` | `#FFFFFF` | App background — pure white |
 | `surface` | `#FFFFFF` | Panels sit *level* with the page; a hairline and a shadow separate them, not a fill (§6) |
 | `surface-raised` | `#F5F5F4` | Hover, selected, nested surfaces |
+| `surface-sunken` | `#F4F3F0` | **The one place Paper cannot hold "panels sit level with the page."** A transcript alternates two voices and tells them apart by fill; with `surface` = `bg` = white, that distinction vanishes. So it steps *down* — but only to a tint. Push it further (`#F0EFEC` was tried) and it crosses into a visible panel behind every operator turn, which is the thing this must not become |
 | `line` | `#E4E4E1` | Hairline borders |
 | `line-strong` | `#CFCFCB` | Emphasized borders |
 | `text-dim` | `#8A8A85` | Ambient telemetry (3.5:1) |
@@ -684,6 +686,7 @@ Keep:
 
   /* ---- INK (dark, default) ---- */
   --bg: #000000;         --surface: #0a0a0a;      --surface-raised: #161616;
+  --surface-sunken: #0f0f0f;
   --line: #212121;       --line-strong: #333333;
   --text-dim: #6e6e6e;   --text: #a8a8a8;         --text-bright: #ffffff;
   --accent: #34d67f;
@@ -695,6 +698,7 @@ Keep:
 
 [data-theme="paper"] {
   --bg: #ffffff;         --surface: #ffffff;      --surface-raised: #f5f5f4;
+  --surface-sunken: #f4f3f0;
   --line: #e4e4e1;       --line-strong: #cfcfcb;
   --text-dim: #8a8a85;   --text: #3d3d3a;         --text-bright: #000000;
   --accent: #0077b6;

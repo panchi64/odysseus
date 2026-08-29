@@ -747,8 +747,14 @@ export function ChatRoomScreen(): JSX.Element {
 
                The bright focus outline is gone — the shell's neutral focus halo
                covers this, and a white rule around the transcript was exactly
-               the kind of border the system dropped. */
-            class="min-h-0 flex-1 overflow-y-auto px-4 py-2 outline-none transition-colors"
+               the kind of border the system dropped.
+
+               PADDING IS TOP-ONLY. A bottom pad here is a band of bare page
+               between the last turn and the composer's LED strip, which is the
+               one thing the dock below is built not to have — see its comment.
+               The last turn's own `py-4` is the breathing room down there; this
+               was stacking a second gap on top of it. */
+            class="min-h-0 flex-1 overflow-y-auto px-4 pt-2 outline-none transition-colors"
           >
             {/* The measure goes on the CONTENT, not on the scroll container:
                 the container has to keep its full width so its scrollbar sits
@@ -849,14 +855,18 @@ export function ChatRoomScreen(): JSX.Element {
         {/* The composer docks on the page background, so the transcript scrolls
             out of sight behind it instead of showing through the gap around the
             card. No rule and no gradient — just the ground, and the LED strip on
-            the composer's own top edge doing the separating with light. That is
-            why the wrapper's top padding stays thin: the glow needs to reach
-            past it onto the transcript to read as a strip light rather than as a
-            line. */}
+            the composer's own top edge doing the separating with light.
+            **No top padding**: the strip has to BE the cutoff. Any gap above it
+            is a band of bare page between the last line of the transcript and
+            the light — the transcript ends, then nothing, then the composer —
+            and the strip stops reading as the edge the conversation runs into.
+            The glow costs no layout (it is a shadow, and nothing between here
+            and the viewport clips it), so it still spills up over the transcript
+            without a pad to spill into. */}
         {/* The dock's own background spans the full width — it is what the
             transcript scrolls out of sight behind — while its contents take the
             same measure as the transcript above. */}
-        <div class="sticky bottom-0 bg-bg px-4 pt-2 pb-1">
+        <div class="sticky bottom-0 bg-bg px-4 pb-1">
           <div class={MEASURE}>
             <Composer
               edge="led"
