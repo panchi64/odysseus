@@ -54,7 +54,24 @@ export interface PopoverProps {
  *
  *  Placement flips above the trigger when there is more room there, and shifts
  *  horizontally to stay inside the viewport. It is recomputed on scroll (capture phase,
- *  so scroll containers fire it too, not just the window) and on resize. */
+ *  so scroll containers fire it too, not just the window), on resize, and **whenever the
+ *  panel's own content changes size** — a disclosure opening inside it, a list filtering
+ *  down. That last one is not a refinement: a placement measured once is wrong in the
+ *  one direction that hurts, since a panel placed below a trigger with just enough room
+ *  keeps growing *downward* off the bottom of the window, and the clamp that would have
+ *  made it scroll was decided when it was still small. */
+/** Whether two placements would paint identically — the panel is positioned entirely
+ *  from these four numbers. */
+function samePlacement(a: Placement | null, b: Placement): boolean {
+  return (
+    a !== null &&
+    a.top === b.top &&
+    a.left === b.left &&
+    a.clampHeight === b.clampHeight &&
+    a.minWidth === b.minWidth
+  );
+}
+
 export function Popover(props: PopoverProps): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const close = () => setOpen(false);
@@ -92,15 +109,18 @@ export function Popover(props: PopoverProps): JSX.Element {
       panel = { width: rect.width, height: rect.height };
       panelRef.style.maxHeight = restore;
     }
-    setPlacement(
-      computePlacement({
-        anchor: triggerRef.getBoundingClientRect(),
-        panel,
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        align: props.align,
-        block: props.block,
-      }),
-    );
+    const next = computePlacement({
+      anchor: triggerRef.getBoundingClientRect(),
+      panel,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      align: props.align,
+      block: props.block,
+    });
+    // An unchanged placement is not re-published. The panel's own size is watched
+    // below, and applying a clamp *changes* that size — so a pass that concludes
+    // nothing moved must end there rather than write an identical object and wake the
+    // observer that called it.
+    setPlacement((prev) => (samePlacement(prev, next) ? prev : next));
   };
 
   createEffect(() => {
@@ -160,7 +180,10 @@ export function Popover(props: PopoverProps): JSX.Element {
 
 /** Split out so `onMount` fires once the panel element exists — the first measure
  *  runs without a height (nothing is rendered yet) and this is what corrects it,
- *  before paint, so the panel never visibly jumps. */
+ *  before paint, so the panel never visibly jumps.
+ *
+ *  It is also where the panel's own size is watched, for the same reason: the element
+ *  is only here. */
 function PopoverPanel(props: {
   ref: (el: HTMLDivElement) => void;
   placement: Placement | null;
@@ -169,10 +192,23 @@ function PopoverPanel(props: {
   onMeasure: () => void;
   children: JSX.Element;
 }): JSX.Element {
-  onMount(() => props.onMeasure());
+  let el: HTMLDivElement | undefined;
+  onMount(() => {
+    props.onMeasure();
+    // Re-place on every size change the panel makes for itself. Observing the panel
+    // rather than listening for a caller's "I grew" keeps the rule in one place: any
+    // panel whose content can change while open is covered, and none of them has to
+    // know it.
+    const ro = new ResizeObserver(() => props.onMeasure());
+    if (el) ro.observe(el);
+    onCleanup(() => ro.disconnect());
+  });
   return (
     <div
-      ref={props.ref}
+      ref={(node) => {
+        el = node;
+        props.ref(node);
+      }}
       class={cx(
         "fixed z-50",
         // A bare panel also drops the rise: it brings its own arrival, and two
