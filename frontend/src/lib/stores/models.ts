@@ -694,9 +694,19 @@ export function selectedModelLabel(): string {
  *  (endpoint, model) pair, and the model is the binding's: an endpoint row usually
  *  carries no default model at all, so reading its column answered "no window" against
  *  a server reporting 262144 perfectly well — which left the dashboard's context figure
- *  blank and, once the gate landed, had the composer refusing to send. */
+ *  blank and, once the gate landed, had the composer refusing to send.
+ *
+ *  **`.latest`, not the plain resource read, and that is load-bearing.** A bare
+ *  `roles()` registers with the nearest Suspense boundary on *every* load — a
+ *  refetch included — and picking a model refetches the bindings by design. The
+ *  chat screen renders inside the shell's content Suspense and reads this through
+ *  the composer's send gate, so each pick suspended the whole content region for
+ *  the length of one round-trip; Suspense detaches its children while suspended,
+ *  which silently reset the transcript's scroll to the top. `.latest` is the same
+ *  reactive value without the suspense registration, so the gate re-reads the new
+ *  window when it lands and nothing unmounts in between. */
 export function effectiveContextWindow(): number | null {
-  return store.roles()?.main?.contextWindow ?? null;
+  return store.roles.latest?.main?.contextWindow ?? null;
 }
 
 /** `sendBlocker` applied to the live selection — the accessor a composer binds to. The
