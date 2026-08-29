@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 import agent.engine as engine
@@ -200,3 +201,31 @@ def test_usage_limit_message_is_operator_legible_for_every_kind():
     # provider quota, which is what sent the operator hunting for a rate limit before.
     for exc in (steps, tool_calls, tokens):
         assert "for a single turn" in usage_limit_message(exc)
+
+
+async def test_parallel_tool_calls_reaches_the_model_request():
+    # The default the product runs on: independent calls go out together, so a
+    # multi-part question costs one model round-trip instead of one per part. Asserted
+    # on what the *model* is handed rather than on the agent object, because the agent's
+    # own settings are merged with each capability's before a request is built.
+    seen: list[dict] = []
+
+    async def capture(messages, info: AgentInfo):
+        seen.append(dict(info.model_settings or {}))
+        yield "ok"
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator("hello", model=FunctionModel(stream_function=capture))
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    assert run.status is RunStatus.done
+    assert seen and all(s["parallel_tool_calls"] is True for s in seen)
+
+
+def test_a_toolless_utility_agent_is_left_alone():
+    # Only the tool-driving agent declares it. A background call — namer, judge,
+    # summarizer — keeps whatever its caller hands `.run()`.
+    from agent.meta import make_utility_agent
+
+    assert make_utility_agent(TestModel(), instructions="name it").model_settings is None

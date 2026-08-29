@@ -2,7 +2,7 @@
  *  No Solid/DOM here — just data → data, so the rules (grouping, compaction,
  *  transcript assembly) stay testable and live in one place. */
 
-import type { AssistantBlock, BlockKind } from "./model";
+import type { AssistantBlock, BlockKind, ToolInvocation } from "./model";
 
 /** A run of consecutive collapsible work only folds into a WORK LOG accordion
  *  once it reaches this many groups. Below it, the run stays inline — a lone
@@ -130,18 +130,45 @@ function hasLiveHost(group: BlockGroup): boolean {
   );
 }
 
+/** A tool call still running. Each tool block is its own group, so a parallel batch is
+ *  a *run* of them — and a run of three is exactly what `WORK_LOG_MIN_RUN` folds away,
+ *  hiding the spinners of calls still in flight. Same rule as `hasLiveHost`. */
+function hasLiveTool(group: BlockGroup): boolean {
+  return group.blocks.some(
+    (b) => b.kind === "tool" && b.tool.status === "running",
+  );
+}
+
 /** Collapsible = process the operator doesn't have to read or act on inline:
  *  reasoning, finished tool calls, host terminals that are neither pending nor
  *  running, and the View chips (a version / the live head — the viewport surfaces
  *  those anyway). Only two kinds break a work log run: answer `text` (the model
  *  writing *to the operator* — the one thing that should segment the log) and
- *  approvals / live host commands (the operator has to act before the run goes on).
- *  Everything else folds into one continuously growing log. */
+ *  approvals / live host commands / running tools (the operator has to act before the
+ *  run goes on, or is watching it happen). Everything else folds into one continuously
+ *  growing log. */
 function isCollapsible(group: BlockGroup): boolean {
-  if (group.kind === "thinking" || group.kind === "tool") return true;
+  if (group.kind === "thinking") return true;
   if (group.kind === "view_version" || group.kind === "view_live") return true;
+  if (group.kind === "tool") return !hasLiveTool(group);
   if (group.kind === "host_command") return !hasLiveHost(group);
   return false;
+}
+
+/** Every group with a call in flight. The trailing group is live by *position*; these
+ *  are live by *state*, and with parallel calls the two are no longer the same set. */
+export function liveToolGroupIds(groups: BlockGroup[]): Set<string> {
+  return new Set(groups.filter(hasLiveTool).map((g) => g.id));
+}
+
+/** Every tool call in flight across a turn, in order — read across the whole turn
+ *  because a parallel batch has no single trailing member that speaks for the rest. */
+export function runningTools(
+  blocks: AssistantBlock[] | undefined,
+): ToolInvocation[] {
+  return (blocks ?? []).flatMap((b) =>
+    b.kind === "tool" && b.tool.status === "running" ? [b.tool] : [],
+  );
 }
 
 /* ── Compaction layout ────────────────────────────────────────────────────────
