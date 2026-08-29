@@ -110,17 +110,84 @@ def estimate_tokens(messages: list[Any]) -> int:
     return sum(len(text) for text in chunks if text) // CHARS_PER_TOKEN
 
 
+@dataclass(frozen=True)
+class ContentChars:
+    """Message characters, split by how they tokenize.
+
+    Prose and JSON do not tokenize at the same rate — measured against cl100k, prose runs
+    about 4.7 characters per token and serialized JSON about 4.0, because JSON spends a
+    third of its characters on punctuation and short repeated keys. A single
+    characters-per-token proxy is fine for a *soft budget* (which is all
+    :func:`estimate_tokens` serves) but not for a **split**, where a shared divisor
+    silently inflates whichever part is prose by about a fifth relative to whichever part
+    is JSON. Keeping the two apart is what lets ``services.context_budget`` apply the
+    right rate to each."""
+
+    prose: int
+    structured: int
+
+
+def message_chars(messages: list[Any]) -> ContentChars:
+    """Characters across ``messages``, split prose vs. serialized-structure.
+
+    The classification is by content shape, not by part type, because that is exactly the
+    distinction that tokenizes differently: a string is prose wherever it appears, and a
+    dict is JSON by the time the model sees it. Binary content contributes nothing, on
+    the same grounds as :func:`estimate_tokens`."""
+    prose = structured = 0
+    for message in messages:
+        for part in message.parts:
+            content = getattr(part, "content", None)
+            if isinstance(content, str):
+                prose += len(content)
+            elif isinstance(content, list | tuple) and all(
+                isinstance(item, str) for item in content
+            ):
+                prose += sum(len(item) for item in content)
+            else:
+                structured += len(_content_text(content))
+    return ContentChars(prose=prose, structured=structured)
+
+
 def _message_text(message: Any) -> str:
     """Every text-bearing part of a message, joined — the input to
     :func:`estimate_tokens`. Binary content contributes nothing on purpose (see there)."""
-    chunks: list[str] = []
-    for part in message.parts:
-        content = getattr(part, "content", None)
-        if isinstance(content, str):
-            chunks.append(content)
-        elif isinstance(content, list | tuple):
-            chunks.extend(item for item in content if isinstance(item, str))
-    return " ".join(chunks)
+    return " ".join(_content_text(getattr(part, "content", None)) for part in message.parts)
+
+
+def _content_text(content: Any) -> str:
+    """A part's content as the text a model would actually be sent.
+
+    **Structured content counts.** A tool result is usually a dict — a search's hits, a
+    file listing, a page of rows — and it reaches the model as serialized JSON, keys
+    included. Reading only `str` content scored every one of those as zero, which on a
+    tool-heavy thread is most of the window: the footprint fallback under-reported by
+    multiples, so auto-compaction held off on precisely the threads filling up fastest,
+    and the context breakdown credited the whole weight to the tool *schemas* instead of
+    to the results they returned.
+
+    **Anything unrecognised still counts as nothing**, which is what keeps the binary
+    rule intact. A `BinaryContent` — a retained screenshot, base64 in the blob — falls
+    through to `""` rather than being measured by its character length, because a single
+    image would otherwise read as hundreds of thousands of phantom tokens. Under-counting
+    is the safe direction and the run's own context-overflow stop is still behind this."""
+    if isinstance(content, str):
+        return content
+    # `bool` before the numbers: it is an `int` subclass, and "True" is not what a model
+    # is sent for a boolean field anyway.
+    if isinstance(content, bool):
+        return str(content)
+    if isinstance(content, int | float):
+        return str(content)
+    if isinstance(content, dict):
+        # Keys as well as values: they are serialized alongside the data and are a real
+        # share of a wide row's tokens.
+        return " ".join(
+            f"{key} {_content_text(value)}" for key, value in content.items()
+        )
+    if isinstance(content, list | tuple):
+        return " ".join(_content_text(item) for item in content)
+    return ""
 
 
 def flatten_content(content: Any) -> str:

@@ -25,6 +25,7 @@ from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.calendar import CalendarService
+from services.context_budget import OverheadCache
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
 from services.cookbook import CookbookService
@@ -286,6 +287,10 @@ def serving(request: Request) -> ServingService:
 
 def settings_store(request: Request) -> SettingsStore:
     return request.app.state.settings_store
+
+
+def overhead_cache(request: Request) -> OverheadCache:
+    return request.app.state.context_overhead
 
 
 def credentials(request: Request) -> CredentialStore:

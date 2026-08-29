@@ -108,6 +108,10 @@ def test_run_metrics_exposes_context_on_the_wire():
         "window": 200_000,
         "fraction": pytest.approx(0.975),
         "level": "alert",
+        # Null, not absent: this frame was built without a measured composition (no turn
+        # assembled a request), and the split is one of the things that is absent rather
+        # than zeroed when it wasn't measured.
+        "parts": None,
     }
 
 

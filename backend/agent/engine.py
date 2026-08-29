@@ -75,6 +75,7 @@ from runs import (
     total_timings,
 )
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
+from services.context_budget import OverheadCache, compose
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
@@ -276,6 +277,7 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
     metrics never diverge."""
     counts = conversation_totals(messages)
     timings = run.prior_timings + total_timings(run.timer.responses)
+    footprint = context_footprint(messages)
     return RunMetrics(
         steps=counts.steps,
         tool_calls=counts.tool_calls,
@@ -290,8 +292,11 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
         ttft_ms_total=timings.ttft_ms_total or None,
         ttft_samples=timings.ttft_samples,
         context_window=run.context_window,
-        context_used=context_footprint(messages),
+        context_used=footprint,
         context_thresholds=run.context_thresholds,
+        # The split of that footprint. Scaled to the provider's own total, so the parts
+        # always add up to the figure beside them even though each is an estimate.
+        context_parts=compose(footprint, run.context_overhead, messages),
     )
 
 
@@ -857,6 +862,7 @@ def build_chat_orchestrator(
     disabled_tools: frozenset[str] = frozenset(),
     binding: ConversationBinding = _CHAT_BINDING,
     request_limit: int | None = None,
+    overhead_cache: OverheadCache | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -895,6 +901,11 @@ def build_chat_orchestrator(
     ``binding`` is the thread's workspace binding — its mode and its project — read off
     the conversation by the caller. It decides where this turn's file work happens
     (``services/workspace.py``) and, through ``disabled_tools``, which tools belong in it.
+
+    ``overhead_cache`` remembers what this turn's request weighed besides the
+    conversation, so a *reload* of the thread can still show the context breakdown — a
+    cold load has no request to measure. See ``services.context_budget.OverheadCache``
+    for why that is remembered rather than stored.
 
     ``context_thresholds`` are the operator's severity boundaries for that window — the
     fullness at which the composer's gauge turns amber and then red. They only decide the
@@ -1127,6 +1138,12 @@ def build_chat_orchestrator(
                 store=store,
                 request_limit=request_limit,
             )
+            # What this turn's requests weighed besides the conversation, kept for the
+            # next cold load of any thread in this mode. Recorded here rather than where
+            # it is measured because the mode is what keys it, and the mode is the
+            # orchestrator's to know.
+            if overhead_cache is not None:
+                overhead_cache.remember(binding.mode, run.context_overhead)
 
             # Verify only a completed turn (not one parked for approval or stopped at
             # a bound), and only when the heuristic says it is worth judging.

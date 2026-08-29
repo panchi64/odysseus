@@ -25,6 +25,7 @@ from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import ContextWindow, RunMetrics
+from services.context_budget import compose
 from services.conversation_view import MessageView
 from services.conversations import (
     ConversationSummaryView,
@@ -304,7 +305,18 @@ async def _detail(
         # the gauge in the colour the live turn left it, and reading the stored pair here
         # is what keeps a cold load from quietly re-deriving severity against 75/90.
         context = ContextWindow.from_used(
-            used, window, await get_context_thresholds(deps.settings_store(request), OPERATOR_ID)
+            used,
+            window,
+            await get_context_thresholds(deps.settings_store(request), OPERATOR_ID),
+            # A reload has no request to measure, so the split leans on what the last turn
+            # in this thread's mode weighed. Absent until some turn has run in this
+            # process — the honest answer, rather than a stored figure that would go stale
+            # the moment a tool was switched off.
+            compose(
+                used,
+                deps.overhead_cache(request).get((await store.binding(conversation_id)).mode),
+                history,
+            ),
         )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the

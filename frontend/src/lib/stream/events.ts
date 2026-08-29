@@ -23,6 +23,23 @@ export interface RunStarted extends Base {
 /** How full a model's context window is after a turn. The backend owns the
  *  whole derivation (used tokens, fraction, severity); clients only render it.
  *  Null on a metrics frame when unmeasurable (no window or no token usage). */
+/** What the occupied part of the window is holding, three ways.
+ *
+ *  The three are exhaustive — the backend scales them to sum to `ContextWindow.used` —
+ *  so they can be read as a whole with no unexplained remainder.
+ *
+ *  Every figure is an **estimate anchored to the provider's total**: no provider reports
+ *  a breakdown, so the split is measured backend-side from what it assembled and scaled
+ *  to the one number the provider does report. Render them with a `~`. */
+export interface ContextComposition {
+  /** The standing brief: instructions + system prompt. */
+  system: number;
+  /** Every tool name, description and JSON schema handed to the model. */
+  tools: number;
+  /** The conversation itself. */
+  messages: number;
+}
+
 export interface ContextWindow {
   /** Tokens occupying the window (prompt + generation). */
   used: number;
@@ -32,6 +49,11 @@ export interface ContextWindow {
   fraction: number;
   /** Window severity per the backend's thresholds. */
   level: "nominal" | "warn" | "alert";
+  /** What `used` is made of. Null when it couldn't be measured — a thread whose turns
+   *  all predate the measurement, or a reload in a process where no turn has run yet.
+   *  Absent, never zeroed: a split claiming no tools and no brief would be a confident
+   *  lie about the one thing this exists to expose. */
+  parts: ContextComposition | null;
 }
 
 /** What the thread has cost so far — **cumulative over the conversation**, not the

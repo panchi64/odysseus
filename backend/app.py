@@ -46,6 +46,7 @@ from routes import (
 from runs import RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
+from services.context_budget import OverheadCache
 from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
@@ -220,6 +221,10 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # it below — because the notification channels resolve their own configuration from
     # it, and they are composed with the attention surface a few lines down.
     app.state.settings_store = SettingsStore(engine)
+    # What a request weighs besides the conversation, per mode — so a reloaded thread can
+    # still break its context down. Deliberately in memory rather than in the database:
+    # it describes the current tool/brief configuration, not the thread's history.
+    app.state.context_overhead = OverheadCache()
     # Conversation-scoped tool auto-approval grants — part of the approval posture,
     # so it stays core beside the run substrate the approvals park on.
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)

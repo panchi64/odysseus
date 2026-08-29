@@ -33,6 +33,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
+from agent.overhead import measure_overhead
 from core.citations import Citable
 from core.serde import jsonable
 from runs import (
@@ -189,6 +190,14 @@ async def stream_agent_run(
                     async for event in stream:
                         _on_model_event(event, run, mark_first_token)
             run.emit(StepCompleted(index=step))
+            # Measured here and nowhere else: the tool manager only lists its definitions
+            # once it has been prepared for a step, and neither the schemas nor the
+            # instructions ever reach the message history — so this is the one moment the
+            # request's non-conversation weight is visible. Re-measured each step because
+            # a turn's tool set can change under it (a mode switch, a toolset that
+            # prepares differently), and the gauge should describe the request that just
+            # went out rather than the first one of the turn.
+            run.context_overhead = measure_overhead(agent_run.ctx, node.request)
             if on_step is not None:
                 on_step(agent_run.ctx.state.message_history)
         elif Agent.is_call_tools_node(node):

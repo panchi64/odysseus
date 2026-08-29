@@ -29,6 +29,11 @@ export interface PopoverProps {
   block?: boolean;
   /** Extra classes for the panel (width, max-height, layout). */
   panelClass?: string;
+  /** Drop the panel's own surface — no fill, no radius, no elevation — leaving only
+   *  the positioning. For a panel that brings its own container (the framed, frosted
+   *  region a `ConstructionReveal` draws): a card *around* that frame is the
+   *  box-in-a-box the frame exists to avoid, and its shadow would sit on the glass. */
+  bare?: boolean;
   /** Fired on the closed→open edge only, so a caller can refresh what the panel is
    *  about to show. Not fired on close, and never twice for one opening. */
   onOpen?: () => void;
@@ -142,6 +147,7 @@ export function Popover(props: PopoverProps): JSX.Element {
             }}
             placement={placement()}
             panelClass={props.panelClass}
+            bare={props.bare}
             onMeasure={measure}
           >
             {props.panel({ close })}
@@ -159,6 +165,7 @@ function PopoverPanel(props: {
   ref: (el: HTMLDivElement) => void;
   placement: Placement | null;
   panelClass?: string;
+  bare?: boolean;
   onMeasure: () => void;
   children: JSX.Element;
 }): JSX.Element {
@@ -167,7 +174,10 @@ function PopoverPanel(props: {
     <div
       ref={props.ref}
       class={cx(
-        "ody-rise fixed z-50 rounded-panel bg-surface shadow-2",
+        "fixed z-50",
+        // A bare panel also drops the rise: it brings its own arrival, and two
+        // entrance animations on nested elements read as a bounce.
+        !props.bare && "ody-rise rounded-panel bg-surface shadow-2",
         // Scrolling is added only when we actually clamp; Select already scrolls
         // itself and Combobox scrolls an inner element, and nesting a second
         // overflow-auto around either gives the panel two scrollbars.

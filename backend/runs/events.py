@@ -74,6 +74,22 @@ class ContextThresholds(_Body):
 DEFAULT_CONTEXT_THRESHOLDS = ContextThresholds(warn=0.75, alert=0.9)
 
 
+class ContextComposition(_Body):
+    """What the occupied part of the window is actually holding, three ways.
+
+    The three are exhaustive by construction — they are scaled to sum to
+    :attr:`ContextWindow.used` (see ``services.context_budget``) — so the operator can
+    read them as a whole rather than wondering what the remainder is.
+
+    Every figure is an **estimate anchored to the provider's total**: the split is ours,
+    measured from what we assembled, because no provider reports one. Surfaces render
+    these with a `~`."""
+
+    system: int  # the standing brief: instructions + system prompt
+    tools: int  # every tool name, description and JSON schema handed to the model
+    messages: int  # the conversation itself
+
+
 class ContextWindow(_Body):
     """How full a model's context window is after a turn — the single owner of
     the fullness derivation and its severity thresholds. Built by
@@ -84,6 +100,10 @@ class ContextWindow(_Body):
     window: int  # the model's context window
     fraction: float  # used / window, clamped to 0–1
     level: Literal["nominal", "warn", "alert"]
+    # What `used` is made of, when it could be measured. Null on a thread whose turns all
+    # predate the measurement, and on a cold load of one — the split is captured while a
+    # request is being assembled, and a reload has no request to look at.
+    parts: ContextComposition | None = None
 
     @classmethod
     def from_used(
@@ -91,6 +111,7 @@ class ContextWindow(_Body):
         used: int | None,
         window: int | None,
         thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
+        parts: ContextComposition | None = None,
     ) -> ContextWindow | None:
         """Derive the window state from the context footprint (``used``), or None
         when there's no ceiling to measure against or no footprint was reported.
@@ -110,7 +131,7 @@ class ContextWindow(_Body):
             if fraction >= thresholds.warn
             else "nominal"
         )
-        return cls(used=used, window=window, fraction=fraction, level=level)
+        return cls(used=used, window=window, fraction=fraction, level=level, parts=parts)
 
 
 class RunMetrics(_Body):
@@ -170,13 +191,19 @@ class RunMetrics(_Body):
         default=DEFAULT_CONTEXT_THRESHOLDS, exclude=True
     )
 
+    # How that footprint splits across the standing brief, the tool schemas and the
+    # conversation. Measured during the turn (the tool definitions are only knowable while
+    # a request is being assembled), so it rides on the frame rather than being derived
+    # from it.
+    context_parts: ContextComposition | None = None
+
     @computed_field
     @property
     def context(self) -> ContextWindow | None:
         """The context-window fullness after this turn — null when unmeasurable
         (no window, or no footprint). Clients render it; they never derive it."""
         return ContextWindow.from_used(
-            self.context_used, self.context_window, self.context_thresholds
+            self.context_used, self.context_window, self.context_thresholds, self.context_parts
         )
 
     @computed_field
