@@ -2,6 +2,7 @@ export {
   isTerminal,
   PROTOCOL_VERSION,
   type ContextComposition,
+  type ContextSegment,
   type ContextWindow,
   type PlanItem,
   type RunEvent,

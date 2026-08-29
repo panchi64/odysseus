@@ -34,6 +34,8 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
+from inspect import isawaitable
 from typing import Any
 
 from pydantic_ai import (
@@ -42,6 +44,7 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
+    RunContext,
     RunUsage,
     ToolApproved,
     UsageLimitExceeded,
@@ -233,7 +236,7 @@ def _build_agent(
     # engine's prompt-prefix cache for the whole history behind them (volatile context
     # belongs in a manifest's `prompt_context` export instead, delivered at the tail).
     for provider in instruction_providers:
-        agent.instructions(provider)
+        agent.instructions(_attributed(provider))
 
     @agent.instructions
     def _current_date() -> str:
@@ -247,6 +250,55 @@ def _build_agent(
         return CURRENT_DATE.format(date=stamp)
 
     return agent
+
+
+def _attributed(provider: InstructionProvider) -> InstructionProvider:
+    """Wrap an instruction provider so the brief it contributes can be attributed to it.
+
+    The context readout breaks the standing brief down by which feature put text there —
+    the one form of the figure an operator can act on, since each block corresponds to
+    something they can switch off. That attribution is only available *here*: the library
+    concatenates every provider's return value into one instructions string, and by the
+    time the request exists there is no seam left to cut on. So each provider's own
+    output is measured as it is produced and left on the Run for `agent/overhead.py` to
+    read at the end of the step.
+
+    Records characters, never the text: this is a gauge annotation, and a copy of the
+    brief on the Run would be one more place a prompt lives.
+    """
+    block = _block_id(provider)
+
+    @wraps(provider)
+    async def attributed(ctx: RunContext[RunDeps]) -> str:
+        # Awaited only when there is something to await: `InstructionProvider` describes
+        # the async shape, but the library accepts a plain sync function and features
+        # write them, so a blanket `await` here would break every synchronous provider's
+        # turn for the sake of a readout row.
+        produced = provider(ctx)
+        text = await produced if isawaitable(produced) else produced
+        # Defensive on both hops: an agent built without deps (a test harness) and a
+        # provider that returned a non-string both cost the block's row, not the turn.
+        run = getattr(getattr(ctx, "deps", None), "run", None)
+        if run is not None and isinstance(text, str):
+            run.instruction_blocks[block] = len(text)
+        return text
+
+    return attributed
+
+
+def _block_id(provider: InstructionProvider) -> str:
+    """The slug a provider's contribution is filed under — its own name, minus the
+    `_instructions` suffix the convention gives them (`skill_catalog_instructions` →
+    `skill_catalog`).
+
+    Derived rather than declared because `InstructionProvider` is a plain callable and
+    giving every manifest a label field would be ceremony for a readout row. A rename
+    therefore renames the row, which is the honest failure: the client de-slugs whatever
+    it is given, so the worst case is a row reading "Skill catalog" instead of "Skills"
+    — never a wrong number.
+    """
+    name = getattr(provider, "__name__", "") or "instructions"
+    return name.strip("_").removesuffix("_instructions").removeprefix("instructions_") or "base"
 
 
 def _summarize(name: str, args: dict[str, Any]) -> str:

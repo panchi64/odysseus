@@ -10,9 +10,14 @@ export function pad(value: number, width = 4): string {
   return Math.trunc(value).toString().padStart(width, "0");
 }
 
-/** Percent with no decimals (e.g. 87%). */
-export function pct(value: number): string {
-  return `${Math.round(value)}%`;
+/** Percent with no decimals (e.g. 87%).
+ *
+ *  `digits` adds them back for a figure whose whole point is that it is small: rounding
+ *  a 0.6% row to "1%" makes the smallest contributors indistinguishable from each other
+ *  and from zero, which in a breakdown is the difference between "these are the rows
+ *  that don't matter" and "these rows are broken". */
+export function pct(value: number, digits = 0): string {
+  return `${value.toFixed(digits)}%`;
 }
 
 /** A duration from milliseconds, at the coarsest unit that still says something
@@ -35,11 +40,17 @@ export function duration(ms: number): string {
 /** A large count abbreviated to three significant figures (e.g. `2.2M`, `450K`, `812`).
  *
  *  For counts that are read as a magnitude rather than a quantity — a thread's token
- *  total is "about two million", and the exact figure belongs in the tooltip. */
-export function compactCount(n: number): string {
+ *  total is "about two million", and the exact figure belongs in the tooltip.
+ *
+ *  `precise` keeps the tenth above 10K (`117.4K`, not `117K`). The default drops it
+ *  because a lone magnitude is read, not compared — the digit is noise there. It is the
+ *  opposite in a *breakdown*, where the figures are read against each other and rounding
+ *  to the thousand makes neighbouring rows collide at the exact moment the operator is
+ *  ranking them. Same rounding either way, one decision. */
+export function compactCount(n: number, precise = false): string {
   const abs = Math.abs(n);
   if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (abs >= 10_000) return `${Math.round(n / 1000)}K`;
+  if (abs >= 10_000 && !precise) return `${Math.round(n / 1000)}K`;
   if (abs >= 1_000) return `${(n / 1000).toFixed(1)}K`;
   return `${n}`;
 }

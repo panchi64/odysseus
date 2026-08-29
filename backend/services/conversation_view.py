@@ -127,26 +127,102 @@ class ContentChars:
     structured: int
 
 
-def message_chars(messages: list[Any]) -> ContentChars:
-    """Characters across ``messages``, split prose vs. serialized-structure.
+#: What each kind of message part counts as, for the context readout's message split.
+#:
+#: The four classes are the ones an operator can *do* something about. A thread that is
+#: mostly ``tool_results`` is a thread whose tools return too much (or are called too
+#: often); one that is mostly ``conversation`` wants a compaction or a fresh thread; one
+#: that is mostly ``reasoning`` wants a lower thinking budget. Splitting any finer — by
+#: role, by turn — would name things the operator has no separate lever for.
+#:
+#: ``SystemPromptPart`` is deliberately **absent**: it lives at the head of the history,
+#: but it is the standing brief, and ``agent/overhead.py`` already counts it there.
+#: Counting it in both places was a real double-count — small, but it made the parts sum
+#: to more than the whole before scaling pulled them back, quietly shrinking every other
+#: row to pay for it.
+_PART_CLASSES: tuple[tuple[type, str], ...] = (
+    (ThinkingPart, "reasoning"),
+    (ToolCallPart, "tool_calls"),
+    (ToolReturnPart, "tool_results"),
+    (RetryPromptPart, "tool_results"),
+    (UserPromptPart, "conversation"),
+    (TextPart, "conversation"),
+)
+
+#: The order the classes are reported in — largest-typical first, and stable regardless
+#: of what a given thread happens to contain, so two threads' breakdowns read the same
+#: way. A class with nothing in it is dropped by the caller rather than shown as a zero.
+MESSAGE_CLASSES = ("conversation", "tool_results", "tool_calls", "reasoning")
+
+
+def _part_class(part: Any) -> str | None:
+    """Which class a part's characters belong to, or None to leave it uncounted."""
+    if type(part).__name__ == "SystemPromptPart":
+        return None
+    for kind, name in _PART_CLASSES:
+        if isinstance(part, kind):
+            return name
+    # Anything the library grows later still lands somewhere real rather than vanishing
+    # from a total that is supposed to be exhaustive.
+    return "conversation"
+
+
+def _part_chars(part: Any) -> tuple[int, int]:
+    """One part as (prose, structured) characters.
 
     The classification is by content shape, not by part type, because that is exactly the
     distinction that tokenizes differently: a string is prose wherever it appears, and a
     dict is JSON by the time the model sees it. Binary content contributes nothing, on
-    the same grounds as :func:`estimate_tokens`."""
-    prose = structured = 0
+    the same grounds as :func:`estimate_tokens`.
+
+    A tool call is the exception that has to be read off another attribute — its payload
+    is ``args``, not ``content`` — and it used to be scored as nothing at all. On a
+    thread of many small calls that is a real slice of the window, and it was landing in
+    the one place guaranteed to mislead: unattributed, so scaling spread it across the
+    parts that *were* measured."""
+    if isinstance(part, ToolCallPart):
+        return 0, len(_content_text(getattr(part, "args", None)))
+    content = getattr(part, "content", None)
+    if isinstance(content, str):
+        return len(content), 0
+    if isinstance(content, list | tuple) and all(isinstance(item, str) for item in content):
+        return sum(len(item) for item in content), 0
+    return 0, len(_content_text(content))
+
+
+def message_class_chars(messages: list[Any]) -> dict[str, ContentChars]:
+    """Characters across ``messages``, split by class and by how each tokenizes.
+
+    Keyed by the classes in :data:`MESSAGE_CLASSES`; a class with no characters is
+    omitted rather than reported as zero, so a thread that has never called a tool grows
+    no empty rows."""
+    prose: dict[str, int] = {}
+    structured: dict[str, int] = {}
     for message in messages:
         for part in message.parts:
-            content = getattr(part, "content", None)
-            if isinstance(content, str):
-                prose += len(content)
-            elif isinstance(content, list | tuple) and all(
-                isinstance(item, str) for item in content
-            ):
-                prose += sum(len(item) for item in content)
-            else:
-                structured += len(_content_text(content))
-    return ContentChars(prose=prose, structured=structured)
+            name = _part_class(part)
+            if name is None:
+                continue
+            text, json_text = _part_chars(part)
+            prose[name] = prose.get(name, 0) + text
+            structured[name] = structured.get(name, 0) + json_text
+    return {
+        name: ContentChars(prose=prose.get(name, 0), structured=structured.get(name, 0))
+        for name in MESSAGE_CLASSES
+        if prose.get(name, 0) or structured.get(name, 0)
+    }
+
+
+def message_chars(messages: list[Any]) -> ContentChars:
+    """Characters across ``messages``, split prose vs. serialized-structure.
+
+    The whole-conversation figure, summed from :func:`message_class_chars` so the total
+    and the per-class rows can never disagree about what the thread weighs."""
+    by_class = message_class_chars(messages).values()
+    return ContentChars(
+        prose=sum(part.prose for part in by_class),
+        structured=sum(part.structured for part in by_class),
+    )
 
 
 def _message_text(message: Any) -> str:
