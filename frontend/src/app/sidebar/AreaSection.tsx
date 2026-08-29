@@ -64,7 +64,6 @@ export function AreaSection(props: {
           <For each={props.area.items}>
             {(item) => (
               <Tooltip
-                float
                 delay={1000}
                 side="right"
                 label={item.description}

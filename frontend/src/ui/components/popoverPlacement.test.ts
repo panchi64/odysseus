@@ -114,7 +114,7 @@ describe("horizontal placement", () => {
 });
 
 describe("block mode", () => {
-  test("matches the trigger width and ignores align", () => {
+  test("floors the panel at the trigger width and ignores align", () => {
     const anchor = anchorAt(100, 300);
     const p = computePlacement({
       anchor,
@@ -123,8 +123,35 @@ describe("block mode", () => {
       align: "right",
       block: true,
     });
-    expect(p.width).toBe(anchor.width);
+    expect(p.minWidth).toBe(anchor.width);
     expect(p.left).toBe(anchor.left);
+  });
+
+  test("never pins a panel down to a narrower trigger", () => {
+    // The reported bug: the composer's mode select is sized by its own short label,
+    // so a panel pinned to it truncated every option. `minWidth` is a floor — the
+    // 160px panel above an 80px trigger keeps its own width.
+    const anchor = anchorAt(100, 300); // 80px wide
+    const p = computePlacement({
+      anchor,
+      panel: PANEL, // 160px wide
+      viewport: VIEWPORT,
+      block: true,
+    });
+    expect(p.minWidth!).toBeLessThanOrEqual(PANEL.width);
+  });
+
+  test("keeps a content-sized panel inside the right edge", () => {
+    // The clamp has to reason about the panel's real width, not the trigger's: a
+    // narrow trigger near the edge with a wide menu used to hang off-screen.
+    const anchor = anchorAt(100, 940); // 80px trigger hard against the right edge
+    const p = computePlacement({
+      anchor,
+      panel: PANEL, // twice the trigger's width
+      viewport: VIEWPORT,
+      block: true,
+    });
+    expect(p.left + PANEL.width).toBeLessThanOrEqual(VIEWPORT.width - EDGE);
   });
 });
 

@@ -169,8 +169,12 @@ function PopoverPanel(props: {
           props.placement?.clampHeight != null
             ? `${props.placement.clampHeight}px`
             : undefined,
-        width: props.placement?.width
-          ? `${props.placement.width}px`
+        // A floor, not a fixed width: a `block` panel spans its field but grows to
+        // fit its own options rather than truncating them (see `Placement.minWidth`).
+        // Safe to measure through — unlike the max-height above, a min-width can only
+        // widen the natural size, so re-measuring never feeds a shrinking value back.
+        "min-width": props.placement?.minWidth
+          ? `${props.placement.minWidth}px`
           : undefined,
         // Until the first measure lands the panel would flash at 0,0 in the corner.
         visibility: props.placement ? "visible" : "hidden",

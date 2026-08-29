@@ -30,7 +30,6 @@ export function ContextMeter(props: ContextMeterProps): JSX.Element {
       <Tooltip
         label={`${tokens(props.usage.used)} / ${tokens(props.usage.window)} tokens`}
         side="top"
-        float
       >
         <span class="flex items-center gap-1">
           <Text variant="micro" tone="dim">
@@ -50,7 +49,7 @@ export function ContextMeter(props: ContextMeterProps): JSX.Element {
         }
       >
         {(t) => (
-          <Tooltip label="Input / output tokens this run" side="top" float>
+          <Tooltip label="Input / output tokens this run" side="top">
             {/* `·`, not `|` — this is the same measurement as the percentage
                 beside it (what this thread costs the window), so it stays inside
                 that group rather than starting a new one. */}

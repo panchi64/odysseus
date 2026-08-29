@@ -11,7 +11,6 @@ import { navMeta } from "./navMeta";
 function PinRow(props: { item: NavItem; active: boolean }): JSX.Element {
   return (
     <Tooltip
-      float
       delay={1000}
       side="right"
       label={props.item.description}
@@ -63,7 +62,7 @@ export function Sidebar(): JSX.Element {
               ODY-WORKSPACE-02.1
             </Text>
           </a>
-          <Tooltip float side="right" label="Go to… (⌘K)">
+          <Tooltip side="right" label="Go to… (⌘K)">
             <Button
               variant="ghost"
               size="sm"

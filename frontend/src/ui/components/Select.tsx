@@ -102,10 +102,16 @@ export function Select(props: SelectProps): JSX.Element {
                           : "opacity-0",
                       )}
                     />
+                    {/* The option sets its own width — no `truncate`. The panel is
+                        floored at the field's width and grows to its contents, so
+                        an option clipped here would be clipped by nothing: the room
+                        to render it in full is always there for the asking. The
+                        trigger above still truncates, because that one *is* bounded
+                        by the field. */}
                     <Text
                       variant="body"
                       tone={opt.value === props.value ? "bright" : "default"}
-                      class="min-w-0 truncate"
+                      class="whitespace-nowrap"
                     >
                       {opt.label}
                     </Text>

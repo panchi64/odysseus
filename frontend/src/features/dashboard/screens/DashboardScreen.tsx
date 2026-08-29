@@ -129,7 +129,7 @@ export function DashboardScreen(): JSX.Element {
             }
           >
             {(reason) => (
-              <Tooltip label={reason()} side="left" prose float>
+              <Tooltip label={reason()} side="left">
                 <StatusFlag status={overallStatus()} dot>
                   {overallLabel()}
                 </StatusFlag>

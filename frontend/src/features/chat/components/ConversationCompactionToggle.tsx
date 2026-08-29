@@ -75,7 +75,7 @@ export function ConversationCompactionToggle(props: {
             align="right"
             panelClass="min-w-44 p-2"
             trigger={({ open, setOpen }) => (
-              <Tooltip label={TOOLTIP} side="top" float>
+              <Tooltip label={TOOLTIP} side="top">
                 {/* Bright while this thread pins its own value, dim while it
                   inherits — brightness separates pinned from inherited, which is
                   exactly what the old label's tone swap said. */}

@@ -1,151 +1,123 @@
 import { Show, createSignal, onCleanup, splitProps, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { cx } from "../cx";
+import { computeTipPosition, type TipSide } from "./tooltipPlacement";
 
 export interface TooltipProps {
   /** Tooltip text. */
   label: string;
-  /** Edge to place the tip. Default top. */
-  side?: "top" | "bottom" | "left" | "right";
-  /** Hover-intent delay before the tip shows, in ms. Only applies in `float`
-   *  mode. Default 0 (instant). */
+  /** Edge to place the tip. Default top — flipped to the opposite edge when that
+   *  side has no room. */
+  side?: TipSide;
+  /** Hover-intent delay before the tip shows, in ms. Default 0 (instant). */
   delay?: number;
-  /** Render the tip in a portal with fixed positioning so it escapes
-   *  overflow-clipping ancestors (e.g. a scrolling sidebar). Enables `delay`. */
-  float?: boolean;
-  /** Let the tip wrap as a sentence (capped width) instead of staying on one
-   *  line — for full explanations rather than short labels (see `InfoHint`). */
-  prose?: boolean;
   class?: string;
   children: JSX.Element;
 }
 
-const sideClass = {
-  top: "bottom-full left-1/2 -translate-x-1/2 mb-1",
-  bottom: "top-full left-1/2 -translate-x-1/2 mt-1",
-  left: "right-full top-1/2 -translate-y-1/2 mr-1",
-  right: "left-full top-1/2 -translate-y-1/2 ml-1",
-} as const;
-
 /* A tooltip explains something to the operator, so it is the interface voice
    (§2): sans, sentence case, on a raised surface with the shadow's own hairline
-   rather than a border of its own. */
-const tipChrome =
-  "pointer-events-none rounded-ctl bg-raised px-2 py-1 text-label font-sans text-bright shadow-1";
-const tipCase = (prose?: boolean) =>
-  prose ? "max-w-64 whitespace-normal" : "whitespace-nowrap";
+   rather than a border of its own.
 
-/** Hover/focus tooltip. Default is a CSS-only instant reveal positioned
- *  relative to the trigger. `float` switches to a portaled, fixed-positioned
- *  tip (with optional `delay`) that can't be clipped by scrolling ancestors. */
+   `max-w` + `whitespace-normal`: the tip soft-wraps at a readable measure instead
+   of running out of the window as one line. Short labels — the numeric readouts
+   under the composer — never reach the cap and so still render on a single line;
+   only a real sentence wraps, which is the point. `break-words` is the backstop
+   for the one thing wrapping can't help with, an unbroken token (a long path, a
+   model id) wider than the cap. */
+const tipChrome =
+  "pointer-events-none max-w-64 rounded-ctl bg-raised px-2 py-1 text-label font-sans whitespace-normal break-words text-bright shadow-1";
+
+/** Hover/focus tooltip.
+ *
+ *  **Always portaled to `document.body` and positioned `fixed`** — the same move,
+ *  and the same reasoning, as `Popover`. It used to default to an `absolute` child
+ *  of its own trigger and portal only when a caller passed `float`, which put the
+ *  burden of knowing about clipping on all 32 call sites: any tip inside a
+ *  scrolling or `overflow-hidden` ancestor — the transcript, the readout line under
+ *  the composer, a panel — was cut off by it, and whether it happened to be cut off
+ *  was a property of where the component was mounted rather than of anything the
+ *  caller said. A portal escapes every ancestor's overflow and stacking context;
+ *  the placement then flips and clamps against the viewport, so a tip near an edge
+ *  moves instead of overflowing. */
 export function Tooltip(props: TooltipProps): JSX.Element {
   const [local] = splitProps(props, [
     "label",
     "side",
     "delay",
-    "float",
-    "prose",
     "class",
     "children",
   ]);
 
-  if (!local.float) {
-    return (
-      <span class={cx("group/tip relative inline-flex", local.class)}>
-        {local.children}
-        <span
-          role="tooltip"
-          class={cx(
-            tipChrome,
-            tipCase(local.prose),
-            "absolute z-50 hidden group-hover/tip:block group-focus-within/tip:block",
-            local.prose ? "max-w-56 whitespace-normal" : "whitespace-nowrap",
-            sideClass[local.side ?? "top"],
-          )}
-        >
-          {local.label}
-        </span>
-      </span>
-    );
-  }
-
-  // Floating mode: position from the trigger's viewport rect, render in a portal.
   let ref: HTMLSpanElement | undefined;
+  let tipRef: HTMLSpanElement | undefined;
   let timer: number | undefined;
-  const [pos, setPos] = createSignal<{ x: number; y: number } | null>(null);
-  const side = () => local.side ?? "top";
+  const [shown, setShown] = createSignal(false);
+  const [pos, setPos] = createSignal<{ top: number; left: number } | null>(
+    null,
+  );
 
-  const show = () => {
+  const measure = (): void => {
     if (!ref) return;
-    const r = ref.getBoundingClientRect();
-    const gap = 4;
-    switch (side()) {
-      case "right":
-        setPos({ x: r.right + gap, y: r.top + r.height / 2 });
-        break;
-      case "left":
-        setPos({ x: r.left - gap, y: r.top + r.height / 2 });
-        break;
-      case "bottom":
-        setPos({ x: r.left + r.width / 2, y: r.bottom + gap });
-        break;
-      default:
-        setPos({ x: r.left + r.width / 2, y: r.top - gap });
-    }
+    // Before the tip has rendered there is no size to centre or flip on, so the
+    // first pass places it from a zero box and the tip's own mount corrects it —
+    // while `visibility` still hides it, so the correction is never seen.
+    const tip = tipRef?.getBoundingClientRect() ?? null;
+    setPos(
+      computeTipPosition({
+        anchor: ref.getBoundingClientRect(),
+        tip: tip && { width: tip.width, height: tip.height },
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        side: local.side,
+      }),
+    );
   };
+
   const open = () => {
     window.clearTimeout(timer);
-    timer = window.setTimeout(show, local.delay ?? 0);
+    timer = window.setTimeout(() => {
+      setShown(true);
+      measure();
+    }, local.delay ?? 0);
   };
   const close = () => {
     window.clearTimeout(timer);
+    setShown(false);
     setPos(null);
   };
   onCleanup(() => window.clearTimeout(timer));
 
-  const transform = () => {
-    switch (side()) {
-      case "right":
-        return "translateY(-50%)";
-      case "left":
-        return "translate(-100%, -50%)";
-      case "bottom":
-        return "translateX(-50%)";
-      default:
-        return "translate(-50%, -100%)";
-    }
-  };
-
   return (
     <span
       ref={ref}
-      class={cx("relative", local.class)}
+      class={cx("relative inline-flex", local.class)}
       onMouseEnter={open}
       onMouseLeave={close}
       onFocusIn={open}
       onFocusOut={close}
     >
       {local.children}
-      <Show when={pos()}>
-        {(p) => (
-          <Portal>
-            <span
-              role="tooltip"
-              class={cx(
-                tipChrome,
-                tipCase(local.prose),
-                "fixed z-50 max-w-56 whitespace-normal",
-              )}
-              style={{
-                left: `${p().x}px`,
-                top: `${p().y}px`,
-                transform: transform(),
-              }}
-            >
-              {local.label}
-            </span>
-          </Portal>
-        )}
+      <Show when={shown()}>
+        <Portal>
+          <span
+            ref={(el) => {
+              tipRef = el;
+              // Measure once the tip exists, before paint, so it never visibly
+              // jumps from the provisional position to the placed one.
+              queueMicrotask(measure);
+            }}
+            role="tooltip"
+            class={cx(tipChrome, "fixed z-50")}
+            style={{
+              top: `${pos()?.top ?? 0}px`,
+              left: `${pos()?.left ?? 0}px`,
+              // Until the first real measure lands the tip would flash at 0,0.
+              visibility: pos() ? "visible" : "hidden",
+            }}
+          >
+            {local.label}
+          </span>
+        </Portal>
       </Show>
     </span>
   );
