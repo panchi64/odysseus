@@ -20,6 +20,8 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from .events import (
+    DEFAULT_CONTEXT_THRESHOLDS,
+    ContextThresholds,
     Event,
     MessageEdited,
     MessageInjected,
@@ -93,6 +95,11 @@ class Run:
     # emitted metrics can report how full the window is. None leaves the derived
     # context fields null (no ceiling to measure against).
     context_window: int | None = None
+    # The operator's severity boundaries for that window, set by the orchestrator from
+    # the same settings read that resolved everything else about the turn. Sits beside
+    # `context_window` because they are one measurement: a ceiling nobody set boundaries
+    # against, and boundaries with no ceiling to apply them to, are equally inert.
+    context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS
     # This run's wall-clock stopwatch, collecting a timing per model response as the
     # translator walks the graph. Lives on the Run rather than in `_drive_turn` so it
     # survives a park/resume: an approval splits a turn into several segments, and a

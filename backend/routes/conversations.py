@@ -32,7 +32,11 @@ from services.conversations import (
     conversation_totals,
 )
 from services.plans import plan_payload
-from services.settings_store import get_auto_compact, resolve_compaction_enabled
+from services.settings_store import (
+    get_auto_compact,
+    get_context_thresholds,
+    resolve_compaction_enabled,
+)
 from services.workspace_history import SnapshotView, snapshot_id_from_result
 
 logger = logging.getLogger(__name__)
@@ -296,7 +300,12 @@ async def _detail(
     context: ContextWindow | None = None
     if used is not None:
         window = await deps.models(request).main_context_window(OPERATOR_ID)
-        context = ContextWindow.from_used(used, window)
+        # The operator's own boundaries, not the defaults: a reloaded thread must show
+        # the gauge in the colour the live turn left it, and reading the stored pair here
+        # is what keeps a cold load from quietly re-deriving severity against 75/90.
+        context = ContextWindow.from_used(
+            used, window, await get_context_thresholds(deps.settings_store(request), OPERATOR_ID)
+        )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the
     # stored per-response timings (the one thing the messages don't carry). A thread

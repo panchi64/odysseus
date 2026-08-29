@@ -63,7 +63,9 @@ from prompts.agent import (
     VERIFIER_NUDGE,
 )
 from runs import (
+    DEFAULT_CONTEXT_THRESHOLDS,
     ApprovalRequired,
+    ContextThresholds,
     ConversationCompacted,
     LimitNotice,
     Orchestrator,
@@ -289,6 +291,7 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
         ttft_samples=timings.ttft_samples,
         context_window=run.context_window,
         context_used=context_footprint(messages),
+        context_thresholds=run.context_thresholds,
     )
 
 
@@ -846,6 +849,7 @@ def build_chat_orchestrator(
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
     context_window: int | None = None,
+    context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     uploads: UploadStore | None = None,
     attachment_ids: list[str] | None = None,
     vision: bool = False,
@@ -892,6 +896,10 @@ def build_chat_orchestrator(
     the conversation by the caller. It decides where this turn's file work happens
     (``services/workspace.py``) and, through ``disabled_tools``, which tools belong in it.
 
+    ``context_thresholds`` are the operator's severity boundaries for that window — the
+    fullness at which the composer's gauge turns amber and then red. They only decide the
+    ``level`` on the emitted metrics; nothing in the turn's behaviour keys off them.
+
     ``auto_compact`` is the conversation-compaction policy (the operator's default folded
     with any per-thread override; absent ⇒ the config defaults). When the replayed history
     has reached its share of ``context_window``, the turns before the retained tail are
@@ -903,6 +911,7 @@ def build_chat_orchestrator(
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         run.context_window = context_window
+        run.context_thresholds = context_thresholds
         agent = _build_agent(
             model, categories=categories, instruction_providers=instruction_providers
         )

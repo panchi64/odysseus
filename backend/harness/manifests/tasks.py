@@ -24,7 +24,11 @@ from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.registry import ModelRegistry
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
-from services.settings_store import SettingsStore, get_agent_request_limit
+from services.settings_store import (
+    SettingsStore,
+    get_agent_request_limit,
+    get_context_thresholds,
+)
 from services.tool_policy import effective_disabled_tools
 from services.uploads import UploadStore
 
@@ -122,6 +126,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             # Same reasoning for the per-turn model-request ceiling: an unattended task
             # runs under the operator's own setting, not a separate default.
             request_limit=await get_agent_request_limit(settings_store, view.owner_id),
+            # And the context gauge's boundaries, so a task's thread reddens at the same
+            # fullness an interactive one does — the readout is read in the same UI.
+            context_thresholds=await get_context_thresholds(settings_store, view.owner_id),
             # And the same for conversation compaction. Inert today — each fire starts a
             # fresh conversation, so there is never history to fold — but passing the
             # operator's policy rather than letting it default keeps the unattended path

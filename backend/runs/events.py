@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 PROTOCOL_VERSION = 1
 
@@ -37,6 +37,43 @@ class RunStarted(_Body):
     protocol_version: int = PROTOCOL_VERSION
 
 
+class ContextThresholds(_Body):
+    """Where a filling context window stops being unremarkable and starts being a
+    problem — the two boundaries the gauge changes colour on.
+
+    **Operator-tunable**, because the point at which the remaining room stops being
+    enough is a property of how someone works rather than of the model: a thread of
+    long tool results can spend the last quarter of a window in a single turn, while a
+    short back-and-forth has a dozen turns left at the same fullness. A fixed boundary
+    is therefore either early enough to be noise for one operator or late enough to be
+    useless for the other.
+
+    Fractions, not percentages — the same 0-1 quantity :attr:`ContextWindow.fraction`
+    and auto-compaction's own threshold already carry, so nothing here has to agree on
+    a second convention.
+
+    ``warn`` strictly below ``alert`` is an invariant, not a preference: equal
+    boundaries make the amber band unreachable, and inverted ones walk the gauge
+    backwards through severity as it fills. Enforced here so that the one construction
+    path is also the one check."""
+
+    warn: float = Field(gt=0, lt=1)
+    alert: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ContextThresholds:
+        if self.warn >= self.alert:
+            raise ValueError("the warn threshold must be below the alert threshold")
+        return self
+
+
+#: The boundaries in force when the operator hasn't moved them. 75/90 leaves roughly a
+#: turn or two of warning at typical turn sizes before the window is genuinely tight,
+#: and both sit below auto-compaction's own 0.95 default - so on a thread with
+#: compaction on, the gauge reddens while there is still something the fold can do.
+DEFAULT_CONTEXT_THRESHOLDS = ContextThresholds(warn=0.75, alert=0.9)
+
+
 class ContextWindow(_Body):
     """How full a model's context window is after a turn — the single owner of
     the fullness derivation and its severity thresholds. Built by
@@ -49,14 +86,30 @@ class ContextWindow(_Body):
     level: Literal["nominal", "warn", "alert"]
 
     @classmethod
-    def from_used(cls, used: int | None, window: int | None) -> ContextWindow | None:
+    def from_used(
+        cls,
+        used: int | None,
+        window: int | None,
+        thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
+    ) -> ContextWindow | None:
         """Derive the window state from the context footprint (``used``), or None
         when there's no ceiling to measure against or no footprint was reported.
-        Severity is nominal until 75% full, warn to 90%, then alert."""
+
+        ``thresholds`` are the operator's severity boundaries; the default is what a
+        caller with no settings store to consult gets. The *level* is resolved here and
+        travels on the wire, so that the gauge, the overflow warning, and anything else
+        keying off severity read one boundary rather than each re-deriving it — the
+        client renders a level, it never decides one."""
         if not window or used is None:
             return None
         fraction = min(1.0, used / window)
-        level = "alert" if fraction >= 0.9 else "warn" if fraction >= 0.75 else "nominal"
+        level = (
+            "alert"
+            if fraction >= thresholds.alert
+            else "warn"
+            if fraction >= thresholds.warn
+            else "nominal"
+        )
         return cls(used=used, window=window, fraction=fraction, level=level)
 
 
@@ -109,12 +162,22 @@ class RunMetrics(_Body):
     # would overstate fullness several-fold on tool-calling or multi-turn runs.
     context_used: int | None = None
 
+    # The operator's severity boundaries, seeded onto the Run at turn start and read
+    # by `context` below. Deliberately **not serialized**: it is an input to the
+    # derivation, not part of the readout, and putting it on the wire would invite a
+    # client to re-derive the level it is already being handed.
+    context_thresholds: ContextThresholds = Field(
+        default=DEFAULT_CONTEXT_THRESHOLDS, exclude=True
+    )
+
     @computed_field
     @property
     def context(self) -> ContextWindow | None:
         """The context-window fullness after this turn — null when unmeasurable
         (no window, or no footprint). Clients render it; they never derive it."""
-        return ContextWindow.from_used(self.context_used, self.context_window)
+        return ContextWindow.from_used(
+            self.context_used, self.context_window, self.context_thresholds
+        )
 
     @computed_field
     @property

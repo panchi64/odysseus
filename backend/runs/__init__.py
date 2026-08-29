@@ -17,10 +17,12 @@ from __future__ import annotations
 
 from . import events
 from .events import (
+    DEFAULT_CONTEXT_THRESHOLDS,
     PROTOCOL_VERSION,
     AnswerDelta,
     ApprovalRequired,
     CitationAdded,
+    ContextThresholds,
     ContextWindow,
     ConversationCompacted,
     ConversationTitled,
@@ -77,6 +79,8 @@ __all__ = [
     # event bodies (re-exported for producers)
     "RunStarted",
     "RunMetrics",
+    "DEFAULT_CONTEXT_THRESHOLDS",
+    "ContextThresholds",
     "ContextWindow",
     "RunEnded",
     "RunError",

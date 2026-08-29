@@ -128,6 +128,40 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       write: (next) => saveChat({ autoCompactThreshold: next / 100 }),
     },
     {
+      id: "chat.context-warn",
+      label: "Context gauge warning",
+      keywords: ["context", "ring", "gauge", "amber", "threshold", "percent"],
+      group: CHAT,
+      kind: "number",
+      unit: "%",
+      min: 1,
+      max: 99,
+      read: () => {
+        const s = chat();
+        return s === undefined
+          ? undefined
+          : Math.round(s.contextWarnThreshold * 100);
+      },
+      write: (next) => saveChat({ contextWarnThreshold: next / 100 }),
+    },
+    {
+      id: "chat.context-alert",
+      label: "Context gauge alert",
+      keywords: ["context", "ring", "gauge", "red", "threshold", "percent"],
+      group: CHAT,
+      kind: "number",
+      unit: "%",
+      min: 2,
+      max: 100,
+      read: () => {
+        const s = chat();
+        return s === undefined
+          ? undefined
+          : Math.round(s.contextAlertThreshold * 100);
+      },
+      write: (next) => saveChat({ contextAlertThreshold: next / 100 }),
+    },
+    {
       id: "chat.step-limit",
       label: "Step limit per turn",
       keywords: ["agent", "requests", "rounds", "budget", "runaway"],
