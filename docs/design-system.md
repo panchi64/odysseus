@@ -659,12 +659,19 @@ Keep:
   --shadow-2: 0 12px 32px -8px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.06);
 }
 
-/* mode-invariant, derived */
+/* mode-invariant, derived. Blurred layers only — a zero-blur layer is a border
+   (§6), and these resolve the *live* accent, so one formula covers both modes
+   and follows an operator-set hue (§5.2) with no second definition. */
 :root, [data-theme="paper"] {
-  --shadow-focus: 0 0 0 1px var(--text-bright);
+  --shadow-focus:
+    0 0 8px 1px color-mix(in oklab, var(--text-bright) 13%, transparent),
+    0 0 22px 5px color-mix(in oklab, var(--text-bright) 7%, transparent);
   --shadow-accent:
-    0 0 0 1px var(--accent),
-    0 2px 14px -2px color-mix(in oklab, var(--accent) 36%, transparent);
+    0 2px 12px -2px color-mix(in oklab, var(--accent) 55%, transparent),
+    0 10px 36px -10px color-mix(in oklab, var(--accent) 38%, transparent);
+  --shadow-alert:
+    0 2px 12px -2px color-mix(in oklab, var(--accent-alert) 50%, transparent),
+    0 10px 36px -10px color-mix(in oklab, var(--accent-alert) 34%, transparent);
 }
 ```
 
