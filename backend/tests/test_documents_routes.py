@@ -123,9 +123,7 @@ async def test_suggestions_are_reviewable_change_by_change():
         # A fully reviewed set drops out of the pending list but stays inspectable.
         assert (await client.get(f"/documents/{doc_id}/suggestions")).json() == []
         resolved = (
-            await client.get(
-                f"/documents/{doc_id}/suggestions", params={"include_resolved": True}
-            )
+            await client.get(f"/documents/{doc_id}/suggestions", params={"include_resolved": True})
         ).json()
         assert [c["status"] for c in resolved[0]["changes"]] == ["accepted", "rejected"]
         assert resolved[0]["changes"][0]["version"] == 2
@@ -137,9 +135,7 @@ async def test_accept_all_applies_a_whole_set_as_one_version():
         doc_id = (
             await client.post("/documents", json={"title": "Notes", "body": "one two three"})
         ).json()["id"]
-        proposed = await _propose(
-            app, doc_id, [("one", "1"), ("two", "2"), ("three", "3")]
-        )
+        proposed = await _propose(app, doc_id, [("one", "1"), ("two", "2"), ("three", "3")])
 
         applied = (
             await client.post(f"/documents/{doc_id}/suggestions/{proposed.id}/accept-all")
@@ -173,9 +169,9 @@ async def test_accepting_a_stale_suggestion_is_a_conflict_not_a_corruption():
 
 async def test_suggestion_review_not_found_paths():
     async with client_app() as (client, app):
-        doc_id = (
-            await client.post("/documents", json={"title": "Notes", "body": "alpha"})
-        ).json()["id"]
+        doc_id = (await client.post("/documents", json={"title": "Notes", "body": "alpha"})).json()[
+            "id"
+        ]
         other_id = (
             await client.post("/documents", json={"title": "Other", "body": "alpha"})
         ).json()["id"]

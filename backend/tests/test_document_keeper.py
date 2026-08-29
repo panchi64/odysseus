@@ -44,9 +44,7 @@ async def test_keeper_reflected_in_conversation_detail(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="hi")
     async with client_app() as (client, app):
         conv = await _start_conversation(client)
-        doc = await app.state.documents.create(
-            "operator", "Notes", "body", conversation_id=conv
-        )
+        doc = await app.state.documents.create("operator", "Notes", "body", conversation_id=conv)
 
         detail = (await client.get(f"/conversations/{conv}")).json()
         [doc_ref] = detail["documents"]

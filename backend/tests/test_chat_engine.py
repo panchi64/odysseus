@@ -137,8 +137,15 @@ def test_drop_dangling_tool_calls_trims_unanswered_trailing_call():
     assert drop_dangling_tool_calls(dangling) == [user]
 
     # Text + a dangling call → keep the text, drop only the call part.
-    mixed = [user, ModelResponse(parts=[TextPart(content="partial"), ToolCallPart(
-        tool_name="x", args={}, tool_call_id="1")])]
+    mixed = [
+        user,
+        ModelResponse(
+            parts=[
+                TextPart(content="partial"),
+                ToolCallPart(tool_name="x", args={}, tool_call_id="1"),
+            ]
+        ),
+    ]
     trimmed = drop_dangling_tool_calls(mixed)
     assert len(trimmed) == 2
     assert [type(p).__name__ for p in trimmed[-1].parts] == ["TextPart"]
@@ -186,8 +193,7 @@ def test_usage_limit_message_is_operator_legible_for_every_kind():
 
     tokens = UsageLimitExceeded("Exceeded the total_tokens_limit of 100 (total_tokens=150)")
     assert (
-        usage_limit_message(tokens)
-        == "this run hit its token budget for a single turn and stopped"
+        usage_limit_message(tokens) == "this run hit its token budget for a single turn and stopped"
     )
 
     # Every one of them names a *per-turn* bound. None may read as an account-level

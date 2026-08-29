@@ -78,7 +78,5 @@ async def test_a_process_that_already_exited_fails_fast_instead_of_waiting_out_t
     loop = asyncio.get_running_loop()
     started = loop.time()
     with pytest.raises(ConnectionError):
-        await await_http_ready(
-            f"http://127.0.0.1:{port}/", 30.0, is_alive=lambda: False
-        )
+        await await_http_ready(f"http://127.0.0.1:{port}/", 30.0, is_alive=lambda: False)
     assert loop.time() - started < 5.0  # nowhere near the 30s budget

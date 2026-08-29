@@ -10,7 +10,7 @@ from core.container import ServiceContainer
 from tools import RunDeps
 from tools.calendar import calendar_toolset
 
-from ._helpers import client_app
+from ._helpers import STUB_CONTEXT_WINDOW, client_app
 
 
 async def _calendar(client, name: str = "Personal", **extra) -> str:
@@ -24,9 +24,7 @@ async def _calendar(client, name: str = "Personal", **extra) -> str:
 
 async def test_calendar_crud_round_trip():
     async with client_app() as (client, _app):
-        created = await client.post(
-            "/calendar/calendars", json={"name": "Work", "tone": "info"}
-        )
+        created = await client.post("/calendar/calendars", json={"name": "Work", "tone": "info"})
         assert created.status_code == 201
         calendar_id = created.json()["id"]
         assert created.json()["synced"] is False
@@ -314,7 +312,11 @@ async def test_parsing_a_phrase_returns_a_draft_and_stores_nothing(monkeypatch):
         )
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=FunctionModel(respond), reasoning_off={})
+        return ResolvedModel(
+            model=FunctionModel(respond),
+            reasoning_off={},
+            context_window=STUB_CONTEXT_WINDOW,
+        )
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
@@ -472,15 +474,12 @@ async def test_editing_a_series_can_drop_its_repeat():
         )
         assert kept.json()["rrule"] == "FREQ=DAILY"
 
-        dropped = await client.patch(
-            f"/calendar/events/{event['id']}", json={"clearRrule": True}
-        )
+        dropped = await client.patch(f"/calendar/events/{event['id']}", json={"clearRrule": True})
         assert dropped.json()["rrule"] is None
 
         # And the window now yields one event rather than a run of occurrences.
         window = await client.get(
-            "/calendar/occurrences"
-            "?start=2026-06-01T00:00:00Z&end=2026-06-30T00:00:00Z"
+            "/calendar/occurrences?start=2026-06-01T00:00:00Z&end=2026-06-30T00:00:00Z"
         )
         assert len(window.json()["items"]) == 1
 

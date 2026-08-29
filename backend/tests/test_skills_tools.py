@@ -298,9 +298,7 @@ def test_catalog_block_lists_each_skill():
 
 
 def test_catalog_block_reports_what_the_budget_dropped():
-    entries = [
-        SkillCatalogEntry(name=f"skill-{i}", description="d" * 200) for i in range(100)
-    ]
+    entries = [SkillCatalogEntry(name=f"skill-{i}", description="d" * 200) for i in range(100)]
     block = _skill_catalog_block(entries)
     assert "…and" in block and "more" in block
     # Newest-first ordering means the first entries survive and the tail is what's dropped.
@@ -330,9 +328,7 @@ async def test_edit_refuses_a_draft_the_same_way_open_does():
     await _published(store)
 
     with pytest.raises(ModelRetry) as caught:
-        await _tool("edit")(
-            _ctx(_deps(skills=store)), "secret-draft", "private", "public", "why"
-        )
+        await _tool("edit")(_ctx(_deps(skills=store)), "secret-draft", "private", "public", "why")
     message = str(caught.value)
     assert "No published skill named" in message
     assert "secret-draft" not in message.split("Available skills:")[1]

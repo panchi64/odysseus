@@ -196,9 +196,7 @@ async def test_context_window_falls_back_through_the_other_keys(tmp_path: Path, 
         None,
     ],
 )
-async def test_context_window_declines_on_an_unusable_payload(
-    tmp_path: Path, monkeypatch, payload
-):
+async def test_context_window_declines_on_an_unusable_payload(tmp_path: Path, monkeypatch, payload):
     _stub_health(monkeypatch, payload=payload)
     assert await _adapter(tmp_path).probe_context_window(8123) is None
 
@@ -219,9 +217,7 @@ async def test_native_tools_follows_the_loaded_tool_parser(tmp_path: Path, monke
     assert await _adapter(tmp_path).probe_native_tools(8123) is True
 
 
-async def test_native_tools_is_false_when_the_template_has_no_parser(
-    tmp_path: Path, monkeypatch
-):
+async def test_native_tools_is_false_when_the_template_has_no_parser(tmp_path: Path, monkeypatch):
     # The case worth catching: the model loads and chats fine, but no request would ever
     # produce a tool call — so a chat role must refuse it rather than degrade silently.
     _stub_health(monkeypatch, payload={"loaded_tool_parser": None})

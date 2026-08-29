@@ -157,10 +157,21 @@ def test_proxy_blocklist_matches_core_ssrf():
     from core import ssrf as core_ssrf
 
     samples = [
-        "8.8.8.8", "1.1.1.1", "93.184.216.34",          # public
-        "127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1",  # loopback / private
-        "169.254.169.254", "100.64.0.1", "224.0.0.1", "0.0.0.0",  # metadata / cgnat / mcast
-        "::1", "fe80::1", "2606:4700:4700::1111", "fd00:ec2::254",  # ipv6
+        "8.8.8.8",
+        "1.1.1.1",
+        "93.184.216.34",  # public
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "172.16.0.1",  # loopback / private
+        "169.254.169.254",
+        "100.64.0.1",
+        "224.0.0.1",
+        "0.0.0.0",  # metadata / cgnat / mcast
+        "::1",
+        "fe80::1",
+        "2606:4700:4700::1111",
+        "fd00:ec2::254",  # ipv6
     ]
     for s in samples:
         ip = ipaddress.ip_address(s)
@@ -574,8 +585,11 @@ def _minimal_pdf(text: str = "Hello PDF World") -> bytes:
         b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
         b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
-        b"4 0 obj\n<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
-        + stream + b"\nendstream\nendobj\n"
+        b"4 0 obj\n<< /Length "
+        + str(len(stream)).encode()
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream\nendobj\n"
         b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
         b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
     )
@@ -683,9 +697,7 @@ async def test_fetch_pdf_text_scanned_pdf_raises(monkeypatch):
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, headers={"content-type": "application/pdf"}, content=scanned
-        )
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=scanned)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
@@ -805,6 +817,7 @@ async def test_containerized_browser_renders_js_extracts_and_is_stealthed(monkey
         # and the Sec-CH-UA it derives. userAgentData needs a secure context, which a
         # route-fulfilled https URL provides offline — no network egress.
         async with browser.context() as ctx:
+
             async def _ok(route):
                 await route.fulfill(status=200, content_type="text/html", body="<p>ok</p>")
 
@@ -813,9 +826,7 @@ async def test_containerized_browser_renders_js_extracts_and_is_stealthed(monkey
             await browser.apply_stealth(probe)
             await probe.goto("https://stealth.local/", wait_until="domcontentloaded")
             assert await probe.evaluate("() => isSecureContext") is True
-            brands = await probe.evaluate(
-                "() => navigator.userAgentData.brands.map(b => b.brand)"
-            )
+            brands = await probe.evaluate("() => navigator.userAgentData.brands.map(b => b.brand)")
             assert brands and not any("HeadlessChrome" in b for b in brands)
             assert any("Chrome" in b for b in brands)
             assert await probe.evaluate("() => navigator.userAgentData.platform") == "Linux"

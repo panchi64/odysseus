@@ -56,9 +56,7 @@ class GoogleNativeProvider:
             ) from exc
         models = payload.get("models") if isinstance(payload, dict) else None
         if not isinstance(models, list):
-            raise DegradedCapabilityError(
-                f"{base_url!r} returned an unrecognized models payload"
-            )
+            raise DegradedCapabilityError(f"{base_url!r} returned an unrecognized models payload")
         # Gemini names come as "models/<id>" — the stored/served id is the bare one.
         ids = [
             row["name"].removeprefix("models/")
@@ -72,15 +70,39 @@ class GoogleNativeProvider:
     ) -> None:
         await self._list_models(base_url, api_key, client=client)
 
+    async def context_window(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> int | None:
+        """Gemini states this outright — ``inputTokenLimit`` on each listing entry —
+        so no key-guessing is needed here, unlike the OpenAI-wire adapter.
+
+        The *input* limit and not input+output: the gauge measures what the next turn
+        must fit into its prompt, which is exactly the input ceiling."""
+        try:
+            payload = await self._list_models(base_url, api_key, client=client)
+        except httpx.HTTPError, ValueError:
+            return None
+        models = payload.get("models") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            return None
+        for row in models:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("name")
+            if not isinstance(name, str) or name.removeprefix("models/") != model:
+                continue
+            limit = row.get("inputTokenLimit")
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                return limit
+        return None
+
     async def _list_models(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
     ) -> object:
         headers = {"x-goog-api-key": api_key} if api_key else {}
         http = client or httpx.AsyncClient(follow_redirects=True)
         try:
-            response = await http.get(
-                _models_url(base_url), headers=headers, timeout=_TIMEOUT
-            )
+            response = await http.get(_models_url(base_url), headers=headers, timeout=_TIMEOUT)
             response.raise_for_status()
             return response.json()
         finally:

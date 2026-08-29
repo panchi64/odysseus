@@ -35,8 +35,8 @@ def _write_gguf(path: Path, metadata: dict[str, tuple[int, bytes]]) -> Path:
     body = b"".join(_kv(k, tag, payload) for k, (tag, payload) in metadata.items())
     path.write_bytes(
         b"GGUF"
-        + struct.pack("<I", 3)          # version
-        + struct.pack("<Q", 0)          # tensor count
+        + struct.pack("<I", 3)  # version
+        + struct.pack("<Q", 0)  # tensor count
         + struct.pack("<Q", len(metadata))
         + body
     )

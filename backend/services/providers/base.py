@@ -65,12 +65,26 @@ class Provider(Protocol):
         optional pooled ``httpx.AsyncClient`` to reuse; None ⇒ a transient one."""
         ...
 
-    async def probe(
-        self, base_url: str, api_key: str | None, *, client: object = None
-    ) -> None:
+    async def probe(self, base_url: str, api_key: str | None, *, client: object = None) -> None:
         """One lightweight reachability+auth check. Unlike ``discover`` this lets the
         **typed** httpx error propagate so the registry's connection test can tell
         auth from rate-limit from timeout from unreachable."""
+        ...
+
+    async def context_window(
+        self, base_url: str, api_key: str | None, model: str, *, client: object = None
+    ) -> int | None:
+        """The context window ``model`` reports, or None when this provider has no way
+        to say — which is the common case, not the exception.
+
+        **Never raises.** A window is a fact the provider either states or doesn't; a
+        failure to reach it is indistinguishable, to every caller, from it not being
+        there, and both answers are "fall back to what the operator configured".
+
+        Per *model*, not per endpoint, because that is the grain of the truth: one
+        OpenAI-compatible server happily serves a 256k model and a 32k model at the
+        same base URL, and a window cached against the endpoint would be wrong for one
+        of them."""
         ...
 
     def reasoning_off(self, descriptor: ModelDescriptor) -> ModelSettings:

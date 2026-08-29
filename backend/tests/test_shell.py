@@ -148,10 +148,7 @@ def _fake_shell(tmp_path: Path) -> str:
     apart from the line discipline's echo of the typed input."""
     script = tmp_path / "fake_shell.sh"
     script.write_text(
-        "#!/bin/sh\n"
-        "while IFS= read -r line; do\n"
-        "    printf 'OUT:%s\\n' \"$line\"\n"
-        "done\n"
+        "#!/bin/sh\nwhile IFS= read -r line; do\n    printf 'OUT:%s\\n' \"$line\"\ndone\n"
     )
     script.chmod(0o755)
     return str(script)

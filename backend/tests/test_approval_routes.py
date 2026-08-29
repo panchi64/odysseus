@@ -10,7 +10,12 @@ from pydantic_ai.models.test import TestModel
 from services.registry import ModelRegistry, ResolvedModel
 from tools import RunDeps
 
-from ._helpers import client_app, collect_sse_events, swap_tool_catalog
+from ._helpers import (
+    STUB_CONTEXT_WINDOW,
+    client_app,
+    collect_sse_events,
+    swap_tool_catalog,
+)
 
 
 def danger_categories():
@@ -32,7 +37,11 @@ def _install_sensitive_tool(monkeypatch):
         # One patch covers the whole run: the turn's own model and the titler that
         # runs (on a toolless agent) after the approved turn completes both resolve
         # through here. A plain text model names the thread without tool calls.
-        return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
+        return ResolvedModel(
+            model=TestModel(custom_output_text="done"),
+            reasoning_off={},
+            context_window=STUB_CONTEXT_WINDOW,
+        )
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 

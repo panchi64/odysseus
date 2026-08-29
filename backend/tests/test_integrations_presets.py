@@ -51,9 +51,7 @@ def test_every_preset_is_dialable_and_describes_its_actions():
 async def test_configure_seals_the_credential_and_starts_untested():
     engine, vault, service = await _service()
 
-    view = await service.configure(
-        OWNER, "github", credentials={"token": "ghp_secret"}
-    )
+    view = await service.configure(OWNER, "github", credentials={"token": "ghp_secret"})
 
     assert view.preset == "github"
     assert view.name == "GitHub"
@@ -127,9 +125,7 @@ async def test_remove_drops_the_connector_and_its_decisions():
 async def test_only_usable_connectors_are_offered_to_the_agent():
     _engine, _vault, service = await _service()
     unconfigured = await service.configure(OWNER, "github")
-    configured = await service.configure(
-        OWNER, "gitlab", credentials={"token": "glpat-x"}
-    )
+    configured = await service.configure(OWNER, "gitlab", credentials={"token": "glpat-x"})
     # A credential-free connector is usable the moment it exists.
     optional = await service.configure(OWNER, "ntfy")
 
@@ -202,10 +198,6 @@ async def test_the_rest_surface_lists_presets_configures_and_gates_an_action():
         assert by_name["create_issue"]["trusted"] is True
         assert by_name["get_repo"]["trusted"] is False
 
-        assert (
-            await client.post("/integrations", json={"preset": "nope"})
-        ).status_code == 404
-        assert (
-            await client.delete(f"/integrations/{connector['id']}")
-        ).status_code == 204
+        assert (await client.post("/integrations", json={"preset": "nope"})).status_code == 404
+        assert (await client.delete(f"/integrations/{connector['id']}")).status_code == 204
         assert (await client.get("/integrations")).json() == []

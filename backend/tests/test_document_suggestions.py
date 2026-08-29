@@ -165,9 +165,7 @@ async def test_rejecting_a_change_mints_no_version_and_leaves_the_body_alone():
 
     # A fully reviewed set drops out of the pending list but survives in history.
     assert await store.suggestions.list_for_document(OWNER, doc_id) == []
-    assert len(
-        await store.suggestions.list_for_document(OWNER, doc_id, include_resolved=True)
-    ) == 1
+    assert len(await store.suggestions.list_for_document(OWNER, doc_id, include_resolved=True)) == 1
 
 
 # --- accept-all -----------------------------------------------------------
@@ -309,9 +307,7 @@ async def test_accept_all_with_every_anchor_gone_writes_nothing():
 
     assert applied.accepted == () and applied.version is None
     assert applied.created_at is None
-    assert {change_id for change_id, _ in applied.skipped} == {
-        c.id for c in proposed.changes
-    }
+    assert {change_id for change_id, _ in applied.skipped} == {c.id for c in proposed.changes}
     assert applied.document.body == "Something else entirely."
     # No version, no re-index — a no-op accept must not write.
     assert [v.version for v in await store.list_versions(OWNER, doc_id)] == [2, 1]

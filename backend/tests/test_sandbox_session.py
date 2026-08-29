@@ -604,9 +604,7 @@ def _fake_container_create(monkeypatch, *, created: list[list[str]] | None = Non
     return log
 
 
-async def test_replenish_only_proceeds_once_the_image_warmup_resolves_ready(
-    tmp_path, monkeypatch
-):
+async def test_replenish_only_proceeds_once_the_image_warmup_resolves_ready(tmp_path, monkeypatch):
     created = _fake_container_create(monkeypatch)
     vault = await _vault(tmp_path)
     manager = _manager(
@@ -672,9 +670,7 @@ async def test_a_spare_is_containerised_exactly_like_a_session_not_merely_simila
     session_argv = created[-1]
 
     def normalised(argv: list[str], name: str, workspace) -> list[str]:
-        return [
-            arg.replace(name, "<name>").replace(str(workspace), "<workspace>") for arg in argv
-        ]
+        return [arg.replace(name, "<name>").replace(str(workspace), "<workspace>") for arg in argv]
 
     assert normalised(spare_argv, spare.container, spare.workspace) == normalised(
         session_argv, session.container, session.workspace
@@ -737,9 +733,7 @@ async def test_a_stale_unclaimed_spare_is_reaped_by_the_idle_sweep_and_replenish
     _fake_container_create(monkeypatch)
     monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
     vault = await _vault(tmp_path)
-    manager = _manager(
-        tmp_path, vault, backend=_pinned_backend(), idle_ttl_s=0.0, spare_count=1
-    )
+    manager = _manager(tmp_path, vault, backend=_pinned_backend(), idle_ttl_s=0.0, spare_count=1)
     manager._image_warmup.mark_done(True)
     manager._kick_replenish()
     await asyncio.wait_for(manager._replenish_task, timeout=1.0)
@@ -773,9 +767,7 @@ async def _pooled_manager(tmp_path, monkeypatch, **overrides) -> SandboxSessionM
     """A manager with one ready spare in the pool, no real runtime touched."""
     _fake_container_create(monkeypatch)
     vault = await _vault(tmp_path)
-    manager = _manager(
-        tmp_path, vault, backend=_pinned_backend(), spare_count=1, **overrides
-    )
+    manager = _manager(tmp_path, vault, backend=_pinned_backend(), spare_count=1, **overrides)
     manager._image_warmup.mark_done(True)
     manager._kick_replenish()
     await asyncio.wait_for(manager._replenish_task, timeout=1.0)
@@ -920,9 +912,7 @@ async def test_live_session_persists_files_across_calls(tmp_path):
         )
         assert wrote.ok
         # A later call in the same session sees the file the earlier one wrote.
-        read = await session.run(
-            SandboxSpec(command=["bash", "-c", "cat note.txt"], timeout_s=60)
-        )
+        read = await session.run(SandboxSpec(command=["bash", "-c", "cat note.txt"], timeout_s=60))
         assert "persisted" in read.stdout
     finally:
         await manager.stop()

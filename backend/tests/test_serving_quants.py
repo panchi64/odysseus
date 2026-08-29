@@ -143,8 +143,10 @@ def _apple_profile() -> HardwareProfile:
         memory=MemoryInfo(total_bytes=128 * _GB, available_bytes=100 * _GB),
         accelerators=[
             Accelerator(
-                name="Apple M3 Max", kind=AcceleratorKind.metal,
-                vram_bytes=96 * _GB, unified=True,
+                name="Apple M3 Max",
+                kind=AcceleratorKind.metal,
+                vram_bytes=96 * _GB,
+                unified=True,
             )
         ],
         compute_backend=ComputeBackend.metal,

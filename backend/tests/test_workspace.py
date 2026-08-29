@@ -99,9 +99,7 @@ async def _repo(root: Path) -> Path:
     (root / "hello.txt").write_text("original\n")
     await _git(root, "git", "init", "-b", "main")
     await _git(root, "git", "add", "-A")
-    await _git(
-        root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first"
-    )
+    await _git(root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first")
     return root
 
 
@@ -212,9 +210,7 @@ class TestCodingMode:
         assert code == 0
         assert WORKTREE_SCRATCH not in out
 
-    async def test_coding_without_a_project_has_no_workspace_rather_than_a_sandbox(
-        self, tmp_path
-    ):
+    async def test_coding_without_a_project_has_no_workspace_rather_than_a_sandbox(self, tmp_path):
         # Falling back to the sandbox would be the worst answer: the agent would edit
         # files in a container while its shell tools are refused, and nothing would say
         # why. `project_id` is required at thread creation precisely so this cannot
@@ -250,7 +246,10 @@ class TestShellIsCodingOnly:
         # the scenario a filter regression would produce.
         ctx = _ctx(_caps(tmp_path), conversation_id="conv-a")
         result = await shell_toolset().call_tool(
-            "run_command", {"command": "echo hi"}, ctx, None  # type: ignore[arg-type]
+            "run_command",
+            {"command": "echo hi"},
+            ctx,
+            None,  # type: ignore[arg-type]
         )
         assert "only available in a coding conversation" in str(result)
 

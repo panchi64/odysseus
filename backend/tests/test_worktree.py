@@ -118,22 +118,16 @@ class TestAcquire:
     async def test_refuses_a_second_conversation(self, tmp_path):
         root = await _repo(tmp_path)
         manager = _manager(tmp_path)
-        await manager.acquire(
-            project_id="p", root=root, base_ref="main", conversation_id="c1"
-        )
+        await manager.acquire(project_id="p", root=root, base_ref="main", conversation_id="c1")
         # One worktree per project, so two threads cannot interleave edits over one
         # checkout and corrupt each other's picture of the tree.
         with pytest.raises(WorktreeBusyError):
-            await manager.acquire(
-                project_id="p", root=root, base_ref="main", conversation_id="c2"
-            )
+            await manager.acquire(project_id="p", root=root, base_ref="main", conversation_id="c2")
 
     async def test_a_released_project_can_be_taken_by_another_conversation(self, tmp_path):
         root = await _repo(tmp_path)
         manager = _manager(tmp_path)
-        await manager.acquire(
-            project_id="p", root=root, base_ref="main", conversation_id="c1"
-        )
+        await manager.acquire(project_id="p", root=root, base_ref="main", conversation_id="c1")
         manager.release("p", "c1")
         state = await manager.acquire(
             project_id="p", root=root, base_ref="main", conversation_id="c2"
@@ -174,18 +168,14 @@ class TestDiffAndMerge:
         # THE assertion this whole design exists for.
         assert (root / "hello.txt").read_text() == "original\n"
 
-        await manager.merge(
-            root, base_ref="main", conversation_id="c1", project_id="p"
-        )
+        await manager.merge(root, base_ref="main", conversation_id="c1", project_id="p")
         assert (root / "hello.txt").read_text() == "changed by the agent\n"
         # An untracked file the agent created lands too — `add -A`, not `add -u`.
         assert (root / "added.txt").is_file()
 
     async def test_diff_reports_uncommitted_work(self, tmp_path):
         root, manager, _state = await self._edited(tmp_path)
-        diff = await manager.diff(
-            root, base_ref="main", conversation_id="c1", project_id="p"
-        )
+        diff = await manager.diff(root, base_ref="main", conversation_id="c1", project_id="p")
         assert diff.files_changed == 2
         assert "changed by the agent" in diff.patch
         assert "a file the agent created" in diff.patch
@@ -198,9 +188,7 @@ class TestDiffAndMerge:
         (state.path / WORKTREE_SCRATCH / "attachments").mkdir(parents=True, exist_ok=True)
         (state.path / WORKTREE_SCRATCH / "attachments" / "note.txt").write_text("mine")
 
-        diff = await manager.diff(
-            root, base_ref="main", conversation_id="c1", project_id="p"
-        )
+        diff = await manager.diff(root, base_ref="main", conversation_id="c1", project_id="p")
         # Odysseus' own staged attachments and skill bundles are not the agent's work,
         # and the operator must not be asked to review them.
         assert WORKTREE_SCRATCH not in diff.patch
@@ -212,16 +200,12 @@ class TestDiffAndMerge:
         # The diff was computed against `main`; merging here would land a different
         # result from the one they read.
         with pytest.raises(WorktreeError):
-            await manager.merge(
-                root, base_ref="main", conversation_id="c1", project_id="p"
-            )
+            await manager.merge(root, base_ref="main", conversation_id="c1", project_id="p")
         assert (root / "hello.txt").read_text() == "original\n"
 
     async def test_merging_hands_the_project_back(self, tmp_path):
         root, manager, _state = await self._edited(tmp_path)
-        await manager.merge(
-            root, base_ref="main", conversation_id="c1", project_id="p"
-        )
+        await manager.merge(root, base_ref="main", conversation_id="c1", project_id="p")
         # Otherwise a project stays locked to its first coding thread forever, and the
         # busy message tells the operator to do the thing they just did.
         assert manager.holder("p") is None
@@ -240,20 +224,14 @@ class TestDiffAndMerge:
         # they would be carried onto whichever branch is taken up next.
         assert not (state.path / "added.txt").exists()
 
-    async def test_a_second_conversation_does_not_inherit_the_first_ones_edits(
-        self, tmp_path
-    ):
+    async def test_a_second_conversation_does_not_inherit_the_first_ones_edits(self, tmp_path):
         root, manager, state = await self._edited(tmp_path)
         manager.release("p", "c1")
 
-        await manager.acquire(
-            project_id="p", root=root, base_ref="main", conversation_id="c2"
-        )
+        await manager.acquire(project_id="p", root=root, base_ref="main", conversation_id="c2")
         # A `git checkout` carries uncommitted files across, so without committing the
         # outgoing branch first, c1's half-finished work would land on c2's branch.
-        diff = await manager.diff(
-            root, base_ref="main", conversation_id="c2", project_id="p"
-        )
+        diff = await manager.diff(root, base_ref="main", conversation_id="c2", project_id="p")
         assert diff.files_changed == 0
         assert (state.path / "hello.txt").read_text() == "original\n"
 

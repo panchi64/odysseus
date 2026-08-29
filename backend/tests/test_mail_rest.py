@@ -100,9 +100,12 @@ GMAIL_ROUTES = {
 
 
 async def test_gmail_labels_are_presented_as_folders():
-    folders = {f.id: f for f in await GmailTransport(
-        _spec("gmail"), client=_client(_Recorder(GMAIL_ROUTES))
-    ).list_folders()}
+    folders = {
+        f.id: f
+        for f in await GmailTransport(
+            _spec("gmail"), client=_client(_Recorder(GMAIL_ROUTES))
+        ).list_folders()
+    }
     assert folders["INBOX"].role == ROLE_INBOX
     assert folders["INBOX"].unread == 2
     assert folders["SENT"].role == ROLE_SENT
@@ -111,9 +114,9 @@ async def test_gmail_labels_are_presented_as_folders():
 
 
 async def test_gmail_reads_raw_rfc5322_through_the_shared_parser():
-    body = await GmailTransport(
-        _spec("gmail"), client=_client(_Recorder(GMAIL_ROUTES))
-    ).fetch("INBOX", "m1")
+    body = await GmailTransport(_spec("gmail"), client=_client(_Recorder(GMAIL_ROUTES))).fetch(
+        "INBOX", "m1"
+    )
     assert body.text.strip() == "The engine weaves algebraic patterns."
     assert body.header.sender == MailAddress(address="ada@example.org", name="Ada Lovelace")
     assert body.header.thread_id == "t1"
@@ -165,9 +168,7 @@ async def test_gmail_send_posts_a_base64url_rfc5322_message():
 
 async def test_a_rejected_token_is_an_auth_error():
     with pytest.raises(MailAuthError):
-        await GmailTransport(
-            _spec("gmail"), client=_client(_Recorder({}, status=401))
-        ).probe()
+        await GmailTransport(_spec("gmail"), client=_client(_Recorder({}, status=401))).probe()
 
 
 # --- Microsoft Graph -----------------------------------------------------------
@@ -185,8 +186,11 @@ GRAPH_MESSAGE = {
     "flag": {"flagStatus": "flagged"},
     "hasAttachments": True,
     "bodyPreview": "Please review",
-    "body": {"contentType": "html", "content": "<article><p>Please review the numbers "
-             "before Thursday, and let me know if anything looks wrong.</p></article>"},
+    "body": {
+        "contentType": "html",
+        "content": "<article><p>Please review the numbers "
+        "before Thursday, and let me know if anything looks wrong.</p></article>",
+    },
 }
 
 GRAPH_ROUTES = {
@@ -204,9 +208,12 @@ GRAPH_ROUTES = {
 
 
 async def test_graph_folders_map_well_known_names():
-    folders = {f.id: f for f in await GraphTransport(
-        _spec("graph"), client=_client(_Recorder(GRAPH_ROUTES))
-    ).list_folders()}
+    folders = {
+        f.id: f
+        for f in await GraphTransport(
+            _spec("graph"), client=_client(_Recorder(GRAPH_ROUTES))
+        ).list_folders()
+    }
     assert folders["f1"].role == ROLE_INBOX
     assert folders["f1"].unread == 1
     assert folders["f2"].role == ROLE_SENT
@@ -229,9 +236,9 @@ async def test_graph_headers_map_structured_fields():
 
 
 async def test_graph_html_body_is_reduced_to_text():
-    body = await GraphTransport(
-        _spec("graph"), client=_client(_Recorder(GRAPH_ROUTES))
-    ).fetch("f1", "g1")
+    body = await GraphTransport(_spec("graph"), client=_client(_Recorder(GRAPH_ROUTES))).fetch(
+        "f1", "g1"
+    )
     assert "review the numbers" in body.text
     assert "<p>" not in body.text
     assert body.html is not None

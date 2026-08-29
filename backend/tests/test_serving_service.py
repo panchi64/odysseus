@@ -337,8 +337,11 @@ async def test_embedding_resolution_skips_a_disabled_endpoint(tmp_path: Path):
     service, registry = await _service(tmp_path)
     try:
         started = await service.serve(
-            OWNER, EngineKind.llama_cpp, "acme/Embed-GGUF",
-            role="embedding", workload=Workload.embedding,
+            OWNER,
+            EngineKind.llama_cpp,
+            "acme/Embed-GGUF",
+            role="embedding",
+            workload=Workload.embedding,
         )
         view = await _wait_settled(service, started.id)
         assert view.state == ServeState.running
@@ -357,9 +360,7 @@ async def test_hf_token_is_threaded_into_downloads(tmp_path: Path):
     adapter = _TokenCapturingAdapter()
     service, _registry = await _service(tmp_path, adapter=adapter, hf_token="hf_secrettoken")
     try:
-        await service.download(
-            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
-        )
+        await service.download(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m")
         assert adapter.tokens == ["hf_secrettoken"]
     finally:
         await service.shutdown()
@@ -370,9 +371,7 @@ async def test_downloads_carry_no_token_when_unset(tmp_path: Path):
     adapter = _TokenCapturingAdapter()
     service, _registry = await _service(tmp_path, adapter=adapter)
     try:
-        await service.download(
-            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m"
-        )
+        await service.download(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", quant="q4_k_m")
         assert adapter.tokens == [None]
     finally:
         await service.shutdown()
@@ -383,9 +382,7 @@ async def test_serve_carries_adapter_context_window_hint(tmp_path: Path):
     # context-window hint (the operator can refine it on the endpoint afterwards).
     service, registry = await _service(tmp_path)
     try:
-        started = await service.serve(
-            OWNER, EngineKind.llama_cpp, "acme/Some-GGUF", quant="q4_k_m"
-        )
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Some-GGUF", quant="q4_k_m")
         view = await _wait_settled(service, started.id)
         assert view.state == ServeState.running
         endpoint = await registry.get_endpoint(OWNER, view.endpoint_id)
@@ -813,9 +810,7 @@ async def test_a_folder_name_survives_the_dots_in_it(tmp_path: Path):
             snap = tmp_path / name
             snap.mkdir()
             (snap / "config.json").write_text("{}")
-            imported.append(
-                await service.import_local(OWNER, EngineKind.llama_cpp, str(snap))
-            )
+            imported.append(await service.import_local(OWNER, EngineKind.llama_cpp, str(snap)))
         assert [m.hf_repo for m in imported] == [
             "Qwen2.5-7B-Instruct-4bit",
             "Qwen2.5-14B-Instruct-4bit",
@@ -830,9 +825,7 @@ async def test_a_folder_name_survives_the_dots_in_it(tmp_path: Path):
 async def test_a_file_still_drops_only_its_extension(tmp_path: Path):
     service, _ = await _service(tmp_path)
     try:
-        row = await service.import_local(
-            OWNER, EngineKind.llama_cpp, str(_local_gguf(tmp_path))
-        )
+        row = await service.import_local(OWNER, EngineKind.llama_cpp, str(_local_gguf(tmp_path)))
         assert row.hf_repo == "Qwen3-8B"
     finally:
         await service.shutdown()
@@ -880,9 +873,7 @@ async def test_a_role_pin_follows_the_model_id_across_a_re_serve(tmp_path: Path)
     adapter = _RenamingAdapter()
     service, registry = await _service(tmp_path, adapter=adapter)
     try:
-        started = await service.serve(
-            OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main"
-        )
+        started = await service.serve(OWNER, EngineKind.llama_cpp, "acme/Model-GGUF", role="main")
         view = await _wait_settled(service, started.id)
         await registry.set_role(OWNER, "main", [view.endpoint_id], model=adapter.model_id)
         assert (await registry.get_role_binding(OWNER, "main"))[1] == "acme/Model-GGUF"

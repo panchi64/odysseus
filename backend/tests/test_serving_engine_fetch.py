@@ -40,9 +40,7 @@ _ASSETS = [
 def _host(monkeypatch, system: str, machine: str, *, vulkan: bool) -> None:
     monkeypatch.setattr(llamacpp.platform, "system", lambda: system)
     monkeypatch.setattr(llamacpp.platform, "machine", lambda: machine)
-    monkeypatch.setattr(
-        llamacpp, "find_library", lambda name: "libvulkan.so.1" if vulkan else None
-    )
+    monkeypatch.setattr(llamacpp, "find_library", lambda name: "libvulkan.so.1" if vulkan else None)
 
 
 # --- variant selection ------------------------------------------------------

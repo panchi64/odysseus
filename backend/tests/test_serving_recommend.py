@@ -45,8 +45,12 @@ def _profile(
 
 def _apple() -> HardwareProfile:
     return _profile(
-        system="Darwin", arch="arm64", backend=ComputeBackend.metal,
-        vram=96 * _GB, ram=128 * _GB, accel_kind=AcceleratorKind.metal,
+        system="Darwin",
+        arch="arm64",
+        backend=ComputeBackend.metal,
+        vram=96 * _GB,
+        ram=128 * _GB,
+        accel_kind=AcceleratorKind.metal,
     )
 
 
@@ -64,8 +68,12 @@ def test_apple_silicon_recommends_mlx_first_llamacpp_baseline():
 def test_cuda_host_leads_with_llamacpp_and_marks_mlx_unavailable():
     recs = recommend(
         _profile(
-            system="Linux", arch="x86_64", backend=ComputeBackend.cuda,
-            vram=24 * _GB, ram=64 * _GB, accel_kind=AcceleratorKind.cuda,
+            system="Linux",
+            arch="x86_64",
+            backend=ComputeBackend.cuda,
+            vram=24 * _GB,
+            ram=64 * _GB,
+            accel_kind=AcceleratorKind.cuda,
         )
     )
     assert recs[0].engine == EngineKind.llama_cpp and recs[0].rank == 1 and recs[0].available
@@ -75,8 +83,12 @@ def test_cuda_host_leads_with_llamacpp_and_marks_mlx_unavailable():
 
 def test_vram_budget_prefers_accelerator_then_falls_back_to_ram():
     gpu = _profile(
-        system="Linux", arch="x86_64", backend=ComputeBackend.cuda,
-        vram=24 * _GB, ram=64 * _GB, accel_kind=AcceleratorKind.cuda,
+        system="Linux",
+        arch="x86_64",
+        backend=ComputeBackend.cuda,
+        vram=24 * _GB,
+        ram=64 * _GB,
+        accel_kind=AcceleratorKind.cuda,
     )
     assert vram_budget(gpu) == 24 * _GB
     cpu = _profile(system="Linux", arch="x86_64", backend=ComputeBackend.cpu, ram=16 * _GB)

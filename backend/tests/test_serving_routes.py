@@ -30,8 +30,10 @@ def _apple_profile() -> HardwareProfile:
         memory=MemoryInfo(total_bytes=128 * _GB, available_bytes=100 * _GB),
         accelerators=[
             Accelerator(
-                name="Apple M3 Max", kind=AcceleratorKind.metal,
-                vram_bytes=96 * _GB, unified=True,
+                name="Apple M3 Max",
+                kind=AcceleratorKind.metal,
+                vram_bytes=96 * _GB,
+                unified=True,
             )
         ],
         compute_backend=ComputeBackend.metal,
@@ -295,9 +297,7 @@ async def test_file_picker_availability_is_reported_either_way(monkeypatch):
 async def test_opening_a_chooser_on_a_host_without_one_is_a_409(monkeypatch):
     monkeypatch.setattr("services.host_picker._resolve", lambda: None)
     async with client_app() as (client, _app):
-        resp = await client.post(
-            "/models/serving/file-picker", json={"mode": "directory"}
-        )
+        resp = await client.post("/models/serving/file-picker", json={"mode": "directory"})
         assert resp.status_code == 409
 
 

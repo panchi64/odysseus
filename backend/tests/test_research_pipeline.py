@@ -146,9 +146,13 @@ _PLAN = ResearchPlan(objective="Find out about X", angles=["angle one"])
 async def test_dedupe_drops_repeated_query_and_url_pre_network():
     hit = SearchResult(title="A", url="https://example.com/a", snippet="s")
     search = FakeSearch(hits={"the query": [hit]})
-    fetcher = FakeFetcher(pages={"https://example.com/a": FetchedPage(
-        url="https://example.com/a", title="A", content="content"
-    )})
+    fetcher = FakeFetcher(
+        pages={
+            "https://example.com/a": FetchedPage(
+                url="https://example.com/a", title="A", content="content"
+            )
+        }
+    )
     main = MainModelFake(
         # Round 1 and round 2 both propose the *same* query — the second occurrence
         # must never reach the search service.
@@ -219,9 +223,13 @@ async def test_over_cap_query_remains_eligible_for_a_later_round():
 async def test_judge_is_not_consulted_before_the_round_floor():
     hit = SearchResult(title="A", url="https://example.com/a", snippet="s")
     search = FakeSearch(hits={"q1": [hit], "q2": [hit]})
-    fetcher = FakeFetcher(pages={"https://example.com/a": FetchedPage(
-        url="https://example.com/a", title="A", content="c"
-    )})
+    fetcher = FakeFetcher(
+        pages={
+            "https://example.com/a": FetchedPage(
+                url="https://example.com/a", title="A", content="c"
+            )
+        }
+    )
     main = MainModelFake(
         queries_by_round=[["q1"], ["q2"], ["q3"]],
         # Gaps stay open every round, so only the judge (or max_rounds) can stop it.
@@ -288,9 +296,13 @@ async def test_zero_time_limit_skips_every_round_and_still_writes():
 async def test_cancellation_is_checked_between_rounds():
     hit = SearchResult(title="A", url="https://example.com/a", snippet="s")
     search = FakeSearch(hits={"q1": [hit], "q2": [hit]})
-    fetcher = FakeFetcher(pages={"https://example.com/a": FetchedPage(
-        url="https://example.com/a", title="A", content="c"
-    )})
+    fetcher = FakeFetcher(
+        pages={
+            "https://example.com/a": FetchedPage(
+                url="https://example.com/a", title="A", content="c"
+            )
+        }
+    )
 
     main = MainModelFake(
         queries_by_round=[["q1"], ["q2"]],
@@ -321,9 +333,11 @@ async def test_one_fetch_failure_does_not_lose_the_round():
     bad = SearchResult(title="Bad", url="https://example.com/bad", snippet="s")
     search = FakeSearch(hits={"q1": [ok, bad]})
     fetcher = FakeFetcher(
-        pages={"https://example.com/ok": FetchedPage(
-            url="https://example.com/ok", title="Good", content="c"
-        )},
+        pages={
+            "https://example.com/ok": FetchedPage(
+                url="https://example.com/ok", title="Good", content="c"
+            )
+        },
         fail=frozenset({"https://example.com/bad"}),
     )
     main = MainModelFake(queries_by_round=[["q1"]], refine_by_round=[("done", [])])
@@ -344,11 +358,15 @@ async def test_one_fetch_failure_does_not_lose_the_round():
 async def test_writer_prompt_carries_only_ledger_evidence():
     hit = SearchResult(title="Src", url="https://example.com/x", snippet="s")
     search = FakeSearch(hits={"q1": [hit]})
-    fetcher = FakeFetcher(pages={"https://example.com/x": FetchedPage(
-        url="https://example.com/x",
-        title="Src",
-        content="RAW_PAGE_TEXT_NOT_A_CLAIM and some other detail",
-    )})
+    fetcher = FakeFetcher(
+        pages={
+            "https://example.com/x": FetchedPage(
+                url="https://example.com/x",
+                title="Src",
+                content="RAW_PAGE_TEXT_NOT_A_CLAIM and some other detail",
+            )
+        }
+    )
     main = MainModelFake(queries_by_round=[["q1"]], refine_by_round=[("evolving draft", [])])
     utility = UtilityModelFake(claim_by_call=["the extracted claim"])
     deps = _deps(main_fake=main, utility_fake=utility, search=search, fetcher=fetcher)
@@ -394,17 +412,28 @@ async def test_event_sequence_for_a_two_round_run_matches_the_documented_frames(
 
     frames = [(getattr(e, "type", None), getattr(e, "title", None)) for e in events]
     assert frames == [
-        ("step.started", "planning"), ("step.completed", None),
-        ("step.started", "searching"), ("step.completed", None),
-        ("step.started", "reading"), ("citation.added", "A"), ("step.completed", None),
+        ("step.started", "planning"),
+        ("step.completed", None),
+        ("step.started", "searching"),
+        ("step.completed", None),
+        ("step.started", "reading"),
+        ("citation.added", "A"),
+        ("step.completed", None),
         ("tool.progress", None),
-        ("step.started", "analyzing"), ("step.completed", None),
-        ("step.started", "planning"), ("step.completed", None),
-        ("step.started", "searching"), ("step.completed", None),
-        ("step.started", "reading"), ("citation.added", "B"), ("step.completed", None),
+        ("step.started", "analyzing"),
+        ("step.completed", None),
+        ("step.started", "planning"),
+        ("step.completed", None),
+        ("step.started", "searching"),
+        ("step.completed", None),
+        ("step.started", "reading"),
+        ("citation.added", "B"),
+        ("step.completed", None),
         ("tool.progress", None),
-        ("step.started", "analyzing"), ("step.completed", None),
-        ("step.started", "writing"), ("step.completed", None),
+        ("step.started", "analyzing"),
+        ("step.completed", None),
+        ("step.started", "writing"),
+        ("step.completed", None),
     ]
     # citation.added lands inside each round's "reading" phase, in first-seen order —
     # the same order the writer's numbered source list uses.

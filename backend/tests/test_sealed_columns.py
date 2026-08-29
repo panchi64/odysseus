@@ -130,9 +130,7 @@ async def test_the_backfill_seals_a_legacy_corpus_path():
 
         source_id = await in_session(engine, write)
         # Readable before the heal…
-        assert any(
-            s["label"] == "/srv/notes" for s in (await client.get("/corpus/sources")).json()
-        )
+        assert any(s["label"] == "/srv/notes" for s in (await client.get("/corpus/sources")).json())
 
         await _backfill_sealed_columns(engine, app.state.vault)
 
@@ -140,9 +138,7 @@ async def test_the_backfill_seals_a_legacy_corpus_path():
         assert row.path is None
         assert row.path_enc is not None
         # …and readable after it.
-        assert any(
-            s["label"] == "/srv/notes" for s in (await client.get("/corpus/sources")).json()
-        )
+        assert any(s["label"] == "/srv/notes" for s in (await client.get("/corpus/sources")).json())
 
 
 async def test_the_backfill_is_idempotent_and_leaves_sealed_rows_alone():

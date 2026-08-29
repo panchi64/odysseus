@@ -64,9 +64,7 @@ async def test_targeted_edit_changes_one_span_and_leaves_the_rest_byte_identical
     doc = await store.create(OWNER, "Notes", body)
     adapter.indexed.clear()
 
-    view, version, created_at = await store.replace_span(
-        OWNER, doc.id, "on Tuesday", "on Thursday"
-    )
+    view, version, created_at = await store.replace_span(OWNER, doc.id, "on Tuesday", "on Thursday")
 
     assert view.body == body.replace("on Tuesday", "on Thursday")
     assert view.body.startswith("Intro paragraph.") and view.body.endswith("Outro paragraph.\n")

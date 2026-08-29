@@ -169,6 +169,25 @@ async def resolve_turn_models(
         raise HTTPException(status_code=404, detail="model endpoint not found") from None
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # No context window, no turn. The window is discovered from the provider where the
+    # provider will say (`ModelRegistry._with_context_windows`), so reaching here means
+    # this one won't and the operator hasn't filled it in either.
+    #
+    # A hard stop rather than a degraded run, because every guard that keeps a thread
+    # inside the model's limits measures against this number: the context gauge, the
+    # auto-compaction trigger, and the overflow warning. Without it a long thread runs
+    # normally right up until the provider rejects a request outright — no warning, no
+    # fold, and the operator's first indication that anything was wrong is a failed
+    # turn. Refusing up front is the honest version of that, and it names the fix.
+    if main.context_window is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "this model's endpoint doesn't report a context window, so the "
+                "conversation can't be kept inside it — set one on the endpoint under "
+                "settings › models › advanced before sending"
+            ),
+        )
     resolved = main.model
 
     # Background work — verification (opt-in) and auto-titling (on by default) —
@@ -320,9 +339,7 @@ async def _submit_turn(
         # Resolved here rather than at each caller so every interactive turn — send,
         # regenerate, edit — runs under the operator's ceiling without threading it
         # through three call sites.
-        request_limit=await get_agent_request_limit(
-            deps.settings_store(request), OPERATOR_ID
-        ),
+        request_limit=await get_agent_request_limit(deps.settings_store(request), OPERATOR_ID),
         # Same reason as the request limit: every interactive turn runs under the
         # operator's inactivity bound (else the config default).
         inactivity_timeout_s=await get_inactivity_timeout(
@@ -342,14 +359,10 @@ async def _validate_attachments(request: Request, attachment_ids: list[str]) -> 
     owned = await deps.uploads(request).owned_ids(OPERATOR_ID, attachment_ids)
     for upload_id in attachment_ids:
         if upload_id not in owned:
-            raise HTTPException(
-                status_code=404, detail=f"attachment {upload_id!r} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"attachment {upload_id!r} not found")
 
 
-async def _resolve_auto_compact(
-    request: Request, conversation_id: str | None
-) -> AutoCompactPolicy:
+async def _resolve_auto_compact(request: Request, conversation_id: str | None) -> AutoCompactPolicy:
     """The effective conversation auto-compaction policy for a turn: the thread's on/off
     override beats the operator's global default, which beats the config default —
     resolved here rather than in the engine so the orchestrator never reads the settings
@@ -408,9 +421,7 @@ async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> No
             status_code=422, detail="an ephemeral conversation cannot use coding mode"
         )
     if body.project_id is None:
-        raise HTTPException(
-            status_code=422, detail="coding mode requires a project_id"
-        )
+        raise HTTPException(status_code=422, detail="coding mode requires a project_id")
 
 
 @router.post("", status_code=202, response_model=ChatCreated)
@@ -571,9 +582,7 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
     else:
         steps = await get_agent_request_limit(store, OPERATOR_ID)
     if body.inactivity_timeout_s is not None:
-        inactivity = await set_inactivity_timeout(
-            store, OPERATOR_ID, body.inactivity_timeout_s
-        )
+        inactivity = await set_inactivity_timeout(store, OPERATOR_ID, body.inactivity_timeout_s)
     else:
         inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
 

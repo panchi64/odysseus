@@ -69,8 +69,12 @@ async def test_watchdog_fires_when_the_engine_crashes(tmp_path: Path):
         crashed.set()
 
     proc = await sup.spawn(
-        "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
-        on_crash=on_crash, log_path=tmp_path / "m.log",
+        "m",
+        spec,
+        port,
+        base_url=f"http://127.0.0.1:{port}/v1",
+        on_crash=on_crash,
+        log_path=tmp_path / "m.log",
     )
     os.kill(proc.pid, signal.SIGKILL)  # external crash
     await asyncio.wait_for(crashed.wait(), timeout=5)
@@ -86,8 +90,12 @@ async def test_spawn_raises_when_the_engine_never_serves(tmp_path: Path):
     spec = ServeSpec(argv=[sys.executable, "-c", crash_now])
     with pytest.raises(ServingError):
         await sup.spawn(
-            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
-            on_crash=_noop_crash, log_path=tmp_path / "m.log",
+            "m",
+            spec,
+            port,
+            base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash,
+            log_path=tmp_path / "m.log",
         )
     assert not sup.is_running("m")
 
@@ -103,8 +111,13 @@ async def test_the_per_engine_timeout_overrides_the_constructor_default(tmp_path
     spec = ServeSpec(argv=[sys.executable, "-c", never])
     with pytest.raises(ServingError, match="within 1s"):
         await sup.spawn(
-            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
-            on_crash=_noop_crash, log_path=tmp_path / "m.log", timeout_s=1.0,
+            "m",
+            spec,
+            port,
+            base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash,
+            log_path=tmp_path / "m.log",
+            timeout_s=1.0,
         )
 
 
@@ -116,8 +129,12 @@ async def test_a_fast_exit_reports_how_long_the_engine_lived(tmp_path: Path):
     spec = ServeSpec(argv=[sys.executable, "-c", "import sys; sys.exit(1)"])
     with pytest.raises(EngineExitedDuringStartup) as excinfo:
         await sup.spawn(
-            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
-            on_crash=_noop_crash, log_path=tmp_path / "m.log",
+            "m",
+            spec,
+            port,
+            base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash,
+            log_path=tmp_path / "m.log",
         )
     assert excinfo.value.elapsed_s < 1.0
 
@@ -131,8 +148,12 @@ async def test_a_slow_exit_is_reported_as_slow(tmp_path: Path):
     spec = ServeSpec(argv=[sys.executable, "-c", dies_late])
     with pytest.raises(EngineExitedDuringStartup) as excinfo:
         await sup.spawn(
-            "m", spec, port, base_url=f"http://127.0.0.1:{port}/v1",
-            on_crash=_noop_crash, log_path=tmp_path / "m.log",
+            "m",
+            spec,
+            port,
+            base_url=f"http://127.0.0.1:{port}/v1",
+            on_crash=_noop_crash,
+            log_path=tmp_path / "m.log",
         )
     assert excinfo.value.elapsed_s >= 0.5
     # The log tail still rides along, so the row can say what actually went wrong.

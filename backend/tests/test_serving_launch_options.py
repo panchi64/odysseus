@@ -227,7 +227,10 @@ async def test_probe_degrades_to_none_when_the_server_is_unreachable(tmp_path, m
 def test_unreadable_stored_options_degrade_to_defaults():
     # Degrade, don't crash: a blob this build can't parse must not sink the status list.
     row = ManagedModel(
-        owner_id="o", engine="llama.cpp", workload="chat", hf_repo="acme/m",
+        owner_id="o",
+        engine="llama.cpp",
+        workload="chat",
+        hf_repo="acme/m",
         launch_options={"context_size": "not-a-number"},
     )
     assert launch_options(row) == LaunchOptions()
@@ -235,7 +238,10 @@ def test_unreadable_stored_options_degrade_to_defaults():
 
 def test_stored_options_round_trip():
     row = ManagedModel(
-        owner_id="o", engine="llama.cpp", workload="chat", hf_repo="acme/m",
+        owner_id="o",
+        engine="llama.cpp",
+        workload="chat",
+        hf_repo="acme/m",
         launch_options=LaunchOptions(context_size=4096, cache_reuse=128).model_dump(mode="json"),
     )
     assert launch_options(row).context_size == 4096

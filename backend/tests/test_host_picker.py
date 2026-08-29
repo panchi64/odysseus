@@ -139,9 +139,7 @@ def test_a_leading_dot_on_an_extension_is_tolerated():
 def _script_helper(monkeypatch, body: str) -> None:
     """Point the picker at a python one-liner standing in for a dialog program."""
     monkeypatch.setattr(host_picker, "_resolve", lambda: _Helper(sys.executable, "zenity"))
-    monkeypatch.setattr(
-        host_picker, "_build_argv", lambda *a, **k: [sys.executable, "-c", body]
-    )
+    monkeypatch.setattr(host_picker, "_build_argv", lambda *a, **k: [sys.executable, "-c", body])
 
 
 async def test_a_chosen_path_comes_back_stripped(monkeypatch):
@@ -160,8 +158,7 @@ async def test_osascripts_cancel_error_is_a_cancellation(monkeypatch):
     # osascript spells cancellation as an *error* (-128) rather than a distinct code.
     _script_helper(
         monkeypatch,
-        "import sys; sys.stderr.write('execution error: User canceled. (-128)');"
-        " sys.exit(1)",
+        "import sys; sys.stderr.write('execution error: User canceled. (-128)'); sys.exit(1)",
     )
     assert await host_picker.pick("file") is None
 

@@ -147,6 +147,119 @@ async def probe_openai_endpoint(
             await http.aclose()
 
 
+# The keys OpenAI-wire servers use for a model's context window, in the order we
+# trust them. There is no standard — the OpenAI `/v1/models` schema has no such field
+# at all — so each server that bothers to report one invented its own name. vLLM says
+# `max_model_len`, LM Studio `max_context_length`, llama.cpp-derived servers `n_ctx`,
+# and several gateways `context_length`. Reading all of them is what makes discovery
+# work across "OpenAI-compatible" servers that agree on nothing but the chat route.
+_CONTEXT_KEYS = (
+    "context_length",
+    "max_context_length",
+    "max_model_len",
+    "context_window",
+    "n_ctx",
+)
+# LM Studio reports nothing useful on the OpenAI route but exposes its own richer
+# listing alongside it. Checked only after the standard route comes back silent.
+_LMSTUDIO_NATIVE = "/api/v0/models"
+
+
+def _context_from_row(row: object) -> int | None:
+    """A positive context length from a model listing entry, whichever key it used.
+
+    LM Studio's `loaded_context_length` is preferred over its `max_context_length`
+    when present: a model loaded at 32k in a server that *could* do 256k has a real
+    ceiling of 32k, and the gauge has to measure the one the next turn will hit."""
+    if not isinstance(row, dict):
+        return None
+    for key in ("loaded_context_length", *_CONTEXT_KEYS):
+        value = row.get(key)
+        # Guard `bool` explicitly: it is an `int` subclass, and a server answering
+        # `"context_length": true` would otherwise yield a one-token window.
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _find_model_row(payload: object, model: str) -> object | None:
+    """The listing entry describing ``model``, across the same shapes
+    :func:`_extract_model_ids` understands."""
+    rows: list[object] = []
+    if isinstance(payload, dict):
+        for key in ("data", "models"):
+            if isinstance(payload.get(key), list):
+                rows = payload[key]
+                break
+    elif isinstance(payload, list):
+        rows = payload
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ident = row.get("id") or row.get("name")
+        if isinstance(ident, str) and ident.removeprefix("models/") == model:
+            return row
+    return None
+
+
+async def discover_openai_context_window(
+    base_url: str,
+    model: str,
+    api_key: str | None = None,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> int | None:
+    """The context window an OpenAI-wire server reports for ``model``, or None.
+
+    **Never raises.** A window we can't discover is not an error — it is a fact the
+    server didn't state, and every caller's answer to that is the same (fall back to
+    whatever the operator configured). Collapsing the failure here keeps that decision
+    in one place instead of at each call site.
+
+    Tries the standard listing first, then LM Studio's native listing, which reports a
+    window where the OpenAI route reports none. That second request is the reason this
+    is worth doing at all for local servers: the OpenAI `/v1/models` schema has no
+    context field, so the most common local setup can never answer on that route.
+    """
+    for url in (base_url.rstrip("/") + "/models", _native_listing_url(base_url)):
+        if url is None:
+            continue
+        row = _find_model_row(await _get_json(url, api_key, client=client), model)
+        window = _context_from_row(row)
+        if window is not None:
+            return window
+    return None
+
+
+def _native_listing_url(base_url: str) -> str | None:
+    """LM Studio's own listing, derived from an OpenAI base URL by swapping the
+    version segment. Only attempted for a `/v1` base — anything else is a server
+    whose native API (if it has one) we know nothing about."""
+    trimmed = base_url.rstrip("/")
+    if not trimmed.endswith("/v1"):
+        return None
+    return trimmed[: -len("/v1")] + _LMSTUDIO_NATIVE
+
+
+async def _get_json(
+    url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+) -> object | None:
+    """A best-effort JSON GET for discovery's optional extras — None on any failure.
+    Short timeouts: this rides on paths the operator is waiting on, and a window we
+    didn't get is survivable where a stall is not."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    http = client or httpx.AsyncClient(follow_redirects=True)
+    try:
+        response = await http.get(url, headers=headers, timeout=httpx.Timeout(5.0, connect=2.0))
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPError, ValueError:
+        return None
+    finally:
+        if client is None:
+            await http.aclose()
+
+
 def _extract_model_ids(payload: object) -> list[str] | None:
     """Pull model identifiers out of whichever shape a provider returned.
 

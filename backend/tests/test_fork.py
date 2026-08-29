@@ -156,9 +156,7 @@ async def _repo(root: Path) -> Path:
     (root / "hello.txt").write_text("original\n")
     await _git(root, "git", "init", "-b", "main")
     await _git(root, "git", "add", "-A")
-    await _git(
-        root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first"
-    )
+    await _git(root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first")
     return root
 
 
@@ -182,9 +180,7 @@ class TestTheRoute:
             detail = (await client.get(f"/conversations/{source}")).json()
             first = detail["messages"][0]["id"]
 
-            resp = await client.post(
-                f"/conversations/{source}/messages/{first}/fork"
-            )
+            resp = await client.post(f"/conversations/{source}/messages/{first}/fork")
             assert resp.status_code == 200, resp.text
             body = resp.json()
             # The client navigates straight to it, so the *fork* has to come back.
@@ -201,15 +197,11 @@ class TestTheRoute:
             )
             assert resp.status_code == 404
 
-    async def test_a_coding_fork_branches_from_the_sources_branch(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_coding_fork_branches_from_the_sources_branch(self, tmp_path, monkeypatch):
         async with client_app() as (client, app):
             root = await _repo(tmp_path / "work")
             project = (
-                await client.post(
-                    "/projects", json={"name": "work", "rootPath": str(root)}
-                )
+                await client.post("/projects", json={"name": "work", "rootPath": str(root)})
             ).json()
             patch_model_resolution(monkeypatch)
             created = (

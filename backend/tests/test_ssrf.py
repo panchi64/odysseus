@@ -12,6 +12,7 @@ from core.ssrf import assert_public_url
 
 def _resolves_to(monkeypatch, ip: str) -> None:
     """Pin DNS resolution so the guard sees ``ip`` for any host (offline + hermetic)."""
+
     def fake_getaddrinfo(host, port, *args, **kwargs):
         family = socket.AF_INET6 if ":" in ip else socket.AF_INET
         return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port or 0))]
@@ -27,15 +28,15 @@ async def test_allows_a_public_address(monkeypatch):
 @pytest.mark.parametrize(
     "ip",
     [
-        "127.0.0.1",        # loopback
-        "10.0.0.5",         # private (RFC1918)
-        "192.168.1.10",     # private
+        "127.0.0.1",  # loopback
+        "10.0.0.5",  # private (RFC1918)
+        "192.168.1.10",  # private
         "169.254.169.254",  # link-local / cloud metadata
-        "::1",              # IPv6 loopback
-        "fc00::1",          # IPv6 unique-local
-        "::ffff:127.0.0.1", # IPv4-mapped loopback
-        "100.64.0.1",       # CGNAT / shared address space (RFC 6598)
-        "0.0.0.0",          # unspecified
+        "::1",  # IPv6 loopback
+        "fc00::1",  # IPv6 unique-local
+        "::ffff:127.0.0.1",  # IPv4-mapped loopback
+        "100.64.0.1",  # CGNAT / shared address space (RFC 6598)
+        "0.0.0.0",  # unspecified
     ],
 )
 async def test_blocks_non_public_addresses(monkeypatch, ip):

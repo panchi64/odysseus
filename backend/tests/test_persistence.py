@@ -17,7 +17,7 @@ from runs import RunRegistry, RunStatus
 from services.conversations import ConversationStore, _project
 from tools import RunDeps
 
-from ._helpers import client_app, collect_sse_events
+from ._helpers import STUB_CONTEXT_WINDOW, client_app, collect_sse_events
 
 
 async def _unlocked_vault(tmp_path, name: str = "keyfile.json") -> Vault:
@@ -41,9 +41,7 @@ async def test_cache_is_bounded_and_evicted_trees_rehydrate(tmp_path):
     # is safe precisely because a miss rehydrates.
     engine = make_engine("sqlite:///:memory:")
     init_db(engine)
-    store = ConversationStore(
-        engine, await _unlocked_vault(tmp_path), max_cached_conversations=2
-    )
+    store = ConversationStore(engine, await _unlocked_vault(tmp_path), max_cached_conversations=2)
     await store.start()
 
     convs = [await store.create_conversation("operator", title=f"t{i}") for i in range(5)]
@@ -494,9 +492,7 @@ async def test_cancel_parked_run_persists_the_parked_turn(tmp_path):
         store=store,
         conversation_id=conv,
     )
-    run = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=orch, conversation_id=conv
-    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id=conv)
     await run.wait()
     assert run.status is RunStatus.awaiting_input
 
@@ -775,7 +771,9 @@ async def test_chat_route_returns_conversation_and_continues(monkeypatch):
         # call_tools=[] → a plain text turn; the default catalog's approval-gated
         # tool would otherwise park the run and stall the SSE this test reads.
         return ResolvedModel(
-            model=TestModel(custom_output_text="hi", call_tools=[]), reasoning_off={}
+            model=TestModel(custom_output_text="hi", call_tools=[]),
+            reasoning_off={},
+            context_window=STUB_CONTEXT_WINDOW,
         )
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)

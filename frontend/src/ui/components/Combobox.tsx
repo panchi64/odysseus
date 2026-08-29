@@ -96,8 +96,14 @@ export function Combobox(props: ComboboxProps): JSX.Element {
             setOpen(!open());
           }}
           class={cx(
-            "flex h-8 max-w-56 items-center gap-1.5 rounded-ctl px-2 transition-colors hover:text-bright",
-            props.bare ? "min-w-0" : "min-w-32 bg-raised",
+            "flex h-8 max-w-56 items-center gap-1.5 rounded-ctl transition-colors hover:text-bright",
+            // A filled trigger's padding is inside a visible box, so it reads as the
+            // control's shape. A bare one has no box, so the same padding just reads as
+            // a gap — and then the real gap beside it lands on top, pushing whatever
+            // follows visibly further away than the next item in the row. Narrower
+            // padding keeps the bare trigger's edge close to its text, which is what
+            // lets a uniform gap actually look uniform.
+            props.bare ? "min-w-0 px-1" : "min-w-32 bg-raised px-2",
           )}
         >
           <Show when={props.leading}>

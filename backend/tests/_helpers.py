@@ -13,6 +13,16 @@ from pydantic_ai.models.test import TestModel
 from app import create_app
 from core.config import Settings
 
+#: The context window a stubbed resolution reports.
+#:
+#: Not decorative. The chat route refuses a turn whose model declares no window — it
+#: can't keep a thread inside a limit it doesn't know, and every guard that would
+#: normally catch the overflow (the gauge, auto-compaction, the ceiling warning)
+#: measures against this number. So a stub standing in for a resolved model has to
+#: declare one, exactly as a real endpoint does; leaving it None makes every route
+#: test that sends a message a 422.
+STUB_CONTEXT_WINDOW = 128_000
+
 
 def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=()):
     """Point registry resolution at a ``TestModel`` so route tests run without a live
@@ -27,7 +37,7 @@ def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=(
         return TestModel(custom_output_text=output_text, call_tools=list(call_tools))
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={})
+        return ResolvedModel(model=_model(), reasoning_off={}, context_window=STUB_CONTEXT_WINDOW)
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 

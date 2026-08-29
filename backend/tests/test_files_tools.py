@@ -53,9 +53,7 @@ def _deps(manager: _Manager | None, conversation_id: str) -> tuple[Run, RunDeps]
     caps = ServiceContainer()
     if manager is not None:
         caps.add(manager, as_type=SandboxSessionManager)
-    return run, RunDeps(
-        run=run, owner_id="operator", caps=caps, conversation_id=conversation_id
-    )
+    return run, RunDeps(run=run, owner_id="operator", caps=caps, conversation_id=conversation_id)
 
 
 # ONE toolset for the whole module, exactly as the app builds one for its whole lifetime.

@@ -233,9 +233,7 @@ async def test_active_run_for_finds_in_flight_run():
         started.set()
         await release.wait()
 
-    run = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
-    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
     await started.wait()
 
     assert reg.active_run_for("c1", "operator") is run
@@ -262,9 +260,7 @@ async def test_submit_rejects_a_second_run_for_the_same_conversation():
         started.set()
         await release.wait()
 
-    run = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
-    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
     await started.wait()
 
     with pytest.raises(ConversationBusyError):
@@ -282,9 +278,7 @@ async def test_submit_rejects_a_second_run_for_the_same_conversation():
     await asyncio.gather(run.wait(), other_conv.wait(), other_owner.wait())
 
     # Once the live run reaches terminal, the conversation is free again.
-    run2 = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
-    )
+    run2 = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
     await run2.wait()
     assert run2.status is RunStatus.done
 

@@ -128,7 +128,14 @@ async def test_keep_turns_zero_retains_nothing_after_the_boundary():
         assert _texts(await store.model_history(cid)) == ["SUMMARY"]
         # And nothing was destroyed — the operator's transcript still has all of it.
         assert _texts(await store.history(cid))[:8] == [
-            "q0", "a0", "q1", "a1", "q2", "a2", "q3", "a3"
+            "q0",
+            "a0",
+            "q1",
+            "a1",
+            "q2",
+            "a2",
+            "q3",
+            "a3",
         ]
 
 
@@ -427,9 +434,7 @@ async def test_summarize_history_degrades_to_none_on_failure():
         async def request(self, *args, **kwargs):
             raise RuntimeError("model down")
 
-    result = await summarize_history(
-        _Boom(), [ModelRequest(parts=[UserPromptPart(content="hi")])]
-    )
+    result = await summarize_history(_Boom(), [ModelRequest(parts=[UserPromptPart(content="hi")])])
     assert result is None
 
 
@@ -711,9 +716,7 @@ async def test_a_disabled_policy_never_compacts_however_full():
             store.record(cid, _loaded_turn(f"q{i}", f"a{i}", 100))
         store.record(cid, _loaded_turn("q3", "a3", 9_900))
 
-        run = await _run_turn(
-            app, cid, policy=build_auto_compact_policy(Settings(), enabled=False)
-        )
+        run = await _run_turn(app, cid, policy=build_auto_compact_policy(Settings(), enabled=False))
         assert run.status is RunStatus.done
         assert not [e for e in run.stream.replay() if e.body.type == "conversation.compacted"]
 
@@ -848,9 +851,7 @@ async def test_a_steered_turn_replays_without_losing_the_next_turns_prompt():
             [
                 ModelRequest(parts=[UserPromptPart(content="do a thing")]),
                 ModelResponse(parts=[ToolCallPart(tool_name="t", args={}, tool_call_id="c1")]),
-                ModelRequest(
-                    parts=[ToolReturnPart(tool_name="t", content="r", tool_call_id="c1")]
-                ),
+                ModelRequest(parts=[ToolReturnPart(tool_name="t", content="r", tool_call_id="c1")]),
                 ModelRequest(parts=[UserPromptPart(content="actually, also this")]),
                 ModelResponse(parts=[TextPart(content="done")]),
             ],

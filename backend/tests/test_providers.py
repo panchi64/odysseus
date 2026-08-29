@@ -127,9 +127,7 @@ async def test_key_requiring_provider_rejects_a_keyless_save():
 async def test_unknown_provider_rejected_at_save():
     reg = await _registry()
     with pytest.raises(ValueError):
-        await reg.create_endpoint(
-            OWNER, name="a", base_url="http://x/v1", provider="no-such-lab"
-        )
+        await reg.create_endpoint(OWNER, name="a", base_url="http://x/v1", provider="no-such-lab")
 
 
 async def test_provider_flows_into_the_resolved_spec():
@@ -221,9 +219,7 @@ async def test_endpoint_routes_carry_and_validate_provider():
 
         # Default provider when unspecified.
         plain = (
-            await client.post(
-                "/models/endpoints", json={"name": "b", "base_url": "http://x/v1"}
-            )
+            await client.post("/models/endpoints", json={"name": "b", "base_url": "http://x/v1"})
         ).json()
         assert plain["provider"] == "openai-compatible"
 
@@ -263,12 +259,8 @@ def test_migration_backfills_local_prefix_endpoints():
 
     columns = "provider, managed, live_status, enabled"
     with Session(engine) as session:
-        local = session.exec(
-            text(f"SELECT {columns} FROM model_endpoints WHERE id='e1'")
-        ).one()
-        cloud = session.exec(
-            text(f"SELECT {columns} FROM model_endpoints WHERE id='e2'")
-        ).one()
+        local = session.exec(text(f"SELECT {columns} FROM model_endpoints WHERE id='e1'")).one()
+        cloud = session.exec(text(f"SELECT {columns} FROM model_endpoints WHERE id='e2'")).one()
     # The stopped local engine: liveness moved to live_status; enabled handed back on.
     assert tuple(local) == ("local", 1, "stopped", 1)
     assert tuple(cloud) == ("openai-compatible", 0, None, 1)

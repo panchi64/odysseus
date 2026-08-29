@@ -56,8 +56,10 @@ def _profile(vram_bytes: int) -> HardwareProfile:
         memory=MemoryInfo(total_bytes=vram_bytes, available_bytes=vram_bytes),
         accelerators=[
             Accelerator(
-                name="Test GPU", kind=AcceleratorKind.metal,
-                vram_bytes=vram_bytes, unified=True,
+                name="Test GPU",
+                kind=AcceleratorKind.metal,
+                vram_bytes=vram_bytes,
+                unified=True,
             )
         ],
         compute_backend=ComputeBackend.metal,
@@ -89,9 +91,7 @@ async def _service(tmp_path: Path, vram_bytes: int) -> tuple[ServingService, Mod
     return service, registry
 
 
-async def _seed_resident(
-    service: ServingService, tmp_path: Path, repo: str, nbytes: int
-) -> None:
+async def _seed_resident(service: ServingService, tmp_path: Path, repo: str, nbytes: int) -> None:
     """Mark a model as already running (no real process) with a real on-disk artifact of
     ``nbytes`` bytes, so the guard sums its true footprint."""
     row = await service._store.get_or_create(
@@ -126,9 +126,7 @@ async def test_serve_allowed_with_ample_budget(tmp_path: Path):
         # The guard let it through; it then serves normally.
         view = None
         for _ in range(400):
-            view = next(
-                (m for m in await service.status(OWNER) if m.id == started.id), None
-            )
+            view = next((m for m in await service.status(OWNER) if m.id == started.id), None)
             if view and view.state in (ServeState.running, ServeState.error):
                 break
             await asyncio.sleep(0.05)

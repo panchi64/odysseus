@@ -32,9 +32,7 @@ async def _store(ocr=None, *, extractor=None):
     chunk_store = CorpusChunkStore(engine, vault, FakeEmbedder())
     adapter = UploadsAdapter(engine, chunk_store, vault.unlocked_event)
     await adapter.start()
-    store = UploadStore(
-        engine, vault, adapter, extractor or BasicExtractor(ocr or NoVisionOCR())
-    )
+    store = UploadStore(engine, vault, adapter, extractor or BasicExtractor(ocr or NoVisionOCR()))
     await store.start()
     return engine, vault, chunk_store, adapter, store
 

@@ -32,6 +32,7 @@ from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
 
 from ._helpers import (
+    STUB_CONTEXT_WINDOW,
     client_app,
     full_tool_categories,
     patch_model_resolution,
@@ -234,9 +235,7 @@ async def test_offline_alone_still_applies_with_no_operator_choices():
 def _force_offline(monkeypatch, app, *names: str) -> None:
     """Pin the live offline service's automatic set without swapping the service out —
     the lifespan still owns its shutdown."""
-    monkeypatch.setattr(
-        app.state.offline, "web_tools_disabled", lambda: frozenset(names)
-    )
+    monkeypatch.setattr(app.state.offline, "web_tools_disabled", lambda: frozenset(names))
 
 
 # --- the route -----------------------------------------------------------------------
@@ -295,7 +294,11 @@ def _install_sensitive_tool(monkeypatch):
     ``swap_tool_catalog(app, _danger_categories())`` after boot."""
 
     async def fake_resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
+        return ResolvedModel(
+            model=TestModel(custom_output_text="done"),
+            reasoning_off={},
+            context_window=STUB_CONTEXT_WINDOW,
+        )
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 

@@ -49,9 +49,7 @@ async def _service(handler, monkeypatch):
         return None
 
     monkeypatch.setattr("services.integrations.service.assert_public_url", _allow)
-    service = IntegrationService(
-        engine, vault, ExternalPolicyStore(engine), http_client=client
-    )
+    service = IntegrationService(engine, vault, ExternalPolicyStore(engine), http_client=client)
     return service, seen
 
 
@@ -177,9 +175,7 @@ async def test_a_redirect_is_reported_rather_than_followed(monkeypatch):
     )
     view = await service.configure(OWNER, "github", credentials={"token": "t"})
 
-    response = await service.call(
-        OWNER, view.id, "get_repo", params={"owner": "a", "repo": "b"}
-    )
+    response = await service.call(OWNER, view.id, "get_repo", params={"owner": "a", "repo": "b"})
 
     assert response.status == 302 and not response.ok
     assert len(seen) == 1
@@ -193,9 +189,7 @@ async def test_the_ssrf_guard_refuses_a_connector_pointed_at_the_host():
     vault = Vault(Path(tempfile.mkdtemp()) / "keyfile.json")
     await vault.setup("pw")
     client, seen = _recorder(lambda _r: httpx.Response(200))
-    service = IntegrationService(
-        engine, vault, ExternalPolicyStore(engine), http_client=client
-    )
+    service = IntegrationService(engine, vault, ExternalPolicyStore(engine), http_client=client)
     view = await service.configure(
         OWNER, "github", base_url="http://127.0.0.1:9", credentials={"token": "t"}
     )

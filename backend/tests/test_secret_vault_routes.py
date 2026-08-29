@@ -34,9 +34,9 @@ async def test_lock_then_unlock_round_trip():
 
         assert (await client.post("/vault/lock")).json()["unlocked"] is False
         assert (await client.post("/vault/unlock", json={"passphrase": "wrong"})).status_code == 403
-        assert (
-            await client.post("/vault/unlock", json={"passphrase": PASSPHRASE})
-        ).json()["unlocked"] is True
+        assert (await client.post("/vault/unlock", json={"passphrase": PASSPHRASE})).json()[
+            "unlocked"
+        ] is True
 
         # Logout is the broader teardown — same observable state, different scope.
         assert (await client.post("/vault/logout")).json()["unlocked"] is False
@@ -68,9 +68,7 @@ async def test_entry_crud():
         listed = (await client.get("/vault/entries")).json()
         assert [e["id"] for e in listed] == [entry["id"]]
 
-        patched = await client.patch(
-            f"/vault/entries/{entry['id']}", json={"password": "rotated"}
-        )
+        patched = await client.patch(f"/vault/entries/{entry['id']}", json={"password": "rotated"})
         assert patched.json()["password"] == "rotated"
         assert patched.json()["name"] == "Production DB"
 

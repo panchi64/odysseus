@@ -206,9 +206,7 @@ async def test_retitle_overwrites_even_an_operator_title(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="Regenerated Name")
     async with client_app() as (client, _app):
         conversation_id = await _start_conversation(client)
-        await client.patch(
-            f"/conversations/{conversation_id}", json={"title": "Operator Name"}
-        )
+        await client.patch(f"/conversations/{conversation_id}", json={"title": "Operator Name"})
 
         resp = await client.post(f"/conversations/{conversation_id}/retitle")
         assert resp.status_code == 200

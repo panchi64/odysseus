@@ -40,8 +40,11 @@ def fake_launch(monkeypatch):
 
     async def fake_launch_preview(*, container, token, command, port, **_rest):
         return PreviewHandle(
-            token=token, container=container, host_port=54321,
-            container_port=port, command=tuple(command),
+            token=token,
+            container=container,
+            host_port=54321,
+            container_port=port,
+            command=tuple(command),
         )
 
     async def fake_stop(runtime, container):

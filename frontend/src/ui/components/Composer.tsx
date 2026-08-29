@@ -411,7 +411,13 @@ export function Composer(props: ComposerProps): JSX.Element {
           {attachBtn}
           <Show when={props.controls}>{props.controls}</Show>
         </div>
-        <div class="flex min-w-0 items-center gap-2">
+        {/* `gap-3`, wider than the leading group's, because the items here are not the
+            same kind of thing. The leading group is buttons, whose own padding carries
+            their separation; this row mixes a bare text trigger, a bare gauge and a
+            filled button, and a gap tuned to the button leaves the gauge crowding it
+            while the trigger's own padding holds it further off. The wider gap is what
+            makes the three read as evenly spaced rather than merely equally gapped. */}
+        <div class="flex min-w-0 items-center gap-3">
           <Show when={props.trailing}>{props.trailing}</Show>
           {actionBtn}
         </div>

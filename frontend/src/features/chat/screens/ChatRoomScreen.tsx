@@ -945,9 +945,10 @@ export function ChatRoomScreen(): JSX.Element {
                   {/* Where the message is going, then how full the thread it's
                       going into is — both read on the way to SEND. */}
                   <ModelPicker />
-                  <Show when={stream.usage()}>
-                    {(usage) => <ContextRing usage={usage()} />}
-                  </Show>
+                  {/* Unconditional: the ring reports an unknown window itself, in
+                      alert, rather than vanishing and leaving the operator to guess
+                      whether the gauge is missing or the setting is. */}
+                  <ContextRing usage={stream.usage()} />
                 </>
               }
             />
