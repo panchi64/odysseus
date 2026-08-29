@@ -32,6 +32,7 @@ from research.state import ResearchDeps
 from routes import research_store
 from routes.research_store import RunOutcome
 from runs import Run, RunRegistry
+from services import llm
 from services.research_launcher import (
     LaunchedResearch,
     ResearchLauncher,
@@ -131,8 +132,12 @@ class PipelineResearchLauncher(ResearchLauncher):
             owner_id=owner_id,
             main_model=main.model,
             utility_model=background.model,
-            main_settings=None,
-            utility_settings=background.reasoning_off,
+            # The platform-wide parallel-tool default, handed to every pipeline agent at
+            # the one seam that feeds them. Inert today — they are structured-output
+            # calls with no toolset, and the rounds search in code — but wiring it here
+            # means one that later grows a toolset isn't the one that missed out.
+            main_settings=llm.with_parallel_tools(),
+            utility_settings=llm.with_parallel_tools(background.reasoning_off),
             search=self._search,
             fetcher=self._fetcher,
             max_rounds=self._settings.research_max_rounds,

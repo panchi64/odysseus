@@ -1,11 +1,16 @@
 import { Show, createMemo, type JSX } from "solid-js";
 import { Collapse, Frames, Reveal, Row, Text } from "~/ui";
 import type { AssistantBlock } from "../model";
-import { workCounts } from "../blocks";
+import { runningTools, workCounts } from "../blocks";
 
-/** What the agent is doing *right now* — derived from the trailing block, since
- *  that's the one currently receiving deltas/updates. */
+/** What the agent is doing *right now* — live tool calls first, then the trailing
+ *  block, which is the one receiving deltas when no tool is out. Calls go out in
+ *  parallel, so the tail is an arbitrary member of the batch: reading it alone would
+ *  drop the others and fall back to "Working" the moment that one returned. */
 function activeLabel(blocks: AssistantBlock[] | undefined): string {
+  const running = runningTools(blocks);
+  if (running.length > 1) return `RUNNING ${running.length} TOOLS`;
+  if (running.length === 1) return `RUNNING ${running[0].name}`;
   const last = blocks?.[blocks.length - 1];
   // No blocks yet = the run was created but nothing has streamed back: the backend
   // is still preparing (context assembly, model spin-up). Say so rather than
@@ -16,10 +21,10 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
       return "Thinking";
     case "text":
       return "Writing";
+    // `runningTools` above claims every live call, so a tool block reaching here has
+    // already returned.
     case "tool":
-      return last.tool.status === "running"
-        ? `RUNNING ${last.tool.name}`
-        : "Working";
+      return "Working";
     case "host_command":
       return last.command.phase === "pending"
         ? "Awaiting approval"

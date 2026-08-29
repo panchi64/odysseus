@@ -29,12 +29,27 @@ from dataclasses import dataclass
 import httpx
 from pydantic_ai.models import Model
 from pydantic_ai.models.fallback import FallbackModel
+from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
 
 ROLES = frozenset({"main", "utility", "embedding"})
 # Roles that drive the agent loop must support native tool-calling (AE-8.1).
 TOOL_CALLING_ROLES = frozenset({"main", "utility"})
+
+# Parallel tool calls, on for every endpoint: independent calls go out in one assistant
+# message and the library runs the batch concurrently, so a three-search step costs one
+# model round-trip instead of three. A flat default rather than a per-provider shape
+# (unlike reasoning-off) because both model classes that read the field omit it from a
+# request carrying no tools — so a toolless agent is untouched and no server is handed an
+# argument for a request with nothing to parallelize.
+TOOL_CALL_SETTINGS: ModelSettings = {"parallel_tool_calls": True}
+
+
+def with_parallel_tools(settings: ModelSettings | None = None) -> ModelSettings:
+    """``settings`` with parallel tool calling folded in, for call sites that already
+    pass their own. An explicit caller value wins, so a deliberate opt-out survives."""
+    return {**TOOL_CALL_SETTINGS, **(settings or {})}
 
 
 @dataclass(frozen=True)

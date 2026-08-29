@@ -175,3 +175,21 @@ async def test_grant_short_circuit_resolves_a_dangling_notification(tmp_path):
     items, _ = await service.list_notifications("operator")
     assert items[0].resolved_at is not None
     await service.stop()
+
+
+async def test_parked_turn_keeps_parallel_tool_calls_on_resume():
+    # Why the setting sits on the agent and not on `agent.iter(...)`: a park stashes
+    # this agent on the ParkedTurn, so the resume inherits it with nothing threaded
+    # through the payload and nothing to go stale in an older one.
+    reg = RunRegistry()
+    run = await _park_a_run(reg)
+    parked: ParkedTurn = run.parked_payload
+
+    assert parked.agent.model_settings["parallel_tool_calls"] is True
+
+    call_id = parked.requests.approvals[0].tool_call_id
+    resumed = await reg.resume(run.id, build_resume_orchestrator(parked, {call_id: ToolApproved()}))
+    await resumed.wait()
+
+    assert resumed.status is RunStatus.done
+    assert "tool.completed" in _types(resumed)

@@ -26,6 +26,7 @@ import type {
 import {
   groupBlocks,
   layoutItemKey,
+  liveToolGroupIds,
   peekLatestTool,
   planTurnLayout,
   type BlockGroup,
@@ -546,7 +547,7 @@ export function TurnBlocks(
   } & Omit<RowHandlers, "chipLookup" | "seenIndex">,
 ): JSX.Element {
   // Memoized so a text/thinking delta (which doesn't change block *structure*)
-  // doesn't re-group/re-plan, and so `activeId` reuses the same grouping rather
+  // doesn't re-group/re-plan, and so `activeIds` reuses the same grouping rather
   // than recomputing it — one structural pass per real change, not per token.
   const groups = createMemo(() => groupBlocks(props.blocks));
   const layout = createMemo(() =>
@@ -589,10 +590,15 @@ export function TurnBlocks(
     const key = props.seenKey?.() ?? null;
     return key ? items.findIndex((i) => i.key === key) : -1;
   });
-  // While streaming, the trailing group is the live one.
-  const activeId = createMemo(() => {
+  // While streaming, the trailing group is live by position and any group with a call
+  // in flight is live by state. Parallel calls make those different groups, so naming
+  // only the tail would un-light the rest of a batch that is still running.
+  const activeIds = createMemo(() => {
     const gs = groups();
-    return props.streaming && gs.length ? gs[gs.length - 1].id : null;
+    if (!props.streaming || !gs.length) return new Set<string>();
+    const ids = liveToolGroupIds(gs);
+    ids.add(gs[gs.length - 1].id);
+    return ids;
   });
 
   // Each work log's open state lives here, keyed by its run's first-block id (a
@@ -651,7 +657,7 @@ export function TurnBlocks(
                   {(g) => (
                     <BlockRow
                       group={g()}
-                      active={g().id === activeId()}
+                      active={activeIds().has(g().id)}
                       streaming={props.streaming}
                       top={top()}
                       forceOpen={props.forceOpen}

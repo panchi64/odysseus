@@ -85,6 +85,7 @@ from services.conversations import (
     context_footprint,
     conversation_totals,
 )
+from services.llm import TOOL_CALL_SETTINGS
 from services.notifications import NotificationService
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
@@ -218,6 +219,12 @@ def _build_agent(
         system_prompt=SYSTEM_PROMPT,
         instructions=INSTRUCTIONS,
         toolsets=build_agent_toolsets(categories),
+        # Parallel tool calling (see `services.llm.TOOL_CALL_SETTINGS`). Declared at
+        # construction, not per-run on `agent.iter(...)`: a park stashes this agent on
+        # the ParkedTurn, so every resume inherits it with nothing threaded through the
+        # payload. The library merges run-level settings over these, so it's a default
+        # a future per-run knob can still override.
+        model_settings=TOOL_CALL_SETTINGS,
         output_type=[str, DeferredToolRequests],
         # ReinjectSystemPrompt keeps our system prompt authoritative — it transforms only
         # what the model sees, never what we persist. Nothing else rewrites the history on
