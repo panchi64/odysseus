@@ -69,10 +69,10 @@ function Mark(props: { class?: string }): JSX.Element {
 /**
  * **A region that draws its own frame before it fills.** The View panel's
  * arrival: a single `+` at the origin corner splits, one half travelling along
- * the top edge with a rule drawn between them, then both drop to the bottom with
- * a rule closing behind them — and the glass surface resolves inside the frame
- * that has just been described. Closing runs the gesture in reverse, so the
- * panel is taken apart rather than switched off.
+ * the top edge with a rule drawn between them, then both drop down the sides
+ * with a rule closing the bottom — and the glass surface resolves inside the
+ * frame that has just been described. Closing runs the gesture in reverse, so
+ * the panel is taken apart rather than switched off.
  *
  * It is a sibling of `Reveal`, not a variant of it. `Reveal` says *content
  * materialized here*; this says *a place was made, and then filled*. That is
@@ -148,20 +148,20 @@ export function ConstructionReveal(
         onAnimationEnd={gate.onAnimationEnd}
       >
         {/* The frame, INSET 6px into the region rather than drawn on its edge.
-            Two things fall out of that, and both were bugs when it sat flush:
 
-            A frame on the edge duplicates whatever edge is already there — the
-            panel's own hairline ring, and on the View's open side the resize
-            handle's divider three pixels further out. Two rules that close
-            together do not read as a frame, they read as a mistake. Inset, the
-            marks are unmistakably *on* the panel rather than *of* it, and can
-            never line up with something else.
+            Flush, it landed a hairline from whatever edge was already there, and
+            two rules a few pixels apart read as a mistake rather than as a
+            frame. The fix for the specific offender is elsewhere — a splitter
+            beside a self-framing panel takes `divider="hover"` — but the inset
+            is what makes the frame independent of its surroundings generally:
+            it is unmistakably *on* the panel rather than *of* it, so it cannot
+            near-miss the panel's own hairline ring either.
 
             It also stops the marks being clipped. They straddle their corners,
             so flush against a region pinned to the viewport — the full-screen
-            sheet — their outer halves fell off the screen entirely. At `inset-1.5`
-            with `-1.5` offsets the outer edge lands exactly on the region's own
-            edge: as far out as it can go and still be whole.
+            sheet — their outer halves fell off the screen entirely. At
+            `inset-1.5` with `-1.5` offsets the outer edge lands exactly on the
+            region's own edge: as far out as it can go and still be whole.
 
             Never interactive, and in the wrapper's own stacking context so it
             cannot escape into the page or swallow a click meant for content. */}
@@ -177,19 +177,14 @@ export function ConstructionReveal(
           </div>
           <span class="ody-frame-rule-top absolute top-0 right-0 left-0 h-px bg-line" />
 
-          {/* Phase 2 — both marks drop to the bottom edge and the bottom rule
-              closes the frame.
-
-              There are no SIDE rules, deliberately. The brief drew a connecting
-              line for the horizontal travel and none for the drop, and it was
-              right to: four rules around a panel that already carries a hairline
-              ring is the box-in-a-box §7 exists to stop. Four corner marks and
-              two rules bracket the region; a full box encloses it, which is a
-              louder claim than a View panel should make. */}
+          {/* Phase 2 — both marks drop to the bottom edge, the sides close
+              behind them, and the bottom rule completes the frame. */}
           <div class="ody-frame-mark-b absolute inset-0">
             <Mark class={cx(OFFSET.bottom, near())} />
             <Mark class={cx(OFFSET.bottom, far())} />
           </div>
+          <span class="ody-frame-rule-side absolute top-0 bottom-0 left-0 w-px bg-line" />
+          <span class="ody-frame-rule-side absolute top-0 right-0 bottom-0 w-px bg-line" />
           <span class="ody-frame-rule-bottom absolute right-0 bottom-0 left-0 h-px bg-line" />
         </div>
 

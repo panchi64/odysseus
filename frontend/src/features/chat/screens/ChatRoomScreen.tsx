@@ -982,16 +982,20 @@ export function ChatRoomScreen(): JSX.Element {
           The breakpoint lives on a wrapper so the `lg:contents` leaves the
           reveal as a direct flex child of the row. */}
       <div class="hidden lg:contents">
-        {/* The handle sits OUTSIDE the construction reveal, on its own gate.
-            It rides the same signal so the two arrive and leave together, but
-            keeping it out is what lets the frame track the panel: inside, the
-            marks measured from the handle's outer edge and the left pair landed
-            a few pixels from the handle's own divider, which read as a doubled
-            border rather than as a corner mark. A hairline splitter has no
-            frame to draw, so a plain reveal is the whole of what it needs. */}
+        {/* The handle sits OUTSIDE the construction reveal, on its own gate. It
+            rides the same signal so the two arrive and leave together, but
+            keeping it out is what lets the frame measure the panel itself —
+            inside, the marks would be offset by the handle's own width.
+            A hairline splitter has no frame to draw, so a plain reveal is the
+            whole of what it needs.
+
+            `divider="hover"` because the panel already brackets itself: at rest
+            the frame's left rule is the edge, and the splitter only paints when
+            the operator reaches for it. */}
         <Reveal when={asideOpen()} class="flex h-full shrink-0">
           <ResizeHandle
             aria-label="Resize viewport panel"
+            divider="hover"
             onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
             onResizeEnd={() => setViewerWidth(liveWidth())}
           />
