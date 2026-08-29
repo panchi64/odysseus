@@ -16,11 +16,11 @@ import {
 import { clearCredential, setCredential, useCredentials } from "../data";
 import type { ServiceCredential } from "../model";
 
-/** API Tokens — the operator's keys for the outbound services the system calls (the
- *  model quality benchmarks, HuggingFace). One row per service the
- *  backend declares; the key is write-only (the API reports only whether one is set),
- *  sealed at rest. This is configuration, not inbound auth — the tokens clients call
- *  *this* API with are the Access Tokens screen (`features/access-tokens`). */
+/** Service Keys — the operator's keys for the outbound services the system calls;
+ *  today, the mail OAuth clients. One row per service the backend declares; the key is
+ *  write-only (the API reports only whether one is set), sealed at rest. This is
+ *  configuration, not inbound auth — the tokens clients call *this* API with are the
+ *  Access Tokens section (`features/access-tokens`). */
 export function ApiTokensScreen(): JSX.Element {
   const credentials = useCredentials();
 

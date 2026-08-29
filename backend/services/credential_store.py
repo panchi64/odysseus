@@ -1,11 +1,11 @@
-"""Outbound service credentials — the store behind the API Tokens page.
+"""Outbound service credentials — the store behind the Service Keys section.
 
-Holds the API keys the system calls *outbound* services with (model-quality benchmarks,
-the HuggingFace catalog, the mail OAuth clients), sealed with the vault exactly like the
-model-endpoint / search-provider `api_key`. The set of services is a **static catalog**
-(`KNOWN_SERVICES`) — the system declares which integrations it has; the store only holds
-a key per known service. A read returns ``None`` while the vault is locked so callers
-degrade to their env fallback rather than crashing at boot.
+Holds the API keys the system calls *outbound* services with (today, the mail OAuth
+clients), sealed with the vault exactly like the model-endpoint / search-provider
+`api_key`. The set of services is a **static catalog** (`KNOWN_SERVICES`) — the system
+declares which integrations it has; the store only holds a key per known service. A read
+returns ``None`` while the vault is locked so callers degrade to their env fallback
+rather than crashing at boot.
 
 Raises domain errors only (`NotFoundError`); the route maps to HTTP.
 """
@@ -40,25 +40,16 @@ class ServiceInfo:
 
 # The outbound services the system integrates with. Display metadata lives here (not the
 # DB); a key is stored per id. Extend this as new keyed integrations land.
+#
+# A service is declared here only while something reads its key. Three entries were
+# removed when the surfaces that used them went (the model-quality rankings behind the
+# Cookbook's recommendations, and the HuggingFace token that lifted the download rate
+# limit) — a Service Keys row offering a credential nothing consumes is a settings
+# surface lying about what the system does. Removing the declaration alone would have
+# stranded any stored key: `status()` returns whatever rows exist, but the UI renders one
+# row per *declared* service, so the operator could neither see it nor clear it. The rows
+# are deleted with the declaration, by migration `b7ad41c9e208`.
 KNOWN_SERVICES: tuple[ServiceInfo, ...] = (
-    ServiceInfo(
-        "artificial_analysis",
-        "Artificial Analysis",
-        "Model-quality ranking — the Intelligence Index, fast to cover new models.",
-        "https://artificialanalysis.ai/",
-    ),
-    ServiceInfo(
-        "llm_stats",
-        "llm-stats.com",
-        "Model-quality ranking — broad, fast-moving benchmark coverage.",
-        "https://llm-stats.com/",
-    ),
-    ServiceInfo(
-        "huggingface",
-        "Hugging Face",
-        "Model catalog — an access token lifts the anonymous API rate limit.",
-        "https://huggingface.co/settings/tokens",
-    ),
     # The two OAuth *client* registrations mail uses (`EMAIL-1`). One per install, not
     # per mailbox — which is exactly what this static catalog models. The rotating
     # per-account token bundle is a different secret and lives sealed on the account row

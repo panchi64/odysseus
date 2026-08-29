@@ -1,7 +1,7 @@
 """API Tokens surface — the operator's outbound service credentials.
 
-Set/clear the API keys the system calls third-party services with (model-quality
-benchmarks, the HuggingFace catalog, the mail OAuth clients). The key is **write-only**:
+Set/clear the API keys the system calls third-party services with (today, the mail
+OAuth clients). The key is **write-only**:
 accepted on set and sealed with the vault, never returned — listings expose only
 ``has_key``. The set of services is the backend's declared catalog (`KNOWN_SERVICES`);
 an unknown id is a 404.
