@@ -72,8 +72,8 @@ export function TasksScreen(): JSX.Element {
       const ok = await confirm({
         title: `Disable "${task.title}"?`,
         detail: "This stops all future scheduled runs until re-enabled.",
-        confirmLabel: "DISABLE",
-        cancelLabel: "KEEP ENABLED",
+        confirmLabel: "Disable",
+        cancelLabel: "Keep enabled",
         tone: "alert",
       });
       if (!ok) return;
@@ -93,8 +93,8 @@ export function TasksScreen(): JSX.Element {
       title: `Delete "${task.title}"?`,
       detail:
         "This removes the task and stops all future scheduled runs. This cannot be undone.",
-      confirmLabel: "DELETE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -121,8 +121,8 @@ export function TasksScreen(): JSX.Element {
       title: `Rotate webhook for "${task.title}"?`,
       detail:
         "The current URL stops working immediately — update anything that calls it.",
-      confirmLabel: "ROTATE",
-      cancelLabel: "CANCEL",
+      confirmLabel: "Rotate",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (!ok) return;
@@ -140,26 +140,26 @@ export function TasksScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="TASKS"
+        title="Tasks"
         subtitle="Scheduled automations and delivery targets."
         assetId="AUTO-TSK-01.0"
         actions={
           <Button variant="primary" leading="plus" onClick={openNew}>
-            NEW TASK
+            New task
           </Button>
         }
       />
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String(tasks().length) },
-          { label: "ENABLED", value: String(enabledCount()), tone: "nominal" },
+          { label: "Total", value: String(tasks().length) },
+          { label: "Enabled", value: String(enabledCount()), tone: "nominal" },
           {
-            label: "DISABLED",
+            label: "Disabled",
             value: String(disabledCount()),
             tone: disabledCount() > 0 ? "warn" : "dim",
           },
-          { label: "WEBHOOKS", value: String(webhookCount()) },
+          { label: "Webhooks", value: String(webhookCount()) },
         ]}
       />
 
@@ -167,11 +167,11 @@ export function TasksScreen(): JSX.Element {
         data={tasksResource}
         onRetry={refreshTasks}
         isEmpty={(t) => t.length === 0}
-        emptyMessage="NO TASKS"
+        emptyMessage="No tasks"
         emptyHint="No scheduled tasks configured."
         empty={
           <Button variant="default" onClick={openNew}>
-            CREATE TASK
+            Create task
           </Button>
         }
       >
@@ -181,7 +181,7 @@ export function TasksScreen(): JSX.Element {
               {(task) => {
                 const expanded = () => expandedId() === task.id;
                 return (
-                  <div class="border-b border-line last:border-b-0">
+                  <div>
                     <div
                       class="flex cursor-pointer items-center gap-3 px-3 py-2 transition-colors hover:bg-raised"
                       classList={{ "bg-raised": expanded() }}
@@ -234,7 +234,7 @@ export function TasksScreen(): JSX.Element {
                           leading="play"
                           onClick={() => void runNow(task)}
                         >
-                          RUN NOW
+                          Run now
                         </Button>
                         <Toggle
                           checked={task.enabled}
@@ -269,29 +269,29 @@ export function TasksScreen(): JSX.Element {
                     </div>
 
                     <Show when={expanded()}>
-                      <div class="border-t border-line bg-raised px-4 py-3">
+                      <div class="rounded-panel bg-raised px-4 py-3">
                         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
                           <Stack gap={3}>
                             <Field
                               label={
                                 task.kind === "agent"
-                                  ? "PROMPT"
-                                  : "REMINDER TEXT"
+                                  ? "Prompt"
+                                  : "Reminder text"
                               }
                               value={task.prompt}
                             />
                             <Row gap={4}>
                               <Field
-                                label="KIND"
+                                label="Kind"
                                 value={task.kind.toUpperCase()}
                               />
                               <Field
-                                label="SCHEDULE"
+                                label="Schedule"
                                 value={humanizeSchedule(task.schedule)}
                               />
                               <Show when={task.kind === "agent"}>
                                 <Field
-                                  label="OUTPUT"
+                                  label="Output"
                                   value={task.output.toUpperCase()}
                                 />
                               </Show>
@@ -299,7 +299,7 @@ export function TasksScreen(): JSX.Element {
                             <Show when={task.preAuthorized.length > 0}>
                               <Stack gap={1}>
                                 <Text variant="label" tone="dim">
-                                  PRE-AUTHORIZED
+                                  Pre-authorized
                                 </Text>
                                 <Row gap={2} class="flex-wrap">
                                   <For each={task.preAuthorized}>
@@ -310,20 +310,20 @@ export function TasksScreen(): JSX.Element {
                             </Show>
                             <Show when={task.nextRunAt}>
                               <Field
-                                label="NEXT RUN"
+                                label="Next run"
                                 value={timestamp(task.nextRunAt!)}
                               />
                             </Show>
                             <Show when={task.lastRunAt}>
                               <Field
-                                label="LAST RUN"
+                                label="Last run"
                                 value={timestamp(task.lastRunAt!)}
                               />
                             </Show>
                             <Show when={task.schedule.type === "webhook"}>
                               <Stack gap={1}>
                                 <Text variant="label" tone="dim">
-                                  WEBHOOK URL
+                                  Webhook URL
                                 </Text>
                                 <Row gap={2} align="center" class="flex-wrap">
                                   <Text
@@ -345,7 +345,7 @@ export function TasksScreen(): JSX.Element {
                                         )
                                       }
                                     >
-                                      COPY
+                                      Copy
                                     </Button>
                                   </Show>
                                   <Button
@@ -355,7 +355,7 @@ export function TasksScreen(): JSX.Element {
                                     disabled={rotatingId() === task.id}
                                     onClick={() => void rotate(task)}
                                   >
-                                    ROTATE
+                                    Rotate
                                   </Button>
                                 </Row>
                               </Stack>

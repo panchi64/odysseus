@@ -23,6 +23,23 @@ export interface RunStarted extends Base {
 /** How full a model's context window is after a turn. The backend owns the
  *  whole derivation (used tokens, fraction, severity); clients only render it.
  *  Null on a metrics frame when unmeasurable (no window or no token usage). */
+/** What the occupied part of the window is holding, three ways.
+ *
+ *  The three are exhaustive — the backend scales them to sum to `ContextWindow.used` —
+ *  so they can be read as a whole with no unexplained remainder.
+ *
+ *  Every figure is an **estimate anchored to the provider's total**: no provider reports
+ *  a breakdown, so the split is measured backend-side from what it assembled and scaled
+ *  to the one number the provider does report. Render them with a `~`. */
+export interface ContextComposition {
+  /** The standing brief: instructions + system prompt. */
+  system: number;
+  /** Every tool name, description and JSON schema handed to the model. */
+  tools: number;
+  /** The conversation itself. */
+  messages: number;
+}
+
 export interface ContextWindow {
   /** Tokens occupying the window (prompt + generation). */
   used: number;
@@ -32,14 +49,40 @@ export interface ContextWindow {
   fraction: number;
   /** Window severity per the backend's thresholds. */
   level: "nominal" | "warn" | "alert";
+  /** What `used` is made of. Null when it couldn't be measured — a thread whose turns
+   *  all predate the measurement, or a reload in a process where no turn has run yet.
+   *  Absent, never zeroed: a split claiming no tools and no brief would be a confident
+   *  lie about the one thing this exists to expose. */
+  parts: ContextComposition | null;
 }
 
+/** What the thread has cost so far — **cumulative over the conversation**, not the
+ *  run. The backend counts the active path and measures its own wall-clock; every
+ *  derived figure below (the ratio, the average, the rate) is computed server-side.
+ *  Null means unmeasured and is never interchangeable with 0 — see `RunMetrics` in
+ *  `backend/runs/events.py`. */
 export interface RunMetrics extends Base {
   type: "run.metrics";
   steps: number;
   tool_calls: number;
+  /** Completed operator exchanges, where `steps` counts the model round-trips. */
+  turns: number;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** Provider-reported cached prompt tokens; null when the endpoint reports none. */
+  cache_read_tokens: number | null;
+  /** Wall-clock measured by the backend around its own streaming, so it means the
+   *  same on every provider. `llm_ms` is the full round-trip, connect and queue
+   *  included — the wait the operator actually sat through. */
+  llm_ms: number | null;
+  tool_ms: number | null;
+  ttft_ms_total: number | null;
+  ttft_samples: number;
+  /** Backend-derived: cached share of prompt tokens (0–1), mean time to first
+   *  content, and generation throughput against model time. */
+  cache_hit_ratio: number | null;
+  ttft_avg_ms: number | null;
+  output_tokens_per_second: number | null;
   /** The model's context window, when known — the ceiling `context` measures
    *  against. Mirror completeness; the gauge renders the derived `context` field. */
   context_window: number | null;
@@ -105,27 +148,6 @@ export interface ToolFailed extends Base {
   tool_call_id: string;
   name: string;
   error: string;
-}
-
-// --- Documents -------------------------------------------------------------
-export interface DocumentCreated extends Base {
-  type: "document.created";
-  document_id: string;
-  title: string | null;
-}
-export interface DocumentDelta extends Base {
-  type: "document.delta";
-  document_id: string;
-  text: string;
-}
-export interface DocumentCommitted extends Base {
-  type: "document.committed";
-  document_id: string;
-  version: number;
-  // The committed version's authoritative mint time (the same `created_at` the cold
-  // read serves). Order the View's versions by this so a version minted live sorts
-  // identically to one read back on refresh.
-  created_at: string;
 }
 
 // --- View (the conversation's one versioned output surface) ----------------
@@ -284,9 +306,6 @@ export type RunEvent =
   | ToolProgress
   | ToolCompleted
   | ToolFailed
-  | DocumentCreated
-  | DocumentDelta
-  | DocumentCommitted
   | ViewLive
   | ViewLiveStopped
   | ViewSnapshot

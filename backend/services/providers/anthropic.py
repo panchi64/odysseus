@@ -65,9 +65,7 @@ class AnthropicNativeProvider:
             ) from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
-            raise DegradedCapabilityError(
-                f"{base_url!r} returned an unrecognized models payload"
-            )
+            raise DegradedCapabilityError(f"{base_url!r} returned an unrecognized models payload")
         ids = [
             row["id"]
             for row in data
@@ -79,6 +77,19 @@ class AnthropicNativeProvider:
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
     ) -> None:
         await self._list_models(base_url, api_key, client=client)
+
+    async def context_window(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> int | None:
+        """Anthropic's models API doesn't carry a context length, so there is nothing
+        here to read.
+
+        Deliberately not a hard-coded table of known Anthropic windows. Such a table
+        would be right until the day it silently isn't — a new model, or a beta that
+        extends an existing one — and a context gauge that is confidently wrong is
+        worse than one that admits it doesn't know: the operator would only find out
+        by hitting a ceiling the meter said was far away."""
+        return None
 
     async def _list_models(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None

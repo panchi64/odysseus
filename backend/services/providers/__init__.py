@@ -16,7 +16,6 @@ from services.providers.base import Provider, ProviderPreset
 __all__ = ["Provider", "ProviderPreset", "all_providers", "get_provider"]
 
 DEFAULT_PROVIDER_ID = "openai-compatible"
-LOCAL_PROVIDER_ID = "local"
 
 
 def _discover() -> dict[str, Provider]:

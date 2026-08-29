@@ -74,7 +74,7 @@ export function FallbackChainsSection(): JSX.Element {
   };
 
   return (
-    <Panel label="FALLBACK CHAINS">
+    <Panel label="Fallback chains">
       <Stack gap={4}>
         <Text variant="micro" tone="dim">
           Where a request goes when the primary endpoint is down. The background
@@ -111,7 +111,7 @@ export function FallbackChainsSection(): JSX.Element {
                           align="center"
                           justify="between"
                           gap={2}
-                          class="border-b border-line py-1.5 last:border-0"
+                          class="py-1.5"
                         >
                           <Row gap={2} align="center" class="min-w-0">
                             <Text variant="micro" tone="dim">
@@ -126,7 +126,7 @@ export function FallbackChainsSection(): JSX.Element {
                               {endpointName(id)}
                             </Text>
                             <Show when={i() === 0}>
-                              <StatusFlag status="nominal">PRIMARY</StatusFlag>
+                              <StatusFlag status="nominal">Primary</StatusFlag>
                             </Show>
                           </Row>
                           <span class="flex shrink-0 items-center gap-1">

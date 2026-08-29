@@ -2,9 +2,9 @@
 
 Why this is a backend service at all: a browser cannot produce an absolute host path.
 ``<input type="file">`` hands over bytes with no location, and the File System Access API
-is Chromium-only and still path-less. But the serving layer needs a real path — weights
-the operator already has on disk are read *where they are*. So the dialog is opened by
-the process that runs on their machine, and the chosen path comes back as data.
+is Chromium-only and still path-less. But some fields need a real path — a project
+directory on the operator's own disk, read *where it is*. So the dialog is opened by the
+process that runs on their machine, and the chosen path comes back as data.
 
 **Progressive enhancement, never a requirement.** Every surface that uses this also takes
 a typed path, and :func:`probe` tells the UI whether to offer the button at all — a
@@ -12,8 +12,8 @@ headless host simply doesn't show it. That keeps the platform rule intact (`XC-P
 no OS-specific facility is load-bearing for any core function, and the helpers below are
 a convenience layer that degrades to typing.
 
-**Agent-unreachable by construction**, like ``host_shell``: imported only by its route and
-the app wiring, never by ``tools/``/``agent/``/``research/`` (enforced by
+**Agent-unreachable by construction**: imported only by its route and the app wiring,
+never by ``tools/``/``agent/``/``research/`` (enforced by
 ``tests/test_host_picker_guard.py``). A model that could open host dialogs — or read back
 arbitrary paths — would be reaching outside every approval gate.
 
@@ -259,7 +259,7 @@ async def _run(argv: list[str]) -> str | None:
             proc.kill()
         with suppress(Exception):
             await proc.wait()
-        logger.info("serving: the file chooser timed out with no selection")
+        logger.info("host picker: the file chooser timed out with no selection")
         return None
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip()
@@ -268,7 +268,7 @@ async def _run(argv: list[str]) -> str | None:
         if _OSASCRIPT_CANCEL in detail:
             return None  # osascript spells cancellation as error -128
         logger.warning(
-            "serving: the file chooser failed (exit %s): %s", proc.returncode, detail
+            "host picker: the file chooser failed (exit %s): %s", proc.returncode, detail
         )
         raise RuntimeError(
             f"the file chooser couldn't be opened{f': {detail}' if detail else ''}"

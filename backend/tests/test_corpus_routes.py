@@ -26,10 +26,10 @@ async def test_folder_lifecycle_and_sources_list():
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "note.txt").write_text("the operator keeps a pet cat")
         async with client_app() as (client, _app):
-            # Stub surfaces are listed from day one (memory + conversations + 4 stubs).
+            # Stub surfaces are listed from day one (memory + conversations + stubs).
             sources = (await client.get("/corpus/sources")).json()
             ids = {s["id"] for s in sources}
-            assert {"surf-memory", "surf-documents", "surf-uploads"} <= ids
+            assert {"surf-memory", "surf-uploads"} <= ids
 
             created = await client.post("/corpus/folders", json={"path": tmp})
             assert created.status_code == 201

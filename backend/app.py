@@ -46,6 +46,7 @@ from routes import (
 from runs import RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
+from services.context_budget import OverheadCache
 from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
 from services.embeddings import RegistryEmbedder
@@ -170,6 +171,15 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     if reload_watches_runtime_state(sys.argv, settings.data_dir):
         logger.warning(UNGUARDED_RELOAD_WARNING, settings.data_dir)
     url = settings.db_url or f"sqlite:///{settings.data_dir / 'app.db'}"
+    # Whether the database backing this workspace is intact — read *before* `init_db`
+    # creates and migrates it, because afterwards a deleted database is indistinguishable
+    # from a fresh one. What says a workspace exists is the keyfile, which sits beside the
+    # database rather than inside it, so an operator who clears `app.db` to start over is
+    # otherwise still asked to unlock a key that now protects nothing. The two facts
+    # together are what `/auth/status` reports as `db_missing`. An explicit `db_url` counts
+    # as intact: we make no claim about a database whose path we don't own.
+    db_path = None if settings.db_url else settings.data_dir / "app.db"
+    app.state.workspace_db_intact = db_path.exists() if db_path else True
     engine = make_engine(url)
     init_db(engine)
     app.state.db_engine = engine
@@ -220,6 +230,10 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # it below — because the notification channels resolve their own configuration from
     # it, and they are composed with the attention surface a few lines down.
     app.state.settings_store = SettingsStore(engine)
+    # What a request weighs besides the conversation, per mode — so a reloaded thread can
+    # still break its context down. Deliberately in memory rather than in the database:
+    # it describes the current tool/brief configuration, not the thread's history.
+    app.state.context_overhead = OverheadCache()
     # Conversation-scoped tool auto-approval grants — part of the approval posture,
     # so it stays core beside the run substrate the approvals park on.
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)

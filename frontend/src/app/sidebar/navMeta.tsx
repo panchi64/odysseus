@@ -49,7 +49,7 @@ function meta(indicator: Status | undefined, offline: boolean, name: string) {
       </Show>
       <Show when={offline}>
         <Text variant="micro" tone="dim">
-          OFFLINE
+          Offline
         </Text>
       </Show>
     </span>

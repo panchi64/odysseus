@@ -76,7 +76,7 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
   // `.latest` rather than the resource call: the palette isn't inside a `Suspense`, and
   // reading a pending resource would suspend the overlay. `.latest` avoids *suspending*
   // but still re-throws a failed fetch, so it is guarded by `.error` — the same shape
-  // `GalleryScreen`/`SkillsDirectoryScreen` use. A settings endpoint that is down must
+  // `SkillsDirectoryScreen` use. A settings endpoint that is down must
   // cost the palette its rows, not blank the whole content region.
   const chat = (): ChatSettings | undefined =>
     chatSaved() ?? (chatResource.error ? undefined : chatResource.latest);
@@ -126,6 +126,40 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
           : Math.round(s.autoCompactThreshold * 100);
       },
       write: (next) => saveChat({ autoCompactThreshold: next / 100 }),
+    },
+    {
+      id: "chat.context-warn",
+      label: "Context gauge warning",
+      keywords: ["context", "ring", "gauge", "amber", "threshold", "percent"],
+      group: CHAT,
+      kind: "number",
+      unit: "%",
+      min: 1,
+      max: 99,
+      read: () => {
+        const s = chat();
+        return s === undefined
+          ? undefined
+          : Math.round(s.contextWarnThreshold * 100);
+      },
+      write: (next) => saveChat({ contextWarnThreshold: next / 100 }),
+    },
+    {
+      id: "chat.context-alert",
+      label: "Context gauge alert",
+      keywords: ["context", "ring", "gauge", "red", "threshold", "percent"],
+      group: CHAT,
+      kind: "number",
+      unit: "%",
+      min: 2,
+      max: 100,
+      read: () => {
+        const s = chat();
+        return s === undefined
+          ? undefined
+          : Math.round(s.contextAlertThreshold * 100);
+      },
+      write: (next) => saveChat({ contextAlertThreshold: next / 100 }),
     },
     {
       id: "chat.step-limit",

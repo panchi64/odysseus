@@ -269,9 +269,7 @@ async def test_reply_all_carries_the_cc_list(mail):
     service, account, transport, _engine, _vault = mail
     transport.messages["INBOX"] = [
         MailBody(
-            header=replace(
-                sample_header("1"), cc=(MailAddress(address="team@example.com"),)
-            ),
+            header=replace(sample_header("1"), cc=(MailAddress(address="team@example.com"),)),
             text="hello",
         )
     ]

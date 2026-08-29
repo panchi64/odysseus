@@ -197,9 +197,7 @@ async def test_a_connector_action_rides_the_same_gate():
     """`INTEG-2` — an agent call to a configured integration is the same kind of unknown
     as an MCP tool, so it gates identically and is trusted the same way."""
     external, _view = await _wired()
-    connector = await external.integrations.configure(
-        OWNER, "github", credentials={"token": "t"}
-    )
+    connector = await external.integrations.configure(OWNER, "github", credentials={"token": "t"})
 
     out, run = await _drive(
         external, f"external_{connector.slug}_get_repo", {"params": {"owner": "a", "repo": "b"}}

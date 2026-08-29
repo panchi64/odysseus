@@ -105,7 +105,8 @@ async def test_chat_settings_rejects_an_unknown_field():
     # silently no-op with a 200 — otherwise a client believes a write landed that never did.
     async with client_app() as (client, _app):
         resp = await client.put(
-            "/chat/settings", json={"agent_request_limi": 15}  # typo: missing 't'
+            "/chat/settings",
+            json={"agent_request_limi": 15},  # typo: missing 't'
         )
         assert resp.status_code == 422
 

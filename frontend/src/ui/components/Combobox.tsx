@@ -33,6 +33,22 @@ export interface ComboboxProps {
   align?: "left" | "right";
   /** Message when discovery returned nothing. */
   emptyHint?: string;
+  /** Drop the trigger's fill and its minimum width, so it reads as a line of text
+   *  with a chevron rather than a control.
+   *
+   *  For a trigger that already sits on a raised surface — the composer's action row
+   *  — where the default fill would be a fill on a fill (§7). The min-width goes with
+   *  it because a bare trigger has no box whose edges need to stay put: it is sized
+   *  by the model name it is showing.
+   *
+   *  The label drops to `dim` with the fill, for the same reason: with no box to
+   *  separate it, a `bright` value reads as a heading over whatever sits beneath it.
+   *  A bare trigger is a setting the operator glances at and rarely changes, not a
+   *  thing to announce. */
+  bare?: boolean;
+  /** Fired when the option list opens — for a caller whose options are worth
+   *  re-fetching at the moment they're about to be looked at. */
+  onOpen?: () => void;
   "aria-label"?: string;
   class?: string;
 }
@@ -67,6 +83,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
     <Popover
       class={props.class}
       align={props.align}
+      onOpen={props.onOpen}
       panelClass="flex max-h-80 w-64 flex-col"
       trigger={({ open, setOpen }) => (
         <button
@@ -78,17 +95,26 @@ export function Combobox(props: ComboboxProps): JSX.Element {
             setQuery("");
             setOpen(!open());
           }}
-          class="flex h-8 min-w-32 max-w-56 items-center gap-1.5 rounded-ctl border border-line bg-surface pl-2 pr-2 transition-colors hover:border-bright"
+          class={cx(
+            "flex h-8 max-w-56 items-center gap-1.5 rounded-ctl transition-colors hover:text-bright",
+            // A filled trigger's padding is inside a visible box, so it reads as the
+            // control's shape. A bare one has no box, so the same padding just reads as
+            // a gap — and then the real gap beside it lands on top, pushing whatever
+            // follows visibly further away than the next item in the row. Narrower
+            // padding keeps the bare trigger's edge close to its text, which is what
+            // lets a uniform gap actually look uniform.
+            props.bare ? "min-w-0 px-1" : "min-w-32 bg-raised px-2",
+          )}
         >
           <Show when={props.leading}>
             <Icon name={props.leading!} size={12} class="shrink-0 text-dim" />
           </Show>
           <Text
             variant="label"
-            tone={selectedLabel() ? "bright" : "dim"}
+            tone={selectedLabel() && !props.bare ? "bright" : "dim"}
             class="min-w-0 flex-1 truncate text-left"
           >
-            {selectedLabel() ?? props.placeholder ?? "SELECT"}
+            {selectedLabel() ?? props.placeholder ?? "Select"}
           </Text>
           <Icon name="chevron-down" size={12} class="shrink-0 text-dim" />
         </button>
@@ -108,7 +134,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
         return (
           <>
             <Show when={searchable()}>
-              <div class="shrink-0 border-b border-line p-1.5">
+              <div class="shrink-0 p-1.5">
                 <div class="relative">
                   <Icon
                     name="search"
@@ -121,7 +147,7 @@ export function Combobox(props: ComboboxProps): JSX.Element {
                     onInput={(e) => setQuery(e.currentTarget.value)}
                     onKeyDown={onSearchKey}
                     placeholder={props.searchPlaceholder ?? "Search…"}
-                    class="h-7 w-full rounded-ctl border border-line bg-bg pl-8 pr-2 font-mono text-body text-bright placeholder:text-dim outline-none transition-colors focus:border-bright"
+                    class="h-7 w-full rounded-ctl bg-raised pl-8 pr-2 font-sans text-body text-bright placeholder:text-dim outline-none transition-colors"
                   />
                 </div>
               </div>
@@ -134,8 +160,8 @@ export function Combobox(props: ComboboxProps): JSX.Element {
                   <div class="px-3 py-2">
                     <Text variant="micro" tone="dim">
                       {props.groups.length === 0
-                        ? (props.emptyHint ?? "NO OPTIONS")
-                        : "NO MATCHES"}
+                        ? (props.emptyHint ?? "No options")
+                        : "No matches"}
                     </Text>
                   </div>
                 }

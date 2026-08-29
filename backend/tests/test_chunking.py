@@ -37,8 +37,8 @@ def test_offsets_point_into_the_source():
     text = "alpha beta gamma delta"
     chunks = chunk_text(text, window=2, overlap=0)
     # Each chunk's offset is the char index of its first token in the source.
-    assert text[chunks[0].offset:].startswith("alpha")
-    assert text[chunks[1].offset:].startswith("gamma")
+    assert text[chunks[0].offset :].startswith("alpha")
+    assert text[chunks[1].offset :].startswith("gamma")
 
 
 def test_repeated_tokens_get_distinct_offsets():

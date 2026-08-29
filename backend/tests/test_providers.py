@@ -1,5 +1,5 @@
-"""The provider layer: adapter dispatch, save-time validation, managed liveness,
-and the migration that backfills the legacy name-prefix inference into real columns."""
+"""The provider layer: adapter dispatch, save-time validation, and the migration that
+backfills the legacy name-prefix inference into a real ``provider`` column."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from sqlmodel import Session, text
 
 from core.db import make_engine
-from core.exceptions import DegradedCapabilityError
 from services import llm
 from services.providers import all_providers, get_provider
 from tests.test_registry import _registry, _resolve
@@ -25,7 +24,7 @@ OWNER = "operator"
 
 def test_builtin_providers_are_discovered():
     ids = {p.id for p in all_providers()}
-    assert {"openai-compatible", "anthropic", "google", "local"} <= ids
+    assert {"openai-compatible", "anthropic", "google"} <= ids
 
 
 def test_unknown_provider_raises():
@@ -38,7 +37,6 @@ def test_build_model_dispatches_to_the_native_classes():
     model class, so a lab's native protocol is spoken natively."""
     cases = [
         ("openai-compatible", OpenAIChatModel),
-        ("local", OpenAIChatModel),
         ("anthropic", AnthropicModel),
         ("google", GoogleModel),
     ]
@@ -54,8 +52,8 @@ def test_build_model_dispatches_to_the_native_classes():
 
 async def test_openai_wire_carries_one_leading_system_message():
     """The standing prompt and the per-turn instructions both ride the OpenAI wire as
-    system messages at the head. Hosted APIs take two; a local engine hands the list to
-    the model's own chat template, and the Qwen family's raises "System message must be
+    system messages at the head. Hosted APIs take two; a self-hosted server hands the list
+    to the model's own chat template, and the Qwen family's raises "System message must be
     at the beginning." on the second — so the adapter merges them into one. Asserted on
     the mapped wire messages (the library's private mapper) because the profile flag
     alone wouldn't catch the day the library renames or re-scopes it."""
@@ -68,17 +66,16 @@ async def test_openai_wire_carries_one_leading_system_message():
             instructions="RULES",
         )
     ]
-    for provider_id in ("openai-compatible", "local"):
-        spec = llm.EndpointSpec(
-            base_url="http://127.0.0.1:8080/v1",
-            model="mlx-community/Qwen3-30B",
-            provider=provider_id,
-            api_key=None,
-        )
-        model = llm.build_model(spec)
-        mapped = await model._map_messages(history, ModelRequestParameters())
-        assert [m["role"] for m in mapped] == ["system", "user"], provider_id
-        assert mapped[0]["content"] == "IDENTITY\n\nRULES", provider_id
+    spec = llm.EndpointSpec(
+        base_url="http://127.0.0.1:8080/v1",
+        model="Qwen3-30B",
+        provider="openai-compatible",
+        api_key=None,
+    )
+    model = llm.build_model(spec)
+    mapped = await model._map_messages(history, ModelRequestParameters())
+    assert [m["role"] for m in mapped] == ["system", "user"]
+    assert mapped[0]["content"] == "IDENTITY\n\nRULES"
 
 
 def test_reasoning_off_is_provider_shaped():
@@ -127,9 +124,7 @@ async def test_key_requiring_provider_rejects_a_keyless_save():
 async def test_unknown_provider_rejected_at_save():
     reg = await _registry()
     with pytest.raises(ValueError):
-        await reg.create_endpoint(
-            OWNER, name="a", base_url="http://x/v1", provider="no-such-lab"
-        )
+        await reg.create_endpoint(OWNER, name="a", base_url="http://x/v1", provider="no-such-lab")
 
 
 async def test_provider_flows_into_the_resolved_spec():
@@ -147,41 +142,6 @@ async def test_provider_flows_into_the_resolved_spec():
     assert isinstance(model, AnthropicModel)
 
 
-# --- managed liveness --------------------------------------------------------
-
-
-async def test_stopped_managed_endpoint_is_skipped_in_the_chain():
-    reg = await _registry()
-    local = await reg.create_endpoint(
-        OWNER,
-        name="Local · acme/m",
-        provider="local",
-        managed=True,
-        live_status="stopped",
-        base_url="http://127.0.0.1:9/v1",
-        model="m-local",
-    )
-    backup = await reg.create_endpoint(OWNER, name="cloud", base_url="http://b/v1", model="m2")
-    await reg.set_role(OWNER, "utility", [local.id, backup.id])
-
-    model = await _resolve(reg, "utility", owner_id=OWNER)
-    assert isinstance(model, OpenAIChatModel) and model.model_name == "m2"
-
-    # Alone in the chain ⇒ degraded, and the per-conversation override rejects it too.
-    await reg.set_role(OWNER, "utility", [local.id])
-    with pytest.raises(DegradedCapabilityError):
-        await _resolve(reg, "utility", owner_id=OWNER)
-    with pytest.raises(DegradedCapabilityError):
-        await _resolve(reg, "main", owner_id=OWNER, override_endpoint_id=local.id)
-
-    # Back to running ⇒ resolvable again; the operator's `enabled` switch still wins.
-    await reg.update_endpoint(OWNER, local.id, live_status="running")
-    assert (await _resolve(reg, "utility", owner_id=OWNER)).model_name == "m-local"
-    await reg.update_endpoint(OWNER, local.id, enabled=False)
-    with pytest.raises(DegradedCapabilityError):
-        await _resolve(reg, "utility", owner_id=OWNER)
-
-
 # --- the surface --------------------------------------------------------------
 
 
@@ -189,7 +149,7 @@ async def test_providers_route_serves_the_presets():
     async with client_app() as (client, _app):
         rows = (await client.get("/models/providers")).json()
         by_id = {row["id"]: row for row in rows}
-        assert {"openai-compatible", "anthropic", "google", "local"} <= set(by_id)
+        assert {"openai-compatible", "anthropic", "google"} <= set(by_id)
         anthropic = by_id["anthropic"]
         assert anthropic["requires_key"] is True
         assert anthropic["default_base_url"] == "https://api.anthropic.com"
@@ -217,13 +177,10 @@ async def test_endpoint_routes_carry_and_validate_provider():
         assert created.status_code == 201
         body = created.json()
         assert body["provider"] == "anthropic"
-        assert body["managed"] is False and body["live_status"] is None
 
         # Default provider when unspecified.
         plain = (
-            await client.post(
-                "/models/endpoints", json={"name": "b", "base_url": "http://x/v1"}
-            )
+            await client.post("/models/endpoints", json={"name": "b", "base_url": "http://x/v1"})
         ).json()
         assert plain["provider"] == "openai-compatible"
 
@@ -232,9 +189,11 @@ async def test_endpoint_routes_carry_and_validate_provider():
 
 
 def test_migration_backfills_local_prefix_endpoints():
-    """Build the DB at the pre-provider revision, insert a serving-named endpoint the
-    old way (liveness overloaded onto `enabled`), upgrade to head, and assert the
-    backfill turned the name-prefix inference into real columns."""
+    """Build the DB at the pre-provider revision, insert a locally-served endpoint the
+    old way (its provider inferable only from a "Local · " name prefix, liveness
+    overloaded onto `enabled`), upgrade to head, and assert the backfill turned that
+    inference into a real `provider` column — and handed `enabled` back to the
+    operator."""
     from alembic import command
     from alembic.config import Config
 
@@ -261,14 +220,11 @@ def test_migration_backfills_local_prefix_endpoints():
 
     command.upgrade(config, "head")
 
-    columns = "provider, managed, live_status, enabled"
+    columns = "provider, enabled"
     with Session(engine) as session:
-        local = session.exec(
-            text(f"SELECT {columns} FROM model_endpoints WHERE id='e1'")
-        ).one()
-        cloud = session.exec(
-            text(f"SELECT {columns} FROM model_endpoints WHERE id='e2'")
-        ).one()
-    # The stopped local engine: liveness moved to live_status; enabled handed back on.
-    assert tuple(local) == ("local", 1, "stopped", 1)
-    assert tuple(cloud) == ("openai-compatible", 0, None, 1)
+        local = session.exec(text(f"SELECT {columns} FROM model_endpoints WHERE id='e1'")).one()
+        cloud = session.exec(text(f"SELECT {columns} FROM model_endpoints WHERE id='e2'")).one()
+    # The row that was off only because it wasn't running: `enabled` handed back on, and
+    # the retired `local` provider folded into the OpenAI-compatible one it always was.
+    assert tuple(local) == ("openai-compatible", 1)
+    assert tuple(cloud) == ("openai-compatible", 1)

@@ -1,7 +1,5 @@
 import { Show, createMemo, createSignal, type JSX } from "solid-js";
-import { useIsDesktop } from "~/lib/useMediaQuery";
 import {
-  Button,
   EmptyState,
   Panel,
   Select,
@@ -10,13 +8,7 @@ import {
   type SelectOption,
   type TabItem,
 } from "~/ui";
-import type { ViewDocumentRef } from "../model";
-import {
-  priorDocumentVersions,
-  priorSnapshots,
-  type PriorVersion,
-  type ViewItem,
-} from "../viewport";
+import { priorSnapshots, type PriorVersion, type ViewItem } from "../viewport";
 import { ViewActionRow } from "./ViewActionRow";
 import { ViewStage } from "./ViewStage";
 import { ViewTimelineRail } from "./ViewTimelineRail";
@@ -24,8 +16,8 @@ import { ViewTimelineRail } from "./ViewTimelineRail";
 type Mode = "preview" | "code";
 
 const MODE_TABS: TabItem[] = [
-  { value: "preview", label: "PREVIEW" },
-  { value: "code", label: "CODE" },
+  { value: "preview", label: "Preview" },
+  { value: "code", label: "Code" },
 ];
 
 /** The chat workspace's viewport — the conversation's **View** rendered beside the
@@ -52,19 +44,6 @@ export function ViewportPanel(props: {
   onClose: () => void;
   /** Rendered only when provided — P5 wires the backend keeper flip. */
   onKeeper?: (item: ViewItem) => void;
-  /** Relays an inline document edit to the backend (SAVE mints a new version). */
-  onSaveDocument: (documentId: string, body: string) => Promise<void>;
-  /** Fold in a version minted outside the run stream — an accepted AI suggestion
-   *  (`DOC-3`) applies through the documents surface, so the View is told. */
-  onDocumentVersion: (
-    documentId: string,
-    body: string,
-    version: number | null,
-  ) => void;
-  /** A navigation (pin/tab change) is blocked on an unsaved document edit. */
-  pendingNav?: boolean;
-  onDiscardEdits?: () => void;
-  onKeepEditing?: () => void;
   /** Captures the focusable panel container for the global keymap's focus-jump
    *  and focus-visible ring. */
   panelRef?: (el: HTMLDivElement) => void;
@@ -93,44 +72,30 @@ export function ViewportPanel(props: {
     const sel = selected();
     return sel ? priorSnapshots(props.items, sel.key) : [];
   });
-  // Prior document versions the selected document's CODE can diff against.
-  const priorDocuments = createMemo<ViewDocumentRef[]>(() => {
-    const sel = selected();
-    return sel ? priorDocumentVersions(props.items, sel.key) : [];
-  });
-
   // PREVIEW-only refresh, same condition the old loose header button used.
   const refreshVisible = () =>
     Boolean(selected()) && props.activeTab === "preview";
 
-  // Whether the panel currently owns the whole screen rather than sharing it
-  // with the transcript — the condition the caller mounts the fullscreen sheet
-  // on. `fullscreen` alone is only half of it: below `lg` the panel is *always*
-  // the sheet and the flag stays off, so a stage arm that needs room (the
-  // suggestion review) would go unreachable on a narrow viewport if it read the
-  // flag directly.
-  const isDesktop = useIsDesktop();
-  const expanded = (): boolean => props.fullscreen || !isDesktop();
-
-  // Keeper only makes sense for a version the backend can actually bookmark: a
-  // captured snapshot, or a *committed* document version (not the in-progress
-  // version-0 head still streaming, and not a standalone live entry with neither).
-  const keeperEligible = (): boolean => {
-    const item = selected();
-    return (
-      Boolean(item?.snapshot) ||
-      Boolean(item?.document && item.document.version >= 1)
-    );
-  };
+  // Keeper only makes sense for a version the backend can actually bookmark — a
+  // captured snapshot, not a standalone live entry with none.
+  const keeperEligible = (): boolean => Boolean(selected()?.snapshot);
 
   return (
     <div
       ref={props.panelRef}
       tabindex={-1}
-      class="h-full outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
+      /* `p-2` keeps the header and the stage off the frame's rules — the
+         surface is the framed box now, not a card with its own padding, so the
+         breathing room has to come from here. */
+      class="h-full p-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
     >
+      {/* `bare`: the frosted surface belongs to the framed region that
+          `ConstructionReveal` draws, so the panel adds no fill, no shadow and
+          no ring of its own. A card here was the parent container with rounded
+          corners — a second box wrapped *around* the frame, when the frame is
+          meant to be the edge of the thing itself. */}
       <Panel
-        label="VIEW"
+        label="View"
         meta={
           <ViewActionRow
             keeper={selected()?.keeper}
@@ -151,6 +116,7 @@ export function ViewportPanel(props: {
             onClose={props.onClose}
           />
         }
+        bare
         flush
         fill
         class="h-full"
@@ -160,41 +126,15 @@ export function ViewportPanel(props: {
           fallback={
             <EmptyState
               icon="eye"
-              message="NOTHING TO SHOW YET"
+              message="Nothing to show yet"
               hint="Pages, charts, files, and live servers from this conversation appear here."
             />
           }
         >
           <div class="flex h-full min-h-0 flex-col">
-            {/* Unsaved-edit guard: blocks a pin/tab change that would navigate away
-                from the item currently being edited inline. Hard-cut, no dialog. */}
-            <Show when={props.pendingNav}>
-              <div class="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
-                <Text variant="label" tone="bright">
-                  UNSAVED EDITS
-                </Text>
-                <div class="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={props.onKeepEditing}
-                  >
-                    KEEP EDITING
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={props.onDiscardEdits}
-                  >
-                    DISCARD EDITS
-                  </Button>
-                </div>
-              </div>
-            </Show>
-
             {/* Version dropdown + PREVIEW / CODE toggle. With a single version the
                 dropdown collapses to its label. */}
-            <div class="flex items-center gap-2 border-b border-line px-3 py-2">
+            <div class="flex items-center gap-2 px-3 py-2">
               <Show
                 when={props.items.length > 1}
                 fallback={
@@ -241,12 +181,8 @@ export function ViewportPanel(props: {
                     mode={props.activeTab}
                     reloadKey={reloadKey()}
                     priorVersions={priorVersions()}
-                    priorDocuments={priorDocuments()}
-                    onSaveDocument={props.onSaveDocument}
-                    onDocumentVersion={props.onDocumentVersion}
                     fontStep={props.fontStep}
                     softWrap={props.softWrap}
-                    expanded={expanded()}
                   />
                 )}
               </Show>

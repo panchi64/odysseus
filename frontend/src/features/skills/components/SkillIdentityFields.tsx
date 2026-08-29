@@ -49,7 +49,7 @@ export function SkillIdentityFields(props: {
   return (
     <Stack gap={3}>
       <Input
-        label="NAME"
+        label="Name"
         value={props.name}
         autofocus={props.autofocus}
         disabled={props.disabled}
@@ -59,7 +59,7 @@ export function SkillIdentityFields(props: {
         onInput={(e) => props.onNameInput(e.currentTarget.value)}
       />
       <Textarea
-        label="DESCRIPTION"
+        label="Description"
         value={props.description}
         disabled={props.disabled}
         invalid={descriptionInvalid()}

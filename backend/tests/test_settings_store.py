@@ -28,9 +28,7 @@ async def test_get_many_reads_several_keys_in_one_call():
     store = _store()
     await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, "0.5")
 
-    values = await store.get_many(
-        OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
-    )
+    values = await store.get_many(OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY))
     assert values == {AUTO_COMPACT_THRESHOLD_KEY: "0.5"}
     # An absent key is simply omitted — the caller applies its own default.
     assert AUTO_COMPACT_ENABLED_KEY not in values
@@ -43,9 +41,7 @@ async def test_get_many_ignores_keys_it_was_not_asked_for():
     await store.set(OWNER, "chat.compaction_enabled", "false")  # a setting that no longer exists
     await store.set(OWNER, AUTO_COMPACT_THRESHOLD_KEY, "0.5")
 
-    values = await store.get_many(
-        OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
-    )
+    values = await store.get_many(OWNER, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY))
     assert values == {AUTO_COMPACT_THRESHOLD_KEY: "0.5"}
     auto = await get_auto_compact(store, OWNER)
     assert auto.enabled == get_settings().auto_compact_enabled

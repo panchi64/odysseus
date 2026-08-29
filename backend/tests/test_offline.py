@@ -222,9 +222,7 @@ async def test_routes_read_and_toggle_manual_offline():
 
         # Clear it and turn auto-detect off in one place; state reads back.
         cleared = (
-            await client.put(
-                "/offline", json={"manual_offline": False, "auto_detect": False}
-            )
+            await client.put("/offline", json={"manual_offline": False, "auto_detect": False})
         ).json()
         assert cleared["effective_offline"] is False
         assert cleared["auto_detect"] is False

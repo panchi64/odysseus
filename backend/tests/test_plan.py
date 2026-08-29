@@ -28,15 +28,12 @@ async def plans(tmp_path):
 
 
 def _store(plans: ConversationPlans, run: Run | None = None) -> ConversationPlanStore:
-    return ConversationPlanStore(
-        plans, owner_id=OWNER, conversation_id="conv-1", run=run
-    )
+    return ConversationPlanStore(plans, owner_id=OWNER, conversation_id="conv-1", run=run)
 
 
 def _items(*contents: str) -> list[PlanItem]:
     return [
-        PlanItem(id=f"t{i}", content=c, status=TaskStatus.pending)
-        for i, c in enumerate(contents)
+        PlanItem(id=f"t{i}", content=c, status=TaskStatus.pending) for i, c in enumerate(contents)
     ]
 
 
@@ -118,14 +115,10 @@ async def test_one_shared_category_keeps_conversations_apart(plans):
         run = Run(id=f"r-{conversation_id}", kind="chat", owner_id=OWNER, stream=RunStream())
         caps = ServiceContainer()
         caps.add(plans, as_type=ConversationPlans)
-        deps = RunDeps(
-            run=run, owner_id=OWNER, caps=caps, conversation_id=conversation_id
-        )
+        deps = RunDeps(run=run, owner_id=OWNER, caps=caps, conversation_id=conversation_id)
         ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
         tools = await toolset.get_tools(ctx)
-        await toolset.call_tool(
-            "plan_add_task", {"content": task}, ctx, tools["plan_add_task"]
-        )
+        await toolset.call_tool("plan_add_task", {"content": task}, ctx, tools["plan_add_task"])
 
     await write("conv-a", "alpha task")
     await write("conv-b", "beta task")
@@ -153,9 +146,7 @@ async def test_a_run_without_a_conversation_keeps_one_plan():
     ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
     tools = await toolset.get_tools(ctx)
 
-    await toolset.call_tool(
-        "plan_add_task", {"content": "only task"}, ctx, tools["plan_add_task"]
-    )
+    await toolset.call_tool("plan_add_task", {"content": "only task"}, ctx, tools["plan_add_task"])
     read = await toolset.call_tool("plan_read_plan", {}, ctx, tools["plan_read_plan"])
     assert "only task" in str(read)
 

@@ -60,7 +60,7 @@ export function BranchChip(props: {
       title: "Discard this branch?",
       detail:
         "Everything the agent changed in this conversation is thrown away. Your own working tree is untouched either way.",
-      confirmLabel: "DISCARD",
+      confirmLabel: "Discard",
       tone: "alert",
     });
     if (!ok) return;
@@ -80,12 +80,20 @@ export function BranchChip(props: {
   };
 
   return (
-    <Show when={branch()}>
+    /* `.latest`, not `branch()`. The caller bumps `revision` the moment a turn
+       settles, and a plain resource read goes undefined for the length of that
+       refetch — so the chip blinked out of the header and back in at exactly the
+       moment the operator looks up from a finished answer. `.latest` holds the
+       previous diffstat until the new one lands, which is also the more honest
+       thing to show: the branch did not stop existing while we asked about it. */
+    <Show when={branch.latest}>
       {(b) => (
         <>
+          {/* Sized to the chat header's other actions rather than to a toolbar
+              chip — it is the third control in that row, and a shorter one
+              beside them reads as a different kind of thing. */}
           <Button
             variant="ghost"
-            size="sm"
             leading="branch"
             onClick={() => setOpen(true)}
             aria-label="Review this conversation's branch"
@@ -115,7 +123,7 @@ export function BranchChip(props: {
               >
                 {/* The patch can be very wide; it scrolls inside its own box so
                     the dialog never scrolls sideways. */}
-                <pre class="scrollbar-thin max-h-96 overflow-auto border border-line p-3 text-xs">
+                <pre class="scrollbar-thin max-h-96 overflow-auto rounded-panel bg-raised p-3 text-xs">
                   {b().patch}
                 </pre>
               </Show>
@@ -124,14 +132,14 @@ export function BranchChip(props: {
                   onClick={() => void merge()}
                   disabled={busy() || !b().filesChanged}
                 >
-                  MERGE
+                  Merge
                 </Button>
                 <Button
                   variant="danger"
                   onClick={() => void discard()}
                   disabled={busy()}
                 >
-                  DISCARD
+                  Discard
                 </Button>
                 <Text variant="micro" tone="dim">
                   MERGE is the only thing that writes your own working tree.

@@ -402,9 +402,7 @@ async def test_title_is_announced_while_the_answer_is_still_streaming(tmp_path):
     assert run.status is RunStatus.done
     types = [b.type for b in _bodies(run)]
     # The name landed before the answer's last token, not after the whole turn.
-    assert types.index("conversation.titled") < len(types) - 1 - types[::-1].index(
-        "answer.delta"
-    )
+    assert types.index("conversation.titled") < len(types) - 1 - types[::-1].index("answer.delta")
     await store.stop()
 
 

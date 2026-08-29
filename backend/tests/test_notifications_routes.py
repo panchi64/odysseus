@@ -69,15 +69,11 @@ async def test_list_pagination_unread_filter_and_unread_count(monkeypatch):
         page = (await client.get("/notifications", params={"limit": 1})).json()
         assert [item["title"] for item in page["items"]] == ["n2"]
 
-        unread_only = (
-            await client.get("/notifications", params={"unread_only": True})
-        ).json()
+        unread_only = (await client.get("/notifications", params={"unread_only": True})).json()
         assert {item["title"] for item in unread_only["items"]} == {"n1", "n2"}
 
         before = (
-            await client.get(
-                "/notifications", params={"before": views[2].created_at.isoformat()}
-            )
+            await client.get("/notifications", params={"before": views[2].created_at.isoformat()})
         ).json()
         assert {item["title"] for item in before["items"]} == {"n0", "n1"}
 

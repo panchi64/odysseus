@@ -36,11 +36,11 @@ import { ProgressPanel } from "../components/ProgressPanel";
 import { ReportView } from "../components/ReportView";
 
 const STATUS_MAP: Record<ResearchStatus, { status: Status; label: string }> = {
-  draft: { status: "idle", label: "DRAFT" },
-  running: { status: "info", label: "RUNNING" },
-  done: { status: "nominal", label: "DONE" },
-  error: { status: "alert", label: "ERROR" },
-  cancelled: { status: "idle", label: "CANCELLED" },
+  draft: { status: "idle", label: "Draft" },
+  running: { status: "info", label: "Running" },
+  done: { status: "nominal", label: "Done" },
+  error: { status: "alert", label: "Error" },
+  cancelled: { status: "idle", label: "Cancelled" },
 };
 
 /** One research entry across its whole lifecycle: clarify → plan/refine loop →
@@ -165,17 +165,17 @@ export function ResearchEntryScreen(): JSX.Element {
           when={entryResource.error}
           fallback={
             <div class="p-6">
-              <LoadingText label="LOADING…" />
+              <LoadingText label="Loading…" />
             </div>
           }
         >
           <EmptyState
             icon="research"
-            message="RESEARCH ENTRY NOT FOUND"
+            message="Research entry not found"
             hint="It may have been deleted."
             action={
               <Button variant="default" leading="chevron-left" href="/research">
-                BACK TO LIBRARY
+                Back to library
               </Button>
             }
           />
@@ -192,7 +192,7 @@ export function ResearchEntryScreen(): JSX.Element {
               href="/research"
               class="self-start"
             >
-              BACK TO LIBRARY
+              Back to library
             </Button>
 
             <PageHeader
@@ -252,7 +252,7 @@ export function ResearchEntryScreen(): JSX.Element {
             <Show when={e().status === "error"}>
               <Panel state="alert">
                 <Stack gap={1}>
-                  <StatusFlag status="alert">RESEARCH FAILED</StatusFlag>
+                  <StatusFlag status="alert">Research failed</StatusFlag>
                   <Text variant="body" tone="dim">
                     {e().report ??
                       progress.state.errorMessage ??
@@ -265,7 +265,7 @@ export function ResearchEntryScreen(): JSX.Element {
             <Show when={e().status === "cancelled"}>
               <Panel>
                 <Row gap={3} align="center">
-                  <StatusFlag status="idle">CANCELLED</StatusFlag>
+                  <StatusFlag status="idle">Cancelled</StatusFlag>
                   <Text variant="body" tone="dim">
                     This research run was cancelled before it finished.
                   </Text>

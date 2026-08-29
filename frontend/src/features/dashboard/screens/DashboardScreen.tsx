@@ -1,7 +1,6 @@
 import { For, Show, createMemo, type JSX } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import {
-  Combobox,
   Composer,
   EmptyState,
   ListRow,
@@ -19,7 +18,8 @@ import { RecentThreadCard } from "../components/RecentThreadCard";
 import { SystemStrip } from "../components/SystemStrip";
 // The overview is a launchpad INTO chat, so it reads the chat feature's data
 // seam directly (one source of truth for threads and entry intents). The model
-// selection is global app state, shared with the top-bar picker.
+// selection is global app state — the picker itself is the shared `ModelPicker`,
+// so this screen reads the selection but never renders its own control for it.
 import {
   entrySessionId,
   openConversation,
@@ -28,12 +28,11 @@ import {
 } from "~/features/chat/data";
 import {
   effectiveContextWindow,
+  sendBlockedReason,
   effectiveSelection,
-  effectiveValue,
-  modelPickerGroups,
-  selectModelByValue,
   selectedModelLabel,
 } from "~/lib/stores/models";
+import { ModelPicker } from "~/app/ModelPicker";
 import { createComposerAttachments } from "~/features/uploads/data";
 
 /** Overall status for the header flag. Any down capability is an alert; a
@@ -81,9 +80,9 @@ export function DashboardScreen(): JSX.Element {
   };
   const overallLabel = (): string => {
     const s = overallStatus();
-    if (s === "alert") return "SYSTEM ALERT";
-    if (s === "warn") return "SYSTEM WARNING";
-    return "ALL SYSTEMS";
+    if (s === "alert") return "System alert";
+    if (s === "warn") return "System warning";
+    return "All systems";
   };
 
   // The capabilities responsible for the current flag — the same severity policy
@@ -116,7 +115,7 @@ export function DashboardScreen(): JSX.Element {
   return (
     <div class="flex min-h-full flex-col gap-6">
       <PageHeader
-        title="ODYSSEUS"
+        title="Odysseus"
         subtitle="Your private, self-hosted AI workspace — chat, research, memory, and more."
         assetId="ODY-HUD-00.1 EDITION 02"
         actions={
@@ -129,7 +128,7 @@ export function DashboardScreen(): JSX.Element {
             }
           >
             {(reason) => (
-              <Tooltip label={reason()} side="left" prose float>
+              <Tooltip label={reason()} side="left">
                 <StatusFlag status={overallStatus()} dot>
                   {overallLabel()}
                 </StatusFlag>
@@ -139,29 +138,24 @@ export function DashboardScreen(): JSX.Element {
         }
       />
 
-      {/* Composer — the focal point, vertically centered in the free space. */}
-      <div class="flex min-h-0 flex-1 items-center justify-center py-4">
-        <div class="w-full max-w-2xl">
+      {/* Composer — the focal point, vertically centered in the free space. It
+          is the only card on this screen that lights its accent on focus, which
+          is what makes "start typing" the obvious move on arrival (§6.2). */}
+      <div class="flex min-h-0 flex-1 items-center justify-center py-8">
+        <div class="w-full max-w-3xl">
           <Composer
             size="lg"
-            title="NEW CONVERSATION"
+            title="New conversation"
             autofocus
             storageKey="home-new"
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
             attachments={attachments}
-            controls={
-              <Combobox
-                groups={modelPickerGroups()}
-                value={effectiveValue()}
-                onChange={selectModelByValue}
-                leading="cpu"
-                placeholder="NO MODEL"
-                searchPlaceholder="Search models…"
-                emptyHint="NO MODELS — ADD AN ENDPOINT IN SETTINGS"
-                aria-label="Model"
-              />
-            }
+            sendBlocked={sendBlockedReason()}
+            // Same slot, same component as the docked composer in a room: the
+            // launchpad's picker was a second inline copy of the shared one, and two
+            // copies of a control bound to one backend value is how they drift.
+            trailing={<ModelPicker />}
           />
         </div>
       </div>
@@ -170,13 +164,13 @@ export function DashboardScreen(): JSX.Element {
       <div class="flex flex-col gap-4">
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* Recent threads — the launchpad's navigation; default brightness. */}
-          <Panel label="RECENT THREADS" class="lg:col-span-2">
+          <Panel label="Recent threads" bare class="lg:col-span-2">
             <Show
               when={recent().length}
               fallback={
                 <EmptyState
                   icon="terminal"
-                  message="NO CONVERSATIONS YET"
+                  message="No conversations yet"
                   hint="Start one above to see it here."
                 />
               }
@@ -199,10 +193,10 @@ export function DashboardScreen(): JSX.Element {
           </Panel>
 
           {/* In flight — most subtle: real runs not yet terminal. */}
-          <Panel label="IN FLIGHT" flush class="lg:col-span-1">
+          <Panel label="In flight" bare class="lg:col-span-1">
             <Resource
               data={runs}
-              emptyMessage="NO ACTIVE RUNS"
+              emptyMessage="No active runs"
               isEmpty={(r) => r.length === 0}
             >
               {(list) => (
@@ -246,7 +240,7 @@ export function DashboardScreen(): JSX.Element {
         <Resource
           data={overview}
           onRetry={refetchOverview}
-          errorMessage="TELEMETRY UNAVAILABLE"
+          errorMessage="Telemetry unavailable"
         >
           {(o) => (
             <SystemStrip

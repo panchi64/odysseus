@@ -25,15 +25,12 @@ from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.backup import BackupService
 from services.calendar import CalendarService
+from services.context_budget import OverheadCache
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
-from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
-from services.documents import DocumentStore
 from services.external_tools import ExternalTools
-from services.gallery import GalleryService
-from services.host_shell import ShellService
 from services.integrations import IntegrationService
 from services.mail import MailService
 from services.mcp import McpRegistry
@@ -49,7 +46,6 @@ from services.scheduler import SchedulerService
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.secret_vault import SecretVaultService
-from services.serving import ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
 from services.tool_policy import effective_disabled_tools
@@ -155,20 +151,12 @@ def approval_grants(request: Request) -> ApprovalGrantStore:
     return request.app.state.approval_grants
 
 
-def documents(request: Request) -> DocumentStore:
-    return request.app.state.documents
-
-
 def skills(request: Request) -> SkillStore:
     return request.app.state.skills
 
 
 def uploads(request: Request) -> UploadStore:
     return request.app.state.uploads
-
-
-def gallery(request: Request) -> GalleryService:
-    return request.app.state.gallery
 
 
 def upload_rate_limiter(request: Request) -> RateLimiter:
@@ -276,16 +264,12 @@ async def active_project(request: Request) -> str | None:
     return header or await projects(request).active_id(OPERATOR_ID)
 
 
-def cookbook(request: Request) -> CookbookService:
-    return request.app.state.cookbook
-
-
-def serving(request: Request) -> ServingService:
-    return request.app.state.serving
-
-
 def settings_store(request: Request) -> SettingsStore:
     return request.app.state.settings_store
+
+
+def overhead_cache(request: Request) -> OverheadCache:
+    return request.app.state.context_overhead
 
 
 def credentials(request: Request) -> CredentialStore:
@@ -300,6 +284,21 @@ def auth_manager(request: Request) -> AuthManager:
     return request.app.state.auth_manager
 
 
+def workspace_db_intact(request: Request) -> bool:
+    """Whether the database backing this workspace survived to this boot.
+
+    False means the keyfile outlived its database — the operator cleared `app.db`
+    expecting a reset and got a password prompt instead. Sampled once at startup
+    before the schema is created (see `app.py`); `/setup` sets it back to true, since
+    the workspace it just created *is* in this database.
+    """
+    return bool(request.app.state.workspace_db_intact)
+
+
+def mark_workspace_db_intact(request: Request) -> None:
+    return setattr(request.app.state, "workspace_db_intact", True)
+
+
 def db_engine(request: Request) -> Engine:
     """The raw DB engine — for the surfaces (like `routes/tasks.py`) that don't yet
     have a dedicated service and read/write their own SQLModel rows directly."""
@@ -308,16 +307,6 @@ def db_engine(request: Request) -> Engine:
 
 def scheduler(request: Request) -> SchedulerService:
     return request.app.state.scheduler
-
-
-def shell(request_or_ws: Request | WebSocket) -> ShellService:
-    # WebSocket-capable for the same reason `sandbox_sessions` is: the shell's only
-    # transport is a socket, while its status routes are ordinary requests.
-    return request_or_ws.app.state.shell
-
-
-def shell_auth_rate_limiter(request: Request) -> RateLimiter:
-    return request.app.state.shell_auth_rate_limiter
 
 
 def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:

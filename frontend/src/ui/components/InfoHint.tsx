@@ -17,18 +17,16 @@ export interface InfoHintProps {
  * A dim ⓘ glyph that reveals an explanatory tooltip on hover/focus — the
  * reusable way to annotate domain jargon (token scopes, MCP transports,
  * suitability flags, privilege names…) inline without cluttering the layout.
- * Uses the floating tooltip so the text wraps and escapes overflow-clipping.
+ *
+ * The delay is the whole of what this adds to a plain `Tooltip`: the glyph is
+ * parked in running text, so an instant tip would fire on every pass of the
+ * cursor. Wrapping and overflow-escape used to be opt-ins here too; they are now
+ * how every tooltip behaves.
  */
 export function InfoHint(props: InfoHintProps): JSX.Element {
   const [local] = splitProps(props, ["label", "side", "size", "class"]);
   return (
-    <Tooltip
-      label={local.label}
-      side={local.side ?? "top"}
-      float
-      prose
-      delay={80}
-    >
+    <Tooltip label={local.label} side={local.side ?? "top"} delay={80}>
       <span
         tabindex="0"
         role="img"

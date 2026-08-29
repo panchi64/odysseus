@@ -120,39 +120,29 @@ async def test_edit_queued_message_matrix():
             f"/runs/{run.id}/messages/{message.id}", json={"text": "final wording"}
         )
         assert resp.status_code == 200
-        assert [(m.id, m.text) for m in run.pending_messages] == [
-            (message.id, "final wording")
-        ]
+        assert [(m.id, m.text) for m in run.pending_messages] == [(message.id, "final wording")]
 
         # Blank text is rejected without touching the queue.
-        resp = await client.patch(
-            f"/runs/{run.id}/messages/{message.id}", json={"text": "   "}
-        )
+        resp = await client.patch(f"/runs/{run.id}/messages/{message.id}", json={"text": "   "})
         assert resp.status_code == 422
         assert run.pending_messages[0].text == "final wording"
 
         # A withdrawn message, an unknown id, and an unknown run → 404.
         assert run.withdraw_message(message.id)
         assert (
-            await client.patch(
-                f"/runs/{run.id}/messages/{message.id}", json={"text": "x"}
-            )
+            await client.patch(f"/runs/{run.id}/messages/{message.id}", json={"text": "x"})
         ).status_code == 404
         assert (
             await client.patch(f"/runs/{run.id}/messages/nope", json={"text": "x"})
         ).status_code == 404
-        assert (
-            await client.patch("/runs/nope/messages/x", json={"text": "x"})
-        ).status_code == 404
+        assert (await client.patch("/runs/nope/messages/x", json={"text": "x"})).status_code == 404
 
         # A message still queued when the run ends can't be edited either.
         stranded = run.enqueue_message("too late")
         gate.set()
         await run.wait()
         assert (
-            await client.patch(
-                f"/runs/{run.id}/messages/{stranded.id}", json={"text": "x"}
-            )
+            await client.patch(f"/runs/{run.id}/messages/{stranded.id}", json={"text": "x"})
         ).status_code == 404
 
         types = [e.body.type for e in run.stream.replay()]
@@ -268,6 +258,7 @@ async def test_listing_many_runs_reads_titles_once_and_still_matches_them_up():
 
 async def test_get_run_conversation_fields_are_null_without_a_conversation():
     async with client_app() as (client, app):
+
         async def orch(run):
             return None
 

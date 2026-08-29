@@ -65,7 +65,7 @@ function AccountFolderRail(props: AccountFolderRailProps): JSX.Element {
 
   return (
     <Stack gap={4}>
-      <Panel label="ACCOUNTS" flush>
+      <Panel label="Accounts" flush>
         <Suspense
           fallback={
             <div class="p-3">
@@ -91,7 +91,7 @@ function AccountFolderRail(props: AccountFolderRailProps): JSX.Element {
         </Suspense>
       </Panel>
 
-      <Panel label="FOLDERS" flush>
+      <Panel label="Folders" flush>
         <Suspense
           fallback={
             <div class="p-3">
@@ -208,19 +208,19 @@ export function EmailInboxScreen(): JSX.Element {
   async function handleSend(): Promise<void> {
     const to = composeTo().trim();
     if (!to) {
-      setToError("RECIPIENT REQUIRED");
+      setToError("Recipient required");
       return;
     }
     // A shape check for immediate feedback only — the backend re-validates and is the
     // authority on whether a message can go out.
     if (!EMAIL_RE.test(to)) {
-      setToError("INVALID EMAIL ADDRESS");
+      setToError("Invalid email address");
       return;
     }
     setToError("");
     const accountId = selectedAccountId();
     if (!accountId) {
-      toast.error("NO ACCOUNT SELECTED");
+      toast.error("No account selected");
       return;
     }
     setSending(true);
@@ -238,9 +238,9 @@ export function EmailInboxScreen(): JSX.Element {
         });
       }
       resetCompose();
-      toast.success("MESSAGE SENT");
+      toast.success("Message sent");
     } catch {
-      toast.error("COULD NOT SEND MESSAGE");
+      toast.error("Could not send message");
     } finally {
       setSending(false);
     }
@@ -265,7 +265,7 @@ export function EmailInboxScreen(): JSX.Element {
     const row = (messages() ?? []).find((m) => m.id === id);
     if (row && !row.read) {
       markMessage(id, { read: true }).catch(() =>
-        toast.error("COULD NOT MARK AS READ"),
+        toast.error("Could not mark as read"),
       );
     }
   }
@@ -287,7 +287,7 @@ export function EmailInboxScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="EMAIL"
+        title="Email"
         subtitle="Multi-account inbox with AI triage."
         assetId="COMM-MAIL-01.0"
         actions={
@@ -299,14 +299,14 @@ export function EmailInboxScreen(): JSX.Element {
               class="lg:hidden"
               onClick={() => setMobileSidebarOpen(true)}
             >
-              ACCOUNTS
+              Accounts
             </Button>
             <Button
               variant="primary"
               leading="plus"
               onClick={() => openCompose()}
             >
-              COMPOSE
+              Compose
             </Button>
           </Row>
         }
@@ -315,7 +315,7 @@ export function EmailInboxScreen(): JSX.Element {
       {/* Draft recovery banner — shown when compose drawer closes with content */}
       <Show when={hasDraft()}>
         <div class="flex items-center gap-3 border border-warn bg-surface px-4 py-2">
-          <StatusFlag status="warn">DRAFT SAVED</StatusFlag>
+          <StatusFlag status="warn">Draft saved</StatusFlag>
           <Text variant="body" tone="dim" class="flex-1">
             Your unsent message was preserved.
           </Text>
@@ -327,7 +327,7 @@ export function EmailInboxScreen(): JSX.Element {
               setComposeOpen(true);
             }}
           >
-            RESUME
+            Resume
           </Button>
           <Button
             variant="ghost"
@@ -336,35 +336,35 @@ export function EmailInboxScreen(): JSX.Element {
               resetCompose();
             }}
           >
-            DISCARD
+            Discard
           </Button>
         </div>
       </Show>
 
-      <Suspense fallback={<LoadingText label="LOADING TRIAGE" />}>
+      <Suspense fallback={<LoadingText label="Loading triage" />}>
         <InstrumentBand
           items={[
             {
-              label: "UNREAD",
+              label: "Unread",
               value: String(unreadCount()),
               tone: unreadCount() > 0 ? "bright" : "dim",
             },
             {
-              label: "HIGH URGENCY",
+              label: "High urgency",
               value: String(highUrgencyCount()),
               tone: highUrgencyCount() > 0 ? "alert" : "dim",
             },
             {
-              label: "SPAM FLAGGED",
+              label: "Spam flagged",
               value: String(spamCount() ?? 0),
               tone: (spamCount() ?? 0) > 0 ? "warn" : "dim",
             },
             {
-              label: "ACCOUNT",
+              label: "Account",
               value: currentAccountAddress(),
             },
             {
-              label: "FOLDER",
+              label: "Folder",
               value: currentFolderName(),
             },
           ]}
@@ -375,7 +375,7 @@ export function EmailInboxScreen(): JSX.Element {
       <Drawer
         open={mobileSidebarOpen()}
         onClose={() => setMobileSidebarOpen(false)}
-        title="ACCOUNTS & FOLDERS"
+        title="Accounts & folders"
         side="left"
       >
         <AccountFolderRail
@@ -403,7 +403,7 @@ export function EmailInboxScreen(): JSX.Element {
 
         {/* Message list */}
         <section class="flex min-h-0 w-72 shrink-0 flex-col">
-          <Panel label="MESSAGES" flush class="flex min-h-0 flex-1 flex-col">
+          <Panel label="Messages" flush class="flex min-h-0 flex-1 flex-col">
             <div class="min-h-0 flex-1 overflow-y-auto">
               <Suspense
                 fallback={
@@ -417,7 +417,7 @@ export function EmailInboxScreen(): JSX.Element {
                   fallback={
                     <EmptyState
                       icon="mail"
-                      message="NO MESSAGES"
+                      message="No messages"
                       hint="This folder is empty."
                     />
                   }
@@ -426,7 +426,7 @@ export function EmailInboxScreen(): JSX.Element {
                     {(msg) => (
                       <button
                         type="button"
-                        class="w-full border-b border-line text-left transition-colors hover:bg-raised"
+                        class="w-full text-left transition-colors hover:bg-raised"
                         classList={{
                           "bg-raised": msg.id === selectedMessageId(),
                         }}
@@ -461,10 +461,10 @@ export function EmailInboxScreen(): JSX.Element {
                           </Text>
                           <Row gap={1} wrap class="mt-1.5">
                             <Show when={msg.urgency === "high"}>
-                              <StatusFlag status="alert">URGENT</StatusFlag>
+                              <StatusFlag status="alert">Urgent</StatusFlag>
                             </Show>
                             <Show when={msg.spam}>
-                              <StatusFlag status="warn">SPAM</StatusFlag>
+                              <StatusFlag status="warn">Spam</StatusFlag>
                             </Show>
                             <For each={msg.tags.slice(0, 2)}>
                               {(tag) => (
@@ -492,7 +492,7 @@ export function EmailInboxScreen(): JSX.Element {
               <div class="flex flex-1 items-center justify-center">
                 <EmptyState
                   icon="mail"
-                  message="NO MESSAGE SELECTED"
+                  message="No message selected"
                   hint="Select a message from the list."
                 />
               </div>
@@ -501,7 +501,7 @@ export function EmailInboxScreen(): JSX.Element {
             {(msg) => (
               <>
                 <Panel
-                  label="MESSAGE"
+                  label="Message"
                   meta={
                     <StatusFlag status={urgencyStatus[msg().urgency]}>
                       {msg().urgency.toUpperCase()}
@@ -509,13 +509,13 @@ export function EmailInboxScreen(): JSX.Element {
                   }
                 >
                   <Stack gap={3}>
-                    <div class="border-b border-line pb-3">
+                    <div class="pb-3">
                       <Text variant="readout" tone="bright">
                         {msg().subject}
                       </Text>
                       <Row gap={2} align="center" class="mt-1">
                         <Text variant="micro" tone="dim">
-                          FROM
+                          From
                         </Text>
                         <Text variant="label" tone="default">
                           {msg().fromName}
@@ -538,13 +538,13 @@ export function EmailInboxScreen(): JSX.Element {
                   </Stack>
                 </Panel>
 
-                <Panel label="AI SUMMARY" state="active">
+                <Panel label="AI summary" state="active">
                   <Text variant="body" tone="default">
                     {msg().summary}
                   </Text>
                 </Panel>
 
-                <Panel label="SUGGESTED REPLIES">
+                <Panel label="Suggested replies">
                   <Suspense fallback={<LoadingText />}>
                     <Row gap={2} wrap>
                       <For each={replySuggestions()}>
@@ -578,7 +578,7 @@ export function EmailInboxScreen(): JSX.Element {
                           );
                         }}
                       >
-                        COMPOSE REPLY
+                        Compose reply
                       </Button>
                     </Row>
                   </Suspense>
@@ -593,12 +593,12 @@ export function EmailInboxScreen(): JSX.Element {
       <Drawer
         open={composeOpen()}
         onClose={closeCompose}
-        title="COMPOSE MESSAGE"
+        title="Compose message"
         side="right"
         footer={
           <Row gap={2}>
             <Button variant="ghost" onClick={closeCompose}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
@@ -606,14 +606,14 @@ export function EmailInboxScreen(): JSX.Element {
               disabled={sending()}
               onClick={() => void handleSend()}
             >
-              {sending() ? "SENDING…" : "SEND"}
+              {sending() ? "Sending…" : "Send"}
             </Button>
           </Row>
         }
       >
         <Stack gap={4}>
           <Input
-            label="TO"
+            label="To"
             value={composeTo()}
             onInput={(e) => {
               setComposeTo(e.currentTarget.value);
@@ -624,13 +624,13 @@ export function EmailInboxScreen(): JSX.Element {
             hint={toError() || undefined}
           />
           <Input
-            label="SUBJECT"
+            label="Subject"
             value={composeSubject()}
             onInput={(e) => setComposeSubject(e.currentTarget.value)}
             placeholder="Subject line"
           />
           <Textarea
-            label="BODY"
+            label="Body"
             rows={12}
             value={composeBody()}
             onInput={(e) => setComposeBody(e.currentTarget.value)}

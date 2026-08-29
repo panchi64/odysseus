@@ -183,9 +183,7 @@ def start_title(
             # would then find the name already there, return False, and emit nothing
             # either: a thread that stays "Untitled" until a reload.
             announcing.set()
-            await announce_title(
-                run, name, store=store, conversation_id=conversation_id
-            )
+            await announce_title(run, name, store=store, conversation_id=conversation_id)
         except asyncio.CancelledError:
             raise  # a park/cancel abandoning the name (see `_discard_title`)
         except Exception:  # noqa: BLE001 — titling is best-effort, not turn-critical

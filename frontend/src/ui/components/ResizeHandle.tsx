@@ -10,6 +10,19 @@ export interface ResizeHandleProps {
    *  so the live drag doesn't write on every move. */
   onResizeEnd?: () => void;
   "aria-label"?: string;
+  /** How the splitter's own hairline behaves at rest.
+   *
+   *  `line` (default) always draws it — for a handle that **is** the boundary,
+   *  like the nav rail's, where the rail carries no surface of its own and this
+   *  hairline is the only thing separating it from the page.
+   *
+   *  `hover` keeps it invisible until pointed at or focused, for a handle
+   *  sitting beside something that already draws its own edge. The View panel is
+   *  the case: it brackets itself with a frame, and a second rule three pixels
+   *  outside that one does not read as a splitter — it reads as the doubled
+   *  border §7 exists to stop. The hit area, the drag and the keyboard nudge are
+   *  unchanged; only the resting paint goes. */
+  divider?: "line" | "hover";
   class?: string;
 }
 
@@ -55,7 +68,15 @@ export function ResizeHandle(props: ResizeHandleProps): JSX.Element {
         props.class,
       )}
     >
-      <span class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors group-hover:bg-bright group-focus-visible:bg-bright" />
+      {/* The resting paint is the only thing `divider` changes — a `hover`
+          splitter still reserves its width, so revealing the line shifts
+          nothing either side of it. */}
+      <span
+        class={cx(
+          "absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors group-hover:bg-bright group-focus-visible:bg-bright",
+          props.divider === "hover" ? "bg-transparent" : "bg-line",
+        )}
+      />
     </div>
   );
 }

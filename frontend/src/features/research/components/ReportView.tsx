@@ -40,17 +40,17 @@ export function ReportView(props: ReportViewProps): JSX.Element {
         {(s) => (
           <InstrumentBand
             items={[
-              { label: "ROUNDS", value: String(s().rounds) },
-              { label: "SOURCES", value: String(s().sources) },
-              { label: "QUERIES", value: String(s().queries) },
-              { label: "DURATION", value: formatDuration(s().durationS) },
-              { label: "MODEL", value: s().model },
+              { label: "Rounds", value: String(s().rounds) },
+              { label: "Sources", value: String(s().sources) },
+              { label: "Queries", value: String(s().queries) },
+              { label: "Duration", value: formatDuration(s().durationS) },
+              { label: "Model", value: s().model },
             ]}
           />
         )}
       </Show>
 
-      <Panel label="REPORT">
+      <Panel label="Report">
         <Markdown>{props.entry.report ?? ""}</Markdown>
       </Panel>
 
@@ -58,7 +58,7 @@ export function ReportView(props: ReportViewProps): JSX.Element {
         <Row gap={3} align="center" justify="between">
           <Stack gap={1}>
             <Text variant="label" tone="bright">
-              CONTINUE IN CHAT
+              Continue in chat
             </Text>
             <Text variant="micro" tone="dim">
               Start a follow-up conversation with this report loaded as context
@@ -71,7 +71,7 @@ export function ReportView(props: ReportViewProps): JSX.Element {
             disabled={props.continuing}
             onClick={props.onContinueInChat}
           >
-            CONTINUE IN CHAT
+            Continue in chat
           </Button>
         </Row>
       </Panel>

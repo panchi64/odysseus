@@ -6,7 +6,8 @@
    value at build time. That is what lets a single [data-theme] swap on <html>
    re-color the entire app at runtime — the utilities resolve the live token.
 
-   tokens.css owns the values; this file only wires them to utility names.
+   tokens.css owns the values; this file only wires them to utility names and
+   sets the resting defaults.
    ========================================================================== */
 
 @theme inline {
@@ -15,9 +16,11 @@
   --color-surface: var(--surface);
   --color-raised: var(--surface-raised);
   --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
   --color-dim: var(--text-dim);
   --color-text: var(--text);
   --color-bright: var(--text-bright);
+  --color-accent: var(--accent);
   --color-nominal: var(--accent-nominal);
   --color-warn: var(--accent-warn);
   --color-alert: var(--accent-alert);
@@ -26,19 +29,26 @@
   /* ---- spacing base (p-1=4px, p-2=8px, p-4=16px, p-6=24px, p-8=32px) ---- */
   --spacing: var(--space-1);
 
-  /* ---- radius -> rounded-ctl (controls only; panels stay square) ---- */
+  /* ---- radius -> rounded-ctl (3px controls) / rounded-panel (6px containers).
+         The hairline data grid stays square — no radius utility on a table
+         cell, an instrument band, or a list row (§7). ---- */
   --radius-ctl: var(--radius-1);
+  --radius-panel: var(--radius-2);
 
-  /* ---- fonts -> font-mono / font-display ---- */
+  /* ---- fonts -> font-sans / font-mono / font-display ---- */
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
   --font-display: var(--font-display);
 
-  /* ---- letter spacing -> tracking-label ---- */
+  /* ---- letter spacing -> tracking-label (mono uppercase) / tracking-tight ---- */
   --tracking-label: var(--tracking-label);
+  --tracking-tight: var(--tracking-tight);
 
-  /* ---- type scale -> text-micro / text-label / ... (size + line-height) ---- */
+  /* ---- type scale -> text-micro / text-meta / text-label / ... ---- */
   --text-micro: var(--type-micro-size);
   --text-micro--line-height: var(--type-micro-lh);
+  --text-meta: var(--type-meta-size);
+  --text-meta--line-height: var(--type-meta-lh);
   --text-label: var(--type-label-size);
   --text-label--line-height: var(--type-label-lh);
   --text-body: var(--type-body-size);
@@ -49,21 +59,35 @@
   --text-readout-lg--line-height: var(--type-readout-lg-lh);
   --text-display: var(--type-display-size);
   --text-display--line-height: var(--type-display-lh);
+
+  /* ---- elevation -> shadow-1 / shadow-2 / shadow-focus / shadow-accent ---- */
+  --shadow-1: var(--shadow-1);
+  --shadow-2: var(--shadow-2);
+  --shadow-focus: var(--shadow-focus);
+  --shadow-accent: var(--shadow-accent);
+  --shadow-alert: var(--shadow-alert);
+  --shadow-bloom: var(--shadow-bloom);
+
+  /* ---- motion -> ease-out-ody / duration-* ---- */
+  --ease-ody: var(--ease);
 }
 
 /* ==========================================================================
-   RESTING-STATE DEFAULTS. A screen at rest is monochrome mono on bg.
+   RESTING-STATE DEFAULTS. The interface speaks in sans; the machine speaks in
+   mono, and only where mono is asked for explicitly (§2).
    ========================================================================== */
 html {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
-  /* tabular + lining figures so every number aligns in columns */
+  font-family: var(--font-sans);
+  /* tabular + lining figures so every number aligns in columns, in both voices */
   font-feature-settings:
     "tnum" 1,
-    "lnum" 1;
+    "lnum" 1,
+    "kern" 1;
   font-variant-numeric: tabular-nums lining-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
@@ -72,35 +96,74 @@ body {
   line-height: var(--type-body-lh);
 }
 
-/* Text selection — a terminal-style inverted block, not the browser's blue.
-   Monochrome (§4): a `text-dim` highlight with the text knocked out to `bg`,
-   reading like an inverted CRT cell rather than a colored wash. */
+/* Text selection. Neutral and quiet: a low-opacity knock-out of the bright
+   token rather than the browser's blue or the old inverted terminal block. */
 ::selection {
-  background: var(--text-dim);
-  color: var(--bg);
+  background: color-mix(in oklab, var(--text-bright) 22%, transparent);
+  color: var(--text-bright);
 }
 
-/* Mechanical motion: no decorative transitions slower than the base tempo.
-   The timing function is pinned to linear — §8 permits instant or linear only,
-   and Tailwind's `transition-*` utilities otherwise carry an eased default. */
-:where(button, a, [role="button"], input, select, textarea) {
+/* ==========================================================================
+   MOTION — THE TWO REGISTERS (§8).
+
+   1. HUMAN. Anything the interface does on the operator's behalf eases: short,
+      decelerating, well-damped. This is the default for interactive elements.
+   ========================================================================== */
+:where(button, a, [role="button"], input, select, textarea, summary) {
   transition-duration: var(--motion-fast);
-  transition-timing-function: linear;
+  transition-timing-function: var(--ease);
 }
 
-/* Shared utility for non-interactive elements that need the same ≤120ms,
-   no-easing motion (§8) as the rule above but sit outside its selector list
-   (e.g. a plain progress-bar fill). Pair with a `transition-*` property
+/* Shared utility for non-interactive elements that need the human register but
+   sit outside the selector list above. Pair with a `transition-*` property
    utility (e.g. `transition-colors`). */
-.transition-fast {
-  transition-duration: var(--motion-fast);
-  transition-timing-function: linear;
+.transition-human {
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--ease);
+}
+
+/* 2. MACHINE. Anything rendered in mono snaps — no transition, no fade, no
+      interpolation. A run state flipping QUEUED -> RUNNING, a token counter
+      ticking, a latency figure updating: the computer does not ease.
+
+      `:where()` keeps specificity at 0, and this rule is declared AFTER the
+      human-register rule above, so at equal specificity it wins for any mono
+      element — no !important needed. This contrast IS the effect: a mono value
+      that eases into place reads as decoration and undercuts the premise. */
+:where(.font-mono),
+:where(.font-mono) :where(*) {
+  transition-duration: var(--motion-machine);
+  transition-timing-function: var(--ease-machine);
+}
+
+/* Reduced motion collapses the human register. The machine register is already
+   0ms and so is unaffected; the braille throbber is retained deliberately as a
+   functional "working now" indicator. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    /* DELAY, not just duration. Zeroing the duration alone leaves a
+       delay-phased animation intact — each step still waits its turn and then
+       snaps, so a sequence that was supposed to collapse to nothing plays out
+       as a stutter over its full timeline instead. Every phase of the
+       construction reveal is scheduled by delay, so without this line reduced
+       motion would be the *worst* the panel looks rather than the calmest. */
+    animation-delay: 0ms !important;
+  }
+  .ody-frames {
+    animation-iteration-count: infinite !important;
+    animation-duration: 800ms !important;
+  }
 }
 
 /* Clickable affordance. Tailwind v4's preflight drops the legacy
    `cursor: pointer` on buttons (browser default is now the arrow), so restore it
    for every interactive control. Disabled controls fall back to `not-allowed`. */
-:where(button, [role="button"], select, label[for]):not(:disabled) {
+:where(button, [role="button"], select, summary, label[for]):not(:disabled) {
   cursor: pointer;
 }
 :where(button, [role="button"], select):disabled,
@@ -108,15 +171,30 @@ body {
   cursor: not-allowed;
 }
 
-/* The house scroll affordance for a strip or panel that scrolls inside the layout
-   rather than being the page — a version rail, a tab strip, a dropdown panel. The
-   platform default is a chunky light-mode bar that reads as chrome from another
-   application; this is a thin, token-backed one that re-colors with the theme like
-   everything else. Reach for it instead of hiding overflow: a strip that scrolls
-   with no visible bar gives the operator nothing to tell them there is more. */
+/* Keyboard focus: a soft neutral halo, never an outline (§6.1).
+
+   TEXT-ENTRY FIELDS ARE DELIBERATELY EXCLUDED. `input` and `textarea` announce
+   their own focus with a blinking caret — an unambiguous, native indicator that
+   no other control has — so any shadow we add on top is pure decoration around
+   the thing the operator is already looking at. A ring reads as a border drawn
+   on them; a halo reads worse. The caret is the affordance.
+
+   Everything else still needs one: a focused button or link has no caret, and a
+   keyboard user who cannot see where they are is the accessibility failure this
+   rule exists to prevent. */
+:where(button, a, [role="button"], select, summary, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* The house scroll affordance for a strip or panel that scrolls inside the
+   layout rather than being the page. The platform default is a chunky bar that
+   reads as chrome from another application; this is a thin, token-backed one
+   that re-colors with the theme. Reach for it instead of hiding overflow: a
+   strip that scrolls with no visible bar tells the operator nothing. */
 @utility scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
+  scrollbar-color: var(--line-strong) transparent;
 
   &::-webkit-scrollbar {
     width: 6px;
@@ -126,7 +204,8 @@ body {
     background: transparent;
   }
   &::-webkit-scrollbar-thumb {
-    background: var(--line);
+    background: var(--line-strong);
+    border-radius: var(--radius-full);
   }
   &::-webkit-scrollbar-thumb:hover {
     background: var(--text-dim);
@@ -137,7 +216,12 @@ body {
   }
 }
 
-/* Terminal cursor blink — a permitted motion (§8). Hard step, not a fade. */
+/* ==========================================================================
+   MACHINE-REGISTER ANIMATIONS. All hard-stepped — these belong to the mono
+   voice and must not be eased (§8).
+   ========================================================================== */
+
+/* Terminal cursor blink. */
 @keyframes ody-blink {
   0%,
   49% {
@@ -152,9 +236,8 @@ body {
   animation: ody-blink 1s steps(1, end) infinite;
 }
 
-/* Search "found-it" pulse — a brief attention flash on the located nav row when
-   a query resolves to a single match. Hard-stepped brightness, not a decorative
-   fade (§8). */
+/* Search "found-it" flash on the located nav row when a query resolves to a
+   single match. Hard-stepped brightness, not a decorative fade. */
 @keyframes ody-flash {
   0%,
   100% {
@@ -165,13 +248,11 @@ body {
   }
 }
 .ody-flash {
-  /* ~0.5s on/off cycle, six times ≈ 3s of pulsing. */
   animation: ody-flash 0.5s steps(1, end) 6;
 }
 
 /* Live-activity pulse — a stepped blink on a state dot while a stream is in
-   flight. Functional (signals "live"), hard-stepped like the caret, not a
-   decorative fade (§8). */
+   flight. Functional (signals "live"), hard-stepped like the caret. */
 @keyframes ody-pulse {
   0%,
   49% {
@@ -188,8 +269,8 @@ body {
 
 /* Marquee — a FUNCTIONAL reveal of clipped content (e.g. a long status message
    in a dense row), not decoration. It ping-pongs the overflow distance set in
-   --mq-shift, pausing at each end. Only applied (via a motion-safe utility)
-   when the content actually overflows; reduced-motion users get static clip. */
+   --mq-shift, pausing at each end. Only applied when the content actually
+   overflows; reduced-motion users get a static clip. */
 @keyframes ody-marquee {
   0%,
   8% {
@@ -204,13 +285,786 @@ body {
   }
 }
 
-/* Rendered prose (markdown) — structured assistant/report/doc text. Styled from
-   tokens so it inherits the mono, monochrome, grid-aligned look. */
+/* ==========================================================================
+   HUMAN-REGISTER ANIMATIONS. Eased, short, decelerating.
+   ========================================================================== */
+
+/* THE REVEAL — one way for anything in the human voice to arrive.
+   `Reveal` is the component surface; these classes are for the cases that
+   cannot take a wrapper (a portal's own root, a DOM node built by hand).
+
+   It is a BLUR fade: content resolves into focus as it arrives rather than
+   simply becoming visible. Opacity alone reads as a light being turned up; a
+   blur reads as something coming into being, which is what the interface is
+   actually doing, and it is the single cheapest way to make an arrival feel
+   considered rather than switched on.
+
+   Two keyframes, not four. Every reveal in the system is "fade" or "fade plus a
+   short glide up", and the rest was distance and duration — so those are custom
+   properties (`--reveal-y`, `--reveal-ms`, `--reveal-blur`) and the presets
+   below only set them. The two are kept separate rather than collapsed into one
+   with `--reveal-y: 0` because `animation-fill-mode: both` would then leave a
+   `translateY(0)` on every faded element forever, and a transform makes the
+   element a containing block for its absolutely-positioned children. A fade
+   should not change layout semantics.
+
+   Which is also why both land on `filter: none` rather than `blur(0)`: the two
+   render identically, but `none` leaves no filter on the element afterwards, and
+   so no lingering containing block or stacking context. (Interpolating a filter
+   list against `none` is defined as interpolating against its no-op, so the
+   animation is still smooth.) The containing block does exist for the ~200ms the
+   animation runs — worth knowing if a reveal wraps absolutely-positioned
+   children. */
+@keyframes ody-reveal-fade {
+  from {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+@keyframes ody-reveal-rise {
+  from {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+    transform: translateY(var(--reveal-y, 4px));
+  }
+  to {
+    opacity: 1;
+    filter: none;
+    transform: translateY(0);
+  }
+}
+
+.ody-fade-in,
+.ody-token-in {
+  animation: ody-reveal-fade var(--reveal-ms, var(--motion-base)) var(--ease)
+    both;
+}
+/* Overlay entry — modals, popovers, menus, toasts. Settles, never bounces. */
+.ody-rise,
+.ody-message-in {
+  animation: ody-reveal-rise var(--reveal-ms, var(--motion-base)) var(--ease)
+    both;
+}
+
+/* LEAVING. Only a *gated* reveal ever does this — one whose caller says when the
+   content should be there — and it is the same motion run backwards, so the
+   region dissolves the way it resolved.
+
+   Swapping the animation NAME rather than adding a competing rule is what lets
+   the exit start cleanly from wherever the entry left off; two animations on one
+   element would be settled by fill-mode instead of by intent. */
+@keyframes ody-reveal-fade-out {
+  from {
+    opacity: 1;
+    filter: none;
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+  }
+}
+@keyframes ody-reveal-rise-out {
+  from {
+    opacity: 1;
+    filter: none;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--reveal-blur, 3px));
+    transform: translateY(var(--reveal-y, 4px));
+  }
+}
+.ody-fade-in[data-closed] {
+  animation-name: ody-reveal-fade-out;
+}
+.ody-rise[data-closed] {
+  animation-name: ody-reveal-rise-out;
+}
+/* Held before its entry plays: mounted, laid out, and invisible.
+   A gated reveal starts its animation a frame AFTER mount rather than at mount,
+   and this is the state it waits in. Starting at mount is only safe when
+   whatever is being revealed renders cheaply: a region whose first render builds
+   an iframe, a highlighter or a document viewer can spend the animation's whole
+   duration blocked on the main thread, so the first frame that actually paints
+   is the last one — the region appears fully formed and the fade is spent on
+   nothing. Starting late costs nothing, because an animation carries its own
+   start value and plays in full whenever it begins. */
+.ody-reveal-hold {
+  opacity: 0;
+}
+
+/* A region on its way out must stop taking clicks the moment it is dismissed,
+   not when it finishes leaving. Otherwise a full-screen overlay keeps swallowing
+   input for the length of its own exit — the operator dismisses it, clicks what
+   was behind it, and hits the ghost instead. */
+.ody-fade-in[data-closed],
+.ody-rise[data-closed],
+.ody-collapse[data-closed] > * {
+  pointer-events: none;
+}
+
+/* A turn arriving in the transcript — the operator's message on send, and the
+   assistant's block as it opens. Travels further than an overlay and moves
+   faster, so it reads as a response rather than as a reveal. Fires once, on
+   mount, so a streaming turn does not re-animate on every delta. */
+.ody-message-in {
+  --reveal-y: 10px;
+  --reveal-ms: 200ms;
+  --reveal-blur: 4px;
+}
+
+/* Per-token arrival in the ANSWER. The answer is the interface speaking, so it
+   belongs to the human register (§8) and each newly-streamed run of text eases
+   in rather than snapping. This is the deliberate counterpart to the reasoning
+   wall above it, which is mono and therefore lands hard: you can see, without
+   reading a word, which of the two is the machine and which is the reply.
+
+   Which is also why it must never reach mono. The walker that applies this class
+   refuses to enter machine text, and the rule below makes that structural rather
+   than a property of one function — a fade on a code block would erase the one
+   contrast the transcript is built on. */
+.ody-token-in {
+  /* Softer than the default: a per-character run is a few pixels wide, and the
+     full blur on 13px text resolves as a smear rather than as a word arriving.
+     Inline spans can't carry the glide either — `transform` does not apply to a
+     non-replaced inline box — so the blur is doing all the materializing here,
+     which is another reason to keep it legible. */
+  --reveal-blur: 2.5px;
+  /* NO `--reveal-ms` here on purpose. The reveal is scheduled in absolute time
+     (`streamReveal.ts`), so the schedule has to know the duration to decide when
+     a character is finished — it owns the number and writes it inline, per span,
+     alongside that character's delay. A second copy here would drift, and the
+     symptom would be characters that never settle or settle early. */
+}
+:where(code, pre, kbd, samp, table, .font-mono) .ody-token-in {
+  animation: none;
+}
+
+/* ==========================================================================
+   THE CONSTRUCTION REVEAL — a region that draws its own frame before it fills.
+
+   For the View panel. Instead of resolving out of a blur like everything else,
+   it is *built*: a single `+` at the origin corner splits, one half travelling
+   along the top edge with a rule drawn between them, then both drop down the
+   sides with a rule closing the bottom — and the glass surface resolves inside
+   the frame that has just been described. Closing runs the same gesture in
+   reverse, so the panel is taken apart rather than switched off.
+
+   WHY THIS IS NOT A `Reveal` PRESET. The rule in ui/CLAUDE.md is "add a preset,
+   never a third keyframe", and it governs the `ody-reveal-*` family — anything
+   whose whole vocabulary is `--reveal-y` / `--reveal-ms` / `--reveal-blur` over
+   the two shared keyframes. This shares none of them: it animates position and
+   scale on six sibling elements that are not the content, in sequence. Writing
+   it as a preset would mean widening `Reveal`'s contract to cover a mechanism
+   only one caller has. It is its own named family instead, and `ConstructionReveal`
+   is its only consumer.
+
+   THE BUDGET IS `--motion-stage` (320ms), NOT THE 240ms CEILING — and this is
+   not a new exception. §8 grants the stage token to "a whole region arriving or
+   leaving", the View panel's `Reveal` already ran at it, and this replaces that
+   reveal. Nothing is waiting on it. The phases overlap by design: two strictly
+   sequential beats inside 320ms read as a stutter, where an overlap reads as one
+   continuous L-shaped gesture travelling left and then down.
+   ========================================================================== */
+
+/* Phase 1 — the trailing `+` travels from the origin to the far corner. The
+   element is positioned at its destination and animated back to the origin, so
+   the geometry stays declarative (`inset`) and only the transform moves. */
+@keyframes ody-frame-slide {
+  from {
+    opacity: 0;
+    transform: translateX(var(--frame-from-x, 100%));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Phase 1 — the rule between the two marks, drawn from the origin outward.
+   `scaleX` on a compositor-friendly transform, never `width`, which would lay
+   out on every frame of the animation. */
+@keyframes ody-frame-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Phase 2 — the pair drops to the panel's bottom edge, and the rule closing it
+   grows the same way `draw` does, on the other axis. */
+@keyframes ody-frame-drop {
+  from {
+    opacity: 0;
+    transform: translateY(var(--frame-from-y, -100%));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes ody-frame-close {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* The surface, resolving inside the frame the marks have just described. It
+   carries the content with it — ONE fade for the whole region, no per-child
+   stagger (§8 forbids staggered cascades, and the region is one thing arriving,
+   not a list of things). */
+@keyframes ody-frame-surface {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The exits are written out reversed rather than driven by
+   `animation-direction: reverse`, matching `ody-reveal-fade-out`. Reversing a
+   direction also reverses the EASING, so a decelerating entry becomes an
+   accelerating exit — which is the one thing §8 says this register never does. */
+@keyframes ody-frame-slide-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--frame-from-x, 100%));
+  }
+}
+@keyframes ody-frame-draw-out {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@keyframes ody-frame-drop-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--frame-from-y, -100%));
+  }
+}
+@keyframes ody-frame-close-out {
+  from {
+    transform: scaleY(1);
+  }
+  to {
+    transform: scaleY(0);
+  }
+}
+@keyframes ody-frame-surface-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* The timeline. Phase 1 runs 0→170ms and phase 2 starts at 150ms, so the two
+   overlap by 20ms; the surface joins at 190ms and everything lands together at
+   320ms. Closing mirrors it: the surface goes first, then the drop, then the
+   slide home — the frame is the last thing on screen, as it was the first. */
+/* The wrapper carries a LIFECYCLE SPAN: an animation with no visual effect
+   whose only job is to last exactly as long as the whole sequence, in both
+   directions, so `animationend` fires on the wrapper itself at the true end.
+
+   It animates `outline-color` between two transparents rather than the more
+   obvious `opacity: 1 -> 1`, and that is not fussiness: an element with a
+   running opacity animation gets composited and becomes a BACKDROP ROOT, which
+   would leave the frosted surface underneath blurring nothing for the whole
+   320ms of the reveal and then snapping into focus when the animation ended.
+   `outline-color` on an element with no outline is animatable, fires the same
+   events, and creates no stacking context.
+
+   `useGatedMount` unmounts on `e.target === e.currentTarget`, because every
+   animation inside the region — six marks and rules here, plus anything the
+   content is doing — bubbles to the same handler. Without a span the wrapper
+   would carry no animation of its own, no qualifying event would ever fire, and
+   the region would stay mounted forever after being closed. Matching on an
+   animation *name* instead would mean naming whichever phase happens to finish
+   last, and re-checking that every time the timeline is retuned.
+
+   Entry and exit both total 320ms: entry ends with the surface (190+130), exit
+   ends with the travelling mark going home (170+150). Keep this in step if
+   either changes. */
+@keyframes ody-frame-span {
+  from {
+    outline-color: transparent;
+  }
+  to {
+    outline-color: transparent;
+  }
+}
+@keyframes ody-frame-span-out {
+  from {
+    outline-color: transparent;
+  }
+  to {
+    outline-color: transparent;
+  }
+}
+
+.ody-frame {
+  --frame-ease: var(--ease);
+}
+
+/* EVERY animation below is scoped under `[data-ready]`, which the component adds
+   once the tree behind it has settled (two frames — see `useGatedMount`). That
+   scoping is not tidiness, it is the mechanism:
+
+   - Held invisible. `.ody-frame-hold`-style opacity on the wrapper could not
+     work here, because the wrapper's own span animation sets `opacity: 1` and
+     an animated value beats a plain declaration in the cascade. Withholding the
+     animation instead leaves the plain `opacity: 0` below to do its job.
+   - Held INERT. The marks and rules carry their animation classes statically
+     from the markup, so without this they would start on mount and could run to
+     completion during the wait — and the reveal would be over before it was
+     allowed to begin. Scoping the rules means nothing is animating until the
+     whole set is released together.
+
+   A region whose first render is expensive — the View hosts iframes, a
+   highlighter and a document viewer — can block the main thread for longer than
+   320ms, and the first frame to paint would otherwise be the last one. */
+.ody-frame:not([data-ready]) {
+  opacity: 0;
+}
+
+.ody-frame[data-ready] {
+  animation: ody-frame-span var(--motion-stage) linear both;
+}
+.ody-frame[data-ready] .ody-frame-mark-a {
+  animation: ody-frame-slide 170ms var(--frame-ease) both;
+}
+.ody-frame[data-ready] .ody-frame-rule-top {
+  animation: ody-frame-draw 170ms var(--frame-ease) both;
+}
+.ody-frame[data-ready] .ody-frame-mark-b {
+  animation: ody-frame-drop 150ms var(--frame-ease) 150ms both;
+}
+.ody-frame[data-ready] .ody-frame-rule-side {
+  animation: ody-frame-close 150ms var(--frame-ease) 150ms both;
+}
+.ody-frame[data-ready] .ody-frame-rule-bottom {
+  animation: ody-frame-draw 130ms var(--frame-ease) 190ms both;
+}
+.ody-frame[data-ready] .ody-frame-surface {
+  animation: ody-frame-surface 130ms var(--frame-ease) 190ms both;
+}
+
+/* The transform origins are geometry, not choreography, so they stay unscoped —
+   an element must not jump because its animation has not been released yet. */
+.ody-frame-rule-top,
+.ody-frame-rule-bottom {
+  transform-origin: var(--frame-origin-x, right) center;
+}
+.ody-frame-rule-side {
+  transform-origin: center top;
+}
+
+/* The exits. Declared AFTER the entries and at equal specificity, so source
+   order is what makes them win — the same arrangement `.ody-led`'s tone
+   modifiers rely on.
+     Each is a DIFFERENT animation NAME from its entry, and that is required
+   rather than stylistic: `data-closed` appearing does not restart an animation
+   that has already finished, so reusing the entry's name would leave the region
+   sitting at its end state until the unmount that never comes. That is also why
+   the wrapper needs `ody-frame-span-out` — its span is what fires the
+   `animationend` the unmount waits on. */
+.ody-frame[data-ready][data-closed] {
+  animation: ody-frame-span-out var(--motion-stage) linear both;
+}
+.ody-frame[data-closed] .ody-frame-mark-a {
+  animation: ody-frame-slide-out 150ms var(--frame-ease) 170ms both;
+}
+.ody-frame[data-closed] .ody-frame-rule-top {
+  animation: ody-frame-draw-out 150ms var(--frame-ease) 170ms both;
+}
+.ody-frame[data-closed] .ody-frame-mark-b {
+  animation: ody-frame-drop-out 150ms var(--frame-ease) both;
+}
+.ody-frame[data-closed] .ody-frame-rule-side {
+  animation: ody-frame-close-out 150ms var(--frame-ease) both;
+}
+.ody-frame[data-closed] .ody-frame-rule-bottom {
+  animation: ody-frame-draw-out 120ms var(--frame-ease) both;
+}
+.ody-frame[data-closed] .ody-frame-surface {
+  animation: ody-frame-surface-out 120ms var(--frame-ease) both;
+}
+
+/* Nothing on its way out takes clicks — same reasoning as the reveal's own
+   rule above: the operator closes the panel and immediately clicks what was
+   behind it. */
+.ody-frame[data-closed] {
+  pointer-events: none;
+}
+
+/* GLASS — a translucent surface over whatever is behind it. `isolation` gives
+   the panel its own stacking context so the frame marks can sit above the
+   surface without escaping into the page; the two tokens are per mode. */
+/* The frosted surface. NOTE what is NOT here: no radius and no shadow. This is
+   the fill of a region something else has already drawn the edges of, not a
+   card — give it corners and elevation and it becomes a second container
+   wrapped around the frame instead of the thing the frame encloses.
+
+   Nor is there `isolation: isolate`. That was here to tidy the stacking and it
+   quietly broke the effect: `isolation: isolate` makes an element a BACKDROP
+   ROOT, and `backdrop-filter` only blurs what is painted inside its backdrop
+   root — so an isolated ancestor leaves the glass blurring nothing at all. The
+   failure is invisible rather than obvious, because the translucent fill still
+   tints: it just looks like a slightly lighter surface. Anything that creates a
+   backdrop root above this element has the same effect, which is why the
+   lifecycle span above animates `outline-color` and not `opacity`. */
+.ody-glass {
+  background: var(--glass-bg);
+  /* Unprefixed only — Lightning CSS adds `-webkit-backdrop-filter` from the
+     build's browser targets. Writing the prefix by hand here made it drop the
+     STANDARD property and ship the `-webkit-` one alone, which would have left
+     the panel opaque everywhere except Safari. */
+  backdrop-filter: var(--glass-filter);
+}
+
+/* ==========================================================================
+   THE LIVE RAIL — an LED, not a border.
+
+   A process timeline's left edge is one of the few borders the system keeps
+   (§7), and while a block is live it should read as an *emitter*: a 2px strip
+   with light spilling leftward onto the page, the way a status LED bleeds onto
+   the panel around it.
+
+   Built as a pseudo-element rather than a `border-left` so the glow can be
+   directional. Four layers, each pushed further along ONE axis with a growing
+   blur, so the light falls away from the strip and fades — a symmetric glow
+   would read as a halo around a line, which is not what an LED does.
+
+   The colour comes from `--led` rather than `currentColor`: the rail wraps the
+   block's content, and `currentColor` would mean tinting every word inside it
+   just to colour a 1px strip.
+
+   Direction and intensity are BOTH custom properties, so a side modifier and a
+   tone modifier compose instead of multiplying: `--led-x`/`--led-y` aim the
+   falloff, `--led-a1..4` set its opacity curve, and the four `box-shadow`
+   layers are written exactly once below.
+   ========================================================================== */
+.ody-led {
+  position: relative;
+  /* Set here rather than inline in every shadow layer. Override it on the
+     element (or from a later rule) to light the rail a different colour. */
+  --led: var(--accent-info);
+  /* WHICH WAY the light falls, kept separate from WHICH EDGE the strip is on:
+     -1 throws away from the container (the rail beside a running block), 1
+     throws into it, under the container's own content (a list row that lights
+     up from its leading edge). The side modifier picks the axis and reads the
+     direction off this, so side and spill compose. */
+  --led-dir: -1;
+  --led-x: var(--led-dir);
+  --led-y: 0;
+  /* Intensity, as two knobs a caller can turn (`LedEdge intensity`) WITHOUT
+     touching the shared curve — brightness and distance are per-instance, not
+     per-tone, because how far a given fixture has to throw light is a fact about
+     where it is mounted, not about what colour it is.
+       --led-reach scales offset, blur and spread together, so the falloff keeps
+       its shape as it grows; raising opacity alone would only brighten the
+       strip's immediate surround.
+       --led-gain scales the whole opacity curve. */
+  --led-reach: 1;
+  --led-gain: 1;
+  --led-a1: 60%;
+  --led-a2: 42%;
+  --led-a3: 26%;
+  --led-a4: 12%;
+}
+.ody-led::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  /* ON the border, not beside it. An absolutely positioned box is placed against
+     the PADDING box, so `left: 0` puts the emitter one hairline *inside* the
+     rule it is meant to be — leaving the border showing alongside the light
+     rather than under it. Pulling it out by the border width makes the lit bar
+     and the resting hairline the same pixels, which is what lets one fade into
+     the other. */
+  left: calc(-1 * var(--line-w));
+  /* Exactly the hairline's width — the LED *is* the rail's rule, lit. Making it
+     thicker would change the timeline's structure to say something about state,
+     which the light is already saying. */
+  width: var(--line-w);
+  background: var(--led);
+  /* The reach is the whole point: a tight glow just reads as a coloured border
+     with soft edges, and only a long falloff reads as light actually spilling
+     onto the surface beside it. */
+  box-shadow:
+    calc(2px * var(--led-x) * var(--led-reach))
+      calc(2px * var(--led-y) * var(--led-reach)) calc(10px * var(--led-reach))
+      0
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a1) * var(--led-gain)),
+        transparent
+      ),
+    calc(6px * var(--led-x) * var(--led-reach))
+      calc(6px * var(--led-y) * var(--led-reach)) calc(24px * var(--led-reach))
+      calc(1px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a2) * var(--led-gain)),
+        transparent
+      ),
+    calc(14px * var(--led-x) * var(--led-reach))
+      calc(14px * var(--led-y) * var(--led-reach)) calc(52px * var(--led-reach))
+      calc(2px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a3) * var(--led-gain)),
+        transparent
+      ),
+    calc(26px * var(--led-x) * var(--led-reach))
+      calc(26px * var(--led-y) * var(--led-reach)) calc(96px * var(--led-reach))
+      calc(4px * var(--led-reach))
+      color-mix(
+        in oklab,
+        var(--led) calc(var(--led-a4) * var(--led-gain)),
+        transparent
+      );
+  /* The emitter is ALWAYS present, and lighting it is an opacity change rather
+     than the class appearing. Toggling `.ody-led` itself would mean the
+     pseudo-element blinking in and out of existence, which no transition can
+     smooth — and a run ending would kill the rail's light mid-frame instead of
+     letting it dim. Unlit, this fades to nothing and reveals whatever border
+     sits underneath it. */
+  opacity: var(--led-lit, 1);
+  /* All three are ambient state — a fixture changing what it reports, with
+     nothing waiting on it — so they fade rather than cut, at the human
+     register's ceiling (§8). A light that snaps reads as a different light
+     switching on, not as the same one changing. */
+  transition:
+    opacity var(--motion-slow) var(--ease),
+    background var(--motion-slow) var(--ease),
+    box-shadow var(--motion-slow) var(--ease);
+}
+
+/* Dark. The rule underneath stays exactly where it was, so nothing moves. */
+.ody-led-off {
+  --led-lit: 0;
+}
+
+/* Side modifier. Declared AFTER `.ody-led::before` so it wins the geometry at
+   equal specificity. Only the strip's box and the falloff axis change — the
+   shadow stack itself is never restated. */
+.ody-led-top::before {
+  /* Same correction as the left edge, on the other axis: out by the border
+     width so the strip sits on the rule rather than under it. */
+  inset: calc(-1 * var(--line-w)) 0 auto;
+  width: auto;
+  height: var(--line-w);
+}
+.ody-led-top {
+  --led-x: 0;
+  --led-y: var(--led-dir);
+}
+
+/* Spill modifier — the light falls INTO the container instead of away from it,
+   landing under the container's own content.
+
+   The z-index pair is what makes that legible rather than a wash over the top:
+   `z-index: 0` gives this element a stacking context, and the emitter at -1 then
+   paints ABOVE the element's own fill but BELOW its text. Without the context
+   the -1 would escape and hide behind whatever surface the element sits on.
+
+   An inward spill almost always wants clipping too — the glow blooms on every
+   axis, so on a short element it bleeds onto its neighbours. Give the container
+   `overflow-hidden` and the light fills the element and stops at its edges. */
+.ody-led-in {
+  --led-dir: 1;
+  z-index: 0;
+}
+.ody-led-in::before {
+  z-index: -1;
+}
+
+/* Tone modifiers. Declared AFTER `.ody-led` so that at equal specificity these
+   win the `--led` assignment. Prefer the `LedEdge` component over hand-writing
+   the pair. */
+.ody-led-nominal {
+  --led: var(--accent-nominal);
+}
+.ody-led-warn {
+  --led: var(--accent-warn);
+}
+.ody-led-alert {
+  --led: var(--accent-alert);
+}
+.ody-led-accent {
+  --led: var(--accent);
+}
+/* Neutral white light. A tone, and ONLY a tone — it sets no reach and no gain,
+   so brightening one surface's strip cannot brighten every other neutral one.
+   It does carry its own opacity curve, because white reads far brighter than a
+   saturated hue at the same alpha; that is compensation for the colour, not an
+   intensity choice. */
+.ody-led-neutral {
+  --led: var(--text-bright);
+  --led-a1: 34%;
+  --led-a2: 22%;
+  --led-a3: 13%;
+  --led-a4: 6%;
+}
+
+/* ==========================================================================
+   THE REASONING STREAM (§10.9). While the model reasons, its trace streams as
+   mono text CLIPPED INTO THE BACKGROUND of the response area — the machine
+   working behind the message, not a message itself. It is barely tinted, sits
+   under the content, and never eases (machine register). When the turn resolves
+   it fades out (human register — that is the interface clearing the stage) and
+   the full trace collapses into a disclosure.
+   ========================================================================== */
+.ody-reasoning {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro-size);
+  line-height: var(--type-micro-lh);
+  /* The SUBTLETY IS THE COLOR, not a fade. A uniform, barely-there tint — the
+     accent mixed low into the dim token — held at one value across the whole
+     block, so it reads as a flat wall of machine text sitting behind the
+     response rather than as a decorated panel. No gradient, no mask: a gradient
+     would make it an effect, and this is meant to be a surface. */
+  color: color-mix(in oklab, var(--accent) 25%, var(--text-dim));
+  opacity: 0.3;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Dense, wall-like setting: the lines pack tighter than normal mono so the
+     block reads as texture at a glance and as text only on inspection. */
+  letter-spacing: 0.01em;
+}
+
+/* The trace cascades: it is bottom-anchored inside the clip, so new tokens push
+   older lines up and out of frame. The wall stays full — the block is always
+   filled to its top edge with older reasoning — and the newest line sits at the
+   bottom, where the eye already is. */
+.ody-reasoning-tail {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+}
+
+/* COLLAPSE — a region that closes to nothing and back without anyone having to
+   know its height.
+
+   The grid row is the whole trick: `1fr` -> `0fr` is animatable where the
+   `auto` -> `0` everyone reaches for first is not. The child clips, so its
+   content is revealed rather than squashed on the way through.
+
+   Transitions do not run on initial render, so a region that mounts already open
+   simply is open — no animation on load, which is what keeps a long transcript
+   still. */
+.ody-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--motion-stage) var(--ease);
+}
+.ody-collapse[data-closed] {
+  grid-template-rows: 0fr;
+}
+.ody-collapse > * {
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
+  /* The content dissolves as the region closes rather than being squashed into
+     a slit — the same blur fade everything else in the human voice arrives
+     with, run backwards (§8). Without it the collapse reads as the content
+     being crushed, which is a different and worse idea. */
+  opacity: 1;
+  filter: none;
+  transition:
+    opacity var(--motion-stage) var(--ease),
+    filter var(--motion-stage) var(--ease);
+}
+.ody-collapse[data-closed] > * {
+  opacity: 0;
+  filter: blur(var(--reveal-blur, 3px));
+}
+
+/* THE STAGE the wall plays on, and the two states it moves between.
+
+   Height is `--reasoning-h` and the region *travels* that distance rather than
+   appearing and vanishing at it: opening, the transcript makes room; clearing,
+   it closes the space back up as the wall fades. A region this large popping in
+   and out is a jump the reader has to absorb twice per turn.
+
+   Both directions are one token each — `--reasoning-h` for the distance and
+   `--motion-stage` for the time — so retiming or resizing the state change is a
+   token edit, and nothing has to be kept in sync with it. In particular the
+   component does NOT hold a matching duration: it waits for `animationend`, so
+   there is no second copy of this number to drift. */
+.ody-reasoning-stage {
+  position: relative;
+  height: var(--reasoning-h);
+  overflow: hidden;
+  animation: ody-stage-open var(--motion-stage) var(--ease) both;
+}
+/* Swapping the NAME (rather than adding a class with its own animation) is what
+   lets the close start cleanly from the open state's end. */
+.ody-reasoning-stage[data-clearing] {
+  animation-name: ody-stage-clear;
+}
+@keyframes ody-stage-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--reasoning-h);
+    opacity: 1;
+  }
+}
+@keyframes ody-stage-clear {
+  from {
+    height: var(--reasoning-h);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+/* ==========================================================================
+   RENDERED PROSE (markdown) — assistant messages, reports, documents.
+   This is the interface speaking to the operator, so it is SANS; mono appears
+   only for code, which is machine output.
+   ========================================================================== */
 .ody-prose {
+  font-family: var(--font-sans);
   font-size: var(--type-body-size);
-  /* Looser than data line-height (16px) — prose needs room to breathe. */
   line-height: 20px;
   color: var(--text);
+  /* Nothing forces the operator to track a line across a 2560px display. */
+  max-width: 72ch;
 }
 /* Default rhythm between blocks. */
 .ody-prose > * + * {
@@ -224,16 +1078,18 @@ body {
 .ody-prose h3,
 .ody-prose h4 {
   color: var(--text-bright);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-label);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  /* Sentence case. Uppercase is now a signal that means "machine" (§4), and a
+     heading is the interface talking. */
+  text-transform: none;
+  letter-spacing: 0;
 }
 /* Headings are section breaks: extra space above, tight to the content below. */
 .ody-prose h1 {
   font-size: var(--type-readout-size);
   line-height: var(--type-readout-lh);
-  text-transform: none;
-  letter-spacing: 0;
+  letter-spacing: var(--tracking-tight);
 }
 .ody-prose :is(h1, h2, h3, h4) + * {
   margin-top: var(--space-2);
@@ -248,16 +1104,18 @@ body {
   margin-top: var(--space-6);
 }
 .ody-prose h2 {
-  font-size: var(--type-body-size);
+  font-size: 15px;
+  line-height: 20px;
 }
 .ody-prose h3,
 .ody-prose h4 {
-  font-size: var(--type-label-size);
-  color: var(--text-dim);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-lh);
+  color: var(--text);
 }
 .ody-prose strong {
   color: var(--text-bright);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ody-prose em {
   font-style: italic;
@@ -265,6 +1123,7 @@ body {
 .ody-prose a {
   color: var(--accent-info);
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .ody-prose ul,
 .ody-prose ol {
@@ -285,41 +1144,43 @@ body {
 .ody-prose li::marker {
   color: var(--text-dim);
 }
+/* Code is machine output: mono, and it snaps rather than eases. */
 .ody-prose code {
   font-family: var(--font-mono);
+  font-size: 12px;
   background: var(--surface-raised);
   border: var(--line-w) solid var(--line);
-  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  padding: 1px var(--space-1);
   color: var(--text-bright);
 }
 .ody-prose pre {
   background: var(--surface-raised);
   border: var(--line-w) solid var(--line);
+  border-radius: var(--radius-2);
   padding: var(--space-3);
   overflow-x: auto;
 }
 .ody-prose pre code {
   background: transparent;
   border: 0;
+  border-radius: 0;
   padding: 0;
 }
 .ody-prose blockquote {
-  border-left: var(--line-emphasis) solid var(--line);
+  border-left: var(--line-emphasis) solid var(--line-strong);
   padding-left: var(--space-3);
   color: var(--text-dim);
 }
 
-/* Rendered math (KaTeX). Math notation is the one place mono is deliberately not
-   used: real typesetting (radicals, large operators, stretchy delimiters) needs
-   KaTeX's bundled glyph metrics, which a monospace face can't provide. Everything
-   else is held to the system: monochrome (color inherited from prose, never
-   KaTeX's own), errors carried in the alert token, and spacing on the 4px grid.
+/* Rendered math (KaTeX). Math is the one place neither voice applies: real
+   typesetting (radicals, large operators, stretchy delimiters) needs KaTeX's
+   bundled glyph metrics. Everything else is held to the system — monochrome,
+   errors in the alert token, spacing on the 4px grid.
 
-   Display math sits on its own line and scrolls horizontally — like code blocks
-   and tables — instead of bursting the message bubble. Its block rhythm comes
-   from the prose `* + *` rule (space-4), so KaTeX's own 1em margin is dropped.
-   It reads as a standalone readout, so it takes `text-bright`; inline math stays
-   the surrounding body tone. */
+   Display math sits on its own line and scrolls horizontally instead of
+   bursting the message bubble; its block rhythm comes from the prose `* + *`
+   rule, so KaTeX's own 1em margin is dropped. */
 .ody-prose .ody-math-block {
   overflow-x: auto;
   overflow-y: hidden;
@@ -332,11 +1193,10 @@ body {
   color: var(--accent-alert);
 }
 
-/* Tables read as dense data panels: a hairline grid, square corners, tabular
-   figures, and an uppercase label-styled header band. No zebra striping or
-   accent fills — hierarchy comes from the header's brightness/weight alone. The
-   scroll host (injected post-render, like code blocks) lets a wide table scroll
-   horizontally instead of bursting its message bubble. */
+/* Tables read as dense data panels: a hairline grid, SQUARE corners (§7 — a
+   rounded cell breaks the ruled structure that makes tabular data scannable),
+   tabular figures, and a mono uppercase header band, because a column header
+   names a machine field. No zebra striping or accent fills. */
 .ody-prose [data-table-host] {
   overflow-x: auto;
 }
@@ -348,7 +1208,7 @@ body {
 }
 .ody-prose th,
 .ody-prose td {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   text-align: left;
   vertical-align: baseline;
 }
@@ -361,8 +1221,9 @@ body {
   border-top: var(--line-w) solid var(--line);
 }
 .ody-prose thead th {
-  font-size: var(--type-label-size);
-  line-height: var(--type-label-lh);
+  font-family: var(--font-mono);
+  font-size: var(--type-meta-size);
+  line-height: var(--type-meta-lh);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: var(--tracking-label);

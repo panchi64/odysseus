@@ -66,7 +66,7 @@ export function ImageFrame(props: ImageFrameProps): JSX.Element {
         when={!failed()}
         fallback={
           <Text variant="micro" tone="dim">
-            NO DATA
+            No data
           </Text>
         }
       >

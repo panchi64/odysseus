@@ -1,5 +1,5 @@
 import { Show, type JSX } from "solid-js";
-import { Button, Text, TypewriterText, cx } from "~/ui";
+import { Button, LedEdge, Text, TypewriterText, cx, type LedTone } from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatActivity } from "../model";
 
@@ -19,14 +19,19 @@ export interface SessionRowProps {
   onTogglePin: () => void;
 }
 
-/** The activity → accent edge mapping, matching the nav rail's split (§4 — color
+/** The activity → LED tone mapping, matching the nav rail's split (§4 — color
  *  carries meaning only): a run parked on the operator's approval decision is a
  *  "needs YOU" signal (warn), plain in-flight work is ambient (info). */
-const activityEdge: Record<ChatActivity, string> = {
-  queued: "border-l-info",
-  running: "border-l-info",
-  awaiting_input: "border-l-warn",
+const activityTone: Record<ChatActivity, LedTone> = {
+  queued: "info",
+  running: "info",
+  awaiting_input: "warn",
 };
+
+/* The row is short and its light spills inward, so the reach is pulled well in:
+   at full reach the bloom would wash the whole row flat instead of falling off
+   across it, and `overflow-hidden` would be doing all the shaping. */
+const LED_REACH = 0.6;
 
 /** Screen-reader wording for each edge, so the state isn't carried by color alone. */
 const activityLabel: Record<ChatActivity, string> = {
@@ -40,18 +45,30 @@ const activityLabel: Record<ChatActivity, string> = {
  * pin are sibling buttons (not nested) so neither swallows the other's click.
  * The pin is revealed on hover/focus unless the row is already pinned.
  *
- * A thread whose run is live carries an accent left edge. Every row reserves the
- * same 2px edge (transparent at rest) so lighting one can't shift the list.
+ * A thread whose run is live lights its leading edge, and the light falls
+ * *inward* — across the row, under the title — so the row itself reads as the
+ * thing that is running rather than as a row wearing a coloured border. Every
+ * row reserves the rule (transparent at rest) so lighting one can't shift the
+ * list.
  */
 export function SessionRow(props: SessionRowProps): JSX.Element {
   return (
-    <div
+    <LedEdge
+      lit={Boolean(props.activity)}
+      tone={props.activity ? activityTone[props.activity] : undefined}
+      spill="in"
+      unlit="clear"
+      reach={LED_REACH}
       class={cx(
-        "group flex items-center border-b border-l-2 border-line transition-colors hover:bg-raised",
+        // No rule between rows (§7) — the hover fill and the rhythm are what
+        // make this read as a list, and the leading edge shows only when there
+        // is something to report.
+        //
+        // `overflow-hidden` is load-bearing, not tidiness: an inward glow blooms
+        // on every axis, so unclipped it would bleed onto the rows above and
+        // below and the list would look smudged rather than lit.
+        "group flex items-center overflow-hidden rounded-ctl transition-colors hover:bg-raised",
         props.selected && "bg-raised",
-        // Exactly one border-left-color class is ever emitted — two would leave the
-        // winner to stylesheet order rather than intent.
-        props.activity ? activityEdge[props.activity] : "border-l-transparent",
       )}
     >
       <button
@@ -104,6 +121,6 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
             "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
         )}
       />
-    </div>
+    </LedEdge>
   );
 }

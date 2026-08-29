@@ -16,11 +16,11 @@ import {
 import { clearCredential, setCredential, useCredentials } from "../data";
 import type { ServiceCredential } from "../model";
 
-/** API Tokens — the operator's keys for the outbound services the system calls (the
- *  Cookbook's quality benchmarks + its HuggingFace token). One row per service the
- *  backend declares; the key is write-only (the API reports only whether one is set),
- *  sealed at rest. This is configuration, not inbound auth — the tokens clients call
- *  *this* API with are the Access Tokens screen (`features/access-tokens`). */
+/** Service Keys — the operator's keys for the outbound services the system calls;
+ *  today, the mail OAuth clients. One row per service the backend declares; the key is
+ *  write-only (the API reports only whether one is set), sealed at rest. This is
+ *  configuration, not inbound auth — the tokens clients call *this* API with are the
+ *  Access Tokens section (`features/access-tokens`). */
 export function ApiTokensScreen(): JSX.Element {
   const credentials = useCredentials();
 
@@ -58,7 +58,7 @@ export function ApiTokensScreen(): JSX.Element {
         title: `Remove the ${credential.label} key?`,
         detail:
           "Features using this service fall back to their default (or degrade) until a new key is set.",
-        confirmLabel: "REMOVE",
+        confirmLabel: "Remove",
         tone: "alert",
       }))
     )
@@ -74,12 +74,13 @@ export function ApiTokensScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="SERVICE KEYS"
+        variant="section"
+        title="Service keys"
         subtitle="Outbound — keys this system uses to reach third-party services. Stored encrypted at rest; never displayed."
         assetId="ODY-ADM-04.0 EDITION 02"
       />
 
-      <Panel label="SERVICE CREDENTIALS" flush>
+      <Panel label="Service credentials" flush>
         <Show
           when={credentials.latest}
           fallback={
@@ -90,12 +91,7 @@ export function ApiTokensScreen(): JSX.Element {
         >
           <For each={credentials.latest ?? []}>
             {(credential) => (
-              <Row
-                align="center"
-                justify="between"
-                gap={3}
-                class="border-b border-line px-3 py-3 last:border-0"
-              >
+              <Row align="center" justify="between" gap={3} class="px-3 py-3">
                 <Stack gap={1} class="min-w-0">
                   <Row gap={2} align="center">
                     <Text variant="label" tone="bright">
@@ -103,9 +99,9 @@ export function ApiTokensScreen(): JSX.Element {
                     </Text>
                     <Show
                       when={credential.hasKey}
-                      fallback={<StatusFlag status="idle">NO KEY</StatusFlag>}
+                      fallback={<StatusFlag status="idle">No key</StatusFlag>}
                     >
-                      <StatusFlag status="nominal">KEY SET</StatusFlag>
+                      <StatusFlag status="nominal">Key set</StatusFlag>
                     </Show>
                   </Row>
                   <Text variant="micro" tone="dim">
@@ -128,7 +124,7 @@ export function ApiTokensScreen(): JSX.Element {
                     leading="key"
                     onClick={() => openSet(credential)}
                   >
-                    {credential.hasKey ? "UPDATE" : "SET KEY"}
+                    {credential.hasKey ? "Update" : "Set key"}
                   </Button>
                   <Show when={credential.hasKey}>
                     <Button
@@ -137,7 +133,7 @@ export function ApiTokensScreen(): JSX.Element {
                       leading="trash"
                       onClick={() => remove(credential)}
                     >
-                      CLEAR
+                      Clear
                     </Button>
                   </Show>
                 </span>
@@ -161,7 +157,7 @@ export function ApiTokensScreen(): JSX.Element {
             label={
               editing()?.hasKey
                 ? "API KEY (replaces the stored key)"
-                : "API KEY"
+                : "API key"
             }
             type="password"
             value={apiKey()}
@@ -171,14 +167,14 @@ export function ApiTokensScreen(): JSX.Element {
           />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={close}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!apiKey().trim() || saving()}
               onClick={save}
             >
-              {saving() ? "SAVING…" : "SAVE"}
+              {saving() ? "Saving…" : "Save"}
             </Button>
           </div>
         </Stack>

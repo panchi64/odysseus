@@ -29,9 +29,7 @@ async def test_provider_crud_over_http():
         assert "api_key" not in body
         assert body["has_api_key"] is True
 
-        patched = await client.patch(
-            f"/search/providers/{provider_id}", json={"enabled": False}
-        )
+        patched = await client.patch(f"/search/providers/{provider_id}", json={"enabled": False})
         assert patched.status_code == 200
         assert patched.json()["enabled"] is False
 

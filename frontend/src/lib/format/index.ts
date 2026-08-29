@@ -15,6 +15,35 @@ export function pct(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+/** A duration from milliseconds, at the coarsest unit that still says something
+ *  (e.g. `840ms`, `20.5s`, `39m44s`, `2h13m`).
+ *
+ *  Two units at most, and never a bare decimal above a minute: `39m44s` is read at a
+ *  glance where `2384.2s` has to be divided first, and `39.7m` throws away the part a
+ *  reader would then try to reconstruct. Below a minute the decimal is the useful
+ *  digit — the difference between a 2.4s and a 2.9s first token is real — so seconds
+ *  keep one, and only sub-second durations drop to whole milliseconds. */
+export function duration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m${Math.floor(totalSeconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h${(minutes % 60).toString().padStart(2, "0")}m`;
+}
+
+/** A large count abbreviated to three significant figures (e.g. `2.2M`, `450K`, `812`).
+ *
+ *  For counts that are read as a magnitude rather than a quantity — a thread's token
+ *  total is "about two million", and the exact figure belongs in the tooltip. */
+export function compactCount(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 10_000) return `${Math.round(n / 1000)}K`;
+  if (abs >= 1_000) return `${(n / 1000).toFixed(1)}K`;
+  return `${n}`;
+}
+
 /** Byte size in IEC units (e.g. 11.2 GB). */
 export function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];

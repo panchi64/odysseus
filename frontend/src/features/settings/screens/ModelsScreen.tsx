@@ -1,13 +1,14 @@
 import { type JSX } from "solid-js";
 import { Disclosure, Divider, PageHeader, Stack, toast } from "~/ui";
 import { isApiError } from "~/lib/api";
-import { HardwareBand, LocalModelsPanel } from "~/features/cookbook";
 import {
   decodeModelValue,
   effectiveSelection,
   effectiveValue,
   encodeModelValue,
   modelPickerGroups,
+  refreshEndpoints,
+  refreshModels,
   type ModelEndpoint,
 } from "~/lib/stores/models";
 import {
@@ -31,15 +32,13 @@ import { ModelRoleCard } from "../components/ModelRoleCard";
  *  disagree about what's selected, and each writes through the store's existing
  *  role actions — no role call is issued here.
  *
- *  Below the role cards is the **one** model list. Local-versus-external stopped
- *  being two pages here: a model the operator serves on this host and a model
- *  they reach over an API are the same kind of thing to the picker above, and
- *  splitting them meant configuring "which model answers me" in one place and
- *  "which models exist" in two. The serving controls live in `features/cookbook`
- *  because the Cookbook's other tabs (embedding, compare, get-started) drive the
- *  same lifecycle; this screen renders them rather than owning a second copy.
+ *  Every model is reached through an **endpoint** — an OpenAI-compatible URL the
+ *  operator points at, whether it is a server on this machine or a lab's API.
+ *  Odysseus no longer downloads weights, installs engines, or supervises a local
+ *  server, so the hardware band and the serve lifecycle that used to sit under
+ *  these cards are gone; what a model runs on is decided where it runs.
  *
- *  Endpoint plumbing (which providers exist) and fallback ordering (where a
+ *  Endpoint plumbing (which endpoints exist) and fallback ordering (where a
  *  request goes when the primary is down) are real but rare, so they sit behind
  *  ADVANCED instead of competing with the choice most people came to make. */
 export function ModelsScreen(): JSX.Element {
@@ -48,6 +47,16 @@ export function ModelsScreen(): JSX.Element {
 
   const endpointById = (id: string | undefined): ModelEndpoint | undefined =>
     id ? (endpoints.latest ?? []).find((e) => e.id === id) : undefined;
+
+  /** Re-ask the endpoints what they serve, whenever one of the pickers below is
+   *  opened. This page is where an operator lands *after* starting a local engine
+   *  or adding a key elsewhere, so the list it shows is the one most likely to be
+   *  out of date — and nothing about the stored endpoint rows changes when a
+   *  provider gains a model, so only asking again can find it. */
+  const rediscover = () => {
+    refreshEndpoints();
+    refreshModels();
+  };
 
   /* ── CHAT ──────────────────────────────────────────────────────────────────
      Read and written through exactly the accessors the top-bar picker uses, so
@@ -93,8 +102,8 @@ export function ModelsScreen(): JSX.Element {
   const SAME_AS_CHAT = "";
   const backgroundGroups = () => [
     {
-      label: "DEFAULT",
-      options: [{ value: SAME_AS_CHAT, label: "SAME AS CHAT MODEL" }],
+      label: "Default",
+      options: [{ value: SAME_AS_CHAT, label: "Same as chat model" }],
     },
     ...modelPickerGroups(),
   ];
@@ -141,38 +150,43 @@ export function ModelsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="MODELS"
+        variant="section"
+        title="Models"
         subtitle="Which model does what. Set it here once — every surface follows."
         assetId="ODY-MDL-01.0"
       />
 
       <ModelRoleCard
-        label="CHAT MODEL"
+        label="Chat model"
         description="Answers you in chat, research, and tasks."
         groups={modelPickerGroups()}
         value={effectiveValue()}
         onChange={(v) => void pickChat(v)}
-        placeholder="NO MODEL"
+        onOpen={rediscover}
+        placeholder="No model"
         endpoint={chatEndpoint()}
+        implicit={roles.latest?.main?.implicit ?? false}
       />
 
       <ModelRoleCard
-        label="BACKGROUND MODEL"
+        label="Background model"
         description="Titles, summaries, verification. A cheaper model is usually the right call."
         groups={backgroundGroups()}
         value={roleValue("utility")}
         onChange={(v) => void pickBackground(v)}
-        placeholder="SAME AS CHAT MODEL"
+        onOpen={rediscover}
+        placeholder="Same as chat model"
         endpoint={roleEndpoint("utility")}
       />
 
       <ModelRoleCard
-        label="SEARCH & MEMORY MODEL"
+        label="Search & memory model"
         description="Powers recall across memories and chats. Changing this re-indexes everything."
         groups={modelPickerGroups()}
         value={roleValue("embedding")}
         onChange={(v) => void pickEmbedding(v)}
-        placeholder="NOT SET — RECALL IS KEYWORD-ONLY"
+        onOpen={rediscover}
+        placeholder="Not set — recall is keyword-only"
         endpoint={roleEndpoint("embedding")}
       >
         <EmbeddingRoleControls
@@ -181,10 +195,8 @@ export function ModelsScreen(): JSX.Element {
       </ModelRoleCard>
 
       <Divider />
-      <HardwareBand />
-      <LocalModelsPanel />
 
-      <Disclosure label="ADVANCED">
+      <Disclosure label="Advanced">
         <Stack gap={6} class="pt-3">
           <EndpointsSection />
           <FallbackChainsSection />

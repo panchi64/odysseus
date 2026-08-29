@@ -27,8 +27,11 @@ class _FakeManager:
     def __init__(self, token: str, host_port: int) -> None:
         self._token = token
         self._handle = PreviewHandle(
-            token=token, container="c", host_port=host_port,
-            container_port=8000, command=("srv",),
+            token=token,
+            container="c",
+            host_port=host_port,
+            container_port=8000,
+            command=("srv",),
         )
         self.touches = 0
 
@@ -175,8 +178,10 @@ async def test_previews_subtree_is_public():
 def test_ws_proxy_round_trips_text_and_bytes(tmp_path):
     with _ws_upstream() as port:
         settings = Settings(
-            db_url="sqlite:///:memory:", data_dir=tmp_path,
-            auth_enabled=False, unlock_passphrase="pw",
+            db_url="sqlite:///:memory:",
+            data_dir=tmp_path,
+            auth_enabled=False,
+            unlock_passphrase="pw",
         )
         app = create_app(settings)
         with TestClient(app) as client:
@@ -192,8 +197,10 @@ def test_ws_unknown_token_is_rejected(tmp_path):
     from starlette.websockets import WebSocketDisconnect
 
     settings = Settings(
-        db_url="sqlite:///:memory:", data_dir=tmp_path,
-        auth_enabled=False, unlock_passphrase="pw",
+        db_url="sqlite:///:memory:",
+        data_dir=tmp_path,
+        auth_enabled=False,
+        unlock_passphrase="pw",
     )
     app = create_app(settings)
     with TestClient(app) as client:

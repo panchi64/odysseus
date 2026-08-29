@@ -49,7 +49,7 @@ function runIcon(
 }
 
 function runLabel(run: TaskRun): string {
-  return run.outcome === null ? "RUNNING" : run.outcome.toUpperCase();
+  return run.outcome === null ? "Running" : run.outcome.toUpperCase();
 }
 
 const RUNS_PAGE = 6;
@@ -77,7 +77,7 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
     <Stack gap={2}>
       <Row gap={2} align="baseline">
         <Text variant="label" tone="dim">
-          RUN HISTORY
+          Run history
         </Text>
         <Text variant="micro" tone="dim">
           {runs().length}
@@ -94,7 +94,7 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
         <Stack gap={0}>
           <For each={shown()}>
             {(run) => (
-              <div class="flex flex-col gap-1 border-b border-line py-2 last:border-b-0">
+              <div class="flex flex-col gap-1 py-2">
                 <Row gap={2} align="center">
                   <Icon
                     name={runIcon(run)}
@@ -118,7 +118,7 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
                         openRunConversation(run);
                       }}
                     >
-                      VIEW CHAT
+                      View chat
                     </Button>
                   </Show>
                 </Row>
@@ -143,7 +143,7 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
                       onClick={() => setOutputRun(run)}
                       class="self-start"
                     >
-                      VIEW OUTPUT
+                      View output
                     </Button>
                   </Show>
                 </Show>
@@ -167,11 +167,11 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
       <Modal
         open={outputRun() !== null}
         onClose={() => setOutputRun(null)}
-        title="RUN OUTPUT"
+        title="Run output"
         class="max-w-2xl"
         footer={
           <Button variant="ghost" onClick={() => setOutputRun(null)}>
-            CLOSE
+            Close
           </Button>
         }
       >
@@ -187,7 +187,7 @@ export function TaskRunHistory(props: { taskId: string }): JSX.Element {
                 </Text>
               </Row>
               <div
-                class="overflow-auto border border-line p-3 font-mono"
+                class="overflow-auto rounded-panel bg-raised p-3 font-mono"
                 style={{ "max-height": "60vh" }}
               >
                 <Text variant="body" tone="dim" class="whitespace-pre-wrap">

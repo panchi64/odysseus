@@ -26,8 +26,8 @@ import {
 import type { AccessToken, IssuedAccessToken } from "../model";
 
 /** Access Tokens — the credentials the operator issues so a *client* can call this API
- *  programmatically (`AUTH-4`). The other direction from the Service Keys screen
- *  (`/admin/tokens`), which stores the keys this system calls third parties with.
+ *  programmatically (`AUTH-4`). The other direction from the Service Keys section
+ *  above it in SECURITY, which stores the keys this system calls third parties with.
  *
  *  The plaintext is returned once and never again, so issuing ends in a reveal the
  *  operator must copy out of — the one place in the app where closing a dialog loses
@@ -78,7 +78,7 @@ export function AccessTokensScreen(): JSX.Element {
         title: `Revoke "${token.label}"?`,
         detail:
           "Any client still presenting this token is refused from its next request. Revoking cannot be undone — issue a new token instead.",
-        confirmLabel: "REVOKE",
+        confirmLabel: "Revoke",
         tone: "alert",
       }))
     )
@@ -98,17 +98,18 @@ export function AccessTokensScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="ACCESS TOKENS"
+        variant="section"
+        title="Access tokens"
         subtitle="Scoped tokens that let your own clients call this API. Shown once at issue; only a one-way hash is kept."
         assetId="ODY-ADM-05.0 EDITION 01"
         actions={
           <Button variant="primary" size="sm" leading="key" onClick={openIssue}>
-            ISSUE TOKEN
+            Issue token
           </Button>
         }
       />
 
-      <Panel label="ISSUED TOKENS" flush>
+      <Panel label="Issued tokens" flush>
         <Show
           when={tokens.latest}
           fallback={
@@ -121,7 +122,7 @@ export function AccessTokensScreen(): JSX.Element {
             when={(tokens.latest ?? []).length > 0}
             fallback={
               <EmptyState
-                message="NO TOKENS ISSUED"
+                message="No tokens issued"
                 hint="Issue one to let a script, CLI, or automation reach this API without your password."
                 icon="key"
               />
@@ -129,12 +130,7 @@ export function AccessTokensScreen(): JSX.Element {
           >
             <For each={tokens.latest ?? []}>
               {(token) => (
-                <Row
-                  align="center"
-                  justify="between"
-                  gap={3}
-                  class="border-b border-line px-3 py-3 last:border-0"
-                >
+                <Row align="center" justify="between" gap={3} class="px-3 py-3">
                   <Stack gap={1} class="min-w-0">
                     <Row gap={2} align="center">
                       <Text variant="label" tone="bright">
@@ -143,10 +139,10 @@ export function AccessTokensScreen(): JSX.Element {
                       <Show
                         when={token.revokedAt}
                         fallback={
-                          <StatusFlag status="nominal">ACTIVE</StatusFlag>
+                          <StatusFlag status="nominal">Active</StatusFlag>
                         }
                       >
-                        <StatusFlag status="alert">REVOKED</StatusFlag>
+                        <StatusFlag status="alert">Revoked</StatusFlag>
                       </Show>
                     </Row>
                     <Text variant="micro" tone="dim">
@@ -156,7 +152,7 @@ export function AccessTokensScreen(): JSX.Element {
                       ISSUED {date(token.createdAt)} ·{" "}
                       {token.lastUsedAt
                         ? `LAST USED ${relativeTime(token.lastUsedAt)}`
-                        : "NEVER USED"}
+                        : "Never used"}
                     </Text>
                   </Stack>
                   <Show when={!token.revokedAt}>
@@ -167,7 +163,7 @@ export function AccessTokensScreen(): JSX.Element {
                       class="shrink-0"
                       onClick={() => revoke(token)}
                     >
-                      REVOKE
+                      Revoke
                     </Button>
                   </Show>
                 </Row>
@@ -180,12 +176,12 @@ export function AccessTokensScreen(): JSX.Element {
       <Modal
         open={issuing()}
         onClose={() => setIssuing(false)}
-        title="ISSUE ACCESS TOKEN"
+        title="Issue access token"
         class="max-w-lg"
       >
         <Stack gap={3}>
           <Input
-            label="LABEL"
+            label="Label"
             value={label()}
             onInput={(e) => setLabel(e.currentTarget.value)}
             placeholder="laptop CLI"
@@ -193,7 +189,7 @@ export function AccessTokensScreen(): JSX.Element {
           />
           <Stack gap={2}>
             <Text variant="label" tone="bright">
-              SCOPES
+              Scopes
             </Text>
             <Text variant="micro" tone="dim">
               The token reaches only what you grant here. Anything outside its
@@ -219,14 +215,14 @@ export function AccessTokensScreen(): JSX.Element {
           </Stack>
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setIssuing(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!label().trim() || chosen().length === 0 || saving()}
               onClick={submit}
             >
-              {saving() ? "ISSUING…" : "ISSUE"}
+              {saving() ? "Issuing…" : "Issue"}
             </Button>
           </div>
         </Stack>
@@ -235,7 +231,7 @@ export function AccessTokensScreen(): JSX.Element {
       <Modal
         open={revealed() !== null}
         onClose={() => setRevealed(null)}
-        title="COPY YOUR TOKEN NOW"
+        title="Copy your token now"
         class="max-w-lg"
       >
         <Stack gap={3}>
@@ -247,7 +243,7 @@ export function AccessTokensScreen(): JSX.Element {
           <Text
             variant="micro"
             tone="bright"
-            class="rounded-sm border border-line bg-surface p-3 break-all select-all"
+            class="rounded-ctl bg-raised p-3 break-all select-all"
           >
             {revealed()?.token}
           </Text>
@@ -256,10 +252,10 @@ export function AccessTokensScreen(): JSX.Element {
           </Text>
           <div class="flex justify-end gap-2">
             <Button variant="ghost" leading="copy" onClick={copy}>
-              COPY
+              Copy
             </Button>
             <Button variant="primary" onClick={() => setRevealed(null)}>
-              DONE
+              Done
             </Button>
           </div>
         </Stack>

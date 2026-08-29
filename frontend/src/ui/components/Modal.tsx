@@ -33,21 +33,25 @@ export function Modal(props: ModalProps): JSX.Element {
     <Show when={local.open}>
       <Portal>
         <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4"
+          class="ody-fade-in fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4 backdrop-blur-[2px]"
           onClick={local.onClose}
         >
+          {/* Overlay: smoothed corners, `shadow-2` (which carries its own
+              hairline ring), and the eased rise of the human register (§8).
+              The header/footer rules are gone — the padding already separates
+              them from the body. */}
           <div
             role="dialog"
             aria-modal="true"
             class={cx(
-              "flex max-h-[85vh] w-full max-w-md flex-col border border-line bg-surface",
+              "ody-rise flex max-h-[85vh] w-full max-w-md flex-col rounded-panel bg-surface shadow-2",
               local.class,
             )}
             onClick={(e) => e.stopPropagation()}
           >
             <Show when={local.title}>
-              <header class="flex items-center justify-between border-b border-line px-4 py-2">
-                <Text variant="label" tone="bright">
+              <header class="flex items-center justify-between gap-4 px-4 pt-4 pb-1">
+                <Text variant="body" tone="bright" class="font-medium">
                   {local.title}
                 </Text>
                 <button
@@ -69,7 +73,7 @@ export function Modal(props: ModalProps): JSX.Element {
               {local.children}
             </div>
             <Show when={local.footer}>
-              <footer class="flex items-center justify-end gap-2 border-t border-line px-4 py-2">
+              <footer class="flex items-center justify-end gap-2 px-4 pt-1 pb-4">
                 {local.footer}
               </footer>
             </Show>

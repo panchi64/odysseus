@@ -17,7 +17,7 @@ function approxTokens(n: number): string {
  *  everything above, so it is available behind a disclosure rather than hidden:
  *  it is the only way to see what the assistant still remembers.
  *
- *  The label states what the fold cost, because "CONTEXT COMPACTED" alone doesn't say
+ *  The label states what the fold cost, because "Context compacted" alone doesn't say
  *  whether that was two messages or forty. Two things about the numbers:
  *  **messages, not turns** — the backend counts `ModelMessage`s (a plain exchange is
  *  two, a tool-heavy turn many more) and doesn't count turns at fold time, so calling
@@ -36,7 +36,7 @@ export function CompactionDivider(props: {
   const folded = () => {
     const n = m().foldedMessages ?? 0;
     return n > 0
-      ? `${n} ${n === 1 ? "MESSAGE" : "MESSAGES"} FOLDED`
+      ? `${n} ${n === 1 ? "Message" : "Messages"} FOLDED`
       : undefined;
   };
   const delta = () => {
@@ -53,7 +53,7 @@ export function CompactionDivider(props: {
       <div class="flex items-center gap-3">
         <Divider class="flex-1" />
         <Text variant="label" tone="dim" class="text-center">
-          {["CONTEXT COMPACTED", folded(), delta()].filter(Boolean).join(" · ")}
+          {["Context compacted", folded(), delta()].filter(Boolean).join(" · ")}
         </Text>
         <Divider class="flex-1" />
       </div>
@@ -63,7 +63,7 @@ export function CompactionDivider(props: {
         The model no longer reads the dimmed turns above — it reads this summary
         instead. Your transcript keeps all of them.
       </Text>
-      <Disclosure label="SUMMARY" triggerClass="w-full">
+      <Disclosure label="Summary" triggerClass="w-full">
         <Text variant="body" tone="dim" class="whitespace-pre-wrap">
           {m().content}
         </Text>

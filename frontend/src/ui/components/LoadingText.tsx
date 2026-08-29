@@ -3,7 +3,7 @@ import type { JSX } from "solid-js";
 import { Text } from "../primitives/Text";
 
 export interface LoadingTextProps {
-  /** Defaults to "LOADING…". Use "UPDATING…", "SYNCING…", etc. as needed. */
+  /** Defaults to "Loading…". Use "Updating…", "Syncing…", etc. as needed. */
   label?: string;
   class?: string;
 }
@@ -14,7 +14,7 @@ export function LoadingText(props: LoadingTextProps): JSX.Element {
   const [local] = splitProps(props, ["label", "class"]);
   return (
     <Text variant="label" tone="dim" class={local.class}>
-      {local.label ?? "LOADING…"}
+      {local.label ?? "Loading…"}
     </Text>
   );
 }

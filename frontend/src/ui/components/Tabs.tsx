@@ -24,7 +24,10 @@ export function Tabs(props: TabsProps): JSX.Element {
         // Scrolls rather than wrapping or clipping when the labels outgrow the
         // container — a tab strip that silently hides its last tab is worse than one
         // with a scrollbar.
-        "scrollbar-thin flex items-stretch overflow-x-auto border-b border-line",
+        // No rule under the strip (§7): the selected tab's own fill marks the
+        // set, and the old border-b drew a line across every screen that had
+        // tabs whether or not anything needed dividing there.
+        "scrollbar-thin flex items-stretch gap-1 overflow-x-auto",
         local.class,
       )}
       role="tablist"
@@ -39,10 +42,10 @@ export function Tabs(props: TabsProps): JSX.Element {
               aria-selected={active()}
               onClick={() => local.onChange(tab.value)}
               class={cx(
-                "-mb-px border-b-2 px-3 py-2 text-label uppercase tracking-label font-mono transition-colors",
+                "rounded-ctl px-3 py-1.5 text-body font-sans font-medium whitespace-nowrap transition-colors",
                 active()
-                  ? "border-bright text-bright"
-                  : "border-transparent text-dim hover:text-text",
+                  ? "bg-raised text-bright"
+                  : "text-dim hover:bg-raised hover:text-text",
               )}
             >
               {tab.label}

@@ -3,7 +3,6 @@ import { Chip, Combobox, Panel, Row, Stack, Text } from "~/ui";
 import { num } from "~/lib/format";
 import type { ModelEndpoint } from "~/lib/stores/models";
 import { EndpointHealthFlag } from "./EndpointHealthFlag";
-import { EndpointLiveFlag } from "./EndpointLiveFlag";
 
 /** One job, one model. The card names the job in plain language, offers ONE
  *  combined picker (a model, with its endpoint implied by the choice), and shows
@@ -13,19 +12,28 @@ import { EndpointLiveFlag } from "./EndpointLiveFlag";
  *  what a pick means. Every fact rendered here is a field the backend already
  *  reports on the endpoint — nothing is derived or judged locally. */
 export interface ModelRoleCardProps {
-  /** Uppercase panel label — the job, not the role name (e.g. "CHAT MODEL"). */
+  /** Uppercase panel label — the job, not the role name (e.g. "Chat model"). */
   label: string;
   /** One sentence saying what this model actually does for the operator. */
   description: string;
   /** Grouped picker options, one group per endpoint (plus any caller-local
-   *  option, e.g. "SAME AS CHAT MODEL"). */
+   *  option, e.g. "Same as chat model"). */
   groups: { label: string; options: { value: string; label: string }[] }[];
   value: string;
   onChange: (value: string) => void;
+  /** Fired when the picker opens — the caller re-asks its endpoints what they serve,
+   *  so a model that appeared since the page loaded is in the list being looked at. */
+  onOpen?: () => void;
   /** Trigger text when nothing is chosen. */
   placeholder: string;
   /** The endpoint backing the current choice — the source of the facts row. */
   endpoint?: ModelEndpoint;
+  /** True when the shown model is the backend's default rather than the operator's
+   *  choice — `main` with nothing bound resolves to the first usable endpoint/model.
+   *  The picker shows it either way (it is what a turn runs on), but *this* card
+   *  describes the configuration, so it has to distinguish the two: a default moves
+   *  when a better endpoint appears, and a pin does not. */
+  implicit?: boolean;
   /** Extra controls belonging to this job (e.g. the re-embed readout). */
   children?: JSX.Element;
 }
@@ -42,10 +50,11 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
           groups={props.groups}
           value={props.value}
           onChange={props.onChange}
+          onOpen={props.onOpen}
           leading="cpu"
           placeholder={props.placeholder}
           searchPlaceholder="Search models…"
-          emptyHint="NO MODELS — ADD AN ENDPOINT UNDER ADVANCED"
+          emptyHint="No models — add an endpoint under advanced"
           aria-label={props.label}
         />
 
@@ -57,15 +66,19 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
                 {ep().name}
               </Text>
               <EndpointHealthFlag status={ep().lastStatus} />
-              <EndpointLiveFlag endpoint={ep()} />
+              <Show when={props.implicit}>
+                <Text variant="micro" tone="dim">
+                  · defaulting to this
+                </Text>
+              </Show>
               <Show when={ep().contextWindow}>
                 {(cw) => <Chip>CTX {num(cw(), 0)}</Chip>}
               </Show>
               <Show when={ep().nativeTools}>
-                <Chip>TOOLS</Chip>
+                <Chip>Tools</Chip>
               </Show>
               <Show when={ep().vision}>
-                <Chip>VISION</Chip>
+                <Chip>Vision</Chip>
               </Show>
             </Row>
           )}

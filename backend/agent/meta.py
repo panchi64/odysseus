@@ -24,9 +24,7 @@ from pydantic_ai.settings import ModelSettings
 from prompts.utility import JUDGE_INSTRUCTIONS
 
 
-def make_utility_agent(
-    model: Model, *, output_type: Any = str, instructions: str
-) -> Agent:
+def make_utility_agent(model: Model, *, output_type: Any = str, instructions: str) -> Agent:
     """Build a one-shot agent on the cheap utility model for background work — a
     judge, a namer, a summarizer. Centralizes the bare ``Agent`` construction so
     every utility caller picks up the same shape (and any future default:
@@ -69,9 +67,7 @@ class Verdict(BaseModel):
 Judge = Callable[[str, str], Awaitable[Verdict]]
 
 
-def make_utility_judge(
-    model: Model, *, model_settings: ModelSettings | None = None
-) -> Judge:
+def make_utility_judge(model: Model, *, model_settings: ModelSettings | None = None) -> Judge:
     """The default judge — asks the given utility model whether the task was
     satisfied. The model is resolved from the registry's ``utility`` role by the
     caller, so the judge itself carries no resolution dependency. ``model_settings``
@@ -81,9 +77,7 @@ def make_utility_judge(
     from the tool call regardless of any reasoning the model emits anyway."""
 
     async def judge(request: str, answer: str) -> Verdict:
-        agent = make_utility_agent(
-            model, output_type=Verdict, instructions=JUDGE_INSTRUCTIONS
-        )
+        agent = make_utility_agent(model, output_type=Verdict, instructions=JUDGE_INSTRUCTIONS)
         result = await agent.run(
             f"Request:\n{request}\n\nResponse:\n{answer}", model_settings=model_settings
         )

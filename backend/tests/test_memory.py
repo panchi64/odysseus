@@ -20,9 +20,15 @@ OWNER = "operator"
 # A tiny concept space so paraphrases (no shared tokens) still embed alike —
 # lets the dense path be tested independently of keyword overlap.
 _CONCEPTS = {
-    "cat": 0, "feline": 0, "kitten": 0,
-    "dog": 1, "canine": 1, "puppy": 1,
-    "car": 2, "vehicle": 2, "automobile": 2,
+    "cat": 0,
+    "feline": 0,
+    "kitten": 0,
+    "dog": 1,
+    "canine": 1,
+    "puppy": 1,
+    "car": 2,
+    "vehicle": 2,
+    "automobile": 2,
 }
 
 

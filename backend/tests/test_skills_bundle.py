@@ -192,7 +192,7 @@ def test_symlink_entries_are_refused():
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("pdf-processing/SKILL.md", SKILL_MD)
         link = zipfile.ZipInfo("pdf-processing/escape")
-        link.external_attr = (0o120777 << 16)
+        link.external_attr = 0o120777 << 16
         archive.writestr(link, "/etc/passwd")
     with pytest.raises(SkillValidationError, match="symlink"):
         bundle.read_bundle(buffer.getvalue())
@@ -226,9 +226,7 @@ def test_claude_code_bundle_roundtrip():
 
     with zipfile.ZipFile(io.BytesIO(exported)) as archive:
         names = archive.namelist()
-        front = yaml.safe_load(
-            archive.read("pdf-processing/SKILL.md").decode().split("---")[1]
-        )
+        front = yaml.safe_load(archive.read("pdf-processing/SKILL.md").decode().split("---")[1])
     assert names[0] == "pdf-processing/SKILL.md"
     assert {name.split("/")[0] for name in names} == {"pdf-processing"}
     assert front["when_to_use"].startswith("When the user mentions")
@@ -259,9 +257,7 @@ def test_comparison_operators_are_not_xml_tags():
 
 def test_real_markup_is_still_rejected():
     with pytest.raises(SkillValidationError) as caught:
-        bundle.parse_skill_md(
-            "---\nname: ok\ndescription: has <b>bold</b> markup\n---\nbody"
-        )
+        bundle.parse_skill_md("---\nname: ok\ndescription: has <b>bold</b> markup\n---\nbody")
     assert caught.value.field == "description"
 
 
@@ -303,8 +299,6 @@ def test_macos_sidecar_entries_are_ignored():
 
 def test_a_flat_archive_is_accepted():
     """Zipping a skill's *contents* puts SKILL.md at the archive root; that's still a skill."""
-    imported = bundle.read_bundle(
-        _zip({"SKILL.md": SKILL_MD.encode(), "scripts/fill.py": b"x"})
-    )
+    imported = bundle.read_bundle(_zip({"SKILL.md": SKILL_MD.encode(), "scripts/fill.py": b"x"}))
     assert imported.skill.name == "pdf-processing"
     assert [relpath for relpath, _ in imported.files] == ["scripts/fill.py"]

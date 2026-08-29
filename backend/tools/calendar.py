@@ -6,8 +6,8 @@ the same one the REST routes call.
 
 **No approval gate.** Creating, editing, and deleting the operator's own calendar entries
 on their behalf is ordinary assistant work — it is not in the `AE-3.1` sensitive set (shell,
-code execution, filesystem writes, sending mail, serving models, config, the vault), all of
-which reach outside the operator's own data or are hard to undo. A calendar entry is neither:
+code execution, filesystem writes, sending mail, config, the vault), all of which reach
+outside the operator's own data or are hard to undo. A calendar entry is neither:
 it is visible on the surface the operator is looking at and one call to remove. Gating it
 would train the operator to click through approvals, which is what makes a gate stop working
 where it matters.

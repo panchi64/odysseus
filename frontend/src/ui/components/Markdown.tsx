@@ -92,7 +92,7 @@ function makeCopyButton(): HTMLButtonElement {
   btn.setAttribute("aria-label", "Copy code");
   btn.className =
     "ody-code-copy absolute right-1 top-1 hidden border border-line bg-raised px-2 py-0.5 text-micro uppercase tracking-label text-dim transition-colors hover:text-bright group-hover/code:block focus:block focus:outline-none";
-  btn.textContent = "COPY";
+  btn.textContent = "Copy";
   return btn;
 }
 

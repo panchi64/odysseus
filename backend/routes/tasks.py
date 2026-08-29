@@ -2,12 +2,12 @@
 webhook trigger over :class:`~models.task.ScheduledTask`/``TaskRun`` (`TASK-1..6`,
 `AE-3.2`/`AE-3.5`).
 
-No dedicated service layer exists yet for this surface (unlike documents/gallery/etc):
+No dedicated service layer exists yet for this surface (unlike corpus/uploads/etc):
 this router reads/writes the two tables directly, the same
 ``core.db.in_session`` primitive every service uses, and defers to
 :class:`~services.scheduler.SchedulerService` only for the tick-loop-shaped
 mechanics (on-demand fire, non-overlap, wake). Out-shapes are camelCase, like the
-app's other newer surfaces (documents/gallery/corpus/notifications).
+app's other newer surfaces (corpus/uploads/notifications).
 
 ``POST /tasks/hooks/{token}`` is the one auth-EXEMPT route here (``core/auth.py``
 matches ``/tasks/hooks/`` exactly, mirroring the ``/previews`` token-gated-subtree

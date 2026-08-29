@@ -125,9 +125,7 @@ async def test_park_notifies_approval_needed(tmp_path):
         capabilities=ServiceContainer.of(service),
         conversation_id="c1",
     )
-    run = reg.submit(
-        kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1"
-    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch, conversation_id="c1")
     await run.wait()
 
     assert run.status is RunStatus.awaiting_input

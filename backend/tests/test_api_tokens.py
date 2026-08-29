@@ -29,40 +29,40 @@ async def _make():
 
 async def test_set_get_roundtrip_and_status():
     store, _engine, _vault = await _make()
-    await store.set_key(OWNER, "artificial_analysis", "aa-secret-123")
-    assert await store.get_secret(OWNER, "artificial_analysis") == "aa-secret-123"
-    assert await store.status(OWNER) == {"artificial_analysis": True}
+    await store.set_key(OWNER, "google_oauth", "goog-secret-123")
+    assert await store.get_secret(OWNER, "google_oauth") == "goog-secret-123"
+    assert await store.status(OWNER) == {"google_oauth": True}
     # An unset service has no key.
-    assert await store.get_secret(OWNER, "llm_stats") is None
+    assert await store.get_secret(OWNER, "microsoft_oauth") is None
 
 
 async def test_set_is_an_upsert():
     store, _engine, _vault = await _make()
-    await store.set_key(OWNER, "llm_stats", "first")
-    await store.set_key(OWNER, "llm_stats", "second")
-    assert await store.get_secret(OWNER, "llm_stats") == "second"
+    await store.set_key(OWNER, "microsoft_oauth", "first")
+    await store.set_key(OWNER, "microsoft_oauth", "second")
+    assert await store.get_secret(OWNER, "microsoft_oauth") == "second"
 
 
 async def test_key_is_encrypted_at_rest():
     store, engine, vault = await _make()
-    await store.set_key(OWNER, "huggingface", "hf-token-xyz")
+    await store.set_key(OWNER, "google_oauth", "oauth-secret-xyz")
     with Session(engine) as session:
         row = session.exec(select(ServiceCredential)).one()
     assert row.api_key_enc is not None
-    assert "hf-token-xyz" not in row.api_key_enc  # sealed, not plaintext
-    assert vault.decrypt_str(row.api_key_enc) == "hf-token-xyz"
+    assert "oauth-secret-xyz" not in row.api_key_enc  # sealed, not plaintext
+    assert vault.decrypt_str(row.api_key_enc) == "oauth-secret-xyz"
 
 
 async def test_clear_removes_the_key():
     store, _engine, _vault = await _make()
-    await store.set_key(OWNER, "llm_stats", "k")
-    await store.clear_key(OWNER, "llm_stats")
-    assert await store.get_secret(OWNER, "llm_stats") is None
+    await store.set_key(OWNER, "microsoft_oauth", "k")
+    await store.clear_key(OWNER, "microsoft_oauth")
+    assert await store.get_secret(OWNER, "microsoft_oauth") is None
     assert await store.status(OWNER) == {}
     # Setting an empty key is also a clear.
-    await store.set_key(OWNER, "llm_stats", "k")
-    await store.set_key(OWNER, "llm_stats", "")
-    assert await store.get_secret(OWNER, "llm_stats") is None
+    await store.set_key(OWNER, "microsoft_oauth", "k")
+    await store.set_key(OWNER, "microsoft_oauth", "")
+    assert await store.get_secret(OWNER, "microsoft_oauth") is None
 
 
 async def test_unknown_service_rejected():
@@ -75,18 +75,18 @@ async def test_unknown_service_rejected():
 
 async def test_locked_vault_yields_none_not_a_crash():
     store, _engine, vault = await _make()
-    await store.set_key(OWNER, "artificial_analysis", "secret")
+    await store.set_key(OWNER, "google_oauth", "secret")
     vault.lock()
-    # Consumers (the Cookbook at boot) must degrade, never raise.
-    assert await store.get_secret(OWNER, "artificial_analysis") is None
+    # Consumers reading a key at boot must degrade, never raise.
+    assert await store.get_secret(OWNER, "google_oauth") is None
 
 
 async def test_on_change_fires_after_writes():
     store, _engine, _vault = await _make()
     hits = []
     store.on_change(lambda: hits.append(1))
-    await store.set_key(OWNER, "llm_stats", "k")
-    await store.clear_key(OWNER, "llm_stats")
+    await store.set_key(OWNER, "microsoft_oauth", "k")
+    await store.clear_key(OWNER, "microsoft_oauth")
     assert len(hits) == 2
 
 
@@ -95,18 +95,18 @@ async def test_credentials_route_set_list_clear_and_never_leaks_key():
         resp = await client.get("/credentials")
         assert resp.status_code == 200
         by_service = {c["service"]: c for c in resp.json()}
-        assert {"artificial_analysis", "llm_stats", "huggingface"} <= by_service.keys()
-        assert by_service["artificial_analysis"]["has_key"] is False
+        assert {"google_oauth", "microsoft_oauth"} <= by_service.keys()
+        assert by_service["google_oauth"]["has_key"] is False
 
-        resp = await client.put("/credentials/artificial_analysis", json={"api_key": "sk-secret"})
+        resp = await client.put("/credentials/google_oauth", json={"api_key": "sk-secret"})
         assert resp.status_code == 200
         assert resp.json()["has_key"] is True
         assert "sk-secret" not in resp.text  # the key is never echoed back
 
         resp = await client.get("/credentials")
-        assert {c["service"]: c["has_key"] for c in resp.json()}["artificial_analysis"] is True
+        assert {c["service"]: c["has_key"] for c in resp.json()}["google_oauth"] is True
 
         assert (await client.put("/credentials/bogus", json={"api_key": "x"})).status_code == 404
 
-        resp = await client.delete("/credentials/artificial_analysis")
+        resp = await client.delete("/credentials/google_oauth")
         assert resp.status_code == 200 and resp.json()["has_key"] is False

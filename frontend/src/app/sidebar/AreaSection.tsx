@@ -30,7 +30,7 @@ export function AreaSection(props: {
     location.pathname === href || location.pathname.startsWith(`${href}/`);
 
   return (
-    <div class="border-b border-line">
+    <div class="pb-1">
       <div class="flex items-center">
         <a
           href={props.area.items[0].href}
@@ -64,7 +64,6 @@ export function AreaSection(props: {
           <For each={props.area.items}>
             {(item) => (
               <Tooltip
-                float
                 delay={1000}
                 side="right"
                 label={item.description}
@@ -75,15 +74,13 @@ export function AreaSection(props: {
                   leading={item.icon}
                   href={item.href}
                   selected={isActive(item.href)}
-                  flush
                   right={navMeta(item)}
-                  // Indented so the rows read as the header's contents; §6
-                  // States — selection is a 2px emphasis rule, not color alone.
+                  // Indented so the rows read as the header's contents.
+                  // Selection is a raised fill (§10 States) — the old 2px left
+                  // rule turned the rail into a column of bars.
                   class={cx(
-                    "border-l-2 pl-5",
-                    isActive(item.href)
-                      ? "border-bright"
-                      : "border-transparent",
+                    "rounded-ctl pl-5",
+                    isActive(item.href) && "bg-raised",
                   )}
                 />
               </Tooltip>

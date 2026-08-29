@@ -1,9 +1,11 @@
 export {
   isTerminal,
   PROTOCOL_VERSION,
+  type ContextComposition,
   type ContextWindow,
   type PlanItem,
   type RunEvent,
+  type RunMetrics,
 } from "./events";
 export {
   streamRun,

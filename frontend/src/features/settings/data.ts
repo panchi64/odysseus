@@ -24,7 +24,7 @@ import type {
 
 // The endpoint catalog, the provider presets, and the role bindings (reads AND
 // the role writes) are owned by the shared models store so the chat picker,
-// the Cookbook, and Settings share one fetch and one type each; this module owns
+// and Settings share one fetch and one type each; this module owns
 // the endpoint CRUD writes. Store-owned actions are re-exported here so the
 // screen reaches everything through this one seam — `setSelectedModel` included,
 // because the Models page's CHAT card is the top-bar picker's control in another
@@ -58,7 +58,7 @@ function toBody(input: Partial<EndpointInput>): Record<string, unknown> {
 
 /* ── Endpoints (writes) ───────────────────────────────────────────────────── */
 
-/** Create an endpoint and return its backend id (the guided cookbook flow needs
+/** Create an endpoint and return its backend id (the caller needs
  *  it to test + auto-select the new connection; the Settings form ignores it). */
 export async function createEndpoint(input: EndpointInput): Promise<string> {
   const created = await api.post<{ id: string }>(
@@ -264,6 +264,8 @@ export async function deleteSearchProvider(id: string): Promise<void> {
 interface ChatSettingsDTO {
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
+  context_warn_threshold: number;
+  context_alert_threshold: number;
   agent_request_limit: number;
   inactivity_timeout_s: number;
 }
@@ -273,6 +275,8 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
   return {
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
+    contextWarnThreshold: dto.context_warn_threshold,
+    contextAlertThreshold: dto.context_alert_threshold,
     agentRequestLimit: dto.agent_request_limit,
     inactivityTimeoutS: dto.inactivity_timeout_s,
   };
@@ -288,6 +292,10 @@ function toChatSettingsBody(
     body.auto_compact_enabled = patch.autoCompactEnabled;
   if (patch.autoCompactThreshold !== undefined)
     body.auto_compact_threshold = patch.autoCompactThreshold;
+  if (patch.contextWarnThreshold !== undefined)
+    body.context_warn_threshold = patch.contextWarnThreshold;
+  if (patch.contextAlertThreshold !== undefined)
+    body.context_alert_threshold = patch.contextAlertThreshold;
   if (patch.agentRequestLimit !== undefined)
     body.agent_request_limit = patch.agentRequestLimit;
   if (patch.inactivityTimeoutS !== undefined)

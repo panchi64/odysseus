@@ -9,7 +9,12 @@ async def test_setup_then_access_then_lock_cycle():
     async with client_app(auth_enabled=True, passphrase=None) as (client, _app):
         # Fresh: not initialized, and feature endpoints are gated.
         status = (await client.get("/auth/status")).json()
-        assert status == {"initialized": False, "unlocked": False, "auth_enabled": True}
+        assert status == {
+            "initialized": False,
+            "unlocked": False,
+            "auth_enabled": True,
+            "db_missing": False,
+        }
         assert (await client.get("/runs/whatever")).status_code == 401
 
         # First-run setup chooses the password and returns a session.

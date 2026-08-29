@@ -31,7 +31,7 @@ async def test_overview_empty_workspace():
     assert caps["chat_model"]["status"] == "alert"
     assert caps["chat_model"]["critical"] is True
     assert caps["chat_model"]["detail"] == "no provider configured"
-    assert caps["chat_model"]["remediation_href"] == "/models/cookbook"
+    assert caps["chat_model"]["remediation_href"] == "/models"
     assert caps["embeddings"]["status"] == "warn"
     assert caps["sandbox"]["status"] == "warn"
     # Web search is managed (auto-run SearXNG); with no runtime in tests it degrades

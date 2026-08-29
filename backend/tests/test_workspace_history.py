@@ -57,12 +57,20 @@ async def test_capture_records_a_snapshot(tmp_path):
 async def test_exact_reshow_collapses_onto_the_existing_version(tmp_path):
     store = await _store(tmp_path)
     first = await store.capture(
-        "operator", "c", run_id="r1", files={"a.py": b"x"}, preview_kind="image",
+        "operator",
+        "c",
+        run_id="r1",
+        files={"a.py": b"x"},
+        preview_kind="image",
         preview_artifact_id="a1",
     )
     # Identical tree AND identical preview → no duplicate; the existing version returns.
     again = await store.capture(
-        "operator", "c", run_id="r2", files={"a.py": b"x"}, preview_kind="image",
+        "operator",
+        "c",
+        run_id="r2",
+        files={"a.py": b"x"},
+        preview_kind="image",
         preview_artifact_id="a1",
     )
     assert again.id == first.id
@@ -72,12 +80,20 @@ async def test_exact_reshow_collapses_onto_the_existing_version(tmp_path):
 async def test_same_tree_new_preview_records_a_new_version(tmp_path):
     store = await _store(tmp_path)
     first = await store.capture(
-        "operator", "c", run_id="r1", files={"a.py": b"x"}, preview_kind="image",
+        "operator",
+        "c",
+        run_id="r1",
+        files={"a.py": b"x"},
+        preview_kind="image",
         preview_artifact_id="a1",
     )
     # Same tree but a fresh preview (a different `show(file=…)`) is a real new version.
     second = await store.capture(
-        "operator", "c", run_id="r2", files={"a.py": b"x"}, preview_kind="html",
+        "operator",
+        "c",
+        run_id="r2",
+        files={"a.py": b"x"},
+        preview_kind="html",
         preview_artifact_id="a2",
     )
     assert second.id != first.id

@@ -35,14 +35,10 @@ async def test_contents_reports_the_discovered_groups():
 async def test_export_then_reimport_is_idempotent():
     async with client_app() as (client, _):
         await _memory(client, "Deploys go out on Thursdays")
-        envelope = (await client.post("/backup/export", json={"secret": SECRET})).json()[
-            "envelope"
-        ]
+        envelope = (await client.post("/backup/export", json={"secret": SECRET})).json()["envelope"]
         assert "Thursdays" not in str(envelope)
 
-        first = await client.post(
-            "/backup/import", json={"secret": SECRET, "envelope": envelope}
-        )
+        first = await client.post("/backup/import", json={"secret": SECRET, "envelope": envelope})
         # The rows are already here — a restore onto its own source adds nothing.
         assert first.json()["imported"]["memories"] == 0
         assert first.json()["skipped"]["memories"] == 1
@@ -52,15 +48,11 @@ async def test_export_then_reimport_is_idempotent():
 async def test_a_wrong_secret_is_400_not_an_auth_failure():
     async with client_app() as (client, _):
         await _memory(client, "A fact")
-        envelope = (await client.post("/backup/export", json={"secret": SECRET})).json()[
-            "envelope"
-        ]
+        envelope = (await client.post("/backup/export", json={"secret": SECRET})).json()["envelope"]
 
         # 400, deliberately: 401/423 would have the frontend client drop the session and
         # bounce to login over a mistyped recovery passphrase.
-        wrong = await client.post(
-            "/backup/import", json={"secret": "nope", "envelope": envelope}
-        )
+        wrong = await client.post("/backup/import", json={"secret": "nope", "envelope": envelope})
         assert wrong.status_code == 400
 
 

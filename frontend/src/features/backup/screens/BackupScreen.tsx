@@ -147,7 +147,8 @@ export function BackupScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="BACKUP / RESTORE"
+        variant="section"
+        title="Backup / restore"
         subtitle="Export an encrypted archive of your workspace, or merge one back in."
         assetId="ODY-ADM-06.0 EDITION 01"
         actions={
@@ -169,7 +170,7 @@ export function BackupScreen(): JSX.Element {
           when={lastBackup()}
           fallback={
             <EmptyState
-              message="NO BACKUPS YET"
+              message="No backups yet"
               hint="Run your first export to get started. Choose a recovery passphrase below and click EXPORT BACKUP."
             />
           }
@@ -177,7 +178,7 @@ export function BackupScreen(): JSX.Element {
           {(b) => (
             <InstrumentBand
               items={[
-                { label: "LAST BACKUP", value: timestamp(b().createdAt) },
+                { label: "Last backup", value: timestamp(b().createdAt) },
                 ...b().items.map((item) => ({
                   label: item.name.toUpperCase(),
                   value: String(item.count),
@@ -190,7 +191,7 @@ export function BackupScreen(): JSX.Element {
 
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* ── EXPORT ───────────────────────────────────────── */}
-        <Panel label="EXPORT">
+        <Panel label="Export">
           <Stack gap={4}>
             <Text variant="body" tone="dim">
               The archive is a single encrypted JSON file, sealed with the
@@ -200,7 +201,7 @@ export function BackupScreen(): JSX.Element {
             <Stack gap={2}>
               <Row align="center" justify="between">
                 <Text variant="label" tone="dim">
-                  INCLUDE
+                  Include
                 </Text>
                 <Row gap={1} align="center">
                   <Button
@@ -209,7 +210,7 @@ export function BackupScreen(): JSX.Element {
                     onClick={() => setExcluded([])}
                     disabled={excluded().length === 0}
                   >
-                    ALL
+                    All
                   </Button>
                   <Button
                     variant="ghost"
@@ -217,7 +218,7 @@ export function BackupScreen(): JSX.Element {
                     onClick={() => setExcluded([...sections()])}
                     disabled={includes().length === 0}
                   >
-                    NONE
+                    None
                   </Button>
                 </Row>
               </Row>
@@ -243,7 +244,7 @@ export function BackupScreen(): JSX.Element {
             <Divider />
             <Row gap={2} align="center">
               <Text variant="label" tone="dim">
-                RECOVERY PASSPHRASE
+                Recovery passphrase
               </Text>
               <InfoHint label="Chosen per export and stored nowhere. It is the only thing that opens the file — lose it and the archive is unrecoverable, which is exactly why it is separate from your login password." />
             </Row>
@@ -262,7 +263,7 @@ export function BackupScreen(): JSX.Element {
                   message={err()}
                   hint="Check the passphrase and try again."
                   onRetry={() => void runExport()}
-                  retryLabel="RETRY EXPORT"
+                  retryLabel="Retry export"
                 />
               )}
             </Show>
@@ -271,7 +272,7 @@ export function BackupScreen(): JSX.Element {
                 <Row gap={2} align="center" justify="between">
                   <Row gap={2} align="center">
                     <StatusFlag status="nominal" dot>
-                      READY
+                      Ready
                     </StatusFlag>
                     <Text variant="micro" tone="dim">
                       {`${exportName()} · ${bytes(blob().size)}`}
@@ -283,7 +284,7 @@ export function BackupScreen(): JSX.Element {
                     leading="download"
                     onClick={downloadBackup}
                   >
-                    DOWNLOAD
+                    Download
                   </Button>
                 </Row>
               )}
@@ -296,13 +297,13 @@ export function BackupScreen(): JSX.Element {
                 includes().length === 0 || !exportSecret() || exporting()
               }
             >
-              {exporting() ? "EXPORTING…" : "EXPORT BACKUP"}
+              {exporting() ? "Exporting…" : "Export backup"}
             </Button>
           </Stack>
         </Panel>
 
         {/* ── IMPORT ───────────────────────────────────────── */}
-        <Panel label="IMPORT / RESTORE">
+        <Panel label="Import / restore">
           <Stack gap={4}>
             <Text variant="body" tone="dim">
               Merge a previously exported archive into this workspace. Records
@@ -316,7 +317,7 @@ export function BackupScreen(): JSX.Element {
                 fallback={
                   <Stack gap={2} class="items-center">
                     <Text variant="label" tone="dim">
-                      DROP BACKUP FILE HERE
+                      Drop backup file here
                     </Text>
                     <Text variant="micro" tone="dim">
                       or select below
@@ -339,12 +340,12 @@ export function BackupScreen(): JSX.Element {
 
             <label class="flex flex-col gap-1">
               <Text variant="label" tone="dim">
-                SELECT FILE
+                Select file
               </Text>
               <input
                 type="file"
                 accept=".json"
-                class="block w-full cursor-pointer border border-line bg-surface px-2 py-1.5 text-label font-mono text-bright file:mr-3 file:border-0 file:bg-raised file:px-2 file:py-1 file:text-label file:font-mono file:text-dim"
+                class="block w-full cursor-pointer rounded-ctl bg-raised px-2 py-1.5 text-label font-sans text-bright file:mr-3 file:border-0 file:bg-raised file:px-2 file:py-1 file:text-label file:font-sans file:text-dim"
                 onChange={(e) => {
                   setImportFile(e.currentTarget.files?.[0] ?? null);
                   setImportError(null);
@@ -354,7 +355,7 @@ export function BackupScreen(): JSX.Element {
             </label>
 
             <Input
-              label="RECOVERY PASSPHRASE"
+              label="Recovery passphrase"
               type="password"
               value={importSecret()}
               onInput={(e) => {
@@ -370,7 +371,7 @@ export function BackupScreen(): JSX.Element {
                   message={err()}
                   hint="Check the passphrase, and that the file is an Odysseus backup archive."
                   onRetry={() => void confirmImport()}
-                  retryLabel="RETRY IMPORT"
+                  retryLabel="Retry import"
                 />
               )}
             </Show>
@@ -378,7 +379,7 @@ export function BackupScreen(): JSX.Element {
               {(r) => (
                 <Stack gap={3}>
                   <StatusFlag status="nominal" dot>
-                    RESTORE COMPLETE
+                    Restore complete
                   </StatusFlag>
                   <Text variant="micro" tone="dim">
                     {`MERGED IN: ${summarize(r().imported)}`}
@@ -389,7 +390,7 @@ export function BackupScreen(): JSX.Element {
                   <Show when={r().unknown.length > 0}>
                     <Row gap={2} align="center">
                       <StatusFlag status="warn" dot>
-                        PARTIAL
+                        Partial
                       </StatusFlag>
                       <Text variant="micro" tone="dim">
                         {`No place in this build for: ${r().unknown.join(", ")} — the archive is from a newer version.`}
@@ -412,7 +413,7 @@ export function BackupScreen(): JSX.Element {
               onClick={() => setImportOpen(true)}
               disabled={!importFile() || !importSecret() || importing()}
             >
-              {importing() ? "RESTORING…" : "IMPORT BACKUP"}
+              {importing() ? "Restoring…" : "Import backup"}
             </Button>
           </Stack>
         </Panel>
@@ -422,11 +423,11 @@ export function BackupScreen(): JSX.Element {
       <Modal
         open={importOpen()}
         onClose={() => setImportOpen(false)}
-        title="CONFIRM RESTORE"
+        title="Confirm restore"
         footer={
           <>
             <Button variant="ghost" onClick={() => setImportOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button variant="primary" onClick={() => void confirmImport()}>
               MERGE &amp; RESTORE

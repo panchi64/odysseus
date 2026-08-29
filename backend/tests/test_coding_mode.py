@@ -30,9 +30,7 @@ async def _repo(root: Path) -> Path:
     (root / "hello.txt").write_text("original\n")
     await _git(root, "git", "init", "-b", "main")
     await _git(root, "git", "add", "-A")
-    await _git(
-        root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first"
-    )
+    await _git(root, "git", "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-m", "first")
     return root
 
 
@@ -78,9 +76,7 @@ class TestTheBinding:
 
     async def test_an_unknown_project_is_refused_rather_than_filed_nowhere(self):
         async with client_app() as (client, _app):
-            resp = await client.post(
-                "/chat", json={"prompt": "hi", "project_id": "nope"}
-            )
+            resp = await client.post("/chat", json={"prompt": "hi", "project_id": "nope"})
             assert resp.status_code == 404
 
     async def test_the_binding_is_stored_on_the_thread(self, tmp_path, monkeypatch):
@@ -183,16 +179,12 @@ class TestDeletingAThread:
             _project_view, conversation_id = await self._with_work(
                 client, app, tmp_path, monkeypatch
             )
-            resp = await client.delete(
-                f"/conversations/{conversation_id}?discardBranch=true"
-            )
+            resp = await client.delete(f"/conversations/{conversation_id}?discardBranch=true")
             assert resp.status_code == 204
 
     async def test_merge_lands_it_on_the_operators_tree(self, tmp_path, monkeypatch):
         async with client_app() as (client, app):
-            project, conversation_id = await self._with_work(
-                client, app, tmp_path, monkeypatch
-            )
+            project, conversation_id = await self._with_work(client, app, tmp_path, monkeypatch)
             root = Path(project["rootPath"])
             # Untouched right up until the operator says so — the point of the design.
             assert (root / "hello.txt").read_text() == "original\n"

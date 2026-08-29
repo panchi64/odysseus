@@ -29,23 +29,31 @@ export interface ButtonProps extends Omit<
   active?: boolean;
 }
 
+/* `primary` is an inverted Swiss-modernist slab — the brightest thing in its
+   region, which is the whole signal. It deliberately carries NO accent halo:
+   attention is drawn by luminance, not hue (§1.3, §5), and a green glow on the
+   Send button would have been the loudest thing on a chat screen whose composer
+   is intentionally neutral. Every other variant is quiet — no fill, and a
+   hairline only where the control's edge is its affordance. */
 const variantClass: Record<ButtonVariant, string> = {
-  primary: "border-2 border-bright text-bright hover:bg-raised",
+  primary: "bg-bright text-bg hover:opacity-90",
   default: "border border-line text-text hover:bg-raised hover:text-bright",
-  ghost: "border border-transparent text-dim hover:text-bright",
-  danger: "border border-alert text-alert hover:bg-raised",
+  ghost: "text-dim hover:bg-raised hover:text-bright",
+  danger:
+    "border border-alert/40 text-alert hover:bg-raised hover:border-alert",
 };
 
 /** `variant="ghost"` while `active` — the whole class string is swapped rather
  *  than appending `text-bright` alongside `text-dim`, so the two never fight
  *  over cascade order. */
-const GHOST_ACTIVE_CLASS =
-  "border border-transparent text-bright hover:text-bright";
+const GHOST_ACTIVE_CLASS = "bg-raised text-bright hover:text-bright";
 
+/* A button label is the interface speaking to the operator, so it is sans and
+   sentence case (§2) — the old mono uppercase made every control shout. */
 const sizeClass: Record<ButtonSize, string> = {
-  sm: "h-6 px-2 gap-1",
-  md: "h-8 px-3 gap-2",
-  lg: "h-10 px-4 gap-2",
+  sm: "h-6 px-2 gap-1 text-label",
+  md: "h-8 px-3 gap-2 text-body",
+  lg: "h-10 px-4 gap-2 text-body",
 };
 
 // Icons scale with the button so a larger control reads as larger, not padded.
@@ -78,7 +86,7 @@ export function Button(props: ButtonProps): JSX.Element {
       href={local.href}
       type={local.href ? undefined : (local.type ?? "button")}
       class={cx(
-        "inline-flex items-center justify-center rounded-ctl text-label uppercase tracking-label font-mono transition-colors",
+        "inline-flex items-center justify-center rounded-ctl font-sans font-medium whitespace-nowrap transition-colors",
         "disabled:cursor-not-allowed disabled:opacity-40",
         local.active && variant === "ghost"
           ? GHOST_ACTIVE_CLASS

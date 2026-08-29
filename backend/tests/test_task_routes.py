@@ -12,7 +12,13 @@ from core.db import in_session
 from models.task import ScheduledTask, TaskRun
 from services.scheduler import TaskRunResult
 
-from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
+from ._helpers import (
+    client_app,
+    patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
+    swap_tool_catalog,
+)
 from .test_approval_routes import danger_categories
 
 _FAR_FUTURE = "2999-01-01T00:00:00Z"
@@ -124,9 +130,7 @@ async def test_create_and_patch_reject_unknown_pre_authorized_scope():
         assert resp.status_code == 422
 
         created = await _create_task(client, pre_authorized=["corpus_retrieve"])
-        bad_patch = await client.patch(
-            f"/tasks/{created['id']}", json={"preAuthorized": ["nope"]}
-        )
+        bad_patch = await client.patch(f"/tasks/{created['id']}", json={"preAuthorized": ["nope"]})
         assert bad_patch.status_code == 422
 
         good_patch = await client.patch(
@@ -138,9 +142,7 @@ async def test_create_and_patch_reject_unknown_pre_authorized_scope():
 
 async def test_interval_and_cron_schedules_compute_a_next_run_at():
     async with client_app() as (client, _app):
-        interval = await _create_task(
-            client, schedule={"type": "interval", "everySeconds": 3600}
-        )
+        interval = await _create_task(client, schedule={"type": "interval", "everySeconds": 3600})
         assert interval["nextRunAt"] is not None
 
         cron = await _create_task(client, schedule={"type": "cron", "cron": "0 * * * *"})
@@ -149,9 +151,7 @@ async def test_interval_and_cron_schedules_compute_a_next_run_at():
 
 async def test_patch_schedule_change_recomputes_next_run_at():
     async with client_app() as (client, _app):
-        created = await _create_task(
-            client, schedule={"type": "interval", "everySeconds": 3600}
-        )
+        created = await _create_task(client, schedule={"type": "interval", "everySeconds": 3600})
         first_next = created["nextRunAt"]
 
         patched = await client.patch(
@@ -176,9 +176,7 @@ async def test_webhook_schedule_has_no_next_run_and_gets_a_url():
 async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="All set, nothing else to do.")
     async with client_app() as (client, app):
-        created = await _create_task(
-            client, pre_authorized=["memory_recall", "corpus_retrieve"]
-        )
+        created = await _create_task(client, pre_authorized=["memory_recall", "corpus_retrieve"])
         task_id = created["id"]
 
         run_now = await client.post(f"/tasks/{task_id}/run_now")
@@ -274,9 +272,7 @@ async def test_run_now_outcome_mapping_error_and_blocked(monkeypatch):
         )
         created2 = await _create_task(client)
         run_now2 = await client.post(f"/tasks/{created2['id']}/run_now")
-        row2 = await _await_task_run_finalized(
-            client, created2["id"], run_now2.json()["taskRunId"]
-        )
+        row2 = await _await_task_run_finalized(client, created2["id"], run_now2.json()["taskRunId"])
         assert row2["outcome"] == "blocked"
         assert row2["summary"] == "hit a limit"
 
@@ -441,9 +437,7 @@ async def test_run_now_refuses_a_disabled_task():
 async def test_rotate_webhook_token_rejected_for_non_webhook_task():
     async with client_app() as (client, _app):
         created = await _create_task(client)  # schedule type "once"
-        resp = await client.patch(
-            f"/tasks/{created['id']}", json={"rotateWebhookToken": True}
-        )
+        resp = await client.patch(f"/tasks/{created['id']}", json={"rotateWebhookToken": True})
         assert resp.status_code == 422
 
 
@@ -477,14 +471,14 @@ async def _install_sensitive_tool(monkeypatch):
     ``swap_tool_catalog(app, danger_categories())`` after boot."""
     from pydantic_ai.models.test import TestModel
 
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     async def fake_resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(
-            model=TestModel(custom_output_text="done", call_tools=["danger_delete_thing"]),
-            reasoning_off={},
+        return await stub_resolution(
+            self, TestModel(custom_output_text="done", call_tools=["danger_delete_thing"])
         )
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

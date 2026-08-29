@@ -1,5 +1,5 @@
 import { createSignal, type JSX } from "solid-js";
-import { Modal } from "~/ui";
+import { FramedOverlay } from "~/ui";
 import { registerKeymap } from "~/lib/keymap";
 import { PaletteBody } from "./palette/PaletteBody";
 
@@ -23,9 +23,13 @@ export function openNavPalette(): void {
  * occasionally — and because an overlay has room to show the description that
  * makes a match make sense, and the live value that makes a setting actionable.
  *
- * The shell is all that lives here: `Modal` mounts its children only while open,
- * so `PaletteBody` holding the query, the cursor, and the settings index means
- * all three are born and die with the overlay.
+ * The shell is all that lives here: `FramedOverlay` mounts its children only
+ * while open, so `PaletteBody` holding the query, the cursor, and the settings
+ * index means all three are born and die with the overlay.
+ *
+ * It arrives in the same framed container the settings dialog and the chat View
+ * use — a place is drawn, then filled. Two overlays reached from the same rail
+ * should not have two different ideas of how an overlay appears.
  */
 export function NavPalette(): JSX.Element {
   const close = (): void => {
@@ -35,8 +39,8 @@ export function NavPalette(): JSX.Element {
   registerKeymap(() => [{ combo: "mod+k", run: () => setOpen(true) }]);
 
   return (
-    <Modal open={open()} onClose={close} padded={false} class="max-w-xl">
+    <FramedOverlay open={open()} onClose={close} class="max-w-xl">
       <PaletteBody onClose={close} />
-    </Modal>
+    </FramedOverlay>
   );
 }

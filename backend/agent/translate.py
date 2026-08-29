@@ -33,6 +33,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
+from agent.overhead import measure_overhead
 from core.citations import Citable
 from core.serde import jsonable
 from runs import (
@@ -69,7 +70,22 @@ def citations_from_tool_result(content: Any) -> list[CitationAdded]:
     return [CitationAdded(url=c.url, title=c.title) for c in content.citations()]
 
 
-def _on_model_event(event: object, run: Run) -> None:
+def _on_model_event(event: object, run: Run, mark_first_token: Callable[[], None]) -> None:
+    """``mark_first_token`` is called for the first output of **any** kind and only
+    counts once (see ``TurnTimer.model_request``).
+
+    Any kind is deliberate, and wider than it first looks. Reasoning counts, because on
+    a thinking model the reasoning is what arrives first and timing to the first *answer*
+    token would bill the whole thinking pass as latency. **Tool calls count too**, even
+    though nothing else in this function acts on them: a response that only calls a tool
+    has still finished processing the prompt and started emitting: If it reported no
+    first token, its entire duration — prefill included — would land in the "generating"
+    side of the throughput calculation that subtracts TTFT from the round-trip, and a
+    tool-heavy thread would report a decode rate well under the truth.
+
+    So the mark is driven by the event arriving at all, not by what we do with it."""
+    if isinstance(event, PartStartEvent | PartDeltaEvent):
+        mark_first_token()
     if isinstance(event, PartStartEvent):
         part = event.part
         if isinstance(part, TextPart) and part.content:
@@ -84,8 +100,8 @@ def _on_model_event(event: object, run: Run) -> None:
             run.emit(AnswerDelta(text=delta.content_delta))
         elif isinstance(delta, ThinkingPartDelta) and delta.content_delta:
             run.emit(ThinkingDelta(text=delta.content_delta))
-    # PartEndEvent / FinalResultEvent / ToolCallPart streaming carry no domain
-    # signal we surface — tool execution is reported from the CallToolsNode.
+    # PartEndEvent / FinalResultEvent carry no domain signal we surface — tool
+    # execution is reported from the CallToolsNode.
 
 
 def _on_tool_event(
@@ -155,22 +171,40 @@ async def stream_agent_run(
     *before* it streams — the request isn't in flight yet and hasn't been appended
     to the history, so the callback may still amend ``node.request.parts`` (the
     engine injects mid-run operator messages here).
+
+    Wall-clock is collected into ``run.timer`` as the nodes are walked: this is the
+    only place that sees both node boundaries, so it is where the stopwatch belongs,
+    and the run owns it so an approval that splits a turn into several segments still
+    accumulates one total.
     """
     step = 0
+    timer = run.timer
     async for node in agent_run:
         if Agent.is_model_request_node(node):
             if on_request_node is not None:
                 on_request_node(node)
             step += 1
             run.emit(StepStarted(index=step))
-            async with node.stream(agent_run.ctx) as stream:
-                async for event in stream:
-                    _on_model_event(event, run)
+            with timer.model_request() as mark_first_token:
+                async with node.stream(agent_run.ctx) as stream:
+                    async for event in stream:
+                        _on_model_event(event, run, mark_first_token)
             run.emit(StepCompleted(index=step))
+            # Measured here and nowhere else: the tool manager only lists its definitions
+            # once it has been prepared for a step, and neither the schemas nor the
+            # instructions ever reach the message history — so this is the one moment the
+            # request's non-conversation weight is visible. Re-measured each step because
+            # a turn's tool set can change under it (a mode switch, a toolset that
+            # prepares differently), and the gauge should describe the request that just
+            # went out rather than the first one of the turn.
+            run.context_overhead = measure_overhead(agent_run.ctx, node.request)
             if on_step is not None:
                 on_step(agent_run.ctx.state.message_history)
         elif Agent.is_call_tools_node(node):
-            async with node.stream(agent_run.ctx) as stream:
-                async for event in stream:
-                    _on_tool_event(event, run, announced, loop_breaker)
+            # Timed as a batch, not per call: the node runs its calls concurrently, so
+            # summing them individually would report more tool time than elapsed.
+            with timer.tool_calls():
+                async with node.stream(agent_run.ctx) as stream:
+                    async for event in stream:
+                        _on_tool_event(event, run, announced, loop_breaker)
         # UserPromptNode / End nodes have nothing to stream.

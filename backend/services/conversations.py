@@ -51,6 +51,7 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ToolCallPart,
     UserPromptPart,
 )
 from sqlalchemy import Engine, delete, func, or_
@@ -63,6 +64,7 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
+from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.projects import project_clause
@@ -96,6 +98,32 @@ class _Row(NamedTuple):
     # node on the path its summary covers. See `record_compaction`.
     compacted: bool = False
     compacted_through: str | None = None
+    # Wall-clock for a model response, from the run's own stopwatch. Null on requests.
+    llm_ms: int | None = None
+    ttft_ms: int | None = None
+    tool_ms: int | None = None
+
+
+class _HydratedRow(NamedTuple):
+    """One message row read back for rehydration, projected out of the ORM object so
+    nothing is held across the session boundary.
+
+    Named rather than a bare tuple: it is unpacked positionally at the far end of the
+    read, and a plain 12-tuple makes adding a column a silent off-by-one that lands as
+    a wrong *value* in a neighbouring field rather than an error."""
+
+    id: str
+    parent_id: str | None
+    seq: int
+    pinned: bool
+    blob: str
+    attachment_ids: list[str]
+    blocked_reason: str | None
+    compacted: bool
+    compacted_through: str | None
+    llm_ms: int | None
+    ttft_ms: int | None
+    tool_ms: int | None
 
 
 @dataclass
@@ -141,6 +169,13 @@ class _Node:
     # Set on an assistant turn's first response node when the run that produced it
     # ended blocked — the human-readable reason. None otherwise.
     blocked_reason: str | None = None
+    # What this response cost in wall-clock (see `models.conversation.Message`). Held on
+    # the node so a warm thread reports the same totals as a cold one — the in-memory
+    # tree is authoritative until the drainer catches up, so timings that lived only in
+    # the queued row would vanish from the readout for the rest of the session.
+    llm_ms: int | None = None
+    ttft_ms: int | None = None
+    tool_ms: int | None = None
     # A conversation-compaction checkpoint (see `record_compaction`): this node's message
     # is a utility-model summary of everything on the path up to and including
     # `compacted_through`. The summarized nodes stay in the tree untouched — only what the
@@ -452,6 +487,74 @@ def context_footprint(messages: list[ModelMessage]) -> int | None:
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationTotals:
+    """What a thread has cost, counted off its **active path**.
+
+    Derived from the messages themselves, never from a running counter, and that is
+    the whole design. The conversation is a *tree*: a rewind or a version switch moves
+    the active leaf, and a stored total would go on reporting tokens spent down a
+    branch the operator has walked away from. Counting the path each time means the
+    numbers follow navigation for free, and a cold load and a live turn compute the
+    same figure from the same function.
+
+    Token fields are None when nothing reported them, matching ``context_footprint``:
+    local servers routinely leave ``input_tokens`` at 0, which is indistinguishable
+    from a real zero, so an unmeasured thread reports absent rather than free.
+    """
+
+    #: Completed operator exchanges (see ``_is_user_prompt``/turn-start semantics).
+    turns: int = 0
+    #: Model round-trips those turns took between them.
+    steps: int = 0
+    tool_calls: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    #: Provider-reported cached prompt tokens. None when no response reported any —
+    #: most OpenAI-compatible and local endpoints never do.
+    cache_read_tokens: int | None = None
+
+
+def conversation_totals(messages: list[ModelMessage]) -> ConversationTotals:
+    """Sum a message path into the readout's counts.
+
+    ``steps`` counts model responses and ``turns`` counts the operator's own prompts
+    that open an exchange — the same distinction ``_is_turn_start`` draws, applied to a
+    flat message list: a prompt directly following another request is a mid-run aside
+    the operator sent while the model worked, not a new exchange."""
+    turns = steps = tool_calls = 0
+    input_tokens = output_tokens = cache_read = 0
+    saw_tokens = saw_cache = False
+    previous: ModelMessage | None = None
+
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            steps += 1
+            tool_calls += sum(1 for p in message.parts if isinstance(p, ToolCallPart))
+            usage = message.usage
+            if usage.input_tokens:
+                saw_tokens = True
+                input_tokens += usage.input_tokens
+                output_tokens += usage.output_tokens or 0
+            # Distinguished from "cached nothing": a provider that reports the field at
+            # all is taken at its word, including when it says zero.
+            if usage.cache_read_tokens:
+                saw_cache = True
+                cache_read += usage.cache_read_tokens
+        elif _is_user_prompt(message) and (previous is None or isinstance(previous, ModelResponse)):
+            turns += 1
+        previous = message
+
+    return ConversationTotals(
+        turns=turns,
+        steps=steps,
+        tool_calls=tool_calls,
+        input_tokens=input_tokens if saw_tokens else None,
+        output_tokens=output_tokens if saw_tokens else None,
+        cache_read_tokens=cache_read if saw_cache else None,
+    )
+
+
 def _part_text(content: object) -> str:
     """Searchable text from a message part's content — a bare string, or the string
     items of a multimodal list (a user prompt that retains an attachment inline, where
@@ -508,15 +611,11 @@ def install_persisted_attachments(message: ModelMessage, persisted: list | None)
             if any(isinstance(item, BinaryContent) for item in items):
                 part.content = items
             else:
-                part.content = "\n\n".join(
-                    item for item in items if isinstance(item, str)
-                ).strip()
+                part.content = "\n\n".join(item for item in items if isinstance(item, str)).strip()
             return  # one user-prompt part per request carries the attachments
 
 
-def _db_stats(
-    session: Session, conversation_ids: list[str]
-) -> dict[str, tuple[int, str | None]]:
+def _db_stats(session: Session, conversation_ids: list[str]) -> dict[str, tuple[int, str | None]]:
     """(message_count, last-message text) per conversation, from the durable rows.
 
     One ``COUNT … GROUP BY`` for the counts and one max-seq lookup for the last
@@ -677,6 +776,7 @@ class ConversationStore:
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
         """Whether ``conversation_id`` names a conversation owned by ``owner_id``."""
+
         def work(session: Session) -> bool:
             conversation = session.get(Conversation, conversation_id)
             return conversation is not None and conversation.owner_id == owner_id
@@ -696,16 +796,7 @@ class ConversationStore:
             if cached is not None:
                 return cached
 
-            def work(
-                session: Session,
-            ) -> tuple[
-                list[
-                    tuple[
-                        str, str | None, int, bool, str, list[str], str | None, bool, str | None
-                    ]
-                ],
-                str | None,
-            ]:
+            def work(session: Session) -> tuple[list[_HydratedRow], str | None]:
                 rows = session.exec(
                     select(Message)
                     .where(Message.conversation_id == conversation_id)
@@ -714,45 +805,41 @@ class ConversationStore:
                 conversation = session.get(Conversation, conversation_id)
                 active = conversation.active_leaf_id if conversation is not None else None
                 return [
-                    (
-                        r.id,
-                        r.parent_id,
-                        r.seq,
-                        r.pinned,
-                        r.blob,
-                        r.attachment_ids,
-                        r.blocked_reason,
-                        r.compacted,
-                        r.compacted_through,
+                    _HydratedRow(
+                        id=r.id,
+                        parent_id=r.parent_id,
+                        seq=r.seq,
+                        pinned=r.pinned,
+                        blob=r.blob,
+                        attachment_ids=r.attachment_ids,
+                        blocked_reason=r.blocked_reason,
+                        compacted=r.compacted,
+                        compacted_through=r.compacted_through,
+                        llm_ms=r.llm_ms,
+                        ttft_ms=r.ttft_ms,
+                        tool_ms=r.tool_ms,
                     )
                     for r in rows
                 ], active
 
             rows, active = await in_session(self._engine, work)
             tree = _Tree()
-            for (
-                row_id,
-                parent_id,
-                seq,
-                pinned,
-                blob,
-                attachment_ids,
-                blocked_reason,
-                compacted,
-                compacted_through,
-            ) in rows:  # pre-sorted by seq
-                message = _MESSAGE.validate_json(self._vault.decrypt_str(blob))
+            for row in rows:  # pre-sorted by seq
+                message = _MESSAGE.validate_json(self._vault.decrypt_str(row.blob))
                 tree.add(
                     _Node(
-                        id=row_id,
-                        parent_id=parent_id,
-                        seq=seq,
+                        id=row.id,
+                        parent_id=row.parent_id,
+                        seq=row.seq,
                         message=message,
-                        pinned=pinned,
-                        attachment_ids=attachment_ids,
-                        blocked_reason=blocked_reason,
-                        compacted=compacted,
-                        compacted_through=compacted_through,
+                        pinned=row.pinned,
+                        attachment_ids=row.attachment_ids,
+                        blocked_reason=row.blocked_reason,
+                        compacted=row.compacted,
+                        compacted_through=row.compacted_through,
+                        llm_ms=row.llm_ms,
+                        ttft_ms=row.ttft_ms,
+                        tool_ms=row.tool_ms,
                     )
                 )
             tree.active_leaf_id = active if active in tree.nodes else tree.fallback_leaf()
@@ -767,6 +854,25 @@ class ConversationStore:
         one with a flag, because every caller here wants the whole thread."""
         tree = await self._tree(conversation_id)
         return [node.message for node in tree.active_path()]
+
+    async def timings(self, conversation_id: str) -> TimingTotals:
+        """The active path's wall-clock, summed — the one figure in the readout that
+        can't be recovered from the messages themselves.
+
+        Walks the same active path :meth:`history` does, so time follows a rewind or a
+        version switch exactly as the token counts beside it do. Responses recorded
+        before timings existed (or by a run whose stopwatch never reached them) carry
+        null and contribute nothing, which is why a thread can honestly report tokens
+        it can't report a duration for."""
+        tree = await self._tree(conversation_id)
+        nodes = tree.active_path()
+        ttft = [n.ttft_ms for n in nodes if n.ttft_ms is not None]
+        return TimingTotals(
+            llm_ms=sum(n.llm_ms or 0 for n in nodes),
+            tool_ms=sum(n.tool_ms or 0 for n in nodes),
+            ttft_ms_total=sum(ttft),
+            ttft_samples=len(ttft),
+        )
 
     async def model_history(self, conversation_id: str) -> list[ModelMessage]:
         """The history the **model** replays: identical to :meth:`history` until the
@@ -1083,9 +1189,7 @@ class ConversationStore:
 
         return await in_session(self._engine, work)
 
-    async def set_compaction_override(
-        self, conversation_id: str, override: bool | None
-    ) -> None:
+    async def set_compaction_override(self, conversation_id: str, override: bool | None) -> None:
         """Set (or clear, with ``None``) this conversation's auto-compaction override.
         A quiet preference, so it deliberately does not bump ``updated_at`` (it isn't
         activity)."""
@@ -1122,6 +1226,7 @@ class ConversationStore:
         attachment_ids: list[str] | None = None,
         persisted: list | None = None,
         blocked_reason: str | None = None,
+        timings: list[ResponseTiming] | None = None,
     ) -> None:
         """Hot path: extend the tree off the active leaf and queue the durable write.
 
@@ -1136,7 +1241,10 @@ class ConversationStore:
         *what the durable blob contains* is the store's job. ``blocked_reason``, when the
         turn ended blocked (a usage/loop/context/time bound), stamps the turn's branch
         node — the first response, matching how ``project_tree`` keys an assistant view —
-        so a reload carries the same persistent stop marker the live stream showed."""
+        so a reload carries the same persistent stop marker the live stream showed.
+        ``timings``, when the caller measured them, are the run's per-response wall-clock
+        in the order the responses were produced — zipped onto the response nodes below,
+        so the readout can total a cold thread's time the way it totals its tokens."""
         if not new_messages:
             return
         tree = self._cache_get(conversation_id)
@@ -1158,6 +1266,12 @@ class ConversationStore:
         rows: list[_Row] = []
         stamped = False
         blocked_stamped = False
+        # One timing per response, consumed in the order the responses appear — the
+        # order the translator produced them in. A short (or absent) list simply leaves
+        # the remaining responses unmeasured: a mismatch means the run stopped somewhere
+        # the stopwatch didn't reach, and a null there is the honest answer, where
+        # misaligning the rest would attribute one response's time to another.
+        pending_timings = iter(timings or ())
         for node in added:
             # The attached files belong to this turn's user request (the first one);
             # install the capped content and stamp the ids before we project/serialize.
@@ -1176,6 +1290,12 @@ class ConversationStore:
             ):
                 node.blocked_reason = blocked_reason
                 blocked_stamped = True
+            if isinstance(node.message, ModelResponse):
+                timing = next(pending_timings, None)
+                if timing is not None:
+                    node.llm_ms = timing.llm_ms
+                    node.ttft_ms = timing.ttft_ms
+                    node.tool_ms = timing.tool_ms
             kind, text = _project(node.message)
             blob = _MESSAGE.dump_json(node.message).decode()
             rows.append(
@@ -1188,6 +1308,9 @@ class ConversationStore:
                     blob=blob,
                     attachment_ids=node.attachment_ids,
                     blocked_reason=node.blocked_reason,
+                    llm_ms=node.llm_ms,
+                    ttft_ms=node.ttft_ms,
+                    tool_ms=node.tool_ms,
                 )
             )
         self._submit(
@@ -1265,9 +1388,7 @@ class ConversationStore:
         self._move_leaf(conversation_id, tree.active_leaf_id)
         return True
 
-    async def fork(
-        self, conversation_id: str, message_id: str, owner_id: str
-    ) -> str | None:
+    async def fork(self, conversation_id: str, message_id: str, owner_id: str) -> str | None:
         """Copy this thread's history up to ``message_id`` into a **new** conversation.
 
         Distinct from regenerate/edit/rewind, which all move the active leaf *within* one
@@ -1424,7 +1545,7 @@ class ConversationStore:
     # ── Attachment provenance & the delete-choice safety check ──────────────────
     #
     # ``attachment_ids`` is a clear JSON column, so both read it directly — no decrypt.
-    # The gallery uses the first for "which images came from chats"; the delete flow uses
+    # The first answers "which images are still referenced from chats"; the delete flow uses
     # the second to purge an attached image only when nothing surviving still references it.
 
     async def referenced_upload_ids(
@@ -1501,9 +1622,7 @@ class ConversationStore:
         for tree in self._cache.values():
             for node in tree.nodes.values():
                 if node.attachment_ids and upload_id in node.attachment_ids:
-                    node.attachment_ids = [
-                        a for a in node.attachment_ids if a != upload_id
-                    ]
+                    node.attachment_ids = [a for a in node.attachment_ids if a != upload_id]
 
         def work(session: Session) -> None:
             rows = session.exec(
@@ -1513,9 +1632,7 @@ class ConversationStore:
             ).all()
             for row in rows:
                 if row.attachment_ids and upload_id in row.attachment_ids:
-                    row.attachment_ids = [
-                        a for a in row.attachment_ids if a != upload_id
-                    ]
+                    row.attachment_ids = [a for a in row.attachment_ids if a != upload_id]
                     session.add(row)
 
         await in_session(self._engine, work)
@@ -1597,6 +1714,9 @@ class ConversationStore:
                         blocked_reason=row.blocked_reason,
                         compacted=row.compacted,
                         compacted_through=row.compacted_through,
+                        llm_ms=row.llm_ms,
+                        ttft_ms=row.ttft_ms,
+                        tool_ms=row.tool_ms,
                         embedding_enc=vector_enc,
                         embedding_model=model,
                         embedding_dim=dim,

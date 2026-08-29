@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
@@ -34,17 +34,20 @@ from core.container import ServiceContainer
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ConversationBusyError, RunRegistry
+from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds, ConversationBusyError, RunRegistry
 from runs.registry import _UNSET
+from services.context_budget import OverheadCache
 from services.conversations import ConversationBinding, ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
     get_agent_request_limit,
     get_auto_compact,
+    get_context_thresholds,
     get_inactivity_timeout,
     set_agent_request_limit,
     set_auto_compact,
+    set_context_thresholds,
     set_inactivity_timeout,
 )
 from services.uploads import UploadStore
@@ -132,6 +135,13 @@ class ChatSettings(BaseModel):
     # fire on an empty thread) and at 1 (above it, compaction could never fire at all).
     auto_compact_enabled: bool | None = None
     auto_compact_threshold: float | None = Field(default=None, gt=0, le=1)
+    # The context gauge's severity boundaries — the fullness at which the ring under the
+    # composer turns amber, then red. Fractions, like the compaction threshold above and
+    # for the same reason. The per-field bounds here only reject a value that is
+    # nonsensical on its own; the pair's ordering (`warn` below `alert`) is checked
+    # against the *merged* values in the PUT, since either may be omitted.
+    context_warn_threshold: float | None = Field(default=None, gt=0, lt=1)
+    context_alert_threshold: float | None = Field(default=None, gt=0, le=1)
     # ``ge=1``, not ``ge=0``: a turn allowed zero model requests could never produce an
     # answer, so 0 is a nonsensical value to accept rather than merely a minimal one.
     agent_request_limit: int | None = Field(default=None, ge=1)
@@ -169,6 +179,25 @@ async def resolve_turn_models(
         raise HTTPException(status_code=404, detail="model endpoint not found") from None
     except DegradedCapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # No context window, no turn. The window is discovered from the provider where the
+    # provider will say (`ModelRegistry._with_context_windows`), so reaching here means
+    # this one won't and the operator hasn't filled it in either.
+    #
+    # A hard stop rather than a degraded run, because every guard that keeps a thread
+    # inside the model's limits measures against this number: the context gauge, the
+    # auto-compaction trigger, and the overflow warning. Without it a long thread runs
+    # normally right up until the provider rejects a request outright — no warning, no
+    # fold, and the operator's first indication that anything was wrong is a failed
+    # turn. Refusing up front is the honest version of that, and it names the fix.
+    if main.context_window is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "this model's endpoint doesn't report a context window, so the "
+                "conversation can't be kept inside it — set one on the endpoint under "
+                "settings › models › advanced before sending"
+            ),
+        )
     resolved = main.model
 
     # Background work — verification (opt-in) and auto-titling (on by default) —
@@ -216,6 +245,8 @@ def compose_turn(
     ephemeral: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
+    context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
+    overhead_cache: OverheadCache | None = None,
     inactivity_timeout_s: float | None | object = _UNSET,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
@@ -242,6 +273,12 @@ def compose_turn(
         title_model=None if ephemeral else utility_model,
         title_settings=None if ephemeral else background_settings,
         context_window=context_window,
+        # The operator's severity boundaries for that window. They decide only the
+        # `level` on the emitted metrics — the gauge's colour — never the turn itself.
+        context_thresholds=context_thresholds,
+        # Where the turn leaves what its request weighed, so a later reload of any thread
+        # in this mode can still break its context down.
+        overhead_cache=overhead_cache,
         capabilities=capabilities,
         store=store,
         conversation_id=conversation_id,
@@ -320,9 +357,13 @@ async def _submit_turn(
         # Resolved here rather than at each caller so every interactive turn — send,
         # regenerate, edit — runs under the operator's ceiling without threading it
         # through three call sites.
-        request_limit=await get_agent_request_limit(
+        request_limit=await get_agent_request_limit(deps.settings_store(request), OPERATOR_ID),
+        # Same again for the context gauge's boundaries: resolved once here so send,
+        # regenerate and edit all report severity against the operator's own pair.
+        context_thresholds=await get_context_thresholds(
             deps.settings_store(request), OPERATOR_ID
         ),
+        overhead_cache=deps.overhead_cache(request),
         # Same reason as the request limit: every interactive turn runs under the
         # operator's inactivity bound (else the config default).
         inactivity_timeout_s=await get_inactivity_timeout(
@@ -342,14 +383,10 @@ async def _validate_attachments(request: Request, attachment_ids: list[str]) -> 
     owned = await deps.uploads(request).owned_ids(OPERATOR_ID, attachment_ids)
     for upload_id in attachment_ids:
         if upload_id not in owned:
-            raise HTTPException(
-                status_code=404, detail=f"attachment {upload_id!r} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"attachment {upload_id!r} not found")
 
 
-async def _resolve_auto_compact(
-    request: Request, conversation_id: str | None
-) -> AutoCompactPolicy:
+async def _resolve_auto_compact(request: Request, conversation_id: str | None) -> AutoCompactPolicy:
     """The effective conversation auto-compaction policy for a turn: the thread's on/off
     override beats the operator's global default, which beats the config default —
     resolved here rather than in the engine so the orchestrator never reads the settings
@@ -408,9 +445,7 @@ async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> No
             status_code=422, detail="an ephemeral conversation cannot use coding mode"
         )
     if body.project_id is None:
-        raise HTTPException(
-            status_code=422, detail="coding mode requires a project_id"
-        )
+        raise HTTPException(status_code=422, detail="coding mode requires a project_id")
 
 
 @router.post("", status_code=202, response_model=ChatCreated)
@@ -538,12 +573,15 @@ async def edit(body: EditCreate, request: Request) -> ChatCreated:
 
 def _settings_response(
     auto: AutoCompactSettings,
+    context: ContextThresholds,
     steps: int,
     inactivity: float | None,
 ) -> ChatSettings:
     return ChatSettings(
         auto_compact_enabled=auto.enabled,
         auto_compact_threshold=auto.threshold,
+        context_warn_threshold=context.warn,
+        context_alert_threshold=context.alert,
         agent_request_limit=steps,
         inactivity_timeout_s=inactivity,
     )
@@ -556,7 +594,8 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     auto = await get_auto_compact(store, OPERATOR_ID)
     steps = await get_agent_request_limit(store, OPERATOR_ID)
     inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
-    return _settings_response(auto, steps, inactivity)
+    context = await get_context_thresholds(store, OPERATOR_ID)
+    return _settings_response(auto, context, steps, inactivity)
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -571,9 +610,7 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
     else:
         steps = await get_agent_request_limit(store, OPERATOR_ID)
     if body.inactivity_timeout_s is not None:
-        inactivity = await set_inactivity_timeout(
-            store, OPERATOR_ID, body.inactivity_timeout_s
-        )
+        inactivity = await set_inactivity_timeout(store, OPERATOR_ID, body.inactivity_timeout_s)
     else:
         inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
 
@@ -591,4 +628,27 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 else body.auto_compact_threshold,
             ),
         )
-    return _settings_response(auto, steps, inactivity)
+
+    context = await get_context_thresholds(store, OPERATOR_ID)
+    if body.context_warn_threshold is not None or body.context_alert_threshold is not None:
+        warn = context.warn if body.context_warn_threshold is None else body.context_warn_threshold
+        alert = (
+            context.alert if body.context_alert_threshold is None else body.context_alert_threshold
+        )
+        # The ordering invariant is checked on the *merged* pair, not on the body: raising
+        # `warn` above a stored `alert` is the ordinary way to invert them, and a body
+        # carrying only that one field would satisfy every per-field bound.
+        # `ContextThresholds` owns the rule; this turns its refusal into the 422 the field
+        # bounds would have produced had the constraint been expressible on one field.
+        try:
+            thresholds = ContextThresholds(warn=warn, alert=alert)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "the context warn threshold must be below the alert threshold "
+                    f"(got warn {warn}, alert {alert})"
+                ),
+            ) from exc
+        context = await set_context_thresholds(store, OPERATOR_ID, thresholds)
+    return _settings_response(auto, context, steps, inactivity)

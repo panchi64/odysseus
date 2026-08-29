@@ -1,14 +1,5 @@
 import { Show, type JSX } from "solid-js";
-import { useNavigate } from "@solidjs/router";
-import {
-  Button,
-  Icon,
-  Menu,
-  Text,
-  copyToClipboard,
-  toast,
-  type MenuItem,
-} from "~/ui";
+import { Button, Icon, Menu, Text, copyToClipboard, type MenuItem } from "~/ui";
 import type { ChatMessage } from "../model";
 import {
   answerText,
@@ -16,7 +7,6 @@ import {
   hasReasoning,
   reasoningText,
 } from "../blocks";
-import { createDocument } from "~/features/documents/data";
 
 /** The one hover/focus reveal in a turn. Metadata and actions surface together on
  *  the same gesture — `opacity`, not `hidden`, so nothing reflows when they appear
@@ -25,27 +15,14 @@ import { createDocument } from "~/features/documents/data";
 export const TURN_REVEAL_CLASS =
   "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100";
 
-/** The turn's plain-text content, whichever role — a user turn's content lives
- *  in `content`, an assistant turn's in its text blocks. */
-function messageText(m: ChatMessage): string {
-  return m.role === "assistant" ? answerText(m.blocks) : m.content;
-}
-
-/** A readable document title from a turn's opening line, capped so it stays a
- *  title rather than a wrapped paragraph. */
-function titleFromText(text: string): string {
-  const firstLine = text.trim().split("\n", 1)[0]?.trim() ?? "";
-  return firstLine.slice(0, 60) || "Untitled";
-}
-
 /** Hover/focus-revealed action row for a chat turn: COPY, and everything else
  *  behind one overflow menu.
  *
  *  Seven labelled buttons per turn made every exchange read as a toolbar with a
  *  message attached, and the transcript is the thing being read. COPY stays out
  *  because it is the action reached most often and costs nothing to leave in
- *  reach; the rest — edit, regenerate, rewind, pin, save, delete — are deliberate
- *  acts that survive one click of indirection. Nothing was removed. */
+ *  reach; the rest — edit, regenerate, rewind, pin, delete — are deliberate acts
+ *  that survive one click of indirection. */
 export function MessageActions(props: {
   message: ChatMessage;
   /** Re-answer an assistant turn with the current model selection. */
@@ -65,22 +42,6 @@ export function MessageActions(props: {
 }): JSX.Element {
   const m = () => props.message;
   const isAssistant = () => m().role === "assistant";
-  const navigate = useNavigate();
-
-  async function saveToDocument() {
-    const text = messageText(m());
-    if (!text.trim()) return;
-    try {
-      const id = await createDocument(titleFromText(text), text);
-      toast.success("Saved to document", {
-        action: { label: "OPEN", onClick: () => navigate(`/documents/${id}`) },
-      });
-    } catch (err) {
-      toast.error(
-        (err as { detail?: string })?.detail ?? "Unable to save the document.",
-      );
-    }
-  }
 
   const overflowItems = (): MenuItem[] => [
     // Lead with the turn's primary act: edit for the operator's own message,
@@ -88,7 +49,7 @@ export function MessageActions(props: {
     ...(!isAssistant() && props.onEdit
       ? [
           {
-            label: "EDIT",
+            label: "Edit",
             icon: "pen",
             onSelect: () => props.onEdit?.(),
           } satisfies MenuItem,
@@ -97,7 +58,7 @@ export function MessageActions(props: {
     ...(isAssistant() && props.onRegenerate
       ? [
           {
-            label: "REGENERATE",
+            label: "Regenerate",
             icon: "refresh",
             onSelect: () => props.onRegenerate?.(),
           } satisfies MenuItem,
@@ -106,7 +67,7 @@ export function MessageActions(props: {
     ...(isAssistant() && props.onRewind
       ? [
           {
-            label: "REWIND TO HERE",
+            label: "Rewind to here",
             icon: "chevron-up",
             onSelect: () => props.onRewind?.(),
           } satisfies MenuItem,
@@ -118,27 +79,22 @@ export function MessageActions(props: {
     ...(props.onFork
       ? [
           {
-            label: "FORK FROM HERE",
+            label: "Fork from here",
             icon: "branch",
             onSelect: () => props.onFork?.(),
           } satisfies MenuItem,
         ]
       : []),
     {
-      label: m().pinned ? "UNPIN" : "PIN",
+      label: m().pinned ? "Unpin" : "PIN",
       icon: "pin",
       onSelect: () => props.onTogglePin?.(),
-    },
-    {
-      label: "SAVE TO DOCUMENT",
-      icon: "note",
-      onSelect: () => void saveToDocument(),
     },
     ...(props.extraItems ?? []),
     ...(props.onDelete
       ? [
           {
-            label: "DELETE",
+            label: "Delete",
             icon: "trash",
             danger: true,
             onSelect: () => props.onDelete?.(),
@@ -162,7 +118,7 @@ export function MessageActions(props: {
             aria-label="Copy message"
             onClick={() => copyToClipboard(m().content, "Answer")}
           >
-            COPY
+            Copy
           </Button>
         }
       >
@@ -175,20 +131,20 @@ export function MessageActions(props: {
             >
               <Icon name="copy" size={12} />
               <Text variant="label" tone="dim">
-                COPY
+                Copy
               </Text>
             </span>
           }
           items={
             [
               {
-                label: "COPY ANSWER",
+                label: "Copy answer",
                 icon: "copy",
                 onSelect: () =>
                   copyToClipboard(answerText(m().blocks), "Answer"),
               },
               {
-                label: "COPY MESSAGE",
+                label: "Copy message",
                 icon: "layers",
                 onSelect: () =>
                   copyToClipboard(assembleTranscript(m().blocks), "Message"),
@@ -196,7 +152,7 @@ export function MessageActions(props: {
               ...(hasReasoning(m().blocks)
                 ? [
                     {
-                      label: "COPY REASONING",
+                      label: "Copy reasoning",
                       icon: "note",
                       onSelect: () =>
                         copyToClipboard(reasoningText(m().blocks), "Reasoning"),

@@ -45,7 +45,7 @@ export function ExpandableText(props: ExpandableTextProps): JSX.Element {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          class="text-label uppercase tracking-label text-dim transition-colors hover:text-bright"
+          class="text-label font-sans font-medium text-dim transition-colors hover:text-bright"
         >
           {open() ? "Less" : "More"}
         </button>

@@ -63,7 +63,7 @@ export function ViewSnapshotPreview(props: {
   onCleanup(() => setActiveDownload(null));
 
   return (
-    <Switch fallback={<LoadingText label="LOADING PREVIEW…" />}>
+    <Switch fallback={<LoadingText label="Loading preview…" />}>
       <Match when={props.files.error}>
         <ErrorState
           message="Could not load this version."
@@ -72,7 +72,7 @@ export function ViewSnapshotPreview(props: {
       </Match>
       <Match when={props.files() && !entry()}>
         <EmptyState
-          message="NO PREVIEW"
+          message="No preview"
           hint="This version has no HTML page — use CODE to browse its files."
         />
       </Match>

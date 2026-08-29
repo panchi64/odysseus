@@ -118,8 +118,7 @@ class TaskRun(SQLModel, table=True):
     __tablename__ = "task_runs"
 
     id: str = Field(default_factory=new_id, primary_key=True)
-    # Cascades: a task's execution history is meaningless once the task itself is
-    # gone (mirrors gallery album membership's cascade over its album/upload FKs).
+    # Cascades: a task's execution history is meaningless once the task itself is gone.
     task_id: str = Field(
         sa_column=Column(
             String,

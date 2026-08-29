@@ -20,7 +20,7 @@ import routes.chat as chat_routes
 import routes.runs as runs_routes
 from core.db import init_db, make_engine
 from runs import Run, RunStream
-from services.registry import ModelRegistry, ResolvedModel
+from services.registry import ModelRegistry
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 from services.tool_policy import (
     effective_disabled_tools,
@@ -35,6 +35,8 @@ from ._helpers import (
     client_app,
     full_tool_categories,
     patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
     swap_tool_catalog,
 )
 from .test_approval_routes import danger_categories as _approval_danger_categories
@@ -89,9 +91,6 @@ _PINNED_CATALOG = {
     "conversations_read",
     "conversations_search",
     "corpus_retrieve",
-    "document_create",
-    "document_edit",
-    "document_suggest",
     "files_create_directory",
     "files_edit_file",
     "files_file_info",
@@ -153,8 +152,6 @@ async def test_booted_app_assembles_the_same_catalog():
             "corpus_retrieve",
             "memory_recall",
             "conversations_search",
-            "document_edit",
-            "document_suggest",
             "shell_run_command",
             "shell_start_command",
         }
@@ -234,9 +231,7 @@ async def test_offline_alone_still_applies_with_no_operator_choices():
 def _force_offline(monkeypatch, app, *names: str) -> None:
     """Pin the live offline service's automatic set without swapping the service out —
     the lifespan still owns its shutdown."""
-    monkeypatch.setattr(
-        app.state.offline, "web_tools_disabled", lambda: frozenset(names)
-    )
+    monkeypatch.setattr(app.state.offline, "web_tools_disabled", lambda: frozenset(names))
 
 
 # --- the route -----------------------------------------------------------------------
@@ -295,8 +290,9 @@ def _install_sensitive_tool(monkeypatch):
     ``swap_tool_catalog(app, _danger_categories())`` after boot."""
 
     async def fake_resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
+        return await stub_resolution(self, TestModel(custom_output_text="done"))
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

@@ -46,9 +46,7 @@ def drop_dangling_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]
     return messages[:-1]
 
 
-def with_tail_context(
-    messages: list[ModelMessage], texts: list[str]
-) -> list[ModelMessage]:
+def with_tail_context(messages: list[ModelMessage], texts: list[str]) -> list[ModelMessage]:
     """Append per-turn context to the trailing user request — the *model's view only*.
 
     The regenerate path re-runs a history that already ends in the user request, so

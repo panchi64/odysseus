@@ -10,14 +10,12 @@ import {
 } from "solid-js";
 import { EmptyState } from "~/ui";
 import { fetchSnapshotFiles } from "../data";
-import type { ViewDocumentRef, ViewSnapshotRef } from "../model";
+import type { ViewSnapshotRef } from "../model";
 import type { ViewItem, PriorVersion } from "../viewport";
 import { ViewLiveContent } from "./ViewLiveContent";
 import { ViewVersionContent } from "./ViewVersionContent";
 import { ViewSnapshotPreview } from "./ViewSnapshotPreview";
 import { ViewSnapshotCode } from "./ViewSnapshotCode";
-import { ViewDocumentContent } from "./ViewDocumentContent";
-import { ViewDocumentCode } from "./ViewDocumentCode";
 
 /**
  * Renders the selected version on stage in the chosen mode. The live head is a persistent
@@ -36,70 +34,13 @@ export function ViewStage(props: {
   reloadKey: number;
   /** Prior snapshots the selected entry's CODE can diff against (oldest → newest). */
   priorVersions: PriorVersion[];
-  /** Prior committed versions of the selected document, for its CODE diff (oldest →
-   *  newest). Empty unless the entry is a document. */
-  priorDocuments: ViewDocumentRef[];
-  /** Relays an inline document edit to the backend (SAVE mints a new version). */
-  onSaveDocument: (documentId: string, body: string) => Promise<void>;
-  onDocumentVersion: (
-    documentId: string,
-    body: string,
-    version: number | null,
-  ) => void;
   /** Operator font-size step (-2..+2) and soft-wrap preference, persisted by the
    *  panel and threaded down to whichever content/code view is on stage. */
   fontStep?: number;
   softWrap?: boolean;
-  /** True when the panel owns the whole screen (the fullscreen sheet) rather than
-   *  sharing it with the transcript — resolved by the panel, since below `lg` the
-   *  sheet is the only mount. Stage arms that need room to be usable (the document
-   *  suggestion review) are gated on it. */
-  expanded?: boolean;
 }): JSX.Element {
   return (
     <Switch>
-      {/* A document version — its markdown body as PREVIEW, raw source + diff as CODE.
-          Only the latest *committed version of this document* is editable inline —
-          gated on `documentIsLatest` (per-document), not the View's single global
-          `isLatest` (which a document loses the moment any other document/snapshot
-          mints a newer entry). The narrowed accessor (`doc()`) is only alive while
-          this branch is selected, so a version switch that swaps `entry` to a
-          non-document can't leave a stale deref of an `undefined` field behind
-          (which would throw and blank the whole app). */}
-      <Match when={props.entry.document}>
-        {(doc) => (
-          <Switch>
-            <Match when={props.mode === "preview"}>
-              {/* Remount per document version: an in-flight inline edit belongs to the
-                  version it started on, so when a newer version arrives (e.g. the agent
-                  commits while the operator is editing) the editor resets rather than
-                  letting SAVE write a stale draft onto the wrong base. */}
-              <Show keyed when={`${doc().documentId}-${doc().version}`}>
-                <ViewDocumentContent
-                  document={doc()}
-                  editable={
-                    Boolean(props.entry.documentIsLatest) && doc().version >= 1
-                  }
-                  onSave={props.onSaveDocument}
-                  onDocumentVersion={props.onDocumentVersion}
-                  fontStep={props.fontStep}
-                  softWrap={props.softWrap}
-                  expanded={props.expanded}
-                />
-              </Show>
-            </Match>
-            <Match when={props.mode === "code"}>
-              <ViewDocumentCode
-                document={doc()}
-                priorVersions={props.priorDocuments}
-                fontStep={props.fontStep}
-                softWrap={props.softWrap}
-              />
-            </Match>
-          </Switch>
-        )}
-      </Match>
-
       {/* PREVIEW — live head first (live = the latest version's preview). Persistent
           across version relabels so the running server's iframe isn't torn down. */}
       <Match when={props.mode === "preview" && props.entry.live}>
@@ -131,7 +72,7 @@ export function ViewStage(props: {
       {/* CODE for a standalone live head with no captured version yet. */}
       <Match when={props.mode === "code" && props.entry.live}>
         <EmptyState
-          message="NO SOURCE"
+          message="No source"
           hint="The live server has no captured version yet."
         />
       </Match>

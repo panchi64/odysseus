@@ -162,7 +162,7 @@ export function CsvTable(props: {
       <Show when={text() !== undefined} fallback={<LoadingText />}>
         <div class="flex h-full min-h-0 flex-col">
           <Show when={truncated()}>
-            <div class="flex shrink-0 items-center justify-between gap-2 border-b border-line px-2 py-1.5">
+            <div class="flex shrink-0 items-center justify-between gap-2 px-2 py-1.5">
               <Text variant="micro" tone="warn">
                 {`SHOWING FIRST ${ROW_CAP.toLocaleString()} OF ${sortedBody().length.toLocaleString()} ROWS — DOWNLOAD FOR THE FULL FILE`}
               </Text>
@@ -172,13 +172,13 @@ export function CsvTable(props: {
                 leading="download"
                 onClick={() => downloadBlob(props.name, props.data)}
               >
-                DOWNLOAD
+                Download
               </Button>
             </div>
           </Show>
           <Show
             when={header().length > 0}
-            fallback={<EmptyState message="NO DATA" />}
+            fallback={<EmptyState message="No data" />}
           >
             <div
               ref={(el) => rememberScroll(el, scrollKey)}

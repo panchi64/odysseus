@@ -40,7 +40,7 @@ export function ViewTimelineRail(props: {
       <div
         role="listbox"
         aria-label="Version timeline"
-        class="scrollbar-thin flex shrink-0 items-stretch overflow-x-auto border-b border-line bg-surface"
+        class="scrollbar-thin flex shrink-0 items-stretch overflow-x-auto bg-surface"
       >
         <For each={props.items}>
           {(item) => {
@@ -90,7 +90,7 @@ export function ViewTimelineRail(props: {
                   </Show>
                   <Show when={item.isLatest && props.followingLatest}>
                     <Text variant="micro" tone="dim" class="tracking-label">
-                      LATEST
+                      Latest
                     </Text>
                   </Show>
                 </span>

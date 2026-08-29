@@ -57,7 +57,7 @@ function NotificationRow(props: {
     <button
       type="button"
       onClick={() => props.onOpen(n())}
-      class="flex w-full items-start gap-2 border-b border-line px-3 py-2 text-left transition-colors last:border-0 hover:bg-raised"
+      class="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-raised"
     >
       <Icon
         name={KIND_ICON[n().kind]}
@@ -140,10 +140,10 @@ export function NotificationBell(): JSX.Element {
       )}
       panel={({ close }) => (
         <div class="flex max-h-96 flex-col">
-          <div class="shrink-0 border-b border-line">
+          <div class="shrink-0">
             <div class="flex items-center justify-between gap-2 px-3 py-2">
               <Text variant="micro" tone="dim">
-                NOTIFICATIONS
+                Notifications
               </Text>
               <Show when={notifications.unreadCount > 0}>
                 <Button
@@ -151,15 +151,15 @@ export function NotificationBell(): JSX.Element {
                   size="sm"
                   onClick={() => void notifications.markAllRead()}
                 >
-                  MARK ALL READ
+                  Mark all read
                 </Button>
               </Show>
             </div>
             {/* Auto-clear: a display preference (mark read + drop from the list
                 after a timeout). `approval_needed` is exempt. Off disables it. */}
-            <div class="flex items-center gap-2 border-t border-line px-3 py-1.5">
+            <div class="flex items-center gap-2 px-3 py-1.5">
               <Text variant="micro" tone="dim">
-                AUTO-CLEAR
+                Auto-clear
               </Text>
               <div class="ml-auto w-24">
                 <Select
@@ -173,7 +173,7 @@ export function NotificationBell(): JSX.Element {
           <div class="min-h-0 flex-1 overflow-y-auto">
             <Show
               when={notifications.visibleItems.length > 0}
-              fallback={<EmptyState icon="bell" message="NO NOTIFICATIONS" />}
+              fallback={<EmptyState icon="bell" message="No notifications" />}
             >
               <For each={notifications.visibleItems}>
                 {(n) => (

@@ -132,9 +132,7 @@ async def resolve_auto_compact_policy(
     )
 
 
-def should_compact(
-    messages: list[ModelMessage], window: int | None, threshold: float
-) -> bool:
+def should_compact(messages: list[ModelMessage], window: int | None, threshold: float) -> bool:
     """Whether this history has reached the operator's share of the model's window.
 
     ``False`` when the endpoint declares no window — there is nothing to measure against,
@@ -256,9 +254,7 @@ async def summarize_history(
     return strip_think_blocks(result.output).strip() or None
 
 
-def render_transcript(
-    messages: list[ModelMessage], *, max_input_tokens: int | None = None
-) -> str:
+def render_transcript(messages: list[ModelMessage], *, max_input_tokens: int | None = None) -> str:
     """Render a message list as a labelled plain-text transcript for the summarizer.
 
     Thinking parts are deliberately dropped: a model's scratch reasoning is the least
@@ -316,5 +312,3 @@ def _result_text(content: object) -> str:
             text = f"<{type(content).__name__}>"
     head, tail, elided = truncate_middle(text.strip(), _TOOL_RESULT_CHARS)
     return head if not elided else f"{head} […{elided} chars…] {tail}"
-
-

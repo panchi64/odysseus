@@ -136,9 +136,9 @@ async def test_drafting_a_reply_saves_without_sending(wired):
     )
     assert (result["saved"], result["sent"]) == (True, False)
     assert transport.sent == []
-    [draft] = await service.drafts.suggestions_for("operator", view.id) or await (
-        service.drafts.list_drafts("operator")
-    )
+    [draft] = await service.drafts.suggestions_for(
+        "operator", view.id
+    ) or await service.drafts.list_drafts("operator")
     assert draft.body == "Noted."
 
 

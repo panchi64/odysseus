@@ -15,9 +15,15 @@ import asyncio
 from pydantic_ai.models.function import FunctionModel
 
 from routes.deps import OPERATOR_ID
-from services.registry import ModelRegistry, ResolvedModel
+from services.registry import ModelRegistry
 
-from ._helpers import client_app, patch_model_resolution, swap_tool_catalog
+from ._helpers import (
+    client_app,
+    patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
+    swap_tool_catalog,
+)
 from .test_approval_routes import _await_parked, _install_sensitive_tool, danger_categories
 
 
@@ -37,8 +43,9 @@ def _patch_hanging_model(monkeypatch, hang: asyncio.Event, started: asyncio.Even
         return FunctionModel(stream_function=stream_fn)
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={})
+        return await stub_resolution(self, _model())
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
 
@@ -68,9 +75,7 @@ async def test_second_chat_post_queues_into_live_run(monkeypatch):
 
         before = await client.get(f"/conversations/{conv_id}")
 
-        second = await client.post(
-            "/chat", json={"prompt": "again", "conversation_id": conv_id}
-        )
+        second = await client.post("/chat", json={"prompt": "again", "conversation_id": conv_id})
         # Steering: the send is accepted into the live run — same run id, a queued
         # message id, and no second Run object ever created for the conversation.
         assert second.status_code == 202
@@ -129,9 +134,7 @@ async def test_guard_releases_once_run_reaches_terminal(monkeypatch):
         conv_id = first.json()["conversation_id"]
         await started.wait()
 
-        queued = await client.post(
-            "/chat", json={"prompt": "again", "conversation_id": conv_id}
-        )
+        queued = await client.post("/chat", json={"prompt": "again", "conversation_id": conv_id})
         assert queued.status_code == 202
         assert queued.json()["queued_message_id"]
 
@@ -139,9 +142,7 @@ async def test_guard_releases_once_run_reaches_terminal(monkeypatch):
         await app.state.runs.get(first.json()["run_id"]).wait()
 
         # Once the run is terminal a new send starts a fresh run (no queueing).
-        accepted = await client.post(
-            "/chat", json={"prompt": "now", "conversation_id": conv_id}
-        )
+        accepted = await client.post("/chat", json={"prompt": "now", "conversation_id": conv_id})
         assert accepted.status_code == 202
         assert accepted.json()["run_id"] != first.json()["run_id"]
         assert accepted.json()["queued_message_id"] is None
@@ -226,9 +227,7 @@ async def test_branch_ops_rejected_while_run_live(monkeypatch):
         hang, started = asyncio.Event(), asyncio.Event()
         _patch_hanging_model(monkeypatch, hang, started)
 
-        live = await client.post(
-            "/chat", json={"prompt": "again", "conversation_id": conv_id}
-        )
+        live = await client.post("/chat", json={"prompt": "again", "conversation_id": conv_id})
         assert live.status_code == 202
         await started.wait()
 
@@ -251,9 +250,7 @@ async def test_branch_ops_rejected_while_run_live(monkeypatch):
         )
         assert pin_resp.status_code == 409
 
-        delete_resp = await client.delete(
-            f"/conversations/{conv_id}/messages/{assistant['id']}"
-        )
+        delete_resp = await client.delete(f"/conversations/{conv_id}/messages/{assistant['id']}")
         assert delete_resp.status_code == 409
 
         after = await client.get(f"/conversations/{conv_id}")
@@ -271,7 +268,7 @@ def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Ev
     regenerate/edit could otherwise slip through during. ``entered`` fires once the
     first caller is parked here, so a test can assert a second request is rejected
     without ever reaching (or needing to release) this gate."""
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     def _model() -> FunctionModel:
         async def stream_fn(messages, info):
@@ -282,13 +279,14 @@ def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Ev
     async def resolve_detailed(self, role, **kwargs):
         entered.set()
         await gate.wait()
-        return ResolvedModel(model=_model(), reasoning_off={})
+        return await stub_resolution(self, _model())
 
     # Patched separately rather than left to delegate: the gate above would otherwise
     # also stall every background resolution this test isn't trying to hold.
     async def resolve_background(self, *, owner_id, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={})
+        return await stub_resolution(self, _model())
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
     monkeypatch.setattr(ModelRegistry, "resolve_background", resolve_background)
 
@@ -412,9 +410,7 @@ async def test_delete_message_purge_claims_against_a_concurrent_chat_submission(
 
         # The claim is released once the delete's own mutation is done — a fresh
         # submission is accepted again.
-        accepted = await client.post(
-            "/chat", json={"prompt": "now", "conversation_id": conv_id}
-        )
+        accepted = await client.post("/chat", json={"prompt": "now", "conversation_id": conv_id})
         assert accepted.status_code == 202
         await app.state.runs.get(accepted.json()["run_id"]).wait()
 
@@ -431,9 +427,7 @@ async def test_awaiting_input_run_queues_a_new_chat_submission(monkeypatch):
         run = await _await_parked(app, first.json()["run_id"])
         assert run.status == "awaiting_input"
 
-        queued = await client.post(
-            "/chat", json={"prompt": "again", "conversation_id": conv_id}
-        )
+        queued = await client.post("/chat", json={"prompt": "again", "conversation_id": conv_id})
         assert queued.status_code == 202
         assert queued.json()["run_id"] == first.json()["run_id"]
         assert queued.json()["queued_message_id"]

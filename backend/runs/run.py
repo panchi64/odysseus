@@ -20,6 +20,8 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from .events import (
+    DEFAULT_CONTEXT_THRESHOLDS,
+    ContextThresholds,
     Event,
     MessageEdited,
     MessageInjected,
@@ -28,7 +30,9 @@ from .events import (
     RunMetrics,
     now_utc,
 )
+from .overhead import TurnOverhead
 from .stream import RunStream
+from .timings import TimingTotals, TurnTimer
 
 # How often :meth:`Run.keepalive` touches the activity clock while a long, silent call is
 # in flight. A ceiling, not a fixed rate: a run held to a shorter inactivity bound beats
@@ -92,6 +96,27 @@ class Run:
     # emitted metrics can report how full the window is. None leaves the derived
     # context fields null (no ceiling to measure against).
     context_window: int | None = None
+    # The operator's severity boundaries for that window, set by the orchestrator from
+    # the same settings read that resolved everything else about the turn. Sits beside
+    # `context_window` because they are one measurement: a ceiling nobody set boundaries
+    # against, and boundaries with no ceiling to apply them to, are equally inert.
+    context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS
+    # This run's wall-clock stopwatch, collecting a timing per model response as the
+    # translator walks the graph. Lives on the Run rather than in `_drive_turn` so it
+    # survives a park/resume: an approval splits a turn into several segments, and a
+    # timer scoped to one of them would report only the last.
+    timer: TurnTimer = field(default_factory=TurnTimer)
+    # The conversation's timing totals *before* this run — read from the persisted
+    # message rows when the turn starts. What makes the emitted frame cumulative over
+    # the thread rather than over this run: everything else in the frame is derived
+    # from the replayed history, but time isn't in the history, only in our own rows.
+    prior_timings: TimingTotals = field(default_factory=TimingTotals)
+    # The standing brief and tool schemas measured on this turn's most recent model
+    # request — the two parts of a request that never reach the message history, and so
+    # are knowable only while one is being assembled. None until the turn makes its first
+    # request, and on any turn whose measurement failed; the composition readout is absent
+    # rather than guessed in that case.
+    context_overhead: TurnOverhead | None = None
     # Set once the first answer token has streamed. The AE-5.3 rule — never
     # switch endpoints after answer text has begun — is enforced against this:
     # the orchestrator refuses to re-drive a turn onto another endpoint once it

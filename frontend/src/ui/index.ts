@@ -31,6 +31,33 @@ export {
 } from "./theme/theme-store";
 export { useTheme } from "./theme/useTheme";
 export { ThemeProvider } from "./theme/ThemeProvider";
+export {
+  ACCENT_TOKENS,
+  ACCENT_DEFAULTS,
+  type AccentToken,
+  type AccentTokenSpec,
+} from "./theme/accents";
+export {
+  accentOverrides,
+  accentValue,
+  hasAccentOverrides,
+  isAccentOverridden,
+  resetAccent,
+  resetAllAccents,
+  restoreAccents,
+  setAccent,
+  ACCENT_STORAGE_KEY,
+  type AccentOverrides,
+} from "./theme/accent-store";
+export {
+  accentContrast,
+  contrastRatio,
+  meetsAccentFloor,
+  normalizeHex,
+  relativeLuminance,
+  ACCENT_CONTRAST_FLOOR,
+  MODE_BG,
+} from "./theme/contrast";
 
 // primitives
 export { Box } from "./primitives/Box";
@@ -73,6 +100,13 @@ export {
   type ComposerAttachment,
   type AttachmentStatus,
 } from "./components/AttachmentChip";
+export {
+  LedEdge,
+  type LedEdgeProps,
+  type LedTone,
+  type LedSide,
+  type LedSpill,
+} from "./components/LedEdge";
 export { ListRow, type ListRowProps } from "./components/ListRow";
 export {
   ListGroupHeader,
@@ -145,7 +179,18 @@ export {
   ExpandableText,
   type ExpandableTextProps,
 } from "./components/ExpandableText";
+export { ColorField, type ColorFieldProps } from "./components/ColorField";
+export {
+  ConstructionReveal,
+  type ConstructionRevealProps,
+} from "./components/ConstructionReveal";
+export {
+  FramedOverlay,
+  type FramedOverlayProps,
+} from "./components/FramedOverlay";
+export { useGatedMount, type GatedMount } from "./components/useGatedMount";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
+export { MetaAction, type MetaActionProps } from "./components/MetaAction";
 export {
   Popover,
   type PopoverProps,
@@ -184,6 +229,16 @@ export {
   type ForbiddenViewProps,
 } from "./components/ForbiddenView";
 export { ProgressBar, type ProgressBarProps } from "./components/ProgressBar";
+export {
+  ProgressRing,
+  type ProgressRingProps,
+} from "./components/ProgressRing";
+export {
+  Reveal,
+  type RevealProps,
+  type RevealMotion,
+} from "./components/Reveal";
+export { Collapse, type CollapseProps } from "./components/Collapse";
 export { Divider, type DividerProps } from "./components/Divider";
 export {
   ResizeHandle,

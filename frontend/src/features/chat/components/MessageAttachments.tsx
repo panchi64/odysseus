@@ -113,7 +113,7 @@ export function MessageAttachments(
         when={!resolving()}
         fallback={
           <div class="flex max-w-[80%] justify-end">
-            <LoadingText label="LOADING ATTACHMENTS" />
+            <LoadingText label="Loading attachments" />
           </div>
         }
       >
@@ -124,7 +124,6 @@ export function MessageAttachments(
               return (
                 <AttachmentChip
                   name={u()?.name ?? id}
-                  href={`/uploads/${id}`}
                   status={u() ? undefined : "error"}
                   kbExcluded={u()?.kbExcluded ?? false}
                 />

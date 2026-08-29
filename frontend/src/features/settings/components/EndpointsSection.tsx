@@ -69,7 +69,7 @@ export function EndpointsSection(): JSX.Element {
       !(await confirm({
         title: `Delete endpoint "${ep.name}"?`,
         detail: "Any role bound to it will fall back to its remaining chain.",
-        confirmLabel: "DELETE",
+        confirmLabel: "Delete",
         tone: "alert",
       }))
     )
@@ -85,7 +85,7 @@ export function EndpointsSection(): JSX.Element {
   return (
     <>
       <Panel
-        label="MODEL ENDPOINTS"
+        label="Model endpoints"
         meta={
           <Button
             variant="primary"
@@ -93,7 +93,7 @@ export function EndpointsSection(): JSX.Element {
             leading="plus"
             onClick={() => openForm(null)}
           >
-            ADD ENDPOINT
+            Add endpoint
           </Button>
         }
       >
@@ -103,7 +103,7 @@ export function EndpointsSection(): JSX.Element {
             fallback={
               <EmptyState
                 icon="cpu"
-                message="NO ENDPOINTS"
+                message="No endpoints"
                 hint="Add an OpenAI-compatible endpoint to pick its models from the top bar."
               />
             }

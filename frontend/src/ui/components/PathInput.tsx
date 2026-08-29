@@ -61,7 +61,7 @@ export function PathInput(props: PathInputProps): JSX.Element {
           disabled={props.disabled || browsing()}
           onClick={() => void browse()}
         >
-          {browsing() ? "CHOOSING…" : (props.browseLabel ?? "BROWSE")}
+          {browsing() ? "Choosing…" : (props.browseLabel ?? "Browse")}
         </Button>
       </Show>
     </Row>

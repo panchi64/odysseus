@@ -30,7 +30,15 @@ export interface Placement {
    *  override each caller's own `max-h-*` (Combobox asks for `max-h-80`, Select for
    *  `max-h-72`) and make every dropdown as tall as the window. */
   clampHeight: number | null;
-  width?: number;
+  /** `block` mode only: the width the panel must span **at least** — the trigger's.
+   *
+   *  Deliberately a floor and not a fixed width. Pinning the panel to the trigger
+   *  made every option in a narrow control unreadable: the mode select in the
+   *  composer's action row is sized by its own short label, so its menu inherited
+   *  that width and truncated the very text the operator opened it to read. A
+   *  field-width menu is the point of `block` — a menu *narrower than its own
+   *  contents* never was. */
+  minWidth?: number;
 }
 
 export function computePlacement(opts: {
@@ -43,7 +51,11 @@ export function computePlacement(opts: {
 }): Placement {
   const { anchor, panel, viewport, align, block } = opts;
   const panelH = panel?.height ?? 0;
-  const panelW = block ? anchor.width : (panel?.width ?? 0);
+  // In `block` mode the panel is floored at the trigger's width but free to grow past
+  // it, so the edge clamps below have to reason about whichever is actually wider —
+  // using the trigger's width alone would let a content-sized panel hang off-screen.
+  const measuredW = panel?.width ?? 0;
+  const panelW = block ? Math.max(anchor.width, measuredW) : measuredW;
 
   const below = viewport.height - anchor.bottom - GAP - EDGE;
   const above = anchor.top - GAP - EDGE;
@@ -68,6 +80,6 @@ export function computePlacement(opts: {
     // wider than the window still starts on-screen rather than at a negative x.
     left: Math.max(EDGE, Math.min(wanted, viewport.width - panelW - EDGE)),
     clampHeight,
-    width: block ? anchor.width : undefined,
+    minWidth: block ? anchor.width : undefined,
   };
 }

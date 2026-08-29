@@ -12,10 +12,46 @@ import {
 } from "~/ui";
 import { saveChatSettings, useChatSettings } from "../data";
 
+/** One preference's title and its explanation — the shape every block in this panel
+ *  opens with. Extracted at the fourth copy: the wording is all that ever differed,
+ *  and four hand-repeated `label`/`micro dim` pairs are four chances for one of them
+ *  to drift to a different tone. */
+function SettingHeader(props: {
+  title: string;
+  children: JSX.Element;
+}): JSX.Element {
+  return (
+    <Stack gap={1}>
+      <Text variant="label" tone="default">
+        {props.title}
+      </Text>
+      <Text variant="micro" tone="dim">
+        {props.children}
+      </Text>
+    </Stack>
+  );
+}
+
+const Rule = (): JSX.Element => <div class="border-line border-t" />;
+
+/** A whole number within `[min, max]`, or null when the field can't supply one —
+ *  every editable value in this panel is one. `Number("")` is 0, so a blanked field has
+ *  to be rejected explicitly rather than read as zero. */
+function wholeNumber(
+  raw: string,
+  { min = 1, max = Number.MAX_SAFE_INTEGER } = {},
+): number | null {
+  const n = Number(raw.trim());
+  if (raw.trim() === "" || !Number.isInteger(n) || n < min || n > max)
+    return null;
+  return n;
+}
+
 /* Operator preferences for how a turn runs: how many model round-trips one turn may
-   spend, how long it may go silent before the watchdog stops it, and the one context
-   reduction there is — when whole earlier turns are folded into a summary. Each
-   editable value seeds from the backend resource and saves back to it. */
+   spend, how long it may go silent before the watchdog stops it, when the composer's
+   context gauge starts showing colour, and the one context reduction there is — when
+   whole earlier turns are folded into a summary. Each editable value seeds from the
+   backend resource and saves back to it. */
 export function ChatSection(): JSX.Element {
   const chatSettings = useChatSettings();
   // How many model round-trips one turn may spend. Every tool call costs one, so this is
@@ -32,6 +68,11 @@ export function ChatSection(): JSX.Element {
   const [autoCompactEnabled, setAutoCompactEnabled] = createSignal(true);
   const [autoCompactPct, setAutoCompactPct] = createSignal("");
   const [savingAutoCompact, setSavingAutoCompact] = createSignal(false);
+  // Where the composer's context ring stops being grey. Two fractions, edited as
+  // percentages and saved together, because the pair is only valid in order.
+  const [warnPct, setWarnPct] = createSignal("");
+  const [alertPct, setAlertPct] = createSignal("");
+  const [savingContext, setSavingContext] = createSignal(false);
   createEffect(() => {
     const s = chatSettings();
     if (!s) return;
@@ -39,13 +80,13 @@ export function ChatSection(): JSX.Element {
     setTimeoutS(String(s.inactivityTimeoutS));
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
+    setWarnPct(String(Math.round(s.contextWarnThreshold * 100)));
+    setAlertPct(String(Math.round(s.contextAlertThreshold * 100)));
   });
   const saveSteps = async () => {
-    const raw = stepLimit().trim();
-    const n = Number(raw);
+    const n = wholeNumber(stepLimit());
     // Floored at 1: a turn allowed zero model requests could never answer at all.
-    // `Number("")` is 0, so a blanked field is rejected explicitly rather than saved.
-    if (raw === "" || !Number.isInteger(n) || n < 1) {
+    if (n === null) {
       toast.error("Enter a whole number of steps (1 or more).");
       return;
     }
@@ -61,11 +102,10 @@ export function ChatSection(): JSX.Element {
     }
   };
   const saveTimeout = async () => {
-    const raw = timeoutS().trim();
-    const n = Number(raw);
     // Whole seconds, above 0: a 0 bound would stop every turn immediately, and the
     // backend rejects it too.
-    if (raw === "" || !Number.isInteger(n) || n < 1) {
+    const n = wholeNumber(timeoutS());
+    if (n === null) {
       toast.error("Enter whole seconds (1 or more).");
       return;
     }
@@ -82,11 +122,10 @@ export function ChatSection(): JSX.Element {
   };
 
   const saveAutoCompact = async () => {
-    const raw = autoCompactPct().trim();
-    const pct = Number(raw);
     // Above 0 and at most 100: a 0% threshold would fire on an empty thread, and there is
     // nothing above "the window is full" to wait for.
-    if (raw === "" || !Number.isInteger(pct) || pct < 1 || pct > 100) {
+    const pct = wholeNumber(autoCompactPct(), { max: 100 });
+    if (pct === null) {
       toast.error("Enter a whole percentage between 1 and 100.");
       return;
     }
@@ -106,22 +145,49 @@ export function ChatSection(): JSX.Element {
     }
   };
 
+  const saveContextThresholds = async () => {
+    // 99 is the ceiling on the warning, not 100: at 100 the amber band is unreachable,
+    // since the ring would go straight to red on a full window.
+    const warn = wholeNumber(warnPct(), { max: 99 });
+    const alert = wholeNumber(alertPct(), { min: 2, max: 100 });
+    if (warn === null || alert === null) {
+      toast.error("Enter whole percentages — warning 1–99, alert 2–100.");
+      return;
+    }
+    // Checked here for immediate feedback, and again by the backend, which owns the
+    // rule: equal boundaries leave no amber band at all, and inverted ones walk the
+    // gauge backwards through severity as the window fills.
+    if (warn >= alert) {
+      toast.error("The warning percentage must be below the alert percentage.");
+      return;
+    }
+    setSavingContext(true);
+    try {
+      const saved = await saveChatSettings({
+        contextWarnThreshold: warn / 100,
+        contextAlertThreshold: alert / 100,
+      });
+      setWarnPct(String(Math.round(saved.contextWarnThreshold * 100)));
+      setAlertPct(String(Math.round(saved.contextAlertThreshold * 100)));
+      toast.success("Context gauge updated");
+    } catch {
+      toast.error("Unable to update the context gauge.");
+    } finally {
+      setSavingContext(false);
+    }
+  };
+
   return (
-    <Panel label="CHAT">
+    <Panel label="Chat">
       <Show when={chatSettings()} fallback={<LoadingText />}>
         <Stack gap={3}>
-          <Stack gap={1}>
-            <Text variant="label" tone="default">
-              STEP LIMIT PER TURN
-            </Text>
-            <Text variant="micro" tone="dim">
-              How many times the model may be called within a single turn. Every
-              tool call spends one, so a long research or multi-step turn is
-              what runs this out — raise it for work that needs many steps,
-              lower it to stop a runaway turn sooner. Mid-run messages you send
-              continue the same turn and share its budget.
-            </Text>
-          </Stack>
+          <SettingHeader title="Step limit per turn">
+            How many times the model may be called within a single turn. Every
+            tool call spends one, so a long research or multi-step turn is what
+            runs this out — raise it for work that needs many steps, lower it to
+            stop a runaway turn sooner. Mid-run messages you send continue the
+            same turn and share its budget.
+          </SettingHeader>
           <Row gap={2} align="center">
             <div class="w-48">
               <Input
@@ -138,23 +204,18 @@ export function ChatSection(): JSX.Element {
               disabled={savingSteps()}
               onClick={() => void saveSteps()}
             >
-              {savingSteps() ? "SAVING…" : "SAVE"}
+              {savingSteps() ? "Saving…" : "Save"}
             </Button>
           </Row>
 
-          <div class="border-line border-t" />
+          <Rule />
 
-          <Stack gap={1}>
-            <Text variant="label" tone="default">
-              INACTIVITY TIMEOUT
-            </Text>
-            <Text variant="micro" tone="dim">
-              How long a run may go without producing anything before it is
-              stopped, in seconds. A long generation — a big file write, a slow
-              first token — needs more than the default; raise it so a slow turn
-              isn't cut off, or lower it to bail on a stuck one sooner.
-            </Text>
-          </Stack>
+          <SettingHeader title="Inactivity timeout">
+            How long a run may go without producing anything before it is
+            stopped, in seconds. A long generation — a big file write, a slow
+            first token — needs more than the default; raise it so a slow turn
+            isn't cut off, or lower it to bail on a stuck one sooner.
+          </SettingHeader>
           <Row gap={2} align="center">
             <div class="w-48">
               <Input
@@ -171,25 +232,72 @@ export function ChatSection(): JSX.Element {
               disabled={savingTimeout()}
               onClick={() => void saveTimeout()}
             >
-              {savingTimeout() ? "SAVING…" : "SAVE"}
+              {savingTimeout() ? "Saving…" : "Save"}
             </Button>
           </Row>
 
-          <div class="border-line border-t" />
+          <Rule />
 
-          <Stack gap={1}>
-            <Text variant="label" tone="default">
-              AUTO-COMPACT CONVERSATIONS
-            </Text>
-            <Text variant="micro" tone="dim">
-              When a conversation nears the model's context limit, its earlier
-              turns are folded into a summary and the chat carries on instead of
-              stopping. The most recent exchanges are kept word for word, and
-              your transcript keeps everything — only what the model re-reads is
-              condensed. Off, a full conversation stops at the limit and you
-              start a new one or rewind.
-            </Text>
-          </Stack>
+          <SettingHeader title="Context gauge">
+            The ring beside Send shows how full the model's context window is.
+            It stays grey while there's room, turns amber at the first
+            percentage, and red at the second — so it only catches your eye when
+            it has something to say. Lower them if your turns are long enough
+            that a nearly-full window runs out in one go; raise them if the ring
+            colours earlier than you need it to.
+          </SettingHeader>
+          <Row gap={4} align="end">
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                AMBER AT (% of context)
+              </Text>
+              <div class="w-32">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="99"
+                  value={warnPct()}
+                  onInput={(e) => setWarnPct(e.currentTarget.value)}
+                  placeholder="75"
+                />
+              </div>
+            </Stack>
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                RED AT (% of context)
+              </Text>
+              <div class="w-32">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="2"
+                  max="100"
+                  value={alertPct()}
+                  onInput={(e) => setAlertPct(e.currentTarget.value)}
+                  placeholder="90"
+                />
+              </div>
+            </Stack>
+            <Button
+              variant="primary"
+              disabled={savingContext()}
+              onClick={() => void saveContextThresholds()}
+            >
+              {savingContext() ? "Saving…" : "Save"}
+            </Button>
+          </Row>
+
+          <Rule />
+
+          <SettingHeader title="Auto-compact conversations">
+            When a conversation nears the model's context limit, its earlier
+            turns are folded into a summary and the chat carries on instead of
+            stopping. The most recent exchanges are kept word for word, and your
+            transcript keeps everything — only what the model re-reads is
+            condensed. Off, a full conversation stops at the limit and you start
+            a new one or rewind.
+          </SettingHeader>
           <Toggle
             checked={autoCompactEnabled()}
             onChange={setAutoCompactEnabled}
@@ -218,7 +326,7 @@ export function ChatSection(): JSX.Element {
               disabled={savingAutoCompact()}
               onClick={() => void saveAutoCompact()}
             >
-              {savingAutoCompact() ? "SAVING…" : "SAVE"}
+              {savingAutoCompact() ? "Saving…" : "Save"}
             </Button>
           </Row>
         </Stack>

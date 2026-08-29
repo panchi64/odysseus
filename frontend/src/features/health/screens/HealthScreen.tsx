@@ -18,6 +18,7 @@ import {
   Marquee,
   Menu,
   type MenuItem,
+  NotConnectedOverlay,
   PageHeader,
   Panel,
   Row,
@@ -66,7 +67,7 @@ function getServiceActions(
 ) {
   const base: MenuItem[] = [
     {
-      label: "VIEW LOGS",
+      label: "View logs",
       icon: "note" as const,
       onSelect: () => onAction(`Viewing logs for ${svc.name}`),
     },
@@ -74,7 +75,7 @@ function getServiceActions(
 
   if (svc.status === "alert" || svc.status === "timeout") {
     base.unshift({
-      label: "RETRY CONNECTION",
+      label: "Retry connection",
       icon: "refresh" as const,
       onSelect: () => onAction(`Retrying connection for ${svc.name}`),
     });
@@ -82,7 +83,7 @@ function getServiceActions(
 
   if (svc.id === "svc-embed") {
     base.unshift({
-      label: "REINDEX",
+      label: "Reindex",
       icon: "database" as const,
       onSelect: () => onAction(`Reindex queued for ${svc.name}`),
     });
@@ -90,7 +91,7 @@ function getServiceActions(
 
   if (svc.status === "partial") {
     base.unshift({
-      label: "RETRY PARTIAL",
+      label: "Retry partial",
       icon: "refresh" as const,
       onSelect: () => onAction(`Retry queued for ${svc.name}`),
     });
@@ -157,7 +158,7 @@ function ServiceDrawer(props: {
             </Row>
 
             <Show when={svc().degradationNote}>
-              <Panel label="DEGRADATION NOTE" state="alert">
+              <Panel label="Degradation note" state="alert">
                 <Text
                   variant="body"
                   tone={svc().status === "alert" ? "alert" : "warn"}
@@ -169,7 +170,7 @@ function ServiceDrawer(props: {
 
             <Stack gap={2}>
               <Text variant="label" tone="dim">
-                RECOVERY ACTIONS
+                Recovery actions
               </Text>
               <For each={getServiceActions(svc(), handleAction)}>
                 {(action) => (
@@ -292,9 +293,20 @@ export function HealthScreen(): JSX.Element {
     ).length;
 
   return (
-    <Stack gap={6}>
+    /* Health is the one surface still on fixtures, and it has to keep saying so.
+       That used to be a route-level flag (`connected` in the nav model) that the
+       shell read to lay a NOT CONNECTED overlay over the page; Health is a
+       section of the settings dialog now and has no route to carry the flag, so
+       the overlay is rendered here, inline, over the section it actually
+       describes. `relative` is what it positions against.
+
+       It goes when the backend measures per-service latency, a baseline, and a
+       status history — none of which it does today. */
+    <Stack gap={6} class="relative">
+      <NotConnectedOverlay />
       <PageHeader
-        title="HEALTH DASHBOARD"
+        variant="section"
+        title="Health dashboard"
         subtitle="Live service diagnostics and degradation tracking."
         assetId="SYS-HLT-07.1"
         actions={
@@ -315,52 +327,52 @@ export function HealthScreen(): JSX.Element {
               onClick={refresh}
               disabled={refreshing()}
             >
-              {refreshing() ? "CHECKING…" : "REFRESH"}
+              {refreshing() ? "Checking…" : "Refresh"}
             </Button>
           </Row>
         }
       />
 
-      <Suspense fallback={<LoadingText label="CHECKING SERVICES" />}>
+      <Suspense fallback={<LoadingText label="Checking services" />}>
         <Show when={overall()}>
           {(o) => (
             <InstrumentBand
               items={[
                 {
-                  label: "OVERALL",
+                  label: "Overall",
                   value: o().status.toUpperCase(),
                   tone: healthTextTone[o().status],
                 },
                 {
-                  label: "UP",
+                  label: "Up",
                   value: `${o().servicesUp} / ${o().servicesTotal}`,
                   tone: "nominal",
                 },
                 {
-                  label: "ALERTS",
+                  label: "Alerts",
                   value: String(alertCount()),
                   tone: alertCount() > 0 ? "alert" : "dim",
                 },
                 {
-                  label: "WARNINGS",
+                  label: "Warnings",
                   value: String(warnCount()),
                   tone: warnCount() > 0 ? "warn" : "dim",
                 },
-                { label: "LAST CHECK", value: timestamp(lastRefresh()) },
-                { label: "UPTIME", value: "99.1%" },
+                { label: "Last check", value: timestamp(lastRefresh()) },
+                { label: "Uptime", value: "99.1%" },
               ]}
             />
           )}
         </Show>
       </Suspense>
 
-      <Suspense fallback={<LoadingText label="LOADING SERVICES" />}>
+      <Suspense fallback={<LoadingText label="Loading services" />}>
         <Show when={resolveServices()}>
           <Show
             when={services.length}
-            fallback={<EmptyState icon="activity" message="NO SERVICES" />}
+            fallback={<EmptyState icon="activity" message="No services" />}
           >
-            <Panel label="SERVICE GRID" flush class="@container">
+            <Panel label="Service grid" flush class="@container">
               {/* One shared grid drives every row so the columns — crucially the
                   uptime HISTORY bars — line up vertically no matter how much
                   detail a given service carries. Each row is a `subgrid` that
@@ -421,7 +433,7 @@ export function HealthScreen(): JSX.Element {
                               tone={svc.status === "timeout" ? "warn" : "alert"}
                               class="shrink-0"
                             >
-                              {svc.status === "timeout" ? "TIMEOUT" : "OFFLINE"}
+                              {svc.status === "timeout" ? "Timeout" : "Offline"}
                             </Text>
                           }
                         >
@@ -473,7 +485,7 @@ export function HealthScreen(): JSX.Element {
                             <Menu
                               trigger={
                                 <Button variant="ghost" size="sm">
-                                  ACTIONS
+                                  Actions
                                 </Button>
                               }
                               items={getServiceActions(svc, (label) => {
@@ -499,7 +511,7 @@ export function HealthScreen(): JSX.Element {
       </Suspense>
 
       <Show when={services.filter((s) => s.degradationNote).length > 0}>
-        <Panel label="DEGRADATION NOTES" state="alert">
+        <Panel label="Degradation notes" state="alert">
           <Stack gap={3}>
             <For each={services.filter((s) => s.degradationNote)}>
               {(svc) => (

@@ -1,7 +1,7 @@
 /** Global model state — the endpoint catalog, the provider presets, runtime
  *  model discovery, and the role bindings (including the chat `main` selection).
  *  One place owns all of it so the app shell's top-bar picker, the overview
- *  launchpad, chat, the Cookbook, and Settings share a single source of truth
+ *  launchpad, chat, compare, and Settings share a single source of truth
  *  (one `/models/endpoints` fetch, one `/models/roles` fetch) — and every role
  *  write goes through the store's actions, never a feature-local PUT.
  *
@@ -35,6 +35,7 @@ import type {
   RoleViewDTO,
 } from "~/lib/api/models-types";
 import { useSession } from "~/lib/stores/session";
+import { sendBlocker } from "./sendGate";
 
 /** A specific model on a specific endpoint — the unit of selection. */
 export interface ModelSelection {
@@ -55,6 +56,10 @@ export interface ModelEndpoint {
   model: string | null;
   /** Whether a key is stored — the value is write-only and never returned. */
   hasApiKey: boolean;
+  /** The operator's *override*, null on every endpoint that never needed one. Only the
+   *  Settings form should read this — it is what belongs in the input box, and it is
+   *  not the window the endpoint runs under. That belongs to the binding, which is
+   *  where the model is decided: see `RoleBinding.contextWindow`. */
   contextWindow: number | null;
   nativeTools: boolean;
   vision: boolean;
@@ -62,11 +67,6 @@ export interface ModelEndpoint {
   /** Whether this endpoint is active — disabled endpoints are hidden from the
    *  picker and skipped in fallback chains (the backend enforces both). */
   enabled: boolean;
-  /** A serving-managed local engine — the Cookbook owns its lifecycle. */
-  managed: boolean;
-  /** Process liveness of a managed engine ("running"/"stopped"); null for
-   *  external endpoints. Liveness renders from this, never from `enabled`. */
-  liveStatus: string | null;
   /** The last probe verdict (null until first tested). */
   lastStatus: EndpointStatus | null;
   lastErrorCategory: EndpointErrorCategory | null;
@@ -134,6 +134,19 @@ function decodeValue(value: string): ModelSelection | null {
 export interface RoleBinding {
   endpointIds: string[];
   model: string | null;
+  /** The chain head's effective context window — the operator's override on the
+   *  endpoint when set, else what the provider reports for the pinned model. Null when
+   *  the role is unconfigured or neither could supply one.
+   *
+   *  On the binding rather than the endpoint because that is where the *model* is
+   *  decided, and a window belongs to the (endpoint, model) pair. An endpoint row
+   *  usually carries no default model at all. */
+  contextWindow: number | null;
+  /** True when this is the backend's default rather than the operator's choice — see
+   *  `RoleViewDTO.implicit`. The picker shows it exactly as it shows a pinned model,
+   *  because it is what a turn would actually run on; only surfaces that describe the
+   *  *configuration* need to distinguish the two. */
+  implicit: boolean;
 }
 
 /** role → its binding. */
@@ -143,15 +156,24 @@ async function fetchRoles(): Promise<RoleBindings> {
   const dto = await api.get<Record<string, RoleViewDTO>>("/models/roles");
   const out: RoleBindings = {};
   for (const [role, v] of Object.entries(dto)) {
-    out[role] = { endpointIds: v.endpoint_ids, model: v.model };
+    out[role] = {
+      endpointIds: v.endpoint_ids,
+      model: v.model,
+      contextWindow: v.context_window,
+      implicit: v.implicit,
+    };
   }
   return out;
 }
 
 /** The chat model = the backend `main` role binding's head endpoint + pinned
  *  model. `main` is single-endpoint (the picker overwrites the whole binding), so
- *  the head is the only endpoint; a binding with no pinned model or no endpoint is
- *  not yet a concrete pick (null) — the picker then displays the first available. */
+ *  the head is the only endpoint.
+ *
+ *  This covers the *implicit* binding too: with nothing bound, the backend resolves
+ *  `main` to the first usable endpoint/model and reports it here, flagged. That is
+ *  deliberately not distinguished at this level — what a turn runs on is one fact,
+ *  however it was arrived at, and the picker's job is to show that fact. */
 function mainSelectionOf(
   roles: RoleBindings | undefined,
 ): ModelSelection | null {
@@ -177,8 +199,6 @@ function toEndpoint(dto: EndpointViewDTO): ModelEndpoint {
     vision: dto.vision,
     thinking: dto.thinking,
     enabled: dto.enabled,
-    managed: dto.managed,
-    liveStatus: dto.live_status,
     lastStatus: dto.last_status,
     lastErrorCategory: dto.last_error_category,
     lastErrorDetail: dto.last_error_detail,
@@ -290,7 +310,7 @@ const store = createRoot(() => {
 
   // The role bindings — one shared `/models/roles` fetch for the picker (which
   // derives the `main` selection from it), Settings' ROLE BINDINGS panel, and the
-  // Cookbook's embedding tab. Every role write (`setRoleBinding`) ticks it, so all
+  // embedding controls. Every role write (`setRoleBinding`) ticks it, so all
   // three surfaces reconcile from the same re-read.
   const [rolesTick, setRolesTick] = createSignal(1);
   const [roles] = createResource(
@@ -325,7 +345,7 @@ const store = createRoot(() => {
   );
 
   // Disabled endpoints are excluded at the picker's source: discovery only runs
-  // over live endpoints, so `groups`/`choices`/`pickerGroups` never offer one and
+  // over live endpoints, so `groups`/`pickerGroups` never offer one and
   // `effective()` auto-falls to the next live choice. (Settings reads the full
   // catalog directly off `endpoints` to still show disabled rows.)
   // Discovery's source is the *discovery-relevant* projection of the live
@@ -357,9 +377,26 @@ const store = createRoot(() => {
       },
     },
   );
-  const [discovery] = createResource(
-    () => (session.isAuthenticated ? liveEndpoints() : false),
-    fetchDiscovery,
+  // Discovery re-runs when the endpoints that feed it change — and when something
+  // explicitly asks it to.
+  //
+  // The tick is not redundant with `endpointsTick`. The memo above deliberately keeps
+  // its identity through a catalog re-read that didn't move any discovery-relevant
+  // field, which is what stops a health probe re-fetching every endpoint's model list.
+  // But *the set of models an endpoint serves is not one of those fields* — a local
+  // engine that just started, or a provider that added a model, changes nothing in the
+  // endpoint row, so re-reading the catalog can never surface it. Only asking the
+  // endpoint again can, and this is how a caller asks.
+  const [discoveryTick, setDiscoveryTick] = createSignal(1);
+  const discoverySource = createMemo(() => {
+    if (!session.isAuthenticated) return false;
+    const live = liveEndpoints();
+    // A fresh tuple per change is the point: its identity is what the resource keys
+    // on, so it refetches on a tick even when the endpoint list is untouched.
+    return live === false ? false : ([discoveryTick(), live] as const);
+  });
+  const [discovery] = createResource(discoverySource, ([, live]) =>
+    fetchDiscovery(live),
   );
 
   const results = createMemo<EndpointResult[]>(() => discovery.latest ?? []);
@@ -372,18 +409,39 @@ const store = createRoot(() => {
         choices: r.choices,
       })),
   );
-  const choices = createMemo<ModelChoice[]>(() =>
-    groups().flatMap((g) => g.choices),
-  );
-  const pickerGroups = createMemo(() =>
-    groups().map((g) => ({
+  // The picker's options — every discovered model, plus the current selection when
+  // discovery doesn't list it.
+  //
+  // That last part is not a nicety. The Combobox labels its trigger by finding the
+  // value among its options, so a selection absent from the list renders as the
+  // placeholder — "No model" — while the backend would happily run it. Discovery
+  // failing (or simply lagging a model served a moment ago) would then blank the
+  // picker on a perfectly working thread, which is the same class of lie as the
+  // display fallback this replaced, only pointing the other way.
+  const pickerGroups = createMemo(() => {
+    const out = groups().map((g) => ({
       label: g.endpointName,
       options: g.choices.map((c) => ({
         value: encodeChoice(c.endpointId, c.model),
         label: c.model,
       })),
-    })),
-  );
+    }));
+    const sel = selection();
+    if (!sel) return out;
+    const value = encodeChoice(sel.endpointId, sel.model);
+    if (out.some((g) => g.options.some((o) => o.value === value))) return out;
+    const endpoint = (endpoints.latest ?? []).find(
+      (e) => e.id === sel.endpointId,
+    );
+    const group = out.find((g) => g.label === endpoint?.name);
+    if (group) group.options = [...group.options, { value, label: sel.model }];
+    else
+      out.push({
+        label: endpoint?.name ?? "Selected",
+        options: [{ value, label: sel.model }],
+      });
+    return out;
+  });
   const discoveries = createMemo<EndpointDiscovery[]>(() =>
     results().map((r) => ({
       endpointId: r.endpointId,
@@ -393,19 +451,25 @@ const store = createRoot(() => {
       status: statusOf(r),
     })),
   );
-  // The picker always resolves to a concrete model when any is configured: the
-  // operator's explicit pick if still valid, otherwise the first available.
-  const effective = createMemo<ModelSelection | null>(() => {
-    const all = choices();
-    const sel = selection();
-    const explicit =
-      sel &&
-      all.find((c) => c.endpointId === sel.endpointId && c.model === sel.model);
-    if (explicit)
-      return { endpointId: explicit.endpointId, model: explicit.model };
-    const first = all[0];
-    return first ? { endpointId: first.endpointId, model: first.model } : null;
-  });
+  // What the picker shows, and what a turn will run on — the same answer, because
+  // both come from the backend's `main` binding.
+  //
+  // This used to fall back to "the first discovered choice" when the binding did not
+  // match one, which made the composer display a model that nothing had selected: the
+  // send resolves `main` and sends no override, so SEND then refused the very model
+  // shown above it, and re-picking that same model in the dropdown was the only way to
+  // reconcile them. The backend now reports an implicit `main` for exactly the case
+  // that fallback was papering over, so the guess is gone.
+  //
+  // Discovery is deliberately not consulted. It can be unreachable or lag a newly
+  // served model, and in that state the honest answer is still the model the backend
+  // would resolve — not some other model that happens to be listed. `pickerGroups`
+  // below carries the selection as an option when discovery lacks it, so the trigger
+  // can always label what will run.
+  const effective = createMemo<ModelSelection | null>(
+    () => selection() ?? null,
+  );
+
   // The endpoint backing the effective pick — the single source for its metadata
   // (provider name, context window) so consumers don't re-derive the lookup.
   const effectiveEndpoint = createMemo<ModelEndpoint | null>(() => {
@@ -424,6 +488,8 @@ const store = createRoot(() => {
     providers,
     endpoints,
     setEndpointsTick,
+    setDiscoveryTick,
+    discovery,
     groups,
     pickerGroups,
     discoveries,
@@ -452,7 +518,7 @@ async function putRoleBinding(
 }
 
 /** The role bindings resource — shared by Settings' ROLE BINDINGS panel and the
- *  Cookbook's embedding tab (the picker derives the `main` selection from it). */
+ *  embedding controls (the picker derives the `main` selection from it). */
 export function useRoles(): Resource<RoleBindings> {
   return store.roles;
 }
@@ -537,6 +603,29 @@ export function refreshEndpoints(): void {
   store.setEndpointsTick((t) => t + 1);
 }
 
+/** Re-ask every live endpoint what models it serves.
+ *
+ *  Distinct from `refreshEndpoints`, which re-reads our own catalog: this is the only
+ *  call that can surface a model that already existed on the provider's side — a local
+ *  engine started since the app loaded, or a model added upstream. Nothing about the
+ *  stored endpoint row changes in either case, so no catalog re-read would notice.
+ *
+ *  Wired to the moment a model dropdown *opens*, rather than to a refresh button beside
+ *  it. Opening the list is already the operator saying "show me what I can pick" — the
+ *  button was asking them to say it twice, and to know that the first list might be
+ *  stale. It refetches in the background: the current options stay on screen and are
+ *  replaced when the answer lands, so the menu never opens empty or jumps under the
+ *  cursor. */
+export function refreshModels(): void {
+  store.setDiscoveryTick((t) => t + 1);
+}
+
+/** Whether a discovery refetch is in flight — for a quiet inline note in a dropdown
+ *  that is showing the previous answer while it waits. */
+export function modelsRefreshing(): boolean {
+  return store.discovery.loading;
+}
+
 /** Probe an endpoint now. The backend persists the verdict, so we re-read the
  *  catalog afterwards to reflect the new `last_*` fields; the verdict is also
  *  returned so the caller can surface it immediately. */
@@ -597,8 +686,21 @@ export function selectedModelLabel(): string {
   return store.effective()?.model ?? "";
 }
 
-/** The context window of the endpoint backing the effective pick (null when
- *  nothing is configured or the endpoint declares none). */
+/** The context window the active pick will actually run under — the operator's
+ *  override when set, else what the provider reported. Null when neither could supply
+ *  one, or when nothing is configured at all.
+ *
+ *  Read off the `main` **binding**, not off its endpoint. A window belongs to the
+ *  (endpoint, model) pair, and the model is the binding's: an endpoint row usually
+ *  carries no default model at all, so reading its column answered "no window" against
+ *  a server reporting 262144 perfectly well — which left the dashboard's context figure
+ *  blank and, once the gate landed, had the composer refusing to send. */
 export function effectiveContextWindow(): number | null {
-  return store.effectiveEndpoint()?.contextWindow ?? null;
+  return store.roles()?.main?.contextWindow ?? null;
+}
+
+/** `sendBlocker` applied to the live selection — the accessor a composer binds to. The
+ *  rule itself, and why it stays quiet on an empty workspace, lives in `sendGate.ts`. */
+export function sendBlockedReason(): string | null {
+  return sendBlocker(store.effective() !== null, effectiveContextWindow());
 }

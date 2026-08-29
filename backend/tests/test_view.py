@@ -69,8 +69,11 @@ class FakeManager:
         if self.fail:
             raise SandboxError("address already in use")
         return PreviewHandle(
-            token="tok", container="c", host_port=5000,
-            container_port=port, command=tuple(command),
+            token="tok",
+            container="c",
+            host_port=5000,
+            container_port=port,
+            command=tuple(command),
         )
 
     async def stop_preview(self, key: str) -> None:
@@ -252,9 +255,7 @@ async def test_show_live_without_path_points_at_root():
 
 async def test_show_live_failure_feeds_back_without_event():
     manager = FakeManager(fail=True)
-    agent, run, deps = _run(
-        _call_then_finish({"serve": ["bad"], "port": 8000}), manager=manager
-    )
+    agent, run, deps = _run(_call_then_finish({"serve": ["bad"], "port": 8000}), manager=manager)
     await _drive(agent, run, deps, "serve it")
     assert "view.live" not in [b.type for b in _bodies(run)]
     assert manager.started  # it tried; the error went back to the model as text
@@ -298,9 +299,7 @@ async def test_show_file_degrades_when_version_capture_fails(tmp_path):
 
 
 async def test_show_live_unavailable_without_sandbox():
-    agent, run, deps = _run(
-        _call_then_finish({"serve": ["x"], "port": 8000}), manager=None
-    )
+    agent, run, deps = _run(_call_then_finish({"serve": ["x"], "port": 8000}), manager=None)
     await _drive(agent, run, deps, "serve it")
     assert "view.live" not in [b.type for b in _bodies(run)]
 

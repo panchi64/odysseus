@@ -22,7 +22,6 @@ from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.conversation import Conversation
 from models.corpus import CorpusSource
-from models.document import Document
 from models.research import ResearchRun
 from models.task import ScheduledTask
 from research import ResearchPlan
@@ -101,7 +100,7 @@ class TestDeletingAProject:
 
     async def test_every_scoped_model_is_listed(self):
         # The unfiling below walks `SCOPED_MODELS` by hand — there is no shared base
-        # class to derive it from. A sixth scoped entity that forgets to join the tuple
+        # class to derive it from. Another scoped entity that forgets to join the tuple
         # would have its rows orphaned on the next project delete, silently and
         # permanently, so the list is checked against the live schema instead.
         from sqlmodel import SQLModel
@@ -120,16 +119,13 @@ class TestDeletingAProject:
         project = await store.create("operator", "Work", str(work))
 
         def seed(session: Session) -> None:
+            session.add(Conversation(id="c-1", owner_id="operator", project_id=project.id))
             session.add(
-                Conversation(id="c-1", owner_id="operator", project_id=project.id)
-            )
-            session.add(
-                Document(
-                    id="d-1",
+                ResearchRun(
+                    id="r-1",
                     owner_id="operator",
                     project_id=project.id,
-                    title_enc="t",
-                    body_enc="b",
+                    question_enc="q",
                 )
             )
             session.commit()
@@ -140,7 +136,7 @@ class TestDeletingAProject:
         def read(session: Session) -> list[str | None]:
             return [
                 session.get(Conversation, "c-1").project_id,  # type: ignore[union-attr]
-                session.get(Document, "d-1").project_id,  # type: ignore[union-attr]
+                session.get(ResearchRun, "r-1").project_id,  # type: ignore[union-attr]
             ]
 
         # A deleted id can never be active again, so rows still pointing at it would
@@ -300,26 +296,23 @@ class TestScopedSurfaces:
             await self._seed(app)
             assert await self._listed(client, "all") == ["c-a", "c-b", "c-unfiled"]
 
-    async def test_documents_tasks_and_research_scope_the_same_way(self):
+    async def test_research_scopes_the_same_way(self):
         async with client_app() as (client, app):
             # Sealed with the app's own vault: these rows are read back through the
             # routes, which decrypt, so a placeholder string is not a valid fixture.
             seal = app.state.vault.encrypt_str
 
             def work(session: Session) -> None:
-                for did, pid in (("d-unfiled", None), ("d-b", "proj-b")):
-                    session.add(Document(id=did, owner_id="operator", project_id=pid,
-                                         title_enc=seal("T"), body_enc=seal("B")))
                 for rid, pid in (("r-unfiled", None), ("r-b", "proj-b")):
-                    session.add(ResearchRun(id=rid, owner_id="operator", project_id=pid,
-                                            question_enc=seal("Q")))
+                    session.add(
+                        ResearchRun(
+                            id=rid, owner_id="operator", project_id=pid, question_enc=seal("Q")
+                        )
+                    )
                 session.commit()
 
             await in_session(app.state.db_engine, work)
             headers = {"X-Ody-Project": "proj-a"}
-
-            docs = (await client.get("/documents", headers=headers)).json()
-            assert sorted(d["id"] for d in docs) == ["d-unfiled"]
 
             research = (await client.get("/research", headers=headers)).json()
             assert sorted(r["id"] for r in research["items"]) == ["r-unfiled"]
@@ -356,14 +349,6 @@ class TestCreationStampsTheScope:
 
         return await in_session(app.state.db_engine, work)
 
-    async def test_a_document_is_filed(self, tmp_path):
-        async with client_app() as (client, app):
-            project_id = await self._active(client, tmp_path, "work")
-            created = (
-                await client.post("/documents", json={"title": "T", "body": "B"})
-            ).json()
-            assert await self._filed(app, Document, created["id"]) == project_id
-
     async def test_a_task_is_filed(self, tmp_path):
         async with client_app() as (client, app):
             project_id = await self._active(client, tmp_path, "work")
@@ -394,9 +379,7 @@ class TestCreationStampsTheScope:
         )
         async with client_app() as (client, app):
             project_id = await self._active(client, tmp_path, "work")
-            created = (
-                await client.post("/research/intake", json={"question": "why?"})
-            ).json()
+            created = (await client.post("/research/intake", json={"question": "why?"})).json()
             assert await self._filed(app, ResearchRun, created["id"]) == project_id
 
     async def test_a_corpus_folder_is_filed(self, tmp_path):
@@ -404,9 +387,7 @@ class TestCreationStampsTheScope:
             project_id = await self._active(client, tmp_path, "work")
             folder = tmp_path / "notes"
             folder.mkdir()
-            created = (
-                await client.post("/corpus/folders", json={"path": str(folder)})
-            ).json()
+            created = (await client.post("/corpus/folders", json={"path": str(folder)})).json()
             assert await self._filed(app, CorpusSource, created["id"]) == project_id
 
     async def test_all_projects_files_nothing(self, tmp_path):
@@ -414,13 +395,19 @@ class TestCreationStampsTheScope:
             await self._active(client, tmp_path, "work")
             created = (
                 await client.post(
-                    "/documents",
-                    json={"title": "T", "body": "B"},
+                    "/tasks",
+                    json={
+                        "kind": "agent",
+                        "title": "T",
+                        "prompt": "do it",
+                        "output": "notification",
+                        "schedule": {"type": "interval", "everySeconds": 3600},
+                    },
                     headers={"X-Ody-Project": "all"},
                 )
             ).json()
             # Asking to *see* everything is not a statement about where new work goes.
-            assert await self._filed(app, Document, created["id"]) is None
+            assert await self._filed(app, ScheduledTask, created["id"]) is None
 
 
 class TestCorpusScopeIsAUnion:
@@ -434,12 +421,25 @@ class TestCorpusScopeIsAUnion:
     @staticmethod
     async def _excluded(app, active: str | None) -> frozenset[str]:
         def work(session: Session) -> None:
-            session.add(CorpusSource(id="s-unfiled", owner_id="operator", kind="folder",
-                                     project_id=None, path_enc="p"))
-            session.add(CorpusSource(id="s-a", owner_id="operator", kind="folder",
-                                     project_id="proj-a", path_enc="p"))
-            session.add(CorpusSource(id="s-b", owner_id="operator", kind="folder",
-                                     project_id="proj-b", path_enc="p"))
+            session.add(
+                CorpusSource(
+                    id="s-unfiled",
+                    owner_id="operator",
+                    kind="folder",
+                    project_id=None,
+                    path_enc="p",
+                )
+            )
+            session.add(
+                CorpusSource(
+                    id="s-a", owner_id="operator", kind="folder", project_id="proj-a", path_enc="p"
+                )
+            )
+            session.add(
+                CorpusSource(
+                    id="s-b", owner_id="operator", kind="folder", project_id="proj-b", path_enc="p"
+                )
+            )
             session.commit()
 
         await in_session(app.state.db_engine, work)

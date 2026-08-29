@@ -133,12 +133,16 @@ describe("isConnectedRoute", () => {
     expect(isConnectedRoute("/group", FIXTURE)).toBe(true);
   });
 
-  test("the real /settings redirect parent is connected", () => {
-    // The concrete case the rule exists for: /settings has no nav item and only
-    // redirects into the first SYSTEM page.
+  test("a retired settings page is connected while it redirects", () => {
+    // `/settings/*` and the surfaces that became dialog categories have no nav
+    // item any more — they resolve through the 404 route, which forwards them
+    // into `?settings=…`. The forward is instant, but the shell reads
+    // connectedness on the way through, and a NOT CONNECTED banner flashing
+    // over a redirect would be a lie told very briefly.
     expect(AREAS.flatMap((a) => a.items).some((i) => i.href === "/settings")) //
       .toBe(false);
     expect(isConnectedRoute("/settings")).toBe(true);
+    expect(isConnectedRoute("/vault")).toBe(true);
   });
 });
 
@@ -211,12 +215,15 @@ describe("the real nav data", () => {
     }
   });
 
-  test("health is the one surface still on fixtures", () => {
-    // Guards the claim the CLAUDE.md files make. When health is wired, this
-    // test is the reminder to update them.
+  test("every remaining nav surface is wired to the backend", () => {
+    // Health was the one exception, and it is no longer a route: it is a section
+    // of the settings dialog, which renders its own inline NOT CONNECTED overlay
+    // (see HealthScreen). Nothing reachable from the rail is on fixtures, so
+    // this list is empty — and if an unwired surface is ever added to the nav,
+    // this is what says so.
     const unconnected = flattenNav()
       .filter((m) => !m.item.connected)
       .map((m) => m.item.href);
-    expect(unconnected).toEqual(["/health"]);
+    expect(unconnected).toEqual([]);
   });
 });

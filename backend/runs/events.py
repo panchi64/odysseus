@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 PROTOCOL_VERSION = 1
 
@@ -37,6 +37,59 @@ class RunStarted(_Body):
     protocol_version: int = PROTOCOL_VERSION
 
 
+class ContextThresholds(_Body):
+    """Where a filling context window stops being unremarkable and starts being a
+    problem — the two boundaries the gauge changes colour on.
+
+    **Operator-tunable**, because the point at which the remaining room stops being
+    enough is a property of how someone works rather than of the model: a thread of
+    long tool results can spend the last quarter of a window in a single turn, while a
+    short back-and-forth has a dozen turns left at the same fullness. A fixed boundary
+    is therefore either early enough to be noise for one operator or late enough to be
+    useless for the other.
+
+    Fractions, not percentages — the same 0-1 quantity :attr:`ContextWindow.fraction`
+    and auto-compaction's own threshold already carry, so nothing here has to agree on
+    a second convention.
+
+    ``warn`` strictly below ``alert`` is an invariant, not a preference: equal
+    boundaries make the amber band unreachable, and inverted ones walk the gauge
+    backwards through severity as it fills. Enforced here so that the one construction
+    path is also the one check."""
+
+    warn: float = Field(gt=0, lt=1)
+    alert: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> ContextThresholds:
+        if self.warn >= self.alert:
+            raise ValueError("the warn threshold must be below the alert threshold")
+        return self
+
+
+#: The boundaries in force when the operator hasn't moved them. 75/90 leaves roughly a
+#: turn or two of warning at typical turn sizes before the window is genuinely tight,
+#: and both sit below auto-compaction's own 0.95 default - so on a thread with
+#: compaction on, the gauge reddens while there is still something the fold can do.
+DEFAULT_CONTEXT_THRESHOLDS = ContextThresholds(warn=0.75, alert=0.9)
+
+
+class ContextComposition(_Body):
+    """What the occupied part of the window is actually holding, three ways.
+
+    The three are exhaustive by construction — they are scaled to sum to
+    :attr:`ContextWindow.used` (see ``services.context_budget``) — so the operator can
+    read them as a whole rather than wondering what the remainder is.
+
+    Every figure is an **estimate anchored to the provider's total**: the split is ours,
+    measured from what we assembled, because no provider reports one. Surfaces render
+    these with a `~`."""
+
+    system: int  # the standing brief: instructions + system prompt
+    tools: int  # every tool name, description and JSON schema handed to the model
+    messages: int  # the conversation itself
+
+
 class ContextWindow(_Body):
     """How full a model's context window is after a turn — the single owner of
     the fullness derivation and its severity thresholds. Built by
@@ -47,25 +100,80 @@ class ContextWindow(_Body):
     window: int  # the model's context window
     fraction: float  # used / window, clamped to 0–1
     level: Literal["nominal", "warn", "alert"]
+    # What `used` is made of, when it could be measured. Null on a thread whose turns all
+    # predate the measurement, and on a cold load of one — the split is captured while a
+    # request is being assembled, and a reload has no request to look at.
+    parts: ContextComposition | None = None
 
     @classmethod
-    def from_used(cls, used: int | None, window: int | None) -> ContextWindow | None:
+    def from_used(
+        cls,
+        used: int | None,
+        window: int | None,
+        thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
+        parts: ContextComposition | None = None,
+    ) -> ContextWindow | None:
         """Derive the window state from the context footprint (``used``), or None
         when there's no ceiling to measure against or no footprint was reported.
-        Severity is nominal until 75% full, warn to 90%, then alert."""
+
+        ``thresholds`` are the operator's severity boundaries; the default is what a
+        caller with no settings store to consult gets. The *level* is resolved here and
+        travels on the wire, so that the gauge, the overflow warning, and anything else
+        keying off severity read one boundary rather than each re-deriving it — the
+        client renders a level, it never decides one."""
         if not window or used is None:
             return None
         fraction = min(1.0, used / window)
-        level = "alert" if fraction >= 0.9 else "warn" if fraction >= 0.75 else "nominal"
-        return cls(used=used, window=window, fraction=fraction, level=level)
+        level = (
+            "alert"
+            if fraction >= thresholds.alert
+            else "warn"
+            if fraction >= thresholds.warn
+            else "nominal"
+        )
+        return cls(used=used, window=window, fraction=fraction, level=level, parts=parts)
 
 
 class RunMetrics(_Body):
+    """What the thread has cost so far — the readout under the composer.
+
+    **Conversation-cumulative, not per-run.** Every count here spans the whole active
+    path: the run seeds them from the conversation's persisted totals and accumulates
+    its own on top. A per-run frame was what this used to be, and it made the line
+    unreadable — the numbers reset to zero at the start of every turn, so the one
+    moment the operator most wants to know what a long thread has spent is the moment
+    the readout says nothing.
+
+    Absent, never zero. A null field means *not measured* — a provider that reports no
+    cache tokens, a turn that streamed no content to time. Zero means measured as zero.
+    The distinction is the whole reason these are nullable, and it is what lets the UI
+    omit a segment rather than assert a flattering 0%.
+    """
+
     type: Literal["run.metrics"] = "run.metrics"
     steps: int = 0
     tool_calls: int = 0
+    # Completed exchanges on the active path — what a reader calls a "turn", where
+    # `steps` counts the model round-trips a turn took internally.
+    turns: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Prompt tokens the provider served from its own cache. **Provider-reported, so
+    # null on every endpoint that doesn't report it** — most OpenAI-compatible and
+    # local servers. This is the one number here we can't measure ourselves, and a 0
+    # would read as "your caching is broken" rather than "nobody said".
+    cache_read_tokens: int | None = None
+    # Wall-clock, measured by us around our own node iteration so it means the same
+    # thing on every endpoint (see `agent/timings.py`). `llm_ms` is the full model
+    # round-trip including connect and queue — the wait the operator actually sat
+    # through — not a claim about the provider's inference time.
+    llm_ms: int | None = None
+    tool_ms: int | None = None
+    # Summed time-to-first-content and the number of responses that produced any, kept
+    # apart so the average survives being added to another run's totals. A single
+    # pre-averaged field could not be accumulated without drifting.
+    ttft_ms_total: int | None = None
+    ttft_samples: int = 0
     # The model's context window, when known — the ceiling the derived `context`
     # measures against. Null when the endpoint declares none.
     context_window: int | None = None
@@ -75,12 +183,76 @@ class RunMetrics(_Body):
     # would overstate fullness several-fold on tool-calling or multi-turn runs.
     context_used: int | None = None
 
+    # The operator's severity boundaries, seeded onto the Run at turn start and read
+    # by `context` below. Deliberately **not serialized**: it is an input to the
+    # derivation, not part of the readout, and putting it on the wire would invite a
+    # client to re-derive the level it is already being handed.
+    context_thresholds: ContextThresholds = Field(
+        default=DEFAULT_CONTEXT_THRESHOLDS, exclude=True
+    )
+
+    # How that footprint splits across the standing brief, the tool schemas and the
+    # conversation. Measured during the turn (the tool definitions are only knowable while
+    # a request is being assembled), so it rides on the frame rather than being derived
+    # from it.
+    context_parts: ContextComposition | None = None
+
     @computed_field
     @property
     def context(self) -> ContextWindow | None:
         """The context-window fullness after this turn — null when unmeasurable
         (no window, or no footprint). Clients render it; they never derive it."""
-        return ContextWindow.from_used(self.context_used, self.context_window)
+        return ContextWindow.from_used(
+            self.context_used, self.context_window, self.context_thresholds, self.context_parts
+        )
+
+    @computed_field
+    @property
+    def cache_hit_ratio(self) -> float | None:
+        """Share of prompt tokens the provider served from cache, 0–1. Null when the
+        provider reports no cache figure, or before any prompt tokens are counted."""
+        if self.cache_read_tokens is None or not self.input_tokens:
+            return None
+        return min(1.0, self.cache_read_tokens / self.input_tokens)
+
+    @computed_field
+    @property
+    def ttft_avg_ms(self) -> int | None:
+        """Mean time to first content across the responses that produced any."""
+        if not self.ttft_samples or self.ttft_ms_total is None:
+            return None
+        return round(self.ttft_ms_total / self.ttft_samples)
+
+    @computed_field
+    @property
+    def output_tokens_per_second(self) -> float | None:
+        """Generation throughput — output tokens over the time actually spent *generating*.
+
+        That is ``llm_ms`` minus the time to first token, and the subtraction is the
+        whole correctness of this figure rather than a refinement of it. ``llm_ms`` is
+        the full round-trip: connect, queue, process the prompt, then generate. Only the
+        last of those produces tokens. On a local model with a long thread the prefill
+        can be most of the wall-clock — a 20s TTFT in front of 5s of generation is
+        ordinary — so dividing by the total reported something like a fifth of the real
+        rate, and got slower the longer the conversation grew even though the model was
+        decoding at exactly the same speed.
+
+        TTFT is precisely the non-generating head of the request, which is why it is the
+        right thing to subtract. Both are summed over the same responses, so this is the
+        thread's mean decode rate, not the last turn's.
+
+        Still measured against model time and not elapsed time: the operator's wait also
+        includes tool execution and their own thinking between turns, and dividing by
+        that would report a rate that falls the longer they leave the tab open."""
+        if not self.output_tokens or self.llm_ms is None:
+            return None
+        generating_ms = self.llm_ms - (self.ttft_ms_total or 0)
+        # Non-positive means the arithmetic has nothing to say: a thread whose responses
+        # were all TTFT and no generation, or timings recorded before this was measured.
+        # Absent beats a number derived from a division we don't trust.
+        if generating_ms <= 0:
+            return None
+        return self.output_tokens / (generating_ms / 1000)
 
 
 class RunEnded(_Body):
@@ -158,30 +330,6 @@ class ToolFailed(_Body):
     tool_call_id: str
     name: str
     error: str
-
-
-# --- Documents ---------------------------------------------------------------
-class DocumentCreated(_Body):
-    type: Literal["document.created"] = "document.created"
-    document_id: str
-    title: str | None = None
-
-
-class DocumentDelta(_Body):
-    type: Literal["document.delta"] = "document.delta"
-    document_id: str
-    text: str
-
-
-class DocumentCommitted(_Body):
-    type: Literal["document.committed"] = "document.committed"
-    document_id: str
-    version: int
-    # The committed version's mint time — the authoritative ordering key, the same
-    # ``DocumentVersion.created_at`` the cold read serves. The frontend orders the View's
-    # versions by it, so a version minted live sorts identically to one read back on
-    # refresh (without it the client had to fabricate a timestamp and could misorder).
-    created_at: datetime
 
 
 # --- View (the conversation's one versioned output surface) ------------------
@@ -377,9 +525,6 @@ EventBody = Annotated[
     | ToolProgress
     | ToolCompleted
     | ToolFailed
-    | DocumentCreated
-    | DocumentDelta
-    | DocumentCommitted
     | CitationAdded
     | ViewLive
     | ViewLiveStopped

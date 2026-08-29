@@ -43,8 +43,10 @@ export function Readout(props: ReadoutProps): JSX.Element {
         <Text variant={valueVariant()} tone={local.tone ?? "bright"}>
           {local.value}
         </Text>
+        {/* A unit is emitted by the process, not written by the interface, so
+            it takes the mono voice (§2) beside the sans value. */}
         <Show when={local.unit}>
-          <Text variant="label" tone="dim">
+          <Text variant="meta" tone="dim">
             {local.unit}
           </Text>
         </Show>

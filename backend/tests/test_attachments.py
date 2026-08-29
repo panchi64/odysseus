@@ -139,9 +139,7 @@ def _workspace(sessions: _FakeSandboxSessions) -> RunWorkspace:
     its place is the degrade case — a fail-closed sandbox, a locked vault, a workspace
     that won't open — and staging must then fall back to inline text rather than name a
     path that isn't there."""
-    return RunWorkspace(
-        root=Path("/fake-host-workspace"), kind="sandbox", files=sessions.session
-    )
+    return RunWorkspace(root=Path("/fake-host-workspace"), kind="sandbox", files=sessions.session)
 
 
 # --- resolve_attachments: staged to the sandbox, announced by marker --------
@@ -211,9 +209,7 @@ async def test_staging_failure_degrades_to_the_full_text_inline():
     engine, _vault, _chunks, _adapter, store = await _uploads_store()
     uid = await _insert_upload(engine, store._vault, mime="text/plain")
 
-    resolved = await resolve_attachments(
-        store, OWNER, [uid], vision=False, workspace=None
-    )
+    resolved = await resolve_attachments(store, OWNER, [uid], vision=False, workspace=None)
 
     # No path to point at, so the text rides inline — in full, wrapped as data — and the
     # marker says the file could not be staged rather than naming a path that isn't there.
@@ -362,9 +358,7 @@ def test_install_keeps_the_prompt_and_retains_an_image():
 
 def test_install_collapses_to_text_when_no_binary_survives():
     request = ModelRequest(parts=[UserPromptPart(content=["summarize this", "<file>doc</file>"])])
-    install_persisted_attachments(
-        request, ["<file>doc</file>", "[Attached file(s): d (id: up2).]"]
-    )
+    install_persisted_attachments(request, ["<file>doc</file>", "[Attached file(s): d (id: up2).]"])
 
     part = request.parts[0]
     assert isinstance(part.content, str)  # no binary → collapsed back to one string
@@ -437,9 +431,7 @@ def _provision_then_answer(uid: str):
 
     def fn(messages, info):
         already = any(
-            isinstance(p, ToolReturnPart | RetryPromptPart)
-            for m in messages
-            for p in m.parts
+            isinstance(p, ToolReturnPart | RetryPromptPart) for m in messages for p in m.parts
         )
         if already:
             return ModelResponse(parts=[TextPart("done")])
@@ -477,12 +469,8 @@ async def _run_provision(uid: str, *, uploads, sessions):
         conversation_id="conv-1",
     )
     result = await agent.run("go", deps=deps)
-    returns = [
-        p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)
-    ]
-    retries = [
-        p for m in result.all_messages() for p in m.parts if isinstance(p, RetryPromptPart)
-    ]
+    returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+    retries = [p for m in result.all_messages() for p in m.parts if isinstance(p, RetryPromptPart)]
     return returns, retries
 
 
@@ -628,7 +616,10 @@ async def test_targeted_source_ids_read_scopes_to_one_file_and_overrides_exclude
         await _drain_adapter(adapter)
 
         index = CorpusIndex(
-            FakeEmbedder(), ModelRegistry.__new__(ModelRegistry), chunk_store, folder=None  # type: ignore[arg-type]
+            FakeEmbedder(),
+            ModelRegistry.__new__(ModelRegistry),
+            chunk_store,
+            folder=None,  # type: ignore[arg-type]
         )
         hits = await index.retrieve(OWNER, "otters", source_ids=["file-a"], limit=5)
         assert hits and all(h.source_id == "file-a" for h in hits)

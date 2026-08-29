@@ -10,12 +10,8 @@ write path, so ``reindex`` delegates to their existing re-embed (memory) or is a
 The stub *surface* adapters exist so the ``/rag`` source list shows every planned surface
 from day one, but they hold no content yet (extraction pipelines are deferred):
 ``retrieve`` returns nothing and ``status`` reports a stale, empty source. Each fills in as
-its surface is built — documents and uploads already have real adapters
-(``corpus/documents.py``, ``corpus/uploads.py``), so they are no longer stubbed here.
-**Gallery is deliberately not a corpus source:** its images *are* uploads, already indexed
-under ``surf-uploads``, so a separate gallery source would double-count the same chunks —
-it is a presentation lens over the uploads, not a second source. Only research remains a
-stub.
+its surface is built — uploads already has a real adapter (``corpus/uploads.py``), so it is
+no longer stubbed here. Only research remains a stub.
 """
 
 from __future__ import annotations

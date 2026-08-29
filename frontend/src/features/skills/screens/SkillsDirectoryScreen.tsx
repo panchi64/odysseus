@@ -1,5 +1,4 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
-import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
@@ -41,15 +40,20 @@ import {
 import { NewSkillDialog } from "../components/NewSkillDialog";
 
 const STATUS_TABS = [
-  { value: "all", label: "ALL" },
-  { value: "published", label: "PUBLISHED" },
-  { value: "draft", label: "DRAFT" },
+  { value: "all", label: "All" },
+  { value: "published", label: "Published" },
+  { value: "draft", label: "Draft" },
 ];
 const STATUS_VALUES = ["all", "published", "draft"] as const;
 type StatusFilter = (typeof STATUS_VALUES)[number];
 
-export function SkillsDirectoryScreen(): JSX.Element {
-  const navigate = useNavigate();
+export function SkillsDirectoryScreen(props: {
+  /** Open a skill's editor. The directory used to navigate to `/skills/{id}`;
+   *  it now lives inside the settings dialog, which owns that second level, so
+   *  where "open" goes is the caller's business rather than a route this
+   *  component hard-codes. */
+  onOpen: (id: string) => void;
+}): JSX.Element {
   const skillsResource = useSkills();
   // Reading a Solid resource accessor re-throws its error (same hazard GalleryScreen
   // documents). A 500 from /skills would otherwise trip the shell's ErrorBoundary and
@@ -82,8 +86,8 @@ export function SkillsDirectoryScreen(): JSX.Element {
       const { skill, warnings } = await importSkill(file);
       toast.success(`Imported "${skill.name}" as a draft`, {
         action: {
-          label: "OPEN",
-          onClick: () => navigate(`/skills/${skill.id}`),
+          label: "Open",
+          onClick: () => props.onOpen(skill.id),
         },
       });
       // Everything the backend flagged about the bundle, verbatim — the operator
@@ -103,7 +107,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
       title: `Delete "${skill.name}"?`,
       detail:
         "The skill and every file in its bundle are permanently removed. Export it first if you want a copy.",
-      confirmLabel: "DELETE",
+      confirmLabel: "Delete",
       tone: "alert",
     });
     if (!ok) return;
@@ -134,7 +138,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
         : `"${skill.name}" unpublished — back to draft.`,
       {
         action: {
-          label: "UNDO",
+          label: "Undo",
           onClick: () => {
             setSkillPublished(skill.id, !next).catch(() =>
               toast.error("Could not undo"),
@@ -178,11 +182,11 @@ export function SkillsDirectoryScreen(): JSX.Element {
     search: (s) => `${s.name} ${s.description}`,
     sorts: {
       recent: {
-        label: "NEWEST",
+        label: "Newest",
         compare: (a, b) => a.updatedAt.localeCompare(b.updatedAt),
       },
       name: {
-        label: "NAME",
+        label: "Name",
         compare: (a, b) => a.name.localeCompare(b.name),
       },
     },
@@ -193,7 +197,8 @@ export function SkillsDirectoryScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
-        title="SKILLS"
+        variant="section"
+        title="Skills"
         subtitle="Agent Skills bundles — reusable procedures the assistant can follow."
         assetId="ODY-SKL-01.0"
         actions={
@@ -211,14 +216,14 @@ export function SkillsDirectoryScreen(): JSX.Element {
               disabled={importing()}
               onClick={picker.openPicker}
             >
-              {importing() ? "IMPORTING…" : "IMPORT"}
+              {importing() ? "Importing…" : "Import"}
             </Button>
             <Button
               variant="primary"
               leading="plus"
               onClick={() => setNewOpen(true)}
             >
-              NEW SKILL
+              New skill
             </Button>
           </Row>
         }
@@ -226,19 +231,19 @@ export function SkillsDirectoryScreen(): JSX.Element {
 
       <InstrumentBand
         items={[
-          { label: "TOTAL", value: String(skills().length) },
+          { label: "Total", value: String(skills().length) },
           {
-            label: "PUBLISHED",
+            label: "Published",
             value: String(publishedCount()),
             tone: "nominal",
           },
-          { label: "DRAFT", value: String(draftCount()), tone: "dim" },
-          { label: "BUNDLES", value: bytes(totalBytes()) },
+          { label: "Draft", value: String(draftCount()), tone: "dim" },
+          { label: "Bundles", value: bytes(totalBytes()) },
         ]}
       />
 
       <Panel flush>
-        <div class="flex items-center justify-between gap-3 border-b border-line pr-3">
+        <div class="flex items-center justify-between gap-3 pr-3">
           <Tabs
             items={STATUS_TABS}
             value={statusFilter()}
@@ -247,20 +252,20 @@ export function SkillsDirectoryScreen(): JSX.Element {
           <Row align="center" gap={3}>
             <Row align="center" gap={1}>
               <Text variant="micro" tone="dim">
-                DRAFT
+                Draft
               </Text>
               <InfoHint label="A draft is invisible to the agent. Publishing is what makes a skill's instructions something the assistant will follow — imported bundles always land as drafts so you can read them first." />
             </Row>
             <Row align="center" gap={1}>
               <Text variant="micro" tone="dim">
-                IMPORT
+                Import
               </Text>
               <InfoHint label="Accepts an Agent Skills bundle (.zip) or a lone SKILL.md. The bundle keeps its supporting files, and anything unusual about it is reported as a warning." />
             </Row>
           </Row>
         </div>
 
-        <div class="border-b border-line p-3">
+        <div class="p-3">
           <ListToolbar
             query={view.query()}
             onQueryChange={view.setQuery}
@@ -287,7 +292,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
             fallback={
               <EmptyState
                 icon="layers"
-                message={loadError() ? "SKILLS UNAVAILABLE" : "NO SKILLS"}
+                message={loadError() ? "Skills unavailable" : "No skills"}
                 hint={loadError() ?? emptyHint()}
               />
             }
@@ -297,7 +302,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
                 <ListRow
                   label={skill.name}
                   leading="layers"
-                  href={`/skills/${skill.id}`}
+                  onClick={() => props.onOpen(skill.id)}
                   right={
                     <span class="flex shrink-0 items-center gap-3">
                       {/* Shown for any bundle that has files at all — a row that
@@ -305,7 +310,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
                       <Show when={skill.fileCount > 0}>
                         <Text variant="micro" tone="dim">
                           {skill.fileCount}{" "}
-                          {skill.fileCount === 1 ? "FILE" : "FILES"} ·{" "}
+                          {skill.fileCount === 1 ? "File" : "Files"} ·{" "}
                           {bytes(skill.sizeBytes)}
                         </Text>
                       </Show>
@@ -335,22 +340,22 @@ export function SkillsDirectoryScreen(): JSX.Element {
                           }
                           items={[
                             {
-                              label: "EDIT",
+                              label: "Edit",
                               icon: "edit",
-                              onSelect: () => navigate(`/skills/${skill.id}`),
+                              onSelect: () => props.onOpen(skill.id),
                             },
                             {
-                              label: "EXPORT",
+                              label: "Export",
                               icon: "download",
                               onSelect: () => void handleExport(skill),
                             },
                             {
-                              label: skill.published ? "UNPUBLISH" : "PUBLISH",
+                              label: skill.published ? "Unpublish" : "Publish",
                               icon: "check",
                               onSelect: () => void handlePublishToggle(skill),
                             },
                             {
-                              label: "DELETE",
+                              label: "Delete",
                               icon: "trash",
                               danger: true,
                               onSelect: () => void handleDelete(skill),
@@ -372,7 +377,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
         onClose={() => setNewOpen(false)}
         onCreated={(id) => {
           setNewOpen(false);
-          navigate(`/skills/${id}`);
+          props.onOpen(id);
         }}
       />
     </Stack>

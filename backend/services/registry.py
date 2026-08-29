@@ -17,7 +17,7 @@ and opened on resolve. Resolution validates that tool-driving roles
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import httpx
@@ -74,6 +74,16 @@ class ModelRegistry:
         # Pooled client for provider model discovery; None ⇒ a transient client
         # per call (the path tests take, where discovery is monkeypatched out).
         self._http_client = http_client
+        # Discovered context windows, keyed (base_url, model) — see
+        # `_discover_context_window`. Process-local and rebuildable, so it is a cache
+        # and not state: losing it costs one provider round-trip, never correctness.
+        self._context_windows: dict[tuple[str, str], int | None] = {}
+        # The implicit `main` chain, keyed by owner — see `implicit_main_binding`.
+        # Same cache discipline as the windows above: process-local, rebuildable, and
+        # dropped by `forget_implicit_main` on any endpoint write, because every input
+        # it reads (which endpoints exist, whether they are enabled, what models they
+        # serve) is exactly what such a write can move.
+        self._implicit_main: dict[str, tuple[list[str], str | None] | None] = {}
 
     # --- endpoint catalog -------------------------------------------------
 
@@ -90,9 +100,7 @@ class ModelRegistry:
         return await in_session(self._engine, work)
 
     async def get_endpoint(self, owner_id: str, endpoint_id: str) -> ModelEndpoint:
-        return await get_owned(
-            self._engine, ModelEndpoint, endpoint_id, owner_id, what="endpoint"
-        )
+        return await get_owned(self._engine, ModelEndpoint, endpoint_id, owner_id, what="endpoint")
 
     async def create_endpoint(
         self,
@@ -108,8 +116,6 @@ class ModelRegistry:
         vision: bool = False,
         thinking: bool = False,
         enabled: bool = True,
-        managed: bool = False,
-        live_status: str | None = None,
     ) -> ModelEndpoint:
         self._validate_provider(provider, has_key=bool(api_key))
         endpoint = ModelEndpoint(
@@ -124,8 +130,6 @@ class ModelRegistry:
             vision=vision,
             thinking=thinking,
             enabled=enabled,
-            managed=managed,
-            live_status=live_status,
         )
 
         def work(session: Session) -> ModelEndpoint:
@@ -134,6 +138,9 @@ class ModelRegistry:
             session.refresh(endpoint)
             return endpoint
 
+        # A new endpoint can become the implicit `main` — most obviously the first one,
+        # where the memoized answer is "none".
+        self.forget_implicit_main()
         return await in_session(self._engine, work)
 
     async def update_endpoint(
@@ -170,6 +177,11 @@ class ModelRegistry:
             session.refresh(endpoint)
             return endpoint
 
+        # A write can move the base URL, the model, or the operator's own window —
+        # every input the memoized discovery keyed on — so the cache is dropped rather
+        # than reasoned about field by field. It costs one round-trip to rebuild.
+        self.forget_context_windows()
+        self.forget_implicit_main()
         return await in_session(self._engine, work)
 
     async def delete_endpoint(self, owner_id: str, endpoint_id: str) -> None:
@@ -181,50 +193,23 @@ class ModelRegistry:
                 session.delete(endpoint)
             # Prune the id from every role chain that referenced it, so deleting an
             # endpoint can never leave a dangling reference a later resolve trips on.
-            bindings = session.exec(
-                select(ModelRole).where(ModelRole.owner_id == owner_id)
-            ).all()
+            bindings = session.exec(select(ModelRole).where(ModelRole.owner_id == owner_id)).all()
             for binding in bindings:
                 if endpoint_id in binding.endpoint_ids:
                     binding.endpoint_ids = [e for e in binding.endpoint_ids if e != endpoint_id]
                     binding.updated_at = datetime.now(UTC)
                     session.add(binding)
 
+        # The deleted endpoint may have been the implicit `main`; the next resolve has
+        # to find the one after it rather than a stale id.
+        self.forget_implicit_main()
         await in_session(self._engine, work)
-
-    async def stop_managed_endpoints(self) -> int:
-        """Mark every serving-managed endpoint not-running, returning how many changed.
-
-        A boot sweep, and owner-agnostic on purpose: a managed endpoint is served by a
-        child of *this* process, so at startup nothing that claims to be running can
-        still be true, for any owner. Sweeping the endpoints directly — rather than only
-        the ones a still-active managed row points at — is the part that matters. A row
-        that reached a terminal state with its endpoint left at ``"running"`` is invisible
-        to a row-driven sweep, and resolution reads ``live_status``: the endpoint stays
-        eligible forever, and every request for the role bound to it goes to a port with
-        nothing behind it. The role binding and the operator's ``enabled`` choice survive
-        untouched, so re-serving restores the endpoint rather than rebuilding it.
-        """
-
-        def work(session: Session) -> int:
-            endpoints = session.exec(
-                select(ModelEndpoint).where(
-                    ModelEndpoint.managed.is_(True),  # type: ignore[attr-defined]
-                    ModelEndpoint.live_status == "running",
-                )
-            ).all()
-            for endpoint in endpoints:
-                endpoint.live_status = "stopped"
-                endpoint.updated_at = datetime.now(UTC)
-                session.add(endpoint)
-            return len(endpoints)
-
-        return await in_session(self._engine, work)
 
     # --- role bindings ----------------------------------------------------
 
     async def get_role(self, owner_id: str, role: str) -> list[str]:
         """The ordered endpoint-id chain bound to ``role`` (empty if unbound)."""
+
         def work(session: Session) -> list[str]:
             binding = session.exec(
                 select(ModelRole)
@@ -237,6 +222,7 @@ class ModelRegistry:
 
     async def get_role_model(self, owner_id: str, role: str) -> str | None:
         """The explicit model pinned on ``role`` (``None`` ⇒ the endpoint's default)."""
+
         def work(session: Session) -> str | None:
             binding = session.exec(
                 select(ModelRole)
@@ -247,12 +233,11 @@ class ModelRegistry:
 
         return await in_session(self._engine, work)
 
-    async def get_role_binding(
-        self, owner_id: str, role: str
-    ) -> tuple[list[str], str | None]:
+    async def get_role_binding(self, owner_id: str, role: str) -> tuple[list[str], str | None]:
         """The role's endpoint chain and pinned model in a single read — the chain
         and the model live on one row, so callers that need both (resolution,
         change-detection) shouldn't pay two round-trips."""
+
         def work(session: Session) -> tuple[list[str], str | None]:
             binding = session.exec(
                 select(ModelRole)
@@ -268,19 +253,16 @@ class ModelRegistry:
     async def list_role_models(self, owner_id: str) -> dict[str, str | None]:
         """The explicit model pinned on each bound role — the picker counterpart to
         :meth:`list_roles` (which returns the endpoint chains)."""
+
         def work(session: Session) -> dict[str, str | None]:
-            bindings = session.exec(
-                select(ModelRole).where(ModelRole.owner_id == owner_id)
-            ).all()
+            bindings = session.exec(select(ModelRole).where(ModelRole.owner_id == owner_id)).all()
             return {b.role: b.model for b in bindings}
 
         return await in_session(self._engine, work)
 
     async def list_roles(self, owner_id: str) -> dict[str, list[str]]:
         def work(session: Session) -> dict[str, list[str]]:
-            bindings = session.exec(
-                select(ModelRole).where(ModelRole.owner_id == owner_id)
-            ).all()
+            bindings = session.exec(select(ModelRole).where(ModelRole.owner_id == owner_id)).all()
             return {b.role: list(b.endpoint_ids) for b in bindings}
 
         return await in_session(self._engine, work)
@@ -315,9 +297,7 @@ class ModelRegistry:
             ).first()
             if binding is None:
                 session.add(
-                    ModelRole(
-                        owner_id=owner_id, role=role, endpoint_ids=endpoint_ids, model=model
-                    )
+                    ModelRole(owner_id=owner_id, role=role, endpoint_ids=endpoint_ids, model=model)
                 )
             else:
                 binding.endpoint_ids = endpoint_ids
@@ -357,8 +337,7 @@ class ModelRegistry:
         """The ordered, decrypted endpoint specs ``role`` resolves to: a
         per-conversation ``main`` override → the role's own chain. Shared by every
         resolution entry point — :meth:`resolve_detailed`, :meth:`resolve_background`,
-        :meth:`main_context_window`, :meth:`role_is_usable` — so all of them see
-        identical resolution.
+        :meth:`main_context_window` — so all of them see identical resolution.
 
         The role's **pinned model** is applied to the chain's primary (head)
         endpoint — a stored binding is thus self-describing, so background /
@@ -371,90 +350,144 @@ class ModelRegistry:
 
         if override_endpoint_id is not None and role == "main":
             endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
-            # An unavailable endpoint is skipped by resolution everywhere — including a
-            # per-conversation override (e.g. regenerating an old turn whose endpoint was
-            # since benched or whose local engine was stopped). The picker hides it, but
-            # the backend is the authority, so reject it here rather than silently
-            # resolving to a dead or benched endpoint.
+            # A benched endpoint is skipped by resolution everywhere — including a
+            # per-conversation override (e.g. regenerating an old turn whose endpoint has
+            # since been benched). The picker hides it, but the backend is the authority,
+            # so reject it here rather than silently resolving to a benched endpoint.
             if not endpoint.enabled:
                 raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is disabled")
-            if not _available(endpoint):
-                raise DegradedCapabilityError(
-                    f"endpoint {endpoint.name!r} is not running"
-                )
-            return [self._to_spec(endpoint, role, model_override=override_model)]
+            return await self._with_context_windows(
+                [self._to_spec(endpoint, role, model_override=override_model)]
+            )
 
         chain_ids, pinned_model = await self.get_role_binding(owner_id, role)
+        if not chain_ids and role == "main":
+            # An unbound `main` with a usable model available resolves to it rather than
+            # degrading. Nothing is written: the default is the state the workspace is
+            # already in, not a fourth thing to configure — the same shape as `utility`
+            # degrading onto `main`. It also keeps the picker honest, since the picker
+            # displays whatever this resolves to; without it the composer showed a model
+            # and the send refused, and re-picking that same model in the dropdown was
+            # the only way to make the two agree.
+            implicit = await self.implicit_main_binding(owner_id)
+            if implicit is not None:
+                chain_ids, pinned_model = implicit
         if not chain_ids:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
         endpoints = [await self.get_endpoint(owner_id, eid) for eid in chain_ids]
-        # Skip unavailable endpoints — operator-benched (`enabled` off) or a managed
-        # local engine that isn't running — so the chain falls through to the next:
-        # the pre-emptive side of the runtime FallbackModel failover.
-        live = [e for e in endpoints if _available(e)]
+        # Skip operator-benched endpoints (`enabled` off) so the chain falls through to
+        # the next: the pre-emptive side of the runtime FallbackModel failover.
+        live = [e for e in endpoints if e.enabled]
         if not live:
             raise DegradedCapabilityError(
-                f"all endpoints bound to role {role!r} are disabled or not running"
+                f"all endpoints bound to role {role!r} are disabled"
             )
         # Pin applies to the head only; the tail falls back on each endpoint's default.
+        return await self._with_context_windows(
+            [
+                self._to_spec(endpoint, role, model_override=pinned_model if i == 0 else None)
+                for i, endpoint in enumerate(live)
+            ]
+        )
+
+    async def implicit_main_binding(
+        self, owner_id: str
+    ) -> tuple[list[str], str | None] | None:
+        """The chain `main` resolves to when the operator has bound nothing — the first
+        enabled endpoint that can name a model, and that model. None when no endpoint
+        can supply one.
+
+        **A default, never a pin.** It is recomputed rather than stored, so adding a
+        better endpoint moves the default instead of leaving `main` fastened to whatever
+        happened to exist first, and an operator who never opens the picker is never
+        surprised by a binding they did not make. `list_roles`/`RoleView` report it with
+        `implicit` set, so a surface can say "defaulting to this" rather than showing it
+        as chosen.
+
+        **Endpoint order is `list_endpoints`' order (by name), not insertion order**, so
+        the answer does not depend on the sequence endpoints were added in — the same
+        catalog always yields the same default.
+
+        The model is the endpoint's configured default when it has one, and otherwise
+        the provider's first discovered model: the setup this workspace is built for is
+        one server serving many models with none of them written on the endpoint row, so
+        a rule that only read the column would find nothing in exactly the common case.
+        Discovery failure is not an error here — an endpoint that cannot be reached
+        simply is not the default — so the scan moves on rather than propagating.
+
+        Memoized per owner. Discovery is provider I/O and this sits on the resolution
+        path of every turn; `forget_implicit_main` drops it on any endpoint write."""
+        if owner_id in self._implicit_main:
+            return self._implicit_main[owner_id]
+        answer: tuple[list[str], str | None] | None = None
+        for endpoint in await self.list_endpoints(owner_id):
+            if not endpoint.enabled:
+                continue
+            model = endpoint.model
+            if not model:
+                try:
+                    discovered = await self.list_provider_models(owner_id, endpoint.id)
+                except (DegradedCapabilityError, NotFoundError):
+                    continue
+                model = discovered[0] if discovered else None
+            if model:
+                answer = ([endpoint.id], model)
+                break
+        self._implicit_main[owner_id] = answer
+        return answer
+
+    async def _with_context_windows(self, specs: list[llm.EndpointSpec]) -> list[llm.EndpointSpec]:
+        """Fill in each spec's context window from its provider where the operator
+        didn't state one.
+
+        Here, at the single point every resolution path funnels through, so the model a
+        run is built on and the ceiling the gauge measures against can't come from
+        different answers. `_to_spec` stays synchronous — discovery is I/O, and the
+        specs have to exist before anything can be asked about them.
+
+        An operator-set window on the endpoint always wins: it is the override for
+        exactly the case discovery can't serve, and a discovered value quietly
+        replacing a deliberate one would make the field appear not to work."""
         return [
-            self._to_spec(endpoint, role, model_override=pinned_model if i == 0 else None)
-            for i, endpoint in enumerate(live)
+            spec
+            if spec.context_window is not None
+            else replace(spec, context_window=await self._discover_context_window(spec))
+            for spec in specs
         ]
 
-    async def repin_roles_for_endpoint(
-        self, owner_id: str, endpoint_id: str, model: str
-    ) -> list[str]:
-        """Re-point every role pinned to a **stale** model on ``endpoint_id``, returning
-        the roles that were moved.
+    async def _discover_context_window(self, spec: llm.EndpointSpec) -> int | None:
+        """The provider's answer for this model, memoized per (base_url, model).
 
-        A role's pin names a model *string*, and resolution sends that string verbatim as
-        the request's ``model``. That is safe while the endpoint keeps answering to it —
-        but a managed endpoint's model id is derived from what is being served, so
-        re-serving can change it under a pin the operator set earlier. MLX makes this
-        concrete: it identifies a model by the local path it loaded from, so a pin left
-        naming the old id would ask the server for a model it doesn't have, and mlx-vlm
-        resolves an unrecognized name by going to the HuggingFace cache for a *different*
-        model.
+        Cached because this sits on the path of *every* turn and the answer changes
+        about as often as the served model does — an uncached lookup would put an extra
+        provider round-trip in front of each run for a number that was already known.
+        Keyed on the base URL rather than the endpoint id so re-pointing an endpoint
+        can't serve a window discovered from the server it used to be."""
+        key = (spec.base_url, spec.model)
+        if key not in self._context_windows:
+            self._context_windows[key] = await get_provider(spec.provider).context_window(
+                spec.base_url, spec.api_key, spec.model, client=self._http_client
+            )
+        return self._context_windows[key]
 
-        Only the pin is rewritten — the operator chose this endpoint and still has it.
-        Writes directly rather than through :meth:`set_role`, which re-runs binding
-        validation (including a live embedding probe) that has no business firing inside
-        a serve."""
-        moved: list[str] = []
+    def forget_implicit_main(self) -> None:
+        """Drop the memoized implicit `main` — after any endpoint create/update/delete,
+        since which endpoint is first, whether it is enabled, and what it serves are all
+        inputs to it.
 
-        def work(session: Session) -> list[str]:
-            bindings = session.exec(
-                select(ModelRole).where(ModelRole.owner_id == owner_id)
-            ).all()
-            for binding in bindings:
-                # The pin only ever applies to the chain's head, so a role that merely
-                # lists this endpoint as a fallback is untouched.
-                head = (binding.endpoint_ids or [None])[0]
-                if head != endpoint_id or not binding.model or binding.model == model:
-                    continue
-                binding.model = model
-                session.add(binding)
-                moved.append(binding.role)
-            return moved
+        Deliberately *not* folded into `forget_context_windows`. That one is also called
+        by `list_provider_models`, which runs **inside** the implicit scan — so clearing
+        both there would leave the scan's own result depending on whether the assignment
+        happened to come after the clear. Correct today, and the kind of correctness that
+        breaks the next time either method moves."""
+        self._implicit_main.clear()
 
-        return await in_session(self._engine, work)
-
-    async def role_is_usable(self, owner_id: str, role: str) -> bool:
-        """Whether ``role`` currently resolves to at least one endpoint that could serve
-        a request right now — bound, enabled, running if managed, tool-capable if the role
-        needs it, and with a model configured.
-
-        Asked by the serving layer before it auto-binds a freshly-served model: a role
-        that already resolves is the operator's working choice and is never displaced.
-        Reuses the real resolution path rather than re-deriving availability, so the two
-        can't drift."""
-        try:
-            await self._resolve_specs(role, owner_id=owner_id)
-        except (DegradedCapabilityError, NotFoundError, ValueError):
-            return False
-        return True
+    def forget_context_windows(self) -> None:
+        """Drop the memoized windows — after an endpoint write, and whenever discovery
+        is explicitly re-run. A model reloaded at a different context length is exactly
+        the case the operator is refreshing to pick up."""
+        self._context_windows.clear()
 
     async def resolve_detailed(
         self,
@@ -526,7 +559,7 @@ class ModelRegistry:
         re-title share."""
         try:
             return await self.resolve_detailed("utility", owner_id=owner_id)
-        except (DegradedCapabilityError, NotFoundError):
+        except DegradedCapabilityError, NotFoundError:
             return await self.resolve_detailed(
                 "main",
                 owner_id=owner_id,
@@ -552,14 +585,28 @@ class ModelRegistry:
         return llm.build_chain([self._to_spec(endpoint, "vision") for endpoint in endpoints])
 
     async def main_context_window(self, owner_id: str) -> int | None:
-        """The default ``main`` chain head's context window, resolved without
-        building a runnable model — for read paths (conversation detail) that need
-        only the ceiling. None when ``main`` is unconfigured — or when its chain is
-        unresolvable (e.g. a stale id left by an out-of-band delete): the context
-        meter is a read-path nicety and must never fail the conversation read."""
+        """The default ``main`` chain head's context window — the ceiling the composer's
+        gauge measures against and the send gate requires."""
+        return await self.role_context_window(owner_id, "main")
+
+    async def role_context_window(self, owner_id: str, role: str) -> int | None:
+        """A role's chain head context window, resolved without building a runnable
+        model — for read paths (conversation detail, the roles listing) that need only
+        the ceiling.
+
+        **The window belongs to the binding, not to the endpoint.** An endpoint row
+        carries a *default* model, and most don't set one: the model in play is the one
+        the role pinned. Asking the endpoint alone therefore answers null on exactly the
+        setup this workspace is built for — one server, many models, the choice made in
+        the picker — which is what made the send gate refuse a perfectly configured
+        thread.
+
+        None when the role is unconfigured, or when its chain is unresolvable (a stale
+        id left by an out-of-band delete): every caller here is a read path, and the
+        ceiling is a nicety that must never fail the read it rides on."""
         try:
-            specs = await self._resolve_specs("main", owner_id=owner_id)
-        except (DegradedCapabilityError, NotFoundError):
+            specs = await self._resolve_specs(role, owner_id=owner_id)
+        except DegradedCapabilityError, NotFoundError:
             return None
         return specs[0].context_window if specs else None
 
@@ -572,13 +619,10 @@ class ModelRegistry:
         if not chain_ids:
             raise DegradedCapabilityError("no embedding endpoint configured")
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
-        # An unavailable endpoint is skipped everywhere, exactly as chat resolution skips
-        # it (a stopped/crashed locally-served model keeps the role binding but reports
-        # itself not running). Degrade to keyword recall rather than resolve a dead port.
-        if not _available(endpoint):
-            raise DegradedCapabilityError(
-                f"embedding endpoint {endpoint.name!r} is disabled or not running"
-            )
+        # A benched endpoint is skipped everywhere, exactly as chat resolution skips it.
+        # Degrade to keyword recall rather than resolve one the operator switched off.
+        if not endpoint.enabled:
+            raise DegradedCapabilityError(f"embedding endpoint {endpoint.name!r} is disabled")
         return self._to_spec(endpoint, "embedding", model_override=model)
 
     async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:
@@ -588,6 +632,10 @@ class ModelRegistry:
         no models API — the caller falls back to the endpoint's configured model."""
         endpoint = await self.get_endpoint(owner_id, endpoint_id)
         api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
+        # Discovery is what the picker calls when it opens, and the operator opening it
+        # is the moment to re-ask about windows too: a model reloaded at a different
+        # context length is exactly what they'd be looking for.
+        self.forget_context_windows()
         return await get_provider(endpoint.provider).discover(
             endpoint.base_url, api_key, client=self._http_client
         )
@@ -600,9 +648,7 @@ class ModelRegistry:
         carries the API key. Persists the four health columns + the check time and
         returns them. Raises ``NotFoundError`` for an unknown endpoint."""
         endpoint = await self.get_endpoint(owner_id, endpoint_id)
-        api_key = (
-            self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
-        )
+        api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
         # A probe only needs base_url + key — the models listing ignores the model
         # name — so an endpoint whose model is discovered at pick-time is testable.
         category, detail = await self._categorize_probe(
@@ -680,7 +726,7 @@ class ModelRegistry:
             return "timeout", "The provider was slow to respond — try again shortly."
         except httpx.ConnectError:
             return "unreachable", "Couldn't connect — check the base URL and your network."
-        except (httpx.HTTPError, ValueError):
+        except httpx.HTTPError, ValueError:
             return "bad_response", "The provider's response couldn't be understood."
         return "ok", "Reachable and the API key was accepted."
 
@@ -697,9 +743,7 @@ class ModelRegistry:
             raise DegradedCapabilityError(
                 f"endpoint {endpoint.name!r} has no model configured and none was selected"
             )
-        api_key = (
-            self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
-        )
+        api_key = self._vault.decrypt_str(endpoint.api_key_enc) if endpoint.api_key_enc else None
         return llm.EndpointSpec(
             base_url=endpoint.base_url,
             model=model,
@@ -719,16 +763,5 @@ class ModelRegistry:
         except LookupError as exc:
             raise ValueError(str(exc)) from exc
         if impl.requires_key and not has_key:
-            raise ValueError(
-                f"provider {impl.display_name!r} requires an API key"
-            )
+            raise ValueError(f"provider {impl.display_name!r} requires an API key")
 
-
-def _available(endpoint: ModelEndpoint) -> bool:
-    """Whether resolution may use this endpoint: the operator's switch is on, and —
-    for a serving-managed local engine — its process is actually running."""
-    if not endpoint.enabled:
-        return False
-    if endpoint.managed and endpoint.live_status != "running":
-        return False
-    return True

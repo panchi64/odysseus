@@ -197,12 +197,12 @@ export function RawTextViewer(props: {
       when={!loaded.error}
       fallback={<ErrorState message="Could not load this file." />}
     >
-      <Show when={loaded()} fallback={<LoadingText label="LOADING VIEW…" />}>
+      <Show when={loaded()} fallback={<LoadingText label="Loading view…" />}>
         <div class="flex h-full min-h-0 flex-col">
-          <div class="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1.5">
+          <div class="flex shrink-0 items-center gap-2 px-2 py-1.5">
             <Input
               leading="search"
-              placeholder="SEARCH…"
+              placeholder="Search…"
               aria-label="Search file contents"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
@@ -235,7 +235,7 @@ export function RawTextViewer(props: {
           </div>
           <Show when={truncationBanner()}>
             {(banner) => (
-              <div class="shrink-0 border-b border-line px-2 py-1">
+              <div class="shrink-0 px-2 py-1">
                 <Text variant="micro" tone="warn">
                   {banner()}
                 </Text>
@@ -244,7 +244,7 @@ export function RawTextViewer(props: {
           </Show>
           <Show
             when={renderLines().length > 0}
-            fallback={<EmptyState message="EMPTY FILE" />}
+            fallback={<EmptyState message="Empty file" />}
           >
             <Show
               when={!props.softWrap}

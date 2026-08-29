@@ -17,6 +17,7 @@ from core.config import get_settings
 from core.db import in_session
 from models._fields import utcnow
 from models.app_setting import AppSetting
+from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds
 
 # Conversation auto-compaction (agent/summarize.py) — the product's one context reduction:
 # whether to fold a thread's older turns into a utility-model summary once its footprint
@@ -24,6 +25,13 @@ from models.app_setting import AppSetting
 # The retained-turn count is config-only; these two are what the operator actually tunes.
 AUTO_COMPACT_ENABLED_KEY = "chat.auto_compact_enabled"
 AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"
+
+# The context gauge's severity boundaries (runs/events.py `ContextThresholds`): the two
+# fullness fractions at which the ring under the composer turns amber and then red.
+# Presentation, but not only presentation — the same `level` is what any overflow warning
+# keys off — so it is stored and validated here rather than as a client-side constant.
+CONTEXT_WARN_THRESHOLD_KEY = "chat.context_warn_threshold"
+CONTEXT_ALERT_THRESHOLD_KEY = "chat.context_alert_threshold"
 
 # The agent's per-turn model-request ceiling (agent/engine.py's `UsageLimits`): the
 # operator's runtime override of `agent_request_limit`. Every model round-trip spends
@@ -241,3 +249,48 @@ async def set_auto_compact(
     )
     await store.set(owner_id, AUTO_COMPACT_THRESHOLD_KEY, str(settings.threshold))
     return settings
+
+
+async def get_context_thresholds(store: SettingsStore, owner_id: str) -> ContextThresholds:
+    """The operator's context-gauge severity boundaries — the stored pair where set (and
+    valid), else the defaults. One batched read, like auto-compaction's pair.
+
+    The fallback is all-or-nothing rather than per-field, because the two are only
+    meaningful together: a stored ``warn`` of 0.95 read alongside a defaulted ``alert``
+    of 0.9 is an inverted pair that no operator ever chose. So a value that is out of
+    range, unparseable, or (with its partner) out of order sends *both* back to the
+    defaults — a gauge with the wrong boundaries is worse than one with the stock pair,
+    since the operator has no way to tell it is miscalibrated by looking at it."""
+    values = await store.get_many(
+        owner_id, (CONTEXT_WARN_THRESHOLD_KEY, CONTEXT_ALERT_THRESHOLD_KEY)
+    )
+    try:
+        return ContextThresholds(
+            warn=_fraction(values.get(CONTEXT_WARN_THRESHOLD_KEY)),
+            alert=_fraction(values.get(CONTEXT_ALERT_THRESHOLD_KEY)),
+        )
+    except (TypeError, ValueError):
+        # `ValueError` covers pydantic's ValidationError (its base) — the ordering
+        # invariant — as well as an unparseable string; `TypeError` covers an absent key.
+        return DEFAULT_CONTEXT_THRESHOLDS
+
+
+def _fraction(raw: str | None) -> float:
+    """A stored fraction as a float, raising on anything unusable so the caller can fall
+    back to the whole default pair rather than to a half-defaulted one."""
+    if raw is None:
+        raise TypeError("unset")
+    return float(raw)
+
+
+async def set_context_thresholds(
+    store: SettingsStore, owner_id: str, thresholds: ContextThresholds
+) -> ContextThresholds:
+    """Persist the operator's context-gauge boundaries. Returns the stored pair.
+
+    Takes a constructed ``ContextThresholds``, so the ordering invariant has already been
+    checked by the one place that owns it — this can't write a pair the getter would then
+    reject and silently replace with the defaults."""
+    await store.set(owner_id, CONTEXT_WARN_THRESHOLD_KEY, str(thresholds.warn))
+    await store.set(owner_id, CONTEXT_ALERT_THRESHOLD_KEY, str(thresholds.alert))
+    return thresholds

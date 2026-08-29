@@ -7,7 +7,7 @@ import {
 import { ErrorState } from "./ErrorState";
 
 export interface ErrorBoundaryProps {
-  /** Error headline (default "SOMETHING WENT WRONG"); the reason is auto-filled. */
+  /** Error headline (default "Something went wrong"); the reason is auto-filled. */
   message?: string;
   /** Extra work to run before Solid re-renders the subtree — e.g. refetch a
    *  resource whose failure threw, so RETRY has something new to render. */

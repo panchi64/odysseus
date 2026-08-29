@@ -118,9 +118,7 @@ def test_selection_basic_pin(monkeypatch):
     from core.config import Settings
     from harness.manifests.uploads import _build_extractor as _build_upload_extractor
 
-    monkeypatch.setattr(
-        MinerUExtractor, "is_available", staticmethod(lambda binary="mineru": True)
-    )
+    monkeypatch.setattr(MinerUExtractor, "is_available", staticmethod(lambda binary="mineru": True))
     extractor = _build_upload_extractor(_registry(), Settings(upload_extractor="basic"))
     assert isinstance(extractor, BasicExtractor)
 

@@ -7,10 +7,16 @@ import asyncio
 from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
-from services.registry import ModelRegistry, ResolvedModel
+from services.registry import ModelRegistry
 from tools import RunDeps
 
-from ._helpers import client_app, collect_sse_events, swap_tool_catalog
+from ._helpers import (
+    client_app,
+    collect_sse_events,
+    register_stub_provider,
+    stub_resolution,
+    swap_tool_catalog,
+)
 
 
 def danger_categories():
@@ -32,8 +38,9 @@ def _install_sensitive_tool(monkeypatch):
         # One patch covers the whole run: the turn's own model and the titler that
         # runs (on a toolless agent) after the approved turn completes both resolve
         # through here. A plain text model names the thread without tool calls.
-        return ResolvedModel(model=TestModel(custom_output_text="done"), reasoning_off={})
+        return await stub_resolution(self, TestModel(custom_output_text="done"))
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

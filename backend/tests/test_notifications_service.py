@@ -197,9 +197,7 @@ async def test_mark_all_read_flags_every_unread(tmp_path):
 
 async def test_resolve_for_run_marks_only_that_runs_pending_notification(tmp_path):
     service = await _service(tmp_path)
-    approval = await service.notify(
-        OWNER, "approval_needed", "needs approval", run_id="run-1"
-    )
+    approval = await service.notify(OWNER, "approval_needed", "needs approval", run_id="run-1")
     other = await service.notify(OWNER, "run_failed", "unrelated", run_id="run-2")
 
     resolved = await service.resolve_for_run(OWNER, "run-1")
@@ -284,9 +282,7 @@ async def test_rehydrated_and_live_notifications_sort_together(tmp_path):
     await service.stop()
 
     # The round-trip really is lossy — otherwise this test would prove nothing.
-    persisted = await in_session(
-        engine, lambda session: session.exec(select(Notification)).all()
-    )
+    persisted = await in_session(engine, lambda session: session.exec(select(Notification)).all())
     assert persisted[0].created_at.tzinfo is None
 
     cold = NotificationService(engine, vault)

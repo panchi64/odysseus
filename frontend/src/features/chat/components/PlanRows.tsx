@@ -102,7 +102,7 @@ export function PlanRows(props: { items: () => PlanItem[] }): JSX.Element {
 
   return (
     <Show when={items().length > 0}>
-      <div class="border-b border-line py-1">
+      <div class="py-1">
         <ol>
           <For each={visible()}>
             {({ item, index }) => (
@@ -145,7 +145,7 @@ export function PlanRows(props: { items: () => PlanItem[] }): JSX.Element {
               class="text-dim"
             />
             <Text variant="label" tone="dim">
-              {expanded() ? "COLLAPSE" : `+${hidden()} MORE`}
+              {expanded() ? "Collapse" : `+${hidden()} MORE`}
             </Text>
           </button>
         </Show>

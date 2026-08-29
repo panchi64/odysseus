@@ -1,8 +1,8 @@
 """Owner-scoped key/value app settings.
 
 A tiny persisted store for small operator preferences that aren't worth a bespoke table
-— the first being the Cookbook's active quality source. Plain string values (not secret,
-not relational); structured config still lives in ``core/config.py`` (env). Owner-scoped
+— the active model-quality source, say. Plain string values (not secret, not relational);
+structured config still lives in ``core/config.py`` (env). Owner-scoped
 like every record, so a per-user split later needs no rewrite.
 """
 

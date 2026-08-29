@@ -17,16 +17,16 @@ from __future__ import annotations
 
 from . import events
 from .events import (
+    DEFAULT_CONTEXT_THRESHOLDS,
     PROTOCOL_VERSION,
     AnswerDelta,
     ApprovalRequired,
     CitationAdded,
+    ContextComposition,
+    ContextThresholds,
     ContextWindow,
     ConversationCompacted,
     ConversationTitled,
-    DocumentCommitted,
-    DocumentCreated,
-    DocumentDelta,
     Event,
     EventBody,
     LimitNotice,
@@ -49,9 +49,11 @@ from .events import (
     ViewLiveStopped,
     ViewSnapshot,
 )
+from .overhead import TurnOverhead
 from .registry import ConversationBusyError, RunRegistry, RunTimeout
 from .run import Orchestrator, QueuedMessage, Run, RunStatus
 from .stream import RunStream
+from .timings import ResponseTiming, TimingTotals, TurnTimer, total_timings
 from .transport import parse_last_event_id, sse_response
 
 __all__ = [
@@ -67,11 +69,19 @@ __all__ = [
     "QueuedMessage",
     "Orchestrator",
     "RunStream",
+    "TurnOverhead",
+    "TurnTimer",
+    "ResponseTiming",
+    "TimingTotals",
+    "total_timings",
     "sse_response",
     "parse_last_event_id",
     # event bodies (re-exported for producers)
     "RunStarted",
     "RunMetrics",
+    "DEFAULT_CONTEXT_THRESHOLDS",
+    "ContextComposition",
+    "ContextThresholds",
     "ContextWindow",
     "RunEnded",
     "RunError",
@@ -83,9 +93,6 @@ __all__ = [
     "ToolProgress",
     "ToolCompleted",
     "ToolFailed",
-    "DocumentCreated",
-    "DocumentDelta",
-    "DocumentCommitted",
     "CitationAdded",
     "ViewLive",
     "ViewLiveStopped",

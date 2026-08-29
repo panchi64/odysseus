@@ -29,6 +29,14 @@ export interface PopoverProps {
   block?: boolean;
   /** Extra classes for the panel (width, max-height, layout). */
   panelClass?: string;
+  /** Drop the panel's own surface — no fill, no radius, no elevation — leaving only
+   *  the positioning. For a panel that brings its own container (the framed, frosted
+   *  region a `ConstructionReveal` draws): a card *around* that frame is the
+   *  box-in-a-box the frame exists to avoid, and its shadow would sit on the glass. */
+  bare?: boolean;
+  /** Fired on the closed→open edge only, so a caller can refresh what the panel is
+   *  about to show. Not fired on close, and never twice for one opening. */
+  onOpen?: () => void;
   class?: string;
 }
 
@@ -50,6 +58,16 @@ export interface PopoverProps {
 export function Popover(props: PopoverProps): JSX.Element {
   const [open, setOpen] = createSignal(false);
   const close = () => setOpen(false);
+
+  // The open edge, fired from the state change rather than the trigger's click
+  // handler — the trigger is only one of the ways this opens, and a caller asking
+  // "refresh when the panel appears" means whenever it appears.
+  let wasOpen = false;
+  createEffect(() => {
+    const isOpen = open();
+    if (isOpen && !wasOpen) props.onOpen?.();
+    wasOpen = isOpen;
+  });
 
   let triggerRef: HTMLDivElement | undefined;
   let panelRef: HTMLDivElement | undefined;
@@ -129,6 +147,7 @@ export function Popover(props: PopoverProps): JSX.Element {
             }}
             placement={placement()}
             panelClass={props.panelClass}
+            bare={props.bare}
             onMeasure={measure}
           >
             {props.panel({ close })}
@@ -146,6 +165,7 @@ function PopoverPanel(props: {
   ref: (el: HTMLDivElement) => void;
   placement: Placement | null;
   panelClass?: string;
+  bare?: boolean;
   onMeasure: () => void;
   children: JSX.Element;
 }): JSX.Element {
@@ -154,7 +174,10 @@ function PopoverPanel(props: {
     <div
       ref={props.ref}
       class={cx(
-        "fixed z-50 border border-line bg-surface",
+        "fixed z-50",
+        // A bare panel also drops the rise: it brings its own arrival, and two
+        // entrance animations on nested elements read as a bounce.
+        !props.bare && "ody-rise rounded-panel bg-surface shadow-2",
         // Scrolling is added only when we actually clamp; Select already scrolls
         // itself and Combobox scrolls an inner element, and nesting a second
         // overflow-auto around either gives the panel two scrollbars.
@@ -169,8 +192,12 @@ function PopoverPanel(props: {
           props.placement?.clampHeight != null
             ? `${props.placement.clampHeight}px`
             : undefined,
-        width: props.placement?.width
-          ? `${props.placement.width}px`
+        // A floor, not a fixed width: a `block` panel spans its field but grows to
+        // fit its own options rather than truncating them (see `Placement.minWidth`).
+        // Safe to measure through — unlike the max-height above, a min-width can only
+        // widen the natural size, so re-measuring never feeds a shrinking value back.
+        "min-width": props.placement?.minWidth
+          ? `${props.placement.minWidth}px`
           : undefined,
         // Until the first measure lands the panel would flash at 0,0 in the corner.
         visibility: props.placement ? "visible" : "hidden",

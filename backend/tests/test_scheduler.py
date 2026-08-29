@@ -336,9 +336,7 @@ async def test_compute_next_run_failure_still_finalizes_and_loop_survives(tmp_pa
 def _locked_error() -> OperationalError:
     """What SQLAlchemy raises when SQLite's write lock is held by another connection
     (e.g. a write-behind drainer flushing concurrently) past the busy_timeout."""
-    return OperationalError(
-        "UPDATE taskrun …", {}, sqlite3.OperationalError("database is locked")
-    )
+    return OperationalError("UPDATE taskrun …", {}, sqlite3.OperationalError("database is locked"))
 
 
 async def test_transient_locked_db_on_finalize_retries_and_never_double_fires(tmp_path):

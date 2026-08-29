@@ -4,7 +4,8 @@ import { Text } from "../primitives/Text";
 import { Icon } from "../primitives/Icon";
 
 export interface DisclosureProps {
-  /** Uppercase label shown beside the chevron. */
+  /** Sentence-case label shown beside the chevron — this is the interface
+   *  naming a section, so it takes the sans voice (§2), not the old uppercase. */
   label: string;
   /** Controlled open state. Omit to let the component own it. */
   open?: boolean;
@@ -23,7 +24,7 @@ export interface DisclosureProps {
 }
 
 /**
- * A labelled show/hide section — chevron, uppercase label, `Show`-gated body.
+ * A labelled show/hide section — chevron, label, `Show`-gated body.
  *
  * The look is the one the chat surface's own collapsibles converged on: a size-12
  * chevron-right that turns chevron-down, a dim label that brightens on hover, and the

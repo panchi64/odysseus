@@ -94,10 +94,17 @@ export interface SearchProviderInput {
  *  stops — the ceiling a long tool-using turn actually runs out of.
  *  `inactivityTimeoutS` is how long (seconds) a run may go without emitting an event
  *  before the watchdog stops it — the bound a long generation (a big write, a slow
- *  first token) needs raised to stay alive. */
+ *  first token) needs raised to stay alive.
+ *  `contextWarnThreshold`/`contextAlertThreshold` are where the composer's context gauge
+ *  turns amber and then red — fractions like `autoCompactThreshold`, and tunable for the
+ *  same reason the ring is grey below them: how much remaining room counts as "enough"
+ *  depends on how long the operator's turns are, not on the model. `warn` is always
+ *  strictly below `alert`; the backend refuses a pair that isn't. */
 export interface ChatSettings {
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
+  contextWarnThreshold: number;
+  contextAlertThreshold: number;
   agentRequestLimit: number;
   inactivityTimeoutS: number;
 }

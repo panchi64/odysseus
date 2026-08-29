@@ -17,11 +17,7 @@ _SCAN_DIRS = ("tools", "agent", "research")
 
 def _source_files() -> list[Path]:
     root = Path(__file__).resolve().parents[1]
-    return [
-        path
-        for dirname in _SCAN_DIRS
-        for path in (root / dirname).rglob("*.py")
-    ]
+    return [path for dirname in _SCAN_DIRS for path in (root / dirname).rglob("*.py")]
 
 
 def test_scan_dirs_contain_source_files() -> None:

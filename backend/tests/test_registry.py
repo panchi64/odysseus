@@ -53,9 +53,7 @@ async def _resolve(reg: ModelRegistry, role: str, **overrides) -> Model:
 
 async def test_single_endpoint_resolves_to_plain_model():
     reg = await _registry()
-    ep = await reg.create_endpoint(
-        OWNER, name="local", base_url="http://x/v1", model="qwen"
-    )
+    ep = await reg.create_endpoint(OWNER, name="local", base_url="http://x/v1", model="qwen")
     await reg.set_role(OWNER, "main", [ep.id])
 
     model = await _resolve(reg, "main", owner_id=OWNER)
@@ -309,9 +307,7 @@ async def test_main_context_window_survives_a_stale_chain():
     # Simulate a chain left pointing at an endpoint that no longer exists (an
     # out-of-band delete, or a pre-prune dangling reference).
     def plant_stale(session: Session) -> None:
-        binding = session.exec(
-            select(ModelRole).where(ModelRole.role == "main")
-        ).one()
+        binding = session.exec(select(ModelRole).where(ModelRole.role == "main")).one()
         binding.endpoint_ids = ["a296928be47b4011ba15a9b806fb31e4"]
         session.add(binding)
 
@@ -341,7 +337,20 @@ async def test_endpoint_crud_over_rest_hides_api_key():
         put = await client.put("/models/roles/main", json={"endpoint_ids": [endpoint_id]})
         assert put.status_code == 204
         roles = (await client.get("/models/roles")).json()
-        assert roles == {"main": {"endpoint_ids": [endpoint_id], "model": None}}
+        # `context_window` is null here for two compounding reasons — no override was
+        # set and the fake host can't be asked — which is exactly the state the send
+        # gate refuses a turn in.
+        # `implicit` is False because the operator wrote this binding — the flag
+        # distinguishes that from the default the backend resolves when nothing is
+        # bound at all.
+        assert roles == {
+            "main": {
+                "endpoint_ids": [endpoint_id],
+                "model": None,
+                "context_window": None,
+                "implicit": False,
+            }
+        }
 
         deleted = await client.delete(f"/models/endpoints/{endpoint_id}")
         assert deleted.status_code == 204
@@ -355,9 +364,7 @@ async def test_embedding_rebind_triggers_reindex(monkeypatch):
 
     monkeypatch.setattr(embeddings, "probe_embedding", _passing_probe)
     triggered: list[str] = []
-    monkeypatch.setattr(
-        EmbeddingReindexer, "trigger", lambda self, owner: triggered.append(owner)
-    )
+    monkeypatch.setattr(EmbeddingReindexer, "trigger", lambda self, owner: triggered.append(owner))
 
     async with client_app() as (client, _app):
         ep = (
@@ -433,9 +440,7 @@ def test_extract_model_ids_handles_provider_shapes():
     # OpenAI / Anthropic: {"data": [{"id": …}]}
     assert _extract_model_ids({"data": [{"id": "b"}, {"id": "a"}]}) == ["a", "b"]
     # Gemini / Cohere / Ollama-native: {"models": [{"name": …}]}, "models/" stripped.
-    assert _extract_model_ids({"models": [{"name": "models/gemini-1.5-pro"}]}) == [
-        "gemini-1.5-pro"
-    ]
+    assert _extract_model_ids({"models": [{"name": "models/gemini-1.5-pro"}]}) == ["gemini-1.5-pro"]
     # The models/ strip is scoped to the named-models shape — an OpenAI-shaped id
     # that legitimately starts with models/ is preserved.
     assert _extract_model_ids({"data": [{"id": "models/foo"}]}) == ["models/foo"]
@@ -534,9 +539,7 @@ async def test_disabled_endpoint_via_main_override_is_degraded():
     ep = await reg.create_endpoint(OWNER, name="picked", base_url="http://p/v1", model="m")
     await reg.update_endpoint(OWNER, ep.id, enabled=False)
     with pytest.raises(DegradedCapabilityError):
-        await _resolve(
-            reg, "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="m"
-        )
+        await _resolve(reg, "main", owner_id=OWNER, override_endpoint_id=ep.id, override_model="m")
 
 
 async def test_disabled_endpoint_is_skipped_in_role_chain():

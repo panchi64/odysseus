@@ -5,7 +5,7 @@ completed-report library (`DR-1`/`DR-7`).
 No dedicated service layer exists for this surface (mirrors `routes/tasks.py`): the
 router owns the ``research`` table and drives the pipeline core (`research/`) itself,
 rather than through a class that would own no decisions. Out-shapes are camelCase, like
-the app's other newer surfaces (documents/gallery/corpus/notifications/tasks).
+the app's other newer surfaces (corpus/uploads/notifications/tasks).
 
 That doesn't mean it all lives in one file. Three neighbours carry what is not routing:
 

@@ -60,9 +60,7 @@ def _call_then_report(tool_name: str = "t_poke"):
     off the answer what the model was actually shown."""
 
     async def stream_fn(messages, info):
-        settled = any(
-            isinstance(p, ToolReturnPart) for m in messages for p in m.parts
-        )
+        settled = any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)
         if not settled:
             yield {0: DeltaToolCall(name=tool_name, json_args=json.dumps({}))}
         else:
@@ -163,9 +161,7 @@ async def test_queue_while_parked_is_injected_on_resume():
         return "deleted"
 
     async def stream_fn(messages, info):
-        settled = any(
-            isinstance(p, ToolReturnPart) for m in messages for p in m.parts
-        )
+        settled = any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)
         if not settled:
             yield {0: DeltaToolCall(name="danger_delete_thing", json_args=json.dumps({}))}
         else:
@@ -191,9 +187,7 @@ async def test_queue_while_parked_is_injected_on_resume():
     parked = run.parked_payload
     assert isinstance(parked, ParkedTurn)
     call_id = parked.requests.approvals[0].tool_call_id
-    resumed = await reg.resume(
-        run.id, build_resume_orchestrator(parked, {call_id: ToolApproved()})
-    )
+    resumed = await reg.resume(run.id, build_resume_orchestrator(parked, {call_id: ToolApproved()}))
     assert resumed is not None
     await run.wait()
 

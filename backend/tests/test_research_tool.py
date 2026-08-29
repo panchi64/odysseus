@@ -102,9 +102,7 @@ class TestStart:
 
 class TestRead:
     async def test_returns_the_report_once_terminal(self):
-        result = await _call(
-            research_toolset(), "read", _ctx(_FakeLauncher()), research_id="r1"
-        )
+        result = await _call(research_toolset(), "read", _ctx(_FakeLauncher()), research_id="r1")
         assert result["status"] == "done"
         assert result["report"] == "# Findings"
         assert result["sources"] == 7
@@ -113,9 +111,7 @@ class TestRead:
         from pydantic_ai import ModelRetry
 
         with pytest.raises(ModelRetry):
-            await _call(
-                research_toolset(), "read", _ctx(_FakeLauncher()), research_id="nope"
-            )
+            await _call(research_toolset(), "read", _ctx(_FakeLauncher()), research_id="nope")
 
 
 class TestWiring:

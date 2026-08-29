@@ -4,7 +4,7 @@ import { Text } from "../primitives/Text";
 import { Icon, type IconProps } from "../primitives/Icon";
 
 export interface EmptyStateProps {
-  /** Primary line. Defaults to "NO DATA". */
+  /** Primary line. Defaults to "No data". */
   message?: string;
   /** Secondary dim hint. */
   hint?: string;
@@ -14,7 +14,7 @@ export interface EmptyStateProps {
   class?: string;
 }
 
-/** "NO DATA" placeholder for empty regions (§6 states). */
+/** "No data" placeholder for empty regions (§10 states). */
 export function EmptyState(props: EmptyStateProps): JSX.Element {
   const [local] = splitProps(props, [
     "message",
@@ -34,7 +34,7 @@ export function EmptyState(props: EmptyStateProps): JSX.Element {
         <Icon name={local.icon!} size={24} class="text-dim" />
       </Show>
       <Text variant="label" tone="dim">
-        {local.message ?? "NO DATA"}
+        {local.message ?? "No data"}
       </Text>
       <Show when={local.hint}>
         <Text variant="micro" tone="dim">

@@ -38,10 +38,8 @@ def _runtime_ready() -> bool:
     if runtime is None:
         return False
     try:
-        proc = subprocess.run(
-            [runtime, "version"], capture_output=True, timeout=10, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
+        proc = subprocess.run([runtime, "version"], capture_output=True, timeout=10, check=False)
+    except OSError, subprocess.SubprocessError:
         return False
     return proc.returncode == 0
 
@@ -77,7 +75,12 @@ async def test_run_in_raises_sandbox_error_on_a_runtime_fault(tmp_path, monkeypa
     # problem (SandboxError → "your computer could not run the code"), never as a
     # pseudo code-failure result the model would try to fix by editing its code.
     async def fake_run_subprocess(argv, **_kwargs):
-        return False, 125, b"", b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        return (
+            False,
+            125,
+            b"",
+            b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        )
 
     monkeypatch.setattr(container_mod, "run_subprocess", fake_run_subprocess)
     backend = ContainerSandbox(runtime="docker")
@@ -279,9 +282,7 @@ async def test_confinement_denies_reading_the_data_directory(tmp_path):
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_container_runs_python_in_isolation():
     sandbox = ContainerSandbox()
-    result = await sandbox.run(
-        SandboxSpec(command=["python", "-c", "print(6 * 7)"], timeout_s=60)
-    )
+    result = await sandbox.run(SandboxSpec(command=["python", "-c", "print(6 * 7)"], timeout_s=60))
     assert result.ok
     assert result.stdout.strip() == "42"
 
@@ -293,9 +294,7 @@ _DNS_PROBE = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_no_egress_by_default():
     sandbox = ContainerSandbox()
-    result = await sandbox.run(
-        SandboxSpec(command=["python", "-c", _DNS_PROBE], timeout_s=60)
-    )
+    result = await sandbox.run(SandboxSpec(command=["python", "-c", _DNS_PROBE], timeout_s=60))
     assert not result.ok  # no route, no DNS — the lookup raises and exits non-zero
 
 

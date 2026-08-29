@@ -36,7 +36,7 @@ function formFor(ep: ModelEndpoint): EndpointFormValues {
 /**
  * Create/edit an endpoint. Owns the field values and the save call; the caller
  * only says whether it's open and on which endpoint. The form control itself
- * (`EndpointForm`) is shared with the guided cookbook flow — this drives it in
+ * (`EndpointForm`) is the shared field set — this drives it in
  * `advanced` mode.
  */
 export function EndpointFormDialog(props: {
@@ -138,7 +138,7 @@ export function EndpointFormDialog(props: {
     <Modal
       open={props.open}
       onClose={props.onClose}
-      title={props.endpoint ? "EDIT ENDPOINT" : "ADD ENDPOINT"}
+      title={props.endpoint ? "Edit endpoint" : "Add endpoint"}
       class="max-w-lg"
     >
       <Stack gap={3}>
@@ -155,14 +155,14 @@ export function EndpointFormDialog(props: {
         />
         <div class="flex justify-end gap-2">
           <Button variant="ghost" onClick={props.onClose}>
-            CANCEL
+            Cancel
           </Button>
           <Button
             variant="primary"
             disabled={!valid() || saving()}
             onClick={save}
           >
-            {saving() ? "SAVING…" : "SAVE"}
+            {saving() ? "Saving…" : "Save"}
           </Button>
         </div>
       </Stack>

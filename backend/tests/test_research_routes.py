@@ -524,8 +524,12 @@ async def test_continue_seeds_a_conversation_with_the_report_and_is_idempotent(m
 
         async def ok(plan, question, deps, emit):
             return ResearchResult(
-                report="the finished report", rounds=1, sources=1, queries=1,
-                duration_s=0.1, model="m",
+                report="the finished report",
+                rounds=1,
+                sources=1,
+                queries=1,
+                duration_s=0.1,
+                model="m",
             )
 
         monkeypatch.setattr("routes.research_launch.run_research", ok)
@@ -561,8 +565,12 @@ async def test_continue_seeds_the_report_wrapped_as_untrusted_history(monkeypatc
 
         async def ok(plan, question, deps, emit):
             return ResearchResult(
-                report="the finished report", rounds=1, sources=1, queries=1,
-                duration_s=0.1, model="m",
+                report="the finished report",
+                rounds=1,
+                sources=1,
+                queries=1,
+                duration_s=0.1,
+                model="m",
             )
 
         monkeypatch.setattr("routes.research_launch.run_research", ok)

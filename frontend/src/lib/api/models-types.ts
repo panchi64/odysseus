@@ -37,11 +37,6 @@ export interface EndpointViewDTO {
   vision: boolean;
   thinking: boolean;
   enabled: boolean;
-  /** A serving-managed local engine — the Cookbook owns its lifecycle. */
-  managed: boolean;
-  /** Process liveness of a managed engine ("running"/"stopped"); null for
-   *  external endpoints. Distinct from the operator's `enabled` switch. */
-  live_status: string | null;
   last_status: EndpointStatus | null;
   last_error_category: EndpointErrorCategory | null;
   last_error_detail: string | null;
@@ -85,6 +80,11 @@ export interface ProviderViewDTO {
 export interface RoleViewDTO {
   endpoint_ids: string[];
   model: string | null;
+  context_window: number | null;
+  /** True when the backend picked this rather than the operator: `main` with nothing
+   *  bound resolves to the first usable endpoint/model and reports what it resolved
+   *  to. A default, not a pin — it moves when a better endpoint appears. */
+  implicit: boolean;
 }
 
 /* ── Embedding reindex ──────────────────────────────────────────────────────── */
@@ -99,15 +99,3 @@ export interface ReindexStatusDTO {
   detail: string | null;
   completed_at: string | null;
 }
-
-/* ── Local serving unions ───────────────────────────────────────────────────── */
-
-/** A local inference engine Odysseus can serve models with. */
-export type EngineKind = "llama.cpp" | "mlx";
-
-/** What a model is served for. */
-export type Workload = "chat" | "embedding" | "vision";
-
-/** Lifecycle state of a managed (downloaded/served) model. */
-export type ServeState =
-  "stopped" | "downloading" | "starting" | "running" | "error";

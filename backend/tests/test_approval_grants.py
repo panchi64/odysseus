@@ -273,7 +273,5 @@ async def test_concurrent_grants_do_not_duplicate_or_error():
     # Two approvals of the same tool racing into grant() must converge on one row via the
     # DB upsert, not raise a duplicate-insert IntegrityError.
     s = _store(3600)
-    await asyncio.gather(
-        *(s.grant(OWNER, CONV, "corpus_retrieve") for _ in range(5))
-    )
+    await asyncio.gather(*(s.grant(OWNER, CONV, "corpus_retrieve") for _ in range(5)))
     assert len(await s.list(OWNER, CONV)) == 1

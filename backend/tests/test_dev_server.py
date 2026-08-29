@@ -2,8 +2,8 @@
 
 The exclusion tests run through **uvicorn's own filter** rather than a reimplementation of
 it, because the failure mode being guarded is precisely that a plausible-looking exclusion
-is accepted and then quietly ignored: an engine runtime installing under ``data/`` restarts
-the server mid-serve, and the operator sees the serve die with no error attached to it.
+is accepted and then quietly ignored: a file the app writes under ``data/`` restarts the
+server mid-request, and the operator sees the work die with no error attached to it.
 """
 
 from __future__ import annotations
@@ -32,14 +32,14 @@ def _laid_out(tmp_path: Path) -> tuple[Path, list[str]]:
 # --- what dev.py excludes ---------------------------------------------------
 
 
-def test_engine_install_does_not_restart_the_server(tmp_path):
-    """The bug this file exists for: installing an engine runtime under the data
-    directory writes hundreds of ``*.py`` files, which used to reload the server in the
-    middle of the serve that triggered the install."""
+def test_runtime_writes_do_not_restart_the_server(tmp_path):
+    """The bug this file exists for: the app writing ``*.py`` under its own data
+    directory — an upload, a file the agent creates in its sandbox workspace — used to
+    reload the server in the middle of the request that wrote it."""
     data_dir, excludes = _laid_out(tmp_path)
 
-    engine_file = data_dir / "serving/engines/mlx/venv/lib/site-packages/x.py"
-    assert not _watches(excludes, engine_file)
+    written = data_dir / "sandbox/workspace/scratch.py"
+    assert not _watches(excludes, written)
 
 
 def test_dependency_installs_do_not_restart_the_server(tmp_path):
@@ -55,7 +55,7 @@ def test_source_edits_still_restart_the_server(tmp_path):
     _, excludes = _laid_out(tmp_path)
 
     assert _watches(excludes, tmp_path / "app.py")
-    assert _watches(excludes, tmp_path / "services/serving/service.py")
+    assert _watches(excludes, tmp_path / "services/registry.py")
 
 
 def test_exclusions_are_absolute(tmp_path):
@@ -70,14 +70,14 @@ def test_exclusions_are_absolute(tmp_path):
 
 
 def test_excludes_the_configured_data_dir_not_a_hardcoded_one(tmp_path):
-    """`ODYSSEUS_DATA_DIR` moves where engines install, so it has to move the exclusion
+    """`ODYSSEUS_DATA_DIR` moves where the app writes, so it has to move the exclusion
     too — otherwise the trap returns for anyone who relocates their data."""
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
 
     excludes = reload_excludes(elsewhere, tmp_path)
 
-    assert not _watches(excludes, elsewhere / "serving/engines/mlx/venv/x.py")
+    assert not _watches(excludes, elsewhere / "sandbox/workspace/scratch.py")
 
 
 def test_missing_directories_are_dropped_rather_than_passed_through(tmp_path):
@@ -98,7 +98,7 @@ def test_missing_directories_are_dropped_rather_than_passed_through(tmp_path):
 def test_the_bare_reload_flag_is_reported(tmp_path):
     """`uvicorn app:app --reload` is muscle memory and lives in shell history. Nothing in
     the app can stop the reloader — it is the parent process — so the least it can do is
-    name the cause, since the symptom (a serve that dies silently) points nowhere near."""
+    name the cause, since the symptom (a run that dies silently) points nowhere near."""
     argv = ["uvicorn", "app:app", "--reload", "--port", "8000"]
 
     assert reload_watches_runtime_state(argv, tmp_path / "data")

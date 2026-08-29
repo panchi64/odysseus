@@ -13,6 +13,7 @@ import { Portal } from "solid-js/web";
 import {
   Button,
   Composer,
+  ConstructionReveal,
   EmptyState,
   ErrorBoundary,
   Frames,
@@ -20,6 +21,7 @@ import {
   Menu,
   Modal,
   ResizeHandle,
+  Reveal,
   Stack,
   Text,
   Tooltip,
@@ -47,11 +49,13 @@ import {
   useChatSessions,
 } from "../data";
 import { isApiError } from "~/lib/api";
-import { setSelectedModel } from "~/lib/stores/models";
+import { sendBlockedReason, setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { BranchChip } from "../components/BranchChip";
 import { ModeControl } from "../components/ModeControl";
+import { ContextRing } from "../components/ContextRing";
+import { ModelPicker } from "~/app/ModelPicker";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
 import { assembleTranscript } from "../blocks";
 import type { ChatMessage } from "../model";
@@ -59,16 +63,27 @@ import {
   activeDownload,
   clampWidth,
   downloadBlob,
-  requestAnchor,
-  setViewerDirty,
   setViewerWidth,
   useViewerPersistence,
-  viewerDirty,
   viewerWidth,
 } from "../viewerPersistence";
 import { registerKeymap } from "~/lib/keymap";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
 import { MessageItem } from "../components/MessageItem";
+
+/** The conversation's reading measure. A line of text on a 27" display is
+ *  unreadable at full width long before it is uncomfortable, and the composer
+ *  spanning the whole bottom of the screen made the input read as a page
+ *  element rather than as a thing to type into.
+ *
+ *  It is deliberately ONE constant applied to both the transcript's content and
+ *  the composer dock. They are the same column and must agree: an input
+ *  narrower than the messages above it looks like a mistake, and an input wider
+ *  than them looks like two layouts. The scroll container and the dock's
+ *  background still span the full width — only their contents are centred — so
+ *  the scrollbar stays at the edge of the pane and the transcript still
+ *  disappears behind the dock rather than beside it. */
+const MEASURE = "mx-auto w-full max-w-4xl";
 
 /** Flatten the whole thread to plain text for COPY CONVERSATION — each turn's
  *  role and content in order, assistant turns including their tool calls/
@@ -81,10 +96,10 @@ function buildConversationTranscript(messages: ChatMessage[]): string {
       // is rather than attributing the summary to the assistant.
       const label =
         m.role === "user"
-          ? "OPERATOR"
+          ? "Operator"
           : m.role === "compaction"
-            ? "CONTEXT COMPACTED"
-            : "ASSISTANT";
+            ? "Context compacted"
+            : "Assistant";
       const body =
         m.role === "assistant" ? assembleTranscript(m.blocks) : m.content;
       return `${label} · ${m.createdAt}\n${body}`;
@@ -271,23 +286,14 @@ export function ChatRoomScreen(): JSX.Element {
   // (presentation-only, so it's automatically thread-scoped). The viewport renders
   // these; the transcript shows compact chips that open them here.
   const viewItems = createMemo(() =>
-    collectViewItems(stream.messages, stream.snapshots(), stream.documents()),
+    collectViewItems(stream.messages, stream.snapshots()),
   );
   // The viewport only makes sense with something to show. Gate the effective open
   // state on having items so a persisted-open thread that's since lost its items
   // (or a fresh chat that never had any) never shows an empty panel.
   const viewportShown = () => state().open && viewItems().length > 0;
-  // Closing (the false-going transition) is routed through the same unsaved-edit
-  // guard as requestPin/requestTab below — an operator mid-edit shouldn't lose a
-  // draft just because they hit the panel's own Collapse, the header eye, or
-  // mod+shift+v.
   const toggleViewport = () => {
-    const nextOpen = !state().open;
-    if (!nextOpen && viewerDirty() !== null) {
-      setPendingNav(() => () => patch({ open: false }));
-      return;
-    }
-    patch({ open: nextOpen });
+    patch({ open: !state().open });
   };
   const openViewport = () => {
     if (!state().open) patch({ open: true });
@@ -306,41 +312,14 @@ export function ChatRoomScreen(): JSX.Element {
   const resolvedViewKey = (): string | null =>
     state().pinnedKey ?? latestViewKey();
 
-  // Unsaved-edit guard: a pin/tab change that would navigate away from the item
-  // the operator is mid-edit on (`viewerDirty()`) is deferred behind an inline
-  // confirm bar in the panel instead of applied immediately.
-  const [pendingNav, setPendingNav] = createSignal<(() => void) | null>(null);
-  const discardEdits = () => {
-    const run = pendingNav();
-    setPendingNav(null);
-    setViewerDirty(null);
-    run?.();
-  };
-  const keepEditing = () => setPendingNav(null);
-  const requestPin = (key: string | null) => {
-    const dirty = viewerDirty();
-    if (dirty !== null && dirty !== key) {
-      setPendingNav(() => () => patch({ pinnedKey: key }));
-      return;
-    }
-    patch({ pinnedKey: key });
-  };
-  const requestTab = (tab: "preview" | "code") => {
-    const dirty = viewerDirty();
-    if (dirty !== null && dirty === resolvedViewKey()) {
-      setPendingNav(() => () => patch({ activeTab: tab }));
-      return;
-    }
-    patch({ activeTab: tab });
-  };
+  const requestPin = (key: string | null) => patch({ pinnedKey: key });
+  const requestTab = (tab: "preview" | "code") => patch({ activeTab: tab });
   // Pin a version — except picking the current latest clears the pin (null), so the
   // viewport resumes following new versions as the agent mints them.
   const selectView = (key: string) =>
     requestPin(key === latestViewKey() ? null : key);
   // Open a View item in the viewport — from a transcript chip or a timeline tab.
-  // Opening a document hands the renderer a scroll-to-first-change request.
   const openViewTo = (key: string) => {
-    if (viewItems().find((i) => i.key === key)?.document) requestAnchor(key);
     selectView(key);
     openViewport();
   };
@@ -389,16 +368,9 @@ export function ChatRoomScreen(): JSX.Element {
   const asideOpen = () => viewportShown() && !sheetOpen();
   let sheetTrigger: HTMLButtonElement | undefined;
   const closeSheet = () => {
-    const run = () => {
-      if (isDesktop()) patch({ fullscreen: false });
-      else patch({ fullscreen: false, open: false });
-      sheetTrigger?.focus();
-    };
-    if (viewerDirty() !== null) {
-      setPendingNav(() => run);
-      return;
-    }
-    run();
+    if (isDesktop()) patch({ fullscreen: false });
+    else patch({ fullscreen: false, open: false });
+    sheetTrigger?.focus();
   };
 
   // Focus: the panel container (either mount) and the transcript scroll
@@ -439,19 +411,11 @@ export function ChatRoomScreen(): JSX.Element {
     if (!d) return;
     void (async () => downloadBlob(d.name, await d.getBlob()))();
   };
-  // Flip the shown item's keeper bookmark — a snapshot version or a committed
-  // document version, whichever backs the entry. Relays to the backend; the
-  // stream store applies the optimistic update and reverts on failure.
+  // Flip the shown snapshot's keeper bookmark. Relays to the backend; the stream
+  // store applies the optimistic update and reverts on failure.
   const toggleKeeper = (item: ViewItem) => {
-    const next = !item.keeper;
     if (item.snapshot)
-      void stream.toggleSnapshotKeeper(item.snapshot.snapshotId, next);
-    else if (item.document)
-      void stream.toggleDocumentKeeper(
-        item.document.documentId,
-        item.document.version,
-        next,
-      );
+      void stream.toggleSnapshotKeeper(item.snapshot.snapshotId, !item.keeper);
   };
 
   registerKeymap(() => [
@@ -581,7 +545,7 @@ export function ChatRoomScreen(): JSX.Element {
       const ok = await confirm({
         title,
         detail: baseDetail,
-        confirmLabel: "DELETE",
+        confirmLabel: "Delete",
         tone: "alert",
       });
       return ok ? false : null;
@@ -591,10 +555,10 @@ export function ChatRoomScreen(): JSX.Element {
       title,
       detail: `${baseDetail} ${n} image attachment${
         n > 1 ? "s" : ""
-      } would be left unused — delete them too or keep them in the gallery?`,
-      confirmLabel: "DELETE IMAGES",
-      secondaryLabel: "KEEP IMAGES",
-      cancelLabel: "CANCEL",
+      } would be left unused — delete them too, or keep them?`,
+      confirmLabel: "Delete images",
+      secondaryLabel: "Keep images",
+      cancelLabel: "Cancel",
       tone: "alert",
     });
     if (choice === "cancel") return null;
@@ -653,11 +617,6 @@ export function ChatRoomScreen(): JSX.Element {
       onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
       onClose={onClose}
       onKeeper={toggleKeeper}
-      onSaveDocument={stream.saveDocumentEdit}
-      onDocumentVersion={stream.noteDocumentVersion}
-      pendingNav={pendingNav() !== null}
-      onDiscardEdits={discardEdits}
-      onKeepEditing={keepEditing}
       panelRef={setPanelEl}
     />
   );
@@ -671,7 +630,7 @@ export function ChatRoomScreen(): JSX.Element {
             and picked in the app top bar; a third, read-only copy here was the one
             that read as a control. Everything else that stood in this row is in the
             status strip below it. */}
-        <header class="flex items-center justify-between gap-3 border-b border-line pb-3">
+        <header class="flex items-center justify-between gap-3 pb-3">
           <span class="flex min-w-0 items-center gap-1.5">
             <Show
               when={headerReveal()}
@@ -707,11 +666,15 @@ export function ChatRoomScreen(): JSX.Element {
                 />
               )}
             </Show>
-            <Tooltip label="VIEWPORT" side="bottom">
+            {/* `md`, matching the session-actions trigger beside it — these are
+                peer controls in the same row and the two most-reached-for things
+                in the header, so they get the same target. The rest of the
+                product's ghost icon buttons stay `sm`; this row is deliberately
+                the exception, not the new default. */}
+            <Tooltip label="Viewport" side="bottom">
               <Button
                 ref={(el) => (sheetTrigger = el)}
                 variant="ghost"
-                size="sm"
                 leading="eye"
                 aria-label="Toggle viewport panel"
                 onClick={toggleViewport}
@@ -734,19 +697,19 @@ export function ChatRoomScreen(): JSX.Element {
               items={
                 [
                   {
-                    label: "RENAME CONVERSATION",
+                    label: "Rename conversation",
                     icon: "edit",
                     disabled: !currentId(),
                     onSelect: openRename,
                   },
                   {
-                    label: "REGENERATE TITLE",
+                    label: "Regenerate title",
                     icon: "refresh",
                     disabled: !currentId(),
                     onSelect: handleRegenerateTitle,
                   },
                   {
-                    label: "COMPACT NOW",
+                    label: "Compact now",
                     icon: "layers",
                     // Nothing to fold in an empty or one-turn thread; the backend
                     // refuses those anyway, this just doesn't offer the action.
@@ -754,13 +717,13 @@ export function ChatRoomScreen(): JSX.Element {
                     onSelect: () => void stream.compactNow(),
                   },
                   {
-                    label: "COPY CONVERSATION",
+                    label: "Copy conversation",
                     icon: "copy",
                     disabled: stream.messages.length === 0,
                     onSelect: handleCopyConversation,
                   },
                   {
-                    label: "DELETE CONVERSATION",
+                    label: "Delete conversation",
                     icon: "trash",
                     danger: true,
                     disabled: !currentId(),
@@ -772,99 +735,103 @@ export function ChatRoomScreen(): JSX.Element {
           </div>
         </header>
 
-        {/* Above the transcript rather than inside it: none of this belongs to the
-            turn that last touched it, and it stays put while the messages below
-            scroll. */}
-        <ConversationStatusStrip
-          conversationId={currentId}
-          streaming={stream.sending}
-          reattaching={stream.reattaching}
-          detached={stream.detached}
-          usage={stream.usage}
-          tokenUsage={stream.tokenUsage}
-          plan={stream.plan}
-          grantsRevalidate={conversationGrantsRevision}
-        />
-
         <div class="relative flex min-h-0 flex-1 flex-col">
           <div
             ref={scrollEl}
             tabindex={-1}
             onScroll={onScroll}
-            class="min-h-0 flex-1 overflow-y-auto py-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
+            /* `px-4` is not cosmetic: a scroll container clips at its padding
+               box, so this is the room the live rail's LED bloom spills into.
+               Without it the glow is cut off a few pixels from the rule and
+               reads as a hard-edged coloured border again.
+
+               The bright focus outline is gone — the shell's neutral focus halo
+               covers this, and a white rule around the transcript was exactly
+               the kind of border the system dropped. */
+            class="min-h-0 flex-1 overflow-y-auto px-4 py-2 outline-none transition-colors"
           >
-            {/* One malformed block must not cost the operator the composer, the
-                thread list, or the text they were typing — scope a throw in the
-                message tree to the scroll region. Switching threads resets it. */}
-            <ErrorBoundary
-              message="THIS CONVERSATION FAILED TO RENDER"
-              resetKey={currentId}
-            >
-              <Show
-                when={stream.messages.length}
-                fallback={
-                  <EmptyState
-                    icon="chat"
-                    message="START A CONVERSATION"
-                    hint="Ask a question, request a summary, or describe a task to begin."
-                  />
-                }
+            {/* The measure goes on the CONTENT, not on the scroll container:
+                the container has to keep its full width so its scrollbar sits
+                at the edge of the pane and its `px-4` still gives the live
+                rail's LED bloom somewhere to spill. */}
+            <div class={MEASURE}>
+              {/* One malformed block must not cost the operator the composer,
+                  the thread list, or the text they were typing — scope a throw
+                  in the message tree to the scroll region. Switching threads
+                  resets it. */}
+              <ErrorBoundary
+                message="This conversation failed to render"
+                resetKey={currentId}
               >
-                <For each={stream.messages}>
-                  {(message, index) => (
-                    <MessageItem
-                      message={message}
-                      dimmed={index() < foldedThrough()}
-                      onResolveApproval={stream.resolveApproval}
-                      onResolveHostCommands={stream.resolveHostCommands}
-                      onRegenerate={() => void stream.regenerate(message.id)}
-                      onContinue={() => void stream.continueTurn()}
-                      onEditMessage={(id, text) => void stream.edit(id, text)}
-                      onSwitchVersion={(id, i) =>
-                        void stream.switchVersion(id, i)
-                      }
-                      onTogglePin={() =>
-                        void stream.toggleMessagePin(message.id)
-                      }
-                      onWithdraw={() => {
-                        if (message.queuedMessageId)
-                          void stream.withdrawQueued(message.queuedMessageId);
-                      }}
-                      onEditQueued={(text) => {
-                        if (message.queuedMessageId)
-                          void stream.editQueued(message.queuedMessageId, text);
-                      }}
-                      onOpenInView={openViewTo}
-                      viewItems={viewItems}
-                      seenKey={() => state().seenKey}
-                      onReattach={() => {
-                        if (message.runId)
-                          void stream.reattachRun(message.runId, {
-                            fromSeq: stream.lastSeq(),
-                          });
-                      }}
-                      onRewind={() => {
-                        void stream.rewind(message.id);
-                      }}
-                      onFork={() => void forkFromHere(message.id)}
-                      onDelete={async () => {
-                        const id = currentId();
-                        if (!id) return;
-                        const purgeImages = await resolveDeleteChoice(
-                          id,
-                          "Delete this message?",
-                          "This removes it and everything after it.",
-                          message.id,
-                        );
-                        if (purgeImages === null) return;
-                        await stream.removeMessage(message.id, purgeImages);
-                        toast.success("Message deleted");
-                      }}
+                <Show
+                  when={stream.messages.length}
+                  fallback={
+                    <EmptyState
+                      icon="chat"
+                      message="Start a conversation"
+                      hint="Ask a question, request a summary, or describe a task to begin."
                     />
-                  )}
-                </For>
-              </Show>
-            </ErrorBoundary>
+                  }
+                >
+                  <For each={stream.messages}>
+                    {(message, index) => (
+                      <MessageItem
+                        message={message}
+                        dimmed={index() < foldedThrough()}
+                        onResolveApproval={stream.resolveApproval}
+                        onResolveHostCommands={stream.resolveHostCommands}
+                        onRegenerate={() => void stream.regenerate(message.id)}
+                        onContinue={() => void stream.continueTurn()}
+                        onEditMessage={(id, text) => void stream.edit(id, text)}
+                        onSwitchVersion={(id, i) =>
+                          void stream.switchVersion(id, i)
+                        }
+                        onTogglePin={() =>
+                          void stream.toggleMessagePin(message.id)
+                        }
+                        onWithdraw={() => {
+                          if (message.queuedMessageId)
+                            void stream.withdrawQueued(message.queuedMessageId);
+                        }}
+                        onEditQueued={(text) => {
+                          if (message.queuedMessageId)
+                            void stream.editQueued(
+                              message.queuedMessageId,
+                              text,
+                            );
+                        }}
+                        onOpenInView={openViewTo}
+                        viewItems={viewItems}
+                        seenKey={() => state().seenKey}
+                        onReattach={() => {
+                          if (message.runId)
+                            void stream.reattachRun(message.runId, {
+                              fromSeq: stream.lastSeq(),
+                            });
+                        }}
+                        onRewind={() => {
+                          void stream.rewind(message.id);
+                        }}
+                        onFork={() => void forkFromHere(message.id)}
+                        onDelete={async () => {
+                          const id = currentId();
+                          if (!id) return;
+                          const purgeImages = await resolveDeleteChoice(
+                            id,
+                            "Delete this message?",
+                            "This removes it and everything after it.",
+                            message.id,
+                          );
+                          if (purgeImages === null) return;
+                          await stream.removeMessage(message.id, purgeImages);
+                          toast.success("Message deleted");
+                        }}
+                      />
+                    )}
+                  </For>
+                </Show>
+              </ErrorBoundary>
+            </div>
           </div>
           <Show when={showJump()}>
             <Button
@@ -874,35 +841,83 @@ export function ChatRoomScreen(): JSX.Element {
               onClick={jumpToLatest}
               class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface"
             >
-              JUMP TO LATEST
+              Jump to latest
             </Button>
           </Show>
         </div>
 
-        <div class="sticky bottom-0 -mx-1">
-          <Composer
-            autofocus
-            streaming={stream.sending()}
-            onStop={() => void stopRun()}
-            onSend={(text, ids) => void stream.send(text, ids)}
-            attachments={attachments}
-            storageKey={composerKey()}
-            prefill={stream.undeliveredDraft()}
-            onPrefillConsumed={stream.clearUndeliveredDraft}
-            controls={
-              // Only while the thread is still unsaved: the binding is set once,
-              // at creation, and an existing coding thread shows its branch in the
-              // status strip instead.
-              <Show when={currentId() === null}>
-                <ModeControl
-                  mode={mode()}
-                  onModeChange={setMode}
-                  projectId={codingProjectId()}
-                  onProjectChange={setCodingProjectId}
-                />
-              </Show>
-            }
-          />
+        {/* The composer docks on the page background, so the transcript scrolls
+            out of sight behind it instead of showing through the gap around the
+            card. No rule and no gradient — just the ground, and the LED strip on
+            the composer's own top edge doing the separating with light. That is
+            why the wrapper's top padding stays thin: the glow needs to reach
+            past it onto the transcript to read as a strip light rather than as a
+            line. */}
+        {/* The dock's own background spans the full width — it is what the
+            transcript scrolls out of sight behind — while its contents take the
+            same measure as the transcript above. */}
+        <div class="sticky bottom-0 bg-bg px-4 pt-2 pb-1">
+          <div class={MEASURE}>
+            <Composer
+              edge="led"
+              autofocus
+              streaming={stream.sending()}
+              onStop={() => void stopRun()}
+              onSend={(text, ids) => void stream.send(text, ids)}
+              // The backend refuses a turn it can't keep inside a context window; this
+              // is the same stop, arriving before the message is committed to it.
+              sendBlocked={sendBlockedReason()}
+              attachments={attachments}
+              storageKey={composerKey()}
+              prefill={stream.undeliveredDraft()}
+              onPrefillConsumed={stream.clearUndeliveredDraft}
+              controls={
+                // Only while the thread is still unsaved: the binding is set once,
+                // at creation, and an existing coding thread shows its branch in the
+                // status strip instead.
+                <Show when={currentId() === null}>
+                  <ModeControl
+                    mode={mode()}
+                    onModeChange={setMode}
+                    projectId={codingProjectId()}
+                    onProjectChange={setCodingProjectId}
+                  />
+                </Show>
+              }
+              trailing={
+                <>
+                  {/* Where the message is going, then how full the thread it's
+                      going into is — both read on the way to SEND. */}
+                  <ModelPicker />
+                  {/* Only once a run has reported. The ring used to be
+                      unconditional and paint an alert-toned "context window
+                      unknown" whenever it had nothing — which on a brand-new
+                      thread is simply *before the first turn*, so a fresh chat
+                      opened on a red gauge announcing a fault that had not been
+                      established. A gauge with nothing to measure has nothing to
+                      say. The genuinely-unknown case is not lost: it is the send
+                      gate's, which blocks SEND and explains why. */}
+                  <Show when={stream.usage()}>
+                    {(usage) => <ContextRing usage={usage()} />}
+                  </Show>
+                </>
+              }
+            />
+            {/* The conversation's readouts sit UNDER the input, not above the
+              transcript where they used to. Two reasons, and the second is the
+              one that matters: after typing, this is where the operator's eye
+              already is — and docked here the line stays put while the
+              conversation scrolls behind it, so nothing it says ever belongs to
+              the turn that happens to be passing behind it. */}
+            <ConversationStatusStrip
+              conversationId={currentId}
+              streaming={stream.sending}
+              detached={stream.detached}
+              stats={stream.stats}
+              plan={stream.plan}
+              grantsRevalidate={conversationGrantsRevision}
+            />
+          </div>
         </div>
       </section>
 
@@ -911,72 +926,119 @@ export function ChatRoomScreen(): JSX.Element {
           content. Above `lg` it's a resizable aside; below `lg` (or in
           fullscreen at any width) the same panel renders in a full-screen sheet
           instead. */}
-      <Show when={asideOpen()}>
-        <ResizeHandle
-          aria-label="Resize viewport panel"
-          onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
-          onResizeEnd={() => setViewerWidth(liveWidth())}
-          class="hidden lg:block"
-        />
-        <aside
-          class="hidden shrink-0 lg:block"
-          style={{ width: `${liveWidth()}px` }}
-        >
-          {renderPanel(toggleViewport)}
-        </aside>
-      </Show>
+      {/* The whole panel resolves in and dissolves out at its full width — it
+          does not grow or shrink. An *animation*, not a transition, and the
+          difference is the mechanism rather than taste: a transition needs a
+          previous computed value, and a region that mounts the instant it is
+          opened has none, so it appears at its end state. An animation has its
+          own start, so it plays on mount. That is the whole reason the sheet
+          always faded correctly and the aside never did.
 
-      <Show when={sheetOpen()}>
-        <Portal>
+          `ConstructionReveal` rather than `Reveal`: the View is a region the
+          operator deliberately opens, so it is *built* — a `+` splits, travels
+          the top edge, drops down the sides, and the glass resolves inside the
+          frame it just described. A fade would say the panel had always been
+          there and the light had merely come up.
+
+          The breakpoint lives on a wrapper so the `lg:contents` leaves the
+          reveal as a direct flex child of the row. */}
+      <div class="hidden lg:contents">
+        {/* The handle sits OUTSIDE the construction reveal, on its own gate. It
+            rides the same signal so the two arrive and leave together, but
+            keeping it out is what lets the frame measure the panel itself —
+            inside, the marks would be offset by the handle's own width.
+            A hairline splitter has no frame to draw, so a plain reveal is the
+            whole of what it needs.
+
+            `divider="hover"` because the panel already brackets itself: at rest
+            the frame's left rule is the edge, and the splitter only paints when
+            the operator reaches for it. */}
+        <Reveal when={asideOpen()} class="flex h-full shrink-0">
+          <ResizeHandle
+            aria-label="Resize viewport panel"
+            divider="hover"
+            onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
+            onResizeEnd={() => setViewerWidth(liveWidth())}
+          />
+        </Reveal>
+        <ConstructionReveal
+          when={asideOpen()}
+          class="h-full shrink-0"
+          contentClass="h-full"
+        >
+          <aside class="min-w-0 shrink-0" style={{ width: `${liveWidth()}px` }}>
+            {renderPanel(toggleViewport)}
+          </aside>
+        </ConstructionReveal>
+      </div>
+
+      {/* The sheet is an overlay, so it has no space to give back — it is built
+          and taken apart in place, on the same choreography as the aside.
+
+          This is the one place the backdrop blur genuinely earns itself: the
+          sheet sits directly over the transcript, so there is real content
+          behind it to frost. The dialog carries the glass rather than an opaque
+          `bg-bg`, which is what lets the conversation stay faintly legible
+          underneath — the panel inside it is on the same surface and needs no
+          fill of its own. */}
+      <Portal>
+        <ConstructionReveal
+          when={sheetOpen()}
+          class="fixed inset-0 z-50"
+          contentClass="h-full"
+        >
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="view-sheet-title"
             data-view-sheet
-            class="fixed inset-0 z-50 flex flex-col bg-bg"
+            /* No fill of its own — the frosted surface is the framed region
+               `ConstructionReveal` draws, and a second glass layer here would
+               stack with it and paint the transcript out. */
+            class="flex h-full flex-col"
           >
-            <header class="flex items-center gap-3 border-b border-line px-4 py-3">
+            <header class="flex items-center gap-3 px-4 py-3">
               <Button
                 variant="ghost"
                 size="sm"
                 leading="chevron-left"
                 onClick={closeSheet}
               >
-                BACK TO CHAT
+                Back to chat
               </Button>
               <span id="view-sheet-title">
                 <Text variant="label" tone="bright">
-                  VIEW
+                  View
                 </Text>
               </span>
             </header>
             <div class="min-h-0 flex-1">{renderPanel(closeSheet)}</div>
           </div>
-        </Portal>
-      </Show>
+        </ConstructionReveal>
+      </Portal>
 
       <Modal
         open={renameOpen()}
         onClose={() => setRenameOpen(false)}
-        title="RENAME CONVERSATION"
+        title="Rename conversation"
       >
         <Stack gap={3}>
           <Input
-            label="TITLE"
+            label="Title"
             value={renameValue()}
             onInput={(e) => setRenameValue(e.currentTarget.value)}
             placeholder="Conversation title"
           />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRenameOpen(false)}>
-              CANCEL
+              Cancel
             </Button>
             <Button
               variant="primary"
               disabled={!renameValue().trim()}
               onClick={submitRename}
             >
-              SAVE
+              Save
             </Button>
           </div>
         </Stack>

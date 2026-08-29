@@ -12,16 +12,16 @@ export function SkillFrontmatter(props: { skill: Skill }): JSX.Element {
   return (
     <Stack gap={3}>
       <Field
-        label="SOURCE"
+        label="Source"
         orientation="row"
         value={props.skill.source.toUpperCase()}
       />
       <Show when={props.skill.license}>
-        <Field label="LICENSE" orientation="row" value={props.skill.license} />
+        <Field label="License" orientation="row" value={props.skill.license} />
       </Show>
       <Show when={props.skill.compatibility}>
         <Field
-          label="COMPATIBILITY"
+          label="Compatibility"
           orientation="row"
           value={props.skill.compatibility}
         />
@@ -47,7 +47,7 @@ export function SkillFrontmatter(props: { skill: Skill }): JSX.Element {
         <Stack gap={1}>
           <Row align="center" gap={1}>
             <Text variant="label" tone="dim">
-              PRESERVED KEYS
+              Preserved keys
             </Text>
             <InfoHint label="Non-standard frontmatter this bundle arrived with. It's kept as-is so exporting returns the bundle unchanged, and it isn't editable here." />
           </Row>
