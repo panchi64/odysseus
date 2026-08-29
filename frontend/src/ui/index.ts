@@ -184,6 +184,10 @@ export {
   ConstructionReveal,
   type ConstructionRevealProps,
 } from "./components/ConstructionReveal";
+export {
+  FramedOverlay,
+  type FramedOverlayProps,
+} from "./components/FramedOverlay";
 export { useGatedMount, type GatedMount } from "./components/useGatedMount";
 export { Menu, type MenuProps, type MenuItem } from "./components/Menu";
 export { MetaAction, type MetaActionProps } from "./components/MetaAction";

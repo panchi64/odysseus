@@ -28,8 +28,8 @@ export interface PaletteBodyProps {
 }
 
 /**
- * The palette's contents, mounted only while the overlay is open (`Modal`
- * renders its children behind a `Show`). That is deliberate on two counts: the
+ * The palette's contents, mounted only while the overlay is open
+ * (`FramedOverlay` renders its children behind a `Show`). That is deliberate on two counts: the
  * query and cursor reset by being born again rather than by an effect, and the
  * settings index's resources are created on open and torn down on close — so an
  * operator who never opens the palette never pays for the reads behind it.
@@ -128,7 +128,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
   };
 
   return (
-    <div onKeyDown={onKeyDown}>
+    <div class="flex min-h-0 flex-col" onKeyDown={onKeyDown}>
       <div class="p-2">
         <Input
           ref={field}
@@ -157,7 +157,7 @@ export function PaletteBody(props: PaletteBodyProps): JSX.Element {
         id={LIST_ID}
         role="listbox"
         aria-label="Pages and settings"
-        class="max-h-96 overflow-y-auto"
+        class="scrollbar-thin max-h-96 min-h-0 flex-1 overflow-y-auto"
       >
         <Show
           when={hits().length > 0}
