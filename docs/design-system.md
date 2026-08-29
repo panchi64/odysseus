@@ -340,6 +340,48 @@ Two things it deliberately does not do. **It never exits** — an exit animation
 
 A table earns that exclusion three times over — its header band is already mono because a column header names a machine field, its cells are values a process emitted rather than sentences a person wrote (§2), and a grid is read in two dimensions, so a reveal sweeping left-to-right through cells reads as flicker rather than as arrival.
 
+### The construction reveal — how a region the operator opens arrives
+
+`Reveal` says *content materialized here*. Some regions want to say *a place was
+made, and then filled*, and that is a different sentence: a region the operator
+deliberately opened should read as having been built for them, not as having been
+there all along with the light turned up.
+
+So a **construction reveal** draws its own frame before it fills. A single `+` at
+the origin corner splits; one half travels the top edge with a hairline drawn
+between them; both drop down the sides as the sides close; and the glass surface
+resolves inside the frame that has just been described. Closing runs the gesture
+in reverse, so the region is taken apart rather than switched off.
+
+Three surfaces use it, and the list is meant to stay short: the chat **View**,
+the **settings dialog**, and the **⌘K palette**. It is the arrival of a place, so
+it belongs to things that are places. A menu, a toast, a confirm and a form
+dialog all keep the ordinary reveal — being *built* would be theatre at that
+size, and the gesture stops meaning anything if everything performs it.
+
+It runs at the **stage budget (320ms)**, which is not a new exception to the
+ceiling below: the ceiling governs what the operator is waiting on, and a whole
+region arriving or leaving already has that budget. Its phases overlap; strictly
+sequential beats inside 320ms read as a stutter rather than as one continuous
+gesture. The content inside is **one fade, never a per-child stagger**.
+
+The frame is **inset**, not flush to the region's edge. Flush, it lands a hairline
+away from whatever edge was already there, and two rules a few pixels apart read
+as a mistake rather than as a frame. Where a neighbour's edge collides, the fix
+belongs to the neighbour — a splitter beside a self-framing panel hides its own
+rule until reached for.
+
+**The frosted surface is the framed region itself**, never a card wrapped around
+it. Give the fill a radius and an elevation and it becomes a second container:
+the frosted area then reads as a pane the marks are decorating rather than as the
+pane the marks describe. Anything inside a framed region is therefore bare — one
+glass layer, at the frame's own box.
+
+And be honest about what the blur buys. Over a flat ground it does nothing,
+because blurring a uniform field returns that field; translucency and the value
+shift are what make it read as a material. It pays where something is genuinely
+behind it — an overlay over the transcript, a dialog over a working page.
+
 ### Permitted animations
 
 - Eased (human): the reveal above, hover and focus transitions, height on disclosure, ambient state colour (240ms, §10.9).
