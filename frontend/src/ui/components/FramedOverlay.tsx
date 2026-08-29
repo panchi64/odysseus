@@ -50,13 +50,14 @@ export interface FramedOverlayProps {
  * - **The dialog carries no fill.** The frosted surface *is* the framed region the
  *   reveal draws; a `bg-*` here stacks a second layer over it and paints the page
  *   behind out. Anything inside is `Panel bare`.
- * - **The reveal layer spans the viewport but takes no clicks** — it has to be
+ * - **The centering layer spans the viewport but takes no clicks** — it has to be
  *   full-size for `place-items-center` to center against the viewport, so it is
- *   `pointer-events-none` and the dialog re-enables them. Without that it would
+ *   `pointer-events-none` and the reveal re-enables them. Without that it would
  *   cover the backdrop and swallow every dismissing click.
- * - **Centering goes on the reveal, sizing on the dialog.** The frame measures the
- *   region it wraps, so a width set on the wrapper would be the frame's width and
- *   the marks would land around the whole screen.
+ * - **Centering goes on that layer; the reveal is sized to the dialog.** The frame
+ *   is drawn on the reveal's own wrapper, so pinning *that* to the viewport puts
+ *   the corner marks in the corners of the screen — which is what the View's
+ *   full-screen sheet wants, and wrong for a dialog.
  */
 export function FramedOverlay(props: FramedOverlayProps): JSX.Element {
   const [local] = splitProps(props, [
@@ -94,26 +95,35 @@ export function FramedOverlay(props: FramedOverlayProps): JSX.Element {
           onClick={local.onClose}
         />
       </Show>
-      <ConstructionReveal
-        when={local.open}
-        origin={local.origin ?? "top-left"}
-        class="pointer-events-none fixed inset-0 z-50 grid place-items-center p-6"
-        contentClass="grid min-h-0 place-items-center"
-      >
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={local.labelledBy}
+      {/* Centering happens HERE, on a viewport-sized layer, and never on the
+          reveal. The frame is drawn on the reveal's own wrapper, so a wrapper
+          pinned to the viewport would put the corner marks in the corners of the
+          *screen* — which is exactly what the chat View's full-screen sheet
+          wants, and exactly wrong for a dialog. The reveal is therefore sized to
+          the dialog, and this layer positions it.
+
+          Always mounted: it is empty and takes no clicks when closed, and
+          gating it would tear the reveal out before it could play its exit. */}
+      <div class="pointer-events-none fixed inset-0 z-50 grid place-items-center p-6">
+        <ConstructionReveal
+          when={local.open}
+          origin={local.origin ?? "top-left"}
           class={cx(
             "pointer-events-auto flex max-h-[85vh] min-h-0 w-full flex-col",
             local.class,
           )}
+          contentClass={cx("flex min-h-0 flex-1 flex-col", local.contentClass)}
         >
-          <div class={cx("flex min-h-0 flex-1 flex-col", local.contentClass)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={local.labelledBy}
+            class="flex min-h-0 flex-1 flex-col"
+          >
             {local.children}
           </div>
-        </div>
-      </ConstructionReveal>
+        </ConstructionReveal>
+      </div>
     </Portal>
   );
 }
