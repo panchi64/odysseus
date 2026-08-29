@@ -43,7 +43,7 @@ import logging
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
@@ -64,6 +64,7 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
+from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
@@ -1198,6 +1199,39 @@ class ConversationStore:
             conversation = session.get(Conversation, conversation_id)
             if conversation is not None:
                 conversation.auto_compact_override = override
+
+        await in_session(self._engine, work)
+
+    async def get_overhead(self, conversation_id: str) -> TurnOverhead | None:
+        """What this thread's last turn carried besides the conversation — the standing
+        brief and the tool schemas, itemised.
+
+        The half of the context readout that a cold load cannot measure: neither reaches
+        the message history, so a reopened thread has only the footprint total without
+        this. ``None`` for a thread that has not run a turn since this was recorded, and
+        the breakdown is then absent rather than guessed."""
+
+        def work(session: Session) -> Any:
+            conversation = session.get(Conversation, conversation_id)
+            return conversation.context_overhead if conversation is not None else None
+
+        return TurnOverhead.from_dict(await in_session(self._engine, work))
+
+    async def set_overhead(self, conversation_id: str, overhead: TurnOverhead | None) -> None:
+        """Record what the turn that just ran weighed, for the next cold load of *this*
+        thread.
+
+        A failed measurement is ignored rather than stored as absence: the previous good
+        figure still describes this thread's configuration better than nothing does. Like
+        the compaction override, this deliberately does not bump ``updated_at`` — it is
+        bookkeeping about a turn, not activity of its own."""
+        if overhead is None:
+            return
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.context_overhead = overhead.as_dict()
 
         await in_session(self._engine, work)
 

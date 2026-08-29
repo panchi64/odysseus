@@ -36,7 +36,6 @@ from routes import deps
 from routes.deps import OPERATOR_ID
 from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds, ConversationBusyError, RunRegistry
 from runs.registry import _UNSET
-from services.context_budget import OverheadCache
 from services.conversations import ConversationBinding, ConversationStore
 from services.registry import ModelRegistry
 from services.settings_store import (
@@ -246,7 +245,6 @@ def compose_turn(
     auto_compact: AutoCompactPolicy | None = None,
     request_limit: int | None = None,
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
-    overhead_cache: OverheadCache | None = None,
     inactivity_timeout_s: float | None | object = _UNSET,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
@@ -276,9 +274,6 @@ def compose_turn(
         # The operator's severity boundaries for that window. They decide only the
         # `level` on the emitted metrics — the gauge's colour — never the turn itself.
         context_thresholds=context_thresholds,
-        # Where the turn leaves what its request weighed, so a later reload of any thread
-        # in this mode can still break its context down.
-        overhead_cache=overhead_cache,
         capabilities=capabilities,
         store=store,
         conversation_id=conversation_id,
@@ -363,7 +358,6 @@ async def _submit_turn(
         context_thresholds=await get_context_thresholds(
             deps.settings_store(request), OPERATOR_ID
         ),
-        overhead_cache=deps.overhead_cache(request),
         # Same reason as the request limit: every interactive turn runs under the
         # operator's inactivity bound (else the config default).
         inactivity_timeout_s=await get_inactivity_timeout(

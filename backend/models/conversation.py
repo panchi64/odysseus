@@ -72,6 +72,27 @@ class Conversation(SQLModel, table=True):
     # window): null inherits the operator default, True/False forces it on/off for this
     # thread. Policy, not user content, so it stays in the clear — like `model`/`ephemeral`.
     auto_compact_override: bool | None = Field(default=None)
+    # What the most recent turn's model request weighed besides the conversation itself:
+    # the standing brief and the tool schemas, itemised, in characters (the serialized
+    # form of `runs.TurnOverhead`). The context readout splits the thread's footprint
+    # with it on a cold load, where there is no live request to measure — the schemas and
+    # the brief never reach the message history, so without this a reopened thread could
+    # only report one undifferentiated "in use" figure until the operator sent another
+    # message, which is exactly when they least want to (the reason to look is to decide
+    # whether to send one at all).
+    #
+    # **Per conversation, last turn wins.** The figure it splits is itself the last
+    # turn's — `context_footprint` reads the newest response's usage — so both halves of
+    # that readout come from the same turn and describe the same request. Per-message
+    # would follow a rewind exactly, at the cost of a near-identical blob on every
+    # response row of every agentic step; what that trades for is drift in one narrow
+    # case (an older turn's footprint split by a newer turn's configuration, after tools
+    # were toggled mid-thread), and the drift moves proportions only. The total stays the
+    # provider's own number, and every figure derived from this renders with a `~`.
+    #
+    # Slugs and character counts — structural metadata, not user content — so it stays in
+    # the clear like `model`/`mode`/`ephemeral`. Null until the thread's first turn.
+    context_overhead: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

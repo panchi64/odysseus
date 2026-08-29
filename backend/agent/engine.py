@@ -78,7 +78,7 @@ from runs import (
     total_timings,
 )
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
-from services.context_budget import OverheadCache, compose
+from services.context_budget import compose
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
@@ -921,7 +921,6 @@ def build_chat_orchestrator(
     disabled_tools: frozenset[str] = frozenset(),
     binding: ConversationBinding = _CHAT_BINDING,
     request_limit: int | None = None,
-    overhead_cache: OverheadCache | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
 
@@ -961,10 +960,10 @@ def build_chat_orchestrator(
     the conversation by the caller. It decides where this turn's file work happens
     (``services/workspace.py``) and, through ``disabled_tools``, which tools belong in it.
 
-    ``overhead_cache`` remembers what this turn's request weighed besides the
-    conversation, so a *reload* of the thread can still show the context breakdown — a
-    cold load has no request to measure. See ``services.context_budget.OverheadCache``
-    for why that is remembered rather than stored.
+    A completed turn writes what its request weighed besides the conversation onto the
+    thread (``ConversationStore.set_overhead``), so a later *reload* can still break the
+    context down — a cold load has no request to measure, and neither the standing brief
+    nor the tool schemas reach the message history.
 
     ``context_thresholds`` are the operator's severity boundaries for that window — the
     fullness at which the composer's gauge turns amber and then red. They only decide the
@@ -1197,12 +1196,6 @@ def build_chat_orchestrator(
                 store=store,
                 request_limit=request_limit,
             )
-            # What this turn's requests weighed besides the conversation, kept for the
-            # next cold load of any thread in this mode. Recorded here rather than where
-            # it is measured because the mode is what keys it, and the mode is the
-            # orchestrator's to know.
-            if overhead_cache is not None:
-                overhead_cache.remember(binding.mode, run.context_overhead)
 
             # Verify only a completed turn (not one parked for approval or stopped at
             # a bound), and only when the heuristic says it is worth judging.
@@ -1284,6 +1277,28 @@ def build_chat_orchestrator(
                 # running one so the event is emitted before the orchestrator returns
                 # (run.ended) and the open stream carries it.
                 await settle_title(title_namer)
+
+            # What this turn's requests weighed besides the conversation, written onto
+            # the thread for its own next cold load — neither the brief nor the schemas
+            # reach the message history, so this is the only way a reopened conversation
+            # can break its footprint down instead of reporting one flat figure.
+            #
+            # **Last, and never fatal.** It sits here rather than beside `_drive_turn`
+            # for three reasons, each of which the earlier placement got wrong: it must
+            # follow the verifier, whose corrective re-attempt drives further requests
+            # and leaves a newer measurement behind; it must follow `_finalize`, so a
+            # thread never carries overhead for a turn whose messages didn't record; and
+            # it must not `await` between a park and the `on_park_cancel` arming above,
+            # which a concurrent cancel of the now-visible parked run depends on. The
+            # write is swallowed because this is a readout: losing the breakdown costs a
+            # reload its detail, where letting the failure out would turn an answered
+            # turn into an errored run and route its messages through the degraded
+            # error-flush instead of the finalize that already recorded them.
+            if store is not None and conversation_id is not None:
+                try:
+                    await store.set_overhead(conversation_id, run.context_overhead)
+                except Exception:
+                    logger.warning("failed to record context overhead", exc_info=True)
         except Exception:
             # Anything else that escapes `_drive_turn` (a provider error its specific
             # catches don't cover, a tool/dependency raising, …) must still not silently
