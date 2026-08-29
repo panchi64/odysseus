@@ -5,7 +5,7 @@ import type { EndpointStatus } from "~/lib/api/models-types";
 /** The backend owns the verdict; this maps its `last_status` token to one of the
  *  design system's status accents for the health dot. No re-categorization — a
  *  token→accent presentation map. The one shared mapping so the Settings endpoint
- *  rows and the guided cookbook tab's CONNECTED PROVIDERS list never drift. */
+ *  rows never drift. */
 export function healthStatus(
   s: EndpointStatus | null,
 ): "nominal" | "alert" | "idle" {

@@ -3,7 +3,6 @@ import { Button, Row, Stack, StatusFlag, Text, Toggle } from "~/ui";
 import type { EndpointDiscovery, ModelEndpoint } from "~/lib/stores/models";
 import { EndpointDiscoveryFlag } from "./EndpointDiscoveryFlag";
 import { EndpointHealthFlag } from "./EndpointHealthFlag";
-import { EndpointLiveFlag } from "./EndpointLiveFlag";
 
 /** One endpoint: what it is, what state it's in, and what can be done to it.
  *  Presentational — every action is the caller's. */
@@ -30,7 +29,6 @@ export function EndpointRow(props: {
             {ep().name}
           </Text>
           <EndpointHealthFlag status={ep().lastStatus} />
-          <EndpointLiveFlag endpoint={ep()} />
           <Show when={!ep().enabled}>
             <StatusFlag status="warn">Disabled</StatusFlag>
           </Show>

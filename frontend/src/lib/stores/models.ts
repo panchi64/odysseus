@@ -1,7 +1,7 @@
 /** Global model state — the endpoint catalog, the provider presets, runtime
  *  model discovery, and the role bindings (including the chat `main` selection).
  *  One place owns all of it so the app shell's top-bar picker, the overview
- *  launchpad, chat, the Cookbook, and Settings share a single source of truth
+ *  launchpad, chat, compare, and Settings share a single source of truth
  *  (one `/models/endpoints` fetch, one `/models/roles` fetch) — and every role
  *  write goes through the store's actions, never a feature-local PUT.
  *
@@ -67,11 +67,6 @@ export interface ModelEndpoint {
   /** Whether this endpoint is active — disabled endpoints are hidden from the
    *  picker and skipped in fallback chains (the backend enforces both). */
   enabled: boolean;
-  /** A serving-managed local engine — the Cookbook owns its lifecycle. */
-  managed: boolean;
-  /** Process liveness of a managed engine ("running"/"stopped"); null for
-   *  external endpoints. Liveness renders from this, never from `enabled`. */
-  liveStatus: string | null;
   /** The last probe verdict (null until first tested). */
   lastStatus: EndpointStatus | null;
   lastErrorCategory: EndpointErrorCategory | null;
@@ -194,8 +189,6 @@ function toEndpoint(dto: EndpointViewDTO): ModelEndpoint {
     vision: dto.vision,
     thinking: dto.thinking,
     enabled: dto.enabled,
-    managed: dto.managed,
-    liveStatus: dto.live_status,
     lastStatus: dto.last_status,
     lastErrorCategory: dto.last_error_category,
     lastErrorDetail: dto.last_error_detail,
@@ -307,7 +300,7 @@ const store = createRoot(() => {
 
   // The role bindings — one shared `/models/roles` fetch for the picker (which
   // derives the `main` selection from it), Settings' ROLE BINDINGS panel, and the
-  // Cookbook's embedding tab. Every role write (`setRoleBinding`) ticks it, so all
+  // embedding controls. Every role write (`setRoleBinding`) ticks it, so all
   // three surfaces reconcile from the same re-read.
   const [rolesTick, setRolesTick] = createSignal(1);
   const [roles] = createResource(
@@ -488,7 +481,7 @@ async function putRoleBinding(
 }
 
 /** The role bindings resource — shared by Settings' ROLE BINDINGS panel and the
- *  Cookbook's embedding tab (the picker derives the `main` selection from it). */
+ *  embedding controls (the picker derives the `main` selection from it). */
 export function useRoles(): Resource<RoleBindings> {
   return store.roles;
 }

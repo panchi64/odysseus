@@ -13,7 +13,7 @@ import {
   Text,
   toast,
 } from "~/ui";
-import { usePathPicker } from "~/features/cookbook/serving";
+import { usePathPicker } from "~/lib/hostPicker";
 import {
   activeProjectId,
   createProject,

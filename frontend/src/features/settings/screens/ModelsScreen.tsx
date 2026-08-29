@@ -1,7 +1,6 @@
 import { type JSX } from "solid-js";
 import { Disclosure, Divider, PageHeader, Stack, toast } from "~/ui";
 import { isApiError } from "~/lib/api";
-import { HardwareBand, LocalModelsPanel } from "~/features/cookbook";
 import {
   decodeModelValue,
   effectiveSelection,
@@ -33,15 +32,13 @@ import { ModelRoleCard } from "../components/ModelRoleCard";
  *  disagree about what's selected, and each writes through the store's existing
  *  role actions — no role call is issued here.
  *
- *  Below the role cards is the **one** model list. Local-versus-external stopped
- *  being two pages here: a model the operator serves on this host and a model
- *  they reach over an API are the same kind of thing to the picker above, and
- *  splitting them meant configuring "which model answers me" in one place and
- *  "which models exist" in two. The serving controls live in `features/cookbook`
- *  because the Cookbook's other tabs (embedding, compare, get-started) drive the
- *  same lifecycle; this screen renders them rather than owning a second copy.
+ *  Every model is reached through an **endpoint** — an OpenAI-compatible URL the
+ *  operator points at, whether it is a server on this machine or a lab's API.
+ *  Odysseus no longer downloads weights, installs engines, or supervises a local
+ *  server, so the hardware band and the serve lifecycle that used to sit under
+ *  these cards are gone; what a model runs on is decided where it runs.
  *
- *  Endpoint plumbing (which providers exist) and fallback ordering (where a
+ *  Endpoint plumbing (which endpoints exist) and fallback ordering (where a
  *  request goes when the primary is down) are real but rare, so they sit behind
  *  ADVANCED instead of competing with the choice most people came to make. */
 export function ModelsScreen(): JSX.Element {
@@ -197,8 +194,6 @@ export function ModelsScreen(): JSX.Element {
       </ModelRoleCard>
 
       <Divider />
-      <HardwareBand />
-      <LocalModelsPanel />
 
       <Disclosure label="Advanced">
         <Stack gap={6} class="pt-3">

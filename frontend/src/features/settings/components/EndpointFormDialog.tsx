@@ -36,7 +36,7 @@ function formFor(ep: ModelEndpoint): EndpointFormValues {
 /**
  * Create/edit an endpoint. Owns the field values and the save call; the caller
  * only says whether it's open and on which endpoint. The form control itself
- * (`EndpointForm`) is shared with the guided cookbook flow — this drives it in
+ * (`EndpointForm`) is the shared field set — this drives it in
  * `advanced` mode.
  */
 export function EndpointFormDialog(props: {

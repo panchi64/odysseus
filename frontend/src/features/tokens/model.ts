@@ -1,7 +1,7 @@
 /** API Tokens feature — outbound service credentials.
  *
  *  A credential is an API key the system uses to call a third-party service on the
- *  operator's behalf (the Cookbook's quality benchmarks, its HuggingFace token). The set
+ *  operator's behalf (model quality benchmarks, HuggingFace). The set
  *  of services is the backend's catalog; the key itself is write-only — the API only ever
  *  reports whether one is set. */
 export interface ServiceCredential {

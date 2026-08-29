@@ -3,7 +3,6 @@ import { Chip, Combobox, Panel, Row, Stack, Text } from "~/ui";
 import { num } from "~/lib/format";
 import type { ModelEndpoint } from "~/lib/stores/models";
 import { EndpointHealthFlag } from "./EndpointHealthFlag";
-import { EndpointLiveFlag } from "./EndpointLiveFlag";
 
 /** One job, one model. The card names the job in plain language, offers ONE
  *  combined picker (a model, with its endpoint implied by the choice), and shows
@@ -61,7 +60,6 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
                 {ep().name}
               </Text>
               <EndpointHealthFlag status={ep().lastStatus} />
-              <EndpointLiveFlag endpoint={ep()} />
               <Show when={ep().contextWindow}>
                 {(cw) => <Chip>CTX {num(cw(), 0)}</Chip>}
               </Show>

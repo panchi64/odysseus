@@ -1,4 +1,4 @@
-/** Side-by-side compare — the data seam for the Cookbook COMPARE tab.
+/** Side-by-side compare — the data seam for the compare bench.
  *
  *  Compare is a thin *view* over the chat engine: each pane is one ordinary chat
  *  conversation pinned to its own model, and a comparison is just the same prompt

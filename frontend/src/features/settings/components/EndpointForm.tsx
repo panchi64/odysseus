@@ -12,7 +12,7 @@ import {
 } from "~/ui";
 
 /** The endpoint form's field state — the single shape both the Settings modal
- *  (advanced) and the guided cookbook tab (simple) drive. Held by the parent so
+ *  (advanced) drives. Held by the parent so
  *  this stays a pure presentation control: it renders fields and relays changes,
  *  it owns no state and makes no decision. */
 export interface EndpointFormValues {
@@ -54,7 +54,7 @@ export interface EndpointFormProps {
 }
 
 /** The shared create/edit endpoint form body. ONE form, two variants — so the
- *  Settings modal and the guided cookbook tab never drift. */
+ *  Settings modal never drifts. */
 export function EndpointForm(props: EndpointFormProps): JSX.Element {
   const v = () => props.values;
   const simple = () => props.variant === "simple";
