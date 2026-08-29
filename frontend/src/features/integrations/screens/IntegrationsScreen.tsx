@@ -400,6 +400,7 @@ export function IntegrationsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Integrations"
         subtitle="HTTP service connectors. Credentials are encrypted at rest."
         assetId="SYS-INT-05.1"

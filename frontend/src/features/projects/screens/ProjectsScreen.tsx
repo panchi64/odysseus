@@ -86,6 +86,7 @@ export function ProjectsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Projects"
         subtitle="Directories you work in. The active one scopes what you see."
       />

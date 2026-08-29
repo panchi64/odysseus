@@ -153,6 +153,7 @@ export function ModelsScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Models"
         subtitle="Which model does what. Set it here once — every surface follows."
         assetId="ODY-MDL-01.0"

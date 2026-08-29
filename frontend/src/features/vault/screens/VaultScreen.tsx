@@ -197,6 +197,7 @@ export function VaultScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Password vault"
         subtitle="Encrypted credential store. Agent reads require explicit approval."
         assetId="ODY-VLT-05.0 EDITION 01"

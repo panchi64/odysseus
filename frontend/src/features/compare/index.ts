@@ -1,0 +1,1 @@
+export { CompareScreen } from "./CompareScreen";

@@ -10,9 +10,11 @@ import { SessionList } from "./SessionList";
  *  so the activity edges would otherwise stay lit until the next turn. */
 const ACTIVITY_POLL_MS = 3000;
 
-/** RECENTS — the conversation list, hoisted out of the chat page and into the
- *  app's nav rail so the chat body is free for the conversation plus a viewport
- *  pane. It owns its chat-seam wiring (the shared sessions resource + the
+/** RECENTS — the conversation list, and the body of the nav rail itself. It was
+ *  hoisted out of the chat page so the chat body is free for the conversation
+ *  plus a viewport pane, and it is now what the rail *is*: mounted on every
+ *  route, not only `/chat`, because threads are the work and everything that was
+ *  configuration went to the settings dialog. It owns its chat-seam wiring (the shared sessions resource + the
  *  persistent room controller), so the app shell only positions it — no chat
  *  state or logic leaks into the shell. Selecting a thread drives the same
  *  `currentId` the room renders; opening from off the chat route navigates there
@@ -74,7 +76,7 @@ export function RecentsRail(): JSX.Element {
   };
 
   return (
-    <div class="mb-2">
+    <div class="flex min-h-0 flex-1 flex-col pb-2">
       <div class="flex items-center justify-between px-3 py-1">
         <Text variant="label" tone="dim">
           Recents
@@ -83,13 +85,15 @@ export function RecentsRail(): JSX.Element {
           New
         </Button>
       </div>
-      {/* Cap the height so a long history scrolls within Recents instead of
-          pushing the rest of the nav off-screen.
+      {/* The list takes whatever height is left rather than a fixed cap. The cap
+          was right when six area sections sat beneath it and a long history would
+          have pushed them off-screen; the rail is the thread list now, so a cap
+          would leave dead space under it instead.
 
           No rule above the list (§7): a hairline here sat directly on top of the
           first row and read as a border belonging to *that item* rather than as
           a divider under the header. The header's own spacing separates them. */}
-      <div class="scrollbar-thin max-h-80 overflow-y-auto">
+      <div class="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
         <SessionList
           sessions={rows}
           currentId={currentId()}

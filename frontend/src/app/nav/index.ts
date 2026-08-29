@@ -1,3 +1,4 @@
+import { legacySettingsHref } from "~/app/settings-dialog/legacy";
 import { AREAS, PINS } from "./areas";
 import { searchSettings } from "./settings-search";
 import type {
@@ -34,9 +35,6 @@ export {
 } from "./settings-search";
 
 export const TOP_PINS = PINS.filter((p) => p.slot === "top").map((p) => p.item);
-export const FOOTER_PINS = PINS.filter((p) => p.slot === "footer").map(
-  (p) => p.item,
-);
 
 /** Every page in the nav, area-owned or not. A pin that only shortcuts into an
  *  area is skipped — its page is already here under its own label, and listing
@@ -111,6 +109,11 @@ export function isConnectedRoute(
   areas: NavArea[] = AREAS,
 ): boolean {
   if (pathname === "/") return true;
+  // A path that only forwards into the settings dialog is connected by virtue of
+  // where it lands. The forward is instant, but the shell reads this on the way
+  // through, and a NOT CONNECTED banner flashing over a redirect would be a lie
+  // told very briefly.
+  if (legacySettingsHref(pathname)) return true;
   return flattenNav(areas).some(
     ({ item }) =>
       item.connected &&

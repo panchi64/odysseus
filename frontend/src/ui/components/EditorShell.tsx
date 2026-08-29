@@ -6,8 +6,12 @@ import { Row } from "../primitives/Row";
 import { Stack } from "../primitives/Stack";
 
 export interface EditorShellProps {
-  /** Back-link target (the parent list) and its label. */
-  backHref: string;
+  /** The return path to the parent list, as either a route or a callback.
+   *  `onBack` wins when both are given — an editor mounted inside an overlay
+   *  has a parent list but no URL to go back to, and a link there would leave
+   *  the overlay entirely. */
+  backHref?: string;
+  onBack?: () => void;
   backLabel: string;
   /** Title shown in the header. */
   title: string;
@@ -57,7 +61,8 @@ export function EditorShell(props: EditorShellProps): JSX.Element {
           variant="ghost"
           size="sm"
           leading="chevron-left"
-          href={props.backHref}
+          href={props.onBack ? undefined : props.backHref}
+          onClick={props.onBack}
           class="self-start"
         >
           {props.backLabel}

@@ -98,6 +98,7 @@ export function AccessTokensScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Access tokens"
         subtitle="Scoped tokens that let your own clients call this API. Shown once at issue; only a one-way hash is kept."
         assetId="ODY-ADM-05.0 EDITION 01"

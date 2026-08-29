@@ -18,6 +18,7 @@ import {
   Marquee,
   Menu,
   type MenuItem,
+  NotConnectedOverlay,
   PageHeader,
   Panel,
   Row,
@@ -292,8 +293,19 @@ export function HealthScreen(): JSX.Element {
     ).length;
 
   return (
-    <Stack gap={6}>
+    /* Health is the one surface still on fixtures, and it has to keep saying so.
+       That used to be a route-level flag (`connected` in the nav model) that the
+       shell read to lay a NOT CONNECTED overlay over the page; Health is a
+       section of the settings dialog now and has no route to carry the flag, so
+       the overlay is rendered here, inline, over the section it actually
+       describes. `relative` is what it positions against.
+
+       It goes when the backend measures per-service latency, a baseline, and a
+       status history — none of which it does today. */
+    <Stack gap={6} class="relative">
+      <NotConnectedOverlay />
       <PageHeader
+        variant="section"
         title="Health dashboard"
         subtitle="Live service diagnostics and degradation tracking."
         assetId="SYS-HLT-07.1"

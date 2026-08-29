@@ -1,5 +1,4 @@
 import { createSignal, For, Show, Suspense, type JSX } from "solid-js";
-import { useNavigate } from "@solidjs/router";
 import {
   Button,
   EmptyState,
@@ -48,8 +47,13 @@ const STATUS_TABS = [
 const STATUS_VALUES = ["all", "published", "draft"] as const;
 type StatusFilter = (typeof STATUS_VALUES)[number];
 
-export function SkillsDirectoryScreen(): JSX.Element {
-  const navigate = useNavigate();
+export function SkillsDirectoryScreen(props: {
+  /** Open a skill's editor. The directory used to navigate to `/skills/{id}`;
+   *  it now lives inside the settings dialog, which owns that second level, so
+   *  where "open" goes is the caller's business rather than a route this
+   *  component hard-codes. */
+  onOpen: (id: string) => void;
+}): JSX.Element {
   const skillsResource = useSkills();
   // Reading a Solid resource accessor re-throws its error (same hazard GalleryScreen
   // documents). A 500 from /skills would otherwise trip the shell's ErrorBoundary and
@@ -83,7 +87,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
       toast.success(`Imported "${skill.name}" as a draft`, {
         action: {
           label: "Open",
-          onClick: () => navigate(`/skills/${skill.id}`),
+          onClick: () => props.onOpen(skill.id),
         },
       });
       // Everything the backend flagged about the bundle, verbatim — the operator
@@ -193,6 +197,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Skills"
         subtitle="Agent Skills bundles — reusable procedures the assistant can follow."
         assetId="ODY-SKL-01.0"
@@ -297,7 +302,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
                 <ListRow
                   label={skill.name}
                   leading="layers"
-                  href={`/skills/${skill.id}`}
+                  onClick={() => props.onOpen(skill.id)}
                   right={
                     <span class="flex shrink-0 items-center gap-3">
                       {/* Shown for any bundle that has files at all — a row that
@@ -337,7 +342,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
                             {
                               label: "Edit",
                               icon: "edit",
-                              onSelect: () => navigate(`/skills/${skill.id}`),
+                              onSelect: () => props.onOpen(skill.id),
                             },
                             {
                               label: "Export",
@@ -372,7 +377,7 @@ export function SkillsDirectoryScreen(): JSX.Element {
         onClose={() => setNewOpen(false)}
         onCreated={(id) => {
           setNewOpen(false);
-          navigate(`/skills/${id}`);
+          props.onOpen(id);
         }}
       />
     </Stack>

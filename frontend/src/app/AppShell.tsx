@@ -16,6 +16,7 @@ import {
 import { NotificationBell } from "./NotificationBell";
 import { Sidebar, useSidebarWidth } from "./sidebar";
 import { isConnectedRoute } from "./nav";
+import { SettingsDialog } from "./settings-dialog";
 
 /** The authenticated app chrome: sidebar rail + top status bar + the routed
  *  content region. Composed entirely from ~/ui. */
@@ -37,8 +38,11 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
     <div class="flex h-screen overflow-hidden bg-bg text-text">
       {/* The rail is drag-sized; the handle draws the hairline that used to be
           the aside's right border. */}
+      {/* `overflow-hidden`, not `overflow-y-auto`: the rail's own body — the
+          thread list — owns the scroll now, so a scrollbar here would be a
+          second one around it. */}
       <aside
-        class="shrink-0 overflow-y-auto"
+        class="shrink-0 overflow-hidden"
         style={{ width: `${rail.width()}px` }}
       >
         <Sidebar />
@@ -92,6 +96,12 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
           </Show>
         </div>
       </div>
+
+      {/* Mounted once, here, and reading its own open state from the URL. It
+          portals to the body, so where it sits in this tree decides nothing
+          about where it paints — only that it exists on every route, which is
+          what lets `?settings=…` open it over any of them. */}
+      <SettingsDialog />
     </div>
   );
 }

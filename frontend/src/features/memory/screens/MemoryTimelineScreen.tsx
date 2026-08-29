@@ -187,6 +187,7 @@ export function MemoryTimelineScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Memory"
         subtitle="Persistent facts, preferences, and context the system has learned."
         assetId="ODY-MEM-01.0"

@@ -59,7 +59,13 @@ function draftOf(skill: Skill): SkillDraft {
  *  that identify it and the rest of the bundle in the tools aside. Every rule
  *  about what's valid lives in the backend; a rejection here renders exactly
  *  what it said, on the field it named. */
-export function SkillEditorScreen(props: { id: string }): JSX.Element {
+export function SkillEditorScreen(props: {
+  id: string;
+  /** Return to the directory. A callback rather than a route, because the
+   *  editor now opens inside the settings dialog, where "back" is one level up
+   *  in the pane and not a page. */
+  onBack: () => void;
+}): JSX.Element {
   const skillResource = useSkillDetail(() => props.id);
   // Reading the accessor re-throws a load failure — a 500 would otherwise trip the
   // shell's ErrorBoundary and replace the editor with a generic message.
@@ -235,7 +241,11 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
             message={loadError() ? "Skill unavailable" : "Skill not found"}
             hint={loadError() ?? "The requested skill does not exist."}
             action={
-              <Button variant="default" leading="chevron-left" href="/skills">
+              <Button
+                variant="default"
+                leading="chevron-left"
+                onClick={props.onBack}
+              >
                 Back to skills
               </Button>
             }
@@ -244,7 +254,7 @@ export function SkillEditorScreen(props: { id: string }): JSX.Element {
       >
         {(s) => (
           <EditorShell
-            backHref="/skills"
+            onBack={props.onBack}
             backLabel="Back to skills"
             title={draft.name || "—"}
             dirty={isDirty()}

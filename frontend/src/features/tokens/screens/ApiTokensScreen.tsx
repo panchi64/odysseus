@@ -74,6 +74,7 @@ export function ApiTokensScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Service keys"
         subtitle="Outbound — keys this system uses to reach third-party services. Stored encrypted at rest; never displayed."
         assetId="ODY-ADM-04.0 EDITION 02"

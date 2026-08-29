@@ -147,6 +147,7 @@ export function BackupScreen(): JSX.Element {
   return (
     <Stack gap={6}>
       <PageHeader
+        variant="section"
         title="Backup / restore"
         subtitle="Export an encrypted archive of your workspace, or merge one back in."
         assetId="ODY-ADM-06.0 EDITION 01"
