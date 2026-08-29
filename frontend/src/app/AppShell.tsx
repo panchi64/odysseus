@@ -2,6 +2,7 @@ import { createEffect, onCleanup, Show, Suspense, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import {
   ErrorBoundary,
+  LoadingText,
   NotConnectedOverlay,
   ResizeHandle,
   StatusFlag,
@@ -88,7 +89,9 @@ export function AppShell(props: { children: JSX.Element }): JSX.Element {
               away from a broken screen clears the error. */}
           <main class="h-full overflow-y-auto p-6">
             <ErrorBoundary resetKey={() => location.pathname}>
-              <Suspense>{props.children}</Suspense>
+              <Suspense fallback={<LoadingText label="Loading" />}>
+                {props.children}
+              </Suspense>
             </ErrorBoundary>
           </main>
           <Show when={!connected()}>

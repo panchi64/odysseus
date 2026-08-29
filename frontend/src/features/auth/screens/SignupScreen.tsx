@@ -1,5 +1,4 @@
 import { createSignal, Show, type JSX } from "solid-js";
-import { Navigate } from "@solidjs/router";
 import { isApiError } from "~/lib/api";
 import { useSession } from "~/lib/stores/session";
 import { Button, Input, Stack, StatusFlag, Text } from "~/ui";
@@ -32,9 +31,9 @@ export function SignupScreen(): JSX.Element {
     setError("");
     setLoading(true);
     try {
-      // Setup flips the session to "unlocked"; the reactive <Navigate> below
-      // redirects home. A second imperative navigate would race that route
-      // transition and blank the page.
+      // Setup flips the session to "unlocked" and the auth gate swaps this screen
+      // for the app in the same tick. There is no navigation to do — which is the
+      // point: routing here is what used to leave the operator staring at the form.
       await session.setup(password());
     } catch (err) {
       setError(
@@ -48,65 +47,55 @@ export function SignupScreen(): JSX.Element {
   }
 
   return (
-    <>
-      {/* Already set up → don't offer setup again. */}
-      <Show when={session.status === "unlocked"}>
-        <Navigate href="/" />
-      </Show>
-      <Show when={session.status === "locked"}>
-        <Navigate href="/login" />
-      </Show>
-
-      <form onSubmit={handleCreate}>
-        <Stack gap={3}>
-          <Stack gap={1}>
-            <StatusFlag status="info" dot>
-              First-run setup
-            </StatusFlag>
-            <Text variant="micro" tone="dim">
-              Choose the operator password. It derives the encryption key for
-              all stored data and is never recoverable — store it safely.
-            </Text>
-          </Stack>
-          <Input
-            label="Password"
-            type="password"
-            value={password()}
-            onInput={(e) => {
-              setPassword(e.currentTarget.value);
-              setError("");
-            }}
-            placeholder="••••••••"
-            hint="Minimum 8 characters."
-            autocomplete="new-password"
-          />
-          <Input
-            label="Confirm password"
-            type="password"
-            value={confirm()}
-            onInput={(e) => {
-              setConfirm(e.currentTarget.value);
-              setError("");
-            }}
-            placeholder="••••••••"
-            invalid={mismatch()}
-            hint={mismatch() ? "Passwords do not match." : undefined}
-            autocomplete="new-password"
-          />
-          <Show when={error()}>
-            <Text variant="micro" tone="alert">
-              {error()}
-            </Text>
-          </Show>
-          <Button
-            variant="primary"
-            type="submit"
-            disabled={loading() || mismatch()}
-          >
-            {loading() ? "Initializing…" : "Initialize workspace"}
-          </Button>
+    <form onSubmit={handleCreate}>
+      <Stack gap={3}>
+        <Stack gap={1}>
+          <StatusFlag status="info" dot>
+            First-run setup
+          </StatusFlag>
+          <Text variant="micro" tone="dim">
+            Choose the operator password. It derives the encryption key for all
+            stored data and is never recoverable — store it safely.
+          </Text>
         </Stack>
-      </form>
-    </>
+        <Input
+          label="Password"
+          type="password"
+          value={password()}
+          onInput={(e) => {
+            setPassword(e.currentTarget.value);
+            setError("");
+          }}
+          placeholder="••••••••"
+          hint="Minimum 8 characters."
+          autocomplete="new-password"
+        />
+        <Input
+          label="Confirm password"
+          type="password"
+          value={confirm()}
+          onInput={(e) => {
+            setConfirm(e.currentTarget.value);
+            setError("");
+          }}
+          placeholder="••••••••"
+          invalid={mismatch()}
+          hint={mismatch() ? "Passwords do not match." : undefined}
+          autocomplete="new-password"
+        />
+        <Show when={error()}>
+          <Text variant="micro" tone="alert">
+            {error()}
+          </Text>
+        </Show>
+        <Button
+          variant="primary"
+          type="submit"
+          disabled={loading() || mismatch()}
+        >
+          {loading() ? "Initializing…" : "Initialize workspace"}
+        </Button>
+      </Stack>
+    </form>
   );
 }

@@ -7,6 +7,14 @@ import {
   setExpireHandler,
   setToken,
 } from "~/lib/api";
+import {
+  classify,
+  dbMissingFrom,
+  type AuthStatus,
+  type SessionStatus,
+} from "./sessionStatus";
+
+export type { SessionStatus };
 
 /**
  * Session store — the real auth state for the single-operator backend.
@@ -20,27 +28,30 @@ import {
  * request flips us back to `locked` through the client's expiry handler.
  */
 
-export type SessionStatus = "loading" | "uninitialized" | "locked" | "unlocked";
-
-interface AuthStatus {
-  initialized: boolean;
-  unlocked: boolean;
-  auth_enabled: boolean;
-}
-
 interface TokenResponse {
   token: string;
 }
 
-const [status, setStatus] = createSignal<SessionStatus>("loading");
-
-/** Map the backend's vault state (plus whether we hold a token) to our status. */
-function classify(s: AuthStatus): SessionStatus {
-  if (!s.initialized) return "uninitialized";
-  if (!s.unlocked) return "locked";
-  if (!s.auth_enabled) return "unlocked"; // gate disabled — no token needed
-  return getToken() ? "unlocked" : "locked";
+/** What a workspace reset actually removed, as the backend reports it. */
+export interface ResetSummary {
+  removed: string[];
+  bytesFreed: number;
+  failed: string[];
 }
+
+interface ResetSummaryDTO {
+  removed: string[];
+  bytes_freed: number;
+  failed: string[];
+}
+
+const [status, setStatus] = createSignal<SessionStatus>("loading");
+const [dbMissing, setDbMissing] = createSignal(false);
+
+/** The probe's own failure, when the backend answered but answered badly. Held so
+ *  the unlock screen can say *that* instead of presenting a plain locked vault — a
+ *  500 from a half-wiped data directory is not a workspace waiting for a password. */
+const [probeError, setProbeError] = createSignal("");
 
 /** How long one probe may hang before we abandon it. A backend that has bound its
  *  listening socket but hasn't finished starting — exactly what uvicorn's reloader
@@ -57,31 +68,42 @@ const PROBE_BACKOFF_MS = [250, 500, 1000, 2000];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** One probe attempt. Returns the classified status, or null when the backend
- *  never answered — a transport failure, the only case worth waiting out. An HTTP
- *  error means it *did* answer (it's up, just unhappy), so that settles instead. */
-async function probe(): Promise<SessionStatus | null> {
+/** One probe attempt, in three outcomes: the backend's answer; `"errored"` when it
+ *  answered but badly (it's up, just unhappy — nothing to wait for); or `null` when
+ *  it never answered at all, the transport failure worth waiting out. */
+type Probe = AuthStatus | "errored" | null;
+
+async function probe(): Promise<Probe> {
   try {
-    return classify(
-      await api.get<AuthStatus>("/auth/status", {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-      }),
-    );
+    const answer = await api.get<AuthStatus>("/auth/status", {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    setProbeError("");
+    return answer;
   } catch (err) {
-    return isApiError(err) ? "locked" : null;
+    if (!isApiError(err)) return null;
+    // An HTTP error settles us on the unlock screen, because that is the surface
+    // that can retry — but it is not evidence of a locked vault, so the reason is
+    // carried through rather than dressed up as one.
+    setProbeError(err.detail);
+    return "errored";
   }
 }
 
-function apply(next: SessionStatus): SessionStatus {
+function apply(result: Probe): SessionStatus {
+  // No usable answer — present as locked so the unlock screen can retry, and claim
+  // nothing about a workspace the backend never described.
+  const answer = typeof result === "object" ? result : null;
+  const next = answer ? classify(answer, getToken() !== null) : "locked";
   if (next !== "unlocked") clearToken(); // a stale token can't unlock us
+  setDbMissing(dbMissingFrom(answer));
   setStatus(next);
   return next;
 }
 
 /** Probe the backend for the current vault state. */
 export async function refresh(): Promise<SessionStatus> {
-  // Backend unreachable — present as locked so the login screen can retry.
-  return apply((await probe()) ?? "locked");
+  return apply(await probe());
 }
 
 /** The boot probe. The page is routinely up before the backend is, so a single
@@ -106,6 +128,21 @@ export async function setup(password: string): Promise<void> {
   const { token } = await api.post<TokenResponse>("/setup", { password });
   setToken(token);
   setStatus("unlocked");
+}
+
+/** Abandon a workspace whose database is gone: the backend removes the encryption
+ *  key and everything sealed under it, which leaves the workspace uninitialized and
+ *  the gate showing setup. Re-probe rather than assuming that — the backend reports
+ *  what it managed to delete, and the state that follows is its call, not ours. */
+export async function resetWorkspace(): Promise<ResetSummary> {
+  const dto = await api.post<ResetSummaryDTO>("/setup/reset");
+  clearToken();
+  await refresh();
+  return {
+    removed: dto.removed,
+    bytesFreed: dto.bytes_freed,
+    failed: dto.failed,
+  };
 }
 
 /** Unlock the workspace with the operator password. */
@@ -151,10 +188,21 @@ export function useSession() {
     get isAuthenticated(): boolean {
       return status() === "unlocked";
     },
+    /** The workspace's key outlived its database. Still `locked` — unlocking works
+     *  and lands in an empty workspace — but the operator deserves to be told. */
+    get dbMissing(): boolean {
+      return dbMissing();
+    },
+    /** Why the status probe failed, when the backend answered with an error rather
+     *  than describing a workspace. Empty when it answered normally. */
+    get probeError(): string {
+      return probeError();
+    },
     refresh,
     setup,
     unlock,
     logout,
     lock,
+    resetWorkspace,
   };
 }

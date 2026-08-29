@@ -171,6 +171,15 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     if reload_watches_runtime_state(sys.argv, settings.data_dir):
         logger.warning(UNGUARDED_RELOAD_WARNING, settings.data_dir)
     url = settings.db_url or f"sqlite:///{settings.data_dir / 'app.db'}"
+    # Whether the database backing this workspace is intact — read *before* `init_db`
+    # creates and migrates it, because afterwards a deleted database is indistinguishable
+    # from a fresh one. What says a workspace exists is the keyfile, which sits beside the
+    # database rather than inside it, so an operator who clears `app.db` to start over is
+    # otherwise still asked to unlock a key that now protects nothing. The two facts
+    # together are what `/auth/status` reports as `db_missing`. An explicit `db_url` counts
+    # as intact: we make no claim about a database whose path we don't own.
+    db_path = None if settings.db_url else settings.data_dir / "app.db"
+    app.state.workspace_db_intact = db_path.exists() if db_path else True
     engine = make_engine(url)
     init_db(engine)
     app.state.db_engine = engine

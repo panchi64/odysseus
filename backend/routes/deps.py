@@ -284,6 +284,21 @@ def auth_manager(request: Request) -> AuthManager:
     return request.app.state.auth_manager
 
 
+def workspace_db_intact(request: Request) -> bool:
+    """Whether the database backing this workspace survived to this boot.
+
+    False means the keyfile outlived its database — the operator cleared `app.db`
+    expecting a reset and got a password prompt instead. Sampled once at startup
+    before the schema is created (see `app.py`); `/setup` sets it back to true, since
+    the workspace it just created *is* in this database.
+    """
+    return bool(request.app.state.workspace_db_intact)
+
+
+def mark_workspace_db_intact(request: Request) -> None:
+    return setattr(request.app.state, "workspace_db_intact", True)
+
+
 def db_engine(request: Request) -> Engine:
     """The raw DB engine — for the surfaces (like `routes/tasks.py`) that don't yet
     have a dedicated service and read/write their own SQLModel rows directly."""
