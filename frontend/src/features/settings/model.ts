@@ -30,8 +30,8 @@ export interface EndpointInput {
   enabled?: boolean;
 }
 
-/** The roles that resolve against an ordered fallback chain — the Models page's
- *  ADVANCED disclosure (`FallbackChainsSection`) is what orders them. `main` is
+/** The roles that resolve against an ordered fallback chain — the Models pane's
+ *  ENDPOINTS tab (`FallbackChainsSection`) is what orders them. `main` is
  *  absent because it is single-endpoint: its card overwrites the whole binding,
  *  exactly as the top-bar picker does. The binding shape
  *  (`RoleBinding`/`RoleBindings`) is owned by `~/lib/stores/models`. */

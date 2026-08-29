@@ -42,10 +42,11 @@ export function ProjectSwitcher(): JSX.Element {
 
   const onChange = (next: string): void => {
     if (next === MANAGE) {
-      // Projects is a section of the AGENT category now, not a page. The `/projects`
-      // route still forwards there, but going through it would push a navigation
-      // the operator never asked for — this opens the dialog where they stand.
-      settings.show("agent");
+      // Projects is a section of the settings dialog now, not a page. The
+      // `/projects` route still forwards there, but going through it would push a
+      // navigation the operator never asked for — this opens the dialog where
+      // they stand.
+      settings.show("projects");
       return;
     }
     if (next === ALL) {

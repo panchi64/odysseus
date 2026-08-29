@@ -15,7 +15,7 @@ import { BINDABLE_ROLES } from "../model";
 import { healthStatus } from "./EndpointHealthFlag";
 import type { ModelEndpoint } from "~/lib/stores/models";
 
-/* The advanced half of a role binding: `utility` and `embedding` each resolve
+/* The second half of a role binding: `utility` and `embedding` each resolve
    against an ordered fallback chain (first = primary), and the control below
    captures that order explicitly — membership *and* position — so it doesn't ride
    on endpoint creation order. WHICH model each job uses is picked on its card

@@ -35,9 +35,8 @@ function formFor(ep: ModelEndpoint): EndpointFormValues {
 
 /**
  * Create/edit an endpoint. Owns the field values and the save call; the caller
- * only says whether it's open and on which endpoint. The form control itself
- * (`EndpointForm`) is the shared field set — this drives it in
- * `advanced` mode.
+ * only says whether it's open and on which endpoint; `EndpointForm` is the field
+ * set it drives.
  */
 export function EndpointFormDialog(props: {
   open: boolean;
@@ -143,7 +142,6 @@ export function EndpointFormDialog(props: {
     >
       <Stack gap={3}>
         <EndpointForm
-          variant="advanced"
           editing={!!props.endpoint}
           values={values()}
           providerOptions={providerOptions()}

@@ -54,7 +54,7 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
           leading="cpu"
           placeholder={props.placeholder}
           searchPlaceholder="Search models…"
-          emptyHint="No models — add an endpoint under advanced"
+          emptyHint="No models — add an endpoint on the Endpoints tab"
           aria-label={props.label}
         />
 

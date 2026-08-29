@@ -48,10 +48,15 @@ export const AREAS: NavArea[] = [
  * The destinations kept outside the one area.
  *
  * Chat sits first because the rail beneath it *is* chat — its thread list. The
- * four below it are the surfaces still worth a page and not mail: the corpus the
- * assistant reads from, the research it produces, the tool servers it reaches,
- * and the compare bench. Each is a place with its own screen, so a rail row is
- * the honest affordance; none is a group, so none is an area.
+ * three below it are the surfaces still worth a page and not mail: the corpus
+ * the assistant reads from, the research it produces, and the compare bench.
+ * Each is a place with its own screen, so a rail row is the honest affordance;
+ * none is a group, so none is an area.
+ *
+ * MCP is deliberately **not** here. Registering a tool server and deciding which
+ * of its tools may run is configuration — a value you set and leave — so it is a
+ * section of the settings dialog, beside the other connections. A pin for it
+ * meant a permanent rail row for a page most operators open twice.
  *
  * Settings is deliberately **not** here. It opens the dialog rather than
  * navigating, so there is no `href` to pin, and the rail's footer renders it
@@ -87,16 +92,6 @@ export const PINS: NavPin[] = [
       icon: "research",
       connected: true,
       description: "Deep, multi-source research reports, kept as reference",
-    },
-  },
-  {
-    slot: "top",
-    item: {
-      label: "MCP",
-      href: "/mcp",
-      icon: "plug",
-      connected: true,
-      description: "Manage Model Context Protocol tool servers",
     },
   },
   {

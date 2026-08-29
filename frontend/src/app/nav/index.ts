@@ -1,4 +1,3 @@
-import { legacySettingsHref } from "~/app/settings-dialog/legacy";
 import { AREAS, PINS } from "./areas";
 import { searchSettings } from "./settings-search";
 import type {
@@ -101,19 +100,13 @@ export function itemForPath(
 }
 
 /** Whether a route is backed by the real backend. Drives the NOT CONNECTED
- *  overlay. `/` has no nav entry but is connected. A parent of connected
- *  children (`/settings`, which redirects into its first section) counts too, so
- *  the redirect doesn't flash an overlay on the way through. */
+ *  overlay. `/` has no nav entry but is connected; a parent of connected
+ *  children counts too. */
 export function isConnectedRoute(
   pathname: string,
   areas: NavArea[] = AREAS,
 ): boolean {
   if (pathname === "/") return true;
-  // A path that only forwards into the settings dialog is connected by virtue of
-  // where it lands. The forward is instant, but the shell reads this on the way
-  // through, and a NOT CONNECTED banner flashing over a redirect would be a lie
-  // told very briefly.
-  if (legacySettingsHref(pathname)) return true;
   return flattenNav(areas).some(
     ({ item }) =>
       item.connected &&
