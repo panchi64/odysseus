@@ -261,15 +261,49 @@ def test_cache_hit_ratio_divides_by_prompt_tokens():
     assert RunMetrics(input_tokens=1000, cache_read_tokens=940).cache_hit_ratio == 0.94
 
 
+def test_throughput_excludes_the_time_before_the_first_token():
+    # THE bug this guards. `llm_ms` is the whole round-trip — connect, queue, prefill,
+    # generate — and only the last part makes tokens. Here 100s of model time began
+    # with 80s of prompt processing, so 920 tokens were generated in 20s: 46 tok/s.
+    # Dividing by the full 100s reported 9.2 — a fifth of the truth, and it would sink
+    # further as the thread grew even with the model decoding at a constant rate.
+    rate = RunMetrics(
+        output_tokens=920, llm_ms=100_000, ttft_ms_total=80_000, ttft_samples=4
+    ).output_tokens_per_second
+    assert rate == 46.0
+
+
 def test_throughput_measures_against_model_time_not_wall_time():
-    # Against llm_ms, so the rate doesn't fall the longer the operator leaves the tab
-    # open between turns.
-    assert RunMetrics(output_tokens=920, llm_ms=100_000).output_tokens_per_second == 9.2
+    # Tool time is excluded by construction (it isn't in llm_ms), so the rate doesn't
+    # fall for a thread that spent an hour in tools or idle between turns.
+    assert (
+        RunMetrics(
+            output_tokens=500, llm_ms=11_000, ttft_ms_total=1_000, ttft_samples=1, tool_ms=3_600_000
+        ).output_tokens_per_second
+        == 50.0
+    )
 
 
 def test_throughput_is_null_before_anything_was_generated():
     assert RunMetrics(llm_ms=5000).output_tokens_per_second is None
     assert RunMetrics(output_tokens=100).output_tokens_per_second is None
+
+
+def test_throughput_is_null_when_nothing_was_left_to_generate_in():
+    # All head and no tail — nothing to divide by. Absent beats a number from a
+    # division we don't trust (or, worse, a negative one).
+    assert (
+        RunMetrics(
+            output_tokens=100, llm_ms=5_000, ttft_ms_total=5_000, ttft_samples=1
+        ).output_tokens_per_second
+        is None
+    )
+    assert (
+        RunMetrics(
+            output_tokens=100, llm_ms=5_000, ttft_ms_total=9_000, ttft_samples=2
+        ).output_tokens_per_second
+        is None
+    )
 
 
 def test_ttft_average_is_null_without_samples():

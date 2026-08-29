@@ -70,30 +70,37 @@ def citations_from_tool_result(content: Any) -> list[CitationAdded]:
 
 
 def _on_model_event(event: object, run: Run, mark_first_token: Callable[[], None]) -> None:
-    """``mark_first_token`` is called for every content part and only counts the
-    first (see ``TurnTimer.model_request``). It fires on *thinking* as readily as on
-    answer text: on a reasoning model the reasoning is what arrives first, and timing
-    to the first answer token instead would bill the whole thinking pass as latency."""
+    """``mark_first_token`` is called for the first output of **any** kind and only
+    counts once (see ``TurnTimer.model_request``).
+
+    Any kind is deliberate, and wider than it first looks. Reasoning counts, because on
+    a thinking model the reasoning is what arrives first and timing to the first *answer*
+    token would bill the whole thinking pass as latency. **Tool calls count too**, even
+    though nothing else in this function acts on them: a response that only calls a tool
+    has still finished processing the prompt and started emitting: If it reported no
+    first token, its entire duration — prefill included — would land in the "generating"
+    side of the throughput calculation that subtracts TTFT from the round-trip, and a
+    tool-heavy thread would report a decode rate well under the truth.
+
+    So the mark is driven by the event arriving at all, not by what we do with it."""
+    if isinstance(event, PartStartEvent | PartDeltaEvent):
+        mark_first_token()
     if isinstance(event, PartStartEvent):
         part = event.part
         if isinstance(part, TextPart) and part.content:
-            mark_first_token()
             run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=part.content))
         elif isinstance(part, ThinkingPart) and part.content:
-            mark_first_token()
             run.emit(ThinkingDelta(text=part.content))
     elif isinstance(event, PartDeltaEvent):
         delta = event.delta
         if isinstance(delta, TextPartDelta) and delta.content_delta:
-            mark_first_token()
             run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=delta.content_delta))
         elif isinstance(delta, ThinkingPartDelta) and delta.content_delta:
-            mark_first_token()
             run.emit(ThinkingDelta(text=delta.content_delta))
-    # PartEndEvent / FinalResultEvent / ToolCallPart streaming carry no domain
-    # signal we surface — tool execution is reported from the CallToolsNode.
+    # PartEndEvent / FinalResultEvent carry no domain signal we surface — tool
+    # execution is reported from the CallToolsNode.
 
 
 def _on_tool_event(

@@ -13,9 +13,17 @@ That choice sets what the numbers include, and the inclusion is deliberate.
 ``llm_ms`` is the full round-trip — connect, queue, generate, stream — because
 that is the wait the operator actually sat through; it is not a claim about the
 provider's own inference time, which we cannot see. ``ttft_ms`` is measured to
-the *first content part of any kind*, reasoning included: on a thinking model the
-first thing to arrive is a thinking delta, and timing to the first answer token
-instead would report the model's entire reasoning pass as latency.
+the *first emitted part of any kind* — reasoning and tool calls included, not just
+answer text. On a thinking model the first thing to arrive is a thinking delta, and
+timing to the first answer token instead would report the model's entire reasoning
+pass as latency.
+
+That breadth is also what makes throughput correct downstream. TTFT is the
+non-generating head of a request (connect, queue, prefill), so the decode rate is
+output tokens over ``llm_ms - ttft_ms``. A response that reported no first token
+would contribute its whole prefill to the generating side of that subtraction, which
+is why even a bare tool call — which this module never otherwise sees — has to mark
+one. See ``RunMetrics.output_tokens_per_second``.
 
 The one number here that isn't a stopwatch is the cache hit — that can only come
 from provider-reported usage (``cache_read_tokens``), so it is absent, never

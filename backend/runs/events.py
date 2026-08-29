@@ -136,14 +136,33 @@ class RunMetrics(_Body):
     @computed_field
     @property
     def output_tokens_per_second(self) -> float | None:
-        """Generation throughput: output tokens over the time the model was working.
+        """Generation throughput — output tokens over the time actually spent *generating*.
 
-        Against ``llm_ms`` and not the turn's elapsed time — the operator's wait
+        That is ``llm_ms`` minus the time to first token, and the subtraction is the
+        whole correctness of this figure rather than a refinement of it. ``llm_ms`` is
+        the full round-trip: connect, queue, process the prompt, then generate. Only the
+        last of those produces tokens. On a local model with a long thread the prefill
+        can be most of the wall-clock — a 20s TTFT in front of 5s of generation is
+        ordinary — so dividing by the total reported something like a fifth of the real
+        rate, and got slower the longer the conversation grew even though the model was
+        decoding at exactly the same speed.
+
+        TTFT is precisely the non-generating head of the request, which is why it is the
+        right thing to subtract. Both are summed over the same responses, so this is the
+        thread's mean decode rate, not the last turn's.
+
+        Still measured against model time and not elapsed time: the operator's wait also
         includes tool execution and their own thinking between turns, and dividing by
         that would report a rate that falls the longer they leave the tab open."""
-        if not self.llm_ms or not self.output_tokens:
+        if not self.output_tokens or self.llm_ms is None:
             return None
-        return self.output_tokens / (self.llm_ms / 1000)
+        generating_ms = self.llm_ms - (self.ttft_ms_total or 0)
+        # Non-positive means the arithmetic has nothing to say: a thread whose responses
+        # were all TTFT and no generation, or timings recorded before this was measured.
+        # Absent beats a number derived from a division we don't trust.
+        if generating_ms <= 0:
+            return None
+        return self.output_tokens / (generating_ms / 1000)
 
 
 class RunEnded(_Body):
