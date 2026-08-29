@@ -38,6 +38,29 @@ export interface ContextComposition {
   tools: number;
   /** The conversation itself. */
   messages: number;
+  /** The same tokens itemised — one row per tool category, per contributor to the
+   *  standing brief, per class of message content. Each belongs to exactly one group,
+   *  and a group's segments sum to its total above, so the two resolutions can never
+   *  disagree. Empty when the backend could measure the totals but not the detail. */
+  segments: ContextSegment[];
+}
+
+/** One line item inside a group.
+ *
+ *  **A segment is here because it weighs something.** The backend emits no zero rows and
+ *  no fixed roster: a thread that has called no tools carries no `tool_results` segment,
+ *  a catalog with no MCP servers connected carries no `external` one, and each appears
+ *  the moment it starts costing the window. So the panel renders whatever arrives — it
+ *  never expects a particular id, and it never draws a row for one that didn't come. */
+export interface ContextSegment {
+  /** A backend slug — a tool category as the operator's own tool settings name it, an
+   *  instruction provider, or a message class. The wording is the client's. */
+  id: string;
+  group: "brief" | "tools" | "messages";
+  tokens: number;
+  /** The population behind the figure where there is one (tools in a category); null
+   *  where counting would be a claim we haven't measured. */
+  count: number | null;
 }
 
 export interface ContextWindow {

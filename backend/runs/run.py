@@ -117,6 +117,15 @@ class Run:
     # request, and on any turn whose measurement failed; the composition readout is absent
     # rather than guessed in that case.
     context_overhead: TurnOverhead | None = None
+    # Characters each dynamic instruction provider contributed to this turn's standing
+    # brief, keyed by the provider's own slug. Written by the measuring shim the engine
+    # wraps every provider in (`agent/engine.py`), read once per request by
+    # `agent/overhead.py` — which is why it lives here rather than in the measurement:
+    # the provider runs while the request is being assembled, and by the time anything
+    # can look at the assembled `instructions` string the individual contributions have
+    # been concatenated beyond recovery. Overwritten each request, never accumulated: it
+    # describes the request that just went out.
+    instruction_blocks: dict[str, int] = field(default_factory=dict)
     # Set once the first answer token has streamed. The AE-5.3 rule — never
     # switch endpoints after answer text has begun — is enforced against this:
     # the orchestrator refuses to re-drive a turn onto another endpoint once it

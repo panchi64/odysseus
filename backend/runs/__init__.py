@@ -23,6 +23,7 @@ from .events import (
     ApprovalRequired,
     CitationAdded,
     ContextComposition,
+    ContextSegment,
     ContextThresholds,
     ContextWindow,
     ConversationCompacted,
@@ -49,7 +50,7 @@ from .events import (
     ViewLiveStopped,
     ViewSnapshot,
 )
-from .overhead import TurnOverhead
+from .overhead import BriefBlock, ToolGroupOverhead, TurnOverhead
 from .registry import ConversationBusyError, RunRegistry, RunTimeout
 from .run import Orchestrator, QueuedMessage, Run, RunStatus
 from .stream import RunStream
@@ -69,6 +70,8 @@ __all__ = [
     "QueuedMessage",
     "Orchestrator",
     "RunStream",
+    "BriefBlock",
+    "ToolGroupOverhead",
     "TurnOverhead",
     "TurnTimer",
     "ResponseTiming",
@@ -81,6 +84,7 @@ __all__ = [
     "RunMetrics",
     "DEFAULT_CONTEXT_THRESHOLDS",
     "ContextComposition",
+    "ContextSegment",
     "ContextThresholds",
     "ContextWindow",
     "RunEnded",

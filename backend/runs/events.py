@@ -74,12 +74,44 @@ class ContextThresholds(_Body):
 DEFAULT_CONTEXT_THRESHOLDS = ContextThresholds(warn=0.75, alert=0.9)
 
 
-class ContextComposition(_Body):
-    """What the occupied part of the window is actually holding, three ways.
+class ContextSegment(_Body):
+    """One line item inside a group — a tool category, a contributor to the standing
+    brief, a class of message content.
 
-    The three are exhaustive by construction — they are scaled to sum to
-    :attr:`ContextWindow.used` (see ``services.context_budget``) — so the operator can
-    read them as a whole rather than wondering what the remainder is.
+    **Present only when it weighs something.** The segment list is not a fixed roster
+    with zeros in it: a thread that has called no tools carries no `tool_results` row, a
+    catalog with no MCP servers connected carries no `external` row, and both appear the
+    moment they start costing the window. That is the difference between a readout the
+    operator scans and a form they have to read — the rows that are there are the rows
+    that matter.
+
+    ``id`` is a slug, not a label: the tool category as the operator's own settings page
+    names it, the instruction provider's slug, or the message class. The wording is the
+    client's — a readout row is presentation, and the backend has no business choosing
+    sentence case. ``count`` is the population behind the figure where one exists (tools
+    in a category, `null` elsewhere), because "22k of schemas" and "22k of schemas across
+    68 tools" lead to different decisions."""
+
+    id: str
+    group: Literal["brief", "tools", "messages"]
+    tokens: int
+    count: int | None = None
+
+
+class ContextComposition(_Body):
+    """What the occupied part of the window is actually holding.
+
+    Two resolutions of one measurement. The three totals are exhaustive by construction —
+    they are scaled to sum to :attr:`ContextWindow.used` (see ``services.context_budget``)
+    — so the operator can read them as a whole rather than wondering what the remainder
+    is. ``segments`` itemises those same tokens without adding any: each segment belongs
+    to exactly one group, and a group's segments sum to its total.
+
+    The itemisation is what makes the readout answer the *next* question. "Tools are 40%
+    of your window" is where the three-way split stops and where the operator's actual
+    decision starts — which tools, and can they be switched off. Empty when a
+    measurement could reach the totals but not the detail, so the coarse reading never
+    depends on the fine one.
 
     Every figure is an **estimate anchored to the provider's total**: the split is ours,
     measured from what we assembled, because no provider reports one. Surfaces render
@@ -88,6 +120,7 @@ class ContextComposition(_Body):
     system: int  # the standing brief: instructions + system prompt
     tools: int  # every tool name, description and JSON schema handed to the model
     messages: int  # the conversation itself
+    segments: tuple[ContextSegment, ...] = ()
 
 
 class ContextWindow(_Body):
