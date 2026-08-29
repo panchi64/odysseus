@@ -128,28 +128,73 @@ The exception is **tabular data** — tables, instrument bands, log output, list
 | **Mono** | `"JetBrains Mono", ui-monospace, SFMono-Regular, monospace` | The machine voice. Self-hosted woff2, subset (see `fonts.css`), including Braille Patterns for throbbers. |
 | **Display** | *= Sans* | There is no separate display face. Oswald is retired: a heavy condensed grotesque was the loudest thing on any screen it appeared on, which §1.1 forbids. Display size is Helvetica at 40px with negative tracking. |
 
-### Type scale
+### Two scales: chrome and reading
 
-Sizes in px, line-heights snapped to the 4px grid.
+There are **two anchors**, and keeping them apart is the point.
+
+The **interface scale** (`--type-*`) dresses chrome — rails, labels, readouts,
+tables, controls — and stays dense at a 13px body, macOS system-text density.
+That is the right register for an instrument panel you *scan*.
+
+The **reading scale** (`--prose-*`) dresses rendered markdown and nothing else —
+assistant messages, research reports, documents — and is anchored on 16px/1.5,
+the browser default and the size long-form reading is standardized around.
+
+One scale cannot serve both. Pushing chrome up to 16px bloats a nineteen-row rail
+into something you scroll; holding prose at 13px asks the operator to read a
+five-paragraph answer at rail-label size. The surfaces differ in *how they are
+looked at*, so they differ in scale.
+
+#### Interface scale
 
 | Token | Size/LH | Family | Weight | Case | Use |
 |---|---|---|---|---|---|
 | `micro` | 10 / 14 | Mono | 400 | as-is | Ambient telemetry, fine print, precision coordinates |
 | `meta` | 11 / 16 | Mono | 500 | UPPER, +0.08em | Machine labels & state: `RUN-0341`, `LIVE`, `QUEUED` |
 | `label` | 12 / 16 | Sans | 500 | Sentence | Field labels, column headers, section eyebrows |
+| `code` | 12 / 16 | Mono | 400 | as-is | Code, diffs, patches inside chrome |
 | `body` | 13 / 20 | Sans | 400 | Sentence | Default interface text |
 | `readout` | 20 / 28 | Sans | 500 | Sentence | Primary values, panel figures |
 | `readout-lg` | 32 / 40 | Sans | 500 | Sentence | Hero value — one per screen, tabular figures |
 | `display` | 40 / 44 | Sans | 600 | Sentence | Page/section titles, −0.02em tracking |
 
+#### Reading scale (`.ody-prose` only)
+
+| Token | Size/LH | Family | Weight | Use |
+|---|---|---|---|---|
+| `prose-code` | 14 / 24 | Mono | 400 | Inline and fenced code |
+| `prose` | 16 / 24 | Sans | 400 | Paragraphs — 1.5, the WCAG 1.4.12 reading floor |
+| `prose-h4` | 16 / 24 | Sans | 600 | `h4`; `h5`/`h6` share it at `text` rather than `text-bright` |
+| `prose-h3` | 20 / 28 | Sans | 600 | `h3` |
+| `prose-h2` | 24 / 32 | Sans | 600 | `h2`, −0.02em tracking |
+| `prose-h1` | 28 / 36 | Sans | 600 | `h1`, −0.02em tracking |
+
+**Four heading levels need four steps.** Rendered markdown used to put `h3` *and*
+`h4` at body size, so a heading was separated from its own paragraph by weight
+alone — which in a long assistant answer reads as a bolded sentence, not as
+structure. `h5`/`h6` are in the ladder too, because markdown emits them and an
+unstyled `h6` falls to the browser default of ~10.7px in the one place the
+operator does not write the source.
+
+**Prose code runs one step under the sans beside it.** JetBrains Mono's x-height
+is large enough that a size-matched inline `code` reads as *bigger* than the
+sentence around it; 14/16 is the ~0.875em every prose stylesheet on the web
+converges on. Its line-height stays on the prose 24px so an inline span never
+opens up the line it sits in.
+
+**Never reach for `--type-*` inside `.ody-prose`, or `--prose-*` outside it.**
+That is precisely what re-couples the two scales, and the next time one moves the
+other follows silently.
+
 ### Rules
 
 - **Labels are sentence case.** "Context used", not "CONTEXT USED". Uppercase is now a *signal* (it means "machine"), and a signal used everywhere signals nothing.
 - **Uppercase belongs to `meta` and `micro` only**, always in mono, always with +0.08em tracking, usually dimmed.
-- **Display type takes negative tracking** (−0.02em). Helvetica at 40px set at 0 looks loose; this is the single most recognizable Swiss-modernist tell.
+- **Display type takes negative tracking** (−0.02em), as do prose `h1`/`h2`. Helvetica at those sizes set at 0 looks loose; this is the single most recognizable Swiss-modernist tell.
 - **Tabular figures for anything that changes or aligns.** Set globally; never turn it off in a table or a counter.
 - **Left-align, ragged right.** No justification. Centering only for an isolated hero readout.
 - Hierarchy is **size → weight → brightness**, in that order. Reach for color last, and usually not at all.
+- **A control's height is derived from its type, not chosen.** Line-height plus the padding the size is meant to read as (`Button` sm 24 / md 32 / lg 40 over the interface scale). If a step ever moves, its control heights move with it — a box sized against the old scale clips the new text.
 
 ---
 

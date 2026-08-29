@@ -3,7 +3,14 @@ import { Dynamic } from "solid-js/web";
 import { cx } from "../cx";
 
 export type TextVariant =
-  "micro" | "meta" | "label" | "body" | "readout" | "readout-lg" | "display";
+  | "micro"
+  | "meta"
+  | "label"
+  | "body"
+  | "reading"
+  | "readout"
+  | "readout-lg"
+  | "display";
 
 export type TextTone =
   | "dim"
@@ -24,7 +31,14 @@ export type TextTone =
    MONO is the machine showing its work — ids, states, counters, durations,
    paths. Small, uppercase where it is a machine *label* (`meta`), and it snaps:
    `transition-none` plus the global `.font-mono` rule in theme.css put every
-   mono element in the machine register, because a computer does not ease. */
+   mono element in the machine register, because a computer does not ease.
+
+   `reading` is the odd one out, and deliberately so: it is the only variant on
+   the READING scale (`--prose-*`) rather than the chrome scale. Use it for
+   conversation CONTENT that isn't markdown — the operator's own turn in a
+   transcript. That text sits inches from a rendered answer, so sizing it as
+   chrome makes the operator's words look like a caption on the model's. Not for
+   anything else; `body` remains the interface's default. */
 const variantClass: Record<TextVariant, string> = {
   // ---- machine voice ----
   micro: "text-micro font-mono transition-none",
@@ -32,6 +46,7 @@ const variantClass: Record<TextVariant, string> = {
   // ---- interface voice ----
   label: "text-label font-sans font-medium",
   body: "text-body font-sans",
+  reading: "text-prose font-sans",
   readout: "text-readout font-sans font-medium",
   "readout-lg": "text-readout-lg font-sans font-medium",
   display: "text-display font-sans font-semibold tracking-tight",

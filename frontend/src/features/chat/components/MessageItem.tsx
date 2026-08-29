@@ -257,8 +257,11 @@ function UserText(props: { text: string }): JSX.Element {
             : `calc(${USER_TURN_CLAMP_LINES} * 1.5em)`,
         }}
       >
+        {/* `reading`, not `body`: this is conversation content sitting inches
+            from a rendered answer on the prose scale. At chrome size the
+            operator's own words read as a caption on the model's. */}
         <Text
-          variant="body"
+          variant="reading"
           tone="bright"
           class="whitespace-pre-wrap break-words text-left"
         >

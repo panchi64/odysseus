@@ -53,6 +53,15 @@
   --text-label--line-height: var(--type-label-lh);
   --text-body: var(--type-body-size);
   --text-body--line-height: var(--type-body-lh);
+  --text-code: var(--type-code-size);
+  --text-code--line-height: var(--type-code-lh);
+  /* The reading scale's base, as a utility. This is the ONE step of the prose
+     scale chrome may reach for, and only for conversation CONTENT that isn't
+     markdown — the operator's own turn, and the composer that produces it. Those
+     sit inches from a rendered answer and have to match it; everything else in
+     the interface stays on the chrome scale above. */
+  --text-prose: var(--prose-size);
+  --text-prose--line-height: var(--prose-lh);
   --text-readout: var(--type-readout-size);
   --text-readout--line-height: var(--type-readout-lh);
   --text-readout-lg: var(--type-readout-lg-size);
@@ -1057,11 +1066,16 @@ body {
    RENDERED PROSE (markdown) — assistant messages, reports, documents.
    This is the interface speaking to the operator, so it is SANS; mono appears
    only for code, which is machine output.
+
+   PROSE RUNS ON ITS OWN SCALE (`--prose-*`), not the chrome scale. Everything
+   here is READ rather than scanned, so it is anchored on 16px/1.5 while the
+   surrounding interface stays at its 13px instrument density. Do not reach for
+   `--type-*` in this block — that is what re-couples the two.
    ========================================================================== */
 .ody-prose {
   font-family: var(--font-sans);
-  font-size: var(--type-body-size);
-  line-height: 20px;
+  font-size: var(--prose-size);
+  line-height: var(--prose-lh);
   color: var(--text);
   /* Nothing forces the operator to track a line across a 2560px display. */
   max-width: 72ch;
@@ -1076,7 +1090,9 @@ body {
 .ody-prose h1,
 .ody-prose h2,
 .ody-prose h3,
-.ody-prose h4 {
+.ody-prose h4,
+.ody-prose h5,
+.ody-prose h6 {
   color: var(--text-bright);
   font-family: var(--font-sans);
   font-weight: 600;
@@ -1085,13 +1101,46 @@ body {
   text-transform: none;
   letter-spacing: 0;
 }
-/* Headings are section breaks: extra space above, tight to the content below. */
+/* Four levels, four steps — 28 / 24 / 20 / 16 over a 16px reading size. h3 and
+   h4 used to both land on body size, which left a heading distinguished from its
+   own paragraph by weight alone; in a long assistant answer that reads as a
+   bolded sentence, not as structure. Every level now separates by SIZE first,
+   weight second, brightness third (§4). */
 .ody-prose h1 {
-  font-size: var(--type-readout-size);
-  line-height: var(--type-readout-lh);
+  font-size: var(--prose-h1-size);
+  line-height: var(--prose-h1-lh);
   letter-spacing: var(--tracking-tight);
 }
-.ody-prose :is(h1, h2, h3, h4) + * {
+.ody-prose h2 {
+  font-size: var(--prose-h2-size);
+  line-height: var(--prose-h2-lh);
+  letter-spacing: var(--tracking-tight);
+}
+.ody-prose h3 {
+  font-size: var(--prose-h3-size);
+  line-height: var(--prose-h3-lh);
+}
+/* The bottom rungs sit at body size, and so carry their level on weight and
+   brightness — which is legitimate here because the step above them is 20px.
+   Going smaller than body for a heading would put a *heading* under the reading
+   size, which is the one direction the ladder must not go.
+
+   h5/h6 are in the ladder because markdown emits them and an unstyled `h6`
+   falls to the browser default of ~10.7px, in the one place the operator does
+   not control the source. */
+.ody-prose h4 {
+  font-size: var(--prose-h4-size);
+  line-height: var(--prose-h4-lh);
+}
+.ody-prose h5,
+.ody-prose h6 {
+  font-size: var(--prose-h4-size);
+  line-height: var(--prose-h4-lh);
+  color: var(--text);
+}
+/* Headings are section breaks: extra space above, tight to the content below.
+   Space above scales with the level, so the eye reads the gap as depth. */
+.ody-prose :is(h1, h2, h3, h4, h5, h6) + * {
   margin-top: var(--space-2);
 }
 .ody-prose * + h1 {
@@ -1100,18 +1149,11 @@ body {
 .ody-prose * + h2 {
   margin-top: var(--space-6);
 }
-.ody-prose * + :is(h3, h4) {
+.ody-prose * + h3 {
   margin-top: var(--space-6);
 }
-.ody-prose h2 {
-  font-size: 15px;
-  line-height: 20px;
-}
-.ody-prose h3,
-.ody-prose h4 {
-  font-size: var(--type-body-size);
-  line-height: var(--type-body-lh);
-  color: var(--text);
+.ody-prose * + :is(h4, h5, h6) {
+  margin-top: var(--space-5);
 }
 .ody-prose strong {
   color: var(--text-bright);
@@ -1147,7 +1189,8 @@ body {
 /* Code is machine output: mono, and it snaps rather than eases. */
 .ody-prose code {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--prose-code-size);
+  line-height: var(--prose-code-lh);
   background: var(--surface-raised);
   border: var(--line-w) solid var(--line);
   border-radius: var(--radius-1);

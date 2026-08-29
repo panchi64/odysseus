@@ -266,7 +266,10 @@ export function Composer(props: ComposerProps): JSX.Element {
      second bordered box inside it would only add a line (§7). */
   const fieldClass = () =>
     cx(
-      "w-full resize-none border-0 bg-transparent px-1 py-1 text-body font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
+      /* `text-prose`, the reading scale — the field produces the operator's turn,
+         which renders at reading size a few pixels above it. Typing at 13px and
+         watching it come back at 16px is the same mismatch, one step earlier. */
+      "w-full resize-none border-0 bg-transparent px-1 py-1 text-prose font-sans text-bright placeholder:text-dim outline-none disabled:opacity-40",
       lg() ? "min-h-20" : "min-h-8",
     );
 

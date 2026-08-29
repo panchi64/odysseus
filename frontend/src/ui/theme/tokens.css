@@ -53,7 +53,15 @@
      grotesque was the loudest thing on every screen it appeared on. */
   --font-display: var(--font-sans);
 
-  /* ---- type scale (size / line-height, snapped to the 4px grid) ---- */
+  /* ---- INTERFACE type scale (size / line-height, snapped to the 4px grid) ----
+     This is the CHROME scale, and it stays dense on purpose: rails, labels,
+     readouts, tables, controls. 13px sans is macOS system-text density, which is
+     the right register for an instrument panel you scan rather than read.
+
+     It is NOT the scale rendered prose uses — see the reading scale below. The
+     two are separate anchors because they answer different questions: chrome is
+     scanned at a glance, prose is read paragraph after paragraph, and one scale
+     serving both means either cramped prose or bloated chrome. */
   --type-micro-size: 10px; /* mono — ambient telemetry, fine print */
   --type-micro-lh: 14px;
   --type-meta-size: 11px; /* mono UPPERCASE — machine labels & state */
@@ -62,12 +70,46 @@
   --type-label-lh: 16px;
   --type-body-size: 13px; /* sans — default interface text */
   --type-body-lh: 20px;
+  --type-code-size: 12px; /* mono — code/diff/patch inside CHROME */
+  --type-code-lh: 16px;
   --type-readout-size: 20px;
   --type-readout-lh: 28px;
   --type-readout-lg-size: 32px;
   --type-readout-lg-lh: 40px;
   --type-display-size: 40px;
   --type-display-lh: 44px;
+
+  /* ---- READING scale — rendered prose only (`.ody-prose`) ----
+     Assistant messages, research reports, documents: everything the operator
+     READS rather than scans. Anchored on 16px/1.5, the browser default and the
+     size long-form reading is standardized around; 13px is a defensible size for
+     a rail row and an indefensible one for a five-paragraph answer.
+
+     The heading ladder is four distinct steps because four heading levels need
+     four sizes. Rendered markdown used to put h3 AND h4 at body size, so a
+     heading was separated from its own paragraph by weight alone — which in a
+     long answer reads as a bolded sentence, not as structure. */
+  --prose-size: 16px;
+  --prose-lh: 24px; /* 1.5 — the WCAG 1.4.12 reading floor */
+  --prose-h1-size: 28px;
+  --prose-h1-lh: 36px;
+  --prose-h2-size: 24px;
+  --prose-h2-lh: 32px;
+  --prose-h3-size: 20px;
+  --prose-h3-lh: 28px;
+  /* h4 and below sit at reading size and carry their level on weight and
+     brightness — legitimate because the step above them is 20px, and because
+     dropping a *heading* under the reading size is the one direction the ladder
+     must not go. */
+  --prose-h4-size: 16px;
+  --prose-h4-lh: 24px;
+  /* Mono runs one step under the sans it sits beside. JetBrains Mono's x-height
+     is large enough that a size-matched inline `code` reads as BIGGER than the
+     sentence around it; ~0.875em is what every prose stylesheet on the web
+     settles on, and 14/16 is exactly that. Line-height stays on the prose 24px
+     so an inline code span never opens up the line it sits in. */
+  --prose-code-size: 14px;
+  --prose-code-lh: 24px;
 
   /* Uppercase tracking belongs to the mono `meta`/`micro` voice only. Sentence
      case sans takes none — tracking a lowercase grotesque is what makes an

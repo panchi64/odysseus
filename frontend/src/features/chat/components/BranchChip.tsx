@@ -123,7 +123,7 @@ export function BranchChip(props: {
               >
                 {/* The patch can be very wide; it scrolls inside its own box so
                     the dialog never scrolls sideways. */}
-                <pre class="scrollbar-thin max-h-96 overflow-auto rounded-panel bg-raised p-3 text-xs">
+                <pre class="scrollbar-thin max-h-96 overflow-auto rounded-panel bg-raised p-3 text-code">
                   {b().patch}
                 </pre>
               </Show>
