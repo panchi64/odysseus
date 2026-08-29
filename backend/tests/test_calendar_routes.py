@@ -10,7 +10,7 @@ from core.container import ServiceContainer
 from tools import RunDeps
 from tools.calendar import calendar_toolset
 
-from ._helpers import STUB_CONTEXT_WINDOW, client_app
+from ._helpers import client_app, register_stub_provider, stub_resolution
 
 
 async def _calendar(client, name: str = "Personal", **extra) -> str:
@@ -298,7 +298,7 @@ async def test_importing_into_an_unknown_calendar_is_a_404():
 
 
 async def test_parsing_a_phrase_returns_a_draft_and_stores_nothing(monkeypatch):
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     async def respond(messages, info):
         tool = info.output_tools[0].name
@@ -312,12 +312,9 @@ async def test_parsing_a_phrase_returns_a_draft_and_stores_nothing(monkeypatch):
         )
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(
-            model=FunctionModel(respond),
-            reasoning_off={},
-            context_window=STUB_CONTEXT_WINDOW,
-        )
+        return await stub_resolution(self, FunctionModel(respond))
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
     async with client_app() as (client, _app):
@@ -346,6 +343,7 @@ async def test_no_utility_model_degrades_to_503(monkeypatch):
     async def resolve_detailed(self, role, **kwargs):
         raise DegradedCapabilityError("no model bound")
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
     async with client_app() as (client, _app):

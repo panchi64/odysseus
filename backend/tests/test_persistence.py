@@ -17,7 +17,12 @@ from runs import RunRegistry, RunStatus
 from services.conversations import ConversationStore, _project
 from tools import RunDeps
 
-from ._helpers import STUB_CONTEXT_WINDOW, client_app, collect_sse_events
+from ._helpers import (
+    client_app,
+    collect_sse_events,
+    register_stub_provider,
+    stub_resolution,
+)
 
 
 async def _unlocked_vault(tmp_path, name: str = "keyfile.json") -> Vault:
@@ -765,17 +770,14 @@ async def test_verify_park_persists_once_on_resume(tmp_path, monkeypatch):
 
 
 async def test_chat_route_returns_conversation_and_continues(monkeypatch):
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     async def fake_resolve_detailed(self, role, **kwargs):
         # call_tools=[] → a plain text turn; the default catalog's approval-gated
         # tool would otherwise park the run and stall the SSE this test reads.
-        return ResolvedModel(
-            model=TestModel(custom_output_text="hi", call_tools=[]),
-            reasoning_off={},
-            context_window=STUB_CONTEXT_WINDOW,
-        )
+        return await stub_resolution(self, TestModel(custom_output_text="hi", call_tools=[]))
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
     async with client_app() as (client, app):

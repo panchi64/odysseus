@@ -15,12 +15,13 @@ import asyncio
 from pydantic_ai.models.function import FunctionModel
 
 from routes.deps import OPERATOR_ID
-from services.registry import ModelRegistry, ResolvedModel
+from services.registry import ModelRegistry
 
 from ._helpers import (
-    STUB_CONTEXT_WINDOW,
     client_app,
     patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
     swap_tool_catalog,
 )
 from .test_approval_routes import _await_parked, _install_sensitive_tool, danger_categories
@@ -42,8 +43,9 @@ def _patch_hanging_model(monkeypatch, hang: asyncio.Event, started: asyncio.Even
         return FunctionModel(stream_function=stream_fn)
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={}, context_window=STUB_CONTEXT_WINDOW)
+        return await stub_resolution(self, _model())
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 
 
@@ -266,7 +268,7 @@ def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Ev
     regenerate/edit could otherwise slip through during. ``entered`` fires once the
     first caller is parked here, so a test can assert a second request is rejected
     without ever reaching (or needing to release) this gate."""
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     def _model() -> FunctionModel:
         async def stream_fn(messages, info):
@@ -277,13 +279,14 @@ def _patch_hanging_resolve(monkeypatch, gate: asyncio.Event, entered: asyncio.Ev
     async def resolve_detailed(self, role, **kwargs):
         entered.set()
         await gate.wait()
-        return ResolvedModel(model=_model(), reasoning_off={}, context_window=STUB_CONTEXT_WINDOW)
+        return await stub_resolution(self, _model())
 
     # Patched separately rather than left to delegate: the gate above would otherwise
     # also stall every background resolution this test isn't trying to hold.
     async def resolve_background(self, *, owner_id, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={}, context_window=STUB_CONTEXT_WINDOW)
+        return await stub_resolution(self, _model())
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
     monkeypatch.setattr(ModelRegistry, "resolve_background", resolve_background)
 

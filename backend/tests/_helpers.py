@@ -13,15 +13,76 @@ from pydantic_ai.models.test import TestModel
 from app import create_app
 from core.config import Settings
 
-#: The context window a stubbed resolution reports.
-#:
-#: Not decorative. The chat route refuses a turn whose model declares no window — it
-#: can't keep a thread inside a limit it doesn't know, and every guard that would
-#: normally catch the overflow (the gauge, auto-compaction, the ceiling warning)
-#: measures against this number. So a stub standing in for a resolved model has to
-#: declare one, exactly as a real endpoint does; leaving it None makes every route
-#: test that sends a message a 422.
+#: The window the stub provider reports. It lives on the *provider*, not on the
+#: ResolvedModel a test builds, because that is where a window comes from in
+#: production — see `stub_resolution`.
 STUB_CONTEXT_WINDOW = 128_000
+_STUB_PROVIDER_ID = "test-stub"
+
+
+class _StubProvider:
+    """A provider adapter that reports a context window and nothing else.
+
+    Exists so a stubbed resolution still travels the real discovery path. A test that
+    hard-coded `context_window=` onto its `ResolvedModel` would satisfy the chat
+    route's window requirement while skipping the code that satisfies it in
+    production — the provider lookup, the manual-value-wins precedence, and the
+    memoization — leaving all of it unexercised by any route test.
+
+    Only `context_window` is implemented: resolution is stubbed before it ever builds
+    a model, so nothing here is asked to."""
+
+    id = _STUB_PROVIDER_ID
+    display_name = "Test stub"
+    requires_key = False
+
+    async def context_window(
+        self, base_url: str, api_key: str | None, model: str, *, client=None
+    ) -> int | None:
+        return STUB_CONTEXT_WINDOW
+
+
+async def stub_resolution(registry, model, *, reasoning_off=None):
+    """A ``ResolvedModel`` whose window was **discovered**, for a test that stubs
+    resolution but still wants the window to arrive the way it really does.
+
+    ``registry`` is the ``ModelRegistry`` the patched method was called on, so the
+    lookup runs against the same instance (and the same cache) production uses."""
+    from services.registry import ResolvedModel
+
+    spec = _stub_spec()
+    [resolved] = await registry._with_context_windows([spec])
+    return ResolvedModel(
+        model=model,
+        reasoning_off=reasoning_off or {},
+        context_window=resolved.context_window,
+    )
+
+
+def _stub_spec():
+    from services.llm import EndpointSpec
+
+    # `context_window=None` is the point: it is what sends `_with_context_windows` to
+    # the provider instead of short-circuiting on an operator-set value.
+    return EndpointSpec(
+        base_url="http://stub.invalid/v1",
+        model="stub-model",
+        provider=_STUB_PROVIDER_ID,
+        context_window=None,
+    )
+
+
+def register_stub_provider(monkeypatch) -> None:
+    """Add the stub adapter to the provider registry for one test.
+
+    Through ``monkeypatch`` on the built registry dict, so it is removed afterwards —
+    a provider id leaking across tests would make `all_providers()` (and the
+    `/models/providers` listing it serves) depend on test order."""
+    from services import providers
+
+    registry = dict(providers._registry())
+    registry[_STUB_PROVIDER_ID] = _StubProvider()
+    monkeypatch.setattr(providers, "_PROVIDERS", registry)
 
 
 def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=()):
@@ -31,13 +92,15 @@ def patch_model_resolution(monkeypatch, *, output_text: str = "hi", call_tools=(
     so the chat route's ``main`` and the background (verify/title) model both come
     through here. ``call_tools=()`` keeps it a plain text turn — the default catalog
     has an approval-gated tool that would otherwise park the run."""
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
+
+    register_stub_provider(monkeypatch)
 
     def _model() -> TestModel:
         return TestModel(custom_output_text=output_text, call_tools=list(call_tools))
 
     async def resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(model=_model(), reasoning_off={}, context_window=STUB_CONTEXT_WINDOW)
+        return await stub_resolution(self, _model())
 
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", resolve_detailed)
 

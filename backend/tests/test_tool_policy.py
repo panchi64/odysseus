@@ -20,7 +20,7 @@ import routes.chat as chat_routes
 import routes.runs as runs_routes
 from core.db import init_db, make_engine
 from runs import Run, RunStream
-from services.registry import ModelRegistry, ResolvedModel
+from services.registry import ModelRegistry
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 from services.tool_policy import (
     effective_disabled_tools,
@@ -32,10 +32,11 @@ from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
 
 from ._helpers import (
-    STUB_CONTEXT_WINDOW,
     client_app,
     full_tool_categories,
     patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
     swap_tool_catalog,
 )
 from .test_approval_routes import danger_categories as _approval_danger_categories
@@ -294,12 +295,9 @@ def _install_sensitive_tool(monkeypatch):
     ``swap_tool_catalog(app, _danger_categories())`` after boot."""
 
     async def fake_resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(
-            model=TestModel(custom_output_text="done"),
-            reasoning_off={},
-            context_window=STUB_CONTEXT_WINDOW,
-        )
+        return await stub_resolution(self, TestModel(custom_output_text="done"))
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 

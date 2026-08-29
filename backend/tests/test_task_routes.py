@@ -13,9 +13,10 @@ from models.task import ScheduledTask, TaskRun
 from services.scheduler import TaskRunResult
 
 from ._helpers import (
-    STUB_CONTEXT_WINDOW,
     client_app,
     patch_model_resolution,
+    register_stub_provider,
+    stub_resolution,
     swap_tool_catalog,
 )
 from .test_approval_routes import danger_categories
@@ -470,15 +471,14 @@ async def _install_sensitive_tool(monkeypatch):
     ``swap_tool_catalog(app, danger_categories())`` after boot."""
     from pydantic_ai.models.test import TestModel
 
-    from services.registry import ModelRegistry, ResolvedModel
+    from services.registry import ModelRegistry
 
     async def fake_resolve_detailed(self, role, **kwargs):
-        return ResolvedModel(
-            model=TestModel(custom_output_text="done", call_tools=["danger_delete_thing"]),
-            reasoning_off={},
-            context_window=STUB_CONTEXT_WINDOW,
+        return await stub_resolution(
+            self, TestModel(custom_output_text="done", call_tools=["danger_delete_thing"])
         )
 
+    register_stub_provider(monkeypatch)
     monkeypatch.setattr(ModelRegistry, "resolve_detailed", fake_resolve_detailed)
 
 
