@@ -26,8 +26,8 @@ import {
 import type { AccessToken, IssuedAccessToken } from "../model";
 
 /** Access Tokens — the credentials the operator issues so a *client* can call this API
- *  programmatically (`AUTH-4`). The other direction from the Service Keys screen
- *  (`/admin/tokens`), which stores the keys this system calls third parties with.
+ *  programmatically (`AUTH-4`). The other direction from the Service Keys section
+ *  above it in SECURITY, which stores the keys this system calls third parties with.
  *
  *  The plaintext is returned once and never again, so issuing ends in a reveal the
  *  operator must copy out of — the one place in the app where closing a dialog loses

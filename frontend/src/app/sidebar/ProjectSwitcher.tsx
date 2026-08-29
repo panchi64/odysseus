@@ -1,5 +1,4 @@
 import { createMemo, Show, type JSX } from "solid-js";
-import { useNavigate } from "@solidjs/router";
 import { Select, Text, toast } from "~/ui";
 import {
   activeProjectId,
@@ -8,6 +7,7 @@ import {
   setUnscoped,
   useProjects,
 } from "~/lib/stores/projects";
+import { useSettingsRoute } from "~/app/settings-dialog";
 
 /** Sentinels. Real project ids are hex, so neither can collide with one. */
 const ALL = "__all__";
@@ -25,7 +25,7 @@ const MANAGE = "__manage__";
  *  used, and the app before projects is exactly the app with none. */
 export function ProjectSwitcher(): JSX.Element {
   const projects = useProjects();
-  const navigate = useNavigate();
+  const settings = useSettingsRoute();
 
   const options = createMemo(() => {
     const rows = (projects.latest?.projects ?? []).filter((p) => !p.archived);
@@ -42,7 +42,10 @@ export function ProjectSwitcher(): JSX.Element {
 
   const onChange = (next: string): void => {
     if (next === MANAGE) {
-      navigate("/projects");
+      // Projects is a section of the AGENT category now, not a page. The `/projects`
+      // route still forwards there, but going through it would push a navigation
+      // the operator never asked for — this opens the dialog where they stand.
+      settings.show("agent");
       return;
     }
     if (next === ALL) {
