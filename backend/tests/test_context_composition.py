@@ -375,52 +375,156 @@ async def test_a_providers_own_contribution_is_attributed_to_it():
 # ── The reload ───────────────────────────────────────────────────────────────────
 
 
-def test_the_cache_keeps_the_last_good_measurement():
-    """A failed measurement is ignored rather than stored as absence: the previous figure
-    still describes the configuration better than nothing does."""
+def test_a_stored_measurement_round_trips():
+    """The column is a JSON blob, so the shape has to survive the trip in both
+    directions — including the itemisation, which is the half the operator can act on."""
+    from runs import BriefBlock, ToolGroupOverhead
     from runs import TurnOverhead as Overhead
-    from services.context_budget import OverheadCache
 
-    cache = OverheadCache()
-    assert cache.get("chat") is None
-    cache.remember("chat", Overhead(system=100, tools=200))
-    cache.remember("chat", None)
-    assert cache.get("chat") == Overhead(system=100, tools=200)
+    original = Overhead(
+        system=300,
+        tools=900,
+        blocks=(BriefBlock(id="base", chars=200), BriefBlock(id="skill_catalog", chars=100)),
+        groups=(ToolGroupOverhead(category="memory", tools=4, chars=900),),
+    )
+    assert Overhead.from_dict(original.as_dict()) == original
 
 
-def test_the_cache_is_keyed_by_mode():
-    # A coding thread and a chat thread are handed different tools, so one's measurement
-    # would misreport the other's weight.
+def test_an_unreadable_stored_measurement_reads_as_absent():
+    """A blob a version skew (or a hand-edited row) left malformed shows no breakdown
+    rather than a wrong one — the same absent-not-guessed rule the composition itself
+    follows."""
     from runs import TurnOverhead as Overhead
-    from services.context_budget import OverheadCache
 
-    cache = OverheadCache()
-    cache.remember("chat", Overhead(system=100, tools=200))
-    assert cache.get("coding") is None
+    assert Overhead.from_dict(None) is None
+    assert Overhead.from_dict("not a mapping") is None
+    assert Overhead.from_dict({"tools": 200}) is None  # no `system`
+    assert Overhead.from_dict({"system": 100, "tools": "lots"}) is None
 
 
-async def test_a_turn_leaves_its_measurement_for_the_next_cold_load(monkeypatch):
-    """What makes a reload able to break the window down at all. The route reads this cache
-    keyed by the thread's mode; if a turn doesn't fill it, a reloaded thread shows a total
-    with no split and the operator has to send a message to learn why their window is
-    full — which is the decision they opened the breakdown to make."""
+def test_a_measurement_without_itemisation_still_reads():
+    """A blob written before the segments existed carries only the two totals. The coarse
+    three-way reading is worth having on its own, so it survives without them."""
+    from runs import TurnOverhead as Overhead
+
+    assert Overhead.from_dict({"system": 100, "tools": 200}) == Overhead(system=100, tools=200)
+
+
+async def test_a_failed_measurement_leaves_the_stored_one_alone(tmp_path):
+    """A turn that never reached a model request measures nothing. That is ignored rather
+    than written as absence: the previous figure still describes this thread better than
+    nothing does, and blanking it would cost the operator the breakdown for a turn that
+    didn't even run."""
+    from core.db import init_db, make_engine
+    from core.vault import Vault
+    from runs import TurnOverhead as Overhead
+    from services.conversations import ConversationStore
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "vault.json")
+    await vault.setup("pw")
+    store = ConversationStore(engine, vault)
+
+    conversation_id = await store.create_conversation("operator")
+    assert await store.get_overhead(conversation_id) is None
+
+    await store.set_overhead(conversation_id, Overhead(system=100, tools=200))
+    await store.set_overhead(conversation_id, None)
+    assert await store.get_overhead(conversation_id) == Overhead(system=100, tools=200)
+
+
+async def test_a_turn_leaves_its_measurement_on_its_own_thread(monkeypatch):
+    """What makes a reload able to break the window down at all — and the reason it is
+    stored per conversation rather than remembered per mode.
+
+    Neither the standing brief nor the tool schemas reach the message history, so a cold
+    load has nothing to measure. Without this the operator would have to send a message to
+    learn why their window is full, which is the decision they opened the breakdown to
+    make. Storing it on the thread also means the split describes *this* conversation's
+    request — a per-mode memory would hand one thread another's configuration."""
     from ._helpers import client_app, collect_sse_events, patch_model_resolution
 
     patch_model_resolution(monkeypatch)
     async with client_app() as (client, app):
-        assert app.state.context_overhead.get("chat") is None
         created = (await client.post("/chat", json={"prompt": "hello"})).json()
         await collect_sse_events(client, created["run_id"])
+        conversation_id = created["conversation_id"]
 
-        overhead = app.state.context_overhead.get("chat")
+        overhead = await app.state.conversations.get_overhead(conversation_id)
         assert overhead is not None, "a completed turn must leave its overhead behind"
         # Both halves are real: the app assembles a full tool catalog and a standing brief,
         # so a zero in either would mean the measurement found nothing while the request
         # plainly carried something.
         assert overhead.system > 0
         assert overhead.tools > 0
-        # And it is keyed by the thread's mode, not shared across them.
-        assert app.state.context_overhead.get("coding") is None
+        # It belongs to the thread that ran the turn, and to no other. This is the whole
+        # difference from the per-mode memory it replaces: that one would have handed this
+        # second chat thread the first one's configuration.
+        other = await app.state.conversations.create_conversation("operator")
+        assert await app.state.conversations.get_overhead(other) is None
+
+
+async def test_a_reopened_thread_reports_the_breakdown_without_another_turn(monkeypatch):
+    """The bug this exists to fix, end to end.
+
+    Re-reading a conversation must serve the same itemised split the live stream did. The
+    footprint it splits is recovered from the stored transcript; the overhead it splits it
+    *with* has to come off the thread, because neither the standing brief nor the tool
+    schemas are in that transcript. Before this was stored, a reopened thread could only
+    report one undifferentiated figure until the operator sent another message — which is
+    the decision they opened the breakdown to make."""
+    from pydantic_ai.usage import RequestUsage
+
+    from runs import BriefBlock, ToolGroupOverhead
+    from runs import TurnOverhead as Overhead
+    from services.registry import ModelRegistry
+
+    from ._helpers import client_app
+
+    # The window is the gauge's denominator and has its own tests; stub it so this one is
+    # about the split rather than about role resolution.
+    async def main_context_window(self, owner_id):
+        return 200_000
+
+    monkeypatch.setattr(ModelRegistry, "main_context_window", main_context_window)
+
+    async with client_app() as (client, app):
+        store = app.state.conversations
+        conversation_id = await store.create_conversation("operator")
+        # A settled turn carrying real provider usage — the stub model reports none, and
+        # a thread with no measured footprint has no gauge to break down at all.
+        store.record(
+            conversation_id,
+            [
+                ModelRequest(parts=[UserPromptPart(content="what is filling my window?")]),
+                ModelResponse(
+                    parts=[TextPart(content="a great many tool schemas")],
+                    usage=RequestUsage(input_tokens=40_000, output_tokens=200),
+                ),
+            ],
+        )
+        await store.set_overhead(
+            conversation_id,
+            Overhead(
+                system=4_000,
+                tools=60_000,
+                blocks=(BriefBlock(id="base", chars=4_000),),
+                groups=(ToolGroupOverhead(category="external", tools=68, chars=60_000),),
+            ),
+        )
+
+        context = (await client.get(f"/conversations/{conversation_id}")).json()["context"]
+        assert context is not None
+        parts = context["parts"]
+        assert parts is not None, "a reopened thread must not fall back to one flat figure"
+        assert parts["system"] > 0 and parts["tools"] > 0
+        # The split still agrees with the total printed above it, cold as well as warm.
+        assert parts["system"] + parts["tools"] + parts["messages"] == context["used"]
+        # And the itemisation survives the round trip — it is the half the operator can
+        # act on ("`external` is 60% of your window, across 68 tools" is a switch to find).
+        external = [s for s in parts["segments"] if s["id"] == "external"]
+        assert external and external[0]["count"] == 68
 
 
 # ── What counts as message weight ────────────────────────────────────────────────
@@ -473,3 +577,119 @@ def test_dict_keys_count_too():
         ModelRequest(parts=[ToolReturnPart(tool_name="t", content=wide, tool_call_id="1")])
     ]
     assert estimate_tokens(messages) > 40
+
+
+async def test_a_turn_that_parks_for_approval_records_its_overhead_before_resuming(tmp_path):
+    """A turn parked awaiting approval has already measured its request, so it records
+    what that request weighs rather than waiting for the operator to decide.
+
+    This is what keeps an approval-heavy thread from being the one kind that can never
+    show a breakdown on reload — and it is why the resume path needs no write of its own:
+    a resume re-runs the same configuration the park already measured."""
+    from pydantic_ai import FunctionToolset
+    from pydantic_ai.models.test import TestModel
+
+    from agent import build_chat_orchestrator
+    from core.db import init_db, make_engine
+    from core.vault import Vault
+    from runs import RunRegistry, RunStatus
+    from services.conversations import ConversationStore
+    from tools import RunDeps
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "vault.json")
+    await vault.setup("pw")
+    store = ConversationStore(engine, vault)
+    conversation_id = await store.create_conversation("operator")
+
+    toolset: FunctionToolset[RunDeps] = FunctionToolset()
+
+    @toolset.tool_plain(requires_approval=True)
+    def delete_thing(name: str) -> str:
+        """Delete the named thing."""
+        return f"deleted {name}"
+
+    run = RunRegistry().submit(
+        kind="chat",
+        owner_id="operator",
+        orchestrator=build_chat_orchestrator(
+            "delete the thing",
+            model=TestModel(custom_output_text="done"),
+            categories={"danger": toolset},
+            store=store,
+            conversation_id=conversation_id,
+        ),
+    )
+    await run.wait()
+    assert run.status is RunStatus.awaiting_input
+
+    overhead = await store.get_overhead(conversation_id)
+    assert overhead is not None, "a parked turn has measured its request already"
+    assert overhead.system > 0
+    # The one tool it was given, itemised under its own category — the row the operator
+    # would act on.
+    assert [(g.category, g.tools) for g in overhead.groups] == [("danger", 1)]
+
+
+def test_a_negative_figure_reads_as_absent():
+    """These are character counts, so nothing below zero is a reading. Left in, one would
+    flow through the composer's proportional scaling as a negative share and draw a bar
+    segment of negative width — a wrong breakdown, which is worse than none."""
+    from runs import TurnOverhead as Overhead
+
+    assert Overhead.from_dict({"system": -1, "tools": 200}) is None
+    assert (
+        Overhead.from_dict({"system": 100, "tools": 200, "blocks": [{"id": "b", "chars": -5}]})
+        is None
+    )
+    assert (
+        Overhead.from_dict(
+            {"system": 100, "tools": 200, "groups": [{"category": "c", "tools": -1, "chars": 5}]}
+        )
+        is None
+    )
+
+
+async def test_a_failed_overhead_write_never_fails_the_turn(tmp_path, monkeypatch):
+    """The breakdown is a readout. If its write fails, the operator loses a reload's
+    detail — they must not lose the answered turn, which is what letting the exception out
+    would cost: the run would end `error` and its messages would route through the
+    degraded error-flush instead of the finalize that already recorded them."""
+    from pydantic_ai.models.test import TestModel
+
+    from agent import build_chat_orchestrator
+    from core.db import init_db, make_engine
+    from core.vault import Vault
+    from runs import RunRegistry, RunStatus
+    from services.conversations import ConversationStore
+
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    vault = Vault(tmp_path / "vault.json")
+    await vault.setup("pw")
+    store = ConversationStore(engine, vault)
+    conversation_id = await store.create_conversation("operator")
+
+    async def boom(self, conversation_id, overhead):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ConversationStore, "set_overhead", boom)
+
+    run = RunRegistry().submit(
+        kind="chat",
+        owner_id="operator",
+        orchestrator=build_chat_orchestrator(
+            "hello",
+            # No tool calls: the default catalog carries an approval-gated tool that
+            # would park the run before it ever reached the write under test.
+            model=TestModel(custom_output_text="hi", call_tools=[]),
+            store=store,
+            conversation_id=conversation_id,
+        ),
+    )
+    await run.wait()
+
+    assert run.status is RunStatus.done, "a readout's write must not decide the outcome"
+    # And the turn itself recorded, through the normal finalize rather than a flush.
+    assert len(await store.history(conversation_id)) == 2

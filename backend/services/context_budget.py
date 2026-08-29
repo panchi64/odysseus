@@ -129,7 +129,7 @@ def _pieces(overhead: TurnOverhead, messages: list[Any]) -> list[_Piece]:
     """Everything in the window, itemised as far as it was measured.
 
     Falls back to a group's total whenever its itemisation is missing — an overhead
-    cached before this measurement existed, or one whose detail a library change put out
+    stored before this measurement existed, or one whose detail a library change put out
     of reach. The coarse reading survives on its own that way; only the rows beneath it
     are lost, which is the right thing to lose."""
     pieces: list[_Piece] = []
@@ -162,36 +162,3 @@ def _pieces(overhead: TurnOverhead, messages: list[Any]) -> list[_Piece]:
     )
     return pieces
 
-
-class OverheadCache:
-    """The last overhead measured, per conversation mode.
-
-    **Why this is remembered rather than stored.** A cold load has no request to measure —
-    the tool schemas and the standing brief never reach the message history — so without
-    something here, opening an existing thread would show no split until the operator sent
-    another message, which is exactly when they least want to (the reason to look is to
-    decide whether to send one at all).
-
-    The obvious fix, writing the figures onto the conversation the way the timings are
-    written, is the wrong one. Timings are history: what that turn cost is true forever.
-    Overhead is *configuration* — which tools are switched on, what the brief says — and it
-    describes what the **next** turn will cost. Persisting it would mean a thread opened
-    after the operator switched half their tools off would confidently report the old tool
-    weight, and a readout that is confidently wrong is worse than one that is absent.
-
-    Keyed by mode because that is what changes the answer: a coding thread and a chat
-    thread are handed different tools. Process-local and rebuildable — it refills on the
-    first turn after a restart, and until then the split is simply absent."""
-
-    def __init__(self) -> None:
-        self._by_mode: dict[str, TurnOverhead] = {}
-
-    def remember(self, mode: str, overhead: TurnOverhead | None) -> None:
-        """Record what a turn in ``mode`` just measured. A failed measurement is ignored
-        rather than stored as absence: the previous good figure still describes the
-        configuration better than nothing does."""
-        if overhead is not None:
-            self._by_mode[mode] = overhead
-
-    def get(self, mode: str) -> TurnOverhead | None:
-        return self._by_mode.get(mode)

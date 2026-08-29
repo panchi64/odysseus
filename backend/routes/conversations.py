@@ -282,15 +282,12 @@ async def _detail(
             used,
             window,
             await get_context_thresholds(deps.settings_store(request), OPERATOR_ID),
-            # A reload has no request to measure, so the split leans on what the last turn
-            # in this thread's mode weighed. Absent until some turn has run in this
-            # process — the honest answer, rather than a stored figure that would go stale
-            # the moment a tool was switched off.
-            compose(
-                used,
-                deps.overhead_cache(request).get((await store.binding(conversation_id)).mode),
-                history,
-            ),
+            # A reload has no request to measure — neither the brief nor the tool schemas
+            # reach the message history — so the split leans on what this thread's last
+            # turn recorded. Same turn as `used` above, so both halves of the readout
+            # describe the same request. Absent for a thread that hasn't run one since
+            # this was recorded, which shows as no breakdown rather than a guessed one.
+            compose(used, await store.get_overhead(conversation_id), history),
         )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the

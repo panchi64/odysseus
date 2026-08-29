@@ -9,6 +9,7 @@ is the run's.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -65,3 +66,63 @@ class TurnOverhead:
     tools: int
     blocks: tuple[BriefBlock, ...] = ()
     groups: tuple[ToolGroupOverhead, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        """The measurement as plain JSON-able data, for the conversation column that
+        carries it between turns (``services.conversations``). Written out field by
+        field rather than via ``dataclasses.asdict`` so the stored shape is a
+        deliberate contract rather than whatever the dataclass happens to look like —
+        renaming an attribute should break a test here, not silently orphan every
+        stored blob."""
+        return {
+            "system": self.system,
+            "tools": self.tools,
+            "blocks": [{"id": b.id, "chars": b.chars} for b in self.blocks],
+            "groups": [
+                {"category": g.category, "tools": g.tools, "chars": g.chars}
+                for g in self.groups
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> TurnOverhead | None:
+        """Rebuild a stored measurement, or ``None`` if it can't be read.
+
+        Total-tolerant on the way in for the same reason the totals exist at all: a blob
+        written by an older version carries no ``blocks``/``groups``, and the coarse
+        three-way reading is still worth having without them. Anything malformed enough
+        to raise reads as absent — a thread whose stored overhead is unreadable should
+        show no breakdown, never a wrong one.
+
+        A negative figure is malformed in exactly that sense and is rejected too. These
+        are character counts, so there is no reading under which one is below zero; left
+        in, it would flow through the composer's proportional scaling as a *negative
+        share* and draw a bar segment of negative width — a wrong breakdown, which is the
+        one outcome this is here to prevent."""
+        if not isinstance(raw, dict):
+            return None
+        try:
+            overhead = cls(
+                system=int(raw["system"]),
+                tools=int(raw["tools"]),
+                blocks=tuple(
+                    BriefBlock(id=str(b["id"]), chars=int(b["chars"]))
+                    for b in raw.get("blocks") or ()
+                ),
+                groups=tuple(
+                    ToolGroupOverhead(
+                        category=str(g["category"]), tools=int(g["tools"]), chars=int(g["chars"])
+                    )
+                    for g in raw.get("groups") or ()
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+        counts = (
+            overhead.system,
+            overhead.tools,
+            *(b.chars for b in overhead.blocks),
+            *(g.chars for g in overhead.groups),
+            *(g.tools for g in overhead.groups),
+        )
+        return overhead if all(c >= 0 for c in counts) else None
