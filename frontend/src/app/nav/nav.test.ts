@@ -133,16 +133,13 @@ describe("isConnectedRoute", () => {
     expect(isConnectedRoute("/group", FIXTURE)).toBe(true);
   });
 
-  test("a retired settings page is connected while it redirects", () => {
-    // `/settings/*` and the surfaces that became dialog categories have no nav
-    // item any more — they resolve through the 404 route, which forwards them
-    // into `?settings=…`. The forward is instant, but the shell reads
-    // connectedness on the way through, and a NOT CONNECTED banner flashing
-    // over a redirect would be a lie told very briefly.
+  test("a surface that became a settings section is not a route", () => {
+    // These have no nav item and no route: configuration is reached through the
+    // dialog, so `/settings` and `/vault` are dead paths that read as dead.
     expect(AREAS.flatMap((a) => a.items).some((i) => i.href === "/settings")) //
       .toBe(false);
-    expect(isConnectedRoute("/settings")).toBe(true);
-    expect(isConnectedRoute("/vault")).toBe(true);
+    expect(isConnectedRoute("/settings")).toBe(false);
+    expect(isConnectedRoute("/vault")).toBe(false);
   });
 });
 

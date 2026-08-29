@@ -1,6 +1,7 @@
-import { type JSX } from "solid-js";
-import { Disclosure, Divider, PageHeader, Stack, toast } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { PageHeader, Stack, Tabs, toast } from "~/ui";
 import { isApiError } from "~/lib/api";
+import { useTabParam } from "~/lib/useTabParam";
 import {
   decodeModelValue,
   effectiveSelection,
@@ -38,12 +39,21 @@ import { ModelRoleCard } from "../components/ModelRoleCard";
  *  server, so the hardware band and the serve lifecycle that used to sit under
  *  these cards are gone; what a model runs on is decided where it runs.
  *
- *  Endpoint plumbing (which endpoints exist) and fallback ordering (where a
- *  request goes when the primary is down) are real but rare, so they sit behind
- *  ADVANCED instead of competing with the choice most people came to make. */
+ *  **Two tabs, not a disclosure.** Endpoint plumbing (which endpoints exist) and
+ *  fallback ordering (where a request goes when the primary is down) used to sit
+ *  behind an ADVANCED chevron, which meant adding an endpoint — the first thing
+ *  anyone does here — required finding a collapsed control first. ENDPOINTS is
+ *  now a named half of this pane: still out of the way of the choice most people
+ *  came to make, but visible from the moment the pane opens.
+ *
+ *  The tab rides in the URL (`?models=endpoints`), so a link can point at the
+ *  endpoint list directly and the back button undoes a switch. */
+const TABS = ["assignments", "endpoints"] as const;
+
 export function ModelsScreen(): JSX.Element {
   const endpoints = useEndpoints();
   const roles = useRoles();
+  const [tab, setTab] = useTabParam("models", TABS, "assignments");
 
   const endpointById = (id: string | undefined): ModelEndpoint | undefined =>
     id ? (endpoints.latest ?? []).find((e) => e.id === id) : undefined;
@@ -84,7 +94,7 @@ export function ModelsScreen(): JSX.Element {
    *  behind it. Picking a *model* must not silently change where a request goes when
    *  the primary is down — the mirror of the invariant `FallbackChainsSection` holds
    *  (reordering preserves the pinned model). Writing `[head]` outright would drop the
-   *  fallbacks configured under ADVANCED with nothing on screen saying so. */
+   *  fallbacks configured on the ENDPOINTS tab with nothing on screen saying so. */
   const chainHeadedBy = (role: string, head: string): string[] => [
     head,
     ...(roles()?.[role]?.endpointIds ?? []).filter((id) => id !== head),
@@ -156,52 +166,63 @@ export function ModelsScreen(): JSX.Element {
         assetId="ODY-MDL-01.0"
       />
 
-      <ModelRoleCard
-        label="Chat model"
-        description="Answers you in chat, research, and tasks."
-        groups={modelPickerGroups()}
-        value={effectiveValue()}
-        onChange={(v) => void pickChat(v)}
-        onOpen={rediscover}
-        placeholder="No model"
-        endpoint={chatEndpoint()}
-        implicit={roles.latest?.main?.implicit ?? false}
+      <Tabs
+        items={[
+          { value: "assignments", label: "Assignments" },
+          { value: "endpoints", label: "Endpoints" },
+        ]}
+        value={tab()}
+        onChange={(v) => setTab(v as (typeof TABS)[number])}
       />
 
-      <ModelRoleCard
-        label="Background model"
-        description="Titles, summaries, verification. A cheaper model is usually the right call."
-        groups={backgroundGroups()}
-        value={roleValue("utility")}
-        onChange={(v) => void pickBackground(v)}
-        onOpen={rediscover}
-        placeholder="Same as chat model"
-        endpoint={roleEndpoint("utility")}
-      />
+      <Show when={tab() === "assignments"}>
+        <Stack gap={6}>
+          <ModelRoleCard
+            label="Chat model"
+            description="Answers you in chat, research, and tasks."
+            groups={modelPickerGroups()}
+            value={effectiveValue()}
+            onChange={(v) => void pickChat(v)}
+            onOpen={rediscover}
+            placeholder="No model"
+            endpoint={chatEndpoint()}
+            implicit={roles.latest?.main?.implicit ?? false}
+          />
 
-      <ModelRoleCard
-        label="Search & memory model"
-        description="Powers recall across memories and chats. Changing this re-indexes everything."
-        groups={modelPickerGroups()}
-        value={roleValue("embedding")}
-        onChange={(v) => void pickEmbedding(v)}
-        onOpen={rediscover}
-        placeholder="Not set — recall is keyword-only"
-        endpoint={roleEndpoint("embedding")}
-      >
-        <EmbeddingRoleControls
-          bound={roleEndpoint("embedding") !== undefined}
-        />
-      </ModelRoleCard>
+          <ModelRoleCard
+            label="Background model"
+            description="Titles, summaries, verification. A cheaper model is usually the right call."
+            groups={backgroundGroups()}
+            value={roleValue("utility")}
+            onChange={(v) => void pickBackground(v)}
+            onOpen={rediscover}
+            placeholder="Same as chat model"
+            endpoint={roleEndpoint("utility")}
+          />
 
-      <Divider />
+          <ModelRoleCard
+            label="Search & memory model"
+            description="Powers recall across memories and chats. Changing this re-indexes everything."
+            groups={modelPickerGroups()}
+            value={roleValue("embedding")}
+            onChange={(v) => void pickEmbedding(v)}
+            onOpen={rediscover}
+            placeholder="Not set — recall is keyword-only"
+            endpoint={roleEndpoint("embedding")}
+          >
+            <EmbeddingRoleControls
+              bound={roleEndpoint("embedding") !== undefined}
+            />
+          </ModelRoleCard>
+        </Stack>
+      </Show>
 
-      <Disclosure label="Advanced">
-        <Stack gap={6} class="pt-3">
+      <Show when={tab() === "endpoints"}>
+        <Stack gap={6}>
           <EndpointsSection />
           <FallbackChainsSection />
         </Stack>
-      </Disclosure>
+      </Show>
     </Stack>
   );
 }

@@ -1,13 +1,19 @@
 export { SettingsDialog } from "./SettingsDialog";
 export {
-  SETTINGS_CATEGORIES,
-  categoryById,
+  SETTINGS_GROUPS,
+  allSections,
   allSectionIds,
-  type SettingsCategory,
-} from "./categories";
+  groupForSection,
+  sectionById,
+  type SettingsGroup,
+  type SettingsSection,
+} from "./sections";
+export {
+  searchSettingsSections,
+  type SettingsSectionHit,
+} from "./sections-search";
 export {
   useSettingsRoute,
   SETTINGS_PARAM,
   type SettingsRoute,
 } from "./useSettingsRoute";
-export { legacySettingsHref } from "./legacy";
