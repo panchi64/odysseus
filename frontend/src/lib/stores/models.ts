@@ -142,6 +142,11 @@ export interface RoleBinding {
    *  decided, and a window belongs to the (endpoint, model) pair. An endpoint row
    *  usually carries no default model at all. */
   contextWindow: number | null;
+  /** True when this is the backend's default rather than the operator's choice — see
+   *  `RoleViewDTO.implicit`. The picker shows it exactly as it shows a pinned model,
+   *  because it is what a turn would actually run on; only surfaces that describe the
+   *  *configuration* need to distinguish the two. */
+  implicit: boolean;
 }
 
 /** role → its binding. */
@@ -155,6 +160,7 @@ async function fetchRoles(): Promise<RoleBindings> {
       endpointIds: v.endpoint_ids,
       model: v.model,
       contextWindow: v.context_window,
+      implicit: v.implicit,
     };
   }
   return out;
@@ -162,8 +168,12 @@ async function fetchRoles(): Promise<RoleBindings> {
 
 /** The chat model = the backend `main` role binding's head endpoint + pinned
  *  model. `main` is single-endpoint (the picker overwrites the whole binding), so
- *  the head is the only endpoint; a binding with no pinned model or no endpoint is
- *  not yet a concrete pick (null) — the picker then displays the first available. */
+ *  the head is the only endpoint.
+ *
+ *  This covers the *implicit* binding too: with nothing bound, the backend resolves
+ *  `main` to the first usable endpoint/model and reports it here, flagged. That is
+ *  deliberately not distinguished at this level — what a turn runs on is one fact,
+ *  however it was arrived at, and the picker's job is to show that fact. */
 function mainSelectionOf(
   roles: RoleBindings | undefined,
 ): ModelSelection | null {
@@ -335,7 +345,7 @@ const store = createRoot(() => {
   );
 
   // Disabled endpoints are excluded at the picker's source: discovery only runs
-  // over live endpoints, so `groups`/`choices`/`pickerGroups` never offer one and
+  // over live endpoints, so `groups`/`pickerGroups` never offer one and
   // `effective()` auto-falls to the next live choice. (Settings reads the full
   // catalog directly off `endpoints` to still show disabled rows.)
   // Discovery's source is the *discovery-relevant* projection of the live
@@ -399,18 +409,39 @@ const store = createRoot(() => {
         choices: r.choices,
       })),
   );
-  const choices = createMemo<ModelChoice[]>(() =>
-    groups().flatMap((g) => g.choices),
-  );
-  const pickerGroups = createMemo(() =>
-    groups().map((g) => ({
+  // The picker's options — every discovered model, plus the current selection when
+  // discovery doesn't list it.
+  //
+  // That last part is not a nicety. The Combobox labels its trigger by finding the
+  // value among its options, so a selection absent from the list renders as the
+  // placeholder — "No model" — while the backend would happily run it. Discovery
+  // failing (or simply lagging a model served a moment ago) would then blank the
+  // picker on a perfectly working thread, which is the same class of lie as the
+  // display fallback this replaced, only pointing the other way.
+  const pickerGroups = createMemo(() => {
+    const out = groups().map((g) => ({
       label: g.endpointName,
       options: g.choices.map((c) => ({
         value: encodeChoice(c.endpointId, c.model),
         label: c.model,
       })),
-    })),
-  );
+    }));
+    const sel = selection();
+    if (!sel) return out;
+    const value = encodeChoice(sel.endpointId, sel.model);
+    if (out.some((g) => g.options.some((o) => o.value === value))) return out;
+    const endpoint = (endpoints.latest ?? []).find(
+      (e) => e.id === sel.endpointId,
+    );
+    const group = out.find((g) => g.label === endpoint?.name);
+    if (group) group.options = [...group.options, { value, label: sel.model }];
+    else
+      out.push({
+        label: endpoint?.name ?? "Selected",
+        options: [{ value, label: sel.model }],
+      });
+    return out;
+  });
   const discoveries = createMemo<EndpointDiscovery[]>(() =>
     results().map((r) => ({
       endpointId: r.endpointId,
@@ -420,19 +451,25 @@ const store = createRoot(() => {
       status: statusOf(r),
     })),
   );
-  // The picker always resolves to a concrete model when any is configured: the
-  // operator's explicit pick if still valid, otherwise the first available.
-  const effective = createMemo<ModelSelection | null>(() => {
-    const all = choices();
-    const sel = selection();
-    const explicit =
-      sel &&
-      all.find((c) => c.endpointId === sel.endpointId && c.model === sel.model);
-    if (explicit)
-      return { endpointId: explicit.endpointId, model: explicit.model };
-    const first = all[0];
-    return first ? { endpointId: first.endpointId, model: first.model } : null;
-  });
+  // What the picker shows, and what a turn will run on — the same answer, because
+  // both come from the backend's `main` binding.
+  //
+  // This used to fall back to "the first discovered choice" when the binding did not
+  // match one, which made the composer display a model that nothing had selected: the
+  // send resolves `main` and sends no override, so SEND then refused the very model
+  // shown above it, and re-picking that same model in the dropdown was the only way to
+  // reconcile them. The backend now reports an implicit `main` for exactly the case
+  // that fallback was papering over, so the guess is gone.
+  //
+  // Discovery is deliberately not consulted. It can be unreachable or lag a newly
+  // served model, and in that state the honest answer is still the model the backend
+  // would resolve — not some other model that happens to be listed. `pickerGroups`
+  // below carries the selection as an option when discovery lacks it, so the trigger
+  // can always label what will run.
+  const effective = createMemo<ModelSelection | null>(
+    () => selection() ?? null,
+  );
+
   // The endpoint backing the effective pick — the single source for its metadata
   // (provider name, context window) so consumers don't re-derive the lookup.
   const effectiveEndpoint = createMemo<ModelEndpoint | null>(() => {

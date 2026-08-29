@@ -81,6 +81,10 @@ export interface RoleViewDTO {
   endpoint_ids: string[];
   model: string | null;
   context_window: number | null;
+  /** True when the backend picked this rather than the operator: `main` with nothing
+   *  bound resolves to the first usable endpoint/model and reports what it resolved
+   *  to. A default, not a pin — it moves when a better endpoint appears. */
+  implicit: boolean;
 }
 
 /* ── Embedding reindex ──────────────────────────────────────────────────────── */

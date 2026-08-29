@@ -26,6 +26,15 @@ describe("sendBlocker", () => {
     expect(sendBlocker(false, null)).toBeNull();
   });
 
+  test("stays silent while the bindings are still loading", () => {
+    // Indistinguishable from the empty workspace above *by these arguments*, and that
+    // is the point: the caller passes `configured: false` until the backend has said
+    // what `main` resolves to, so a composer that has not yet been told anything shows
+    // no fault. Announcing one before it is established is what made a fresh chat open
+    // on an error it had no basis for.
+    expect(sendBlocker(false, null)).toBeNull();
+  });
+
   test("says what to do, not just that something is wrong", () => {
     // The operator is the only one who can clear this, and only if the message names
     // the place — a bare "cannot send" leaves them hunting through settings.

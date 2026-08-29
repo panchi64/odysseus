@@ -232,6 +232,12 @@ class RoleView(BaseModel):
     # reading a window off it answers null on exactly this workspace's shape — one
     # server, many models, the choice made in the picker.
     context_window: int | None = None
+    # True when this is the backend's default rather than the operator's choice: `main`
+    # with nothing bound resolves to the first usable endpoint/model instead of
+    # degrading, and reports what it resolved to here. A surface should say "defaulting
+    # to this" rather than showing it as pinned — the default moves when a better
+    # endpoint appears, which a pin would not.
+    implicit: bool = False
 
 
 @router.get("/roles", response_model=dict[str, RoleView])
@@ -239,7 +245,7 @@ async def list_roles(request: Request) -> dict[str, RoleView]:
     models = deps.models(request)
     chains = await models.list_roles(OPERATOR_ID)
     pinned = await models.list_role_models(OPERATOR_ID)
-    return {
+    out = {
         role: RoleView(
             endpoint_ids=ids,
             model=pinned.get(role),
@@ -250,6 +256,21 @@ async def list_roles(request: Request) -> dict[str, RoleView]:
         )
         for role, ids in chains.items()
     }
+    # `list_roles` returns only *stored* bindings, so an unbound `main` is absent —
+    # and the picker, which reads this, would have nothing to show for the model a
+    # turn would actually run on. Report the implicit resolution under the same key,
+    # flagged, so display and execution cannot disagree.
+    if not out.get("main") or not out["main"].endpoint_ids:
+        implicit = await models.implicit_main_binding(OPERATOR_ID)
+        if implicit is not None:
+            chain_ids, model = implicit
+            out["main"] = RoleView(
+                endpoint_ids=chain_ids,
+                model=model,
+                context_window=await models.role_context_window(OPERATOR_ID, "main"),
+                implicit=True,
+            )
+    return out
 
 
 @router.put("/roles/{role}", status_code=204)

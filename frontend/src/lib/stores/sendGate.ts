@@ -15,10 +15,14 @@
  *  *before* the operator commits a message to it — a SEND that accepts the text and
  *  then rejects it is a worse version of the same stop.
  *
- *  `configured` is what keeps this quiet on an empty workspace. Nothing configured has
- *  no window either, but "your endpoint doesn't report a context window" is the wrong
- *  thing to tell someone who hasn't added an endpoint yet: that state has its own
- *  surfacing, and this would talk over it. */
+ *  `configured` is what keeps this quiet when there is nothing to judge yet — and it
+ *  covers two states, not one. An **empty workspace** has no window, but "your endpoint
+ *  doesn't report a context window" is the wrong thing to tell someone who hasn't added
+ *  an endpoint: that state has its own surfacing and this would talk over it. A
+ *  workspace still **loading its bindings** has no window either, and answering before
+ *  the backend has said what `main` resolves to would put a fault on screen that no one
+ *  has established — the caller passes false until the roles resource is ready, so the
+ *  composer opens quiet and the message only ever appears once it is actually true. */
 export function sendBlocker(
   configured: boolean,
   contextWindow: number | null,
@@ -26,6 +30,7 @@ export function sendBlocker(
   if (!configured || contextWindow !== null) return null;
   return (
     "This model's endpoint doesn't report a context window, so the conversation " +
-    "can't be kept inside it. Set one on the endpoint under Settings › Models."
+    "can't be kept inside it. Set one on the endpoint under Settings › Models › " +
+    "Advanced."
   );
 }

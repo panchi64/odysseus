@@ -889,10 +889,17 @@ export function ChatRoomScreen(): JSX.Element {
                   {/* Where the message is going, then how full the thread it's
                       going into is — both read on the way to SEND. */}
                   <ModelPicker />
-                  {/* Unconditional: the ring reports an unknown window itself, in
-                      alert, rather than vanishing and leaving the operator to guess
-                      whether the gauge is missing or the setting is. */}
-                  <ContextRing usage={stream.usage()} />
+                  {/* Only once a run has reported. The ring used to be
+                      unconditional and paint an alert-toned "context window
+                      unknown" whenever it had nothing — which on a brand-new
+                      thread is simply *before the first turn*, so a fresh chat
+                      opened on a red gauge announcing a fault that had not been
+                      established. A gauge with nothing to measure has nothing to
+                      say. The genuinely-unknown case is not lost: it is the send
+                      gate's, which blocks SEND and explains why. */}
+                  <Show when={stream.usage()}>
+                    {(usage) => <ContextRing usage={usage()} />}
+                  </Show>
                 </>
               }
             />

@@ -5,9 +5,11 @@ import { ConstructionReveal, Popover, ProgressRing, Text } from "~/ui";
 import type { ContextUsage } from "../model";
 
 export interface ContextRingProps {
-  /** The backend-derived context-window state, or null when the window is unknown —
-   *  the provider reports none and the operator has set none. */
-  usage: ContextUsage | null | undefined;
+  /** The backend-derived context-window state. Non-null by construction: the caller
+   *  mounts the ring only once a run has reported one, because a gauge with nothing
+   *  to measure has nothing to say. The window being genuinely unknown is the send
+   *  gate's to report, not this one's. */
+  usage: ContextUsage;
 }
 
 const tokens = (n: number) => n.toLocaleString("en-US");
@@ -94,17 +96,12 @@ export function ContextRing(props: ContextRingProps): JSX.Element {
           type="button"
           class="flex cursor-pointer items-center rounded-ctl"
           aria-expanded={open()}
-          aria-label={
-            props.usage
-              ? `Context window ${pct(props.usage.fraction * 100)} full`
-              : "Context window unknown"
-          }
+          aria-label={`Context window ${pct(props.usage.fraction * 100)} full`}
           onClick={() => setOpen(!open())}
         >
           <ProgressRing
-            value={props.usage ? props.usage.fraction * 100 : 0}
-            tone={props.usage ? RING_TONE[props.usage.level] : undefined}
-            trackTone={props.usage ? undefined : "alert"}
+            value={props.usage.fraction * 100}
+            tone={RING_TONE[props.usage.level]}
             size={18}
             thickness={2}
           />
@@ -122,9 +119,7 @@ export function ContextRing(props: ContextRingProps): JSX.Element {
               content within the framed box, and a second `p-*` on the same node is a
               Tailwind conflict resolved by stylesheet order rather than by intent. */}
           <div class="flex flex-col gap-3 px-4 py-3.5">
-            <Show when={props.usage} fallback={<UnknownWindow />}>
-              {(usage) => <Breakdown usage={usage()} />}
-            </Show>
+            <Breakdown usage={props.usage} />
           </div>
         </ConstructionReveal>
       )}
@@ -239,36 +234,5 @@ function Bar(props: { usage: ContextUsage }): JSX.Element {
         )}
       </Show>
     </div>
-  );
-}
-
-/** The gauge with nothing to measure against: the endpoint reports no context window
- *  and none was configured.
- *
- *  **It renders, rather than disappearing.** Absent is how this component used to
- *  handle it, and that was the wrong lesson from the absent-not-zero rule the readout
- *  line follows: omitting a *statistic* nobody reported says "not measured", but
- *  omitting a *gauge* says "no gauge here", and the operator concludes the feature is
- *  broken instead of unconfigured. The only person who can fix it is the one who can't
- *  see anything is wrong.
- *
- *  Empty and in alert, because both halves are true: nothing is known to be filled,
- *  and something needs attention. It reads as a warning rather than as 0% precisely
- *  because of the colour — an empty nominal ring would be a claim that the window is
- *  wide open, which is the one thing we can't say. Sending is blocked in this state
- *  anyway (the backend refuses the turn), so this is the visible half of a stop the
- *  operator would otherwise only meet on pressing SEND. */
-function UnknownWindow(): JSX.Element {
-  return (
-    <>
-      <Text variant="label" tone="default">
-        No context window for this model
-      </Text>
-      <Text variant="micro" tone="dim">
-        The endpoint doesn't report one, so the conversation can't be kept
-        inside it — and sending is blocked until it's known. Set one under
-        settings › models › advanced.
-      </Text>
-    </>
   );
 }

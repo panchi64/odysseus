@@ -165,6 +165,7 @@ export function ModelsScreen(): JSX.Element {
         onOpen={rediscover}
         placeholder="No model"
         endpoint={chatEndpoint()}
+        implicit={roles.latest?.main?.implicit ?? false}
       />
 
       <ModelRoleCard

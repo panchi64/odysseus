@@ -28,6 +28,12 @@ export interface ModelRoleCardProps {
   placeholder: string;
   /** The endpoint backing the current choice — the source of the facts row. */
   endpoint?: ModelEndpoint;
+  /** True when the shown model is the backend's default rather than the operator's
+   *  choice — `main` with nothing bound resolves to the first usable endpoint/model.
+   *  The picker shows it either way (it is what a turn runs on), but *this* card
+   *  describes the configuration, so it has to distinguish the two: a default moves
+   *  when a better endpoint appears, and a pin does not. */
+  implicit?: boolean;
   /** Extra controls belonging to this job (e.g. the re-embed readout). */
   children?: JSX.Element;
 }
@@ -60,6 +66,11 @@ export function ModelRoleCard(props: ModelRoleCardProps): JSX.Element {
                 {ep().name}
               </Text>
               <EndpointHealthFlag status={ep().lastStatus} />
+              <Show when={props.implicit}>
+                <Text variant="micro" tone="dim">
+                  · defaulting to this
+                </Text>
+              </Show>
               <Show when={ep().contextWindow}>
                 {(cw) => <Chip>CTX {num(cw(), 0)}</Chip>}
               </Show>

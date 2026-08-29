@@ -78,6 +78,12 @@ class ModelRegistry:
         # `_discover_context_window`. Process-local and rebuildable, so it is a cache
         # and not state: losing it costs one provider round-trip, never correctness.
         self._context_windows: dict[tuple[str, str], int | None] = {}
+        # The implicit `main` chain, keyed by owner — see `implicit_main_binding`.
+        # Same cache discipline as the windows above: process-local, rebuildable, and
+        # dropped by `forget_implicit_main` on any endpoint write, because every input
+        # it reads (which endpoints exist, whether they are enabled, what models they
+        # serve) is exactly what such a write can move.
+        self._implicit_main: dict[str, tuple[list[str], str | None] | None] = {}
 
     # --- endpoint catalog -------------------------------------------------
 
@@ -132,6 +138,9 @@ class ModelRegistry:
             session.refresh(endpoint)
             return endpoint
 
+        # A new endpoint can become the implicit `main` — most obviously the first one,
+        # where the memoized answer is "none".
+        self.forget_implicit_main()
         return await in_session(self._engine, work)
 
     async def update_endpoint(
@@ -172,6 +181,7 @@ class ModelRegistry:
         # every input the memoized discovery keyed on — so the cache is dropped rather
         # than reasoned about field by field. It costs one round-trip to rebuild.
         self.forget_context_windows()
+        self.forget_implicit_main()
         return await in_session(self._engine, work)
 
     async def delete_endpoint(self, owner_id: str, endpoint_id: str) -> None:
@@ -190,6 +200,9 @@ class ModelRegistry:
                     binding.updated_at = datetime.now(UTC)
                     session.add(binding)
 
+        # The deleted endpoint may have been the implicit `main`; the next resolve has
+        # to find the one after it rather than a stale id.
+        self.forget_implicit_main()
         await in_session(self._engine, work)
 
     # --- role bindings ----------------------------------------------------
@@ -348,6 +361,17 @@ class ModelRegistry:
             )
 
         chain_ids, pinned_model = await self.get_role_binding(owner_id, role)
+        if not chain_ids and role == "main":
+            # An unbound `main` with a usable model available resolves to it rather than
+            # degrading. Nothing is written: the default is the state the workspace is
+            # already in, not a fourth thing to configure — the same shape as `utility`
+            # degrading onto `main`. It also keeps the picker honest, since the picker
+            # displays whatever this resolves to; without it the composer showed a model
+            # and the send refused, and re-picking that same model in the dropdown was
+            # the only way to make the two agree.
+            implicit = await self.implicit_main_binding(owner_id)
+            if implicit is not None:
+                chain_ids, pinned_model = implicit
         if not chain_ids:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
@@ -366,6 +390,52 @@ class ModelRegistry:
                 for i, endpoint in enumerate(live)
             ]
         )
+
+    async def implicit_main_binding(
+        self, owner_id: str
+    ) -> tuple[list[str], str | None] | None:
+        """The chain `main` resolves to when the operator has bound nothing — the first
+        enabled endpoint that can name a model, and that model. None when no endpoint
+        can supply one.
+
+        **A default, never a pin.** It is recomputed rather than stored, so adding a
+        better endpoint moves the default instead of leaving `main` fastened to whatever
+        happened to exist first, and an operator who never opens the picker is never
+        surprised by a binding they did not make. `list_roles`/`RoleView` report it with
+        `implicit` set, so a surface can say "defaulting to this" rather than showing it
+        as chosen.
+
+        **Endpoint order is `list_endpoints`' order (by name), not insertion order**, so
+        the answer does not depend on the sequence endpoints were added in — the same
+        catalog always yields the same default.
+
+        The model is the endpoint's configured default when it has one, and otherwise
+        the provider's first discovered model: the setup this workspace is built for is
+        one server serving many models with none of them written on the endpoint row, so
+        a rule that only read the column would find nothing in exactly the common case.
+        Discovery failure is not an error here — an endpoint that cannot be reached
+        simply is not the default — so the scan moves on rather than propagating.
+
+        Memoized per owner. Discovery is provider I/O and this sits on the resolution
+        path of every turn; `forget_implicit_main` drops it on any endpoint write."""
+        if owner_id in self._implicit_main:
+            return self._implicit_main[owner_id]
+        answer: tuple[list[str], str | None] | None = None
+        for endpoint in await self.list_endpoints(owner_id):
+            if not endpoint.enabled:
+                continue
+            model = endpoint.model
+            if not model:
+                try:
+                    discovered = await self.list_provider_models(owner_id, endpoint.id)
+                except (DegradedCapabilityError, NotFoundError):
+                    continue
+                model = discovered[0] if discovered else None
+            if model:
+                answer = ([endpoint.id], model)
+                break
+        self._implicit_main[owner_id] = answer
+        return answer
 
     async def _with_context_windows(self, specs: list[llm.EndpointSpec]) -> list[llm.EndpointSpec]:
         """Fill in each spec's context window from its provider where the operator
@@ -400,6 +470,18 @@ class ModelRegistry:
                 spec.base_url, spec.api_key, spec.model, client=self._http_client
             )
         return self._context_windows[key]
+
+    def forget_implicit_main(self) -> None:
+        """Drop the memoized implicit `main` — after any endpoint create/update/delete,
+        since which endpoint is first, whether it is enabled, and what it serves are all
+        inputs to it.
+
+        Deliberately *not* folded into `forget_context_windows`. That one is also called
+        by `list_provider_models`, which runs **inside** the implicit scan — so clearing
+        both there would leave the scan's own result depending on whether the assignment
+        happened to come after the clear. Correct today, and the kind of correctness that
+        breaks the next time either method moves."""
+        self._implicit_main.clear()
 
     def forget_context_windows(self) -> None:
         """Drop the memoized windows — after an endpoint write, and whenever discovery

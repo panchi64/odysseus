@@ -340,8 +340,16 @@ async def test_endpoint_crud_over_rest_hides_api_key():
         # `context_window` is null here for two compounding reasons — no override was
         # set and the fake host can't be asked — which is exactly the state the send
         # gate refuses a turn in.
+        # `implicit` is False because the operator wrote this binding — the flag
+        # distinguishes that from the default the backend resolves when nothing is
+        # bound at all.
         assert roles == {
-            "main": {"endpoint_ids": [endpoint_id], "model": None, "context_window": None}
+            "main": {
+                "endpoint_ids": [endpoint_id],
+                "model": None,
+                "context_window": None,
+                "implicit": False,
+            }
         }
 
         deleted = await client.delete(f"/models/endpoints/{endpoint_id}")
