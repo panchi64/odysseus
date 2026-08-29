@@ -63,11 +63,11 @@ async def test_issue_rejects_an_unknown_or_empty_scope_set():
 
 async def test_scopes_catalog_never_covers_credential_or_host_surfaces():
     # Deny-by-default is the guarantee: no token can mint another token, read the
-    # operator's secrets, or reach the host shell. The table is per-app, assembled
-    # from core claims + every enabled manifest's — so this asserts the real one.
+    # operator's secrets, or drive a backup. The table is per-app, assembled from
+    # core claims + every enabled manifest's — so this asserts the real one.
     async with client_app() as (_client, app):
         table = app.state.api_scope_table
-        for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup", "/shell/ws"):
+        for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup"):
             assert table.scope_for_path(path) is None
         # Longest prefix wins, so serving is grantable apart from the rest of /models.
         assert table.scope_for_path("/models/roles") == "models"

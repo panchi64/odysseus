@@ -255,7 +255,7 @@ class UploadStore:
     async def set_favorite(
         self, owner_id: str, upload_id: str, value: bool
     ) -> UploadView:
-        """Toggle the operator's gallery favorite on an image. A clear-column flip, like
+        """Toggle the operator's star on an image. A clear-column flip, like
         ``set_kb_excluded`` but with no corpus restamp — favorite is a UI affordance, not a
         knowledge-base property, so it touches the row alone."""
 

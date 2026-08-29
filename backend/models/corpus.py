@@ -2,7 +2,7 @@
 
 The corpus is **one retrieval index** fed by many *sources* (the rich stores —
 memory, conversations — plug in as adapters untouched; chunked reference content
-— host folders now, uploads/gallery/research/document bodies later — lands here).
+— host folders and uploads now, research later — lands here).
 
 Two tables:
 

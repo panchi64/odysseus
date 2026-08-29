@@ -9,7 +9,6 @@ as a render-ready projection — the durable record stays full-fidelity
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -98,28 +97,6 @@ class ViewSnapshotRefOut(BaseModel):
     keeper: bool = False  # the operator's durable bookmark on this version
 
 
-class DocumentVersionRefOut(BaseModel):
-    """One committed version of a thread's document, oldest first, for the View's version
-    dropdown + diff. Carries the body so a cold read renders any version and diffs without a
-    follow-up fetch (documents are the operator's own writing — small at single-operator scale)."""
-
-    version: int
-    origin: str  # user | ai | extraction
-    created_at: datetime
-    body: str
-    keeper: bool = False  # the operator's durable bookmark on this version
-
-
-class DocumentRefOut(BaseModel):
-    """A document the agent created in this conversation, mirroring the live
-    ``document.*`` events so a cold read rebuilds the View's document versions like a warm
-    one. Conversation-scoped (seeded from the documents the thread created)."""
-
-    document_id: str
-    title: str
-    versions: list[DocumentVersionRefOut] = []
-
-
 class MessageOut(BaseModel):
     id: str
     role: str
@@ -167,9 +144,6 @@ class ConversationDetail(ConversationSummary):
     # turn, newest last. Conversation-scoped; the frontend merges them into the View
     # timeline alongside the per-message versions.
     snapshots: list[ViewSnapshotRefOut] = []
-    # The documents the agent created in this thread, with their version history — the
-    # frontend folds them into the View timeline alongside the workspace snapshots.
-    documents: list[DocumentRefOut] = []
     # The context-window state reconstructed from the last turn's stored usage, so
     # an existing thread shows its fullness on load — not just after the next turn.
     # Null when usage or a window is unavailable.
@@ -351,30 +325,6 @@ async def _detail(
     # by-id map the cold-read uses to re-attach each turn's inline chips.
     snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
     by_id = {s.id: s for s in snapshots}
-    # The documents this thread created, each with its version history (oldest first), so a
-    # cold read rebuilds the View's document versions like the live document.* stream did.
-    documents_store = deps.documents(request)
-    doc_views = await documents_store.list_by_conversation(OPERATOR_ID, conversation_id)
-    doc_versions = await asyncio.gather(
-        *(documents_store.list_versions(OPERATOR_ID, doc.id) for doc in doc_views)
-    )
-    documents: list[DocumentRefOut] = [
-        DocumentRefOut(
-            document_id=doc.id,
-            title=doc.title,
-            versions=[
-                DocumentVersionRefOut(
-                    version=v.version,
-                    origin=v.origin,
-                    created_at=v.created_at,
-                    body=v.body,
-                    keeper=v.keeper,
-                )
-                for v in reversed(versions)  # list_versions is newest-first; want oldest-first
-            ],
-        )
-        for doc, versions in zip(doc_views, doc_versions, strict=True)
-    ]
     return ConversationDetail(
         **_summary(summary, activity=active_run.status if active_run else None).model_dump(),
         messages=[_message(m, by_id) for m in messages],
@@ -391,7 +341,6 @@ async def _detail(
             )
             for s in snapshots
         ],
-        documents=documents,
         context=context,
         stats=stats,
         active_run=active_run,
@@ -498,21 +447,17 @@ async def _image_orphans(
     request: Request, conversation_id: str, *, message_id: str | None
 ) -> list[str]:
     """The image uploads that the proposed delete would orphan — computed before the delete
-    runs (the doomed turns must still be in the tree), filtered to ``image/*``, and minus any
-    the operator has curated (favorited or filed into an album), which are kept regardless of
-    where they were first attached. The store's check spares any image still referenced by a
-    surviving branch or another chat; the gallery's spares the ones deliberately collected."""
+    runs (the doomed turns must still be in the tree) and filtered to ``image/*``. The store's
+    check spares any image still referenced by a surviving branch or another chat."""
     candidates = await deps.store(request).orphaned_attachments_for_delete(
         OPERATOR_ID, conversation_id, message_id=message_id
     )
-    images = await deps.uploads(request).image_ids(OPERATOR_ID, candidates)
-    curated = await deps.gallery(request).curated_image_ids(OPERATOR_ID, images)
-    return [uid for uid in images if uid not in curated]
+    return await deps.uploads(request).image_ids(OPERATOR_ID, candidates)
 
 
 async def _purge_uploads(request: Request, upload_ids: list[str]) -> None:
-    """Hard-delete the chosen image uploads (bytes + corpus chunks + album memberships
-    cascade). Best-effort per id, run after the conversation/message is already deleted: one
+    """Hard-delete the chosen image uploads (bytes + corpus chunks cascade).
+    Best-effort per id, run after the conversation/message is already deleted: one
     already gone (a race) or otherwise failing to delete is logged and skipped, so it never
     aborts the remaining purges or 500s a delete the operator already saw succeed."""
     uploads = deps.uploads(request)
@@ -584,7 +529,7 @@ async def delete_conversation(
     discard_branch: bool = Query(default=False, alias="discardBranch"),
 ) -> None:
     """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
-    the image attachments this would orphan; the default keeps them in the gallery.
+    the image attachments this would orphan; the default keeps them.
 
     A **coding** thread with unmerged commits is refused (409) unless
     ``discardBranch=true``. Merging a branch is a deliberate act the operator has to take;

@@ -52,7 +52,7 @@ class UploadSummaryOut(CamelModel):
     note: str | None = None
     # Whether the operator has scoped this file out of the knowledge base.
     kb_excluded: bool
-    # The operator's gallery favorite (image uploads).
+    # The operator's star (image uploads).
     favorite: bool
     created_at: datetime
     updated_at: datetime
@@ -77,7 +77,7 @@ class UploadOut(CamelModel):
 class UploadPatch(CamelModel):
     """A partial update of an upload. Any field may be sent on its own: ``text`` is an
     operator correction of the extracted text (`UP-2`); ``kbExcluded`` toggles
-    knowledge-base membership (retroactive); ``favorite`` toggles the gallery star.
+    knowledge-base membership (retroactive); ``favorite`` toggles the operator's star.
     Sending none is a no-op read."""
 
     text: str | None = None
@@ -172,7 +172,7 @@ async def get_upload(upload_id: str, request: Request) -> UploadOut:
 
 @router.get("/{upload_id}/content")
 async def download_upload(upload_id: str, request: Request) -> Response:
-    """Serve the original bytes as an attachment, unconditionally. The gallery and chat
+    """Serve the original bytes as an attachment, unconditionally. Chat
     image views read these bytes through the client (``getBlob`` → object URL), where the
     Content-Disposition is moot — so forcing ``attachment`` costs the product nothing and
     keeps a direct navigation to this URL from rendering operator-supplied HTML/SVG inline
@@ -200,7 +200,7 @@ async def thumbnail_upload(
     size: int = _DEFAULT_THUMB,
     if_none_match: str | None = Header(default=None),
 ) -> Response:
-    """A downscaled preview of an image upload for the gallery grid (a full multi-MB
+    """A downscaled preview of an image upload for an image grid (a full multi-MB
     original per tile would be wasteful). The ETag is content-addressed (the upload's
     clear ``sha256`` + the requested size), so a conditional re-request is answered ``304``
     **without** unsealing the bytes — the per-request decrypt + decode is paid only on a

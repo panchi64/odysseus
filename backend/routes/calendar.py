@@ -1,7 +1,7 @@
 """The calendar surface (`CAL-1..3`) — calendars, events, ICS files, sync, NL entry.
 
 Thin over `services/calendar`: parse, delegate, map. Out-shapes are camelCase, matching
-the app's other newer surfaces (documents/gallery/corpus/tasks/notifications) and the
+the app's other newer surfaces (corpus/uploads/tasks/notifications) and the
 frontend's own calendar contract.
 
 Two shapes are worth knowing before reading the handlers:

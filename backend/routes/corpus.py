@@ -25,7 +25,6 @@ router = APIRouter(prefix="/corpus", tags=["corpus"])
 
 # A surface's row glyph by its fixed source id (folders fall back to an archive glyph).
 _SURFACE_ICONS = {
-    "surf-documents": "file",
     "surf-uploads": "upload",
     "surf-memory": "database",
     "surf-conversations": "chat",

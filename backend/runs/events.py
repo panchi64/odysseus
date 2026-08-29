@@ -332,30 +332,6 @@ class ToolFailed(_Body):
     error: str
 
 
-# --- Documents ---------------------------------------------------------------
-class DocumentCreated(_Body):
-    type: Literal["document.created"] = "document.created"
-    document_id: str
-    title: str | None = None
-
-
-class DocumentDelta(_Body):
-    type: Literal["document.delta"] = "document.delta"
-    document_id: str
-    text: str
-
-
-class DocumentCommitted(_Body):
-    type: Literal["document.committed"] = "document.committed"
-    document_id: str
-    version: int
-    # The committed version's mint time — the authoritative ordering key, the same
-    # ``DocumentVersion.created_at`` the cold read serves. The frontend orders the View's
-    # versions by it, so a version minted live sorts identically to one read back on
-    # refresh (without it the client had to fabricate a timestamp and could misorder).
-    created_at: datetime
-
-
 # --- View (the conversation's one versioned output surface) ------------------
 # The View is one canvas with a history of **versions** to compare plus an optional
 # live **head**. A version is one ``view.snapshot`` (the captured workspace tree +
@@ -549,9 +525,6 @@ EventBody = Annotated[
     | ToolProgress
     | ToolCompleted
     | ToolFailed
-    | DocumentCreated
-    | DocumentDelta
-    | DocumentCommitted
     | CitationAdded
     | ViewLive
     | ViewLiveStopped

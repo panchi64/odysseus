@@ -42,7 +42,6 @@ from core.vault import Vault
 from models._fields import utcnow
 from models.conversation import Conversation
 from models.corpus import CorpusSource
-from models.document import Document
 from models.project import Project
 from models.research import ResearchRun
 from models.task import ScheduledTask
@@ -55,7 +54,6 @@ from services.settings_store import ACTIVE_PROJECT_KEY, SettingsStore
 #: fails there rather than silently losing its rows on the next project delete.
 SCOPED_MODELS: tuple[type[SQLModel], ...] = (
     Conversation,
-    Document,
     ScheduledTask,
     ResearchRun,
     CorpusSource,

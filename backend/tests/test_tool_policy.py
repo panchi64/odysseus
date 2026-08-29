@@ -91,9 +91,6 @@ _PINNED_CATALOG = {
     "conversations_read",
     "conversations_search",
     "corpus_retrieve",
-    "document_create",
-    "document_edit",
-    "document_suggest",
     "files_create_directory",
     "files_edit_file",
     "files_file_info",
@@ -155,8 +152,6 @@ async def test_booted_app_assembles_the_same_catalog():
             "corpus_retrieve",
             "memory_recall",
             "conversations_search",
-            "document_edit",
-            "document_suggest",
             "shell_run_command",
             "shell_start_command",
         }

@@ -1545,7 +1545,7 @@ class ConversationStore:
     # ── Attachment provenance & the delete-choice safety check ──────────────────
     #
     # ``attachment_ids`` is a clear JSON column, so both read it directly — no decrypt.
-    # The gallery uses the first for "which images came from chats"; the delete flow uses
+    # The first answers "which images are still referenced from chats"; the delete flow uses
     # the second to purge an attached image only when nothing surviving still references it.
 
     async def referenced_upload_ids(

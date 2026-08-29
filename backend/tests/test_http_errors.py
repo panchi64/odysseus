@@ -13,7 +13,6 @@ from fastapi import APIRouter
 from core.exceptions import (
     ApprovalRequiredError,
     DegradedCapabilityError,
-    DocumentSpanError,
     InvalidInputError,
     ModelLoadError,
     NotFoundError,
@@ -22,6 +21,7 @@ from core.exceptions import (
     RateLimitedError,
     ServingError,
     ServingUnavailableError,
+    SkillSpanError,
     SkillValidationError,
     SpanEditError,
     SSRFError,
@@ -41,7 +41,7 @@ from ._helpers import client_app
         (InvalidInputError("a name is required"), 422),
         (SkillValidationError("name", "too long"), 422),
         (SpanEditError(0), 409),
-        (DocumentSpanError(3), 409),  # a subclass answers with its parent's status
+        (SkillSpanError(3), 409),  # a subclass answers with its parent's status
         (SSRFError("refused"), 422),
         (RateLimitedError(4.2), 429),
         (DegradedCapabilityError("no embedding endpoint"), 503),

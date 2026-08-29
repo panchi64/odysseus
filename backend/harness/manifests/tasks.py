@@ -204,7 +204,6 @@ MANIFEST = FeatureManifest(
     after=(
         "calendar",
         "corpus",
-        "documents",
         "external",
         "mail",
         "memory",

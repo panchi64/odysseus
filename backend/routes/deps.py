@@ -31,10 +31,7 @@ from services.conversations import ConversationStore
 from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
-from services.documents import DocumentStore
 from services.external_tools import ExternalTools
-from services.gallery import GalleryService
-from services.host_shell import ShellService
 from services.integrations import IntegrationService
 from services.mail import MailService
 from services.mcp import McpRegistry
@@ -156,20 +153,12 @@ def approval_grants(request: Request) -> ApprovalGrantStore:
     return request.app.state.approval_grants
 
 
-def documents(request: Request) -> DocumentStore:
-    return request.app.state.documents
-
-
 def skills(request: Request) -> SkillStore:
     return request.app.state.skills
 
 
 def uploads(request: Request) -> UploadStore:
     return request.app.state.uploads
-
-
-def gallery(request: Request) -> GalleryService:
-    return request.app.state.gallery
 
 
 def upload_rate_limiter(request: Request) -> RateLimiter:
@@ -313,16 +302,6 @@ def db_engine(request: Request) -> Engine:
 
 def scheduler(request: Request) -> SchedulerService:
     return request.app.state.scheduler
-
-
-def shell(request_or_ws: Request | WebSocket) -> ShellService:
-    # WebSocket-capable for the same reason `sandbox_sessions` is: the shell's only
-    # transport is a socket, while its status routes are ordinary requests.
-    return request_or_ws.app.state.shell
-
-
-def shell_auth_rate_limiter(request: Request) -> RateLimiter:
-    return request.app.state.shell_auth_rate_limiter
 
 
 def research_run_waiters(request: Request) -> dict[str, asyncio.Future[Run]]:

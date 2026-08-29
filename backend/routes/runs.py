@@ -25,7 +25,7 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 class RunView(BaseModel):
     # Existing fields stay snake_case (this surface predates the camelCase
     # convention); the two new dashboard fields below are camelCase to match the
-    # newer surfaces (documents/gallery/corpus/notifications) — `populate_by_name`
+    # newer surfaces (corpus/uploads/notifications) — `populate_by_name`
     # lets this model still build from the plain attribute names below.
     model_config = ConfigDict(populate_by_name=True)
 

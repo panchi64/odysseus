@@ -59,11 +59,6 @@ class SpanEditError(OdysseusError):
         )
 
 
-class DocumentSpanError(SpanEditError):
-    """A :class:`SpanEditError` on a document body (`DOC-2`). Its own type so the document
-    routes/tool keep mapping it to their existing phrasing unchanged."""
-
-
 class SkillSpanError(SpanEditError):
     """A :class:`SpanEditError` on a skill's ``SKILL.md`` body (`SKILL-3`)."""
 

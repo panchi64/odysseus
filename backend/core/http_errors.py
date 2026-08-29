@@ -34,7 +34,7 @@ needs to do any more is restate the answer already written here.
   ``ServingUnavailableError``'s own docstring describes: a precondition the operator
   resolves, versus a download or launch that failed.
 - ``ModelLoadError`` → **502**. The inference server refused; the hint says what to do.
-- ``SpanEditError`` (and its document/skill subclasses) → **409**. The edit's anchor text
+- ``SpanEditError`` (and its skill subclass) → **409**. The edit's anchor text
   didn't match exactly one span, so the write would have been ambiguous.
 - ``SkillValidationError`` → **422**, carrying the offending ``field`` so the operator is
   told which part of the bundle to fix.

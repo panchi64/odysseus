@@ -13,7 +13,7 @@ operator's own tree is **invisible to the agent**. That is the price of never to
 their tree, and it should be read on the project screen rather than discovered halfway
 through a session.
 
-camelCase out, matching the `documents`/`gallery`/`corpus`/`tasks` surfaces the frontend
+camelCase out, matching the `corpus`/`uploads`/`tasks` surfaces the frontend
 seams were built against.
 """
 
