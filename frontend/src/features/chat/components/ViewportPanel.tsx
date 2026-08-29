@@ -127,8 +127,16 @@ export function ViewportPanel(props: {
     <div
       ref={props.panelRef}
       tabindex={-1}
-      class="h-full outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
+      /* `p-2` keeps the header and the stage off the frame's rules — the
+         surface is the framed box now, not a card with its own padding, so the
+         breathing room has to come from here. */
+      class="h-full p-2 outline-none transition-colors focus-visible:outline-1 focus-visible:outline-bright"
     >
+      {/* `bare`: the frosted surface belongs to the framed region that
+          `ConstructionReveal` draws, so the panel adds no fill, no shadow and
+          no ring of its own. A card here was the parent container with rounded
+          corners — a second box wrapped *around* the frame, when the frame is
+          meant to be the edge of the thing itself. */}
       <Panel
         label="View"
         meta={
@@ -151,9 +159,9 @@ export function ViewportPanel(props: {
             onClose={props.onClose}
           />
         }
+        bare
         flush
         fill
-        glass
         class="h-full"
       >
         <Show

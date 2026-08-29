@@ -129,7 +129,14 @@ export function ConstructionReveal(
   return (
     <Show when={gate.mounted()}>
       <div
-        class={cx("ody-frame relative isolate", local.class)}
+        /* `relative`, and deliberately NOT `isolate`. An `isolation: isolate`
+           ancestor becomes the *backdrop root* for anything inside it, so the
+           glass below would have blurred only what this wrapper itself paints —
+           which is nothing — instead of the page behind it. The frosted effect
+           dies silently under it: the fill still tints, so it looks like a
+           slightly lighter surface rather than like broken glass, which is
+           exactly how it read. The frame's `z-10` is enough on its own. */
+        class={cx("ody-frame relative", local.class)}
         style={vars()}
         /* `data-ready` releases the whole timeline at once — every animation in
            theme.css is scoped under it, so until it appears nothing is running
@@ -147,15 +154,23 @@ export function ConstructionReveal(
            finish first. See the note in theme.css. */
         onAnimationEnd={gate.onAnimationEnd}
       >
+        {/* THE SURFACE IS THE FRAMED AREA — the region between the marks, and
+            nothing wider. It is a sibling of the content rather than a fill on
+            whatever the caller renders inside, because a card with its own
+            rounded corners and its own shadow sitting *around* the frame is a
+            second container: the frosted area then reads as a pane the marks are
+            decorating rather than as the pane the marks describe. Square, no
+            radius, no elevation. `inset-1.5` puts it on exactly the box the
+            rules draw. */}
+        <div class="ody-frame-surface ody-glass absolute inset-1.5" />
+
         {/* The frame, INSET 6px into the region rather than drawn on its edge.
 
             Flush, it landed a hairline from whatever edge was already there, and
             two rules a few pixels apart read as a mistake rather than as a
             frame. The fix for the specific offender is elsewhere — a splitter
             beside a self-framing panel takes `divider="hover"` — but the inset
-            is what makes the frame independent of its surroundings generally:
-            it is unmistakably *on* the panel rather than *of* it, so it cannot
-            near-miss the panel's own hairline ring either.
+            is what keeps the frame independent of its surroundings generally.
 
             It also stops the marks being clipped. They straddle their corners,
             so flush against a region pinned to the viewport — the full-screen
@@ -163,23 +178,29 @@ export function ConstructionReveal(
             `inset-1.5` with `-1.5` offsets the outer edge lands exactly on the
             region's own edge: as far out as it can go and still be whole.
 
-            Never interactive, and in the wrapper's own stacking context so it
-            cannot escape into the page or swallow a click meant for content. */}
+            Never interactive, and above the surface so the rules and marks sit
+            on the glass rather than under it. */}
         <div
           class="pointer-events-none absolute inset-1.5 z-10"
           aria-hidden="true"
         >
           {/* Phase 1 — the origin mark is simply there; its twin travels the
-              top edge with a rule drawn between them. */}
-          <Mark class={cx(OFFSET.top, near())} />
-          <div class="ody-frame-mark-a absolute inset-0">
+              top edge with a rule drawn between them.
+
+              Every mark carries `z-10` so it paints ON TOP of the rules. These
+              are all positioned children with `z-index: auto`, so without it
+              they stack in DOM order and each rule — declared after the marks
+              of its own phase — laid a hairline straight across the middle of
+              the `+`, breaking the glyph exactly where the two strokes cross. */}
+          <Mark class={cx("z-10", OFFSET.top, near())} />
+          <div class="ody-frame-mark-a absolute inset-0 z-10">
             <Mark class={cx(OFFSET.top, far())} />
           </div>
           <span class="ody-frame-rule-top absolute top-0 right-0 left-0 h-px bg-line" />
 
           {/* Phase 2 — both marks drop to the bottom edge, the sides close
               behind them, and the bottom rule completes the frame. */}
-          <div class="ody-frame-mark-b absolute inset-0">
+          <div class="ody-frame-mark-b absolute inset-0 z-10">
             <Mark class={cx(OFFSET.bottom, near())} />
             <Mark class={cx(OFFSET.bottom, far())} />
           </div>
@@ -188,7 +209,13 @@ export function ConstructionReveal(
           <span class="ody-frame-rule-bottom absolute right-0 bottom-0 left-0 h-px bg-line" />
         </div>
 
-        <div class={cx("ody-frame-surface", local.contentClass)}>
+        {/* `relative` so the content paints above the absolutely-positioned
+            surface behind it, and `p-1.5` so it sits INSIDE the framed box
+            rather than spilling the 6px out to the region's own edge. The
+            padding is also what keeps the wrapper sized by its content: the
+            surface and the frame are both absolute and contribute no width, so
+            an aside with an explicit width still drives the column. */}
+        <div class={cx("ody-frame-surface relative p-1.5", local.contentClass)}>
           {local.children}
         </div>
       </div>

@@ -1031,7 +1031,10 @@ export function ChatRoomScreen(): JSX.Element {
             aria-modal="true"
             aria-labelledby="view-sheet-title"
             data-view-sheet
-            class="ody-glass flex h-full flex-col"
+            /* No fill of its own — the frosted surface is the framed region
+               `ConstructionReveal` draws, and a second glass layer here would
+               stack with it and paint the transcript out. */
+            class="flex h-full flex-col"
           >
             <header class="flex items-center gap-3 px-4 py-3">
               <Button

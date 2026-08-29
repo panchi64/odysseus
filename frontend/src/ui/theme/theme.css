@@ -589,6 +589,14 @@ body {
    whose only job is to last exactly as long as the whole sequence, in both
    directions, so `animationend` fires on the wrapper itself at the true end.
 
+   It animates `outline-color` between two transparents rather than the more
+   obvious `opacity: 1 -> 1`, and that is not fussiness: an element with a
+   running opacity animation gets composited and becomes a BACKDROP ROOT, which
+   would leave the frosted surface underneath blurring nothing for the whole
+   320ms of the reveal and then snapping into focus when the animation ended.
+   `outline-color` on an element with no outline is animatable, fires the same
+   events, and creates no stacking context.
+
    `useGatedMount` unmounts on `e.target === e.currentTarget`, because every
    animation inside the region — six marks and rules here, plus anything the
    content is doing — bubbles to the same handler. Without a span the wrapper
@@ -602,18 +610,18 @@ body {
    either changes. */
 @keyframes ody-frame-span {
   from {
-    opacity: 1;
+    outline-color: transparent;
   }
   to {
-    opacity: 1;
+    outline-color: transparent;
   }
 }
 @keyframes ody-frame-span-out {
   from {
-    opacity: 1;
+    outline-color: transparent;
   }
   to {
-    opacity: 1;
+    outline-color: transparent;
   }
 }
 
@@ -715,6 +723,19 @@ body {
 /* GLASS — a translucent surface over whatever is behind it. `isolation` gives
    the panel its own stacking context so the frame marks can sit above the
    surface without escaping into the page; the two tokens are per mode. */
+/* The frosted surface. NOTE what is NOT here: no radius and no shadow. This is
+   the fill of a region something else has already drawn the edges of, not a
+   card — give it corners and elevation and it becomes a second container
+   wrapped around the frame instead of the thing the frame encloses.
+
+   Nor is there `isolation: isolate`. That was here to tidy the stacking and it
+   quietly broke the effect: `isolation: isolate` makes an element a BACKDROP
+   ROOT, and `backdrop-filter` only blurs what is painted inside its backdrop
+   root — so an isolated ancestor leaves the glass blurring nothing at all. The
+   failure is invisible rather than obvious, because the translucent fill still
+   tints: it just looks like a slightly lighter surface. Anything that creates a
+   backdrop root above this element has the same effect, which is why the
+   lifecycle span above animates `outline-color` and not `opacity`. */
 .ody-glass {
   background: var(--glass-bg);
   /* Unprefixed only — Lightning CSS adds `-webkit-backdrop-filter` from the
@@ -722,7 +743,6 @@ body {
      STANDARD property and ship the `-webkit-` one alone, which would have left
      the panel opaque everywhere except Safari. */
   backdrop-filter: var(--glass-filter);
-  isolation: isolate;
 }
 
 /* ==========================================================================
