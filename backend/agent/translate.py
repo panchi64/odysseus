@@ -69,20 +69,28 @@ def citations_from_tool_result(content: Any) -> list[CitationAdded]:
     return [CitationAdded(url=c.url, title=c.title) for c in content.citations()]
 
 
-def _on_model_event(event: object, run: Run) -> None:
+def _on_model_event(event: object, run: Run, mark_first_token: Callable[[], None]) -> None:
+    """``mark_first_token`` is called for every content part and only counts the
+    first (see ``TurnTimer.model_request``). It fires on *thinking* as readily as on
+    answer text: on a reasoning model the reasoning is what arrives first, and timing
+    to the first answer token instead would bill the whole thinking pass as latency."""
     if isinstance(event, PartStartEvent):
         part = event.part
         if isinstance(part, TextPart) and part.content:
+            mark_first_token()
             run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=part.content))
         elif isinstance(part, ThinkingPart) and part.content:
+            mark_first_token()
             run.emit(ThinkingDelta(text=part.content))
     elif isinstance(event, PartDeltaEvent):
         delta = event.delta
         if isinstance(delta, TextPartDelta) and delta.content_delta:
+            mark_first_token()
             run.answer_started = True  # pins the endpoint past this point (AE-5.3)
             run.emit(AnswerDelta(text=delta.content_delta))
         elif isinstance(delta, ThinkingPartDelta) and delta.content_delta:
+            mark_first_token()
             run.emit(ThinkingDelta(text=delta.content_delta))
     # PartEndEvent / FinalResultEvent / ToolCallPart streaming carry no domain
     # signal we surface — tool execution is reported from the CallToolsNode.
@@ -155,22 +163,32 @@ async def stream_agent_run(
     *before* it streams — the request isn't in flight yet and hasn't been appended
     to the history, so the callback may still amend ``node.request.parts`` (the
     engine injects mid-run operator messages here).
+
+    Wall-clock is collected into ``run.timer`` as the nodes are walked: this is the
+    only place that sees both node boundaries, so it is where the stopwatch belongs,
+    and the run owns it so an approval that splits a turn into several segments still
+    accumulates one total.
     """
     step = 0
+    timer = run.timer
     async for node in agent_run:
         if Agent.is_model_request_node(node):
             if on_request_node is not None:
                 on_request_node(node)
             step += 1
             run.emit(StepStarted(index=step))
-            async with node.stream(agent_run.ctx) as stream:
-                async for event in stream:
-                    _on_model_event(event, run)
+            with timer.model_request() as mark_first_token:
+                async with node.stream(agent_run.ctx) as stream:
+                    async for event in stream:
+                        _on_model_event(event, run, mark_first_token)
             run.emit(StepCompleted(index=step))
             if on_step is not None:
                 on_step(agent_run.ctx.state.message_history)
         elif Agent.is_call_tools_node(node):
-            async with node.stream(agent_run.ctx) as stream:
-                async for event in stream:
-                    _on_tool_event(event, run, announced, loop_breaker)
+            # Timed as a batch, not per call: the node runs its calls concurrently, so
+            # summing them individually would report more tool time than elapsed.
+            with timer.tool_calls():
+                async with node.stream(agent_run.ctx) as stream:
+                    async for event in stream:
+                        _on_tool_event(event, run, announced, loop_breaker)
         # UserPromptNode / End nodes have nothing to stream.

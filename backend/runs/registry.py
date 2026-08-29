@@ -149,9 +149,7 @@ class RunRegistry:
         candidates = [
             r
             for r in self._runs.values()
-            if r.owner_id == owner_id
-            and r.conversation_id == conversation_id
-            and not r.is_terminal
+            if r.owner_id == owner_id and r.conversation_id == conversation_id and not r.is_terminal
         ]
         if not candidates:
             return None

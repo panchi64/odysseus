@@ -116,6 +116,20 @@ class Message(SQLModel, table=True):
     # search hit, and no listing preview — the summary lives only in the sealed blob.
     compacted: bool = Field(default=False)
     compacted_through: str | None = None
+    # What this model response cost in wall-clock, measured by us around our own
+    # streaming (never read off a provider, so it means the same thing on every
+    # endpoint — see runs/timings.py). Null on request rows, and on responses written
+    # before this was recorded; the readout sums whatever is present and reports the
+    # rest as unmeasured. Structural metadata, not user content, so in the clear.
+    #
+    # On the *message* rather than in a per-conversation total because the thread is a
+    # tree: a rewind or a version switch changes which responses are on the active
+    # path, and a running total would keep charging the operator for a branch they
+    # left. Every other figure in the readout is already derived from the path this
+    # way — time is only here because it isn't recoverable from the message blob.
+    llm_ms: int | None = None  # full model round-trip: connect, queue, generate, stream
+    ttft_ms: int | None = None  # to the first content part of any kind, reasoning included
+    tool_ms: int | None = None  # executing the tool calls this response asked for
     # Semantic-search vector over `text`, encrypted at rest like the projection it
     # embeds. Null when the message has no searchable text (tool/reasoning-only
     # turns) or the embedder was unavailable when it was persisted — such a message

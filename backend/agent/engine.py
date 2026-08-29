@@ -70,12 +70,14 @@ from runs import (
     Run,
     RunMetrics,
     RunStatus,
+    total_timings,
 )
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
     context_footprint,
+    conversation_totals,
 )
 from services.notifications import NotificationService
 from services.projects import ProjectStore, WorktreeManager
@@ -249,26 +251,42 @@ def _summarize(name: str, args: dict[str, Any]) -> str:
     return f"{name}({rendered})"
 
 
-def _sum_tokens(prior: int | None, delta: int | None) -> int | None:
-    """Add two optional token counts, keeping ``None`` only when both are unknown."""
-    if prior is None and delta is None:
-        return None
-    return (prior or 0) + (delta or 0)
+def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
+    """The thread's cumulative readout, counted off ``messages`` — the full replayed
+    history, not just this run's own additions.
 
+    **Derived, not accumulated.** ``messages`` is everything on the active path, and
+    each stored response carries the usage the provider reported for it, so every count
+    and token here is a fresh sum over the path. That is what makes the figures survive
+    a reload, a rewind and a version switch without a counter to keep in step: the same
+    ``conversation_totals`` runs on a cold load and produces the same answer. It is also
+    why this no longer takes a ``base``/``usage`` pair — the run's own ``RunUsage``
+    covers only the current run, and adding it to a path-derived total would count this
+    turn twice.
 
-def _turn_metrics(
-    base: RunMetrics | None, usage: RunUsage, run: Run, messages: list[ModelMessage]
-) -> RunMetrics:
-    """The run's metrics from the pre-turn ``base`` plus this turn's accumulating ``usage``.
+    Time is the exception, and the only thing still carried on the Run: it isn't in the
+    message blobs. ``run.prior_timings`` holds the persisted total for the turns before
+    this one, and ``run.timer`` holds this run's own, so the two add.
 
-    ``context_used`` is the *footprint* — the last response's prompt+generation, not the run's
-    summed tokens — so a multi-step turn doesn't overstate fullness. Built in one place so the
-    live per-step frames (the context gauge) and the stashed terminal metrics never diverge."""
+    ``context_used`` is the *footprint* — the last response's prompt+generation, not the
+    path's summed tokens — so a long thread doesn't overstate fullness. Built in one
+    place so the live per-step frames (the context gauge) and the stashed terminal
+    metrics never diverge."""
+    counts = conversation_totals(messages)
+    timings = run.prior_timings + total_timings(run.timer.responses)
     return RunMetrics(
-        steps=(base.steps if base else 0) + usage.requests,
-        tool_calls=(base.tool_calls if base else 0) + usage.tool_calls,
-        input_tokens=_sum_tokens(base.input_tokens if base else None, usage.input_tokens),
-        output_tokens=_sum_tokens(base.output_tokens if base else None, usage.output_tokens),
+        steps=counts.steps,
+        tool_calls=counts.tool_calls,
+        turns=counts.turns,
+        input_tokens=counts.input_tokens,
+        output_tokens=counts.output_tokens,
+        cache_read_tokens=counts.cache_read_tokens,
+        # A thread whose responses all predate the stopwatch reports no time rather
+        # than none-elapsed — the same absent-not-zero rule the token counts follow.
+        llm_ms=timings.llm_ms or None,
+        tool_ms=timings.tool_ms or None,
+        ttft_ms_total=timings.ttft_ms_total or None,
+        ttft_samples=timings.ttft_samples,
         context_window=run.context_window,
         context_used=context_footprint(messages),
     )
@@ -384,9 +402,7 @@ async def _park_for_approval(
                 run_id=run.id,
             )
         except Exception:  # noqa: BLE001 — a notify failure must not break the park
-            logger.warning(
-                "approval_needed notification failed for run %s", run.id, exc_info=True
-            )
+            logger.warning("approval_needed notification failed for run %s", run.id, exc_info=True)
     run.park(
         ParkedTurn(
             agent,
@@ -421,9 +437,7 @@ async def _drive_turn(
     # absent (a stateless/eval turn, or an older parked payload) it falls back to the
     # config default. It bounds *model round-trips*, so every tool call spends one.
     limits = UsageLimits(
-        request_limit=(
-            settings.agent_request_limit if request_limit is None else request_limit
-        ),
+        request_limit=(settings.agent_request_limit if request_limit is None else request_limit),
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
     deps = RunDeps(
@@ -447,9 +461,6 @@ async def _drive_turn(
     # (or grow the call stack) by deferring on each hop; it trips the loop/usage stop.
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     usage = RunUsage()
-    # Metrics from any earlier segment of this run (a verifier correction, an approval
-    # resume); captured once so the per-hop accumulation below never double-counts.
-    base = run.metrics
 
     def report_progress(history: list[ModelMessage]) -> None:
         # A live context/usage frame as each model response lands, so the operator's context
@@ -461,7 +472,7 @@ async def _drive_turn(
         # requested cancel can never be silently absorbed.
         if run.cancel_requested:
             raise asyncio.CancelledError()
-        run.emit(_turn_metrics(base, usage, run, history))
+        run.emit(_turn_metrics(run, history))
 
     # Rebound each loop iteration by `agent.iter()`'s `as agent_run`; stays None only
     # if a bound trips before the context manager assigns it (its `__aenter__` does
@@ -571,9 +582,9 @@ async def _drive_turn(
 
         output = result.output
         messages = result.all_messages()
-        # ``usage`` accumulates across hops, so add it onto the pre-turn ``base`` once —
-        # ``base`` already holds earlier segments' totals.
-        run.set_metrics(_turn_metrics(base, usage, run, messages))
+        # Counted off the full replayed history, so hops and segments need no
+        # accumulator — see `_turn_metrics`.
+        run.set_metrics(_turn_metrics(run, messages))
         if not (isinstance(output, DeferredToolRequests) and output.approvals):
             # The model finished, but the operator queued more while it was working:
             # instead of ending the run, continue it with the queued text as the next
@@ -765,6 +776,10 @@ def _finalize(
             attachment_ids=list(context.attachment_ids),
             persisted=context.persisted,
             blocked_reason=turn.blocked_reason,
+            # The run's stopwatch, one entry per response it streamed, in the order the
+            # store will meet them. Recorded on the same call as the messages so a
+            # response and its duration can never be persisted apart.
+            timings=run.timer.responses,
         )
 
 
@@ -800,9 +815,7 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
     parked = run.parked_payload
     if not isinstance(parked, ParkedTurn):
         return
-    _flush_recorder(run, store)(
-        parked.message_history, CANCELLED_DETAIL, _parked_context(parked)
-    )
+    _flush_recorder(run, store)(parked.message_history, CANCELLED_DETAIL, _parked_context(parked))
 
 
 def _parked_context(parked: ParkedTurn) -> PersistContext:
@@ -886,6 +899,7 @@ def build_chat_orchestrator(
     summary. The summarizer is ``utility_model`` — the same cheap model the namer and the
     judge use.
     """
+
     async def orchestrate(run: Run) -> None:
         settings = get_settings()
         run.context_window = context_window
@@ -975,6 +989,12 @@ def build_chat_orchestrator(
             if store is not None and conversation_id is not None
             else None
         )
+        # What the thread's earlier turns cost in wall-clock. Read once, here, because it
+        # is the one part of the readout that isn't recoverable from the replayed history
+        # — every count and token beside it is derived from the messages themselves. A
+        # stateless turn has no thread to have spent anything, and keeps the zero default.
+        if store is not None and conversation_id is not None:
+            run.prior_timings = await store.timings(conversation_id)
         # Fold the older turns away *before* anything downstream measures this list. The
         # rebuild has to land ahead of both `_drop_dangling_tool_calls` and `start`, because
         # `start` is the index `_finalize` slices the turn out of `result.all_messages()` at

@@ -52,6 +52,7 @@ from .events import (
 from .registry import ConversationBusyError, RunRegistry, RunTimeout
 from .run import Orchestrator, QueuedMessage, Run, RunStatus
 from .stream import RunStream
+from .timings import ResponseTiming, TimingTotals, TurnTimer, total_timings
 from .transport import parse_last_event_id, sse_response
 
 __all__ = [
@@ -67,6 +68,10 @@ __all__ = [
     "QueuedMessage",
     "Orchestrator",
     "RunStream",
+    "TurnTimer",
+    "ResponseTiming",
+    "TimingTotals",
+    "total_timings",
     "sse_response",
     "parse_last_event_id",
     # event bodies (re-exported for producers)

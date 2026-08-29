@@ -61,11 +61,45 @@ class ContextWindow(_Body):
 
 
 class RunMetrics(_Body):
+    """What the thread has cost so far — the readout under the composer.
+
+    **Conversation-cumulative, not per-run.** Every count here spans the whole active
+    path: the run seeds them from the conversation's persisted totals and accumulates
+    its own on top. A per-run frame was what this used to be, and it made the line
+    unreadable — the numbers reset to zero at the start of every turn, so the one
+    moment the operator most wants to know what a long thread has spent is the moment
+    the readout says nothing.
+
+    Absent, never zero. A null field means *not measured* — a provider that reports no
+    cache tokens, a turn that streamed no content to time. Zero means measured as zero.
+    The distinction is the whole reason these are nullable, and it is what lets the UI
+    omit a segment rather than assert a flattering 0%.
+    """
+
     type: Literal["run.metrics"] = "run.metrics"
     steps: int = 0
     tool_calls: int = 0
+    # Completed exchanges on the active path — what a reader calls a "turn", where
+    # `steps` counts the model round-trips a turn took internally.
+    turns: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Prompt tokens the provider served from its own cache. **Provider-reported, so
+    # null on every endpoint that doesn't report it** — most OpenAI-compatible and
+    # local servers. This is the one number here we can't measure ourselves, and a 0
+    # would read as "your caching is broken" rather than "nobody said".
+    cache_read_tokens: int | None = None
+    # Wall-clock, measured by us around our own node iteration so it means the same
+    # thing on every endpoint (see `agent/timings.py`). `llm_ms` is the full model
+    # round-trip including connect and queue — the wait the operator actually sat
+    # through — not a claim about the provider's inference time.
+    llm_ms: int | None = None
+    tool_ms: int | None = None
+    # Summed time-to-first-content and the number of responses that produced any, kept
+    # apart so the average survives being added to another run's totals. A single
+    # pre-averaged field could not be accumulated without drifting.
+    ttft_ms_total: int | None = None
+    ttft_samples: int = 0
     # The model's context window, when known — the ceiling the derived `context`
     # measures against. Null when the endpoint declares none.
     context_window: int | None = None
@@ -81,6 +115,35 @@ class RunMetrics(_Body):
         """The context-window fullness after this turn — null when unmeasurable
         (no window, or no footprint). Clients render it; they never derive it."""
         return ContextWindow.from_used(self.context_used, self.context_window)
+
+    @computed_field
+    @property
+    def cache_hit_ratio(self) -> float | None:
+        """Share of prompt tokens the provider served from cache, 0–1. Null when the
+        provider reports no cache figure, or before any prompt tokens are counted."""
+        if self.cache_read_tokens is None or not self.input_tokens:
+            return None
+        return min(1.0, self.cache_read_tokens / self.input_tokens)
+
+    @computed_field
+    @property
+    def ttft_avg_ms(self) -> int | None:
+        """Mean time to first content across the responses that produced any."""
+        if not self.ttft_samples or self.ttft_ms_total is None:
+            return None
+        return round(self.ttft_ms_total / self.ttft_samples)
+
+    @computed_field
+    @property
+    def output_tokens_per_second(self) -> float | None:
+        """Generation throughput: output tokens over the time the model was working.
+
+        Against ``llm_ms`` and not the turn's elapsed time — the operator's wait
+        includes tool execution and their own thinking between turns, and dividing by
+        that would report a rate that falls the longer they leave the tab open."""
+        if not self.llm_ms or not self.output_tokens:
+            return None
+        return self.output_tokens / (self.llm_ms / 1000)
 
 
 class RunEnded(_Body):

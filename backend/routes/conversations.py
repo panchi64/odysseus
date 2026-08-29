@@ -24,9 +24,13 @@ from core.config import get_settings
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import ContextWindow
+from runs import ContextWindow, RunMetrics
 from services.conversation_view import MessageView
-from services.conversations import ConversationSummaryView, context_footprint
+from services.conversations import (
+    ConversationSummaryView,
+    context_footprint,
+    conversation_totals,
+)
 from services.plans import plan_payload
 from services.settings_store import get_auto_compact, resolve_compaction_enabled
 from services.workspace_history import SnapshotView, snapshot_id_from_result
@@ -165,6 +169,13 @@ class ConversationDetail(ConversationSummary):
     # an existing thread shows its fullness on load — not just after the next turn.
     # Null when usage or a window is unavailable.
     context: ContextWindow | None = None
+    # The thread's cumulative readout — turns, steps, tokens, cache, wall-clock —
+    # rebuilt from the stored messages so the line under the composer says the same
+    # thing on a cold load as it did live. Deliberately the **same** `RunMetrics` shape
+    # the run stream emits, for the reason `context` above shares `ContextWindow`: one
+    # shape from either source means the client has one mapper and the two can't drift.
+    # Null for a thread that has never run.
+    stats: RunMetrics | None = None
     # Present only while a turn is still streaming server-side — lets a reattaching
     # client resume the live run instead of rendering a reply-less thread.
     active_run: ActiveRun | None = None
@@ -205,9 +216,7 @@ def _activity(request: Request, conversation_id: str) -> str | None:
     return run.status.value if run is not None else None
 
 
-def _summary(
-    view: ConversationSummaryView, activity: str | None = None
-) -> ConversationSummary:
+def _summary(view: ConversationSummaryView, activity: str | None = None) -> ConversationSummary:
     return ConversationSummary(
         id=view.id,
         title=view.title,
@@ -220,9 +229,7 @@ def _summary(
     )
 
 
-def _message_versions(
-    view: MessageView, by_id: dict[str, SnapshotView]
-) -> list[ViewVersionRefOut]:
+def _message_versions(view: MessageView, by_id: dict[str, SnapshotView]) -> list[ViewVersionRefOut]:
     """The View versions this turn minted, recovered from its ``view`` tool results
     (each ``show(file=…)`` embeds the version id). Only a static-preview version folds an
     inline chip — a live/auto version is already marked by its LIVE chip, matching the
@@ -283,11 +290,36 @@ async def _detail(
     # window when there's a footprint to measure against it. The window is the
     # default ``main`` model's (no per-conversation endpoint is persisted, so that's
     # what the next turn would run on).
-    used = context_footprint(await store.history(conversation_id))
+    history = await store.history(conversation_id)
+    used = context_footprint(history)
+    window: int | None = None
     context: ContextWindow | None = None
     if used is not None:
         window = await deps.models(request).main_context_window(OPERATOR_ID)
         context = ContextWindow.from_used(used, window)
+    # The same figures the live stream reports, rebuilt from the same messages by the
+    # same function — the counts and tokens off the active path, the wall-clock off the
+    # stored per-response timings (the one thing the messages don't carry). A thread
+    # that has never produced a response has nothing to report and sends null, so the
+    # readout stays absent rather than rendering a row of zeroes.
+    totals = conversation_totals(history)
+    stats: RunMetrics | None = None
+    if totals.steps:
+        timings = await store.timings(conversation_id)
+        stats = RunMetrics(
+            steps=totals.steps,
+            tool_calls=totals.tool_calls,
+            turns=totals.turns,
+            input_tokens=totals.input_tokens,
+            output_tokens=totals.output_tokens,
+            cache_read_tokens=totals.cache_read_tokens,
+            llm_ms=timings.llm_ms or None,
+            tool_ms=timings.tool_ms or None,
+            ttft_ms_total=timings.ttft_ms_total or None,
+            ttft_samples=timings.ttft_samples,
+            context_window=window,
+            context_used=used,
+        )
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (
         ActiveRun(id=run.id, status=run.status.value, last_seq=run.stream.last_seq)
@@ -340,6 +372,7 @@ async def _detail(
         ],
         documents=documents,
         context=context,
+        stats=stats,
         active_run=active_run,
     )
 
@@ -471,9 +504,7 @@ async def _purge_uploads(request: Request, upload_ids: list[str]) -> None:
             logger.exception("failed to purge orphaned image upload %s", upload_id)
 
 
-@router.get(
-    "/{conversation_id}/orphan-image-attachments", response_model=OrphanImageAttachments
-)
+@router.get("/{conversation_id}/orphan-image-attachments", response_model=OrphanImageAttachments)
 async def orphan_image_attachments(
     conversation_id: str,
     request: Request,
@@ -487,9 +518,7 @@ async def orphan_image_attachments(
     return OrphanImageAttachments(upload_ids=upload_ids)
 
 
-async def _settle_coding_branch(
-    request: Request, conversation_id: str, *, discard: bool
-) -> None:
+async def _settle_coding_branch(request: Request, conversation_id: str, *, discard: bool) -> None:
     """Refuse to delete a coding thread that still holds unmerged commits, or throw its
     branch away when the operator said to.
 
@@ -553,22 +582,16 @@ async def delete_conversation(
             raise HTTPException(status_code=404, detail="conversation not found")
         await _settle_coding_branch(request, conversation_id, discard=discard_branch)
         orphans = (
-            await _image_orphans(request, conversation_id, message_id=None)
-            if purge_images
-            else []
+            await _image_orphans(request, conversation_id, message_id=None) if purge_images else []
         )
         await store.delete_conversation(conversation_id)
         await _purge_uploads(request, orphans)
         # Drop the conversation's View history (snapshots + any blob no other snapshot
         # needs), so the work doesn't linger encrypted on disk after the thread is gone.
-        await deps.workspace_history(request).delete_for_conversation(
-            OPERATOR_ID, conversation_id
-        )
+        await deps.workspace_history(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         # Same reasoning for the agent's task list: it restates what was asked for, so it
         # must not outlive the thread.
-        await deps.conversation_plans(request).delete_for_conversation(
-            OPERATOR_ID, conversation_id
-        )
+        await deps.conversation_plans(request).delete_for_conversation(OPERATOR_ID, conversation_id)
         # Delete the conversation's sandbox too (its workspace + sealed archive),
         # otherwise it lingers on disk keyed to a thread that no longer exists. The DB
         # delete above is the authoritative action, so a purge failure must not fail it.
