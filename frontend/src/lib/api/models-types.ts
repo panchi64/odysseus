@@ -85,6 +85,7 @@ export interface ProviderViewDTO {
 export interface RoleViewDTO {
   endpoint_ids: string[];
   model: string | null;
+  context_window: number | null;
 }
 
 /* ── Embedding reindex ──────────────────────────────────────────────────────── */

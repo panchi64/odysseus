@@ -592,13 +592,27 @@ class ModelRegistry:
         return llm.build_chain([self._to_spec(endpoint, "vision") for endpoint in endpoints])
 
     async def main_context_window(self, owner_id: str) -> int | None:
-        """The default ``main`` chain head's context window, resolved without
-        building a runnable model — for read paths (conversation detail) that need
-        only the ceiling. None when ``main`` is unconfigured — or when its chain is
-        unresolvable (e.g. a stale id left by an out-of-band delete): the context
-        meter is a read-path nicety and must never fail the conversation read."""
+        """The default ``main`` chain head's context window — the ceiling the composer's
+        gauge measures against and the send gate requires."""
+        return await self.role_context_window(owner_id, "main")
+
+    async def role_context_window(self, owner_id: str, role: str) -> int | None:
+        """A role's chain head context window, resolved without building a runnable
+        model — for read paths (conversation detail, the roles listing) that need only
+        the ceiling.
+
+        **The window belongs to the binding, not to the endpoint.** An endpoint row
+        carries a *default* model, and most don't set one: the model in play is the one
+        the role pinned. Asking the endpoint alone therefore answers null on exactly the
+        setup this workspace is built for — one server, many models, the choice made in
+        the picker — which is what made the send gate refuse a perfectly configured
+        thread.
+
+        None when the role is unconfigured, or when its chain is unresolvable (a stale
+        id left by an out-of-band delete): every caller here is a read path, and the
+        ceiling is a nicety that must never fail the read it rides on."""
         try:
-            specs = await self._resolve_specs("main", owner_id=owner_id)
+            specs = await self._resolve_specs(role, owner_id=owner_id)
         except DegradedCapabilityError, NotFoundError:
             return None
         return specs[0].context_window if specs else None

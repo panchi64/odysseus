@@ -49,7 +49,7 @@ import {
   useChatSessions,
 } from "../data";
 import { isApiError } from "~/lib/api";
-import { setSelectedModel } from "~/lib/stores/models";
+import { sendBlockedReason, setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { BranchChip } from "../components/BranchChip";
@@ -923,6 +923,9 @@ export function ChatRoomScreen(): JSX.Element {
               streaming={stream.sending()}
               onStop={() => void stopRun()}
               onSend={(text, ids) => void stream.send(text, ids)}
+              // The backend refuses a turn it can't keep inside a context window; this
+              // is the same stop, arriving before the message is committed to it.
+              sendBlocked={sendBlockedReason()}
               attachments={attachments}
               storageKey={composerKey()}
               prefill={stream.undeliveredDraft()}

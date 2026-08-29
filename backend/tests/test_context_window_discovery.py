@@ -265,3 +265,51 @@ async def test_a_turn_is_refused_when_no_window_can_be_established(tmp_path, mon
         await resolve_turn_models(registry, None, None, owner_id="operator")
     assert caught.value.status_code == 422
     assert "context window" in caught.value.detail
+
+
+# ── The binding: what the frontend reads to know a window exists ─────────────────
+
+
+async def test_the_window_follows_the_binding_not_the_endpoint_row(tmp_path, monkeypatch):
+    """The bug the send gate shipped with. An endpoint row carries only a *default*
+    model and usually doesn't set one — the model in play is the one the role pinned. A
+    window read off the endpoint alone therefore answers null on exactly this workspace's
+    shape (one server, many models, the choice made in the picker), which had the
+    composer refusing to send on a perfectly configured thread."""
+    registry, _ = await _registry(tmp_path, monkeypatch, window=262_144)
+    endpoint = await registry.create_endpoint(
+        "operator", name="stub", base_url="http://stub/v1", provider="probe-stub"
+    )
+    # No default model on the row — the binding names it, exactly as the picker leaves it.
+    assert endpoint.model is None
+    await registry.set_role("operator", "main", [endpoint.id], model="stub-model")
+
+    assert await registry.role_context_window("operator", "main") == 262_144
+
+
+async def test_every_role_reports_its_own_window(tmp_path, monkeypatch):
+    """The field means the same thing on every row of the roles listing — a value
+    populated for one role and silently null for the others is a trap for the next
+    caller."""
+    registry, _ = await _registry(tmp_path, monkeypatch, window=200_000)
+    await _bind(registry, context_window=None)
+    assert await registry.role_context_window("operator", "main") == 200_000
+    # Unconfigured roles answer null rather than raising: this is a read path.
+    assert await registry.role_context_window("operator", "utility") is None
+
+
+async def test_main_context_window_is_the_same_answer(tmp_path, monkeypatch):
+    """The gate calls one, the roles listing the other. If they could disagree, the
+    operator would meet a refusal from a composer that looked ready — or be blocked on a
+    thread that would have run fine."""
+    registry, _ = await _registry(tmp_path, monkeypatch, window=262_144)
+    await _bind(registry, context_window=None)
+    assert await registry.main_context_window("operator") == await registry.role_context_window(
+        "operator", "main"
+    )
+
+
+async def test_an_unresolvable_role_reports_no_window_rather_than_raising(tmp_path, monkeypatch):
+    registry, _ = await _registry(tmp_path, monkeypatch, window=None)
+    await _bind(registry, context_window=None)
+    assert await registry.role_context_window("operator", "main") is None

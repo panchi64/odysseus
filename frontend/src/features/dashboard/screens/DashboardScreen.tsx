@@ -28,6 +28,7 @@ import {
 } from "~/features/chat/data";
 import {
   effectiveContextWindow,
+  sendBlockedReason,
   effectiveSelection,
   selectedModelLabel,
 } from "~/lib/stores/models";
@@ -150,6 +151,7 @@ export function DashboardScreen(): JSX.Element {
             placeholder="Ask anything, request a summary, or describe a task…"
             onSend={handleStart}
             attachments={attachments}
+            sendBlocked={sendBlockedReason()}
             // Same slot, same component as the docked composer in a room: the
             // launchpad's picker was a second inline copy of the shared one, and two
             // copies of a control bound to one backend value is how they drift.

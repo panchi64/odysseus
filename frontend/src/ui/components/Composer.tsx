@@ -14,6 +14,7 @@ import { HIDDEN_FILE_INPUT, useFileDrop } from "../primitives/useFileDrop";
 import { AttachmentChip, type ComposerAttachment } from "./AttachmentChip";
 import { Button } from "./Button";
 import { LedEdge } from "./LedEdge";
+import { Tooltip } from "./Tooltip";
 
 // Self-contained guarded storage: the design system does not depend on ~/lib, so
 // the Composer keeps its own best-effort draft persistence rather than importing
@@ -71,6 +72,15 @@ export interface ComposerProps {
   /** Receives the trimmed text and the ids of every ready attachment. */
   onSend: (text: string, attachmentIds: string[]) => void;
   disabled?: boolean;
+  /** Why this message cannot be sent, or null when it can. SEND is disabled and
+   *  carries the reason on hover; the **field stays live**, so a draft already typed
+   *  survives and can still be edited while the operator goes and fixes the cause.
+   *
+   *  Distinct from `disabled`, which means "the composer is not accepting input right
+   *  now" (a run owns it). This means "what you have is fine, but it would be refused"
+   *  — a blocker the operator can act on, which is why it carries an explanation and
+   *  `disabled` doesn't. */
+  sendBlocked?: string | null;
   /** A run is generating: a STOP button wired to `onStop` joins the action row,
    *  so the interrupt control sits where the user's focus already is. When the
    *  field itself stays enabled (`disabled` false), SEND remains beside it —
@@ -206,7 +216,9 @@ export function Composer(props: ComposerProps): JSX.Element {
   });
 
   const canSend = () =>
-    !props.disabled && (Boolean(text().trim()) || hasReady());
+    !props.disabled &&
+    !props.sendBlocked &&
+    (Boolean(text().trim()) || hasReady());
 
   const submit = () => {
     if (!canSend()) return;
@@ -326,7 +338,11 @@ export function Composer(props: ComposerProps): JSX.Element {
   // user's focus already is. A caller that keeps the field enabled mid-stream
   // keeps SEND beside it (Enter/SEND then queues into the live run — steering);
   // one that disables the field shows STOP alone, as before.
-  const sendBtn = () => (
+  // A component, not a JSX value held in a variable: each `<SendButton />` below builds
+  // its own element. Sharing one across both arms of the `Show` shares the same DOM
+  // node, and Solid tears the tree apart trying to move it between them ("the new child
+  // element contains the parent") the first time the block state flips.
+  const SendButton = () => (
     <Button
       variant="primary"
       trailing="send"
@@ -335,6 +351,17 @@ export function Composer(props: ComposerProps): JSX.Element {
     >
       Send
     </Button>
+  );
+  // Wrapped only when there is something to say. A tooltip on every SEND would fire on
+  // the one control the operator uses most, to tell them nothing.
+  const sendBtn = () => (
+    <Show when={props.sendBlocked} fallback={<SendButton />}>
+      {(reason) => (
+        <Tooltip label={reason()} side="top">
+          <SendButton />
+        </Tooltip>
+      )}
+    </Show>
   );
   const actionBtn = (
     <Show when={props.streaming} fallback={sendBtn()}>

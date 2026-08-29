@@ -337,7 +337,12 @@ async def test_endpoint_crud_over_rest_hides_api_key():
         put = await client.put("/models/roles/main", json={"endpoint_ids": [endpoint_id]})
         assert put.status_code == 204
         roles = (await client.get("/models/roles")).json()
-        assert roles == {"main": {"endpoint_ids": [endpoint_id], "model": None}}
+        # `context_window` is null here for two compounding reasons — no override was
+        # set and the fake host can't be asked — which is exactly the state the send
+        # gate refuses a turn in.
+        assert roles == {
+            "main": {"endpoint_ids": [endpoint_id], "model": None, "context_window": None}
+        }
 
         deleted = await client.delete(f"/models/endpoints/{endpoint_id}")
         assert deleted.status_code == 204

@@ -35,6 +35,7 @@ import type {
   RoleViewDTO,
 } from "~/lib/api/models-types";
 import { useSession } from "~/lib/stores/session";
+import { sendBlocker } from "./sendGate";
 
 /** A specific model on a specific endpoint — the unit of selection. */
 export interface ModelSelection {
@@ -55,6 +56,10 @@ export interface ModelEndpoint {
   model: string | null;
   /** Whether a key is stored — the value is write-only and never returned. */
   hasApiKey: boolean;
+  /** The operator's *override*, null on every endpoint that never needed one. Only the
+   *  Settings form should read this — it is what belongs in the input box, and it is
+   *  not the window the endpoint runs under. That belongs to the binding, which is
+   *  where the model is decided: see `RoleBinding.contextWindow`. */
   contextWindow: number | null;
   nativeTools: boolean;
   vision: boolean;
@@ -134,6 +139,14 @@ function decodeValue(value: string): ModelSelection | null {
 export interface RoleBinding {
   endpointIds: string[];
   model: string | null;
+  /** The chain head's effective context window — the operator's override on the
+   *  endpoint when set, else what the provider reports for the pinned model. Null when
+   *  the role is unconfigured or neither could supply one.
+   *
+   *  On the binding rather than the endpoint because that is where the *model* is
+   *  decided, and a window belongs to the (endpoint, model) pair. An endpoint row
+   *  usually carries no default model at all. */
+  contextWindow: number | null;
 }
 
 /** role → its binding. */
@@ -143,7 +156,11 @@ async function fetchRoles(): Promise<RoleBindings> {
   const dto = await api.get<Record<string, RoleViewDTO>>("/models/roles");
   const out: RoleBindings = {};
   for (const [role, v] of Object.entries(dto)) {
-    out[role] = { endpointIds: v.endpoint_ids, model: v.model };
+    out[role] = {
+      endpointIds: v.endpoint_ids,
+      model: v.model,
+      contextWindow: v.context_window,
+    };
   }
   return out;
 }
@@ -639,8 +656,21 @@ export function selectedModelLabel(): string {
   return store.effective()?.model ?? "";
 }
 
-/** The context window of the endpoint backing the effective pick (null when
- *  nothing is configured or the endpoint declares none). */
+/** The context window the active pick will actually run under — the operator's
+ *  override when set, else what the provider reported. Null when neither could supply
+ *  one, or when nothing is configured at all.
+ *
+ *  Read off the `main` **binding**, not off its endpoint. A window belongs to the
+ *  (endpoint, model) pair, and the model is the binding's: an endpoint row usually
+ *  carries no default model at all, so reading its column answered "no window" against
+ *  a server reporting 262144 perfectly well — which left the dashboard's context figure
+ *  blank and, once the gate landed, had the composer refusing to send. */
 export function effectiveContextWindow(): number | null {
-  return store.effectiveEndpoint()?.contextWindow ?? null;
+  return store.roles()?.main?.contextWindow ?? null;
+}
+
+/** `sendBlocker` applied to the live selection — the accessor a composer binds to. The
+ *  rule itself, and why it stays quiet on an empty workspace, lives in `sendGate.ts`. */
+export function sendBlockedReason(): string | null {
+  return sendBlocker(store.effective() !== null, effectiveContextWindow());
 }

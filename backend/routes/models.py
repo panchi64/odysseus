@@ -56,6 +56,10 @@ class EndpointView(BaseModel):
     base_url: str
     model: str | None
     has_api_key: bool
+    # The operator's *override*, null on every endpoint that never needed one. It is not
+    # the window the endpoint runs under and no read surface should treat it as one — a
+    # window belongs to the (endpoint, model) pair, and the model is the role's. See
+    # `RoleView.context_window`.
     context_window: int | None
     native_tools: bool
     vision: bool
@@ -224,6 +228,16 @@ class RoleBinding(BaseModel):
 class RoleView(BaseModel):
     endpoint_ids: list[str]
     model: str | None = None
+    # The chain head's effective context window: the operator's override on the endpoint
+    # when set, else what the provider reports for the pinned model. Null when the role
+    # is unconfigured or neither could supply one — which for `main` is the state the
+    # backend refuses to send a turn in, so it is also what the composer gates on.
+    #
+    # It lives here rather than on the endpoint because that is where the *model* is
+    # decided. An endpoint row carries only a default model and usually doesn't set one;
+    # reading a window off it answers null on exactly this workspace's shape — one
+    # server, many models, the choice made in the picker.
+    context_window: int | None = None
 
 
 @router.get("/roles", response_model=dict[str, RoleView])
@@ -232,7 +246,14 @@ async def list_roles(request: Request) -> dict[str, RoleView]:
     chains = await models.list_roles(OPERATOR_ID)
     pinned = await models.list_role_models(OPERATOR_ID)
     return {
-        role: RoleView(endpoint_ids=ids, model=pinned.get(role))
+        role: RoleView(
+            endpoint_ids=ids,
+            model=pinned.get(role),
+            # Memoized per (base_url, model) in the registry, so the first listing after
+            # a change pays for discovery and the rest are free. Bounded either way: the
+            # lookup has its own short timeouts and never raises.
+            context_window=await models.role_context_window(OPERATOR_ID, role),
+        )
         for role, ids in chains.items()
     }
 
