@@ -67,6 +67,11 @@ output.txt.txt
 !docs/*.gif
 !docs/*.webp
 
+# …and the README's own screenshots. Deliberately named assets only: a raw
+# "Screenshot 2026-… .png" dropped in here stays ignored, so a capture that
+# still has private workspace content in it cannot be committed by accident.
+!md-assets/odysseus-*.png
+
 # Reports and temp files
 /reports/
 /tasks/

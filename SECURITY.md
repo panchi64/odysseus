@@ -1,6 +1,6 @@
 # Security Policy
 
-Odysseus is a self-hosted AI workspace with privileged local capabilities — shell access, code execution, file writes, model serving, email, web research. Please do not run it as a public, unauthenticated service.
+Odysseus is a self-hosted AI workspace with privileged local capabilities — shell access, code execution, file writes, email, web research. Please do not run it as a public, unauthenticated service.
 
 > **Note:** the backend is mid-rebuild (greenfield on Pydantic AI + FastAPI). This describes the **security posture the build targets**, defined in `docs/spec/00-overview.md` (`XC-SEC-*`, `XC-PORT-*`) and `docs/architecture/`. Concrete deployment hardening steps will be filled in as the install flow lands.
 
