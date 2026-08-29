@@ -1,33 +1,30 @@
-"""Local model serving + the Cookbook + embedding-space healing.
+"""Embedding-space healing — the reindexer and the boot-time backfill.
 
-Serving downloads a HuggingFace model and supervises an inference engine
-(llama.cpp universal baseline; MLX on Apple Silicon) as a subprocess that registers
-as a loopback endpoint — local models flow through the same registry resolve path
-as external ones. The Cookbook is host hardware detection feeding its
-recommendations. The reindexer + backfill heal semantic recall when the embedding
-model changes or content predates one (`EMB-2`) — they live beside serving because
-binding a freshly served embedding model is what most often triggers the heal.
+`EMB-2` segregates vectors by the model that produced them, so changing the embedding
+endpoint strands every vector written under the old one, and content persisted before any
+embedder existed has no vector at all. Two things close that gap: the `EmbeddingReindexer`
+re-embeds on demand (with progress the operator can watch), and `_backfill_embeddings`
+lifts whatever backlog exists once the vault is unlocked.
+
+This lived beside local model serving while the app served its own models, because binding
+a freshly served embedding model was the most common way to trigger a heal. Serving is
+gone — Odysseus now speaks only to endpoints the operator points it at — but the healing is
+not about *where* the embedder runs, only about the model changing underneath the vectors.
+So it stands on its own here.
 """
 
 from __future__ import annotations
 
 import logging
 
-from core.api_scopes import ScopeClaim
 from core.vault import Vault
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
-from routes import cookbook as cookbook_routes
-from routes import serving as serving_routes
 from routes.deps import OPERATOR_ID
 from services.conversations import ConversationStore
-from services.cookbook import CookbookService
 from services.corpus import CorpusChunkStore
-from services.credential_store import CredentialStore
 from services.memory import MemoryStore
 from services.registry import ModelRegistry
 from services.reindex import EmbeddingReindexer
-from services.serving import ServingPaths, ServingService
-from services.settings_store import SettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,34 +67,10 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
     conversations = ctx.services.get(ConversationStore)
     memory = ctx.services.get(MemoryStore)
     chunk_store = ctx.services.get(CorpusChunkStore)
-    # The Cookbook — host hardware detection. The probe is warmed in the background
-    # so a slow `system_profiler` never blocks boot; the first request falls back to
-    # lazy-detect if the warm-up hasn't finished.
-    cookbook = CookbookService()
-    logger.info("cookbook: hardware detection (warming in background)")
-    ctx.lifecycle.track("cookbook-warmup", cookbook.warmup())
     # Heals semantic recall after the operator changes the embedding model: EMB-2
     # segregates vectors by model, so a swap strands every existing vector until
     # it's re-embedded. Runs the reindex in the background and exposes progress.
     reindexer = EmbeddingReindexer(registry, memory, conversations, chunk_store)
-    # Engines from a prior process can't be adopted across a restart, so reconcile
-    # clean-slates any mid-flight rows (best-effort, never blocks startup);
-    # shutdown stops them gracefully.
-    serving = ServingService(
-        ctx.engine,
-        ctx.vault,
-        registry,
-        cookbook,
-        ServingPaths(ctx.settings.data_dir),
-        reindexer=reindexer,
-        settings=ctx.services.get(SettingsStore),
-        credentials=ctx.services.get(CredentialStore),
-    )
-    await ctx.lifecycle.start(
-        "serving", start=serving.reconcile_on_startup, stop=serving.shutdown
-    )
-    # Registered after serving so it stops first: an engine going down during
-    # shutdown must not be able to kick off a doomed reindex.
     ctx.lifecycle.on_stop("embedding-reindexer", reindexer.shutdown)
     # Lift any pre-existing backlog (messages + memories + corpus chunks) into the
     # semantic index once unlocked — off the critical path; new content is already
@@ -107,19 +80,13 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
         _backfill_embeddings(conversations, memory, chunk_store, ctx.vault),
     )
     return FeatureRuntime(
-        services=(cookbook, reindexer, serving),
-        state={
-            "cookbook": cookbook,
-            "embedding_reindexer": reindexer,
-            "serving": serving,
-        },
+        services=(reindexer,),
+        state={"embedding_reindexer": reindexer},
     )
 
 
 MANIFEST = FeatureManifest(
-    name="serving",
+    name="embedding",
     after=("corpus", "memory"),
-    routers=(serving_routes.router, cookbook_routes.router),
-    api_scopes=(ScopeClaim("serving", ("/models/serving",)),),
     build=_build,
 )

@@ -14,8 +14,9 @@ own claims — so core never has to know which features exist.
 
 Three rules make it safe:
 
-* **Longest prefix wins.** ``/models/serving`` resolves to the ``serving`` scope, not the
-  broader ``models`` one, so bringing model servers up and down is grantable on its own.
+* **Longest prefix wins.** A narrow claim (``/models/roles``) resolves ahead of the broader
+  one it sits inside (``/models``), so a sub-surface can be granted — or withheld — on its
+  own without restating the parent.
 * **A claim may narrow to read methods.** Where one prefix covers both reading a surface
   and reconfiguring it, the claim says which methods it means, so a scope described to the
   operator as read-only cannot be spent on a write.
@@ -93,12 +94,7 @@ SCOPE_DEFS: tuple[ScopeDef, ...] = (
         "Tasks & notifications",
         "Scheduled tasks, their run history, and the notification stream.",
     ),
-    ScopeDef("models", "Models", "Read the model registry, roles, and the Cookbook catalog."),
-    ScopeDef(
-        "serving",
-        "Model serving",
-        "Start and stop local model servers — powerful; grant deliberately.",
-    ),
+    ScopeDef("models", "Models", "Read the model registry, endpoints, and role bindings."),
     ScopeDef("status", "Status", "Read-only system status and the home overview."),
     ScopeDef(
         "projects",
@@ -115,7 +111,7 @@ CORE_CLAIMS: tuple[ScopeClaim, ...] = (
     # a lesser version of reading it: `POST /models/endpoints` plus `PUT /models/roles/main`
     # is enough to route every future turn — prompts, history, recalled memories — through
     # an endpoint of the token holder's choosing. Those stay unreachable with a token,
-    # like `/vault` and `/tokens`; `/models/serving` remains its own deliberate grant.
+    # like `/vault` and `/tokens`.
     ScopeClaim("models", ("/models",), methods=READ_METHODS),
     ScopeClaim("status", ("/overview",)),
 )

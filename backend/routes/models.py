@@ -68,10 +68,6 @@ class EndpointView(BaseModel):
     # backend's verdict verbatim so the catalog list shows at-a-glance status without
     # a probe per row; they are null until the endpoint has been tested.
     enabled: bool
-    # A serving-managed local engine: the Cookbook owns its lifecycle; `live_status`
-    # is its process liveness ("running"/"stopped"; null for external endpoints).
-    managed: bool
-    live_status: str | None
     last_status: str | None
     last_error_category: str | None
     last_error_detail: str | None
@@ -91,8 +87,6 @@ def _view(endpoint: ModelEndpoint) -> EndpointView:
         vision=endpoint.vision,
         thinking=endpoint.thinking,
         enabled=endpoint.enabled,
-        managed=endpoint.managed,
-        live_status=endpoint.live_status,
         last_status=endpoint.last_status,
         last_error_category=endpoint.last_error_category,
         last_error_detail=endpoint.last_error_detail,

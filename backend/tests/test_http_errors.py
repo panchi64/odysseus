@@ -19,8 +19,6 @@ from core.exceptions import (
     OdysseusError,
     PermissionDeniedError,
     RateLimitedError,
-    ServingError,
-    ServingUnavailableError,
     SkillSpanError,
     SkillValidationError,
     SpanEditError,
@@ -45,8 +43,6 @@ from ._helpers import client_app
         (SSRFError("refused"), 422),
         (RateLimitedError(4.2), 429),
         (DegradedCapabilityError("no embedding endpoint"), 503),
-        (ServingUnavailableError("not enough memory"), 409),
-        (ServingError("the download failed"), 502),
         (ModelLoadError("pre-load it"), 502),
         (WebFetchError("that page 500ed"), 502),
     ],
@@ -61,13 +57,6 @@ def test_the_base_class_is_deliberately_unmapped():
     # error stays a 500, and stays visible, until someone decides what it means.
     assert status_for(OdysseusError("something new")) is None
     assert status_for(RuntimeError("not ours at all")) is None
-
-
-def test_a_serving_subclass_is_consulted_before_its_parent():
-    # ServingUnavailableError is a ServingError; order in the table is what keeps its 409
-    # from being shadowed by the parent's 502.
-    assert status_for(ServingUnavailableError("no room")) == 409
-    assert status_for(ServingError("launch failed")) == 502
 
 
 # --- end to end, through a real app ------------------------------------------

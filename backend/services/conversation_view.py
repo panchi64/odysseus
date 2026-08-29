@@ -92,7 +92,7 @@ def estimate_tokens(messages: list[Any]) -> int:
     The fallback for endpoints that report no usage — local servers commonly return
     ``input_tokens=0``, which ``services.conversations.context_footprint`` (rightly) treats
     as unmeasured rather than as a real zero. Without an estimate, conversation compaction
-    would be dead on exactly the local-serving setup this workspace is built for.
+    would be dead on exactly the self-hosted endpoints this workspace is built for.
 
     Deliberately blind to binary parts. A retained inline image is base64 in the blob, and
     measuring it by character length would read a single screenshot as hundreds of

@@ -30,9 +30,6 @@ needs to do any more is restate the answer already written here.
 - ``SSRFError`` → **422**. The *request* named a target we refuse to reach; nothing
   upstream failed, so this is not a 502.
 - ``WebFetchError`` → **502**. A genuine upstream failure fetching one URL.
-- ``ServingUnavailableError`` → **409** and ``ServingError`` → **502**, the split
-  ``ServingUnavailableError``'s own docstring describes: a precondition the operator
-  resolves, versus a download or launch that failed.
 - ``ModelLoadError`` → **502**. The inference server refused; the hint says what to do.
 - ``SpanEditError`` (and its skill subclass) → **409**. The edit's anchor text
   didn't match exactly one span, so the write would have been ambiguous.
@@ -56,16 +53,14 @@ from core.exceptions import (
     NotFoundError,
     PermissionDeniedError,
     RateLimitedError,
-    ServingError,
-    ServingUnavailableError,
     SkillValidationError,
     SpanEditError,
     SSRFError,
     WebFetchError,
 )
 
-# Ordered most specific first: the first class an exception is an instance of decides, so a
-# ``ServingUnavailableError`` must be consulted before its ``ServingError`` parent.
+# Ordered most specific first: the first class an exception is an instance of decides, so
+# a subclass that answers differently from its parent must be listed ahead of it.
 _STATUSES: tuple[tuple[type[Exception], int], ...] = (
     (NotFoundError, 404),
     (PermissionDeniedError, 403),
@@ -76,8 +71,6 @@ _STATUSES: tuple[tuple[type[Exception], int], ...] = (
     (SSRFError, 422),
     (RateLimitedError, 429),
     (DegradedCapabilityError, 503),
-    (ServingUnavailableError, 409),
-    (ServingError, 502),
     (ModelLoadError, 502),
     (WebFetchError, 502),
 )

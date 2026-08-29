@@ -114,7 +114,7 @@ async def get_overview(request: Request) -> Overview:
                 status="alert",
                 detail=chat_detail,
                 critical=True,
-                remediation_href="/models/cookbook",
+                remediation_href="/models",
                 remediation_label="CONFIGURE",
             )
         )

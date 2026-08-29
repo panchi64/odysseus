@@ -108,17 +108,3 @@ class WebFetchError(OdysseusError):
     different source — a network error, a non-OK status, too many redirects, or a
     page with no extractable content. Distinct from a missing capability."""
 
-
-class ServingError(OdysseusError):
-    """A local model-serving action failed in a way the operator can act on — a
-    download that couldn't fetch the repo, an engine runtime that wouldn't install
-    or start, or a request against an engine that isn't available on this host.
-    Carries a plain-language message; never contains a secret (local servers have none)."""
-
-
-class ServingUnavailableError(ServingError):
-    """A serving request can't be satisfied by the host's current state — the engine
-    isn't available/supported here, or there isn't enough memory to fit the model
-    alongside what's already running. A precondition the operator resolves (free room,
-    pick another engine), not an engine/upstream failure — so routes map it to 409,
-    distinct from the 502 a genuine download/launch failure gets."""

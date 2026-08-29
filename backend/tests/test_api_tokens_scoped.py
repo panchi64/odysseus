@@ -69,9 +69,11 @@ async def test_scopes_catalog_never_covers_credential_or_host_surfaces():
         table = app.state.api_scope_table
         for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup"):
             assert table.scope_for_path(path) is None
-        # Longest prefix wins, so serving is grantable apart from the rest of /models.
+        # Opening a native dialog on the operator's machine — and reading back whatever
+        # absolute path came out — is never reachable with a token.
+        assert table.scope_for_path("/host/file-picker") is None
+        assert table.scope_for_path("/host/file-picker", "POST") is None
         assert table.scope_for_path("/models/roles") == "models"
-        assert table.scope_for_path("/models/serving/start", "POST") == "serving"
         # The `models` scope is described to the operator as read-only, so it has to be
         # one: creating an endpoint and rebinding a role would let a token route every
         # future turn through an inference server of its choosing.

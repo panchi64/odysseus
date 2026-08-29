@@ -77,7 +77,7 @@ async def test_locked_vault_yields_none_not_a_crash():
     store, _engine, vault = await _make()
     await store.set_key(OWNER, "artificial_analysis", "secret")
     vault.lock()
-    # Consumers (the Cookbook at boot) must degrade, never raise.
+    # Consumers reading a key at boot must degrade, never raise.
     assert await store.get_secret(OWNER, "artificial_analysis") is None
 
 

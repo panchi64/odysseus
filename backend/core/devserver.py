@@ -1,11 +1,12 @@
 """Auto-reload knowledge, in one place.
 
 The development reloader watches the working directory for ``*.py``, and two directories
-under it hold **runtime state, not source**: ``data/serving/engines/<engine>/venv`` (an
-inference runtime installed on the first serve) and ``.venv``. Installing an engine writes
-hundreds of files, so an unguarded reloader tears the server down *in the middle of the
-serve that triggered the install* — the operator sees ``Shutting down`` where a model
-should have loaded, with no error attached to the serve itself.
+under it hold **runtime state, not source**: ``data/`` (the DB, uploads, corpus files, the
+sandbox workspace, the browser profile — anything the running app writes for itself) and
+``.venv``. A run that writes ``*.py`` into either — an upload, a file the agent creates in
+its workspace, a ``uv sync`` — tears the server down *in the middle of the work that
+caused it*, and the operator sees ``Shutting down`` with no error attached to the thing
+that died.
 
 ``dev.py`` starts uvicorn with the exclusions this module builds. Plain
 ``uvicorn app:app --reload`` does not, which is why the app also asks this module whether
@@ -21,9 +22,9 @@ from pathlib import Path
 # The message the app logs when it finds itself under an unguarded reloader. Here rather
 # than at the call site so the fix and the warning about its absence stay in step.
 UNGUARDED_RELOAD_WARNING = (
-    "auto-reload is watching runtime state: installing an inference engine writes into "
-    "%s and will restart this server mid-serve, which looks like the serve dying for no "
-    "reason. Start the dev server with `uv run python dev.py` instead."
+    "auto-reload is watching runtime state: anything the app writes under %s will "
+    "restart this server mid-request, which looks like the work dying for no reason. "
+    "Start the dev server with `uv run python dev.py` instead."
 )
 
 

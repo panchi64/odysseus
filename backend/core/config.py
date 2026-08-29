@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # Model resolution is the DB-backed registry's job (services/registry.py) —
     # named roles bound to ordered endpoint chains, the single source of truth,
     # populated by manual config (the /models surface) today and the automatic
-    # setup / Cookbook later. There is deliberately no env model seam.
+    # setup later. There is deliberately no env model seam.
 
     # Agent bounds: max model requests per turn and optional per-turn
     # tool-call cap. None disables the tool cap.

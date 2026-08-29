@@ -110,8 +110,6 @@ class ModelRegistry:
         vision: bool = False,
         thinking: bool = False,
         enabled: bool = True,
-        managed: bool = False,
-        live_status: str | None = None,
     ) -> ModelEndpoint:
         self._validate_provider(provider, has_key=bool(api_key))
         endpoint = ModelEndpoint(
@@ -126,8 +124,6 @@ class ModelRegistry:
             vision=vision,
             thinking=thinking,
             enabled=enabled,
-            managed=managed,
-            live_status=live_status,
         )
 
         def work(session: Session) -> ModelEndpoint:
@@ -195,35 +191,6 @@ class ModelRegistry:
                     session.add(binding)
 
         await in_session(self._engine, work)
-
-    async def stop_managed_endpoints(self) -> int:
-        """Mark every serving-managed endpoint not-running, returning how many changed.
-
-        A boot sweep, and owner-agnostic on purpose: a managed endpoint is served by a
-        child of *this* process, so at startup nothing that claims to be running can
-        still be true, for any owner. Sweeping the endpoints directly — rather than only
-        the ones a still-active managed row points at — is the part that matters. A row
-        that reached a terminal state with its endpoint left at ``"running"`` is invisible
-        to a row-driven sweep, and resolution reads ``live_status``: the endpoint stays
-        eligible forever, and every request for the role bound to it goes to a port with
-        nothing behind it. The role binding and the operator's ``enabled`` choice survive
-        untouched, so re-serving restores the endpoint rather than rebuilding it.
-        """
-
-        def work(session: Session) -> int:
-            endpoints = session.exec(
-                select(ModelEndpoint).where(
-                    ModelEndpoint.managed.is_(True),  # type: ignore[attr-defined]
-                    ModelEndpoint.live_status == "running",
-                )
-            ).all()
-            for endpoint in endpoints:
-                endpoint.live_status = "stopped"
-                endpoint.updated_at = datetime.now(UTC)
-                session.add(endpoint)
-            return len(endpoints)
-
-        return await in_session(self._engine, work)
 
     # --- role bindings ----------------------------------------------------
 
@@ -357,8 +324,7 @@ class ModelRegistry:
         """The ordered, decrypted endpoint specs ``role`` resolves to: a
         per-conversation ``main`` override → the role's own chain. Shared by every
         resolution entry point — :meth:`resolve_detailed`, :meth:`resolve_background`,
-        :meth:`main_context_window`, :meth:`role_is_usable` — so all of them see
-        identical resolution.
+        :meth:`main_context_window` — so all of them see identical resolution.
 
         The role's **pinned model** is applied to the chain's primary (head)
         endpoint — a stored binding is thus self-describing, so background /
@@ -371,15 +337,12 @@ class ModelRegistry:
 
         if override_endpoint_id is not None and role == "main":
             endpoint = await self.get_endpoint(owner_id, override_endpoint_id)
-            # An unavailable endpoint is skipped by resolution everywhere — including a
-            # per-conversation override (e.g. regenerating an old turn whose endpoint was
-            # since benched or whose local engine was stopped). The picker hides it, but
-            # the backend is the authority, so reject it here rather than silently
-            # resolving to a dead or benched endpoint.
+            # A benched endpoint is skipped by resolution everywhere — including a
+            # per-conversation override (e.g. regenerating an old turn whose endpoint has
+            # since been benched). The picker hides it, but the backend is the authority,
+            # so reject it here rather than silently resolving to a benched endpoint.
             if not endpoint.enabled:
                 raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is disabled")
-            if not _available(endpoint):
-                raise DegradedCapabilityError(f"endpoint {endpoint.name!r} is not running")
             return await self._with_context_windows(
                 [self._to_spec(endpoint, role, model_override=override_model)]
             )
@@ -389,13 +352,12 @@ class ModelRegistry:
             raise DegradedCapabilityError(f"no model endpoints configured for role {role!r}")
 
         endpoints = [await self.get_endpoint(owner_id, eid) for eid in chain_ids]
-        # Skip unavailable endpoints — operator-benched (`enabled` off) or a managed
-        # local engine that isn't running — so the chain falls through to the next:
-        # the pre-emptive side of the runtime FallbackModel failover.
-        live = [e for e in endpoints if _available(e)]
+        # Skip operator-benched endpoints (`enabled` off) so the chain falls through to
+        # the next: the pre-emptive side of the runtime FallbackModel failover.
+        live = [e for e in endpoints if e.enabled]
         if not live:
             raise DegradedCapabilityError(
-                f"all endpoints bound to role {role!r} are disabled or not running"
+                f"all endpoints bound to role {role!r} are disabled"
             )
         # Pin applies to the head only; the tail falls back on each endpoint's default.
         return await self._with_context_windows(
@@ -444,57 +406,6 @@ class ModelRegistry:
         is explicitly re-run. A model reloaded at a different context length is exactly
         the case the operator is refreshing to pick up."""
         self._context_windows.clear()
-
-    async def repin_roles_for_endpoint(
-        self, owner_id: str, endpoint_id: str, model: str
-    ) -> list[str]:
-        """Re-point every role pinned to a **stale** model on ``endpoint_id``, returning
-        the roles that were moved.
-
-        A role's pin names a model *string*, and resolution sends that string verbatim as
-        the request's ``model``. That is safe while the endpoint keeps answering to it —
-        but a managed endpoint's model id is derived from what is being served, so
-        re-serving can change it under a pin the operator set earlier. MLX makes this
-        concrete: it identifies a model by the local path it loaded from, so a pin left
-        naming the old id would ask the server for a model it doesn't have, and mlx-vlm
-        resolves an unrecognized name by going to the HuggingFace cache for a *different*
-        model.
-
-        Only the pin is rewritten — the operator chose this endpoint and still has it.
-        Writes directly rather than through :meth:`set_role`, which re-runs binding
-        validation (including a live embedding probe) that has no business firing inside
-        a serve."""
-        moved: list[str] = []
-
-        def work(session: Session) -> list[str]:
-            bindings = session.exec(select(ModelRole).where(ModelRole.owner_id == owner_id)).all()
-            for binding in bindings:
-                # The pin only ever applies to the chain's head, so a role that merely
-                # lists this endpoint as a fallback is untouched.
-                head = (binding.endpoint_ids or [None])[0]
-                if head != endpoint_id or not binding.model or binding.model == model:
-                    continue
-                binding.model = model
-                session.add(binding)
-                moved.append(binding.role)
-            return moved
-
-        return await in_session(self._engine, work)
-
-    async def role_is_usable(self, owner_id: str, role: str) -> bool:
-        """Whether ``role`` currently resolves to at least one endpoint that could serve
-        a request right now — bound, enabled, running if managed, tool-capable if the role
-        needs it, and with a model configured.
-
-        Asked by the serving layer before it auto-binds a freshly-served model: a role
-        that already resolves is the operator's working choice and is never displaced.
-        Reuses the real resolution path rather than re-deriving availability, so the two
-        can't drift."""
-        try:
-            await self._resolve_specs(role, owner_id=owner_id)
-        except DegradedCapabilityError, NotFoundError, ValueError:
-            return False
-        return True
 
     async def resolve_detailed(
         self,
@@ -626,13 +537,10 @@ class ModelRegistry:
         if not chain_ids:
             raise DegradedCapabilityError("no embedding endpoint configured")
         endpoint = await self.get_endpoint(owner_id, chain_ids[0])
-        # An unavailable endpoint is skipped everywhere, exactly as chat resolution skips
-        # it (a stopped/crashed locally-served model keeps the role binding but reports
-        # itself not running). Degrade to keyword recall rather than resolve a dead port.
-        if not _available(endpoint):
-            raise DegradedCapabilityError(
-                f"embedding endpoint {endpoint.name!r} is disabled or not running"
-            )
+        # A benched endpoint is skipped everywhere, exactly as chat resolution skips it.
+        # Degrade to keyword recall rather than resolve one the operator switched off.
+        if not endpoint.enabled:
+            raise DegradedCapabilityError(f"embedding endpoint {endpoint.name!r} is disabled")
         return self._to_spec(endpoint, "embedding", model_override=model)
 
     async def list_provider_models(self, owner_id: str, endpoint_id: str) -> list[str]:
@@ -775,12 +683,3 @@ class ModelRegistry:
         if impl.requires_key and not has_key:
             raise ValueError(f"provider {impl.display_name!r} requires an API key")
 
-
-def _available(endpoint: ModelEndpoint) -> bool:
-    """Whether resolution may use this endpoint: the operator's switch is on, and —
-    for a serving-managed local engine — its process is actually running."""
-    if not endpoint.enabled:
-        return False
-    if endpoint.managed and endpoint.live_status != "running":
-        return False
-    return True

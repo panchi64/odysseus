@@ -28,7 +28,6 @@ from services.calendar import CalendarService
 from services.context_budget import OverheadCache
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
-from services.cookbook import CookbookService
 from services.corpus import CorpusIndex
 from services.credential_store import CredentialStore
 from services.external_tools import ExternalTools
@@ -47,7 +46,6 @@ from services.scheduler import SchedulerService
 from services.search import SearchService
 from services.searxng import ManagedSearxng
 from services.secret_vault import SecretVaultService
-from services.serving import ServingService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
 from services.tool_policy import effective_disabled_tools
@@ -264,14 +262,6 @@ async def active_project(request: Request) -> str | None:
     if header == PROJECT_SCOPE_ALL:
         return None
     return header or await projects(request).active_id(OPERATOR_ID)
-
-
-def cookbook(request: Request) -> CookbookService:
-    return request.app.state.cookbook
-
-
-def serving(request: Request) -> ServingService:
-    return request.app.state.serving
 
 
 def settings_store(request: Request) -> SettingsStore:

@@ -3,11 +3,11 @@
 Roles the engine consumes: ``main`` (chat/agent), ``utility`` (cheap background
 work), ``embedding`` (recall). Resolution of a *role* to a model is the
 **registry's** job (:mod:`services.registry`, the single source of truth — manual
-config today, the automatic-setup/Cookbook write path later). This module owns
+config today, an automatic-setup write path later). This module owns
 the layer below it: dispatching one spec to its **provider adapter**
 (:mod:`services.providers` — OpenAI-compatible, Anthropic, Google, local) and
 wrapping an ordered chain in ``FallbackModel``. Both registry-sourced and
-Cookbook-sourced endpoints flow through these builders. The OpenAI-wire discovery
+Every endpoint flows through these builders. The OpenAI-wire discovery
 and probe helpers live here too — they are what the openai-compatible and local
 adapters delegate to.
 

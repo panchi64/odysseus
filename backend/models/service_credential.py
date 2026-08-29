@@ -1,8 +1,8 @@
 """Outbound service-credential schema.
 
 A **service credential** is an API key the system uses to call an *outbound* third-party
-service on the operator's behalf — the Cookbook's quality benchmarks (Artificial Analysis,
-llm-stats) and its HuggingFace catalog token. Owner-scoped, one row per service id, with
+service on the operator's behalf — the model-quality benchmarks (Artificial Analysis,
+llm-stats) and the HuggingFace catalog token. Owner-scoped, one row per service id, with
 the key sealed application-layer like every other secret (the same at-rest posture as the
 model-endpoint / search-provider `api_key`). This is **not** inbound auth — issuing access
 tokens to clients is a separate concern.

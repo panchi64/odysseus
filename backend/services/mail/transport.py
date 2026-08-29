@@ -2,7 +2,7 @@
 
 The same shape as the two seams already in `services/`: an explicit ``Protocol`` (like
 :class:`~services.upload_extraction.UploadExtractor`) that the layers above program
-against, with one adapter per backend (like ``services/serving/adapters/``). IMAP+SMTP,
+against, with one adapter per backend. IMAP+SMTP,
 JMAP, Gmail and Microsoft Graph are then interchangeable, and a test drives the whole
 service against a fake that implements nothing but this protocol.
 
