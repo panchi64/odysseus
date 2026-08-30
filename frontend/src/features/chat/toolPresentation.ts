@@ -1,0 +1,297 @@
+/** How a tool call reads in the transcript.
+ *
+ *  The agent's tools are namespaced `category_tool` (`backend/tools/catalog.py`),
+ *  which is the name the model is offered and the name the operator's tool
+ *  toggles match on — but it is a *registry* name, and a transcript row is not a
+ *  registry. Reading `files_read_file, path=backend/app.py` costs a beat that
+ *  "Read · backend/app.py" does not, and a turn is a dozen of those rows.
+ *
+ *  So each tool gets three things here: the glyph for its family (so a column of
+ *  rows is scannable by shape before any word is read), a short label in the
+ *  interface's own voice, and — where the generic fallbacks would guess wrong —
+ *  which argument actually says what the call is about and what its results are
+ *  counted in.
+ *
+ *  **The table is a display convenience, never a gate.** A tool missing from it
+ *  still renders: it falls back to its category's glyph and a humanized form of
+ *  its own name. That is what keeps `external_*` connector tools — which are
+ *  discovered per operator and cannot be enumerated here — from needing an entry,
+ *  and what keeps a newly landed backend tool from rendering as a blank row. */
+
+import type { IconName } from "~/ui";
+import type { ToolInvocation } from "./model";
+
+export interface ToolPresentation {
+  icon: IconName;
+  label: string;
+}
+
+export interface ToolEntry extends ToolPresentation {
+  /** Argument keys in preference order; the first one present becomes the row's
+   *  detail. Omitted where the generic order already picks the right one. */
+  keys?: readonly string[];
+  /** `[singular, plural]` for a counted result — "12 entries", "1 match". */
+  noun?: readonly [string, string];
+}
+
+/** The glyph for a category, for any tool without its own row below. Every
+ *  registered category is listed, so a new tool lands in the right family on the
+ *  day it lands rather than falling through to the generic plug. */
+const CATEGORY_ICONS: Record<string, IconName> = {
+  agents: "users",
+  attachments: "attach",
+  builtin: "clock",
+  calendar: "calendar",
+  code: "code",
+  conversations: "chat",
+  corpus: "library",
+  external: "plug",
+  files: "file",
+  mail: "mail",
+  memory: "database",
+  plan: "note",
+  project: "layers",
+  repo: "branch",
+  research: "research",
+  shell: "terminal",
+  skills: "library",
+  vault: "lock",
+  view: "panel-right",
+  web: "search",
+};
+
+const DEFAULT_ICON: IconName = "plug";
+
+const TOOLS: Record<string, ToolEntry> = {
+  agents_delegate_task: {
+    icon: "users",
+    label: "Delegate",
+    keys: ["task", "agent_name"],
+  },
+  attachments_provision: {
+    icon: "attach",
+    label: "Attach",
+    keys: ["attachment_id"],
+  },
+  builtin_now: { icon: "clock", label: "Clock" },
+
+  calendar_agenda: {
+    icon: "calendar",
+    label: "Agenda",
+    keys: ["start"],
+    noun: ["event", "events"],
+  },
+  calendar_create_event: {
+    icon: "calendar",
+    label: "New event",
+    keys: ["title"],
+  },
+  calendar_delete_event: {
+    icon: "calendar",
+    label: "Delete event",
+    keys: ["event_id"],
+  },
+  calendar_draft_event_from_text: {
+    icon: "calendar",
+    label: "Draft event",
+    keys: ["phrase"],
+  },
+  calendar_list_calendars: {
+    icon: "calendar",
+    label: "Calendars",
+    noun: ["calendar", "calendars"],
+  },
+  calendar_update_event: {
+    icon: "calendar",
+    label: "Edit event",
+    keys: ["title", "event_id"],
+  },
+
+  code_execute: { icon: "code", label: "Run code", keys: ["code"] },
+  code_run_host_command: {
+    icon: "terminal",
+    label: "Host command",
+    keys: ["explanation", "command"],
+  },
+
+  conversations_read: {
+    icon: "chat",
+    label: "Read thread",
+    keys: ["conversation_id"],
+  },
+  conversations_search: {
+    icon: "chat",
+    label: "Search threads",
+    keys: ["query"],
+    noun: ["thread", "threads"],
+  },
+  corpus_retrieve: {
+    icon: "library",
+    label: "Retrieve",
+    keys: ["query"],
+    noun: ["passage", "passages"],
+  },
+
+  files_create_directory: { icon: "file", label: "New folder" },
+  files_edit_file: { icon: "edit", label: "Edit" },
+  files_file_info: { icon: "file", label: "File info" },
+  files_find_files: {
+    icon: "search",
+    label: "Find files",
+    keys: ["pattern", "glob", "path"],
+    noun: ["match", "matches"],
+  },
+  files_list_directory: {
+    icon: "file",
+    label: "List",
+    noun: ["entry", "entries"],
+  },
+  files_read_file: { icon: "file", label: "Read" },
+  files_search_files: {
+    icon: "search",
+    label: "Search files",
+    keys: ["pattern", "query", "path"],
+    noun: ["match", "matches"],
+  },
+  files_write_file: { icon: "pen", label: "Write" },
+
+  mail_draft_reply: { icon: "pen", label: "Draft reply", keys: ["message_id"] },
+  mail_list_accounts: {
+    icon: "mail",
+    label: "Mail accounts",
+    noun: ["account", "accounts"],
+  },
+  mail_list_messages: {
+    icon: "mail",
+    label: "Inbox",
+    keys: ["folder", "account_id"],
+    noun: ["message", "messages"],
+  },
+  mail_mark: { icon: "mail", label: "Mark mail", keys: ["message_id"] },
+  mail_read: { icon: "mail", label: "Read mail", keys: ["message_id"] },
+  mail_reply: {
+    icon: "send",
+    label: "Reply",
+    keys: ["explanation", "message_id"],
+  },
+  mail_send: { icon: "send", label: "Send mail", keys: ["subject", "to"] },
+
+  memory_recall: {
+    icon: "database",
+    label: "Recall",
+    keys: ["query"],
+    noun: ["memory", "memories"],
+  },
+  memory_remember: { icon: "database", label: "Remember", keys: ["content"] },
+
+  plan_add_task: { icon: "note", label: "Add task" },
+  plan_read_plan: { icon: "note", label: "Read plan", noun: ["task", "tasks"] },
+  plan_remove_task: { icon: "note", label: "Drop task" },
+  plan_update_task_status: {
+    icon: "note",
+    label: "Task status",
+    keys: ["status"],
+  },
+  plan_update_task_statuses: { icon: "note", label: "Task statuses" },
+  plan_write_plan: { icon: "note", label: "Write plan" },
+
+  project_active: { icon: "layers", label: "Active project" },
+  project_list: {
+    icon: "layers",
+    label: "Projects",
+    noun: ["project", "projects"],
+  },
+  repo_inventory_agent_context: { icon: "branch", label: "Repo context" },
+
+  research_read: {
+    icon: "research",
+    label: "Read research",
+    keys: ["research_id"],
+  },
+  research_start: { icon: "research", label: "Research", keys: ["question"] },
+
+  shell_check_command: { icon: "terminal", label: "Check process" },
+  shell_run_command: { icon: "terminal", label: "Shell", keys: ["command"] },
+  shell_start_command: {
+    icon: "terminal",
+    label: "Start process",
+    keys: ["command"],
+  },
+  shell_stop_command: { icon: "stop", label: "Stop process" },
+
+  skills_create: { icon: "library", label: "New skill", keys: ["name"] },
+  skills_edit: {
+    icon: "library",
+    label: "Edit skill",
+    keys: ["name", "explanation"],
+  },
+  skills_open: { icon: "library", label: "Open skill", keys: ["name"] },
+
+  vault_get_entry: { icon: "key", label: "Secret", keys: ["entry_id"] },
+  vault_list_entries: {
+    icon: "lock",
+    label: "Vault",
+    keys: ["reason"],
+    noun: ["entry", "entries"],
+  },
+
+  view_close: { icon: "close", label: "Close view" },
+  view_show: {
+    icon: "panel-right",
+    label: "Show view",
+    keys: ["title", "file", "path"],
+  },
+
+  web_fetch: { icon: "link", label: "Fetch", keys: ["url"] },
+  web_search: {
+    icon: "search",
+    label: "Web search",
+    keys: ["query"],
+    noun: ["result", "results"],
+  },
+};
+
+/** The namespace a name declares, or `""` for a name that declares none. The
+ *  guard is the point: `slice(0, indexOf(…))` on a name with no underscore takes
+ *  `slice(0, -1)`, which hands back the name minus its last character — and
+ *  `"views"` would then read as the `view` category, taking that glyph and
+ *  losing its own label to the prefix strip below. */
+function categoryOf(name: string): string {
+  const cut = name.indexOf("_");
+  return cut === -1 ? "" : name.slice(0, cut);
+}
+
+/** `files_read_file` → `Read file`; `external_linear_create_issue` → `Linear
+ *  create issue`. Drops a *known* category prefix only — an unrecognized name is
+ *  humanized whole rather than losing its first word to a bad guess. */
+function humanize(name: string): string {
+  const category = categoryOf(name);
+  const bare =
+    category in CATEGORY_ICONS ? name.slice(category.length + 1) : name;
+  const words = bare.replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : name;
+}
+
+/** The full row for a tool — presentation plus the summarizer's hints. */
+export function toolEntry(name: string): ToolEntry {
+  const known = TOOLS[name];
+  if (known) return known;
+  return {
+    icon: CATEGORY_ICONS[categoryOf(name)] ?? DEFAULT_ICON,
+    label: humanize(name),
+  };
+}
+
+/** The glyph and label a transcript row leads with. */
+export function toolPresentation(name: string): ToolPresentation {
+  const { icon, label } = toolEntry(name);
+  return { icon, label };
+}
+
+/** A call as one line of text — "Read · backend/app.py". What the tool card's own
+ *  header says, for the places that have room for a line but not a card. */
+export function toolRowLabel(tool: ToolInvocation): string {
+  const { label } = toolEntry(tool.name);
+  const detail = tool.detail ?? tool.args;
+  return detail ? `${label} · ${detail}` : label;
+}

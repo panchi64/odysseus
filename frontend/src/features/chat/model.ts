@@ -54,12 +54,19 @@ export interface ToolInvocation {
   id: string;
   /** Namespaced tool name, e.g. "memory.recall". */
   name: string;
-  /** Human-readable argument summary. */
+  /** Human-readable summary of every argument, shown when the card is expanded. */
   args: string;
+  /** The one argument that says what this call is *about* — the path, the query,
+   *  the command — for the collapsed row. Undefined when no argument stands out,
+   *  in which case the row shows `args` instead. */
+  detail?: string;
   status: ToolStatus;
   /** Latest progress note while `status='running'` (`tool.progress`), e.g. the
    *  sandbox spinning up. Reassures the operator the wait is work, not a stall. */
   progress?: string;
+  /** What came back, in a few characters — "12 entries", "exit 0". Set on
+   *  completion; undefined when the result has no shape worth summarizing. */
+  outcome?: string;
   /** Result preview shown when expanded. */
   result?: string;
   /** Error detail shown when status='error'. */

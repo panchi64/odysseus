@@ -51,6 +51,7 @@ import type {
   ViewSnapshotRef,
   ViewVersionBlock,
 } from "./model";
+import { describeToolArgs, describeToolResult } from "./toolSummary";
 
 /** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
  *  approval + execution render as a single persistent terminal, never a generic
@@ -496,7 +497,14 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
     id: dto.id,
     name: dto.name,
     args: formatArgs(dto.args),
+    detail: describeToolArgs(dto.name, dto.args),
     status: dto.status,
+    // Only a call that succeeded has an outcome to report; a failure's story is
+    // its error, which the card shows in full.
+    outcome:
+      dto.status === "ok"
+        ? describeToolResult(dto.name, dto.result)
+        : undefined,
     result: stringifyResult(dto.result),
     error: dto.error ?? undefined,
   };
@@ -1178,6 +1186,7 @@ export function createChatStream(
               id: ev.tool_call_id,
               name: ev.name,
               args: formatArgs(ev.args),
+              detail: describeToolArgs(ev.name, ev.args),
               status: "running",
             },
           });
@@ -1213,6 +1222,7 @@ export function createChatStream(
           if (b) {
             b.tool.status = "ok";
             b.tool.result = stringifyResult(ev.result);
+            b.tool.outcome = describeToolResult(ev.name, ev.result);
             b.tool.progress = undefined; // the run is over — drop the spin-up note
           }
         });
