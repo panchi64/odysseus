@@ -876,3 +876,140 @@ async def test_clearing_an_unknown_id_retires_the_last_stop_on_the_path(tmp_path
     # Nothing blocked left, so the fallback has nothing to find either.
     assert await store.clear_blocked_reason(conv, "a7-client-side-id") is False
     await store.stop()
+
+
+async def test_a_second_stop_after_a_retired_one_stands_on_its_own(tmp_path, monkeypatch):
+    # Retiring a marker must not be a one-shot: a thread the operator keeps resuming
+    # stops, gets continued, and stops again — and the second stop has to raise its own
+    # marker on its own turn, with the first one staying retired underneath it.
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+    reg = RunRegistry()
+
+    async def stopped_turn(prompt: str) -> str:
+        """Run a turn that trips the tool-call bound; return its marked node id."""
+        orch = build_chat_orchestrator(
+            prompt,
+            model=TestModel(call_tools=["x_noop"]),
+            categories={"x": toolset},
+            store=store,
+            conversation_id=conv,
+        )
+        run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await run.wait()
+        assert run.status is RunStatus.blocked
+        marked = [v for v in await store.messages_view(conv) if v.blocked_reason is not None]
+        assert len(marked) == 1, "each stop raises exactly one marker"
+        return marked[-1].id
+
+    first = await stopped_turn("call the tool")
+    assert await store.clear_blocked_reason(conv, first) is True
+
+    # "Continue." — a plain turn on the same conversation, which stops again.
+    second = await stopped_turn("Continue.")
+    assert second != first, "the second stop marks its own turn, not the retired one"
+
+    assert await store.clear_blocked_reason(conv, second) is True
+    assert all(v.blocked_reason is None for v in await store.messages_view(conv))
+
+    # Reload parity: neither retirement comes back, and the thread still has both turns.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    cold_views = await cold.messages_view(conv)
+    assert all(v.blocked_reason is None for v in cold_views)
+    assert [v.content for v in cold_views if v.role == "user"] == ["call the tool", "Continue."]
+    await cold.stop()
+
+
+async def test_clearing_one_marker_leaves_an_earlier_one_alone(tmp_path, monkeypatch):
+    # Two stops can stand on one path at once (the operator continued the first with a
+    # question of their own, and that stopped too). Clearing by id must retire exactly
+    # the turn named — an earlier marker is still an unanswered prompt to resume.
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+    reg = RunRegistry()
+
+    async def stopped_turn(prompt: str) -> str:
+        orch = build_chat_orchestrator(
+            prompt,
+            model=TestModel(call_tools=["x_noop"]),
+            categories={"x": toolset},
+            store=store,
+            conversation_id=conv,
+        )
+        run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await run.wait()
+        return [v for v in await store.messages_view(conv) if v.blocked_reason is not None][-1].id
+
+    first = await stopped_turn("call the tool")
+    second = await stopped_turn("and again")
+    assert {first, second} == {
+        v.id for v in await store.messages_view(conv) if v.blocked_reason is not None
+    }
+
+    assert await store.clear_blocked_reason(conv, second) is True
+    still_marked = {v.id for v in await store.messages_view(conv) if v.blocked_reason is not None}
+    assert still_marked == {first}
+    await store.stop()
+
+
+async def test_the_fallback_retires_the_newest_stop_not_an_older_one(tmp_path, monkeypatch):
+    # The fallback exists for a turn whose id the client made up locally, and a client
+    # can only make one up for the turn it is streaming — the newest. With an older
+    # marker also standing, the fallback must still take the newest, or continuing the
+    # live stop would silently retire a stop further up the thread instead.
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+    reg = RunRegistry()
+
+    async def stopped_turn(prompt: str) -> str:
+        orch = build_chat_orchestrator(
+            prompt,
+            model=TestModel(call_tools=["x_noop"]),
+            categories={"x": toolset},
+            store=store,
+            conversation_id=conv,
+        )
+        run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+        await run.wait()
+        return [v for v in await store.messages_view(conv) if v.blocked_reason is not None][-1].id
+
+    older = await stopped_turn("call the tool")
+    newest = await stopped_turn("and again")
+
+    assert await store.clear_blocked_reason(conv, "a9-client-side-id") is True
+    marked = {v.id for v in await store.messages_view(conv) if v.blocked_reason is not None}
+    assert marked == {older}, "the fallback took the newest stop, leaving the older one"
+    assert newest not in marked
+    await store.stop()

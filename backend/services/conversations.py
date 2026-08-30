@@ -1563,11 +1563,12 @@ class ConversationStore:
         reload must not resurrect a stop the operator already handled. Queued behind
         any in-flight message writes so it lands on a persisted row.
 
-        An unrecognized ``message_id`` falls back to the last blocked turn on the
-        active path. A live client names the turn by the id it is *showing*, and for
-        a turn that stopped before anything was persisted that id is the client's own
-        optimistic one — never a node id here. The marker it means is unambiguous
-        (nothing else on the path is blocked below it), so honour the intent rather
+        An unrecognized ``message_id`` falls back to the *newest* blocked turn on the
+        active path. A live client names the turn by the id it is showing, and for a
+        turn that stopped before anything was persisted that id is the client's own
+        optimistic one — never a node id here. Such an id can only ever name the turn
+        being streamed, i.e. the newest, so the fallback is unambiguous even with
+        older markers still standing further up the thread — honour the intent rather
         than leaving a stop the operator has visibly resolved."""
         tree = await self._tree(conversation_id)
         node = tree.nodes.get(message_id)
