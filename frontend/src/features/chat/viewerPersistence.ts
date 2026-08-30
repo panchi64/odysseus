@@ -152,24 +152,26 @@ export function useViewerPersistence(conversationId: () => string): {
   return { state, patch };
 }
 
-/** The window's width, reactively. One app-wide listener (the panel is a singleton,
- *  like everything else module-level in this file) rather than one per mount: the
- *  clamp below depends on it, so a window dragged narrower has to give the transcript
- *  its room back without waiting for a reload. `Infinity` where there is no window,
- *  so the ceiling stands alone — a value clamped against a viewport that isn't there
- *  would be arbitrary. */
-const [windowWidth, setWindowWidth] = createSignal(
-  typeof window === "undefined" ? Infinity : window.innerWidth,
-);
-if (typeof window !== "undefined")
-  window.addEventListener("resize", () => setWindowWidth(window.innerWidth));
+/** How much width the panel's row actually has, reactively — set by the screen that
+ *  owns the row (`ChatRoomScreen`, from a `ResizeObserver` on it).
+ *
+ *  It has to be the **row**, not the window: by the time the layout reaches here the
+ *  nav rail and the shell's padding are already spent, so clamping against
+ *  `window.innerWidth` reserves a transcript that isn't there and lets the panel take
+ *  ~300px more than the row can give — the conversation column is then squeezed past
+ *  its min-content and the row overflows the shell. `Infinity` until the first
+ *  measurement, so the ceiling stands alone rather than guessing at a box nobody has
+ *  measured yet. */
+const [availableWidth, setAvailableWidth] = createSignal(Infinity);
 
-/** The widest the panel may be right now: its own ceiling, less what the window
- *  cannot spare. */
+export { setAvailableWidth };
+
+/** The widest the panel may be right now: its own ceiling, less what the row cannot
+ *  spare. */
 function ceiling(): number {
   return Math.max(
     WIDTH_MIN,
-    Math.min(WIDTH_CEILING, windowWidth() - TRANSCRIPT_MIN),
+    Math.min(WIDTH_CEILING, availableWidth() - TRANSCRIPT_MIN),
   );
 }
 

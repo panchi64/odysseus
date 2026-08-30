@@ -65,6 +65,7 @@ import {
   clampWidth,
   downloadBlob,
   panelWidth,
+  setAvailableWidth,
   setPanelWidth,
   useViewerPersistence,
   type PanelKind,
@@ -401,6 +402,26 @@ export function ChatRoomScreen(): JSX.Element {
     }
   });
 
+  // How much width the conversation and the panel have to share. Measured off the row
+  // itself rather than the window, because the nav rail and the shell's padding are
+  // already spent by the time the layout gets here — clamping the panel against the
+  // window reserves a transcript that isn't there and lets the aside overflow the
+  // shell. A `ResizeObserver` rather than a `resize` listener, since the rail is
+  // drag-sizable and the window never fires for that.
+  let rowEl: HTMLDivElement | undefined;
+  onMount(() => {
+    if (!rowEl) return;
+    // Seeded synchronously, before the observer's first async callback: the panel is
+    // laid out from this number, and starting at "unmeasured" would paint one frame at
+    // a width the row cannot hold.
+    setAvailableWidth(rowEl.clientWidth);
+    const observer = new ResizeObserver(([entry]) => {
+      setAvailableWidth(entry.contentRect.width);
+    });
+    observer.observe(rowEl);
+    onCleanup(() => observer.disconnect());
+  });
+
   // The panel renders in a desktop-only aside above `lg`; below it (or in
   // fullscreen at any width) it renders in a full-screen sheet instead.
   const [isDesktop, setIsDesktop] = createSignal(true);
@@ -689,7 +710,7 @@ export function ChatRoomScreen(): JSX.Element {
   );
 
   return (
-    <div class="flex h-full min-h-0">
+    <div ref={rowEl} class="flex h-full min-h-0">
       {/* Conversation — the thread list now lives in the app rail's RECENTS, so
           the body is free for the conversation plus the viewport pane. */}
       <section class="flex min-h-full min-w-0 flex-1 flex-col">
