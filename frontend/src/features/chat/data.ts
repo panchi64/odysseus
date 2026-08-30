@@ -47,6 +47,7 @@ import type {
   SnapshotDiff,
   SnapshotFile,
   ToolBlock,
+  ToolImage,
   ToolInvocation,
   ViewSnapshotRef,
   ViewVersionBlock,
@@ -203,6 +204,14 @@ interface ConversationSummaryDTO {
   activity?: ChatActivity | null;
 }
 
+/** One image on the wire. The REST detail and the SSE `tool.completed` event carry the
+ *  identical shape — deliberately, so `toolImages` is one mapping rather than two that
+ *  could drift into disagreeing about the same screenshot. */
+interface ToolImageDTO {
+  media_type: string;
+  data: string;
+}
+
 interface ToolCallDTO {
   id: string;
   name: string;
@@ -210,6 +219,7 @@ interface ToolCallDTO {
   status: ToolInvocation["status"];
   result?: unknown;
   error?: string | null;
+  images?: ToolImageDTO[];
 }
 
 /** An inline View chip re-attached to the message that minted it — references the
@@ -492,6 +502,16 @@ function citationsFromToolResult(name: string, result: unknown): Citation[] {
   return [];
 }
 
+/** The wire's snake_case image list as the model's, or undefined when a call returned
+ *  none — the same mapping for the live event and the cold DTO, since a screenshot has
+ *  to look identical whether the operator watched it happen or reloaded into it. */
+function toolImages(
+  images: ToolImageDTO[] | undefined,
+): ToolImage[] | undefined {
+  if (!images?.length) return undefined;
+  return images.map((i) => ({ mediaType: i.media_type, data: i.data }));
+}
+
 function toTool(dto: ToolCallDTO): ToolInvocation {
   return {
     id: dto.id,
@@ -507,6 +527,7 @@ function toTool(dto: ToolCallDTO): ToolInvocation {
         : undefined,
     result: stringifyResult(dto.result),
     error: dto.error ?? undefined,
+    images: toolImages(dto.images),
   };
 }
 
@@ -1258,6 +1279,7 @@ export function createChatStream(
             b.tool.result = stringifyResult(ev.result);
             b.tool.outcome = describeToolResult(ev.name, ev.result);
             b.tool.progress = undefined; // the run is over — drop the spin-up note
+            b.tool.images = toolImages(ev.images);
           }
         });
         break;

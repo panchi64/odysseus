@@ -7,11 +7,29 @@ import {
   planTurnLayout,
   runningTools,
 } from "./blocks";
-import type { AssistantBlock, HostCommandPhase, ToolStatus } from "./model";
+import type {
+  AssistantBlock,
+  HostCommandPhase,
+  ToolImage,
+  ToolStatus,
+} from "./model";
 
 /** A tool block, named so an assertion can point at it by name. */
 function tool(id: string, name: string, status: ToolStatus): AssistantBlock {
   return { kind: "tool", id, tool: { id, name, args: "", status } };
+}
+
+/** A settled tool call that came back with a screenshot — or, given an empty list, one
+ *  that reported no pictures at all. */
+function shot(
+  id: string,
+  images: ToolImage[] = [{ mediaType: "image/png", data: "QUJD" }],
+): AssistantBlock {
+  return {
+    kind: "tool",
+    id,
+    tool: { id, name: "browse_screenshot", args: "", status: "ok", images },
+  };
 }
 
 function text(id: string): AssistantBlock {
@@ -93,6 +111,42 @@ describe("parallel tool calls stay visible while they run", () => {
       { streaming: true },
     );
     expect(layoutItemKey(items[0])).toBe("w:a");
+  });
+});
+
+describe("a call that came back with a picture keeps its run inline", () => {
+  // The defect this covers bites hardest in the case that produces the pictures: an
+  // agent that screenshots repeatedly makes a *run* of settled calls, which is exactly
+  // what folds — so the images would be hidden precisely when there are the most of
+  // them to see. Same fixture discipline as the failure rule: mid-run, settled turn,
+  // enough collapsible groups either side that dropping the guard really does fold.
+  test("a settled turn with a screenshot does not fold", () => {
+    expect(
+      plan(
+        [
+          tool("a", "browse_click", "ok"),
+          shot("b"),
+          tool("c", "browse_get_text", "ok"),
+          tool("d", "browse_click", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("an empty image list is not a picture", () => {
+    // The rule reads `images?.length`, not `images !== undefined` — a call that
+    // reported an empty list has nothing to show and must fold like any other.
+    expect(
+      plan(
+        [
+          tool("a", "browse_click", "ok"),
+          shot("b", []),
+          tool("c", "browse_click", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog"]);
   });
 });
 

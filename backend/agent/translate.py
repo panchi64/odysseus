@@ -44,8 +44,10 @@ from runs import (
     ThinkingDelta,
     ToolCompleted,
     ToolFailed,
+    ToolImage,
     ToolStarted,
 )
+from services.conversation_view import tool_images
 
 from .meta import LoopBreaker
 
@@ -138,11 +140,19 @@ def _on_tool_event(
                 )
             )
         else:
+            # `event.content` is what the tool handed back *for the model* rather than as
+            # its result — pixels, today. It rides the event beside the call id, so the
+            # warm render pairs an image to its call exactly; the cold projection has to
+            # recover the same pairing positionally (see `_attach_tool_images`).
             run.emit(
                 ToolCompleted(
                     tool_call_id=part.tool_call_id,
                     name=part.tool_name,
                     result=jsonable(part.content),
+                    images=[
+                        ToolImage(media_type=image.media_type, data=image.data)
+                        for image in tool_images(getattr(event, "content", None))
+                    ],
                 )
             )
             for citation in citations_from_tool_result(part.content):

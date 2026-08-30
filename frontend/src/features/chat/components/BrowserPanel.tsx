@@ -202,9 +202,14 @@ export function BrowserPanel(props: {
             >
               {(current) => (
                 <img
-                  /* `object-contain` letterboxes rather than crops: the operator is
-                     checking what the agent sees, and a cropped frame hides the part of
-                     the page a click landed on. */
+                  /* Centred in the slot, letterboxed rather than cropped: the operator
+                     is checking what the agent sees, and a cropped frame hides the part
+                     of the page a click landed on. Top-anchoring was tried while the
+                     panel was still clamped against the window and could only ever be a
+                     narrow column — the leftover height was large enough that splitting
+                     it into two bands made the frame read as smaller than it was. Sized
+                     against its own row now, the slot fits the frame closely enough that
+                     centring is simply where a picture belongs. */
                   class="h-full w-full object-contain transition-opacity"
                   classList={{ "opacity-50": state().status === "ended" }}
                   src={`data:image/jpeg;base64,${current().data}`}

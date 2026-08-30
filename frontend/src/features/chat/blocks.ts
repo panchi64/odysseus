@@ -150,8 +150,13 @@ function hasFailure(group: BlockGroup): boolean {
   );
 }
 
+/** A call that came back with a picture — a browser screenshot. */
+function hasImages(group: BlockGroup): boolean {
+  return group.blocks.some((b) => b.kind === "tool" && b.tool.images?.length);
+}
+
 /** Work that must stay on screen whatever else folds: still in flight, waiting on
- *  a decision, or failed.
+ *  a decision, failed, or carrying something to look at.
  *
  *  Failure is here and deliberately NOT in `hasLiveTool`, because the two mean
  *  different things and only one of them lights the rail. `liveToolGroupIds`
@@ -161,9 +166,21 @@ function hasFailure(group: BlockGroup): boolean {
  *
  *  Without this, a failure was the single most hidden thing in a turn: the card
  *  auto-expands on error, but the work log folded shut around it, so the one
- *  event that should interrupt was the one event buried. */
+ *  event that should interrupt was the one event buried.
+ *
+ *  Images are here for the same reason and it bites hardest in the case that
+ *  produced them: an agent that screenshots repeatedly makes a run of settled
+ *  calls, which is exactly what folds — so without this the pictures would be
+ *  hidden precisely when there are the most of them to see. A fold exists to hide
+ *  undifferentiated process, and a picture of the page is not that. It costs the
+ *  turn a strip of height per screenshot, knowingly. */
 function pinsRunInline(group: BlockGroup): boolean {
-  return hasLiveTool(group) || hasLiveHost(group) || hasFailure(group);
+  return (
+    hasLiveTool(group) ||
+    hasLiveHost(group) ||
+    hasFailure(group) ||
+    hasImages(group)
+  );
 }
 
 /** Collapsible = process the operator doesn't have to read or act on inline:

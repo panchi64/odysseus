@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent.summarize import compact_conversation
 from agent.title import title_from_history
@@ -61,6 +61,15 @@ class ConversationSummary(BaseModel):
     activity: str | None = None
 
 
+class ToolCallImageOut(BaseModel):
+    """An image the call handed back — base64, scheme added by the renderer. The wire
+    twin of the live stream's ``tool.completed`` images, so a screenshot renders in the
+    work log identically whether the operator watched it happen or reloaded into it."""
+
+    media_type: str
+    data: str
+
+
 class ToolCallOut(BaseModel):
     id: str
     name: str
@@ -68,6 +77,7 @@ class ToolCallOut(BaseModel):
     status: str
     result: Any = None
     error: str | None = None
+    images: list[ToolCallImageOut] = Field(default_factory=list)
 
 
 class ViewVersionRefOut(BaseModel):
@@ -238,7 +248,13 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         reasoning=view.reasoning or None,
         tools=[
             ToolCallOut(
-                id=t.id, name=t.name, args=t.args, status=t.status, result=t.result, error=t.error
+                id=t.id,
+                name=t.name,
+                args=t.args,
+                status=t.status,
+                result=t.result,
+                error=t.error,
+                images=[ToolCallImageOut(media_type=i.media_type, data=i.data) for i in t.images],
             )
             for t in view.tools
         ],
