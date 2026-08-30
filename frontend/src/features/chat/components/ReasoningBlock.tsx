@@ -1,11 +1,29 @@
-import { Show, createEffect, createSignal, on, type JSX } from "solid-js";
-import { Disclosure, Text } from "~/ui";
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  type JSX,
+} from "solid-js";
+import { Collapse, Text } from "~/ui";
+import { ProcessRow, Sep } from "./ProcessRow";
 
 /** The animation that plays when the stage clears. The component waits for this
  *  by name rather than holding a duration of its own — the timing lives in
  *  `--motion-stage`, and a copy here would be a second number to keep in sync
  *  with a token that exists precisely so there is only one. */
 const CLEAR_ANIMATION = "ody-stage-clear";
+
+/** The settled row's glyph. Reasoning is not a tool, so it has no registry entry
+ *  to borrow; `cpu` is the machine doing its own work and is unclaimed by any
+ *  tool category, so it can't be mistaken for one. Matches `WorkLogHeader`. */
+const THINK_ICON = "cpu" as const;
+
+/** How much of the trace the collapsed row shows. The same slot a tool row's
+ *  `detail` fills — what this step was *about* — so a column of thinks and calls
+ *  reads as one sequence rather than as two kinds of thing. */
+const PEEK_CHARS = 90;
 
 /** The reasoning stream (design §10.10) — the model's thought process, in the
  *  two states the machine voice implies.
@@ -56,30 +74,66 @@ export function ReasoningBlock(props: {
     setOpen((v) => !v);
   };
 
+  /* The trace's opening line, flattened — a trace is paragraphs of prose and the
+     row is one line, so newlines have to go or the row's height follows the
+     content.
+
+     **Bounded before it is flattened, and that is the whole point.** A memo is
+     eager: it recomputes on every delta while the trace is still streaming, even
+     though the settled row it feeds is not on screen then. Flattening the whole
+     string each time is O(n) per delta and so O(n²) over a run — on the main
+     thread, inside the stream handler, to produce ninety characters nobody is
+     looking at yet. A deep-research trace is large enough for that to be felt.
+     Taking a fixed head first makes each pass constant-cost regardless of how
+     long the trace grows. (Same reasoning as `lineCount` in `toolSummary.ts`.) */
+  const peek = createMemo(() => {
+    // Generous enough that collapsing runs of whitespace inside it still leaves
+    // more than PEEK_CHARS of text in any realistic trace.
+    const head = props.reasoning.slice(0, PEEK_CHARS * 4);
+    const flat = head.replace(/\s+/g, " ").trim();
+    if (flat.length > PEEK_CHARS) return `${flat.slice(0, PEEK_CHARS - 1)}…`;
+    // The head was cut short, so there IS more trace even though the flattened
+    // text came in under the limit — say so rather than implying this is all.
+    return head.length < props.reasoning.length ? `${flat}…` : flat;
+  });
+
   return (
     <Show
       when={live() || fading()}
       fallback={
-        // The wall fades to the background, then the accordion fades in where it
-        // stood — above the response — so the handoff reads as one movement
+        // The wall fades to the background, then the settled row fades in where
+        // it stood — above the response — so the handoff reads as one movement
         // rather than as a block being swapped out.
-        <Disclosure
-          label="Reasoning"
-          open={open()}
-          onToggle={toggle}
-          class="mt-2"
-          triggerClass="ody-fade-in"
-        >
-          {/* The trace itself is machine output, so it keeps the mono voice
-              even at rest — just dim, and no longer tinted or clipped. */}
-          <Text
-            variant="micro"
-            tone="dim"
-            class="block cursor-text whitespace-pre-wrap"
+        <div class="ody-fade-in">
+          <ProcessRow
+            open={open()}
+            onToggle={toggle}
+            icon={THINK_ICON}
+            label="Reasoning"
           >
-            {props.reasoning}
-          </Text>
-        </Disclosure>
+            {/* The same "what was this about" slot a tool row fills with its
+                salient argument. Without it, a settled think was a bare word on
+                a rail of rows that all carried a detail — the one row in the
+                column that said nothing about itself. */}
+            <Show when={peek()}>
+              <Sep />
+              <Text variant="micro" tone="dim" class="min-w-0 truncate">
+                {peek()}
+              </Text>
+            </Show>
+          </ProcessRow>
+          <Collapse open={open()}>
+            {/* The trace itself is machine output, so it keeps the mono voice
+                even at rest — just dim, and no longer tinted or clipped. */}
+            <Text
+              variant="micro"
+              tone="dim"
+              class="block cursor-text whitespace-pre-wrap px-2 py-1.5"
+            >
+              {props.reasoning}
+            </Text>
+          </Collapse>
+        </div>
       }
     >
       {/* A fixed-height stage, tall enough that the trace reads as a wall rather

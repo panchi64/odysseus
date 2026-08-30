@@ -3,7 +3,6 @@
  *  transcript assembly) stay testable and live in one place. */
 
 import type { AssistantBlock, BlockKind, ToolInvocation } from "./model";
-import { toolRowLabel } from "./toolPresentation";
 
 /** A run of consecutive collapsible work only folds into a WORK LOG accordion
  *  once it reaches this many groups. Below it, the run stays inline — a lone
@@ -121,8 +120,8 @@ export function groupBlocks(
 }
 
 /** A host-command group the operator still needs eyes on — awaiting a decision
- *  (pending) or actively running on the host (live output) — must never be
- *  hidden. Only finished terminals (ok/error/denied) may fold away. */
+ *  (pending) or actively running on the host (live output). See `pinsRunInline`
+ *  for the rest of what must not fold; this one is specifically about *live*. */
 function hasLiveHost(group: BlockGroup): boolean {
   return group.blocks.some(
     (b) =>
@@ -140,19 +139,49 @@ function hasLiveTool(group: BlockGroup): boolean {
   );
 }
 
+/** A call that failed — the tool returned an error, or a host command came back
+ *  non-zero. A denied host command is not this: that is a decision the operator
+ *  already made, and it may fold away like any other settled terminal. */
+function hasFailure(group: BlockGroup): boolean {
+  return group.blocks.some(
+    (b) =>
+      (b.kind === "tool" && b.tool.status === "error") ||
+      (b.kind === "host_command" && b.command.phase === "error"),
+  );
+}
+
+/** Work that must stay on screen whatever else folds: still in flight, waiting on
+ *  a decision, or failed.
+ *
+ *  Failure is here and deliberately NOT in `hasLiveTool`, because the two mean
+ *  different things and only one of them lights the rail. `liveToolGroupIds`
+ *  drives the `LedEdge`, whose whole claim is "this is running *now*" — lighting
+ *  it for a call that failed a minute ago would be a lie in the one place the
+ *  interface speaks in light rather than words.
+ *
+ *  Without this, a failure was the single most hidden thing in a turn: the card
+ *  auto-expands on error, but the work log folded shut around it, so the one
+ *  event that should interrupt was the one event buried. */
+function pinsRunInline(group: BlockGroup): boolean {
+  return hasLiveTool(group) || hasLiveHost(group) || hasFailure(group);
+}
+
 /** Collapsible = process the operator doesn't have to read or act on inline:
- *  reasoning, finished tool calls, host terminals that are neither pending nor
- *  running, and the View chips (a version / the live head — the viewport surfaces
- *  those anyway). Only two kinds break a work log run: answer `text` (the model
- *  writing *to the operator* — the one thing that should segment the log) and
- *  approvals / live host commands / running tools (the operator has to act before the
- *  run goes on, or is watching it happen). Everything else folds into one continuously
- *  growing log. */
+ *  reasoning, tool calls that finished cleanly, host terminals that are settled
+ *  and not failed, and the View chips (a version / the live head — the viewport
+ *  surfaces those anyway).
+ *
+ *  Three things break a work log run: answer `text` (the model writing *to the
+ *  operator* — the one thing that should segment the log), approvals, and
+ *  anything `pinsRunInline` claims — a call in flight, a host command awaiting a
+ *  decision, or a failure. The operator has to act before the run goes on, is
+ *  watching it happen, or needs to know it went wrong. Everything else folds into
+ *  one continuously growing log. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking") return true;
   if (group.kind === "view_version" || group.kind === "view_live") return true;
-  if (group.kind === "tool") return !hasLiveTool(group);
-  if (group.kind === "host_command") return !hasLiveHost(group);
+  if (group.kind === "tool" || group.kind === "host_command")
+    return !pinsRunInline(group);
   return false;
 }
 
@@ -233,50 +262,5 @@ export function planTurnLayout(
   return items;
 }
 
-/** The latest tool/host call in a set of groups, with the reasoning that led to
- *  it — the peek the WORK LOG accordion shows while collapsed.
- *
- *  `label` is what the folded row *reads as*, not a registry name: a tool call is
- *  phrased the way its own card phrases it ("Read · backend/app.py"), and a host
- *  command is already a human string. Resolving it here rather than in the
- *  accordion keeps the two branches from needing different treatment at the
- *  render site. */
-export function peekLatestTool(
-  groups: BlockGroup[],
-): { label: string; rationale?: string } | null {
-  const flat = groups.flatMap((g) => g.blocks);
-  for (let i = flat.length - 1; i >= 0; i--) {
-    const b = flat[i];
-    const label =
-      b.kind === "tool"
-        ? toolRowLabel(b.tool)
-        : b.kind === "host_command"
-          ? b.command.command
-          : null;
-    if (label == null) continue;
-    // The reasoning that led to *this* call is the thinking block immediately
-    // before it; condense to a line. If another block sits between (e.g. a prior
-    // tool), there's no direct rationale — don't borrow an unrelated one.
-    const prev = flat[i - 1];
-    const rationale =
-      prev?.kind === "thinking"
-        ? prev.text.replace(/\s+/g, " ").trim()
-        : undefined;
-    return { label, rationale };
-  }
-  return null;
-}
-
-/** Count work blocks by kind for the settled progress summary. */
-export function workCounts(blocks: AssistantBlock[] | undefined): {
-  thinks: number;
-  tools: number;
-} {
-  let thinks = 0;
-  let tools = 0;
-  for (const b of blocks ?? []) {
-    if (b.kind === "thinking") thinks++;
-    else if (b.kind === "tool" || b.kind === "host_command") tools++;
-  }
-  return { thinks, tools };
-}
+/* The collapsed work log's own summary lives in `workShape.ts` — what the run
+   was made of, by tool, rather than the latest call or a bare step count. */
