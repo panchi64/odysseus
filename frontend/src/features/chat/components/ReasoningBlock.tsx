@@ -7,6 +7,7 @@ import {
   type JSX,
 } from "solid-js";
 import { Collapse, Text } from "~/ui";
+import { THINK_ICON } from "../workShape";
 import { ProcessRow, Sep } from "./ProcessRow";
 
 /** The animation that plays when the stage clears. The component waits for this
@@ -14,11 +15,6 @@ import { ProcessRow, Sep } from "./ProcessRow";
  *  `--motion-stage`, and a copy here would be a second number to keep in sync
  *  with a token that exists precisely so there is only one. */
 const CLEAR_ANIMATION = "ody-stage-clear";
-
-/** The settled row's glyph. Reasoning is not a tool, so it has no registry entry
- *  to borrow; `cpu` is the machine doing its own work and is unclaimed by any
- *  tool category, so it can't be mistaken for one. Matches `WorkLogHeader`. */
-const THINK_ICON = "cpu" as const;
 
 /** How much of the trace the collapsed row shows. The same slot a tool row's
  *  `detail` fills — what this step was *about* — so a column of thinks and calls

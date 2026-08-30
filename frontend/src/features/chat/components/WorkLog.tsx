@@ -14,12 +14,14 @@ import { WorkLogHeader } from "./WorkLogHeader";
  *  single accordion, so a busy turn doesn't bury the screen. Expanding restores
  *  the full ordered run.
  *
- *  The header leads with the *shape* of what folded — the tools by name, with
- *  their counts — rather than a step count. See `WorkLogHeader`.
+ *  The header leads with the run's *last step*, in the same `glyph · Label ·
+ *  detail` anatomy the rows inside use — not a step count, and no longer a
+ *  per-tool tally. See `WorkLogHeader`.
  *
  *  Nothing that must be seen ends up in here: `isCollapsible` in `blocks.ts`
- *  keeps a call in flight, a pending approval and, since this rework, a failure
- *  out of the fold entirely. */
+ *  keeps a call in flight, a pending approval and a failure out of the fold
+ *  entirely. That is also why the header has no failure flag and no throbber —
+ *  neither state can occur inside one. */
 export function WorkLog(
   props: {
     groups: BlockGroup[];
