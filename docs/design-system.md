@@ -572,6 +572,10 @@ Put the two side by side and the system explains itself without a word being rea
 
 Markdown structure must survive the stream — blocks that have settled keep their DOM across deltas, so only the trailing block re-parses. A streaming answer that renders as plain text and then pops into formatting when it finishes is not acceptable.
 
+**Links in an answer.** A link is the only element in an answer that is a *place the operator can go*, which is what earns it the one accent the resting palette spends on prose: `--accent-info`, underlined, 2px offset. An outbound link — anything but `mailto:` — carries a dim `↗` immediately after its last word, bound to it by a non-breaking space so it can never wrap alone, and names its base domain in the anchor's `title`. The pair is deliberate and split: **the glyph says the link leaves the workspace; the hover says where it goes.** The glyph is a pseudo-element, so it never animates in with the reveal above and never lands in a copied selection.
+
+Below the answer, the **Sources row** lists the pages the turn's tools actually retrieved, numbered, as base-domain chips. The two devices answer different questions and both are needed: Sources is *what this turn read*, an inline link is *where this sentence came from*. They use the same domain label so the operator can tell at a glance when they are the same page.
+
 ### 10.12 The composer
 
 **One component, one layout, two sizes.** The docked input bar and the home page's hero field are the same card — `size` changes padding and the field's resting height, and nothing else. They used to be separate branches (a bordered field nested inside a bordered bar; a 2px box) and that fork was the clearest case of the box-in-a-box §7 exists to stop.

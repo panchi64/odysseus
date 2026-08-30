@@ -1199,10 +1199,61 @@ body {
 .ody-prose em {
   font-style: italic;
 }
+/* A link the model wrote into its prose. Info is the one accent the resting
+   palette spends here (§1.4), and it is spent because a link is a place the
+   operator can go — the only element in an answer that is. */
 .ody-prose a {
   color: var(--accent-info);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+/* An outbound link says so. The glyph is the affordance that separates "this
+   leaves the workspace, in a new tab" from in-app navigation, and it is the
+   quiet half of a pair: this marks *that* a link is outbound, and the anchor's
+   `title` — its base domain, set in markdownLinks.ts — names *where*.
+
+   A pseudo-element rather than markup, which settles three things at once: it is
+   not a text node, so the answer's reveal cascade (AnswerText) has nothing to
+   animate and the glyph is simply there from the frame its link is; it is not in
+   the selection, so copying an answer yields the prose without it; and it cannot
+   be broken onto a line of its own, because the leading non-breaking space binds
+   it to the link's last word (an inline-block would un-underline it, at the cost
+   of a break opportunity right before it — the trade runs the wrong way).
+
+   It therefore carries the link's underline, which is correct: the glyph is part
+   of the link, not an annotation floating beside it. Dim keeps it quiet next to
+   the accented text. */
+.ody-prose a[data-link-external]::after {
+  content: "\a0↗";
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+/* An image the answer embedded. It arrives with no `src` (markdownLinks parks the
+   address; remoteImages.ts resolves it through the backend proxy), so the resting
+   state here is an element with nothing in it — `min-height` reserves a little of
+   the line so the paragraph doesn't jolt when the bytes land, and the hairline
+   frame reads as a held slot rather than a rendering fault. Square corners: this is
+   captured content, the same family as a data panel (§7). */
+.ody-prose img.ody-remote-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  background: var(--surface-sunken);
+}
+.ody-prose img.ody-remote-image[data-remote-state="loading"] {
+  min-height: var(--space-8);
+}
+/* The stand-in for an image that would not load. Dim and mono — a failure to fetch
+   is the machine reporting, not the interface speaking (§2), and it says which host
+   it could not reach so the operator can judge whether that matters. */
+.ody-prose .ody-remote-image-error {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--type-meta-size);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  padding: var(--space-2) var(--space-3);
 }
 .ody-prose ul,
 .ody-prose ol {

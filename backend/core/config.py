@@ -200,6 +200,13 @@ class Settings(BaseSettings):
     web_fetch_startup_timeout_s: float = 45.0
     web_fetch_timeout_s: float = 15.0
     web_fetch_max_bytes: int = 2_000_000
+    # An image the answer embeds, fetched by us so the operator's browser never
+    # contacts the remote host (`services.webimage`). Its own budget, not the page
+    # fetch's: no browser to start, so a slow image is a slow socket and nothing more,
+    # and the cap is larger because a photograph is legitimately bigger than a page's
+    # extracted text.
+    web_image_timeout_s: float = 10.0
+    web_image_max_bytes: int = 10_000_000
     web_fetch_wait_until: Literal["load", "domcontentloaded", "networkidle", "commit"] = (
         "domcontentloaded"
     )
