@@ -24,6 +24,7 @@ from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.artifacts import ArtifactStore
 from services.backup import BackupService
+from services.browser import BrowserSessionManager
 from services.calendar import CalendarService
 from services.conversation_search import ConversationSearch
 from services.conversations import ConversationStore
@@ -186,14 +187,17 @@ def offline(request: Request) -> OfflineModeService:
     return request.app.state.offline
 
 
-async def disabled_tools(request: Request, mode: str = "chat") -> frozenset[str]:
+async def disabled_tools(
+    request: Request, mode: str = "chat", *, vision: bool = True
+) -> frozenset[str]:
     """Everything withheld from the agent on this run — the operator's own disabled set
-    (`AE-3.3`) unioned with offline mode's automatic web suspension and the tools that
-    don't belong in ``mode``. Every route that fills ``RunDeps.disabled_tools`` resolves
-    it here, so a run path can't apply one source and drop the others; ``app.py``'s task
-    executor calls the service directly (it has no ``Request``)."""
+    (`AE-3.3`) unioned with offline mode's automatic web suspension, the tools that don't
+    belong in ``mode``, and the ones this run's model can't read the results of. Every
+    route that fills ``RunDeps.disabled_tools`` resolves it here, so a run path can't
+    apply one source and drop the others; ``app.py``'s task executor calls the service
+    directly (it has no ``Request``)."""
     return await effective_disabled_tools(
-        settings_store(request), offline(request), OPERATOR_ID, mode=mode
+        settings_store(request), offline(request), OPERATOR_ID, mode=mode, vision=vision
     )
 
 
@@ -214,6 +218,17 @@ def sandbox_sessions(request_or_ws: Request | WebSocket) -> SandboxSessionManage
     that carries ``app``.
     """
     return request_or_ws.app.state.sandbox
+
+
+def browser_sessions(request_or_ws: Request | WebSocket) -> BrowserSessionManager | None:
+    """The per-conversation browser manager, or None when browser control isn't wired
+    (the feature is off, or no browser to attach to ever came up).
+
+    Accepts a ``WebSocket`` for the same reason ``sandbox_sessions`` does: the frame
+    stream reaches this from a socket handler, and the two carry ``app`` without sharing
+    a base class.
+    """
+    return getattr(request_or_ws.app.state, "browser_sessions", None)
 
 
 def projects(request: Request) -> ProjectStore:

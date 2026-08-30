@@ -86,6 +86,7 @@ from services.llm import TOOL_CALL_SETTINGS
 from services.notifications import NotificationService
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
+from services.tool_policy import vision_disabled_tools
 from services.uploads import UploadStore
 from services.workspace import resolve_workspace
 from tools import (
@@ -180,6 +181,11 @@ class ParkedTurn:
     # source for one fact — and a resume that defaulted it to chat would hand a parked
     # coding turn a different filesystem than the one it parked in.
     binding: ConversationBinding = field(default_factory=ConversationBinding)
+    # Whether the model this turn runs on can read an image, carried for the same reason
+    # `binding` is: the resume must offer the tools the parked turn was offered. Re-reading
+    # it would resolve whatever is bound *now*, which need not be the model the parked
+    # agent still holds — so a re-read would be a second, disagreeing source for one fact.
+    vision: bool = True
 
 
 @dataclass
@@ -401,6 +407,7 @@ async def _park_for_approval(
     conversation_id: str | None = None,
     request_limit: int | None = None,
     binding: ConversationBinding = _CHAT_BINDING,
+    vision: bool = True,
 ) -> None:
     # Only the calls still awaiting the operator are announced; any pre-approved by an
     # active grant ride silently on the parked payload and merge into the resume.
@@ -453,6 +460,7 @@ async def _park_for_approval(
             pre_approved=pre_approved,
             request_limit=request_limit,
             binding=binding,
+            vision=vision,
         )
     )
 
@@ -469,6 +477,7 @@ async def _drive_turn(
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     binding: ConversationBinding = _CHAT_BINDING,
+    vision: bool = True,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
@@ -670,6 +679,7 @@ async def _drive_turn(
                 conversation_id=conversation_id,
                 request_limit=request_limit,
                 binding=binding,
+                vision=vision,
             )
             return _TurnResult(answer=None, messages=messages)
         # Every deferred call is grant-covered — continue the SAME turn inline (no
@@ -709,6 +719,7 @@ async def _verify_and_correct(
     store: ConversationStore | None = None,
     request_limit: int | None = None,
     binding: ConversationBinding = _CHAT_BINDING,
+    vision: bool = True,
     drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
@@ -748,6 +759,7 @@ async def _verify_and_correct(
         conversation_id=conversation_id,
         disabled_tools=disabled_tools,
         binding=binding,
+        vision=vision,
         partial_history_ref=partial_history_ref,
         store=store,
         request_limit=request_limit,
@@ -1166,6 +1178,7 @@ def build_chat_orchestrator(
                 conversation_id=conversation_id,
                 disabled_tools=disabled_tools,
                 binding=binding,
+                vision=vision,
                 partial_history_ref=partial_history_ref,
                 store=store,
                 request_limit=request_limit,
@@ -1199,6 +1212,7 @@ def build_chat_orchestrator(
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
                         binding=binding,
+                        vision=vision,
                         partial_history_ref=partial_history_ref,
                         store=store,
                         request_limit=request_limit,
@@ -1352,7 +1366,11 @@ def build_resume_orchestrator(
                 announced=parked.announced,
                 caps=capabilities,
                 conversation_id=parked.conversation_id,
-                disabled_tools=disabled_tools,
+                # The route re-reads the operator/offline/mode sources so a tool switched
+                # off while this was parked stays hidden; the vision half comes off the
+                # payload instead, because only the parked agent knows which model it
+                # holds (see `ParkedTurn.vision`).
+                disabled_tools=disabled_tools | vision_disabled_tools(parked.vision),
                 # From the parked payload, not a fresh read: the resumed turn must work
                 # in the same place the parked one did.
                 binding=parked.binding,

@@ -205,6 +205,21 @@ export interface ViewSnapshot extends Base {
   preview_artifact_id: string | null;
 }
 
+// --- Browser (the agent's own live page) -----------------------------------
+// The agent touched a page in this conversation's browser, so there is now something to
+// watch. `url` is a token-gated WebSocket path on the API origin carrying JSON frames.
+// There is deliberately **no stopped counterpart**: a browser session outlives the run
+// that opened it and is reaped between turns, when no run stream exists to carry an
+// event. The socket's own `{t:"end"}` message is the stop signal, and
+// `GET /browser/stream/{token}/status` answers for a panel whose socket dropped.
+export interface BrowserLive extends Base {
+  type: "browser.live";
+  conversation_id: string;
+  url: string;
+  page_url: string | null;
+  title: string | null;
+}
+
 // --- Conversation ----------------------------------------------------------
 export interface ConversationTitled extends Base {
   type: "conversation.titled";
@@ -332,6 +347,7 @@ export type RunEvent =
   | ViewLive
   | ViewLiveStopped
   | ViewSnapshot
+  | BrowserLive
   | ConversationTitled
   | ConversationCompacted
   | CitationAdded

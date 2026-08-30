@@ -240,6 +240,29 @@ class Settings(BaseSettings):
     web_fetch_distill_max_windows: int = 8
     web_fetch_distill_timeout_s: float = 90.0
 
+    # Browser control — the agent drives a real page (click, type, submit) rather than
+    # only reading one. It attaches to the *same* containerized Chromium web fetch
+    # renders in, so there is one browser process, one SSRF proxy, and one thing offline
+    # mode has to bring down. There is no separate on/off switch: `web_fetch_enabled`
+    # decides whether a browser exists, and with none there is nothing to attach to.
+    #
+    # A session is conversation-scoped, not per-turn: a login or a half-filled form in
+    # one turn must still be there in the next, which is the whole point of controlling a
+    # browser rather than fetching pages. `idle_ttl_s` is how long one may sit unused
+    # before it is reaped, `reap_interval_s` how often the sweep runs, and `max_live`
+    # caps how many conversations hold one at once — each costs a Playwright driver
+    # process, so this is deliberately small.
+    browser_control_idle_ttl_s: float = 900.0
+    browser_control_reap_interval_s: float = 60.0
+    browser_control_max_live: int = 3
+    # What the operator watches in the Browser panel: a CDP screencast of the live page,
+    # JPEG frames bounded to the same 1280×800 viewport the stealth context options use.
+    # `quality` trades bytes for fidelity on a stream nobody reads text off — the model
+    # reads the page through `snapshot`/`get_text`, not through this.
+    browser_control_frame_quality: int = 60
+    browser_control_frame_width: int = 1280
+    browser_control_frame_height: int = 800
+
     # Managed web search. So search "just works" with zero operator setup, the
     # backend runs its own SearXNG in a container (the same runtime the sandbox
     # uses), bound to loopback, and queries it automatically — the DB-backed

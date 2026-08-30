@@ -420,6 +420,26 @@ class ViewSnapshot(_Body):
     preview_artifact_id: str | None = None
 
 
+# --- Browser (the agent's own live page) --------------------------------------
+class BrowserLive(_Body):
+    """The agent touched a page in the conversation's browser, and there is now something
+    to watch. ``url`` is a token-gated WebSocket path on this same API origin
+    (``/browser/stream/{token}``) carrying JSON frames of the live page.
+
+    Frontend contract: open it as a socket and render each frame's base64 JPEG. Unlike
+    ``view.live`` there is **no stopped counterpart**, and deliberately so: a browser
+    session outlives the run that opened it and is reaped between turns, when no run
+    stream exists to carry an event. The socket's own ``{"t": "end"}`` message is the
+    stop signal, and ``GET /browser/stream/{token}/status`` answers for a panel whose
+    socket dropped. Additive to v1; no bump."""
+
+    type: Literal["browser.live"] = "browser.live"
+    conversation_id: str
+    url: str  # "/browser/stream/{token}"
+    page_url: str | None = None
+    title: str | None = None
+
+
 # --- Conversation ------------------------------------------------------------
 class ConversationTitled(_Body):
     """The chassis named a freshly-created conversation from its first exchange,
@@ -562,6 +582,7 @@ EventBody = Annotated[
     | ViewLive
     | ViewLiveStopped
     | ViewSnapshot
+    | BrowserLive
     | ConversationTitled
     | ConversationCompacted
     | ApprovalRequired

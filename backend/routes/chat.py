@@ -367,7 +367,10 @@ async def _submit_turn(
         categories=deps.tool_categories(request),
         instruction_providers=deps.instruction_providers(request),
         prompt_context_providers=deps.prompt_context_providers(request),
-        disabled_tools=await deps.disabled_tools(request, binding.mode),
+        # `models[4]` is the resolved main model's vision fact — the same one
+        # `compose_turn` passes to the engine for attachments. A tool that answers with
+        # an image is withheld from a model that can't read one.
+        disabled_tools=await deps.disabled_tools(request, binding.mode, vision=models[4]),
         binding=binding,
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,

@@ -831,6 +831,22 @@ export async function fetchPlan(conversationId: string): Promise<PlanItem[]> {
   return api.get<PlanItem[]>(`/conversations/${conversationId}/plan`);
 }
 
+/** The stream path for this thread's live agent browser, or null when it has none.
+ *
+ *  The `browser.live` event announces a session as the agent first touches a page, but a
+ *  client that reloads (or opens the thread later) has no stream to replay and the
+ *  session outlives the run that announced it — so the backend's session manager, not the
+ *  transcript, is what the panel starts from.
+ */
+export async function fetchBrowserSession(
+  conversationId: string,
+): Promise<string | null> {
+  const info = await api.get<{ active: boolean; url: string | null }>(
+    `/browser/session/${conversationId}`,
+  );
+  return info.active ? info.url : null;
+}
+
 /** Revoke a conversation auto-approval — the next call to that tool asks again. */
 export async function revokeGrant(
   conversationId: string,
@@ -922,6 +938,11 @@ export function createChatStream(
   // live (which fold onto message blocks), snapshots are conversation-scoped, so
   // they live here beside the messages rather than in the transcript.
   const [snapshots, setSnapshots] = createSignal<ViewSnapshotRef[]>([]);
+  // The thread's live agent browser, as a stream path — conversation-scoped like the
+  // snapshots, and for a stronger reason: the browser session outlives the run that
+  // opened it, so a message block (which replays with the transcript) would resurrect a
+  // browser that has since been reaped.
+  const [browserStream, setBrowserStream] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
   // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
@@ -1074,6 +1095,9 @@ export function createChatStream(
     // Seed the git-style snapshot history from the loaded thread (empty for a new
     // conversation); the live `view.snapshot` event appends to it from here.
     setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
+    // A live browser belongs to the thread, not to the client — so a switch clears the
+    // previous thread's and asks the backend whether *this* one has one.
+    setBrowserStream(null);
     // The plan is owned by the backend and survives reloads, so a thread switch clears
     // the old one and refetches rather than carrying the previous thread's list over.
     setPlan([]);
@@ -1094,6 +1118,16 @@ export function createChatStream(
         .catch(() => {
           // The panel is an aid, not the transcript — a failed backfill leaves it
           // empty and the next `plan.updated` fills it in.
+        });
+      void fetchBrowserSession(requested)
+        .then((path) => {
+          // Only if the operator is still on this thread, and the stream hasn't already
+          // announced a session (which would be newer than this answer).
+          if (key() === requested && browserStream() === null)
+            setBrowserStream(path);
+        })
+        .catch(() => {
+          // Browser control may not be wired at all; no panel is the right answer.
         });
     }
   });
@@ -1314,6 +1348,14 @@ export function createChatStream(
                 m.blocks = m.blocks.filter((b) => b.kind !== "view_live");
           }),
         );
+        break;
+      case "browser.live":
+        // Conversation-scoped, not a message block: the session outlives this run, and a
+        // block would replay a long-reaped browser on the next cold load. There is no
+        // stopped counterpart — the panel's own socket carries the end (see
+        // `browserLive.ts`), because a reap happens between turns with no stream to
+        // carry an event.
+        setBrowserStream(ev.url);
         break;
       case "view.snapshot": {
         // A version minted by `show`: append to the conversation-scoped version list
@@ -2457,6 +2499,11 @@ export function createChatStream(
     messages,
     /** The conversation's workspace snapshots (git-style history), newest last. */
     snapshots,
+    /** The stream path of this thread's live agent browser, or null when it has none. */
+    browserStream,
+    /** Drop the live browser — the panel calls this when its socket reports the session
+     *  is gone, which is the only signal a reap between turns can produce. */
+    clearBrowserStream: () => setBrowserStream(null),
     toggleSnapshotKeeper,
     sending,
     errored,
