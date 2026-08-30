@@ -51,6 +51,7 @@ import {
 import { isApiError } from "~/lib/api";
 import { sendBlockedReason, setSelectedModel } from "~/lib/stores/models";
 import { createComposerAttachments } from "~/features/uploads/data";
+import { BrowserPanel } from "../components/BrowserPanel";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { BranchChip } from "../components/BranchChip";
 import { ModeControl } from "../components/ModeControl";
@@ -291,7 +292,12 @@ export function ChatRoomScreen(): JSX.Element {
   // The viewport only makes sense with something to show. Gate the effective open
   // state on having items so a persisted-open thread that's since lost its items
   // (or a fresh chat that never had any) never shows an empty panel.
-  const viewportShown = () => state().open && viewItems().length > 0;
+  // What the panel has to show: the thread's View versions, or a live agent browser.
+  // The browser is not a View item — it has no version, no code and no history — so it
+  // has to be counted here or the slot would stay shut through a whole browsing session.
+  const hasPanelContent = () =>
+    viewItems().length > 0 || stream.browserStream() !== null;
+  const viewportShown = () => state().open && hasPanelContent();
   const toggleViewport = () => {
     patch({ open: !state().open });
   };
@@ -328,7 +334,7 @@ export function ChatRoomScreen(): JSX.Element {
   // close is respected and subsequent items update it silently.
   createEffect(() => {
     const id = currentId();
-    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
+    if (id !== null && hasPanelContent() && claimAutoOpen(id)) {
       openViewport();
     }
   });
@@ -602,7 +608,26 @@ export function ChatRoomScreen(): JSX.Element {
   // toggles the panel, but the sheet's Collapse (routed through the same
   // ViewActionRow) must reset `fullscreen` and return focus to the trigger —
   // `closeSheet` does both, `toggleViewport` does neither.
+  // While the agent has a live browser, it takes the slot. A browser is a place the
+  // agent *is*, not an artifact it produced, so it gets none of the View's version
+  // chrome — and it is transient, so the versioned View comes straight back when the
+  // session ends rather than the operator having to switch back to it.
   const renderPanel = (onClose: () => void) => (
+    <Show when={stream.browserStream()} fallback={renderViewportPanel(onClose)}>
+      {(path) => (
+        <BrowserPanel
+          streamPath={path()}
+          onEnded={stream.clearBrowserStream}
+          fullscreen={state().fullscreen}
+          onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
+          onClose={onClose}
+          panelRef={setPanelEl}
+        />
+      )}
+    </Show>
+  );
+
+  const renderViewportPanel = (onClose: () => void) => (
     <ViewportPanel
       items={viewItems()}
       selectedKey={state().pinnedKey}
@@ -678,10 +703,8 @@ export function ChatRoomScreen(): JSX.Element {
                 leading="eye"
                 aria-label="Toggle viewport panel"
                 onClick={toggleViewport}
-                disabled={viewItems().length === 0}
-                class={
-                  viewItems().length > 0 ? undefined : "hidden lg:inline-flex"
-                }
+                disabled={!hasPanelContent()}
+                class={hasPanelContent() ? undefined : "hidden lg:inline-flex"}
               >
                 <Show when={unseenCount() > 0}>
                   {unseenCount() > 9 ? "9+" : unseenCount()}

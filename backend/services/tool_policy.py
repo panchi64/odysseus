@@ -5,14 +5,16 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Three independent sources feed one set:
+Four independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
   so it stays in the clear like every other app preference;
 - **offline mode's automatic web-tool suspension** (``services/offline``), derived from
   connectivity rather than chosen;
-- **the run's mode** — whether a tool belongs in a chat thread or a coding one.
+- **the run's mode** — whether a tool belongs in a chat thread or a coding one;
+- **the model's own reach** — a tool that answers with an image is withheld from a model
+  that cannot see one.
 
 They **union**: :func:`effective_disabled_tools` is the one place that rule lives, so no
 run path can apply one source and silently drop the others. Every site that fills
@@ -110,6 +112,25 @@ CODING_ONLY_TOOLS = frozenset(
 CHAT_ONLY_TOOLS = frozenset({"code_execute", "code_run_host_command"})
 
 
+# Tools whose *result* only a vision model can read — they return image content rather
+# than text. Written out here for the same reason the mode sets are: `services/` sits
+# below `tools/`, so importing the category that owns them would invert the dependency
+# order. `tests/test_tool_policy.py` checks the literal against the real catalog.
+VISION_ONLY_TOOLS = frozenset({"browse_screenshot"})
+
+
+def vision_disabled_tools(vision: bool) -> frozenset[str]:
+    """The tools a model that cannot see should not be offered.
+
+    Not a safety gate — a courtesy and a cost one. A text-only model handed a screenshot
+    tool spends a call producing image content its provider will reject or silently drop,
+    and learns nothing either way. It loses nothing by the withholding: reading a page
+    through `snapshot`/`get_text` is the cheaper path the browser capability recommends
+    first regardless, and the operator still watches the live page in the panel.
+    """
+    return frozenset() if vision else VISION_ONLY_TOOLS
+
+
 def mode_disabled_tools(mode: str) -> frozenset[str]:
     """The tools that do not belong in ``mode``.
 
@@ -125,16 +146,24 @@ async def effective_disabled_tools(
     owner_id: str,
     *,
     mode: str = "chat",
+    vision: bool = True,
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with
-    offline mode's automatic web suspension and the tools that don't belong in ``mode``.
+    offline mode's automatic web suspension, the tools that don't belong in ``mode``, and
+    the ones whose results this run's model cannot read.
 
-    A union, never a replacement — the three answer different questions ("the operator
-    does not want this tool", "this tool cannot work right now", "this tool is not part
-    of this kind of thread"), and any one of them alone is enough to withhold a tool.
+    A union, never a replacement — the four answer different questions ("the operator does
+    not want this tool", "this tool cannot work right now", "this tool is not part of this
+    kind of thread", "this model cannot read what this tool returns"), and any one of them
+    alone is enough to withhold a tool.
+
+    ``vision`` defaults to True — permissive — because the callers that cannot know
+    (a background agent that resolves its own model) should not have tools taken away by
+    an assumption; the interactive paths, which do know, pass the resolved answer.
     """
     return (
         await get_disabled_tools(settings, owner_id)
         | offline.web_tools_disabled()
         | mode_disabled_tools(mode)
+        | vision_disabled_tools(vision)
     )

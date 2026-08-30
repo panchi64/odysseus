@@ -23,10 +23,12 @@ from runs import Run, RunStream
 from services.registry import ModelRegistry
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 from services.tool_policy import (
+    VISION_ONLY_TOOLS,
     effective_disabled_tools,
     get_disabled_tools,
     mode_disabled_tools,
     set_tool_enabled,
+    vision_disabled_tools,
 )
 from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
@@ -79,6 +81,24 @@ async def test_catalog_matches_the_names_the_agent_is_offered():
 _PINNED_CATALOG = {
     "agents_delegate_task",
     "attachments_provision",
+    "browse_click",
+    "browse_console_messages",
+    "browse_execute_js",
+    "browse_get_text",
+    "browse_go_back",
+    "browse_go_forward",
+    "browse_handle_next_dialog",
+    "browse_hover",
+    "browse_navigate",
+    "browse_network_requests",
+    "browse_press_key",
+    "browse_screenshot",
+    "browse_scroll",
+    "browse_select_option",
+    "browse_snapshot",
+    "browse_tabs",
+    "browse_type_text",
+    "browse_wait_for",
     "builtin_now",
     "calendar_agenda",
     "calendar_create_event",
@@ -228,6 +248,25 @@ async def test_offline_alone_still_applies_with_no_operator_choices():
     assert disabled - mode_disabled_tools("chat") == {"web_search"}
 
 
+async def test_a_model_that_cannot_see_is_not_offered_an_image_tool():
+    # `browse_screenshot` answers with image content: a text-only model spends the call
+    # and learns nothing, so it is withheld — and offered again the moment it can see.
+    store = _store()
+    offline = _StubOffline(frozenset())
+    blind = await effective_disabled_tools(store, offline, OWNER, vision=False)
+    sighted = await effective_disabled_tools(store, offline, OWNER, vision=True)
+    assert "browse_screenshot" in blind
+    assert "browse_screenshot" not in sighted
+    # Only that one — the other seventeen browse tools return text and are unaffected.
+    assert blind - sighted == {"browse_screenshot"}
+
+
+def test_the_vision_gate_names_tools_that_actually_exist():
+    # The set is written out in `services/` (which sits below `tools/`), so a harness
+    # rename would otherwise leave it silently covering nothing.
+    assert VISION_ONLY_TOOLS <= _PINNED_CATALOG
+
+
 def _force_offline(monkeypatch, app, *names: str) -> None:
     """Pin the live offline service's automatic set without swapping the service out —
     the lifespan still owns its shutdown."""
@@ -275,7 +314,11 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
         patch_model_resolution(monkeypatch)
         await client.post("/chat", json={"prompt": "hi"})
 
-    assert captured["disabled"] - mode_disabled_tools("chat") == {
+    # The stub model the test app resolves declares no vision, so the image-returning
+    # tools are withheld too; subtract the automatic sources to leave the two this test
+    # is actually about (one the operator turned off, one offline mode suspended).
+    automatic = mode_disabled_tools("chat") | vision_disabled_tools(False)
+    assert captured["disabled"] - automatic == {
         "builtin_now",
         "web_search",
     }

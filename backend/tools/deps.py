@@ -54,6 +54,11 @@ class RunDeps:
     # Never set by a construction site: it is a per-run cache, not an input, and it lives
     # here so it dies with the run instead of in a module-level dict.
     workspace: RunWorkspace | None = field(default=None, repr=False, compare=False)
+    # Browser-session tokens this run has already announced (`browser.live`). Same
+    # reasoning as `workspace`: per-run bookkeeping, so it dies with the run rather than
+    # accumulating in the app-wide toolset. A conversation's browser outlives the run, so
+    # without this every browse tool call would re-announce the same live session.
+    announced_browsers: set[str] = field(default_factory=set, repr=False, compare=False)
 
     @property
     def sandbox_key(self) -> str:

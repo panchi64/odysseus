@@ -123,6 +123,11 @@ class ManagedBrowser:
         self._runtime: str | None = None
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
+        # The container's CDP endpoint, kept after bring-up so a *second* client can
+        # attach to the same Chromium instead of starting one of its own — the agent's
+        # controllable browser (`services/browser`) does exactly that, inheriting this
+        # container's isolation and its SSRF proxy rather than duplicating both.
+        self._ws_url: str | None = None
         self._user_agent = ""  # resolved from the override or the engine version in _bring_up
         self._browser_version = ""  # the engine version, for matching the client-hint brands
         self._task: asyncio.Task | None = None
@@ -134,6 +139,17 @@ class ManagedBrowser:
         return (
             self._browser is not None and self._browser.is_connected() and self._proxy_up
         )
+
+    @property
+    def cdp_url(self) -> str | None:
+        """The container's CDP endpoint for another client to attach to, or None when
+        there is nothing safe to attach to.
+
+        Gated on :attr:`available` for the same fail-closed reason it is: handing out the
+        endpoint while the SSRF proxy is down would let a second client reach the network
+        unguarded, which is precisely what that flag exists to prevent.
+        """
+        return self._ws_url if self.available else None
 
     async def start(self) -> None:
         """Begin bring-up. Returns immediately — the pull/launch/connect runs in a
@@ -272,6 +288,7 @@ class ManagedBrowser:
             self._pw = pw
             browser = await pw.chromium.connect_over_cdp(ws_url)
             self._browser = browser
+            self._ws_url = ws_url
         except Exception:
             logger.exception("web fetch: could not connect to the browser over CDP")
             await self._disconnect()
@@ -351,6 +368,7 @@ class ManagedBrowser:
 
     async def _disconnect(self) -> None:
         self._proxy_up = False
+        self._ws_url = None
         if self._browser is not None:
             try:
                 await self._browser.close()
