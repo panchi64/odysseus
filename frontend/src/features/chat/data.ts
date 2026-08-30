@@ -1755,6 +1755,11 @@ export function createChatStream(
           list[i].versionIndex = server[i].version_index;
           list[i].versionCount = server[i].version_count;
           list[i].pinned = server[i].pinned;
+          // The store owns the stop marker (a continue retires it), so take its
+          // word here too — otherwise a turn cleared server-side stays warned
+          // locally until a full reseat.
+          list[i].blocked = server[i].blocked_reason != null;
+          list[i].blockedDetail = server[i].blocked_reason ?? undefined;
         }
       }),
     );
@@ -1882,6 +1887,9 @@ export function createChatStream(
   async function send(
     text: string,
     attachmentIds: string[] = [],
+    /** Set only by `continueTurn`: the branch node id of the stopped turn this
+     *  send resumes, so the backend retires that turn's stop marker for good. */
+    continuesMessageId?: string,
   ): Promise<void> {
     // A turn needs either prompt text or at least one attachment to send.
     if (!text.trim() && attachmentIds.length === 0) return;
@@ -1945,6 +1953,7 @@ export function createChatStream(
         // sending them again would be a second source for one fact.
         mode: wasNew ? options.mode?.() : undefined,
         project_id: wasNew ? options.projectId?.() : undefined,
+        continues_message_id: continuesMessageId,
       });
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
@@ -1972,19 +1981,33 @@ export function createChatStream(
       return;
     }
     activeConversationId = created.conversation_id;
+    // Accepted — so the backend has retired the stop marker this turn resumes.
+    // Echo that now rather than waiting for the run to finish: the warning is about
+    // a turn the operator has visibly just resumed, and leaving it up for the length
+    // of the new run reads as the Continue press having done nothing.
+    if (continuesMessageId !== undefined)
+      patchById(continuesMessageId, (m) => {
+        m.blocked = false;
+        m.blockedDetail = undefined;
+      });
     await driveRun(created.run_id, assistantId, wasNew);
   }
 
   /** Resume a turn a bound stopped (inactivity/wall-clock timeout or cancel) by
    *  sending a fresh "Continue." turn on the same conversation. Reuses the ordinary
-   *  send path — no backend change — so a small "Continue." bubble appears in the
-   *  transcript and the model picks up where the prior turn left off. */
-  async function continueTurn(): Promise<void> {
+   *  send path, so a small "Continue." bubble appears in the transcript and the
+   *  model picks up where the prior turn left off.
+   *
+   *  ``messageId`` is the stopped turn's branch node id — the backend retires that
+   *  turn's stop marker when it accepts the turn, so the warning doesn't linger
+   *  under a turn the operator already resumed, and a reload reads the retirement
+   *  back from the store rather than resurrecting it. */
+  async function continueTurn(messageId?: string): Promise<void> {
     // A blocked turn is settled, so this is a fresh turn — but if a run is already
     // in flight (the operator started a new one), don't inject "Continue." as a
     // steering message; just no-op.
     if (activeConversationId === null || sending()) return;
-    await send(CONTINUE_PROMPT);
+    await send(CONTINUE_PROMPT, [], messageId);
   }
 
   /** Cancel the in-flight run for real: tell the backend to stop it (it keeps

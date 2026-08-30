@@ -84,6 +84,12 @@ class ChatCreate(BaseModel):
     # writes one script that calls many tools). This is a mode of the chat.
     mode: Literal["chat", "coding"] = "chat"
     project_id: str | None = None
+    # Set when this turn is the operator resuming a turn a bound stopped (the
+    # "Continue" button under a stop marker): the branch node id of the turn that
+    # carries the marker. Accepting the turn retires that marker durably, so the
+    # warning doesn't outlive the thing it was asking for. Ignored on a new
+    # conversation — nothing there can be blocked yet.
+    continues_message_id: str | None = None
 
 
 class RegenerateCreate(BaseModel):
@@ -375,9 +381,7 @@ async def _submit_turn(
         request_limit=await get_agent_request_limit(deps.settings_store(request), OPERATOR_ID),
         # Same again for the context gauge's boundaries: resolved once here so send,
         # regenerate and edit all report severity against the operator's own pair.
-        context_thresholds=await get_context_thresholds(
-            deps.settings_store(request), OPERATOR_ID
-        ),
+        context_thresholds=await get_context_thresholds(deps.settings_store(request), OPERATOR_ID),
         # Same reason as the request limit: every interactive turn runs under the
         # operator's inactivity bound (else the config default).
         inactivity_timeout_s=await get_inactivity_timeout(
@@ -440,6 +444,19 @@ def _enqueue_steering(
         conversation_id=conversation_id,
         queued_message_id=message.id,
     )
+
+
+async def _retire_stop_marker(
+    store: ConversationStore, conversation_id: str, body: ChatCreate
+) -> None:
+    """Clear the stop marker this turn resumes, if it says it resumes one.
+
+    Best-effort by design: an id the store no longer knows (the turn was deleted or
+    regenerated out from under a stale client) means there is no marker left to
+    retire, which is the outcome the caller wanted anyway."""
+    if body.continues_message_id is None:
+        return
+    await store.clear_blocked_reason(conversation_id, body.continues_message_id)
 
 
 async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> None:
@@ -517,8 +534,12 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
     except ConversationBusyError:
         queued = _enqueue_steering(registry, conversation_id, body)
         if queued is not None:
+            await _retire_stop_marker(store, conversation_id, body)
             return queued
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from None
+    # Only once the turn is actually accepted — a rejected send leaves the operator
+    # with the same unfinished turn, so it must leave them the marker too.
+    await _retire_stop_marker(store, conversation_id, body)
     try:
         return await _submit_turn(
             request,

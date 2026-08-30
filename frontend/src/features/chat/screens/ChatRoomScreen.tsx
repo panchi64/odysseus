@@ -787,7 +787,7 @@ export function ChatRoomScreen(): JSX.Element {
                         onResolveApproval={stream.resolveApproval}
                         onResolveHostCommands={stream.resolveHostCommands}
                         onRegenerate={() => void stream.regenerate(message.id)}
-                        onContinue={() => void stream.continueTurn()}
+                        onContinue={() => void stream.continueTurn(message.id)}
                         onEditMessage={(id, text) => void stream.edit(id, text)}
                         onSwitchVersion={(id, i) =>
                           void stream.switchVersion(id, i)

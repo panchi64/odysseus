@@ -795,3 +795,84 @@ async def test_chat_route_returns_conversation_and_continues(monkeypatch):
         history = await app.state.conversations.history(conv_id)
 
     assert len(history) >= 4  # two turns, both persisted to the same conversation
+
+
+async def test_continuing_a_stopped_turn_retires_its_marker_for_good(tmp_path, monkeypatch):
+    # The stop marker is a standing "this turn didn't finish — resume it?" prompt.
+    # Once the operator has resumed it, leaving the warning up is the UI arguing with
+    # itself, so the clear has to be as durable as the marker was.
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, db_engine = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_noop"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+
+    views = await store.messages_view(conv)
+    blocked = next(v for v in views if v.blocked_reason is not None)
+
+    assert await store.clear_blocked_reason(conv, blocked.id) is True
+    assert all(v.blocked_reason is None for v in await store.messages_view(conv))
+    # Already-clear is not an error, but reports that there was nothing to retire.
+    assert await store.clear_blocked_reason(conv, blocked.id) is False
+
+    # Reload parity: the retired marker must not come back from the DB.
+    await store.stop()
+    cold = ConversationStore(db_engine, await _unlocked_vault(tmp_path))
+    await cold.start()
+    assert all(v.blocked_reason is None for v in await cold.messages_view(conv))
+    await cold.stop()
+
+
+async def test_clearing_an_unknown_id_retires_the_last_stop_on_the_path(tmp_path, monkeypatch):
+    # A turn that stopped before anything persisted is shown under the client's own
+    # optimistic id, which is not a node id here. The marker it means is still the
+    # only one on the path, so the fallback retires that rather than no-oping and
+    # leaving a warning the operator has visibly resolved.
+    toolset = FunctionToolset()
+
+    @toolset.tool_plain
+    def noop(x: int) -> int:
+        return x
+
+    monkeypatch.setattr(
+        engine, "get_settings", lambda: Settings(agent_request_limit=25, agent_tool_calls_limit=0)
+    )
+    store, _ = await _fresh_store(tmp_path)
+    await store.start()
+    conv = await store.create_conversation("operator", title="t")
+
+    reg = RunRegistry()
+    orch = build_chat_orchestrator(
+        "call the tool",
+        model=TestModel(call_tools=["x_noop"]),
+        categories={"x": toolset},
+        store=store,
+        conversation_id=conv,
+    )
+    run = reg.submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+    assert any(v.blocked_reason is not None for v in await store.messages_view(conv))
+
+    assert await store.clear_blocked_reason(conv, "a7-client-side-id") is True
+    assert all(v.blocked_reason is None for v in await store.messages_view(conv))
+    # Nothing blocked left, so the fallback has nothing to find either.
+    assert await store.clear_blocked_reason(conv, "a7-client-side-id") is False
+    await store.stop()

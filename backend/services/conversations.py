@@ -138,12 +138,13 @@ class _PersistJob:
       parents) and reseat the active leaf.
     """
 
-    kind: str  # "messages" | "active_leaf" | "delete" | "pin"
+    kind: str  # "messages" | "active_leaf" | "delete" | "pin" | "unblock"
     conversation_id: str
     active_leaf_id: str | None = None
     rows: list[_Row] = field(default_factory=list)
     deleted_ids: list[str] = field(default_factory=list)
-    # For "pin": the message to (un)pin and the value to set.
+    # For "pin": the message to (un)pin and the value to set. "unblock" reuses
+    # ``message_id`` — the turn whose stop marker the operator resolved.
     message_id: str | None = None
     pinned: bool = False
     # The active path's last-used model at queue time — written denormalized onto
@@ -1550,6 +1551,43 @@ class ConversationStore:
         )
         return True
 
+    async def clear_blocked_reason(self, conversation_id: str, message_id: str) -> bool:
+        """Retire the persistent stop marker on the turn whose branch node is
+        ``message_id``. Returns False if the node is unknown or was never blocked.
+
+        A stop marker says "this turn was cut short and nothing has been done about
+        it" — a standing prompt to resume. Once the operator *has* resumed it, the
+        marker is answering a question nobody is asking any more, so it is cleared
+        rather than left to accumulate down the transcript. Clearing is durable (it
+        rewrites the node and its row) because the marker itself is durable: a
+        reload must not resurrect a stop the operator already handled. Queued behind
+        any in-flight message writes so it lands on a persisted row.
+
+        An unrecognized ``message_id`` falls back to the last blocked turn on the
+        active path. A live client names the turn by the id it is *showing*, and for
+        a turn that stopped before anything was persisted that id is the client's own
+        optimistic one — never a node id here. The marker it means is unambiguous
+        (nothing else on the path is blocked below it), so honour the intent rather
+        than leaving a stop the operator has visibly resolved."""
+        tree = await self._tree(conversation_id)
+        node = tree.nodes.get(message_id)
+        if node is None:
+            node = next(
+                (n for n in reversed(tree.active_path()) if n.blocked_reason is not None),
+                None,
+            )
+        if node is None or node.blocked_reason is None:
+            return False
+        node.blocked_reason = None
+        self._submit(
+            _PersistJob(
+                kind="unblock",
+                conversation_id=conversation_id,
+                message_id=node.id,
+            )
+        )
+        return True
+
     async def delete_message(self, conversation_id: str, message_id: str) -> bool:
         """Delete the turn whose branch node is ``message_id`` and everything after
         it on every branch (its subtree), reseating the active leaf on the parent if
@@ -1716,6 +1754,8 @@ class ConversationStore:
             await self._persist_delete(job)
         elif job.kind == "pin":
             await self._persist_pin(job)
+        elif job.kind == "unblock":
+            await self._persist_unblock(job)
         # Deliberately not in a `finally`: a raise here is retried by the worker, and
         # the conversation must stay pinned across those attempts. A job that exhausts
         # its retries releases through `_on_drop` instead.
@@ -1878,6 +1918,17 @@ class ConversationStore:
             row = session.get(Message, job.message_id) if job.message_id else None
             if row is not None:
                 row.pinned = job.pinned
+
+        await in_session(self._engine, work)
+
+    async def _persist_unblock(self, job: _PersistJob) -> None:
+        def work(session: Session) -> None:
+            # Like the pin write, deliberately does not bump updated_at: retiring a
+            # stop marker is bookkeeping on an old turn, and the turn that actually
+            # resumes it floats the conversation on its own.
+            row = session.get(Message, job.message_id) if job.message_id else None
+            if row is not None:
+                row.blocked_reason = None
 
         await in_session(self._engine, work)
 

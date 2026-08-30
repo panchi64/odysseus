@@ -222,3 +222,58 @@ async def test_inactivity_timeout_rejects_zero_and_negative():
         for bad in (0, -1):
             resp = await client.put("/chat/settings", json={"inactivity_timeout_s": bad})
             assert resp.status_code == 422
+
+
+async def test_continue_turn_retires_the_stop_marker(monkeypatch):
+    # The "Continue" button under a stopped turn resumes it as an ordinary turn and
+    # names the turn it resumes. Accepting that turn must retire the marker durably —
+    # a warning that survives the operator acting on it is a warning they learn to
+    # ignore.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, app):
+        first = await client.post("/chat", json={"prompt": "say hi"})
+        conv = first.json()["conversation_id"]
+        await collect_sse_events(client, first.json()["run_id"])
+
+        store = app.state.conversations
+        stopped = (await store.messages_view(conv))[-1]
+        # Stamp a marker the way a bound-stopped run would, then continue that turn.
+        store._cache_get(conv).nodes[stopped.id].blocked_reason = "cancelled by the operator"
+        assert (await store.messages_view(conv))[-1].blocked_reason is not None
+
+        resumed = await client.post(
+            "/chat",
+            json={
+                "prompt": "Continue.",
+                "conversation_id": conv,
+                "continues_message_id": stopped.id,
+            },
+        )
+        assert resumed.status_code == 202
+        await collect_sse_events(client, resumed.json()["run_id"])
+
+        detail = await client.get(f"/conversations/{conv}")
+        assert all(m["blocked_reason"] is None for m in detail.json()["messages"])
+
+
+async def test_a_rejected_send_leaves_the_stop_marker_alone(monkeypatch):
+    # A turn the backend refuses outright leaves the operator with the same
+    # unfinished turn, so it has to leave them the prompt to resume it too.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, app):
+        first = await client.post("/chat", json={"prompt": "say hi"})
+        conv = first.json()["conversation_id"]
+        await collect_sse_events(client, first.json()["run_id"])
+
+        store = app.state.conversations
+        stopped = (await store.messages_view(conv))[-1]
+        store._cache_get(conv).nodes[stopped.id].blocked_reason = "cancelled by the operator"
+
+        rejected = await client.post(
+            "/chat",
+            json={"prompt": "", "conversation_id": conv, "continues_message_id": stopped.id},
+        )
+        assert rejected.status_code == 422
+        assert (await store.messages_view(conv))[-1].blocked_reason is not None
