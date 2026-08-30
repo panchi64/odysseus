@@ -202,10 +202,18 @@ export function BrowserPanel(props: {
             >
               {(current) => (
                 <img
-                  /* `object-contain` letterboxes rather than crops: the operator is
-                     checking what the agent sees, and a cropped frame hides the part of
-                     the page a click landed on. */
-                  class="h-full w-full object-contain transition-opacity"
+                  /* Full width at the frame's own aspect, anchored to the top of the
+                     column rather than centred in it: the slot is taller than a 16:10
+                     page frame, and centring split the difference into a band above and
+                     a band below, which reads as a smaller picture than it is. Whatever
+                     is left over now collects in one place, under the frame.
+
+                     `max-h-full` for the short-panel case, where the height is the
+                     binding constraint and `object-contain` letterboxes instead — it
+                     letterboxes rather than crops because the operator is checking what
+                     the agent sees, and a cropped frame hides the part of the page a
+                     click landed on. */
+                  class="block max-h-full w-full object-contain transition-opacity"
                   classList={{ "opacity-50": state().status === "ended" }}
                   src={`data:image/jpeg;base64,${current().data}`}
                   alt={
@@ -218,7 +226,10 @@ export function BrowserPanel(props: {
             </Show>
 
             {/* Non-blocking status strips, mirroring ViewLiveContent: a reconnect or an
-                ending is reported over the last frame rather than replacing it. */}
+                ending is reported alongside the last frame rather than replacing it.
+                It rides the panel's bottom edge, not the frame's — the frame is
+                top-anchored and any leftover height falls below it, so anchoring the
+                strip to the frame would float it mid-panel on a wide slot. */}
             <Show when={state().status !== "streaming"}>
               <div class="absolute inset-x-0 bottom-0 bg-surface/80 px-3 py-1">
                 <Text variant="micro" tone="dim">

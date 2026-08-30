@@ -51,15 +51,40 @@ const V2_KEY = "ody.chat.viewer.v2";
  *  Left in place on migration — only read once, to seed a conversation that has
  *  no v3 *or* v2 entry. */
 const LEGACY_OPEN_KEY = "ody.chat.viewport";
-/** Legacy (and still current) global panel width key — `viewerWidth` keeps using it
+/** Legacy (and still current) global panel width key — `panelWidth` keeps using it
  *  directly rather than folding width into the per-conversation v2 record. */
 const WIDTH_KEY = "ody.chat.viewport.w";
+/** The live browser's own width. Both panels take the same slot but want very
+ *  different sizes: a document or a diff reads fine in a narrow column, while a
+ *  1280×800 page frame scaled into one is a thumbnail. Remembering them separately is
+ *  what lets a browser session widen the slot and hand the operator's own width back
+ *  when it ends, without either drag overwriting the other. */
+const BROWSER_WIDTH_KEY = "ody.chat.viewport.browser.w";
 const SCROLL_KEY = "ody.chat.viewer.scroll";
 const SCROLL_LRU_CAP = 200;
 
 const WIDTH_DEFAULT = 384;
 const WIDTH_MIN = 320;
-const WIDTH_MAX = 760;
+/** The widest the panel may be asked for. The *effective* max is also bounded by the
+ *  window (see `ceiling`), so this is a preference cap rather than a layout one. */
+const WIDTH_CEILING = 1200;
+/** Room the conversation column keeps however wide the panel is dragged — below this
+ *  the transcript stops being a transcript and becomes a gutter. */
+const TRANSCRIPT_MIN = 480;
+
+/** The live browser's resting width and floor. A 1280×800 frame needs real width
+ *  before the page inside it is legible at all: at the View's 384px default it renders
+ *  240px tall, which is a thumbnail of a screenshot. */
+const BROWSER_WIDTH_DEFAULT = 860;
+const BROWSER_WIDTH_MIN = 640;
+
+/** Which panel holds the slot. They size independently — see `BROWSER_WIDTH_KEY`. */
+export type PanelKind = "view" | "browser";
+
+const MIN_WIDTH: Record<PanelKind, number> = {
+  view: WIDTH_MIN,
+  browser: BROWSER_WIDTH_MIN,
+};
 
 type PersistedMap = Record<string, ViewerPersistedState>;
 
@@ -127,26 +152,63 @@ export function useViewerPersistence(conversationId: () => string): {
   return { state, patch };
 }
 
-/** Clamps a candidate panel width to the draggable range — exported so a live
- *  drag (e.g. `ChatRoomScreen`'s in-memory width signal) can apply the same
- *  bounds per pointermove tick without persisting until the drag settles. */
-export const clampWidth = (w: number): number =>
-  Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, w));
-
-const [widthSignal, setWidthSignal] = createSignal(
-  clampWidth(Number(readLS(WIDTH_KEY)) || WIDTH_DEFAULT),
+/** The window's width, reactively. One app-wide listener (the panel is a singleton,
+ *  like everything else module-level in this file) rather than one per mount: the
+ *  clamp below depends on it, so a window dragged narrower has to give the transcript
+ *  its room back without waiting for a reload. `Infinity` where there is no window,
+ *  so the ceiling stands alone — a value clamped against a viewport that isn't there
+ *  would be arbitrary. */
+const [windowWidth, setWindowWidth] = createSignal(
+  typeof window === "undefined" ? Infinity : window.innerWidth,
 );
+if (typeof window !== "undefined")
+  window.addEventListener("resize", () => setWindowWidth(window.innerWidth));
 
-/** The global (cross-thread) panel width — same storage key/semantics as the
- *  legacy `ody.chat.viewport.w`. */
-export function viewerWidth(): number {
-  return widthSignal();
+/** The widest the panel may be right now: its own ceiling, less what the window
+ *  cannot spare. */
+function ceiling(): number {
+  return Math.max(
+    WIDTH_MIN,
+    Math.min(WIDTH_CEILING, windowWidth() - TRANSCRIPT_MIN),
+  );
 }
 
-export function setViewerWidth(w: number): void {
-  const clamped = clampWidth(w);
-  setWidthSignal(clamped);
-  writeLS(WIDTH_KEY, String(clamped));
+/** Clamps a candidate panel width to `kind`'s draggable range — exported so a live
+ *  drag (e.g. `ChatRoomScreen`'s in-memory width signal) can apply the same
+ *  bounds per pointermove tick without persisting until the drag settles.
+ *
+ *  The floor gives way to the ceiling rather than fighting it: on a window too narrow
+ *  to honour the browser's minimum, the panel takes what there is instead of pushing
+ *  the transcript off the edge. */
+export const clampWidth = (w: number, kind: PanelKind = "view"): number => {
+  const max = ceiling();
+  return Math.min(max, Math.max(Math.min(MIN_WIDTH[kind], max), w));
+};
+
+/** The stored *preference*, unclamped — clamping happens on read (`panelWidth`) so a
+ *  width set on a wide display isn't permanently trimmed by one narrow session. */
+const [viewWidth, setViewWidth] = createSignal(
+  Number(readLS(WIDTH_KEY)) || WIDTH_DEFAULT,
+);
+const [browserWidth, setBrowserWidth] = createSignal(
+  Number(readLS(BROWSER_WIDTH_KEY)) || BROWSER_WIDTH_DEFAULT,
+);
+
+/** The global (cross-thread) width of whichever panel holds the slot — the View's
+ *  keeps the legacy `ody.chat.viewport.w` key and semantics. */
+export function panelWidth(kind: PanelKind = "view"): number {
+  return clampWidth(kind === "browser" ? browserWidth() : viewWidth(), kind);
+}
+
+export function setPanelWidth(kind: PanelKind, w: number): void {
+  const clamped = clampWidth(w, kind);
+  if (kind === "browser") {
+    setBrowserWidth(clamped);
+    writeLS(BROWSER_WIDTH_KEY, String(clamped));
+  } else {
+    setViewWidth(clamped);
+    writeLS(WIDTH_KEY, String(clamped));
+  }
 }
 
 function readScrollMap(): Record<string, number> {

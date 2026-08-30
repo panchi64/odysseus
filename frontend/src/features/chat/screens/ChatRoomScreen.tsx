@@ -64,9 +64,10 @@ import {
   activeDownload,
   clampWidth,
   downloadBlob,
-  setViewerWidth,
+  panelWidth,
+  setPanelWidth,
   useViewerPersistence,
-  viewerWidth,
+  type PanelKind,
 } from "../viewerPersistence";
 import { registerKeymap } from "~/lib/keymap";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
@@ -298,6 +299,11 @@ export function ChatRoomScreen(): JSX.Element {
   const hasPanelContent = () =>
     viewItems().length > 0 || stream.browserStream() !== null;
   const viewportShown = () => state().open && hasPanelContent();
+  // Which panel is in the slot — the browser takes it whenever there is a live one
+  // (`renderPanel` below). It is what the slot is *sized* by, so it is derived here
+  // rather than read off the render.
+  const panelKind = (): PanelKind =>
+    stream.browserStream() !== null ? "browser" : "view";
   const toggleViewport = () => {
     patch({ open: !state().open });
   };
@@ -305,10 +311,34 @@ export function ChatRoomScreen(): JSX.Element {
     if (!state().open) patch({ open: true });
   };
   // The aside's width while dragging: updated per pointermove tick (in-memory
-  // only) so the drag never writes localStorage on every move; `setViewerWidth`
+  // only) so the drag never writes localStorage on every move; `setPanelWidth`
   // (the persisting setter) is only called once the drag settles, on
-  // `onResizeEnd`. Seeded from the persisted global width.
-  const [liveWidth, setLiveWidth] = createSignal(viewerWidth());
+  // `onResizeEnd`, and the override is dropped so the slot follows the stored
+  // width again. An override rather than a seeded copy, so the panel swapping
+  // (a browser session opening or ending) re-reads that panel's own width
+  // instead of keeping the width the other one was dragged to.
+  //
+  // It carries the *kind* it started on, for two reasons. Null means no drag
+  // happened, so a bare click on the splitter can't persist a window-clamped read
+  // over a wider stored preference. And a browser session ending mid-drag must not
+  // land the browser's width on the View's key — where the width goes is decided
+  // when the drag starts, not when the pointer happens to come up.
+  const [drag, setDrag] = createSignal<{
+    kind: PanelKind;
+    width: number;
+  } | null>(null);
+  const liveWidth = () => drag()?.width ?? panelWidth(panelKind());
+  const onResize = (dx: number): void => {
+    const started = drag();
+    const kind = started?.kind ?? panelKind();
+    const from = started?.width ?? panelWidth(kind);
+    setDrag({ kind, width: clampWidth(from - dx, kind) });
+  };
+  const onResizeEnd = (): void => {
+    const settled = drag();
+    if (settled) setPanelWidth(settled.kind, settled.width);
+    setDrag(null);
+  };
   // The newest version's key (the one collectViewItems flags as latest). Following
   // it (pinnedKey null) means freshly-minted versions keep advancing the view
   // instead of leaving it stranded on a now-stale pick.
@@ -334,9 +364,21 @@ export function ChatRoomScreen(): JSX.Element {
   // close is respected and subsequent items update it silently.
   createEffect(() => {
     const id = currentId();
-    if (id !== null && hasPanelContent() && claimAutoOpen(id)) {
+    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
       openViewport();
     }
+  });
+  // The browser gets its own one-shot, keyed on the *session* rather than the thread.
+  // The conversation-scoped claim is about one artifact accumulating versions, where a
+  // manual close means "not this, thanks" for the rest of the thread; a browser session
+  // is a different kind of event — it starts hours later, it is a place the agent went
+  // rather than a new version of what it was already showing, and a thread that spent
+  // its shot on a View item would otherwise browse the whole session behind a closed
+  // panel. Re-announcements of the same session share one claim, so a close during a
+  // session is still respected until the next one.
+  createEffect(() => {
+    const path = stream.browserStream();
+    if (path !== null && claimAutoOpen(`browser:${path}`)) openViewport();
   });
   // The badge on the header eye toggle: items minted after the "seen through"
   // pointer (`seenKey`). Counting from a key's position — not a raw count —
@@ -990,8 +1032,8 @@ export function ChatRoomScreen(): JSX.Element {
           <ResizeHandle
             aria-label="Resize viewport panel"
             divider="hover"
-            onResize={(dx) => setLiveWidth((w) => clampWidth(w - dx))}
-            onResizeEnd={() => setViewerWidth(liveWidth())}
+            onResize={onResize}
+            onResizeEnd={onResizeEnd}
           />
         </Reveal>
         <ConstructionReveal

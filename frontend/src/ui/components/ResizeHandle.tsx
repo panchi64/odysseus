@@ -40,13 +40,19 @@ export function ResizeHandle(props: ResizeHandleProps): JSX.Element {
       props.onResize(ev.clientX - lastX);
       lastX = ev.clientX;
     };
+    // `pointercancel` settles the drag too, not just `pointerup`. The browser fires
+    // it instead when the gesture is taken away (a touch becoming a system scroll, the
+    // capture being lost), and a caller that holds live drag state until it is told the
+    // drag ended would otherwise hold it forever.
     const up = () => {
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
       props.onResizeEnd?.();
     };
     target.addEventListener("pointermove", move);
     target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
   };
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "ArrowLeft") props.onResize(-STEP);
