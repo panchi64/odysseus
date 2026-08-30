@@ -45,6 +45,7 @@ from pydantic_ai import (
     RunContext,
     RunUsage,
     ToolApproved,
+    ToolDenied,
     UsageLimitExceeded,
     UsageLimits,
     UserPromptPart,
@@ -86,6 +87,7 @@ from services.conversations import (
 from services.llm import TOOL_CALL_SETTINGS
 from services.modes import mode_spec
 from services.notifications import NotificationService
+from services.permissions import Decision, blocked_message, decide
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
@@ -152,10 +154,11 @@ class ParkedTurn:
     message_history: list[ModelMessage]
     requests: DeferredToolRequests
     announced: set[str] = field(default_factory=set)
-    # Calls already auto-approved by an active conversation grant — surfaced to the
-    # operator (no approval.required event for them) but merged back into the resume's
+    # Deferred calls that never reached the operator: auto-approved by an active
+    # conversation grant, or refused outright by the thread's permission level. Not
+    # surfaced (no approval.required event for them) but merged back into the resume's
     # decisions so the single DeferredToolResults still covers every deferred call.
-    pre_approved: dict[str, ToolApproved] = field(default_factory=dict)
+    settled: dict[str, ToolApproved | ToolDenied] = field(default_factory=dict)
     # Persistence context, attached by the orchestrator: the conversation and
     # the index from which messages are still unpersisted (so a resume records
     # the parked turn's messages too, once it finally completes).
@@ -178,10 +181,12 @@ class ParkedTurn:
     # carried so the resume continues under the same ceiling the original turn ran with
     # rather than silently reverting to the default. None ⇒ resolve from config.
     request_limit: int | None = None
-    # The thread's workspace binding, carried rather than re-read on resume. It is
-    # immutable for the life of a conversation, so re-resolving it would be a second
-    # source for one fact — and a resume that defaulted it to Normal would hand a parked
-    # code turn a different filesystem than the one it parked in.
+    # The thread's binding, carried rather than re-read on resume. A resume that
+    # defaulted it to Normal would hand a parked code turn a different filesystem than the
+    # one it parked in — and the permission level rides along for the same reason it is
+    # read once per turn rather than per call: the operator may raise the level while this
+    # is parked, and a call they are about to approve must be judged by the rules that
+    # deferred it, not by rules that arrived afterwards.
     binding: ConversationBinding = field(default_factory=ConversationBinding)
     # Whether the model this turn runs on can read an image, carried for the same reason
     # `binding` is: the resume must offer the tools the parked turn was offered. Re-reading
@@ -411,7 +416,7 @@ async def _park_for_approval(
     requests: DeferredToolRequests,
     announced: set[str],
     *,
-    pre_approved: dict[str, ToolApproved] | None = None,
+    settled: dict[str, ToolApproved | ToolDenied] | None = None,
     notifications: NotificationService | None = None,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
@@ -419,12 +424,13 @@ async def _park_for_approval(
     binding: ConversationBinding = _DEFAULT_BINDING,
     vision: bool = True,
 ) -> None:
-    # Only the calls still awaiting the operator are announced; any pre-approved by an
-    # active grant ride silently on the parked payload and merge into the resume.
-    pre_approved = pre_approved or {}
+    # Only the calls still awaiting the operator are announced; the ones a grant or the
+    # thread's level already settled ride silently on the parked payload and merge into
+    # the resume.
+    settled = settled or {}
     pending_names: set[str] = set()
     for call in requests.approvals:
-        if call.tool_call_id in pre_approved:
+        if call.tool_call_id in settled:
             continue
         pending_names.add(call.tool_name)
         args = call.args_as_dict()
@@ -467,7 +473,7 @@ async def _park_for_approval(
             messages,
             requests,
             announced,
-            pre_approved=pre_approved,
+            settled=settled,
             request_limit=request_limit,
             binding=binding,
             vision=vision,
@@ -520,6 +526,10 @@ async def _drive_turn(
         # must not change what an already-running thread is doing.
         project_id=binding.project_id,
         mode=binding.mode,
+        # And how far it may go on its own. The toolset stack reads this to mark the tools
+        # that reach past it, so the level is enforced before a call runs rather than
+        # apologised for afterwards.
+        permission=binding.permission,
     )
     # A turn may run as several segments: the initial model pass, then a continuation
     # for each batch of deferred calls a conversation grant auto-approves. They share
@@ -670,19 +680,37 @@ async def _drive_turn(
             answer = output if isinstance(output, str) else None
             return _TurnResult(answer=answer, messages=messages)
 
-        # A tool the operator allowed for this conversation auto-approves without a
-        # prompt; the rest still park for a decision. Grants are conversation-scoped,
-        # so a stateless (no-conversation) turn always asks.
+        # Rule on each deferred call. A tool the operator allowed for this conversation
+        # auto-approves without a prompt — an explicit standing decision outranks any
+        # policy, so the grant is consulted first and its answer is spelled in the same
+        # vocabulary the level's is, leaving one dispatch below rather than two. Grants are
+        # conversation-scoped, so a stateless (no-conversation) turn always asks.
         granted: set[str] = set()
         grants = caps.get_optional(ApprovalGrantStore)
         if grants is not None and conversation_id is not None:
             granted = await grants.active(run.owner_id, conversation_id)
-        pre_approved = {
-            call.tool_call_id: ToolApproved()
-            for call in output.approvals
-            if covered_by_grant(call.tool_name, granted)
-        }
-        manual = [c for c in output.approvals if c.tool_call_id not in pre_approved]
+        settled: dict[str, ToolApproved | ToolDenied] = {}
+        manual = []
+        for call in output.approvals:
+            decision = (
+                Decision.ALLOW
+                if covered_by_grant(call.tool_name, granted)
+                else decide(binding.permission, call.tool_name)
+            )
+            if decision is Decision.ALLOW:
+                settled[call.tool_call_id] = ToolApproved()
+            elif decision is Decision.BLOCK:
+                # The level does not permit this at all, so there is nothing to put in
+                # front of the operator — they already answered by choosing the level.
+                # The model is told, in place of the tool's result, and re-plans.
+                settled[call.tool_call_id] = ToolDenied(
+                    message=blocked_message(binding.permission, call.tool_name)
+                )
+            else:
+                # ASK, and — until the review stage exists — REVIEW too: a level whose
+                # policy is to review has no judge to run this through yet, and the
+                # direction a missing judge degrades in is towards the operator.
+                manual.append(call)
         if manual:
             await _park_for_approval(
                 run,
@@ -690,7 +718,7 @@ async def _drive_turn(
                 messages,
                 output,
                 announced,
-                pre_approved=pre_approved,
+                settled=settled,
                 notifications=caps.get_optional(NotificationService),
                 store=store,
                 conversation_id=conversation_id,
@@ -699,9 +727,10 @@ async def _drive_turn(
                 vision=vision,
             )
             return _TurnResult(answer=None, messages=messages)
-        # Every deferred call is grant-covered — continue the SAME turn inline (no
-        # operator round-trip), reusing the shared budget/guard/usage above. The auto-run
-        # tool still streams its tool.started/completed, so it stays visible. Defensively
+        # Every deferred call settled without the operator — continue the SAME turn inline
+        # (no round-trip), reusing the shared budget/guard/usage above. An auto-run tool
+        # still streams its tool.started/completed, so it stays visible, and a call the
+        # level refused comes back to the model as a denial it can plan around. Defensively
         # resolve any approval_needed notification still pending for this run — normally
         # a no-op (this branch only runs when nothing this hop parked), but idempotent
         # against whatever multi-hop history led here, so nothing is ever left dangling.
@@ -711,7 +740,7 @@ async def _drive_turn(
                 await notifications.resolve_for_run(run.owner_id, run.id)
         prompt = None
         message_history = messages
-        deferred_results = DeferredToolResults(approvals=pre_approved)
+        deferred_results = DeferredToolResults(approvals=settled)
 
 
 def _should_verify(settings: Any, run: Run) -> bool:

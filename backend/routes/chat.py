@@ -38,6 +38,7 @@ from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds, ConversationBusy
 from runs.registry import _UNSET
 from services.conversations import ConversationBinding, ConversationStore
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
+from services.permissions import PermissionLevel
 from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
@@ -87,6 +88,12 @@ class ChatCreate(BaseModel):
     # writes one script that calls many tools). This is a mode of the chat.
     mode: ModeId = DEFAULT_MODE
     project_id: str | None = None
+    # How far the model may go this turn — and, unlike `mode`, from this turn onwards:
+    # the level is persisted on the thread, so switching mid-conversation is a plain send
+    # rather than a separate call, and a reload comes back at the level the operator left
+    # it. Absent means "whatever the thread is already at" (a new thread starts at its
+    # mode's default), so a client that never learned about levels keeps working.
+    permission_level: PermissionLevel | None = None
     # Set when this turn is the operator resuming a turn a bound stopped (the
     # "Continue" button under a stop marker): the branch node id of the turn that
     # carries the marker. Accepting the turn retires that marker durably, so the
@@ -373,7 +380,9 @@ async def _submit_turn(
         # `models[4]` is the resolved main model's vision fact — the same one
         # `compose_turn` passes to the engine for attachments. A tool that answers with
         # an image is withheld from a model that can't read one.
-        disabled_tools=await deps.disabled_tools(request, binding.mode, vision=models[4]),
+        disabled_tools=await deps.disabled_tools(
+            request, binding.mode, permission=binding.permission, vision=models[4]
+        ),
         binding=binding,
         attachment_ids=attachment_ids,
         ephemeral=ephemeral,
@@ -516,11 +525,19 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         if not await store.exists(body.conversation_id, OPERATOR_ID):
             raise HTTPException(status_code=404, detail="conversation not found")
         conversation_id = body.conversation_id
+        # The one binding fact a later turn may change. Written before the turn reads the
+        # thread's binding below, so this send runs at the level it asked for rather than
+        # at the previous one — and it stays, so the next send inherits it and a reload
+        # comes back to it.
+        if body.permission_level is not None:
+            await store.set_permission_level(conversation_id, body.permission_level)
     else:
         conversation_id = await store.create_conversation(
             OPERATOR_ID,
             ephemeral=body.ephemeral,
             mode=body.mode,
+            # Absent, the mode's own default decides what a fresh thread may do.
+            permission=body.permission_level,
             # A thread files itself under whatever the request scope resolved — the
             # explicit `project_id` when the client sent one (code mode always does),
             # else the operator's active project, else unfiled.

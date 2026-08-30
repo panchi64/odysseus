@@ -15,9 +15,8 @@ composed toolset stack rather than through a re-derivation of the rule.
 
 from __future__ import annotations
 
-from services.modes import PERMISSION_LEVELS
+from services.permissions import PERMISSION_LEVELS, PLANNING_TOOLS
 from services.tool_policy import (
-    PLANNING_TOOLS,
     effective_disabled_tools,
     mode_disabled_tools,
     permission_disabled_tools,

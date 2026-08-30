@@ -38,6 +38,7 @@ from services.memory import MemoryStore
 from services.modes import DEFAULT_MODE
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
+from services.permissions import DEFAULT_PERMISSION
 from services.plans import ConversationPlans
 from services.projects import ProjectStore, WorktreeManager, visible_project_ids
 from services.registry import ModelRegistry
@@ -189,16 +190,26 @@ def offline(request: Request) -> OfflineModeService:
 
 
 async def disabled_tools(
-    request: Request, mode: str = DEFAULT_MODE, *, vision: bool = True
+    request: Request,
+    mode: str = DEFAULT_MODE,
+    *,
+    permission: str = DEFAULT_PERMISSION,
+    vision: bool = True,
 ) -> frozenset[str]:
     """Everything withheld from the agent on this run — the operator's own disabled set
     (`AE-3.3`) unioned with offline mode's automatic web suspension, the tools that don't
-    belong in ``mode``, and the ones this run's model can't read the results of. Every
-    route that fills ``RunDeps.disabled_tools`` resolves it here, so a run path can't
-    apply one source and drop the others; ``app.py``'s task executor calls the service
-    directly (it has no ``Request``)."""
+    belong in ``mode``, the ones this run's ``permission`` level may not act with at all,
+    and the ones this run's model can't read the results of. Every route that fills
+    ``RunDeps.disabled_tools`` resolves it here, so a run path can't apply one source and
+    drop the others; ``app.py``'s task executor calls the service directly (it has no
+    ``Request``)."""
     return await effective_disabled_tools(
-        settings_store(request), offline(request), OPERATOR_ID, mode=mode, vision=vision
+        settings_store(request),
+        offline(request),
+        OPERATOR_ID,
+        mode=mode,
+        permission=permission,
+        vision=vision,
     )
 
 

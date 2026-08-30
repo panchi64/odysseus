@@ -41,15 +41,14 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from services.modes import (
-    DEFAULT_MODE,
+from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
+from services.permissions import (
     DEFAULT_PERMISSION,
-    MODE_SCOPED_TOOLS,
-    mode_spec,
-    permission_level,
+    ApprovalPolicy,
+    permission_spec,
+    tools_beyond_scope,
 )
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
-from services.tool_sensitivity import Sensitivity, tools_above
 
 if TYPE_CHECKING:
     from services.offline import OfflineModeService
@@ -139,23 +138,6 @@ def mode_disabled_tools(mode: str) -> frozenset[str]:
     )
 
 
-# The Planning toolset's writes — the one mutation a Plan turn exists to make, and so the
-# one exemption from Plan's withholding. A read-only thread that could not record what it
-# decided would have no way to end. Written out here for the same reason
-# `VISION_ONLY_TOOLS` is, and pinned against the live catalog by
-# `tests/test_tool_sensitivity.py`. Reading the plan is already admitted — it classifies
-# as `read` — so only the writes are listed.
-PLANNING_TOOLS = frozenset(
-    {
-        "plan_add_task",
-        "plan_remove_task",
-        "plan_update_task_status",
-        "plan_update_task_statuses",
-        "plan_write_plan",
-    }
-)
-
-
 def permission_disabled_tools(level: str) -> frozenset[str]:
     """The tools a run at ``level`` must not even be offered.
 
@@ -171,12 +153,18 @@ def permission_disabled_tools(level: str) -> frozenset[str]:
     when it matters. A tool that is not in the catalog cannot be called by a model that
     decides otherwise.
 
-    An unrecognised level lands on Plan (``services/modes.py``), so a corrupt stored value
-    reads as "this thread may only look", not as free rein.
+    Read off the level's two knobs rather than off its name (``services/permissions``): a
+    level withholds when its approval policy is to withhold, and what it withholds is what
+    it does not permit — the same question the toolset's approval gate asks about one
+    tool, asked here about the whole catalog, so the two cannot draw the line in different
+    places. A fifth preset is then a row in that registry and nothing here.
+
+    An unrecognised level lands on Plan (``services/permissions``), so a corrupt stored
+    value reads as "this thread may only look", not as free rein.
     """
-    if permission_level(level) != "plan":
+    if permission_spec(level).approval_policy is not ApprovalPolicy.WITHHOLD:
         return frozenset()
-    return tools_above(Sensitivity.READ) - PLANNING_TOOLS
+    return tools_beyond_scope(level)
 
 
 async def effective_disabled_tools(

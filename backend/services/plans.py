@@ -27,7 +27,7 @@ import asyncio
 import json
 import logging
 
-from pydantic_ai_harness.planning import PlanItem, PlanStore, TaskStatus
+from pydantic_ai_harness.planning import PlanItem, PlanStore, TaskStatus, render_plan
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
@@ -62,6 +62,24 @@ def plan_payload(items: list[PlanItem]) -> list[dict]:
         }
         for item in items
     ]
+
+
+def accepted_plan_prompt(items: list[PlanItem]) -> str:
+    """The message that starts the turn after the operator accepts a plan.
+
+    A Plan-level turn ends with a plan and no way to act on it; accepting it raises the
+    thread's level and sends this. It is written in the operator's voice because it *is*
+    their message — the turn it opens is an ordinary one, so the acceptance lands in the
+    transcript where anyone reading the thread later can see what was agreed to and when.
+
+    The list is restated even though the current one already rides at the tail of every
+    turn's prompt (``tools/plan.py``). That block is live and the model rewrites it as it
+    works; this is the version that was accepted, fixed in the history.
+    """
+    return (
+        "I've reviewed this plan and I'm accepting it. Carry it out now, keeping the "
+        f"task list accurate as you go.\n\n{render_plan(items)}"
+    )
 
 
 class ConversationPlans:

@@ -25,6 +25,7 @@ from pydantic_ai import RunContext
 from core.container import ServiceContainer
 from runs import Run
 from services.modes import DEFAULT_MODE, ModeId
+from services.permissions import DEFAULT_PERMISSION, PermissionLevel
 from services.workspace import RunWorkspace
 
 
@@ -52,6 +53,12 @@ class RunDeps:
     # channel the mode reaches a tool through: a tool executes inside a Run, long after
     # the request that chose the mode is gone.
     mode: ModeId = DEFAULT_MODE
+    # How far this run may go before it has to ask: "plan", "manual", "edit" or "auto".
+    # Here for exactly the reason `mode` is — a tool is offered and executed inside a Run,
+    # long after the request that chose the level is gone — and read by the toolset stack,
+    # which marks every tool reaching past the level's write scope as needing approval so
+    # the engine sees the call before it runs (`services/permissions`).
+    permission: PermissionLevel = DEFAULT_PERMISSION
     # This run's resolved workspace, memoised by `tools/workspace.py` on first use.
     # Never set by a construction site: it is a per-run cache, not an input, and it lives
     # here so it dies with the run instead of in a module-level dict.

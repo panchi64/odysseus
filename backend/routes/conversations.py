@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -32,7 +32,8 @@ from services.conversations import (
     conversation_totals,
 )
 from services.modes import mode_spec
-from services.plans import plan_payload
+from services.permissions import DEFAULT_PERMISSION
+from services.plans import accepted_plan_prompt, plan_payload
 from services.settings_store import (
     get_auto_compact,
     get_context_thresholds,
@@ -151,6 +152,12 @@ class ActiveRun(BaseModel):
 
 class ConversationDetail(ConversationSummary):
     messages: list[MessageOut]
+    # How far the model may go in this thread, so a reload restores the control at the
+    # level the operator left it rather than at the default. On the detail and not the
+    # listing: it is a fact about the thread you have open, and the sidebar row has no
+    # use for it. Always populated — a thread that predates the column reads as the
+    # level it was effectively running at.
+    permission_level: str = DEFAULT_PERMISSION
     # The View's git-style history — workspace snapshots captured per file-changing
     # turn, newest last. Conversation-scoped; the frontend merges them into the View
     # timeline alongside the per-message versions.
@@ -358,6 +365,10 @@ async def _detail(
         context=context,
         stats=stats,
         active_run=active_run,
+        # Off the thread's own binding, resolved through the registry — so a row written
+        # by an older build, or carrying a value this one has no rule for, opens at the
+        # level that does the least rather than at whatever the string happens to say.
+        permission_level=(await store.binding(conversation_id)).permission,
     )
 
 
@@ -755,6 +766,50 @@ async def read_plan(conversation_id: str, request: Request) -> list[PlanItemOut]
     await _require_owned(request, conversation_id)
     items = await deps.conversation_plans(request).items(OPERATOR_ID, conversation_id)
     return [PlanItemOut(**row) for row in plan_payload(items)]
+
+
+class PlanAccept(BaseModel):
+    """Which level to raise the thread to. Only the two that can act: accepting a plan
+    and staying read-only is a no-op with extra steps, and dropping to Manual is a
+    downgrade the composer's own control already offers."""
+
+    level: Literal["edit", "auto"] = "edit"
+
+
+class PlanAccepted(BaseModel):
+    """What the thread is now, and the message that starts the turn which acts on it.
+
+    The prompt is handed back rather than sent, because sending is a turn: it goes
+    through ``POST /chat`` like every other message, with that route's claim, its bounds
+    and its place in the transcript. Accepting only clears the way."""
+
+    permission_level: str
+    prompt: str
+
+
+@router.post("/{conversation_id}/plan/accept", response_model=PlanAccepted)
+async def accept_plan(
+    conversation_id: str, request: Request, body: PlanAccept | None = None
+) -> PlanAccepted:
+    """Accept the plan this thread produced and let it act.
+
+    The closing half of the Plan level's contract. A Plan turn is offered no tool that
+    changes anything, so the only way it can end is by writing down what it would do; this
+    is the operator reading that and saying yes. It raises the thread's level — nothing
+    else about the thread moves — and returns the plan as the message to send next.
+
+    ``409`` when there is no plan to accept: a thread with an empty task list has produced
+    nothing to agree to, and raising the level on the strength of it would be granting on
+    the basis of a document that does not exist. (A locked vault also reads as no plan;
+    the level stays where it is, which is the right way for that to fail.)
+    """
+    await _require_owned(request, conversation_id)
+    items = await deps.conversation_plans(request).items(OPERATOR_ID, conversation_id)
+    if not items:
+        raise HTTPException(status_code=409, detail="there is no plan to accept")
+    level = (body or PlanAccept()).level
+    stored = await deps.store(request).set_permission_level(conversation_id, level)
+    return PlanAccepted(permission_level=stored, prompt=accepted_plan_prompt(items))
 
 
 @router.delete("/{conversation_id}/grants/{tool_name}", status_code=204)

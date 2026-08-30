@@ -15,14 +15,21 @@ categories (the builtin starter tools and the sandbox code runner, both wired by
 what production passes down as ``categories``.
 
 Sensitive-action gating is *not* a filter here — those tools pause for operator
-approval at execution time, handled by the engine, not dropped from the catalog.
+approval at execution time, handled by the engine, not dropped from the catalog. What
+*is* here is the **approval gate**: the run's permission level marks every tool that
+reaches past its write scope as needing approval, so the model's request for one comes
+back to the engine undone instead of running. A tool's own marking is left alone — the
+gate only ever adds (``services/permissions``).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
+
+from services.permissions import beyond_scope
 
 from .agents import agents_toolset
 from .builtin import builtin_toolset
@@ -46,6 +53,35 @@ CORE_GATED_TOOLS: frozenset[str] = _SHELL_GATED
 def _enabled_gate(ctx: RunContext[RunDeps], tool_def: ToolDefinition) -> bool:
     """Operator-disabled tools are not offered to or invoked by the agent."""
     return tool_def.name not in ctx.deps.disabled_tools
+
+
+def _approval_gate(
+    ctx: RunContext[RunDeps], tool_defs: list[ToolDefinition]
+) -> list[ToolDefinition]:
+    """Mark every tool that reaches past this run's permission level as needing approval.
+
+    The level's half of the enforcement. Pydantic AI defers a call to an ``unapproved``
+    tool rather than executing it — the same mechanism a tool's own
+    ``requires_approval=True`` uses — so the engine gets the call, with its arguments,
+    before anything happens, and rules on it (``services/permissions/decide.py``).
+
+    **Rewriting the definition rather than filtering it out** is what separates this from
+    the enabled gate above. A withheld tool tells the model the capability does not exist;
+    a gated one tells it the capability needs permission, which is the true statement at
+    every level except Plan — and Plan does its withholding in the catalog, where the
+    saving in schema tokens is real.
+
+    Only ``function`` tools are touched. An ``output`` tool ends the run and an
+    ``external`` one is already deferred to someone else; making either "unapproved" would
+    change what the deferral *means* rather than merely when it happens.
+    """
+    return [
+        replace(tool_def, kind="unapproved")
+        if tool_def.kind == "function"
+        and beyond_scope(ctx.deps.permission, tool_def.name)
+        else tool_def
+        for tool_def in tool_defs
+    ]
 
 
 def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
@@ -79,4 +115,7 @@ def build_agent_toolsets(
     cats = dict(categories) if categories is not None else core_categories()
     prefixed = [toolset.prefixed(name) for name, toolset in cats.items()]
     combined = CombinedToolset(prefixed)
-    return [combined.filtered(_enabled_gate)]
+    # Namespaced, then filtered, then gated — in that order because each step needs the
+    # one before it: the gate classifies by the `category_tool` name the prefixing
+    # produces, and there is no point gating a tool the filter already took away.
+    return [combined.filtered(_enabled_gate).prepared(_approval_gate)]

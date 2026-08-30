@@ -1,9 +1,13 @@
-"""The code & shell tools: sandboxed execution (ungated), the fail-closed
-degraded path, and the host escape hatch (approval-gated, with an explanation)."""
+"""The code & shell tools: sandboxed execution, the fail-closed degraded path, and the
+host escape hatch (approval-gated on the tool itself, with an explanation).
+
+Running a program reaches past every permission level's write scope, so a call to either
+runner is deferred before it executes (`services/permissions`) — the helper below approves
+and continues, because what these tests are about is what the tool does once it runs."""
 
 from __future__ import annotations
 
-from pydantic_ai import Agent, DeferredToolRequests, ToolApproved
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, ToolApproved
 from pydantic_ai.models.test import TestModel
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator, stream_agent_run
@@ -69,26 +73,71 @@ def _bodies(run: Run):
     return [e.body for e in run.stream.replay()]
 
 
-async def _run_one_tool(tool: str, *, sessions=None) -> Run:
-    """Drive a single code tool through an agent and return the finished Run."""
-    agent = Agent(
+def _one_tool_agent(tool: str) -> Agent:
+    return Agent(
         TestModel(call_tools=[tool]),
         deps_type=RunDeps,
         toolsets=build_agent_toolsets({"code": code_toolset()}),
         output_type=[str, DeferredToolRequests],
     )
-    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+
+
+def _one_tool_deps(run: Run, sessions) -> RunDeps:
     caps = ServiceContainer()
     if sessions is not None:
         # The fake manager registers under the class the code tools resolve.
         caps.add(sessions, as_type=SandboxSessionManager)
-    deps = RunDeps(run=run, owner_id="operator", caps=caps, conversation_id="conv-1")
+    return RunDeps(run=run, owner_id="operator", caps=caps, conversation_id="conv-1")
+
+
+async def _run_one_tool(tool: str, *, sessions=None) -> Run:
+    """Drive a single code tool through an agent and return the finished Run.
+
+    Two passes, because running a program reaches past every permission level's write
+    scope: the first pass comes back with the call deferred rather than executed, and the
+    second supplies the approval the operator would give. These tests are about what the
+    tool *does* once it runs, so the helper approves and carries on — the same two steps
+    the approve route drives in production, with one `announced` set across both so a
+    deferred call is still announced exactly once.
+    """
+    agent = _one_tool_agent(tool)
+    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+    deps = _one_tool_deps(run, sessions)
+    announced: set[str] = set()
     async with agent.iter("go", deps=deps) as agent_run:
-        await stream_agent_run(agent_run, run)
+        await stream_agent_run(agent_run, run, announced=announced)
+        output = agent_run.result.output
+        messages = agent_run.result.all_messages()
+    if not isinstance(output, DeferredToolRequests) or not output.approvals:
+        return run
+    approvals = {call.tool_call_id: ToolApproved() for call in output.approvals}
+    async with agent.iter(
+        None,
+        deps=deps,
+        message_history=messages,
+        deferred_tool_results=DeferredToolResults(approvals=approvals),
+    ) as agent_run:
+        await stream_agent_run(agent_run, run, announced=announced)
     return run
 
 
-# --- sandboxed execution (the default, not approval-gated) -------------------
+# --- sandboxed execution (contained, and still the level's to permit) --------
+async def test_sandboxed_execution_is_deferred_before_it_runs():
+    """The container is a fence around the blast radius, not a reason to treat running
+    arbitrary code as a workspace write — so the working permission level defers the call
+    and the operator (or, at Auto, the review) says whether it happens."""
+    manager = FakeSessionManager()
+    agent = _one_tool_agent("code_execute")
+    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+    async with agent.iter("go", deps=_one_tool_deps(run, manager)) as agent_run:
+        await stream_agent_run(agent_run, run)
+        output = agent_run.result.output
+
+    assert isinstance(output, DeferredToolRequests)
+    assert [c.tool_name for c in output.approvals] == ["code_execute"]
+    assert manager.session.specs == []  # requested, not executed
+
+
 async def test_execute_code_runs_in_the_conversation_session():
     manager = FakeSessionManager()
     run = await _run_one_tool("code_execute", sessions=manager)
@@ -100,10 +149,11 @@ async def test_execute_code_runs_in_the_conversation_session():
     spec = manager.session.specs[0]
     assert spec.command[:2] == ["python", "-c"]
     assert spec.network is False
-    # The result reached the model — no approval pause for a sandboxed call.
+    # The result reached the model, once the call was approved.
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
     assert completed.result["stdout"] == "hello from box"
-    assert "approval.required" not in [b.type for b in _bodies(run)]
+    # Announced once across both passes, not re-announced on the continuation.
+    assert len([b for b in _bodies(run) if b.type == "tool.started"]) == 1
 
 
 async def test_cold_session_announces_the_spin_up():

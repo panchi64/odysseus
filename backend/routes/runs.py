@@ -186,10 +186,11 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         raise HTTPException(status_code=409, detail=f"run is not awaiting approval ({run.status})")
 
     parked: ParkedTurn = run.parked_payload
-    # The operator only decides the calls that weren't already auto-approved by an
-    # active conversation grant; those ride on the parked payload and merge back below.
+    # The operator only decides the calls that weren't already settled without them — by
+    # an active conversation grant, or by the thread's permission level refusing outright.
+    # Those ride on the parked payload and merge back below.
     tool_by_id = {call.tool_call_id: call.tool_name for call in parked.requests.approvals}
-    pending = set(tool_by_id) - set(parked.pre_approved)
+    pending = set(tool_by_id) - set(parked.settled)
     provided = {d.tool_call_id for d in body.decisions}
     if provided != pending:
         raise HTTPException(
@@ -203,12 +204,18 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     # still auto-run its call.
     active = (
         await grants.active(deps.OPERATOR_ID, parked.conversation_id)
-        if parked.pre_approved and parked.conversation_id is not None
+        if parked.settled and parked.conversation_id is not None
         else set()
     )
     decisions: dict[str, ToolApproved | ToolDenied] = {}
-    for call_id in parked.pre_approved:
-        if covered_by_grant(tool_by_id.get(call_id), active):
+    for call_id, outcome in parked.settled.items():
+        if isinstance(outcome, ToolDenied):
+            # A refusal the permission level made when the turn parked. It carries
+            # forward verbatim: the operator was never asked about this call, so there is
+            # no decision of theirs to re-validate, and a grant recorded since covers a
+            # tool the level does not permit at all.
+            decisions[call_id] = outcome
+        elif covered_by_grant(tool_by_id.get(call_id), active):
             decisions[call_id] = ToolApproved()
         else:
             # The grant was revoked or expired while parked; either way it no longer
@@ -251,9 +258,12 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         # on resume. This is the only path an approval-gated tool ever actually runs on,
         # so a gate missing here would be a gate that never applies to the calls that
         # matter most.
-        # ...and the mode the parked turn ran in, read off the payload rather than the
-        # conversation, so the resumed turn is offered the same tools it parked with.
-        disabled_tools=await deps.disabled_tools(request, parked.binding.mode),
+        # ...and the mode and permission level the parked turn ran in, read off the
+        # payload rather than the conversation, so the resumed turn is offered the same
+        # tools it parked with.
+        disabled_tools=await deps.disabled_tools(
+            request, parked.binding.mode, permission=parked.binding.permission
+        ),
     )
     # Record grants *before* resuming: resume only schedules the turn (it doesn't await
     # it), and the resumed turn's inline grant check must see them, or a tool re-called

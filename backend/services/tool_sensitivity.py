@@ -226,6 +226,18 @@ def sensitivity_of(name: str) -> Sensitivity:
     return _BY_NAME.get(name, UNCLASSIFIED)
 
 
+def classified(name: str) -> bool:
+    """Whether this module has an actual answer for ``name``, rather than the fallback.
+
+    The distinction matters to a caller deciding what to do *before* a call exists.
+    :func:`sensitivity_of` always answers, because a call that has arrived has to be ruled
+    on; a caller marking tools ahead of time can ask whether the answer is knowledge or a
+    guess, and treat the two differently where the difference is load-bearing
+    (``services/permissions``).
+    """
+    return name in _BY_NAME
+
+
 def tools_above(floor: Sensitivity) -> frozenset[str]:
     """Every classified tool that escalates past ``floor``.
 

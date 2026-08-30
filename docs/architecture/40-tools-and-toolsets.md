@@ -67,7 +67,8 @@ def build_agent_toolsets(categories=None) -> list[AbstractToolset[RunDeps]]:
     cats = dict(categories) if categories is not None else default_categories()
     prefixed  = [ts.prefixed(name) for name, ts in cats.items()]   # stable category_tool names
     combined  = CombinedToolset(prefixed)                          # one catalog, all categories
-    return [combined.filtered(_enabled_gate)]                      # drop operator-disabled tools
+    return [combined.filtered(_enabled_gate)                       # drop operator-disabled tools
+                    .prepared(_approval_gate)]                     # mark what the level can't run
 ```
 
 Read as a pipeline, against the README's idealized stack:
@@ -76,17 +77,24 @@ Read as a pipeline, against the README's idealized stack:
 CombinedToolset(builtin + memory + code + … MCP/integrations as they land)
   → .prefixed(category)        #              stable "category_tool" names           (AE-2.x)
   → .filtered(enabled_gate)    # AE-3.3       drop operator-disabled tools
+  → .prepared(approval_gate)   #              mark every tool that reaches past this run's
+  #                              permission level as `unapproved`, so Pydantic AI defers its
+  #                              call to the engine's decision point instead of running it
+  #                              (services/permissions). Only ever *adds* a gate: a tool that
+  #                              defers on its own account keeps doing so at every level.
   # no privilege gate          — single operator, no tiers (D14): there is no tier to filter on
   # no relevance pre-filter    — D3: a capable native-tool-call model discerns from the full
   #                              gated catalog; AE-4.2 is trivially met (every tool always present).
-  #                              A .prepared() relevance step can slot in HERE if the catalog ever
-  #                              outgrows what one prompt should carry — the seam is reserved.
+  #                              A relevance step composes onto the same `.prepared()` seam if
+  #                              the catalog ever outgrows what one prompt should carry.
 ```
 
 Two deliberate omissions, each a settled decision rather than an oversight:
 
 - **No privilege gate (D14).** The spec's README §2 stack shows a `privilege_gate` first. With a single operator there are **no tiers**, so there is nothing to filter on — the line is intentionally absent. The `owner_id` seam carries the *future* multi-user story; when a second human exists, a `.filtered(privilege_gate)` slots in ahead of the enabled gate, keyed on the same deps. The shape is ready; the filter is empty today.
-- **No relevance pre-filter (D3).** `AE-4.1` (pre-select likely-relevant tools) is a waivable SHOULD-performance. On one powerful host with native-tool-call models, the model selects its own tools from the full gated catalog; pre-filtering would add latency and a place to be wrong. `AE-4.2` ("every permitted tool reachable") is then trivially satisfied. The `.prepared()` seam is reserved for if/when the catalog grows past what one context should hold.
+- **No relevance pre-filter (D3).** `AE-4.1` (pre-select likely-relevant tools) is a waivable SHOULD-performance. On one powerful host with native-tool-call models, the model selects its own tools from the full gated catalog; pre-filtering would add latency and a place to be wrong. `AE-4.2` ("every permitted tool reachable") is then trivially satisfied. The `.prepared()` seam now carries the approval gate, and a relevance step composes onto it if/when the catalog grows past what one context should hold.
+
+**Where the permission level acts, and why in two places.** A level narrows the catalog *and* marks what survives. The narrowing is the read-only level's alone (`services/tool_policy.py`): a tool that is not offered cannot be called by a model that decides otherwise, and a read-only turn saves the schemas outright. Every other level offers the full catalog and marks the tools past its write scope, because withholding one from them would tell the model the capability does not exist rather than that it needs permission. Both halves ask the same question — `services/permissions.beyond_scope` — so they cannot draw the line in different places.
 
 ### The category catalog
 
@@ -194,7 +202,7 @@ The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` 
 
 | Concern | State |
 |---|---|
-| Toolset stack (namespacing + enabled gate) | ✅ built (`tools/toolsets.py`) |
+| Toolset stack (namespacing + enabled gate + approval gate) | ✅ built (`tools/toolsets.py`) |
 | `builtin`, `memory`, `code` categories | ✅ built |
 | D20 approval pause/resume (engine + `/runs/{id}/approve`) | ✅ built |
 | D23 sandbox isolation + host escape hatch | ✅ built (`services/sandbox`, `tools/code.py`) |

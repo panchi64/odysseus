@@ -69,6 +69,7 @@ from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
+from services.permissions import DEFAULT_PERMISSION, PermissionLevel, permission_level
 from services.projects import project_clause
 from services.sealing import open_sealed
 
@@ -423,12 +424,19 @@ def _forked_title(source: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class ConversationBinding:
-    """Where a thread's file work happens. Read as a pair, because a worktree mode with no
-    project and a project with no worktree mode are both nonsense and both silently
-    plausible if the two are fetched separately."""
+    """How a thread works: where its file work happens, and how far the model may go on
+    its own.
+
+    Read as one record because the parts are only meaningful together — a worktree mode
+    with no project and a project with no worktree mode are both nonsense and both
+    silently plausible if the two are fetched separately, and a run that resolved its
+    workspace from the conversation but its permission level from somewhere else would be
+    two threads wearing one name.
+    """
 
     mode: ModeId = DEFAULT_MODE
     project_id: str | None = None
+    permission: PermissionLevel = DEFAULT_PERMISSION
 
 
 @dataclass(frozen=True)
@@ -755,10 +763,16 @@ class ConversationStore:
         *,
         project_id: str | None = None,
         mode: str = DEFAULT_MODE,
+        permission: str | None = None,
     ) -> str:
         """Start a thread. ``project_id`` files it (null is unfiled, which is visible
         under every scope) and ``mode`` decides where its file work happens; both are
-        set here and never afterwards — see `models/conversation.py`."""
+        set here and never afterwards — see `models/conversation.py`.
+
+        ``permission`` is the level it *starts* at and moves freely afterwards; absent, the
+        mode's own default applies, which is how a mode gets to say what a fresh thread in
+        it should be allowed to do without every caller repeating the answer."""
+        spec = mode_spec(mode)
 
         def work(session: Session) -> str:
             conversation = Conversation(
@@ -767,6 +781,9 @@ class ConversationStore:
                 ephemeral=ephemeral,
                 project_id=project_id,
                 mode=mode,
+                permission_level=(
+                    spec.default_permission if permission is None else permission_level(permission)
+                ),
             )
             session.add(conversation)
             session.flush()
@@ -1163,25 +1180,52 @@ class ConversationStore:
         return await in_session(self._engine, work)
 
     async def binding(self, conversation_id: str) -> ConversationBinding:
-        """This thread's workspace binding — the two facts a run needs to know *where* it
-        works, read together so no path can pick up one and default the other.
+        """This thread's binding — the facts a run needs to know where it works and how far
+        it may go, read together so no path can pick up one and default the others.
 
-        A missing conversation reads as an unfiled Normal thread, which is the same answer
-        a stateless turn gets and the safe one: Normal never touches the host.
+        A missing conversation reads as an unfiled Normal thread at the default level,
+        which is the same answer a stateless turn gets and the safe one: Normal never
+        touches the host.
         """
 
         def work(session: Session) -> ConversationBinding:
             conversation = session.get(Conversation, conversation_id)
             if conversation is None:
                 return ConversationBinding()
-            # The column is a plain string, so an unrecognised value (a restored backup
-            # from a future version, a hand-edited row) is normalised through the registry
-            # rather than reaching the resolver as something it has no row for.
+            # Both columns are plain strings, so an unrecognised value (a restored backup
+            # from a future version, a hand-edited row) is normalised through its registry
+            # rather than reaching the resolver as something it has no row for. They
+            # degrade in opposite directions and each towards the answer that does least.
             return ConversationBinding(
-                mode=mode_spec(conversation.mode).id, project_id=conversation.project_id
+                mode=mode_spec(conversation.mode).id,
+                project_id=conversation.project_id,
+                permission=permission_level(conversation.permission_level),
             )
 
         return await in_session(self._engine, work)
+
+    async def set_permission_level(self, conversation_id: str, level: str) -> PermissionLevel:
+        """Move this thread to ``level``, returning what it is now.
+
+        The one binding fact that moves after creation, and the reason it is a plain write
+        rather than a new row: the level is the operator's live control, changed by sending
+        at a different level or by accepting a plan, and a thread mid-flight keeps every
+        other thing about itself. A run already in progress is unaffected — it carries the
+        level it started with on its own binding, so a switch lands on the next turn rather
+        than halfway through this one.
+
+        Deliberately does not bump ``updated_at``: choosing what the model may do next is
+        not activity in the thread, the same reasoning the compaction override follows.
+        """
+        resolved = permission_level(level)
+
+        def work(session: Session) -> None:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is not None:
+                conversation.permission_level = resolved
+
+        await in_session(self._engine, work)
+        return resolved
 
     async def get_compaction_override(self, conversation_id: str) -> bool | None:
         """This conversation's auto-compaction override — ``None`` inherits the operator
@@ -1466,6 +1510,9 @@ class ConversationStore:
             title=_forked_title(source.title if source is not None else None),
             project_id=binding.project_id,
             mode=binding.mode,
+            # The level rides along with the rest of the binding: a fork of a thread the
+            # operator had dropped to Manual must not come back at the mode's default.
+            permission=binding.permission,
         )
 
         forked = self._cache_get(new_id_) or self._cache_put(new_id_, _Tree())
