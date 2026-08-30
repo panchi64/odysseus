@@ -66,10 +66,26 @@ export function Collapse(props: CollapseProps): JSX.Element {
      there is no edge to cross. That is what keeps a transcript of collapsed
      regions still on load. */
   const [shown, setShown] = createSignal(props.open);
+
+  /* Whether the region has *arrived* — open and no longer travelling.
+
+     The clip is scaffolding for the animation, not for the open state: while the
+     grid row is between `0fr` and `1fr` the content is taller than its track and
+     has to be cut. Once it lands, the track is exactly the content's height, and
+     the clip starts cutting the one thing that legitimately lives outside a
+     child's border box — the 1px ring `--shadow-1` paints around every card. The
+     symptom is a card losing its right edge, and the last card in a run losing
+     its bottom edge, which reads as a rendering defect rather than as a border.
+
+     So the clip lifts here and nowhere else. Mounting already open never
+     transitions, so this starts at `props.open` for the same reason `shown`
+     does; closing drops it synchronously, before the height starts moving. */
+  const [settled, setSettled] = createSignal(props.open);
   let host: HTMLDivElement | undefined;
   createEffect(() => {
     if (!props.open) {
       setShown(false);
+      setSettled(false);
       return;
     }
     setMounted(true);
@@ -89,13 +105,16 @@ export function Collapse(props: CollapseProps): JSX.Element {
         ref={(el) => (host = el)}
         class={cx("ody-collapse", props.class)}
         data-closed={shown() ? undefined : ""}
+        data-settled={settled() ? "" : undefined}
         onTransitionEnd={(e) => {
           // Guard on the property AND the target: the content's own opacity and
           // filter transitions run alongside this one, and a child's transitions
           // bubble up here too. Unmounting on any of those would cut the region
           // short — or worse, while it is still open.
-          if (e.target !== e.currentTarget || props.open) return;
-          if (e.propertyName === "grid-template-rows") setMounted(false);
+          if (e.target !== e.currentTarget) return;
+          if (e.propertyName !== "grid-template-rows") return;
+          if (props.open) setSettled(true);
+          else setMounted(false);
         }}
       >
         <div>{props.children}</div>

@@ -1043,6 +1043,17 @@ body {
   opacity: 0;
   filter: blur(var(--reveal-blur, 3px));
 }
+/* The clip is scaffolding for the travel, not for the open state. Once the row
+   has landed the track is exactly the content's height, and the clip's only
+   remaining effect is to cut the 1px ring `--shadow-1` paints OUTSIDE each
+   card's border box: every card loses its right edge against the flush
+   container, and the last one loses its bottom. `Collapse` marks arrival with
+   `data-settled` (set on transition end, and from the start for a region that
+   mounts open, which never transitions) — the clip lifts only then, and comes
+   straight back on the way closed. */
+.ody-collapse[data-settled] > * {
+  overflow: visible;
+}
 
 /* THE STAGE the wall plays on, and the two states it moves between.
 

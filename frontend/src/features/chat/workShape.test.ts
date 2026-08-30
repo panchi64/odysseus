@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { SHAPE_MAX_ENTRIES, workShape } from "./workShape";
+import { workShape } from "./workShape";
 import { groupBlocks } from "./blocks";
 import type { AssistantBlock, HostCommandPhase, ToolStatus } from "./model";
 
 function tool(
   id: string,
   name: string,
+  detail?: string,
   status: ToolStatus = "ok",
 ): AssistantBlock {
-  return { kind: "tool", id, tool: { id, name, args: "", status } };
+  return { kind: "tool", id, tool: { id, name, args: "", status, detail } };
 }
 
 function think(id: string): AssistantBlock {
@@ -19,7 +20,7 @@ function host(id: string, phase: HostCommandPhase): AssistantBlock {
   return {
     kind: "host_command",
     id,
-    command: { toolCallId: id, command: "ls", phase },
+    command: { toolCallId: id, command: "ls -la", phase },
   };
 }
 
@@ -29,124 +30,96 @@ function shape(blocks: AssistantBlock[]) {
   return workShape(groupBlocks(blocks));
 }
 
-describe("workShape names the tools, not the step count", () => {
-  test("repeated calls to one tool collapse into a counted entry", () => {
+describe("workShape reports the run's last step", () => {
+  test("the latest call wins, not the first or the most frequent", () => {
+    // Three reads then one search: a tally would have led with "Read ×3", which
+    // is exactly the reading this replaced.
     const s = shape([
-      tool("a", "files_read_file"),
-      tool("b", "files_read_file"),
-      tool("c", "files_read_file"),
+      tool("a", "files_read_file", "src/a.ts"),
+      tool("b", "files_read_file", "src/b.ts"),
+      tool("c", "files_read_file", "src/c.ts"),
+      tool("d", "web_search", "pydantic ai streaming"),
     ]);
-    expect(s.entries).toEqual([
-      { key: "files_read_file", icon: "file", label: "Read", count: 3 },
-    ]);
+    expect(s.latest).toEqual({
+      icon: "search",
+      label: "Web search",
+      detail: "pydantic ai streaming",
+    });
   });
 
-  test("entries keep the tool's own glyph and label, not its family's", () => {
+  test("the step keeps the tool's own glyph and label, not its family's", () => {
     // `files_search_files` and `files_read_file` share the `files` category but
-    // are different acts — the whole point of the registry table is that the
-    // summary says "Search files" rather than bucketing both as "File".
-    const s = shape([
-      tool("a", "files_read_file"),
-      tool("b", "files_search_files"),
-    ]);
-    expect(s.entries.map((e) => e.label)).toEqual(["Read", "Search files"]);
-    expect(s.entries.map((e) => e.icon)).toEqual(["file", "search"]);
+    // are different acts — the registry table exists so the header says "Search
+    // files" rather than bucketing both as "File".
+    expect(shape([tool("a", "files_search_files")]).latest).toMatchObject({
+      icon: "search",
+      label: "Search files",
+    });
+    expect(shape([tool("a", "files_read_file")]).latest).toMatchObject({
+      icon: "file",
+      label: "Read",
+    });
   });
 
-  test("entries are in first-appearance order, not count order", () => {
-    const s = shape([
-      tool("a", "web_search"),
-      tool("b", "files_read_file"),
-      tool("c", "files_read_file"),
-      tool("d", "files_read_file"),
-    ]);
-    expect(s.entries.map((e) => e.key)).toEqual([
-      "web_search",
-      "files_read_file",
-    ]);
+  test("a call with no salient argument still names its kind", () => {
+    // `detail` is undefined whenever `toolSummary` found nothing worth lifting.
+    // The header must degrade to the bare verb rather than to nothing.
+    const s = shape([tool("a", "memory_recall")]);
+    expect(s.latest?.label).toBe("Recall");
+    expect(s.latest?.detail).toBeUndefined();
   });
 
   test("an unregistered tool still gets a family glyph and a humanized label", () => {
     // `external_*` connector tools are discovered per operator and can never be
-    // enumerated in the table, so the summary must not depend on a table hit.
-    const s = shape([tool("a", "external_linear_create_issue")]);
-    expect(s.entries[0]).toEqual({
-      key: "external_linear_create_issue",
+    // enumerated in the table, so the header must not depend on a table hit.
+    expect(shape([tool("a", "external_linear_create_issue")]).latest).toEqual({
       icon: "plug",
       label: "Linear create issue",
-      count: 1,
+      detail: undefined,
     });
   });
-});
 
-describe("workShape reports failures separately from the entry cap", () => {
-  test("failures are counted across the whole run", () => {
-    const s = shape([
-      tool("a", "files_read_file", "ok"),
-      tool("b", "files_read_file", "error"),
-      tool("c", "web_search", "error"),
-    ]);
-    expect(s.failed).toBe(2);
+  test("reasoning is a step like any other when it is the last one", () => {
+    const s = shape([tool("a", "web_search", "q"), think("b")]);
+    expect(s.latest).toEqual({ icon: "cpu", label: "Reasoning" });
   });
 
-  test("a failure past the entry cap is still reported", () => {
-    // The cap drops SEGMENTS, never the failure count — otherwise a long run
-    // could fold with its one failure invisible, which is the exact defect the
-    // never-fold-a-failure rule exists to prevent.
-    const blocks = [
-      tool("a", "files_read_file"),
-      tool("b", "web_search"),
-      tool("c", "files_write_file"),
-      tool("d", "shell_run_command"),
-      tool("e", "memory_recall"),
-      tool("f", "calendar_agenda", "error"),
-    ];
-    const s = shape(blocks);
-    expect(s.entries).toHaveLength(SHAPE_MAX_ENTRIES);
-    expect(s.overflow).toBe(2);
-    expect(s.failed).toBe(1);
-  });
-
-  test("a failed host command counts as a failure", () => {
-    const s = shape([host("a", "error")]);
-    expect(s.failed).toBe(1);
-  });
-
-  test("a denied host command is a decision, not a failure", () => {
-    expect(shape([host("a", "denied")]).failed).toBe(0);
-  });
-});
-
-describe("workShape covers the work that is not a tool call", () => {
-  test("every host command is one entry, borrowing the tool's registry glyph", () => {
-    const s = shape([host("a", "ok"), host("b", "ok")]);
-    expect(s.entries).toEqual([
-      { key: "host", icon: "terminal", label: "Host command", count: 2 },
-    ]);
-  });
-
-  test("reasoning is counted apart from the tool entries", () => {
-    const s = shape([think("a"), tool("b", "web_search"), think("c")]);
-    expect(s.thinks).toBe(2);
-    expect(s.entries.map((e) => e.key)).toEqual(["web_search"]);
+  test("a host command reads as its command line", () => {
+    expect(shape([host("a", "ok")]).latest).toEqual({
+      icon: "terminal",
+      label: "Host command",
+      detail: "ls -la",
+    });
   });
 
   test("a run of nothing but View chips still summarizes as something", () => {
     const s = shape([
       { kind: "view_version", id: "a", snapshotId: "s1", title: "Report" },
-      { kind: "view_version", id: "b", snapshotId: "s2", title: "Report" },
+      { kind: "view_version", id: "b", snapshotId: "s2", title: "Chart" },
     ]);
-    expect(s.entries).toEqual([
-      { key: "view", icon: "panel-right", label: "View", count: 2 },
-    ]);
+    expect(s.latest).toEqual({
+      icon: "panel-right",
+      label: "View",
+      detail: "Chart",
+    });
+  });
+});
+
+describe("workShape reports how much is folded", () => {
+  test("steps counts the rows expanding would reveal, one per group", () => {
+    expect(shape([think("a"), tool("b", "web_search"), think("c")]).steps).toBe(
+      3,
+    );
   });
 
-  test("an empty run is empty rather than undefined", () => {
-    expect(shape([])).toEqual({
-      entries: [],
-      overflow: 0,
-      failed: 0,
-      thinks: 0,
-    });
+  test("batched host commands are one group and so one step", () => {
+    // `groupBlocks` batches consecutive host commands into a single card, so
+    // counting blocks here would promise two rows and open onto one.
+    const s = shape([host("a", "ok"), host("b", "ok")]);
+    expect(s.steps).toBe(1);
+  });
+
+  test("an empty run has no latest step and no size", () => {
+    expect(shape([])).toEqual({ steps: 0 });
   });
 });
