@@ -72,6 +72,17 @@ export interface ToolInvocation {
   /** Error detail shown when status='error'. */
   error?: string;
   elapsedMs?: number;
+  /** What the call *saw* — a browser screenshot, today. A tool that hands back pixels
+   *  hands them back for the model, and the backend routes them here rather than
+   *  letting the wire's user-role carrier surface as a turn the operator never took. */
+  images?: ToolImage[];
+}
+
+/** One image a tool returned: base64 payload plus its media type. The scheme is the
+ *  renderer's to add, so nothing stores a data URI it would have to re-parse. */
+export interface ToolImage {
+  mediaType: string;
+  data: string;
 }
 
 /** A sensitive action the agent paused to ask about (`approval.required`). The

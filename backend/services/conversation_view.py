@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic_ai import (
+    BinaryContent,
     ModelRequest,
     ModelResponse,
     RetryPromptPart,
@@ -34,6 +35,24 @@ from core.text import CHARS_PER_TOKEN
 
 
 @dataclass
+class ToolImageView:
+    """An image a tool handed back — a browser screenshot, today.
+
+    A tool that returns pixels returns them *for the model*: Pydantic AI puts the bytes
+    in a user-role part so a vision model can see them, since no provider accepts an
+    image inside a tool result. That is a wire detail, not something the operator took
+    part in — so the image belongs to the call that produced it, in the work log, and
+    this is what carries it there.
+
+    Base64 rather than a URL because a tool result is already inline in this projection
+    (``ToolView.result``), and a second convention for the same turn's output would mean
+    a second lifetime to reason about."""
+
+    media_type: str
+    data: str  # base64, no data-URI scheme — the renderer adds it
+
+
+@dataclass
 class ToolView:
     id: str
     name: str
@@ -41,6 +60,7 @@ class ToolView:
     status: str = "running"  # "running" | "ok" | "error"
     result: Any = None
     error: str | None = None
+    images: list[ToolImageView] = field(default_factory=list)
 
 
 @dataclass
@@ -283,6 +303,58 @@ def flatten_content(content: Any) -> str:
     return ""
 
 
+#: The most an image may weigh before the work log declines to carry it, in source bytes.
+#: The browser harness caps a capture at 5 MB of PNG, which is ~6.7 MB of base64 on a
+#: single stream frame *and* again in every read of the conversation thereafter. A
+#: viewport screenshot is a fraction of this; what approaches it is a full-page capture of
+#: something enormous, and shipping one would spend the transcript's whole load budget on
+#: one picture. The call still reports what it did in words — that is the part the model
+#: read and the part the operator needs.
+MAX_TOOL_IMAGE_BYTES = 2_000_000
+
+
+def tool_images(content: Any) -> list[ToolImageView]:
+    """The images in a tool's returned content, in order.
+
+    Shared with the live translator so a screenshot looks the same warm and cold. Only
+    images: a tool may hand back a PDF or an audio clip for the model to read, and a
+    work-log card has nothing useful to do with either. Oversized ones are dropped rather
+    than shrunk — re-encoding here would put an image pipeline in a projection."""
+    items = content if isinstance(content, list | tuple) else [content]
+    return [
+        ToolImageView(media_type=item.media_type, data=item.base64)
+        for item in items
+        if isinstance(item, BinaryContent)
+        and item.media_type.startswith("image/")
+        and len(item.data) <= MAX_TOOL_IMAGE_BYTES
+    ]
+
+
+def _attach_tool_images(
+    user_parts: list[Any], returns: list[Any], by_call: dict[str, ToolView]
+) -> None:
+    """Hang a tool-return request's image payloads on the calls that produced them.
+
+    Pydantic AI appends one user part per image-bearing call, in call order, *after* all
+    the tool parts — the pairing is order-preserving but carries no call id, so it can
+    only be recovered positionally. With one image-bearing call in the step, which is
+    what a screenshot is, that is exact. A step where two calls both return pixels and
+    a third sits between them could hang an image on the neighbouring card; the image
+    still reaches the work log, and the alternative is persisting an association Pydantic
+    AI does not give us for a case the browser toolset does not produce.
+
+    The live path does not have this problem — ``FunctionToolResultEvent`` carries the
+    call id and its content together — so a warm render is always exact."""
+    candidates = [p for p in returns if isinstance(p, ToolReturnPart)]
+    for part, tool_return in zip(user_parts, candidates, strict=False):
+        images = tool_images(part.content)
+        if not images:
+            continue
+        tool = by_call.get(tool_return.tool_call_id)
+        if tool is not None:
+            tool.images.extend(images)
+
+
 def project_tree(
     nodes: list[tuple[str, Any]], *, compacted_ids: frozenset[str] = frozenset()
 ) -> list[MessageView]:
@@ -348,7 +420,15 @@ def project_tree(
         since_checkpoint.append(message)
         if isinstance(message, ModelRequest):
             user_parts = [p for p in message.parts if isinstance(p, UserPromptPart)]
-            if user_parts:
+            returns = [p for p in message.parts if isinstance(p, ToolReturnPart | RetryPromptPart)]
+            # A request carrying tool returns is the agent's own round-trip, even when it
+            # *also* carries a user part: a tool that hands back pixels (a screenshot)
+            # gets them appended here as user content, because no provider accepts an
+            # image inside a tool result. Reading that as an operator turn spoke for
+            # somebody who never said anything — and cost two more things, since opening
+            # a user turn closed the assistant turn mid-work and skipped the very results
+            # this branch exists to stitch.
+            if user_parts and not returns:
                 # A new user turn closes any open assistant turn.
                 assistant = None
                 part = user_parts[0]
@@ -373,6 +453,7 @@ def project_tree(
                     if tool is not None:
                         tool.status = "error"
                         tool.error = part.model_response()
+            _attach_tool_images(user_parts, returns, by_call)
         elif isinstance(message, ModelResponse):
             if assistant is None:
                 # First response of the turn — its node id is the branch point.
