@@ -86,10 +86,14 @@ def test_nothing_to_measure_means_no_split():
 
 
 async def test_the_overhead_is_measured_from_the_request_that_went_out():
-    """`measure_overhead` reaches into Pydantic AI internals that carry no compatibility
-    promise, so this pins the two things it must find: the standing brief and the tool
-    schemas the model was actually handed."""
+    """The measurement rides Pydantic AI's own `before_model_request` hook, so this pins
+    that the hook's public fields carry the two things it needs — the standing brief, as
+    instruction parts plus the system prompt on the outgoing messages, and the tool
+    definitions the model was actually handed."""
+    from dataclasses import dataclass
+
     from pydantic_ai import Agent, FunctionToolset
+    from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai.models.test import TestModel
 
     from agent.overhead import measure_overhead
@@ -101,25 +105,32 @@ async def test_the_overhead_is_measured_from_the_request_that_went_out():
         """Look something up in the corpus."""
         return "x"
 
+    seen: list = []
+
+    @dataclass
+    class _Capture(AbstractCapability[None]):
+        async def before_model_request(self, ctx, request_context):
+            params = request_context.model_request_parameters
+            seen.append(
+                measure_overhead(
+                    params.instruction_parts, request_context.messages, params.function_tools
+                )
+            )
+            return request_context
+
     agent = Agent(
         TestModel(custom_output_text="ok", call_tools=[]),
         system_prompt="A" * 300,
         instructions="B" * 200,
         toolsets=[toolset],
+        capabilities=[_Capture()],
     )
-    async with agent.iter("hello") as run:
-        async for node in run:
-            if not Agent.is_model_request_node(node):
-                continue
-            async with node.stream(run.ctx) as stream:
-                async for _ in stream:
-                    pass
-            overhead = measure_overhead(run.ctx, node.request)
-            break
+    await agent.run("hello")
 
-    assert overhead is not None
-    # Both halves of the standing brief, counted together: the instructions off the
-    # assembled request, the system prompt off the history head.
+    assert seen, "before_model_request never fired"
+    overhead = seen[0]
+    # Both halves of the standing brief, counted together: the instruction parts off the
+    # request parameters, the system prompt off the outgoing message list.
     assert overhead.system >= 500
     # The schema is serialized, so the tool's name, its docstring and its parameters are
     # all in there — the figure is far larger than the name alone.
@@ -127,16 +138,31 @@ async def test_the_overhead_is_measured_from_the_request_that_went_out():
     assert overhead.tools > 100
 
 
-def test_a_broken_context_degrades_to_unmeasured_rather_than_raising():
-    """Every attribute this reads is a library internal. An upgrade that moves one must
-    cost the readout, never the turn that was producing it."""
+def test_an_unnamed_instruction_part_falls_into_base():
+    """Only a provider registered with a `name=` earns its own row. Our own literal
+    instructions carry no name, and neither do the separators the library joins parts
+    with, so both land in `base` — which is what keeps the blocks summing to the brief
+    that was actually sent rather than to the sum of the named parts."""
+    from pydantic_ai import InstructionPart
+    from pydantic_ai.messages import AgentInstructionSource, InstructionId
+
     from agent.overhead import measure_overhead
 
-    class _Nothing:
-        def __getattr__(self, name):
-            raise AttributeError(name)
+    parts = [
+        InstructionPart(content="B" * 200),
+        InstructionPart(
+            content="S" * 500,
+            name="skill_catalog",
+            id=InstructionId(AgentInstructionSource(), name="skill_catalog"),
+        ),
+    ]
+    blocks = {b.id: b.chars for b in measure_overhead(parts, [], []).blocks}
+    assert blocks["skill_catalog"] == 500
+    # 200 for the unnamed part, plus the two characters `join` puts between them.
+    assert blocks["base"] == 202
 
-    assert measure_overhead(_Nothing(), _Nothing()) is None
+    # Nothing to measure is an empty measurement, not a crash.
+    assert measure_overhead(None, [], []).blocks == ()
 
 
 async def test_a_live_turn_reports_a_split_that_sums_to_its_footprint():
@@ -337,8 +363,8 @@ def test_the_standing_brief_is_not_counted_twice():
 
 async def test_a_providers_own_contribution_is_attributed_to_it():
     """What makes the brief actionable: 'your brief is 5k' is a fact, 'the skill catalog is
-    4k of it' is a decision. The library concatenates every provider into one string, so the
-    attribution has to be captured as each one runs."""
+    4k of it' is a decision. Each provider is registered under a `name`, so the library
+    stamps the part it resolves to and the row is read off the assembled request."""
     from pydantic_ai.models.test import TestModel
 
     from agent import build_chat_orchestrator
