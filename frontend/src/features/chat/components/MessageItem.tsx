@@ -8,7 +8,7 @@ import {
   type JSX,
 } from "solid-js";
 import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
-import { relativeTime } from "~/lib/format";
+import { hostLabel, relativeTime } from "~/lib/format";
 import { selectedModelLabel } from "~/lib/stores/models";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
@@ -444,16 +444,6 @@ function UserTurn(props: {
   );
 }
 
-/** The base domain of a URL (host, minus a leading `www.`) for a compact
- *  citation label — falls back to the raw URL if it doesn't parse. */
-function citationHost(url: string): string {
-  try {
-    return new URL(url).host.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
 const SOURCES_PREVIEW_COUNT = 3;
 
 /** The web sources a turn's `web_search`/`web_fetch` calls surfaced, as a compact
@@ -480,7 +470,7 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
           <Chip
             onClick={() => window.open(c.url, "_blank", "noopener,noreferrer")}
           >
-            [{i() + 1}] {citationHost(c.url)}
+            [{i() + 1}] {hostLabel(c.url)}
           </Chip>
         )}
       </For>

@@ -15,6 +15,7 @@ import httpx
 from core.api_scopes import ScopeClaim
 from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
 from prompts.utility import DISTILL_INSTRUCTIONS
+from routes import media as media_routes
 from routes import offline as offline_routes
 from routes import search as search_routes
 from routes.deps import OPERATOR_ID
@@ -150,10 +151,14 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
 
 MANIFEST = FeatureManifest(
     name="web",
-    routers=(search_routes.router, offline_routes.router),
+    routers=(search_routes.router, offline_routes.router, media_routes.router),
     api_scopes=(
         ScopeClaim("search", ("/search",)),
         ScopeClaim("status", ("/offline",)),
+        # An image embedded in an answer is part of reading the thread, so it rides
+        # the chat scope rather than minting one of its own — same reasoning as a
+        # View's versions.
+        ScopeClaim("chat", ("/media",)),
     ),
     toolsets=(("web", web_toolset),),
     # Both of this feature's tools *are* the internet — a search with no link reaches no

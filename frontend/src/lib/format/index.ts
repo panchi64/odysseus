@@ -104,3 +104,16 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   const days = Math.round(hours / 24);
   return `${days}D AGO`;
 }
+
+/** The base domain of a URL — host minus a leading `www.` — as a compact label for
+ *  "where does this go". Falls back to the raw string when it doesn't parse.
+ *
+ *  Shared by the two places that name a destination: the Sources row beneath an
+ *  answer, and the hover label on an inline link the model wrote into its prose. */
+export function hostLabel(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}

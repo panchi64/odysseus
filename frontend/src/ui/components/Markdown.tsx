@@ -11,7 +11,9 @@ import { marked, type Token } from "marked";
 import "katex/dist/katex.min.css";
 import { cx } from "../cx";
 import { copyToClipboard } from "../clipboard";
+import { markedLinks } from "./markdownLinks";
 import { markedMath } from "./markdownMath";
+import { hydrateRemoteImages } from "./remoteImages";
 
 export interface MarkdownProps {
   /** Markdown source. Rendered with token-styled prose (.ody-prose). */
@@ -30,6 +32,7 @@ export interface MarkdownProps {
 
 marked.setOptions({ gfm: true, breaks: true });
 marked.use(markedMath);
+marked.use(markedLinks);
 
 /** Top-level block sources for `source`, in document order — the exact strings
  *  `marked.lexer` re-serializes each top-level token from. Reused by callers that
@@ -101,9 +104,13 @@ function makeCopyButton(): HTMLButtonElement {
  * replies, research reports, and document bodies. Each fenced code block gets a
  * hover copy button (top-right) that copies the block's clean source — no fences.
  *
- * NOTE (Phase 2): mock content is trusted, so output is injected directly.
- * When real LLM/user-authored markdown is wired in, sanitize the HTML (e.g.
- * DOMPurify) before injection.
+ * The source is model- or user-authored and the result is injected as HTML, so
+ * the three constructs that could carry a URL or markup out of the source and
+ * into the DOM are closed at the renderer (`markdownLinks`): link hrefs are
+ * scheme-checked and escaped, images degrade to their alt text rather than
+ * fetching, and raw HTML is escaped to visible text rather than injected.
+ * Everything else `marked` emits is markup it wrote itself from Markdown tokens,
+ * so there is nothing left for a sanitizer pass to take out.
  */
 export function Markdown(props: MarkdownProps): JSX.Element {
   const [local] = splitProps(props, [
@@ -138,7 +145,13 @@ export function Markdown(props: MarkdownProps): JSX.Element {
   // single dataset read per pre/table) and correct for the block path, where only
   // the trailing block's DOM actually changed per delta.
   const enhance = (): void => {
-    if (!ref || local.copyCode === false) return;
+    if (!ref) return;
+    // Unconditional, and ahead of the `copyCode` gate below: a remote image has no
+    // `src` until this runs (markdownLinks parks the address so nothing loads on
+    // parse), so gating it on a code-affordance flag would leave the image blank
+    // for any caller that turned copy buttons off.
+    hydrateRemoteImages(ref);
+    if (local.copyCode === false) return;
     const pres = ref.querySelectorAll<HTMLPreElement>("pre");
     pres.forEach((pre) => {
       if (pre.parentElement?.dataset.codeHost !== undefined) return;
@@ -160,13 +173,17 @@ export function Markdown(props: MarkdownProps): JSX.Element {
   };
 
   createEffect(() => {
-    const enabled = local.copyCode !== false; // re-runs when toggled (stream end)
+    // Re-runs when `copyCode` is toggled (stream end), which is the point: the pass
+    // has to be re-scheduled so blocks rendered while it was off get their buttons.
+    void local.copyCode;
     // Track re-parses (streaming deltas) so new blocks get enhanced.
     if (local.streamStable) blockRaws();
     else html();
-    // Skip scheduling entirely while disabled (e.g. a streaming answer), so a long
-    // stream doesn't re-scan/re-wrap the DOM on every token.
-    if (enabled) queueMicrotask(enhance);
+    // Always scheduled, even with `copyCode` off. It used to be skipped there to
+    // spare a long stream one DOM scan per token, but the pass no longer only adds
+    // affordances — it is also what gives a remote image its `src`, and an image
+    // that never loads is a worse trade than a `querySelectorAll` per delta.
+    queueMicrotask(enhance);
   });
 
   // One delegated click handler copies the sibling <code>'s text (already clean).
