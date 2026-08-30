@@ -34,6 +34,10 @@ import {
   useEndpoints,
   useOfflineState,
 } from "~/features/settings/data";
+import {
+  DEFAULT_WALL_CLOCK_S,
+  wallClockMinutes,
+} from "~/features/settings/model";
 import type { ChatSettings } from "~/features/settings/model";
 import {
   AUTO_CLEAR_OPTIONS,
@@ -181,6 +185,44 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       min: 1,
       read: () => chat()?.inactivityTimeoutS,
       write: (next) => saveChat({ inactivityTimeoutS: next }),
+    },
+    // The wall clock is a nullable bound, which no single row kind expresses, so it takes
+    // two: the switch, and the duration. Off is the normal state — the step limit is what
+    // bounds a runaway turn — so the switch reads first and the duration only shows a
+    // value while there is one.
+    {
+      id: "chat.wall-clock-enabled",
+      label: "Total time limit",
+      keywords: ["wall clock", "timeout", "overall", "stop", "runaway"],
+      group: CHAT,
+      kind: "toggle",
+      read: () => {
+        const s = chat();
+        return s === undefined ? undefined : s.wallClockTimeoutS !== null;
+      },
+      // Switching off discards the duration (the store keeps no number behind an off
+      // bound), so switching back on always lands on the shared seed rather than on
+      // whatever was set before. The duration row below is how it gets changed.
+      write: (next) =>
+        saveChat({ wallClockTimeoutS: next ? DEFAULT_WALL_CLOCK_S : null }),
+    },
+    {
+      id: "chat.wall-clock-timeout",
+      label: "Stop a turn after",
+      keywords: ["wall clock", "timeout", "overall", "minutes", "duration"],
+      group: CHAT,
+      kind: "number",
+      unit: "min",
+      min: 1,
+      // `undefined` because there is nothing to show, not because nothing has loaded —
+      // the row renders empty either way, and the switch above is what says which it is.
+      read: () => {
+        const seconds = chat()?.wallClockTimeoutS;
+        return seconds == null ? undefined : wallClockMinutes(seconds);
+      },
+      // Writing a duration is also how the bound gets switched on, so an operator who
+      // found this row first doesn't have to go find the toggle.
+      write: (next) => saveChat({ wallClockTimeoutS: next * 60 }),
     },
     {
       id: "offline.manual",

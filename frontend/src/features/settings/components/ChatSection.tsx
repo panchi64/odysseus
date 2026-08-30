@@ -11,6 +11,7 @@ import {
   toast,
 } from "~/ui";
 import { saveChatSettings, useChatSettings } from "../data";
+import { DEFAULT_WALL_CLOCK_S, wallClockMinutes } from "../model";
 
 /** One preference's title and its explanation — the shape every block in this panel
  *  opens with. Extracted at the fourth copy: the wording is all that ever differed,
@@ -47,6 +48,14 @@ function wholeNumber(
   return n;
 }
 
+/** This panel's policy for a bound that isn't set: fall back to the shared seed, so
+ *  switching the limit on and pressing Save writes something sensible instead of erroring
+ *  on a blank field. The conversion itself is `wallClockMinutes`, shared with the
+ *  palette so one stored bound never rounds to two different numbers. */
+function minutesOr(seconds: number | null): number {
+  return wallClockMinutes(seconds ?? DEFAULT_WALL_CLOCK_S);
+}
+
 /* Operator preferences for how a turn runs: how many model round-trips one turn may
    spend, how long it may go silent before the watchdog stops it, when the composer's
    context gauge starts showing colour, and the one context reduction there is — when
@@ -62,6 +71,13 @@ export function ChatSection(): JSX.Element {
   // long generation (a big write, a slow first token) needs raised to stay alive.
   const [timeoutS, setTimeoutS] = createSignal("");
   const [savingTimeout, setSavingTimeout] = createSignal(false);
+  // How long (minutes) a run may take in total, however busy it is. Off unless the
+  // operator switches it on — the step limit is what bounds a runaway turn, so this
+  // exists for the case nothing else covers: a run that keeps emitting and so never
+  // looks idle to the watchdog. Edited in minutes, stored in seconds.
+  const [wallClockOn, setWallClockOn] = createSignal(false);
+  const [wallClockMin, setWallClockMin] = createSignal("");
+  const [savingWallClock, setSavingWallClock] = createSignal(false);
   // Conversation compaction: fold whole earlier turns into a summary once the context
   // window fills. The threshold is stored as a fraction and edited as a percentage — the
   // number the operator actually thinks in.
@@ -78,6 +94,8 @@ export function ChatSection(): JSX.Element {
     if (!s) return;
     setStepLimit(String(s.agentRequestLimit));
     setTimeoutS(String(s.inactivityTimeoutS));
+    setWallClockOn(s.wallClockTimeoutS !== null);
+    setWallClockMin(String(minutesOr(s.wallClockTimeoutS)));
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
     setWarnPct(String(Math.round(s.contextWarnThreshold * 100)));
@@ -118,6 +136,29 @@ export function ChatSection(): JSX.Element {
       toast.error("Unable to update the inactivity timeout.");
     } finally {
       setSavingTimeout(false);
+    }
+  };
+  const saveWallClock = async () => {
+    // Off sends `null` — a value the backend acts on (remove the bound), not an omission.
+    // The minutes field is only read when the switch is on, so a blank one can't block
+    // turning the limit off.
+    const minutes = wallClockOn() ? wholeNumber(wallClockMin()) : null;
+    if (wallClockOn() && minutes === null) {
+      toast.error("Enter whole minutes (1 or more).");
+      return;
+    }
+    setSavingWallClock(true);
+    try {
+      const saved = await saveChatSettings({
+        wallClockTimeoutS: minutes === null ? null : minutes * 60,
+      });
+      setWallClockOn(saved.wallClockTimeoutS !== null);
+      setWallClockMin(String(minutesOr(saved.wallClockTimeoutS)));
+      toast.success("Total time limit updated");
+    } catch {
+      toast.error("Unable to update the total time limit.");
+    } finally {
+      setSavingWallClock(false);
     }
   };
 
@@ -233,6 +274,48 @@ export function ChatSection(): JSX.Element {
               onClick={() => void saveTimeout()}
             >
               {savingTimeout() ? "Saving…" : "Save"}
+            </Button>
+          </Row>
+
+          <Rule />
+
+          <SettingHeader title="Total time limit">
+            A ceiling on how long one turn may take start to finish, however
+            busy it is. Off by default: the step limit above is what stops a
+            runaway turn, so a clock mostly cuts off turns that are simply slow
+            — a local model, a long tool call. Switch it on to catch what
+            neither other limit does: a turn that keeps producing output — a
+            tool reporting progress, a model still writing — and so never looks
+            idle, no matter how long it goes on.
+          </SettingHeader>
+          <Toggle
+            checked={wallClockOn()}
+            onChange={setWallClockOn}
+            label="Stop a turn once it has run this long"
+          />
+          <Row gap={4} align="end">
+            <Stack gap={1}>
+              <Text variant="micro" tone="dim">
+                STOP AFTER (minutes)
+              </Text>
+              <div class="w-48">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  value={wallClockMin()}
+                  onInput={(e) => setWallClockMin(e.currentTarget.value)}
+                  placeholder={String(minutesOr(null))}
+                  disabled={!wallClockOn()}
+                />
+              </div>
+            </Stack>
+            <Button
+              variant="primary"
+              disabled={savingWallClock()}
+              onClick={() => void saveWallClock()}
+            >
+              {savingWallClock() ? "Saving…" : "Save"}
             </Button>
           </Row>
 

@@ -45,6 +45,15 @@ AGENT_REQUEST_LIMIT_KEY = "chat.agent_request_limit"
 # alive. Seconds; the config default (or None = disabled) applies when unset.
 INACTIVITY_TIMEOUT_KEY = "chat.inactivity_timeout_s"
 
+# The run substrate's wall-clock bound (runs/registry.py): the operator's runtime override
+# of `run_wall_clock_timeout_s` — how long a run may take in total, however busy it is.
+# Off by default (see the config note): the useful case is a run that keeps emitting and
+# so never trips the inactivity watchdog, which nothing else stops. Unlike every other
+# key here, "unset" and "off" are different states — an empty stored value means the
+# operator turned it off, which must not fall back to the config default.
+WALL_CLOCK_TIMEOUT_KEY = "chat.wall_clock_timeout_s"
+_DISABLED = ""
+
 # Offline mode (services/offline.py) persists the operator's two switches here as
 # "true"/"false" strings: the manual force-offline toggle and the auto-detect master
 # switch. Policy, not a secret — stored in the clear like every other app preference.
@@ -149,6 +158,34 @@ async def set_inactivity_timeout(
     The ``gt=0`` body field at the route rejects a nonsensical one; a stray non-positive
     value stored here would simply be ignored by the getter."""
     await store.set(owner_id, INACTIVITY_TIMEOUT_KEY, str(value))
+    return value
+
+
+async def get_wall_clock_timeout(store: SettingsStore, owner_id: str) -> float | None:
+    """The operator's wall-clock bound in seconds — the runtime override if set (and
+    valid), else the config default (itself ``None``, i.e. no bound, unless the deploy
+    sets one).
+
+    The empty stored value is the one case that must *not* fall back: it is how the
+    operator says "no bound", which is indistinguishable from the default only while the
+    default happens to be ``None`` too. A 0, negative, or non-numeric value is corruption
+    rather than intent, so it falls back like everywhere else in this module."""
+    raw = await store.get(owner_id, WALL_CLOCK_TIMEOUT_KEY)
+    if raw == _DISABLED:
+        return None
+    return _positive_float_or(raw, get_settings().run_wall_clock_timeout_s)
+
+
+async def set_wall_clock_timeout(
+    store: SettingsStore, owner_id: str, value: float | None
+) -> float | None:
+    """Persist the operator's wall-clock bound in seconds, or ``None`` to remove it.
+    Returns the stored value. The ``gt=0`` body field at the route rejects a nonsensical
+    number; ``None`` is a deliberate choice, not an omission, and the route distinguishes
+    the two before calling this."""
+    await store.set(
+        owner_id, WALL_CLOCK_TIMEOUT_KEY, _DISABLED if value is None else str(value)
+    )
     return value
 
 

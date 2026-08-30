@@ -18,6 +18,7 @@ from agent import ParkedTurn, build_resume_orchestrator
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import covered_by_grant
+from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -264,7 +265,20 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     if to_grant and conv_id is not None:
         for tool_name in to_grant:
             await grants.grant(deps.OPERATOR_ID, conv_id, tool_name)
-    if await registry.resume(run_id, orchestrator) is None:
+    # A resumed turn runs under the *operator's* bounds, not the registry defaults. Both
+    # are settings now, and a continuation that quietly ran unbounded (or under a config
+    # default the operator had overridden) would make the setting a half-truth — approval
+    # resume is the only path an approval-gated tool ever actually runs on.
+    settings_store = deps.settings_store(request)
+    if (
+        await registry.resume(
+            run_id,
+            orchestrator,
+            inactivity_timeout_s=await get_inactivity_timeout(settings_store, deps.OPERATOR_ID),
+            wall_clock_timeout_s=await get_wall_clock_timeout(settings_store, deps.OPERATOR_ID),
+        )
+        is None
+    ):
         if to_grant and conv_id is not None:
             for tool_name in to_grant:
                 await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name)
