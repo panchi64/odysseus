@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fastapi import HTTPException
+
 from core.config import get_settings
 
 from ._helpers import client_app, collect_sse_events, patch_model_resolution
@@ -276,4 +278,39 @@ async def test_a_rejected_send_leaves_the_stop_marker_alone(monkeypatch):
             json={"prompt": "", "conversation_id": conv, "continues_message_id": stopped.id},
         )
         assert rejected.status_code == 422
+        assert (await store.messages_view(conv))[-1].blocked_reason is not None
+
+
+async def test_a_turn_that_fails_to_submit_leaves_the_stop_marker_alone(monkeypatch):
+    # The route's own claim is not proof the turn will run: `submit` has its own atomic
+    # check-and-claim, and a race it catches surfaces as a 409 from inside `_submit_turn`.
+    # Retiring the marker before that point would strand the operator with an unfinished
+    # turn and no button left to resume it.
+    patch_model_resolution(monkeypatch)
+
+    async with client_app() as (client, app):
+        first = await client.post("/chat", json={"prompt": "say hi"})
+        conv = first.json()["conversation_id"]
+        await collect_sse_events(client, first.json()["run_id"])
+
+        store = app.state.conversations
+        stopped = (await store.messages_view(conv))[-1]
+        store._cache_get(conv).nodes[stopped.id].blocked_reason = "cancelled by the operator"
+
+        import routes.chat as chat_routes
+
+        def busy(**_kwargs):
+            raise HTTPException(status_code=409, detail="lost the race")
+
+        monkeypatch.setattr(chat_routes, "compose_turn", busy)
+
+        lost = await client.post(
+            "/chat",
+            json={
+                "prompt": "Continue.",
+                "conversation_id": conv,
+                "continues_message_id": stopped.id,
+            },
+        )
+        assert lost.status_code == 409
         assert (await store.messages_view(conv))[-1].blocked_reason is not None

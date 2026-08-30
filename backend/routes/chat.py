@@ -451,9 +451,12 @@ async def _retire_stop_marker(
 ) -> None:
     """Clear the stop marker this turn resumes, if it says it resumes one.
 
-    Best-effort by design: an id the store no longer knows (the turn was deleted or
-    regenerated out from under a stale client) means there is no marker left to
-    retire, which is the outcome the caller wanted anyway."""
+    Best-effort, and deliberately loose about *which* marker: the store resolves an id
+    it doesn't recognize to the newest stop on the thread, because a live client names
+    a turn that stopped before anything persisted by its own optimistic id. The cost of
+    that latitude is a stale client — one whose turn was since deleted or regenerated —
+    retiring a newer stop instead of the one it meant. That is a marker the operator
+    loses, never a turn: the resume they asked for still runs either way."""
     if body.continues_message_id is None:
         return
     await store.clear_blocked_reason(conversation_id, body.continues_message_id)
@@ -537,11 +540,8 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             await _retire_stop_marker(store, conversation_id, body)
             return queued
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from None
-    # Only once the turn is actually accepted — a rejected send leaves the operator
-    # with the same unfinished turn, so it must leave them the marker too.
-    await _retire_stop_marker(store, conversation_id, body)
     try:
-        return await _submit_turn(
+        created = await _submit_turn(
             request,
             prompt=body.prompt,
             conversation_id=conversation_id,
@@ -549,6 +549,12 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             attachment_ids=body.attachment_ids,
             ephemeral=body.ephemeral,
         )
+        # Only once the run is submitted — a rejected send leaves the operator with the
+        # same unfinished turn, so it must leave them the marker too. The claim above is
+        # not enough to know that: `submit` has its own atomic check-and-claim, and a
+        # race it catches becomes a 409 from in here.
+        await _retire_stop_marker(store, conversation_id, body)
+        return created
     finally:
         deps.release_conversation(request, conversation_id)
 
