@@ -50,6 +50,17 @@ type WorkspaceKind = Literal["sandbox", "worktree"]
 #: and enforced elsewhere; a mode only names the one a fresh thread starts at.
 type PermissionLevel = Literal["plan", "manual", "edit", "auto"]
 
+#: The four, as a set to validate against. Written once here so no caller re-lists them.
+PERMISSION_LEVELS: frozenset[str] = frozenset({"plan", "manual", "edit", "auto"})
+
+#: What a mode that names no level of its own starts a thread at, and what a caller with
+#: no level to pass gets. ``edit`` reproduces the gate as it stood before levels existed:
+#: workspace writes pass, and host, external and outbound effects pause for the operator.
+DEFAULT_PERMISSION: PermissionLevel = "edit"
+
+#: The level that does the least — where an unreadable stored value lands.
+STRICTEST_PERMISSION: PermissionLevel = "plan"
+
 #: What an unrecognised stored value resolves to. Normal is the conservative answer: it is
 #: the mode that never reaches the host.
 DEFAULT_MODE: ModeId = "normal"
@@ -99,10 +110,8 @@ class ModeSpec:
     #: The prompt fragment this mode adds, or "" when it adds nothing (:mod:`prompts.modes`
     #: explains why most modes add nothing). Delivered as a dynamic instruction.
     instructions: str = ""
-    #: What a fresh thread in this mode starts at. ``edit`` is the level that reproduces
-    #: the gate as it stood before permission levels existed: workspace writes pass, and
-    #: host, external and outbound effects pause for the operator.
-    default_permission: PermissionLevel = "edit"
+    #: What a fresh thread in this mode starts at.
+    default_permission: PermissionLevel = DEFAULT_PERMISSION
     #: A floor under the turn's model-round-trip budget, or None to let the operator's
     #: setting decide alone. A mode raises it rather than capping it: the ceiling is the
     #: operator's to set, but a mode that *cannot* do its work inside the default would
@@ -131,6 +140,20 @@ MODES: Mapping[ModeId, ModeSpec] = {
         categories=frozenset({"shell", "repo"}),
     ),
 }
+
+
+def permission_level(level: str) -> PermissionLevel:
+    """A stored permission value, falling back to the strictest level rather than the
+    default one.
+
+    The two axes degrade in the same direction and for the same reason — a value that
+    reaches this comes off a database row or a parked run's payload, both of which outlive
+    a rename — but the conservative answer differs. An unknown *mode* is Normal because
+    Normal reaches the least; an unknown *level* is Plan because Plan does the least. A
+    corrupt value leaves the model able to read and to plan, and unable to act, which is a
+    failure the operator can see and correct rather than one that quietly grants.
+    """
+    return level if level in PERMISSION_LEVELS else STRICTEST_PERMISSION
 
 
 def mode_spec(mode: str) -> ModeSpec:

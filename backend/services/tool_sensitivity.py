@@ -1,0 +1,237 @@
+"""What a tool *does* if it runs, in five classes.
+
+Three markings live on the tools today and none of them answers this question.
+``requires_approval=True`` says "pause before running this"; an ``ApprovalRequired`` raised
+from inside a call says "pause, now that I have seen the arguments"; a tool carrying
+neither says nothing at all. All three are about **when to ask the operator** — they
+schedule a prompt. None of them describes the act itself, which is what a permission level
+has to know *before* the model is offered the tool. "May this run in a read-only thread?"
+has no answer in a marking whose only purpose is to raise a dialog.
+
+So every tool carries a **sensitivity**: the worst thing it can do, named. The classes are
+kinds of reach, not degrees of danger:
+
+- ``read`` — observes and returns. Reaching the network to observe (a web search, a page
+  fetch, an IMAP body) is still reading: nothing anywhere is different afterwards.
+- ``workspace_write`` — changes state this installation owns. The run's own files, the
+  conversation's plan, the operator's memory and skills, a local draft. Visible from
+  inside Odysseus, inspectable, and undoable from here.
+- ``host_exec`` — hands a command or a program to an interpreter, so the worst case is not
+  bounded by the tool's own arguments. The sandbox container is a fence around the blast
+  radius, not a reason to call running arbitrary code a file write.
+- ``external_effect`` — reaches something outside: a mail server, a calendar server, a live
+  page in the operator's own browser session, a third-party tool.
+- ``secret`` — touches credential material. Reading a password hands the model something no
+  later approval can take back, which is why it is its own class and not an external read.
+
+**Why the names are written out.** ``tools/`` sits above ``services/`` in the dependency
+order, so walking the live catalog from here would invert it — the same constraint
+``services/modes.py`` works under. The literal is not left to rot:
+``tests/test_tool_sensitivity.py`` pins it against the catalog a real run resolves, in both
+directions, so a renamed tool fails a test rather than silently losing its class.
+
+**Why an unclassified name is treated as an external effect.** The catalog is not closed:
+``external_{slug}_{tool}`` names come from the operator's own MCP servers and connectors,
+so they cannot appear in any literal here. An unknown tool reaches something this module
+cannot bound, which is exactly what ``external_effect`` means — and it is the fail-closed
+direction: an unclassified tool is withheld from a read-only thread rather than admitted
+to one.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from enum import StrEnum
+
+
+class Sensitivity(StrEnum):
+    """The worst case of one tool, as a class of reach."""
+
+    READ = "read"
+    WORKSPACE_WRITE = "workspace_write"
+    HOST_EXEC = "host_exec"
+    EXTERNAL_EFFECT = "external_effect"
+    SECRET = "secret"
+
+    @property
+    def escalation(self) -> int:
+        """How far past pure observation this class sits.
+
+        The three top classes share a rank deliberately. They are different kinds of reach,
+        not degrees of one — a shell command, a sent email and a read password are not on a
+        line, and pretending they are would invite a policy that quietly ordered them.
+        A level that wants to treat them differently names them; a level that wants "more
+        than a workspace write" compares.
+        """
+        return _ESCALATION[self]
+
+    def above(self, floor: Sensitivity) -> bool:
+        """Whether this class escalates past ``floor`` — *not* a total order (see
+        :attr:`escalation`): two classes of equal rank are each not above the other."""
+        return self.escalation > floor.escalation
+
+
+_ESCALATION: Mapping[Sensitivity, int] = {
+    Sensitivity.READ: 0,
+    Sensitivity.WORKSPACE_WRITE: 1,
+    Sensitivity.HOST_EXEC: 2,
+    Sensitivity.EXTERNAL_EFFECT: 2,
+    Sensitivity.SECRET: 2,
+}
+
+#: What a name this module has never heard of resolves to (see the module docstring).
+UNCLASSIFIED: Sensitivity = Sensitivity.EXTERNAL_EFFECT
+
+
+#: Every registered tool, by namespaced name, grouped by what it can do. Grouped rather
+#: than listed name-by-class because the grouping is the argument: a tool added to the
+#: wrong group is obvious next to its neighbours in a way a trailing enum member is not.
+SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
+    Sensitivity.READ: frozenset(
+        {
+            "builtin_now",
+            # Browsing that only observes. Every one of these returns what the page
+            # already shows — moving through history and scrolling included, which change
+            # the agent's viewport and nothing on the far side.
+            "browse_console_messages",
+            "browse_get_text",
+            "browse_go_back",
+            "browse_go_forward",
+            "browse_hover",
+            "browse_navigate",
+            "browse_network_requests",
+            "browse_screenshot",
+            "browse_scroll",
+            "browse_snapshot",
+            "browse_tabs",
+            "browse_wait_for",
+            "calendar_agenda",
+            "calendar_list_calendars",
+            # Drafting is pure computation: it turns a phrase into a structured event and
+            # returns it. Nothing is stored until `calendar_create_event` is called.
+            "calendar_draft_event_from_text",
+            "conversations_read",
+            "conversations_search",
+            "corpus_retrieve",
+            "files_file_info",
+            "files_find_files",
+            "files_list_directory",
+            "files_read_file",
+            "files_search_files",
+            "mail_list_accounts",
+            "mail_list_messages",
+            "mail_read",
+            "memory_recall",
+            "plan_read_plan",
+            "project_active",
+            "project_list",
+            "repo_inventory_agent_context",
+            "research_read",
+            # Reading the status and output of a command someone else started. Starting
+            # and stopping one are execution; asking what it printed is not.
+            "shell_check_command",
+            "skills_open",
+            # Retrieval over the network. The operator's machine and every service on it
+            # are exactly as they were afterwards.
+            "web_fetch",
+            "web_search",
+        }
+    ),
+    Sensitivity.WORKSPACE_WRITE: frozenset(
+        {
+            "attachments_provision",
+            "files_create_directory",
+            "files_edit_file",
+            "files_write_file",
+            # Sealed in this installation's own database and shown to the operator — the
+            # draft never reaches the mail server, which is the whole point of preferring
+            # it over `mail_reply`.
+            "mail_draft_reply",
+            "memory_remember",
+            "plan_add_task",
+            "plan_remove_task",
+            "plan_update_task_status",
+            "plan_update_task_statuses",
+            "plan_write_plan",
+            "skills_create",
+            "skills_edit",
+            # The View is this conversation's own surface: showing and tearing down its
+            # live head changes what the operator sees and nothing they own.
+            "view_close",
+            "view_show",
+        }
+    ),
+    Sensitivity.HOST_EXEC: frozenset(
+        {
+            # Arbitrary code, whichever machine runs it: `code_execute` in the
+            # conversation's container, `code_run_host_command` and the shell on the
+            # operator's own.
+            "code_execute",
+            "code_run_host_command",
+            "shell_run_command",
+            "shell_start_command",
+            "shell_stop_command",
+            # A sub-agent's whole catalog, reached through one call. Its worst case is at
+            # least the worst case of running a program, and its arguments say nothing
+            # about which tools it will end up using.
+            "agents_delegate_task",
+        }
+    ),
+    Sensitivity.EXTERNAL_EFFECT: frozenset(
+        {
+            # Browsing that acts. A click submits, a keystroke sends, and evaluated
+            # JavaScript runs with the page's own authority — inside a browser session
+            # carrying the operator's logins.
+            "browse_click",
+            "browse_execute_js",
+            "browse_handle_next_dialog",
+            "browse_press_key",
+            "browse_select_option",
+            "browse_type_text",
+            "calendar_create_event",
+            "calendar_delete_event",
+            "calendar_update_event",
+            # Reversible, and still on the far side of the operator's mail server.
+            "mail_mark",
+            "mail_reply",
+            "mail_send",
+            # Starts an autonomous run that reads the web in the operator's name.
+            "research_start",
+        }
+    ),
+    Sensitivity.SECRET: frozenset(
+        {
+            "vault_get_entry",
+            # Names, usernames and URLs — never the passwords. Still the shape of the
+            # operator's credential set, which is not something a read-only thread needs.
+            "vault_list_entries",
+        }
+    ),
+}
+
+
+_BY_NAME: Mapping[str, Sensitivity] = {
+    name: sensitivity for sensitivity, names in SENSITIVITY_CLASSES.items() for name in names
+}
+
+
+def sensitivity_of(name: str) -> Sensitivity:
+    """The class of one namespaced tool name, falling back to :data:`UNCLASSIFIED`.
+
+    Never raises: the names reaching this come from a model's tool call and from the
+    operator's own external sources, neither of which this registry can enumerate ahead of
+    time. The fallback is the conservative direction, so an unclassified tool is withheld
+    from a read-only thread rather than admitted to one.
+    """
+    return _BY_NAME.get(name, UNCLASSIFIED)
+
+
+def tools_above(floor: Sensitivity) -> frozenset[str]:
+    """Every classified tool that escalates past ``floor``.
+
+    Only classified names, by construction — an unclassified one is unknown to this module
+    until it is called, so a catalog-narrowing caller cannot withhold it and does not need
+    to: the decision point that sees the call still resolves it through
+    :func:`sensitivity_of`.
+    """
+    return frozenset(name for name, s in _BY_NAME.items() if s.above(floor))

@@ -5,7 +5,7 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Four independent sources feed one set:
+Five independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
@@ -14,6 +14,8 @@ Four independent sources feed one set:
   connectivity rather than chosen;
 - **the run's mode** — whether a tool belongs in this kind of thread, read off the mode
   registry (``services/modes.py``) rather than restated here;
+- **the run's permission level** — under Plan, every tool that would change something is
+  withheld outright, classified by ``services/tool_sensitivity.py``;
 - **the model's own reach** — a tool that answers with an image is withheld from a model
   that cannot see one.
 
@@ -39,8 +41,15 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
+from services.modes import (
+    DEFAULT_MODE,
+    DEFAULT_PERMISSION,
+    MODE_SCOPED_TOOLS,
+    mode_spec,
+    permission_level,
+)
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
+from services.tool_sensitivity import Sensitivity, tools_above
 
 if TYPE_CHECKING:
     from services.offline import OfflineModeService
@@ -130,30 +139,75 @@ def mode_disabled_tools(mode: str) -> frozenset[str]:
     )
 
 
+# The Planning toolset's writes — the one mutation a Plan turn exists to make, and so the
+# one exemption from Plan's withholding. A read-only thread that could not record what it
+# decided would have no way to end. Written out here for the same reason
+# `VISION_ONLY_TOOLS` is, and pinned against the live catalog by
+# `tests/test_tool_sensitivity.py`. Reading the plan is already admitted — it classifies
+# as `read` — so only the writes are listed.
+PLANNING_TOOLS = frozenset(
+    {
+        "plan_add_task",
+        "plan_remove_task",
+        "plan_update_task_status",
+        "plan_update_task_statuses",
+        "plan_write_plan",
+    }
+)
+
+
+def permission_disabled_tools(level: str) -> frozenset[str]:
+    """The tools a run at ``level`` must not even be offered.
+
+    Only **Plan** narrows the catalog, and it is the reason the sensitivity classes exist:
+    a read-only turn is the one case where withholding beats asking. The other three levels
+    decide *at the call* — they let the model see a tool and then gate its execution — so
+    they withhold nothing here; taking a tool out of their catalog would tell the model the
+    capability does not exist rather than that it needs permission, and it would answer as
+    if the operator had never had the option.
+
+    Withholding rather than prompt-toggling is deliberate. A mode that only *asks* the
+    model to stay read-only is enforcement by cooperation, which stops working precisely
+    when it matters. A tool that is not in the catalog cannot be called by a model that
+    decides otherwise.
+
+    An unrecognised level lands on Plan (``services/modes.py``), so a corrupt stored value
+    reads as "this thread may only look", not as free rein.
+    """
+    if permission_level(level) != "plan":
+        return frozenset()
+    return tools_above(Sensitivity.READ) - PLANNING_TOOLS
+
+
 async def effective_disabled_tools(
     settings: SettingsStore,
     offline: OfflineModeService,
     owner_id: str,
     *,
     mode: str = DEFAULT_MODE,
+    permission: str = DEFAULT_PERMISSION,
     vision: bool = True,
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with
-    offline mode's automatic web suspension, the tools that don't belong in ``mode``, and
-    the ones whose results this run's model cannot read.
+    offline mode's automatic web suspension, the tools that don't belong in ``mode``, the
+    ones this run's ``permission`` level does not let it act with, and the ones whose
+    results this run's model cannot read.
 
-    A union, never a replacement — the four answer different questions ("the operator does
+    A union, never a replacement — the five answer different questions ("the operator does
     not want this tool", "this tool cannot work right now", "this tool is not part of this
-    kind of thread", "this model cannot read what this tool returns"), and any one of them
-    alone is enough to withhold a tool.
+    kind of thread", "this thread may not act at all", "this model cannot read what this
+    tool returns"), and any one of them alone is enough to withhold a tool.
 
-    ``vision`` defaults to True — permissive — because the callers that cannot know
-    (a background agent that resolves its own model) should not have tools taken away by
-    an assumption; the interactive paths, which do know, pass the resolved answer.
+    ``permission`` defaults to the level that withholds nothing, so a caller with no level
+    to pass is unaffected; ``vision`` defaults to True — permissive — because the callers
+    that cannot know (a background agent that resolves its own model) should not have tools
+    taken away by an assumption; the interactive paths, which do know, pass the resolved
+    answer.
     """
     return (
         await get_disabled_tools(settings, owner_id)
         | offline.web_tools_disabled()
         | mode_disabled_tools(mode)
+        | permission_disabled_tools(permission)
         | vision_disabled_tools(vision)
     )
