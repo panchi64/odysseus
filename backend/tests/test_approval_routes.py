@@ -81,6 +81,39 @@ async def test_approve_flow_resumes_and_completes(monkeypatch):
     assert types[-1] == "run.ended"
 
 
+async def test_approve_resumes_under_the_operators_bounds(monkeypatch):
+    # The continuation is a turn like any other, so it must run under the operator's own
+    # bounds rather than the registry defaults — a wall clock that applied to send but not
+    # to the resumed half of an approval-gated turn would be a setting that lies.
+    _install_sensitive_tool(monkeypatch)
+    async with client_app() as (client, app):
+        swap_tool_catalog(app, danger_categories())
+        await client.put(
+            "/chat/settings", json={"wall_clock_timeout_s": 900, "inactivity_timeout_s": 45}
+        )
+        run_id = (await client.post("/chat", json={"prompt": "delete it"})).json()["run_id"]
+        run = await _await_parked(app, run_id)
+
+        seen: dict[str, object] = {}
+        real_resume = app.state.runs.resume
+
+        async def spy(rid, orchestrator, **kwargs):
+            seen.update(kwargs)
+            return await real_resume(rid, orchestrator, **kwargs)
+
+        monkeypatch.setattr(app.state.runs, "resume", spy)
+
+        call_id = run.parked_payload.requests.approvals[0].tool_call_id
+        resp = await client.post(
+            f"/runs/{run_id}/approve",
+            json={"decisions": [{"tool_call_id": call_id, "approved": True}]},
+        )
+        assert resp.status_code == 202
+        await collect_sse_events(client, run_id)
+
+    assert seen == {"wall_clock_timeout_s": 900, "inactivity_timeout_s": 45}
+
+
 async def test_approve_rejects_unknown_and_unparked(monkeypatch):
     async with client_app() as (client, app):
         # unknown run
@@ -138,7 +171,7 @@ async def test_failed_resume_rolls_back_the_recorded_grant(monkeypatch):
         approval = run.parked_payload.requests.approvals[0]
         conv_id = run.conversation_id
 
-        async def fail_resume(run_id, orchestrator):
+        async def fail_resume(run_id, orchestrator, **kwargs):
             return None
 
         monkeypatch.setattr(app.state.runs, "resume", fail_resume)

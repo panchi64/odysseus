@@ -95,6 +95,11 @@ export interface SearchProviderInput {
  *  `inactivityTimeoutS` is how long (seconds) a run may go without emitting an event
  *  before the watchdog stops it — the bound a long generation (a big write, a slow
  *  first token) needs raised to stay alive.
+ *  `wallClockTimeoutS` is a total-duration bound on a run however busy it is, and is
+ *  `null` (no bound) unless the operator sets one: a turn is already bounded by
+ *  `agentRequestLimit`, so a wall clock mostly stops runs that are merely slow. What it
+ *  does catch is a run that keeps emitting — a tool streaming progress, a model streaming
+ *  tokens — and so refreshes the inactivity watchdog forever without spending a step.
  *  `contextWarnThreshold`/`contextAlertThreshold` are where the composer's context gauge
  *  turns amber and then red — fractions like `autoCompactThreshold`, and tunable for the
  *  same reason the ring is grey below them: how much remaining room counts as "enough"
@@ -107,6 +112,21 @@ export interface ChatSettings {
   contextAlertThreshold: number;
   agentRequestLimit: number;
   inactivityTimeoutS: number;
+  wallClockTimeoutS: number | null;
+}
+
+/** What `wallClockTimeoutS` seeds to when it is switched on and nothing was stored — the
+ *  frontend's own starting suggestion, not a backend default (there isn't one: the bound
+ *  is absent until an operator asks for it). Shared so the Chat panel and the settings
+ *  palette can't seed the switch to two different durations. */
+export const DEFAULT_WALL_CLOCK_S = 1800;
+
+/** `wallClockTimeoutS` as the whole minutes both editing surfaces offer. Shared for the
+ *  same reason as the seed above: the panel and the palette must round one stored bound
+ *  to the same number. Each caller keeps its own policy for "there is no bound" — the
+ *  panel seeds the field, the palette shows nothing — so this takes a real duration. */
+export function wallClockMinutes(seconds: number): number {
+  return Math.max(1, Math.round(seconds / 60));
 }
 
 /* ── Offline mode ──────────────────────────────────────────────────────────── */

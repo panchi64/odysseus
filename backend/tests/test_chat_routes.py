@@ -177,6 +177,44 @@ async def test_inactivity_timeout_round_trip():
         assert again["inactivity_timeout_s"] == 300
 
 
+async def test_wall_clock_timeout_is_absent_until_the_operator_sets_one():
+    # The default is no bound at all: a turn is already capped by `agent_request_limit`, so
+    # a clock only ever stops a run that is legitimately slow.
+    async with client_app() as (client, _app):
+        got = (await client.get("/chat/settings")).json()
+        assert got["wall_clock_timeout_s"] is None
+
+        put = await client.put("/chat/settings", json={"wall_clock_timeout_s": 3600})
+        assert put.status_code == 200
+        assert put.json()["wall_clock_timeout_s"] == 3600
+
+        again = (await client.get("/chat/settings")).json()
+        assert again["wall_clock_timeout_s"] == 3600
+
+
+async def test_explicit_null_removes_the_wall_clock_bound():
+    # `null` is the one body value that means something rather than "unchanged", so a PUT
+    # carrying it must clear the bound — and a PUT that omits the field must not.
+    async with client_app() as (client, _app):
+        await client.put("/chat/settings", json={"wall_clock_timeout_s": 3600})
+
+        untouched = await client.put("/chat/settings", json={"agent_request_limit": 30})
+        assert untouched.json()["wall_clock_timeout_s"] == 3600
+
+        cleared = await client.put("/chat/settings", json={"wall_clock_timeout_s": None})
+        assert cleared.status_code == 200
+        assert cleared.json()["wall_clock_timeout_s"] is None
+        assert (await client.get("/chat/settings")).json()["wall_clock_timeout_s"] is None
+
+
+async def test_wall_clock_timeout_rejects_zero_and_negative():
+    # Off is `null`, not 0 — a 0 bound would stop every turn the instant it started.
+    async with client_app() as (client, _app):
+        for bad in (0, -1):
+            resp = await client.put("/chat/settings", json={"wall_clock_timeout_s": bad})
+            assert resp.status_code == 422
+
+
 async def test_inactivity_timeout_rejects_zero_and_negative():
     # A 0 bound would stop every turn immediately, and a negative one is nonsensical —
     # both are rejected rather than silently disabling the watchdog.

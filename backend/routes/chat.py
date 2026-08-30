@@ -44,10 +44,12 @@ from services.settings_store import (
     get_auto_compact,
     get_context_thresholds,
     get_inactivity_timeout,
+    get_wall_clock_timeout,
     set_agent_request_limit,
     set_auto_compact,
     set_context_thresholds,
     set_inactivity_timeout,
+    set_wall_clock_timeout,
 )
 from services.uploads import UploadStore
 from tools import InstructionProvider, PromptContextProvider
@@ -118,7 +120,13 @@ class ChatSettings(BaseModel):
     utility-model summary once the context window fills.
     ``agent_request_limit`` is how many model round-trips one turn may spend before it
     stops. They're optional on a PUT — an omitted one is left unchanged — and always
-    populated on a GET. snake_case out, matching the rest of the ``/chat`` surface."""
+    populated on a GET. snake_case out, matching the rest of the ``/chat`` surface.
+
+    On a PUT, ``wall_clock_timeout_s`` is the one field where ``null`` is a *value* (no
+    bound) rather than an omission, so the handler reads ``model_fields_set`` for it
+    instead of testing against ``None`` like the rest. On a GET, ``null`` is meaningful in
+    two fields, not one: an absent wall clock, and an ``inactivity_timeout_s`` a deploy
+    disabled outright."""
 
     # `extra="forbid"` so a mistyped/unknown field is a 422, not a silent no-op: with every
     # field optional (omitted ⇒ unchanged), a typo'd key would otherwise be dropped and the PUT
@@ -149,6 +157,13 @@ class ChatSettings(BaseModel):
     # immediately); the config default applies when the operator hasn't set one, and a
     # deploy-level ``None`` disables the watchdog entirely.
     inactivity_timeout_s: float | None = Field(default=None, gt=0)
+    # The wall-clock bound in seconds: how long a run may take in total, however busy it
+    # is. Off unless the operator sets one — a turn is already bounded by
+    # `agent_request_limit`, so a wall clock mostly stops runs that are merely slow. What
+    # it does catch is a run that keeps emitting (a tool streaming progress, a model
+    # streaming tokens) and so refreshes the inactivity watchdog forever without spending
+    # a model request. ``gt=0`` for the same reason as above; ``null`` removes the bound.
+    wall_clock_timeout_s: float | None = Field(default=None, gt=0)
 
 
 async def resolve_turn_models(
@@ -246,6 +261,7 @@ def compose_turn(
     request_limit: int | None = None,
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     inactivity_timeout_s: float | None | object = _UNSET,
+    wall_clock_timeout_s: float | None | object = _UNSET,
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -300,6 +316,10 @@ def compose_turn(
             # The operator's inactivity bound, resolved by the interactive caller; the
             # unattended task path omits it (_UNSET) and the registry default applies.
             inactivity_timeout_s=inactivity_timeout_s,
+            # Same shape for the wall clock — resolved by the interactive caller, _UNSET
+            # elsewhere. Both defaults are off, so an unattended turn is unbounded in
+            # wall-clock terms unless the deploy set `run_wall_clock_timeout_s`.
+            wall_clock_timeout_s=wall_clock_timeout_s,
         )
     except ConversationBusyError as exc:
         # The registry's own atomic check-and-claim caught a race the caller's
@@ -361,6 +381,11 @@ async def _submit_turn(
         # Same reason as the request limit: every interactive turn runs under the
         # operator's inactivity bound (else the config default).
         inactivity_timeout_s=await get_inactivity_timeout(
+            deps.settings_store(request), OPERATOR_ID
+        ),
+        # And the wall clock, which is normally absent — resolved here anyway so that an
+        # operator who does set one gets it on every interactive turn, not just send.
+        wall_clock_timeout_s=await get_wall_clock_timeout(
             deps.settings_store(request), OPERATOR_ID
         ),
     )
@@ -570,6 +595,7 @@ def _settings_response(
     context: ContextThresholds,
     steps: int,
     inactivity: float | None,
+    wall_clock: float | None,
 ) -> ChatSettings:
     return ChatSettings(
         auto_compact_enabled=auto.enabled,
@@ -578,6 +604,7 @@ def _settings_response(
         context_alert_threshold=context.alert,
         agent_request_limit=steps,
         inactivity_timeout_s=inactivity,
+        wall_clock_timeout_s=wall_clock,
     )
 
 
@@ -588,8 +615,9 @@ async def get_chat_settings(request: Request) -> ChatSettings:
     auto = await get_auto_compact(store, OPERATOR_ID)
     steps = await get_agent_request_limit(store, OPERATOR_ID)
     inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
+    wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
     context = await get_context_thresholds(store, OPERATOR_ID)
-    return _settings_response(auto, context, steps, inactivity)
+    return _settings_response(auto, context, steps, inactivity, wall_clock)
 
 
 @router.put("/settings", response_model=ChatSettings)
@@ -607,6 +635,12 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         inactivity = await set_inactivity_timeout(store, OPERATOR_ID, body.inactivity_timeout_s)
     else:
         inactivity = await get_inactivity_timeout(store, OPERATOR_ID)
+    # `null` here means "remove the bound", so presence in the body — not a non-None
+    # value — is what says the client touched it.
+    if "wall_clock_timeout_s" in body.model_fields_set:
+        wall_clock = await set_wall_clock_timeout(store, OPERATOR_ID, body.wall_clock_timeout_s)
+    else:
+        wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
 
     auto = await get_auto_compact(store, OPERATOR_ID)
     if body.auto_compact_enabled is not None or body.auto_compact_threshold is not None:
@@ -645,4 +679,4 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 ),
             ) from exc
         context = await set_context_thresholds(store, OPERATOR_ID, thresholds)
-    return _settings_response(auto, context, steps, inactivity)
+    return _settings_response(auto, context, steps, inactivity, wall_clock)

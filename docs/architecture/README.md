@@ -52,7 +52,7 @@ A Run owns:
 - a **typed, sequence-numbered event stream** (Pillar II) published to an in-process broker,
 - an **in-memory event buffer** so a client that disconnects and reconnects can replay what it missed (`AE-7`) — this lives only as long as the server process, which is exactly what the spec requires,
 - a background **asyncio task** tracked in a `RunRegistry`, decoupled from any client connection: closing the browser does not stop the work (`AE-7.1`),
-- **bounds**: a max-step ceiling (`AE-1.5`), optional tool-call ceiling (`AE-1.6`), an inactivity watchdog and a wall-clock limit (`XC-PERF-2`), and cancellation that takes effect at the next step boundary (`DR-3.3`, `CHAT-5`).
+- **bounds**: a max-step ceiling (`AE-1.5`), optional tool-call ceiling (`AE-1.6`), an inactivity watchdog and an opt-in wall-clock limit (`XC-PERF-2`), and cancellation that takes effect at the next step boundary (`DR-3.3`, `CHAT-5`). The step ceiling and the watchdog apply to every run; the wall clock is off unless the deploy or the operator sets one, since a turn that is merely slow is a turn we want to let finish. Research supplies its own.
 
 Because every long-running feature is a Run, continuity/resume/cancel/timeout/metrics are written **once** and inherited by chat, agent, and research alike. ⟦OPEN: D1 transport, D2 concurrency model⟧
 
@@ -138,7 +138,7 @@ Dependency direction is strictly downward: `routes → agent/research → tools 
 4. It runs the Pydantic AI `Agent` via `agent.iter()`, translating each node's stream into domain events (reasoning, text deltas, tool start/progress/result, step boundaries) and publishing them through the broker to the SSE transport — while also persisting durable artifacts (messages, documents, metrics).
 5. Tools receive `RunContext.deps` and can **emit their own progress events** (so a slow tool shows elapsed time and partial output, `AE-6.1`) and reach capabilities without globals.
 6. On the model's final output, the **meta-loop** optionally verifies deliverables and may make one bounded corrective re-attempt; then the orchestrator emits final metrics and an explicit end-of-turn, and persists the updated `ModelMessage` history.
-7. Throughout, the inactivity watchdog and wall-clock limit can cut the run off; a `POST /runs/{id}/cancel` stops it at the next step boundary. Disconnect at any point leaves the run running and resumable.
+7. Throughout, the inactivity watchdog — and a wall-clock limit, where one is configured — can cut the run off; a `POST /runs/{id}/cancel` stops it at the next step boundary. Disconnect at any point leaves the run running and resumable.
 
 Deep research is the same skeleton with a different orchestrator: a rounds-based pipeline (plan → search → read → analyze → write) emitting phase/progress events on the same substrate, reusing the same search/LLM capabilities, bounded by rounds + time (`DR-3`).
 

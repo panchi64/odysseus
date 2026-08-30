@@ -268,6 +268,7 @@ interface ChatSettingsDTO {
   context_alert_threshold: number;
   agent_request_limit: number;
   inactivity_timeout_s: number;
+  wall_clock_timeout_s: number | null;
 }
 
 /** The single snake_case→camel mapper for the stored chat preferences. */
@@ -279,6 +280,7 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
     contextAlertThreshold: dto.context_alert_threshold,
     agentRequestLimit: dto.agent_request_limit,
     inactivityTimeoutS: dto.inactivity_timeout_s,
+    wallClockTimeoutS: dto.wall_clock_timeout_s,
   };
 }
 
@@ -300,6 +302,10 @@ function toChatSettingsBody(
     body.agent_request_limit = patch.agentRequestLimit;
   if (patch.inactivityTimeoutS !== undefined)
     body.inactivity_timeout_s = patch.inactivityTimeoutS;
+  // `null` is a value here (remove the bound), not an absence, so the `undefined` test
+  // is what says the caller touched it — the backend reads presence the same way.
+  if (patch.wallClockTimeoutS !== undefined)
+    body.wall_clock_timeout_s = patch.wallClockTimeoutS;
   return body;
 }
 

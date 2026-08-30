@@ -69,7 +69,14 @@ class Settings(BaseSettings):
 
     # Run substrate bounds. Timeouts are seconds; None disables.
     run_max_concurrency: int = 8
-    run_wall_clock_timeout_s: float | None = 1800.0
+    # Off by default: a turn is already bounded by `agent_request_limit` (it cannot loop
+    # forever), so a wall clock mostly fires on a run that is legitimately slow — a local
+    # model, a long sandboxed tool call — which is precisely the run we want to let
+    # finish. It stays available as an opt-in lever for the gap neither other bound
+    # covers: the inactivity watchdog reads activity off the event stream, so a run that
+    # keeps *emitting* — a tool streaming progress, a model streaming tokens — refreshes
+    # the clock on every frame and never trips it, while spending no extra model requests.
+    run_wall_clock_timeout_s: float | None = None
     run_inactivity_timeout_s: float | None = 120.0
 
     # Model resolution is the DB-backed registry's job (services/registry.py) —
