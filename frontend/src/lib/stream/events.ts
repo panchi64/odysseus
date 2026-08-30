@@ -165,6 +165,13 @@ export interface ToolCompleted extends Base {
   tool_call_id: string;
   name: string;
   result: unknown;
+  /** Images the call handed back for the model to look at — a screenshot. Base64,
+   *  media type alongside; the renderer adds the data-URI scheme. */
+  images?: ToolImage[];
+}
+export interface ToolImage {
+  media_type: string;
+  data: string;
 }
 export interface ToolFailed extends Base {
   type: "tool.failed";

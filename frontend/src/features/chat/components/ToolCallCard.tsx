@@ -1,4 +1,5 @@
 import {
+  For,
   Show,
   createEffect,
   createMemo,
@@ -157,6 +158,31 @@ export function ToolCallCard(props: {
           </Text>
         </Show>
       </ProcessRow>
+      {/* What the call saw, on the card rather than behind it: a screenshot is the
+          whole point of the call that took it, and a picture the operator has to
+          expand a row to find is a picture they will not look at. It sits *outside*
+          the Collapse and grows when the card opens, so the bytes are in the DOM once
+          — at rest it is a strip tall enough to recognise the page, opened it is the
+          frame at the card's full width. */}
+      <Show when={props.tool.images?.length}>
+        <div class="flex flex-col gap-1 px-2 pb-1.5">
+          <For each={props.tool.images}>
+            {(image, index) => (
+              <img
+                /* Top-anchored: a page is recognised by its header, so a strip that
+                   cropped from the middle would show the operator the least
+                   identifying part of it. */
+                class="w-full rounded-ctl border border-line object-cover object-top"
+                classList={{ "max-h-28": !open() }}
+                src={`data:${image.mediaType};base64,${image.data}`}
+                alt={`What ${props.tool.name} saw${
+                  (props.tool.images?.length ?? 0) > 1 ? `, ${index() + 1}` : ""
+                }`}
+              />
+            )}
+          </For>
+        </div>
+      </Show>
       <Collapse open={open()}>
         <div class="flex flex-col gap-1 px-2 py-1.5">
           {/* The registry name and every argument — what the collapsed row trades

@@ -351,11 +351,25 @@ class ToolProgress(_Body):
     partial: str | None = None
 
 
+class ToolImage(BaseModel):
+    """An image a tool handed back for the model to look at — a screenshot, today.
+
+    It rides the call's completion rather than arriving as a turn of its own: no
+    provider accepts an image inside a tool result, so Pydantic AI moves it into a
+    user-role part, and that wire detail must not reach the operator as a message they
+    appear to have sent. The work log is where the call is, so it is where the picture
+    of what the call saw belongs."""
+
+    media_type: str
+    data: str  # base64, no data-URI scheme — the renderer adds it
+
+
 class ToolCompleted(_Body):
     type: Literal["tool.completed"] = "tool.completed"
     tool_call_id: str
     name: str
     result: Any = None
+    images: list[ToolImage] = Field(default_factory=list)
 
 
 class ToolFailed(_Body):
