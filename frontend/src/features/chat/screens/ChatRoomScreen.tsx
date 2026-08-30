@@ -127,8 +127,8 @@ export function ChatRoomScreen(): JSX.Element {
     markWarmResolved,
     mode,
     setMode,
-    codingProjectId,
-    setCodingProjectId,
+    codeProjectId,
+    setCodeProjectId,
   } = mainChat();
 
   // Follow the stream: keep the transcript pinned to the bottom while the answer
@@ -742,7 +742,7 @@ export function ChatRoomScreen(): JSX.Element {
             </Show>
           </span>
           <div class="flex shrink-0 items-center gap-2">
-            {/* A coding thread's branch and diffstat. Renders nothing for a chat
+            {/* A code thread's branch and diffstat. Renders nothing for a sandbox
                 thread — the backend answers 404 for one, which is the ordinary
                 case. Re-reads when a turn settles, since that is when the agent
                 has just changed something. */}
@@ -969,14 +969,14 @@ export function ChatRoomScreen(): JSX.Element {
               onPrefillConsumed={stream.clearUndeliveredDraft}
               controls={
                 // Only while the thread is still unsaved: the binding is set once,
-                // at creation, and an existing coding thread shows its branch in the
+                // at creation, and an existing code thread shows its branch in the
                 // status strip instead.
                 <Show when={currentId() === null}>
                   <ModeControl
                     mode={mode()}
                     onModeChange={setMode}
-                    projectId={codingProjectId()}
-                    onProjectChange={setCodingProjectId}
+                    projectId={codeProjectId()}
+                    onProjectChange={setCodeProjectId}
                   />
                 </Show>
               }

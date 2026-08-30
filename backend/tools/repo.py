@@ -15,8 +15,8 @@ model-facing text:
   locates them; reading them is the file tools' job. Rebound per run like every other
   workspace-rooted category.
 
-Both are no-ops outside coding mode: a chat conversation's sandbox workspace is scratch
-space, and there is no repository in it to have an opinion.
+Both are no-ops outside a worktree mode: a sandbox workspace is scratch space, and there
+is no repository in it to have an opinion.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from pathlib import Path
 from pydantic_ai import AbstractToolset, RunContext
 from pydantic_ai_harness import RepoContext
 
+from services.modes import mode_spec
 from services.projects.worktree import WorktreeBusyError
 
 from .deps import RunDeps
@@ -51,7 +52,7 @@ def _capability(root: Path) -> RepoContext[RunDeps]:
 
 async def repo_instructions(ctx: RunContext[RunDeps]) -> str:
     """The project's own instruction files, as standing instructions for the run."""
-    if ctx.deps.mode != "coding":
+    if mode_spec(ctx.deps.mode).workspace != "worktree":
         return ""
     try:
         workspace = await run_workspace(ctx)

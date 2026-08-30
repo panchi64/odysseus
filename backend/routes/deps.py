@@ -35,6 +35,7 @@ from services.integrations import IntegrationService
 from services.mail import MailService
 from services.mcp import McpRegistry
 from services.memory import MemoryStore
+from services.modes import DEFAULT_MODE
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
 from services.plans import ConversationPlans
@@ -188,7 +189,7 @@ def offline(request: Request) -> OfflineModeService:
 
 
 async def disabled_tools(
-    request: Request, mode: str = "chat", *, vision: bool = True
+    request: Request, mode: str = DEFAULT_MODE, *, vision: bool = True
 ) -> frozenset[str]:
     """Everything withheld from the agent on this run — the operator's own disabled set
     (`AE-3.3`) unioned with offline mode's automatic web suspension, the tools that don't

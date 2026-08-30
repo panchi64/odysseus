@@ -125,7 +125,7 @@ class TestTheBinding:
     async def test_the_fork_inherits_project_and_mode(self, tmp_path):
         store = await _store(tmp_path)
         source = await store.create_conversation(
-            OWNER, title="T", project_id="proj-1", mode="coding"
+            OWNER, title="T", project_id="proj-1", mode="code"
         )
         store.record(source, [_user("q"), _assistant("a")])
         tree = await store._tree(source)  # noqa: SLF001
@@ -133,12 +133,12 @@ class TestTheBinding:
         forked = await store.fork(source, tree.active_path()[0].id, OWNER)
         assert forked is not None
         binding = await store.binding(forked)
-        # A coding fork that came back as a chat thread would silently drop the operator
+        # A code fork that came back as a Normal thread would silently drop the operator
         # into a different workspace with the same transcript.
-        assert (binding.mode, binding.project_id) == ("coding", "proj-1")
+        assert (binding.mode, binding.project_id) == ("code", "proj-1")
 
 
-# --- over HTTP, and the coding fork's branch ------------------------------------------
+# --- over HTTP, and the code fork's branch --------------------------------------------
 
 
 async def _git(cwd: Path, *args: str) -> None:
@@ -197,7 +197,7 @@ class TestTheRoute:
             )
             assert resp.status_code == 404
 
-    async def test_a_coding_fork_branches_from_the_sources_branch(self, tmp_path, monkeypatch):
+    async def test_a_code_fork_branches_from_the_sources_branch(self, tmp_path, monkeypatch):
         async with client_app() as (client, app):
             root = await _repo(tmp_path / "work")
             project = (
@@ -209,7 +209,7 @@ class TestTheRoute:
                     "/chat",
                     json={
                         "prompt": "hello",
-                        "mode": "coding",
+                        "mode": "code",
                         "project_id": project["id"],
                     },
                 )

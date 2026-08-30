@@ -1,6 +1,6 @@
 /** Global project state — the operator's working directories and which one is
  *  active. One place owns it so the nav switcher, the projects screens, and the
- *  chat composer's coding-mode picker share a single source of truth.
+ *  chat composer's code-mode picker share a single source of truth.
  *
  *  **The selection is the backend's, not ours.** `POST /projects/{id}/activate`
  *  persists it, and the response carries the whole listing back, so activating

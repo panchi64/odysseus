@@ -1,6 +1,6 @@
 """Projects — a directory on the operator's machine, and the scope the app filters by.
 
-A `Project` is one host path the operator works in, plus the git facts the coding mode
+A `Project` is one host path the operator works in, plus the git facts code mode
 needs to work on it safely. Two things about the shape are load-bearing:
 
 **`root_path_enc` is sealed.** A filesystem path names the operator's clients, employers
@@ -44,7 +44,7 @@ class Project(SQLModel, table=True):
     # side effect on the operator's disk that they confirmed, and a later reader deserves
     # to know the repo was ours rather than theirs.
     git_initialized: bool = False
-    # What a coding conversation's branch is cut from, and what a merge lands back on.
+    # What a code conversation's branch is cut from, and what a merge lands back on.
     base_ref: str = "HEAD"
 
     archived: bool = False

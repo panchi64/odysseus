@@ -1,7 +1,7 @@
-"""Coding mode over HTTP: the binding, the branch surface, and the delete gate.
+"""Code mode over HTTP: the binding, the branch surface, and the delete gate.
 
 The binding is set once and never again, so what these assert is mostly *refusal*: a
-coding thread with no project, an ephemeral one, a delete that would silently destroy
+code thread with no project, an ephemeral one, a delete that would silently destroy
 unmerged work. Each of those is a state the rest of the system has no answer for, and the
 cheapest place to make them impossible is the route that would otherwise create them.
 """
@@ -53,9 +53,9 @@ async def _project(client, tmp_path, name="work") -> dict:
 
 
 class TestTheBinding:
-    async def test_a_coding_thread_needs_a_project(self, tmp_path):
+    async def test_a_code_thread_needs_a_project(self, tmp_path):
         async with client_app() as (client, _app):
-            resp = await client.post("/chat", json={"prompt": "hi", "mode": "coding"})
+            resp = await client.post("/chat", json={"prompt": "hi", "mode": "code"})
             assert resp.status_code == 422
             assert "project_id" in resp.text
 
@@ -66,7 +66,7 @@ class TestTheBinding:
                 "/chat",
                 json={
                     "prompt": "hi",
-                    "mode": "coding",
+                    "mode": "code",
                     "project_id": project["id"],
                     "ephemeral": True,
                 },
@@ -85,13 +85,13 @@ class TestTheBinding:
             patch_model_resolution(monkeypatch)
             created = await client.post(
                 "/chat",
-                json={"prompt": "hi", "mode": "coding", "project_id": project["id"]},
+                json={"prompt": "hi", "mode": "code", "project_id": project["id"]},
             )
             assert created.status_code == 202, created.text
             conversation_id = created.json()["conversation_id"]
 
             binding = await app.state.conversations.binding(conversation_id)
-            assert binding.mode == "coding"
+            assert binding.mode == "code"
             assert binding.project_id == project["id"]
 
     async def test_a_plain_thread_files_itself_under_the_active_project(
@@ -105,14 +105,14 @@ class TestTheBinding:
             conversation_id = created.json()["conversation_id"]
 
             binding = await app.state.conversations.binding(conversation_id)
-            # Filed, but still a chat thread — activating a project must not silently
+            # Filed, but still a Normal thread — activating a project must not silently
             # start putting the agent on the operator's host.
             assert binding.project_id == project["id"]
-            assert binding.mode == "chat"
+            assert binding.mode == "normal"
 
 
 class TestTheBranchSurface:
-    async def test_a_chat_thread_has_no_branch(self, tmp_path, monkeypatch):
+    async def test_a_normal_thread_has_no_branch(self, tmp_path, monkeypatch):
         async with client_app() as (client, _app):
             patch_model_resolution(monkeypatch)
             created = await client.post("/chat", json={"prompt": "hi"})
@@ -120,7 +120,7 @@ class TestTheBranchSurface:
             resp = await client.get(f"/worktrees/{conversation_id}")
             assert resp.status_code == 404
 
-    async def test_a_coding_thread_with_no_work_yet_reports_an_empty_diff(
+    async def test_a_code_thread_with_no_work_yet_reports_an_empty_diff(
         self, tmp_path, monkeypatch
     ):
         async with client_app() as (client, _app):
@@ -128,7 +128,7 @@ class TestTheBranchSurface:
             patch_model_resolution(monkeypatch)
             created = await client.post(
                 "/chat",
-                json={"prompt": "hi", "mode": "coding", "project_id": project["id"]},
+                json={"prompt": "hi", "mode": "code", "project_id": project["id"]},
             )
             conversation_id = created.json()["conversation_id"]
 
@@ -145,12 +145,12 @@ class TestDeletingAThread:
         project = await _project(client, tmp_path)
         patch_model_resolution(monkeypatch)
         created = await client.post(
-            "/chat", json={"prompt": "hi", "mode": "coding", "project_id": project["id"]}
+            "/chat", json={"prompt": "hi", "mode": "code", "project_id": project["id"]}
         )
         conversation_id = created.json()["conversation_id"]
         await _settled(app, created.json()["run_id"])
 
-        # Do what a coding turn actually does: acquire the worktree and edit files.
+        # Do what a code turn actually does: acquire the worktree and edit files.
         # **No commit** — the agent has no `git commit`, so this is the state every real
         # session is in when the operator opens the diff. Committing here by hand is what
         # made an earlier version of these tests pass against inert code.

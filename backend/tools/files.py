@@ -20,10 +20,10 @@ this category is a :class:`~tools.rebound.WorkspaceToolset`, which asks
 bound to *that* directory.
 
 **The invariant is that these tools reach exactly what this run can execute in, and
-nothing else.** In chat mode that is the conversation's sandbox workspace at
+nothing else.** In a sandbox mode that is the conversation's sandbox workspace at
 ``<data_dir>/sandbox/work/<key>/`` — the host side of the container's ``/work`` bind
 mount, the box's own scratch space, never the operator's files — so they reach exactly
-what ``code_execute`` reaches. In coding mode it is the project's git worktree, which is
+what ``code_execute`` reaches. In code mode it is the project's git worktree, which is
 exactly what the shell tools run in. Either way editing and running agree, which is the
 whole point of resolving the workspace once (``services/workspace.py``).
 

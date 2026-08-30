@@ -4,7 +4,7 @@
 `RunDeps` and the capability bag, so a tool asks one question and gets one answer rather
 than each reaching for `SandboxSessionManager` and branching on mode itself.
 
-The answer is memoised **on the run's own deps**, not in a module-level cache: a coding
+The answer is memoised **on the run's own deps**, not in a module-level cache: a code
 turn's first call does real work (`git worktree add`, a branch checkout) and a turn makes
 many file-tool calls, but the memo must die with the run rather than outlive it in a
 global. Only a successful resolution is kept — a sandbox that failed to open may open on
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pydantic_ai import RunContext
 
+from services.modes import mode_spec
 from services.projects.store import ProjectStore
 from services.projects.worktree import WorktreeManager
 from services.sandbox import SandboxSessionManager
@@ -30,7 +31,7 @@ NO_WORKSPACE = (
 )
 
 NO_PROJECT = (
-    "This coding conversation has no project workspace: its project is missing or its "
+    "This code conversation has no project workspace: its project is missing or its "
     "git worktree could not be opened. Ask the operator to check the project's folder."
 )
 
@@ -38,8 +39,8 @@ NO_PROJECT = (
 async def run_workspace(ctx: RunContext[RunDeps]) -> RunWorkspace | None:
     """Where this run's file work happens, or None when it has nowhere to work.
 
-    None is the degrade signal every caller already knows how to handle: chat mode with
-    no sandbox runtime, coding mode with no project bound. A busy worktree raises
+    None is the degrade signal every caller already knows how to handle: a sandbox mode
+    with no runtime, a worktree mode with no project bound. A busy worktree raises
     instead — the operator has to be told, not quietly given a different filesystem.
     """
     deps = ctx.deps
@@ -62,4 +63,4 @@ async def run_workspace(ctx: RunContext[RunDeps]) -> RunWorkspace | None:
 
 def unavailable(deps: RunDeps) -> str:
     """The right "no workspace" sentence for the mode the run is in."""
-    return NO_PROJECT if deps.mode == "coding" else NO_WORKSPACE
+    return NO_PROJECT if mode_spec(deps.mode).workspace == "worktree" else NO_WORKSPACE

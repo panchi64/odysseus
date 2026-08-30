@@ -2,7 +2,7 @@
 
 The store is exported as both a service (the worktree layer and the scoped list queries
 resolve it) and a capability (the `project` tools read it). The `WorktreeManager` goes out
-the same way, because coding mode's workspace resolver runs *inside* a run and reaches it
+the same way, because code mode's workspace resolver runs *inside* a run and reaches it
 through the bag like any other capability.
 
 The host file picker (`/host/file-picker`) rides along here: it is stateless and owns no

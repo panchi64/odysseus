@@ -376,6 +376,12 @@ export interface ChatSummary {
   activity?: ChatActivity;
 }
 
+/** What kind of work a thread is — the backend's `services/modes.py` vocabulary, sent
+ *  verbatim on the send that creates the conversation and never translated on the way.
+ *  `normal` and `research` work in the conversation's own sandbox container; `code`
+ *  works in a git worktree of a project's repository on the operator's machine. */
+export type SessionMode = "normal" | "research" | "code";
+
 /** One decision in an approval response (mirrors the backend's shape). */
 export interface ApprovalDecision {
   tool_call_id: string;

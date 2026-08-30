@@ -42,6 +42,7 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
+    RunContext,
     RunUsage,
     ToolApproved,
     UsageLimitExceeded,
@@ -83,6 +84,7 @@ from services.conversations import (
     conversation_totals,
 )
 from services.llm import TOOL_CALL_SETTINGS
+from services.modes import mode_spec
 from services.notifications import NotificationService
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
@@ -135,10 +137,10 @@ logger = logging.getLogger(__name__)
 # A shared empty bag for the no-capabilities default — every capability-backed tool
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
-# A stateless turn's workspace binding: an unfiled chat thread. The conservative default —
-# chat mode never reaches the host — so a caller that forgets to resolve one cannot
-# accidentally hand a run the operator's own files.
-_CHAT_BINDING = ConversationBinding()
+# A stateless turn's workspace binding: an unfiled Normal thread. The conservative
+# default — Normal never reaches the host — so a caller that forgets to resolve one
+# cannot accidentally hand a run the operator's own files.
+_DEFAULT_BINDING = ConversationBinding()
 
 
 @dataclass
@@ -178,8 +180,8 @@ class ParkedTurn:
     request_limit: int | None = None
     # The thread's workspace binding, carried rather than re-read on resume. It is
     # immutable for the life of a conversation, so re-resolving it would be a second
-    # source for one fact — and a resume that defaulted it to chat would hand a parked
-    # coding turn a different filesystem than the one it parked in.
+    # source for one fact — and a resume that defaulted it to Normal would hand a parked
+    # code turn a different filesystem than the one it parked in.
     binding: ConversationBinding = field(default_factory=ConversationBinding)
     # Whether the model this turn runs on can read an image, carried for the same reason
     # `binding` is: the resume must offer the tools the parked turn was offered. Re-reading
@@ -255,6 +257,14 @@ def _build_agent(
     # the assembled request instead of measuring providers as they run.
     for provider in instruction_providers:
         agent.instructions(name=_block_id(provider))(provider)
+
+    @agent.instructions(name="mode")
+    def _mode_posture(ctx: RunContext[RunDeps]) -> str:
+        """The thread's mode, where it has something of its own to say — read off the
+        registry, so a mode's prose lives with the rest of that mode's declaration rather
+        than in a branch here. Most modes add nothing and resolve to "" (see
+        `prompts/modes.py`), which is why this is unconditional."""
+        return mode_spec(ctx.deps.mode).instructions
 
     @agent.instructions(name="date")
     def _current_date() -> str:
@@ -406,7 +416,7 @@ async def _park_for_approval(
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
     request_limit: int | None = None,
-    binding: ConversationBinding = _CHAT_BINDING,
+    binding: ConversationBinding = _DEFAULT_BINDING,
     vision: bool = True,
 ) -> None:
     # Only the calls still awaiting the operator are announced; any pre-approved by an
@@ -476,18 +486,25 @@ async def _drive_turn(
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    binding: ConversationBinding = _CHAT_BINDING,
+    binding: ConversationBinding = _DEFAULT_BINDING,
     vision: bool = True,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
 ) -> _TurnResult:
     settings = get_settings()
+    spec = mode_spec(binding.mode)
     # ``request_limit`` is the operator's runtime setting when the caller resolved one;
     # absent (a stateless/eval turn, or an older parked payload) it falls back to the
     # config default. It bounds *model round-trips*, so every tool call spends one.
+    #
+    # A mode may raise that floor but never lower it: the operator's number is set for the
+    # kind of turn they usually run, and a mode whose work genuinely cannot fit inside it
+    # would otherwise stop at a bound nobody chose for it. Lowering, by contrast, would be
+    # the mode overruling an explicit setting.
+    resolved_limit = settings.agent_request_limit if request_limit is None else request_limit
     limits = UsageLimits(
-        request_limit=(settings.agent_request_limit if request_limit is None else request_limit),
+        request_limit=max(resolved_limit, spec.request_limit or 0),
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
     deps = RunDeps(
@@ -718,7 +735,7 @@ async def _verify_and_correct(
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
-    binding: ConversationBinding = _CHAT_BINDING,
+    binding: ConversationBinding = _DEFAULT_BINDING,
     vision: bool = True,
     drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
@@ -905,7 +922,7 @@ def build_chat_orchestrator(
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    binding: ConversationBinding = _CHAT_BINDING,
+    binding: ConversationBinding = _DEFAULT_BINDING,
     request_limit: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).
@@ -1122,7 +1139,7 @@ def build_chat_orchestrator(
                 vision=vision,
                 # Resolved the one way the file tools resolve it, so an attachment
                 # lands in the very workspace the agent is about to work in — the
-                # conversation's sandbox, or its project worktree in coding mode.
+                # conversation's sandbox, or its project worktree in code mode.
                 workspace=await resolve_workspace(
                     mode=binding.mode,
                     project_id=binding.project_id,

@@ -1,22 +1,23 @@
 import { Show, createMemo, type JSX } from "solid-js";
 import { Combobox, Select, Text } from "~/ui";
 import { useProjects } from "~/lib/stores/projects";
+import type { SessionMode } from "../model";
 
-/** CHAT or CODING for the *next* conversation, plus which project a coding thread
+/** NORMAL or CODE for the *next* conversation, plus which project a code thread
  *  works in.
  *
  *  Shown only while the thread is still unsaved. A thread's mode and project are
- *  set at creation and never again — a coding thread owns a git branch, and
+ *  set at creation and never again — a code thread owns a git branch, and
  *  re-pointing it mid-flight would strand that branch and leave the transcript
  *  describing a tree that isn't there. So this disappears the moment the first
- *  message lands, and an existing coding thread shows its branch instead.
+ *  message lands, and an existing code thread shows its branch instead.
  *
  *  Presentation only: it captures the operator's choice and hands it to the send
  *  path, which passes it to the backend once. Nothing here decides anything —
  *  including whether the choice is legal, which the backend re-checks. */
 export function ModeControl(props: {
-  mode: "chat" | "coding";
-  onModeChange: (mode: "chat" | "coding") => void;
+  mode: SessionMode;
+  onModeChange: (mode: SessionMode) => void;
   projectId: string | undefined;
   onProjectChange: (id: string | undefined) => void;
 }): JSX.Element {
@@ -47,14 +48,14 @@ export function ModeControl(props: {
     <div class="flex flex-wrap items-center gap-2">
       <Select
         value={props.mode}
-        onChange={(v) => props.onModeChange(v === "coding" ? "coding" : "chat")}
+        onChange={(v) => props.onModeChange(v === "code" ? "code" : "normal")}
         options={[
-          { value: "chat", label: "Chat" },
-          { value: "coding", label: "Coding" },
+          { value: "normal", label: "Normal" },
+          { value: "code", label: "Code" },
         ]}
         aria-label="Conversation mode"
       />
-      <Show when={props.mode === "coding"}>
+      <Show when={props.mode === "code"}>
         <Combobox
           groups={groups()}
           value={props.projectId ?? ""}

@@ -1,4 +1,4 @@
-"""The `shell` category — running commands in a coding conversation's worktree.
+"""The `shell` category — running commands in a code conversation's worktree.
 
 `pydantic_ai_harness`'s `Shell`: `run_command` (blocking), `start_command` /
 `check_command` / `stop_command` (background), so a dev server or a long test run is a
@@ -18,7 +18,7 @@ through the fence. So what protects the operator here is not an OS boundary:
   spawned environment;
 - the harness's destructive-command denylist (`rm`, `dd`, `mkfs`, `shutdown`, …), which
   its own README is careful to call a guardrail rather than a security boundary;
-- coding mode being **explicitly chosen** for a thread and bound to a project the
+- code mode being **explicitly chosen** for a thread and bound to a project the
   operator named.
 
 **Failures the model can act on come back as `ModelRetry`, not as a dead run.** A denied or
@@ -28,15 +28,16 @@ could do nothing about (a host that cannot allocate a process, an oversized argu
 environment) still aborts the turn. That split is the harness's, not ours — we hand it a
 `cwd` and a denylist and inherit the rest.
 
-An allowlist was considered instead of the approval gate and rejected: a coding agent
+An allowlist was considered instead of the approval gate and rejected: an agent writing code
 needs whatever build tool the project uses, so any allowlist honest enough to be useful is
 long enough to be meaningless, and it would still be bypassable through an allowed
 interpreter. One deliberate "yes, run commands in this project" is a stronger statement
 and a far smaller nuisance.
 
-**Refused outright outside coding mode.** `mode_disabled_tools` already hides these tools
-from a chat run, but that is a filter, and a filter is the wrong place for the only thing
-standing between an unfenced host command and a chat thread. The check is here too.
+**Refused outright outside a worktree mode.** `mode_disabled_tools` already hides these
+tools from every mode whose spec does not admit the `shell` category, but that is a
+filter, and a filter is the wrong place for the only thing standing between an unfenced
+host command and a sandbox thread. The check is here too.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from pydantic_ai.exceptions import ApprovalRequired
 from pydantic_ai_harness import Shell
 from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
 
+from services.modes import mode_spec
 from services.workspace import RunWorkspace
 
 from .deps import RunDeps
@@ -79,19 +81,20 @@ EXECUTING_TOOLS = frozenset({"run_command", "start_command"})
 GATED_TOOLS = frozenset(f"shell_{name}" for name in EXECUTING_TOOLS)
 
 _WRONG_MODE = (
-    "Shell commands are only available in a coding conversation, which runs in a "
-    "project's git worktree. This is a chat conversation — use `code_execute` instead."
+    "Shell commands are only available in a code conversation, which runs in a "
+    "project's git worktree. This conversation runs in a container — use `code_execute` "
+    "instead."
 )
 
 
 def _guard(name: str, ctx: RunContext[RunDeps], workspace: RunWorkspace) -> str | None:
-    """Refuse outside coding mode; otherwise pause for approval on the first command.
+    """Refuse outside a worktree mode; otherwise pause for approval on the first command.
 
     `tool_call_approved` is set on the re-invocation after an approval, so this raises
     once and then lets the command run — and a conversation-scoped grant means the
     operator is asked once per thread, not once per command.
     """
-    if ctx.deps.mode != "coding" or workspace.kind != "worktree":
+    if mode_spec(ctx.deps.mode).workspace != "worktree" or workspace.kind != "worktree":
         return _WRONG_MODE
     if name in EXECUTING_TOOLS and not ctx.tool_call_approved:
         raise ApprovalRequired()

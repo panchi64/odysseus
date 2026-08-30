@@ -31,6 +31,7 @@ from services.conversations import (
     context_footprint,
     conversation_totals,
 )
+from services.modes import mode_spec
 from services.plans import plan_payload
 from services.settings_store import (
     get_auto_compact,
@@ -497,8 +498,8 @@ async def orphan_image_attachments(
     return OrphanImageAttachments(upload_ids=upload_ids)
 
 
-async def _settle_coding_branch(request: Request, conversation_id: str, *, discard: bool) -> None:
-    """Refuse to delete a coding thread that still holds unmerged commits, or throw its
+async def _settle_code_branch(request: Request, conversation_id: str, *, discard: bool) -> None:
+    """Refuse to delete a code thread that still holds unmerged commits, or throw its
     branch away when the operator said to.
 
     Best-effort about *everything except the refusal*: a project that has since been
@@ -506,7 +507,7 @@ async def _settle_coding_branch(request: Request, conversation_id: str, *, disca
     the delete. Only a real, countable diff stops it.
     """
     binding = await deps.store(request).binding(conversation_id)
-    if binding.mode != "coding" or not binding.project_id:
+    if mode_spec(binding.mode).workspace != "worktree" or not binding.project_id:
         return
     try:
         project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
@@ -518,13 +519,13 @@ async def _settle_coding_branch(request: Request, conversation_id: str, *, disca
             project_id=project.id,
         )
     except Exception:  # noqa: BLE001 — no branch, no project, no repo: nothing to lose
-        logger.debug("no coding branch to settle for %s", conversation_id, exc_info=True)
+        logger.debug("no code branch to settle for %s", conversation_id, exc_info=True)
         return
     if diff.files_changed and not discard:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This coding conversation has unmerged work on {diff.branch}: "
+                f"This code conversation has unmerged work on {diff.branch}: "
                 f"{diff.files_changed} file(s), +{diff.insertions} −{diff.deletions}. "
                 "Merge it first, or delete with discardBranch=true to throw it away."
             ),
@@ -544,7 +545,7 @@ async def delete_conversation(
     """Delete a conversation. With ``purgeImages=true`` the operator chose to also delete
     the image attachments this would orphan; the default keeps them.
 
-    A **coding** thread with unmerged commits is refused (409) unless
+    A **code** thread with unmerged commits is refused (409) unless
     ``discardBranch=true``. Merging a branch is a deliberate act the operator has to take;
     destroying one must be at least as deliberate, and deleting the thread would otherwise
     be the quiet way to lose work that the merge gate exists to protect.
@@ -559,7 +560,7 @@ async def delete_conversation(
     try:
         if await store.get_summary(conversation_id, OPERATOR_ID) is None:
             raise HTTPException(status_code=404, detail="conversation not found")
-        await _settle_coding_branch(request, conversation_id, discard=discard_branch)
+        await _settle_code_branch(request, conversation_id, discard=discard_branch)
         orphans = (
             await _image_orphans(request, conversation_id, message_id=None) if purge_images else []
         )
@@ -699,17 +700,17 @@ async def fork(conversation_id: str, message_id: str, request: Request) -> Conve
 
 
 async def _branch_the_fork(request: Request, source_id: str, forked_id: str) -> None:
-    """Give a forked **coding** thread a branch cut from the source's, not from the
+    """Give a forked **code** thread a branch cut from the source's, not from the
     project's base ref.
 
     The copied transcript describes files as they are on the source conversation's branch.
-    Branching the fork from `base_ref` — what a first coding turn would otherwise do —
+    Branching the fork from `base_ref` — what a first code turn would otherwise do —
     would hand it a tree that does not match the history it was given, which is precisely
     what forking is supposed to preserve. Best-effort: a source that never cut a branch
-    leaves the fork to create one normally on its first coding turn.
+    leaves the fork to create one normally on its first code turn.
     """
     binding = await deps.store(request).binding(forked_id)
-    if binding.mode != "coding" or not binding.project_id:
+    if mode_spec(binding.mode).workspace != "worktree" or not binding.project_id:
         return
     try:
         project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)

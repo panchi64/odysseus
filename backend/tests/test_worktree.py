@@ -148,7 +148,7 @@ class TestDiffAndMerge:
         """A conversation that has done work — **without committing it**.
 
         That is the whole point. The agent has file and shell tools and no `git commit`,
-        so this is exactly the state every real coding session is in when the operator
+        so this is exactly the state every real code session is in when the operator
         opens the diff. An earlier version of these tests committed by hand here, and
         every assertion below passed while `diff`/`merge`/the delete gate were inert
         against real usage: a ref-to-ref diff sees only commits.
@@ -206,7 +206,7 @@ class TestDiffAndMerge:
     async def test_merging_hands_the_project_back(self, tmp_path):
         root, manager, _state = await self._edited(tmp_path)
         await manager.merge(root, base_ref="main", conversation_id="c1", project_id="p")
-        # Otherwise a project stays locked to its first coding thread forever, and the
+        # Otherwise a project stays locked to its first code thread forever, and the
         # busy message tells the operator to do the thing they just did.
         assert manager.holder("p") is None
         state = await manager.acquire(

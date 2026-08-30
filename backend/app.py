@@ -393,8 +393,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # reminder below is: the `agents` category ships with the harness core categories.
     # It is small and static, so the prompt *head* is the right home — it stays in the
     # cached prefix rather than churning per turn.
-    # `repo_instructions` joins it for the same reason and returns "" outside coding
-    # mode, so a chat thread pays nothing for it.
+    # `repo_instructions` joins it for the same reason and returns "" outside a worktree
+    # mode, so a sandbox thread pays nothing for it.
     instruction_providers: list[InstructionProvider] = [
         delegate_instructions,
         repo_instructions,

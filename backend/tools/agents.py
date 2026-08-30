@@ -143,7 +143,7 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
         # handler below closes over this `ctx`. A key that outlived the run would hand
         # the next delegation a handler pointed at a finished `Run` and a stale
         # `tool_call_id` — sub-agent progress would vanish from every delegation after
-        # the first, and in coding mode (one worktree per project) from another
+        # the first, and in code mode (one worktree per project) from another
         # conversation's entirely. A run makes several delegations, so the cache still
         # earns its keep within one.
         key = (workspace, str(background.model), ctx.deps.run.id)
@@ -213,14 +213,14 @@ def _describe(event: Any) -> str:
 async def _workspace_for(ctx: RunContext[RunDeps]) -> str | None:
     """Where the sub-agent reads — the *parent's* workspace, resolved the one way.
 
-    The sandbox workspace in chat mode, the project's worktree in coding mode. It goes
+    The sandbox workspace in a sandbox mode, the project's worktree in code mode. It goes
     through `run_workspace` rather than reaching for a sandbox path so the explorer can
     never end up looking at a different filesystem than the agent that delegated to it.
     """
     try:
         workspace = await run_workspace(ctx)
     except WorktreeBusyError:
-        # Another coding conversation holds the checkout; there is nothing to read.
+        # Another code conversation holds the checkout; there is nothing to read.
         return None
     return None if workspace is None else str(workspace.root)
 

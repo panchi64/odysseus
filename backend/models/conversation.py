@@ -35,13 +35,17 @@ class Conversation(SQLModel, table=True):
     # The project this belongs to, or null for **unfiled** — visible in every scope,
     # not orphaned. See models/project.py for the one scope rule.
     project_id: str | None = Field(default=None, index=True)
-    # Where this thread's file work happens: "chat" is the conversation's own sandbox
-    # container, "coding" is a git worktree of `project_id`'s repository on the host.
+    # What kind of work this thread is — "normal", "research" or "code". What each
+    # implies (its workspace, the tool categories it admits, its prompt fragment) is the
+    # mode registry's answer, `services/modes.py`; the column stores only the name.
+    # Deliberately a plain string rather than an enum: a restored backup or a row written
+    # by another build must still load, and the registry normalises an unrecognised value
+    # to the mode that reaches the least.
     # **The mode belongs to the thread, not the message**, and it is set at creation and
-    # immutable after: a coding thread owns a branch, and re-pointing it mid-flight would
+    # immutable after: a code thread owns a branch, and re-pointing it mid-flight would
     # strand that branch and leave the transcript describing a tree that isn't there.
     # Structural, not user content, so it stays in the clear like `model`/`ephemeral`.
-    mode: str = Field(default="chat")
+    mode: str = Field(default="normal")
     # AEAD ciphertext of the thread's title. It is user content — an auto-generated
     # summary of the operator's own first message, and the most revealing single line a
     # thread has — so it is sealed like every peer entity's title (XC-SEC-3). Null for an

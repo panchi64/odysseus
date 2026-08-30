@@ -234,7 +234,7 @@ async def test_operator_and_offline_sets_union_rather_than_overwrite():
     await set_tool_enabled(store, OWNER, "builtin_now", False)
     offline = _StubOffline(frozenset({"web_search", "web_fetch"}))
     disabled = await effective_disabled_tools(store, offline, OWNER)
-    assert disabled - mode_disabled_tools("chat") == {
+    assert disabled - mode_disabled_tools("normal") == {
         "builtin_now",
         "web_search",
         "web_fetch",
@@ -245,7 +245,7 @@ async def test_offline_alone_still_applies_with_no_operator_choices():
     store = _store()
     offline = _StubOffline(frozenset({"web_search"}))
     disabled = await effective_disabled_tools(store, offline, OWNER)
-    assert disabled - mode_disabled_tools("chat") == {"web_search"}
+    assert disabled - mode_disabled_tools("normal") == {"web_search"}
 
 
 async def test_a_model_that_cannot_see_is_not_offered_an_image_tool():
@@ -317,7 +317,7 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
     # The stub model the test app resolves declares no vision, so the image-returning
     # tools are withheld too; subtract the automatic sources to leave the two this test
     # is actually about (one the operator turned off, one offline mode suspended).
-    automatic = mode_disabled_tools("chat") | vision_disabled_tools(False)
+    automatic = mode_disabled_tools("normal") | vision_disabled_tools(False)
     assert captured["disabled"] - automatic == {
         "builtin_now",
         "web_search",
@@ -391,7 +391,7 @@ async def test_resume_applies_the_operator_set_and_the_offline_set(monkeypatch):
         )
         assert resp.status_code == 202
 
-    assert captured["disabled"] - mode_disabled_tools("chat") == {
+    assert captured["disabled"] - mode_disabled_tools("normal") == {
         "danger_safe_thing",
         "web_search",
     }

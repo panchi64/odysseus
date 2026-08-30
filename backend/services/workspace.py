@@ -6,19 +6,23 @@ it slightly differently, and one of them — `tools/files.py` — stated the inv
 made the set coherent: *these tools reach exactly what `code_execute` reaches and nothing
 else*.
 
-Coding mode moves the file work to a git worktree on the host. Re-rooting only the file
+Code mode moves the file work to a git worktree on the host. Re-rooting only the file
 tools would break that invariant **silently**: the agent would edit a file it cannot run,
 attachments would land where its file tools can't see them, and an opened skill's scripts
 would point at a container that isn't in play. So the workspace stops being an assumption
 scattered across four modules and becomes one resolved value:
 
-    chat mode   → the conversation's sandbox workspace, mounted in the box at ``/work``
-    coding mode → the project's git worktree, on the host, addressed by absolute path
+    workspace "sandbox"  → the conversation's own container, mounted at ``/work``
+    workspace "worktree" → the project's git worktree, on the host, by absolute path
+
+Which of the two a thread gets is the mode registry's answer (``services/modes.py``), read
+off ``ModeSpec.workspace`` rather than compared against a mode name here — the resolver's
+job is to *build* a workspace, not to know which modes are which.
 
 :class:`RunWorkspace` carries both halves — the host directory to act on, and
-:meth:`RunWorkspace.display`, the path *string the model is told*. Those differ in chat
-mode (host `<data>/sandbox/work/<key>/x` is `/work/x` to the model) and are the same in
-coding mode, which is exactly the kind of detail that goes wrong when four modules each
+:meth:`RunWorkspace.display`, the path *string the model is told*. Those differ in a
+sandbox (host `<data>/sandbox/work/<key>/x` is `/work/x` to the model) and are the same in
+a worktree, which is exactly the kind of detail that goes wrong when four modules each
 build it themselves.
 
 **Attachments and skills stage under ``.odysseus/`` in a worktree.** They have to land
@@ -33,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
+from services.modes import mode_spec
 from services.projects.store import ProjectStore
 from services.projects.worktree import WorktreeBusyError, WorktreeManager
 from services.sandbox import SandboxError, SandboxSessionManager
@@ -89,7 +94,7 @@ class RunWorkspace:
     root: Path
     kind: Literal["sandbox", "worktree"]
     files: WorkspaceFiles
-    #: The branch a coding run is working on; None in chat mode.
+    #: The branch a worktree run is working on; None in a sandbox.
     branch: str | None = None
 
     @property
@@ -128,7 +133,7 @@ async def worktree_workspace(
 ) -> RunWorkspace:
     """The project's git worktree, with this conversation's branch checked out.
 
-    Idempotent per conversation, and refused (`WorktreeBusyError`) while another coding
+    Idempotent per conversation, and refused (`WorktreeBusyError`) while another code
     conversation holds the project — one checkout, one thread at a time.
     """
     project = await projects.get(owner_id, project_id)
@@ -190,12 +195,12 @@ async def resolve_workspace(
     time, before the run exists, to stage attachments. One resolution, two entry points.
 
     Returns None rather than raising, for the two shapes of "no workspace" the callers
-    already handle: coding mode without the pieces it needs, and a sandbox that will not
-    open. A busy worktree is *not* one of those — that is a real conflict the operator
+    already handle: a worktree mode without the pieces it needs, and a sandbox that will
+    not open. A busy worktree is *not* one of those — that is a real conflict the operator
     has to see, so `WorktreeBusyError` propagates.
     """
-    if mode == "coding":
-        # Never fall back to the sandbox. A coding run that quietly got a container
+    if mode_spec(mode).workspace == "worktree":
+        # Never fall back to the sandbox. A code run that quietly got a container
         # workspace would edit files its shell tools are refused access to, and nothing
         # would say why — the failure the one-workspace rule exists to prevent. No
         # worktree means no workspace, and the tool layer says so in words.

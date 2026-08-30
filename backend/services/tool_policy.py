@@ -12,7 +12,8 @@ Four independent sources feed one set:
   so it stays in the clear like every other app preference;
 - **offline mode's automatic web-tool suspension** (``services/offline``), derived from
   connectivity rather than chosen;
-- **the run's mode** — whether a tool belongs in a chat thread or a coding one;
+- **the run's mode** — whether a tool belongs in this kind of thread, read off the mode
+  registry (``services/modes.py``) rather than restated here;
 - **the model's own reach** — a tool that answers with an image is withheld from a model
   that cannot see one.
 
@@ -26,7 +27,9 @@ once at startup and ``tools/catalog.py`` derives the operator's settings list fr
 building a different mapping per mode would let the settings page and the agent's real
 stack disagree, which is the exact failure the namespacing was built to prevent. So the
 `shell` and `repo` categories are registered like every other, listed like every other,
-and simply withheld from a run that is not in their mode.
+and simply withheld from a run that is not in their mode. **Which** categories a mode
+admits is the registry's answer, not this module's — mode is one axis of a thread, and
+this module only knows how to turn an axis into a withheld set.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 
 if TYPE_CHECKING:
@@ -89,29 +93,6 @@ async def _store(settings: SettingsStore, owner_id: str, names: Iterable[str]) -
     await settings.set(owner_id, DISABLED_TOOLS_KEY, json.dumps(sorted(names)))
 
 
-# The tools that belong to one mode and not the other, by namespaced name. Written out
-# rather than derived from the category mapping because `tools/` sits *above* this layer
-# and importing the catalog here would invert the dependency order. The literal set is
-# checked against the real catalog by `tests/test_mode_tools.py`, so a renamed or dropped
-# tool fails there rather than silently ceasing to be filtered.
-CODING_ONLY_TOOLS = frozenset(
-    {
-        "shell_run_command",
-        "shell_start_command",
-        "shell_check_command",
-        "shell_stop_command",
-        "repo_inventory_agent_context",
-    }
-)
-
-# Coding mode has exactly one way to run something — the shell, in the worktree the file
-# tools are rooted at. Leaving `code_execute` alongside it would offer the model a second
-# filesystem it could edit in and never ship from, which is the failure the one-workspace
-# rule exists to prevent; `code_run_host_command` goes with it because its own sandboxed
-# fence is a different (and, in a worktree, redundant) boundary.
-CHAT_ONLY_TOOLS = frozenset({"code_execute", "code_run_host_command"})
-
-
 # Tools whose *result* only a vision model can read — they return image content rather
 # than text. Written out here for the same reason the mode sets are: `services/` sits
 # below `tools/`, so importing the category that owns them would invert the dependency
@@ -132,12 +113,21 @@ def vision_disabled_tools(vision: bool) -> frozenset[str]:
 
 
 def mode_disabled_tools(mode: str) -> frozenset[str]:
-    """The tools that do not belong in ``mode``.
+    """The tools that do not belong in ``mode`` — every mode-scoped category the mode's
+    spec does not admit, flattened to namespaced names.
 
-    An unrecognised mode is treated as chat — the conservative answer, since chat mode is
-    the one that never reaches the host.
+    Derived from the registry rather than written out per mode, so a fourth mode withholds
+    the right tools the moment its row exists. An unrecognised mode resolves to Normal
+    (``services/modes.py``), which is the conservative direction: Normal is the mode that
+    never reaches the host, so a corrupt stored value cannot open the shell up.
     """
-    return CHAT_ONLY_TOOLS if mode == "coding" else CODING_ONLY_TOOLS
+    admitted = mode_spec(mode).categories
+    return frozenset(
+        name
+        for category, names in MODE_SCOPED_TOOLS.items()
+        if category not in admitted
+        for name in names
+    )
 
 
 async def effective_disabled_tools(
@@ -145,7 +135,7 @@ async def effective_disabled_tools(
     offline: OfflineModeService,
     owner_id: str,
     *,
-    mode: str = "chat",
+    mode: str = DEFAULT_MODE,
     vision: bool = True,
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with

@@ -9,9 +9,9 @@ import {
   type BranchState,
 } from "../data";
 
-/** What a coding thread has changed, and the two ways it ends.
+/** What a code thread has changed, and the two ways it ends.
  *
- *  A chat thread renders nothing here — `fetchBranch` answers 404 for one, which
+ *  A sandbox thread renders nothing here — `fetchBranch` answers 404 for one, which
  *  is the ordinary case and not an error.
  *
  *  **MERGE is the operator's approval.** It is the only action in the product that

@@ -20,7 +20,7 @@ run-submission path.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -37,6 +37,7 @@ from routes.deps import OPERATOR_ID
 from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds, ConversationBusyError, RunRegistry
 from runs.registry import _UNSET
 from services.conversations import ConversationBinding, ConversationStore
+from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
@@ -74,15 +75,17 @@ class ChatCreate(BaseModel):
     # hides (the side-by-side compare panes set this). Ignored when continuing an
     # existing conversation.
     ephemeral: bool = False
-    # Where a *new* thread's file work happens: "chat" is its own sandbox container,
-    # "coding" is a git worktree of `project_id`'s repository on the host. Both are
-    # ignored when continuing an existing conversation — the binding is set once, at
-    # creation, and a thread's branch would be stranded if it could move.
+    # What kind of work a *new* thread is — the vocabulary and everything each mode
+    # implies live in the registry (`services/modes.py`). "normal" and "research" run in
+    # the conversation's own sandbox container; "code" runs in a git worktree of
+    # `project_id`'s repository on the host. Both this and `project_id` are ignored when
+    # continuing an existing conversation — the binding is set once, at creation, and a
+    # thread's branch would be stranded if it could move.
     #
     # Deliberately **not** `code_mode`: `pydantic_ai_harness` ships a capability called
     # `CodeMode`, and it is an unrelated thing (a context-saving trick where the model
     # writes one script that calls many tools). This is a mode of the chat.
-    mode: Literal["chat", "coding"] = "chat"
+    mode: ModeId = DEFAULT_MODE
     project_id: str | None = None
     # Set when this turn is the operator resuming a turn a bound stopped (the
     # "Continue" button under a stop marker): the branch node id of the turn that
@@ -466,12 +469,12 @@ async def _retire_stop_marker(
 
 
 async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> None:
-    """Reject a coding thread that could not work, before anything is created.
+    """Reject a thread that could not work, before anything is created.
 
-    Coding mode needs a real project the operator owns, because that is what supplies the
-    repository a worktree is cut from. And an **ephemeral** thread cannot code: the
-    compare panes are throwaway scratch threads, and each one would mint a git branch
-    nobody ever looks at.
+    A mode whose workspace is a git worktree needs a real project the operator owns,
+    because that is what supplies the repository the worktree is cut from. And an
+    **ephemeral** thread cannot have one: the compare panes are throwaway scratch threads,
+    and each one would mint a git branch nobody ever looks at.
     """
     if body.project_id is not None:
         # 404 rather than a silent unfiled thread: filing work under a project that
@@ -480,14 +483,16 @@ async def _validate_new_thread_binding(request: Request, body: ChatCreate) -> No
             await deps.projects(request).get(OPERATOR_ID, body.project_id)
         except NotFoundError:
             raise HTTPException(status_code=404, detail="project not found") from None
-    if body.mode != "coding":
+    if mode_spec(body.mode).workspace != "worktree":
         return
     if body.ephemeral:
         raise HTTPException(
-            status_code=422, detail="an ephemeral conversation cannot use coding mode"
+            status_code=422, detail=f"an ephemeral conversation cannot use {body.mode} mode"
         )
     if body.project_id is None:
-        raise HTTPException(status_code=422, detail="coding mode requires a project_id")
+        raise HTTPException(
+            status_code=422, detail=f"{body.mode} mode requires a project_id"
+        )
 
 
 @router.post("", status_code=202, response_model=ChatCreated)
@@ -517,7 +522,7 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             ephemeral=body.ephemeral,
             mode=body.mode,
             # A thread files itself under whatever the request scope resolved — the
-            # explicit `project_id` when the client sent one (coding mode always does),
+            # explicit `project_id` when the client sent one (code mode always does),
             # else the operator's active project, else unfiled.
             project_id=body.project_id or await deps.active_project(request),
         )

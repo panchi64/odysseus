@@ -43,7 +43,7 @@ import logging
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal, NamedTuple
+from typing import Any, NamedTuple
 
 from pydantic import TypeAdapter
 from pydantic_ai import (
@@ -68,6 +68,7 @@ from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import MessageView, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
+from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.projects import project_clause
 from services.sealing import open_sealed
 
@@ -422,11 +423,11 @@ def _forked_title(source: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class ConversationBinding:
-    """Where a thread's file work happens. Read as a pair, because a coding mode with no
-    project and a project with no coding mode are both nonsense and both silently
+    """Where a thread's file work happens. Read as a pair, because a worktree mode with no
+    project and a project with no worktree mode are both nonsense and both silently
     plausible if the two are fetched separately."""
 
-    mode: Literal["chat", "coding"] = "chat"
+    mode: ModeId = DEFAULT_MODE
     project_id: str | None = None
 
 
@@ -753,7 +754,7 @@ class ConversationStore:
         ephemeral: bool = False,
         *,
         project_id: str | None = None,
-        mode: str = "chat",
+        mode: str = DEFAULT_MODE,
     ) -> str:
         """Start a thread. ``project_id`` files it (null is unfiled, which is visible
         under every scope) and ``mode`` decides where its file work happens; both are
@@ -1165,8 +1166,8 @@ class ConversationStore:
         """This thread's workspace binding — the two facts a run needs to know *where* it
         works, read together so no path can pick up one and default the other.
 
-        A missing conversation reads as an unfiled chat thread, which is the same answer
-        a stateless turn gets and the safe one: chat mode never touches the host.
+        A missing conversation reads as an unfiled Normal thread, which is the same answer
+        a stateless turn gets and the safe one: Normal never touches the host.
         """
 
         def work(session: Session) -> ConversationBinding:
@@ -1174,10 +1175,11 @@ class ConversationStore:
             if conversation is None:
                 return ConversationBinding()
             # The column is a plain string, so an unrecognised value (a restored backup
-            # from a future version, a hand-edited row) reads as chat rather than
-            # reaching the resolver as something it has no branch for.
-            mode = "coding" if conversation.mode == "coding" else "chat"
-            return ConversationBinding(mode=mode, project_id=conversation.project_id)
+            # from a future version, a hand-edited row) is normalised through the registry
+            # rather than reaching the resolver as something it has no row for.
+            return ConversationBinding(
+                mode=mode_spec(conversation.mode).id, project_id=conversation.project_id
+            )
 
         return await in_session(self._engine, work)
 

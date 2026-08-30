@@ -5,9 +5,9 @@ Thin over `services/projects`. Two shapes deserve a note:
 `repo` on every listing is **probed live**, not stored. Whether a directory is a git
 repository, and how many changes are uncommitted, are facts about the world that change
 without us; caching them would mean showing the operator a stale answer to the one
-question that decides whether coding mode is safe to start.
+question that decides whether code mode is safe to start.
 
-`uncommittedChanges` is surfaced deliberately, and the UI is expected to show it. Coding
+`uncommittedChanges` is surfaced deliberately, and the UI is expected to show it. Code
 mode branches a worktree from the project's base ref, so uncommitted work in the
 operator's own tree is **invisible to the agent**. That is the price of never touching
 their tree, and it should be read on the project screen rather than discovered halfway
@@ -143,7 +143,7 @@ async def delete_project(request: Request, project_id: str) -> None:
 async def init_repo(request: Request, project_id: str) -> ProjectOut:
     """Make the project's directory a git repository, with the operator's explicit yes.
 
-    Coding mode needs one — a worktree is cut from it — but running `git init` and
+    Code mode needs one — a worktree is cut from it — but running `git init` and
     committing someone's whole directory is a real, visible side effect, so it is never
     implicit. This route *is* the confirmation: the UI asks, the operator answers, and
     only then does anything happen. The agent has no path to it.

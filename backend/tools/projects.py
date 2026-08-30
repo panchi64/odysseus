@@ -57,7 +57,7 @@ def project_toolset() -> FunctionToolset[RunDeps]:
     async def active_project(ctx: RunContext[RunDeps]) -> dict:
         """The project this conversation is working in, if any.
 
-        In coding mode this is the project whose git worktree your file and shell tools
+        In code mode this is the project whose git worktree your file and shell tools
         act on. Uncommitted changes in the operator's own checkout are **not** visible to
         you — your worktree branches from the project's base ref — so if their tree is
         dirty, say so rather than assuming you can see their latest edits.

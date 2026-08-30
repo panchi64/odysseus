@@ -121,10 +121,10 @@ def _ctx(caps: ServiceContainer, **deps) -> RunContext[RunDeps]:
     )
 
 
-# --- chat mode: unchanged, and the /work translation is the resolver's ----------------
+# --- normal mode: unchanged, and the /work translation is the resolver's --------------
 
 
-class TestChatMode:
+class TestNormalMode:
     async def test_resolves_the_conversations_own_sandbox_workspace(self, tmp_path):
         ctx = _ctx(_caps(tmp_path), conversation_id="conv-a")
         workspace = await run_workspace(ctx)
@@ -157,15 +157,15 @@ class TestChatMode:
         ctx = _ctx(_caps(tmp_path), conversation_id="conv-a")
         first = await run_workspace(ctx)
         second = await run_workspace(ctx)
-        # A coding turn's first resolution runs `git worktree add`; a turn makes many
+        # A code turn's first resolution runs `git worktree add`; a turn makes many
         # file-tool calls, and it must not run once per call.
         assert first is second
 
 
-# --- coding mode: the worktree, and the one-workspace invariant ----------------------
+# --- code mode: the worktree, and the one-workspace invariant ------------------------
 
 
-class TestCodingMode:
+class TestCodeMode:
     async def _ctx(self, tmp_path, *, conversation_id="conv-a", run_id="run-1"):
         root = await _repo(tmp_path / "project")
         caps = _caps(tmp_path, {"proj-1": root})
@@ -174,7 +174,7 @@ class TestCodingMode:
             conversation_id=conversation_id,
             run_id=run_id,
             project_id="proj-1",
-            mode="coding",
+            mode="code",
         )
 
     async def test_resolves_the_projects_worktree_not_the_operators_tree(self, tmp_path):
@@ -210,15 +210,15 @@ class TestCodingMode:
         assert code == 0
         assert WORKTREE_SCRATCH not in out
 
-    async def test_coding_without_a_project_has_no_workspace_rather_than_a_sandbox(self, tmp_path):
+    async def test_code_without_a_project_has_no_workspace_rather_than_a_sandbox(self, tmp_path):
         # Falling back to the sandbox would be the worst answer: the agent would edit
         # files in a container while its shell tools are refused, and nothing would say
         # why. `project_id` is required at thread creation precisely so this cannot
         # happen; if it does, it degrades visibly.
         caps = _caps(tmp_path, {})
-        assert await run_workspace(_ctx(caps, conversation_id="c", mode="coding")) is None
+        assert await run_workspace(_ctx(caps, conversation_id="c", mode="code")) is None
         # ...and likewise when the project id names nothing.
-        ctx = _ctx(caps, conversation_id="c", mode="coding", project_id="gone", run_id="r2")
+        ctx = _ctx(caps, conversation_id="c", mode="code", project_id="gone", run_id="r2")
         assert await run_workspace(ctx) is None
 
 
@@ -251,7 +251,7 @@ class TestShellIsCodingOnly:
             ctx,
             None,  # type: ignore[arg-type]
         )
-        assert "only available in a coding conversation" in str(result)
+        assert "only available in a code conversation" in str(result)
 
 
 class TestShellRecoverableFailures:
@@ -266,7 +266,7 @@ class TestShellRecoverableFailures:
         """
         root = await _repo(tmp_path / "project")
         caps = _caps(tmp_path, {"proj-1": root})
-        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="coding")
+        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="code")
         toolset = shell_toolset()
         tools = await toolset.get_tools(ctx)
 
@@ -318,7 +318,7 @@ class TestResolveWorkspace:
     async def test_no_handles_at_all_is_no_workspace(self):
         assert (
             await resolve_workspace(
-                mode="chat",
+                mode="normal",
                 project_id=None,
                 conversation_id="c",
                 sandbox_key="c",

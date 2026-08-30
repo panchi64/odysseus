@@ -19,12 +19,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Literal
 
 from pydantic_ai import RunContext
 
 from core.container import ServiceContainer
 from runs import Run
+from services.modes import DEFAULT_MODE, ModeId
 from services.workspace import RunWorkspace
 
 
@@ -45,11 +45,13 @@ class RunDeps:
     # *conversation's* stored binding, never from the live request — switching the
     # active project must not change what an already-running thread is doing.
     project_id: str | None = None
-    # Which workspace this run's file work happens in: "chat" is the host-isolated
-    # container, "coding" is the project's git worktree on the host. This is the one
-    # channel that answer reaches a tool through — a tool executes inside a Run, long
-    # after the request that chose the mode is gone.
-    mode: Literal["chat", "coding"] = "chat"
+    # What kind of work this thread is: "normal" and "research" run in the conversation's
+    # host-isolated container, "code" in the project's git worktree on the host. What each
+    # implies — the workspace, the tools, the prompt — is the registry's answer
+    # (`services/modes.py`), never a comparison written out at a tool. This is the one
+    # channel the mode reaches a tool through: a tool executes inside a Run, long after
+    # the request that chose the mode is gone.
+    mode: ModeId = DEFAULT_MODE
     # This run's resolved workspace, memoised by `tools/workspace.py` on first use.
     # Never set by a construction site: it is a per-run cache, not an input, and it lives
     # here so it dies with the run instead of in a module-level dict.

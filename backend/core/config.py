@@ -46,7 +46,7 @@ class Settings(BaseSettings):
         # relative one is read as a named volume, which forbids path separators.
         return value.expanduser().resolve()
 
-    # Where coding mode's git worktrees are checked out. **Deliberately outside
+    # Where code mode's git worktrees are checked out. **Deliberately outside
     # `data_dir`**: an approved host command is fenced by `services/sandbox/host.py`,
     # which denies reads of the whole data directory (the vault, the sealed workspaces
     # and the DB live there). A worktree under `data_dir` would therefore be unreadable

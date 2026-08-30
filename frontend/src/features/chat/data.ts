@@ -44,6 +44,7 @@ import type {
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
+  SessionMode,
   SnapshotDiff,
   SnapshotFile,
   ToolBlock,
@@ -733,7 +734,7 @@ export async function deleteConversation(
 ): Promise<void> {
   const params = [
     purgeImages ? "purgeImages=true" : "",
-    // A coding thread with unmerged commits is refused unless this says so —
+    // A code thread with unmerged commits is refused unless this says so —
     // the backend decides, this only relays the operator's answer.
     discardBranch ? "discardBranch=true" : "",
   ].filter(Boolean);
@@ -757,7 +758,7 @@ export async function forkConversation(
   return detail.id;
 }
 
-/** What a coding thread has changed against its project's base ref. */
+/** What a code thread has changed against its project's base ref. */
 export interface BranchState {
   conversationId: string;
   projectId: string;
@@ -927,11 +928,11 @@ export interface ChatStreamOptions {
   /** Mark a freshly-created conversation as scratch (hidden from the sidebar
    *  listing). Used by compare panes — throwaway threads, not saved history. */
   ephemeral?: boolean;
-  /** What kind of thread the *next new* conversation should be: an ordinary chat,
-   *  or a coding thread working in `projectId`'s git worktree. Read only when a
-   *  send creates the conversation — the binding is immutable afterwards, and the
-   *  backend owns it from then on. */
-  mode?: () => "chat" | "coding";
+  /** What kind of thread the *next new* conversation should be — an ordinary one, a
+   *  research thread, or a code thread working in `projectId`'s git worktree. Read
+   *  only when a send creates the conversation — the binding is immutable afterwards,
+   *  and the backend owns it from then on. */
+  mode?: () => SessionMode;
   projectId?: () => string | undefined;
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
@@ -2594,10 +2595,10 @@ export interface MainChat {
    *  the screen because the send path reads it, and because a composer draft that
    *  survives navigation should keep the mode it was written for. Read only when a
    *  send creates the thread; the binding is the backend's from then on. */
-  mode: Accessor<"chat" | "coding">;
-  setMode: (mode: "chat" | "coding") => void;
-  codingProjectId: Accessor<string | undefined>;
-  setCodingProjectId: (id: string | undefined) => void;
+  mode: Accessor<SessionMode>;
+  setMode: (mode: SessionMode) => void;
+  codeProjectId: Accessor<string | undefined>;
+  setCodeProjectId: (id: string | undefined) => void;
 }
 
 let _mainChat: MainChat | undefined;
@@ -2607,10 +2608,10 @@ export function mainChat(): MainChat {
   if (_mainChat) return _mainChat;
   return (_mainChat = createRoot(() => {
     const [currentId, setCurrentId] = createSignal<string | null>(null);
-    const [mode, setMode] = createSignal<"chat" | "coding">("chat");
-    const [codingProjectId, setCodingProjectId] = createSignal<
-      string | undefined
-    >(undefined);
+    const [mode, setMode] = createSignal<SessionMode>("normal");
+    const [codeProjectId, setCodeProjectId] = createSignal<string | undefined>(
+      undefined,
+    );
     const session = useChatSession(currentId);
     const stream = createChatStream(
       // Withhold the source while history loads — the resource still reports the
@@ -2635,7 +2636,7 @@ export function mainChat(): MainChat {
           session.loading ? undefined : session()?.snapshots,
         // Read only when a send creates the conversation.
         mode,
-        projectId: codingProjectId,
+        projectId: codeProjectId,
       },
     );
     // Reattach when the tab returns to the foreground or the network comes back.
@@ -2699,8 +2700,8 @@ export function mainChat(): MainChat {
       markWarmResolved: () => setWarmResolved(true),
       mode,
       setMode,
-      codingProjectId,
-      setCodingProjectId,
+      codeProjectId,
+      setCodeProjectId,
     } satisfies MainChat;
   }));
 }

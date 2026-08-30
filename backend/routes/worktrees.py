@@ -1,6 +1,6 @@
-"""The coding branch surface — review what a coding conversation changed, then land it.
+"""The code branch surface — review what a code conversation changed, then land it.
 
-A coding thread works on `ody/<conversation-id>` in a worktree beside the project, never
+A code thread works on `ody/<conversation-id>` in a worktree beside the project, never
 in the operator's own checkout. These three endpoints are how that work gets back:
 
 - ``GET /worktrees/{conversation_id}`` — the diffstat and the patch, against the project's
@@ -24,6 +24,7 @@ from core.exceptions import NotFoundError
 from routes import deps
 from routes.camel import CamelModel
 from routes.deps import OPERATOR_ID
+from services.modes import mode_spec
 from services.projects import ProjectView, WorktreeError, branch_for
 
 router = APIRouter(prefix="/worktrees", tags=["projects"])
@@ -39,7 +40,7 @@ class BranchOut(CamelModel):
     deletions: int
     patch: str
     #: Whether this conversation currently holds the project's single checkout. False
-    #: means another coding thread has it — the branch still exists and is still
+    #: means another code thread has it — the branch still exists and is still
     #: mergeable, it just isn't the one checked out right now.
     active: bool
 
@@ -52,8 +53,8 @@ class MergedOut(CamelModel):
 async def _resolve(request: Request, conversation_id: str) -> tuple[ProjectView, Path]:
     """The thread's project and its root path, or a 4xx explaining which half is missing."""
     binding = await deps.store(request).binding(conversation_id)
-    if binding.mode != "coding" or not binding.project_id:
-        raise HTTPException(status_code=404, detail="not a coding conversation")
+    if mode_spec(binding.mode).workspace != "worktree" or not binding.project_id:
+        raise HTTPException(status_code=404, detail="not a code conversation")
     try:
         project = await deps.projects(request).get(OPERATOR_ID, binding.project_id)
     except NotFoundError as exc:
@@ -73,7 +74,7 @@ async def read_branch(request: Request, conversation_id: str) -> BranchOut:
             project_id=project.id,
         )
     except WorktreeError:
-        # No branch yet (a coding thread that hasn't touched a file), or a project
+        # No branch yet (a code thread that hasn't touched a file), or a project
         # directory that has moved out from under us. An empty diff is the honest answer
         # for both, and far better than a 500 on every render of the chat header.
         diff = None
