@@ -19,7 +19,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
@@ -252,6 +252,46 @@ class TestShellIsCodingOnly:
             None,  # type: ignore[arg-type]
         )
         assert "only available in a coding conversation" in str(result)
+
+
+class TestShellRecoverableFailures:
+    async def test_a_command_the_os_wont_spawn_is_a_retry_not_a_dead_run(self, tmp_path):
+        """The harness returns what the model can act on — a denied command, a working
+        directory that vanished, a command the OS refuses to spawn — as `ModelRetry`, so
+        the turn continues and the agent tries something else. Only failures it could do
+        nothing about still abort.
+
+        Pinned because it is behaviour we *inherit*: it arrived in a harness release
+        rather than in code of ours, so nothing else here would notice it going away.
+        """
+        root = await _repo(tmp_path / "project")
+        caps = _caps(tmp_path, {"proj-1": root})
+        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="coding")
+        toolset = shell_toolset()
+        tools = await toolset.get_tools(ctx)
+
+        async def run(command: str):
+            return await toolset.call_tool(
+                "run_command",
+                {"command": command},
+                ctx,
+                tools["run_command"],
+            )
+
+        # Approval is the gate on the *first* command; `tool_call_approved` is what the
+        # engine sets on the re-invocation, so drive the post-approval call directly.
+        ctx.tool_call_approved = True
+
+        # A destructive command the harness denies by name.
+        with pytest.raises(ModelRetry):
+            await run("rm -rf /")
+
+        # A command holding a NUL byte, which the OS cannot spawn at all.
+        with pytest.raises(ModelRetry):
+            await run("echo \x00hi")
+
+        # And the turn is still usable afterwards — a retry left nothing broken behind it.
+        assert "ok" in str(await run("echo ok"))
 
 
 # --- the host-side staging adapter ---------------------------------------------------

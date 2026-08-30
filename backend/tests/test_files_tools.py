@@ -125,6 +125,31 @@ async def test_a_symlink_out_of_the_workspace_is_refused(tmp_path):
     assert "host side" not in str(caught.value)
 
 
+async def test_a_correctable_failure_comes_back_as_a_retry_not_a_dead_run(tmp_path):
+    """The harness returns what the model can fix as `ModelRetry` — a missing file, a
+    directory colliding with a file, a glob it can't parse — so the turn continues and
+    the agent tries something else.
+
+    Pinned here because it is behaviour we *inherit*: it arrived in a harness release
+    rather than in code of ours, so nothing else in this repo would notice it going away.
+    Also pinned: the message names the path the way the model spelled it, never an
+    absolute host path — the model has no business learning where the workspace lives.
+    """
+    manager = _Manager(tmp_path)
+    (tmp_path / "conv-1").mkdir(exist_ok=True)
+
+    with pytest.raises(ModelRetry) as caught:
+        await _call("read_file", {"path": "nope.txt"}, manager=manager)
+    assert str(tmp_path) not in str(caught.value)
+
+    with pytest.raises(ModelRetry):
+        await _call(
+            "edit_file",
+            {"path": "nope.txt", "old_text": "a", "new_text": "b"},
+            manager=manager,
+        )
+
+
 async def test_no_sandbox_runtime_degrades_instead_of_failing(tmp_path):
     # Fail-closed means the capability is absent, not that the turn dies: the model is
     # told its machine is unavailable and adapts.

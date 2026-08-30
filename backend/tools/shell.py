@@ -21,6 +21,13 @@ through the fence. So what protects the operator here is not an OS boundary:
 - coding mode being **explicitly chosen** for a thread and bound to a project the
   operator named.
 
+**Failures the model can act on come back as `ModelRetry`, not as a dead run.** A denied or
+blocked command, a working directory an earlier command deleted, and a command the OS
+refuses to spawn all return to the model so it can try something else; only what the model
+could do nothing about (a host that cannot allocate a process, an oversized argument or
+environment) still aborts the turn. That split is the harness's, not ours — we hand it a
+`cwd` and a denylist and inherit the rest.
+
 An allowlist was considered instead of the approval gate and rejected: a coding agent
 needs whatever build tool the project uses, so any allowlist honest enough to be useful is
 long enough to be meaningless, and it would still be bypassable through an allowed

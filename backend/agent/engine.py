@@ -34,8 +34,6 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import wraps
-from inspect import isawaitable
 from typing import Any
 
 from pydantic_ai import (
@@ -44,7 +42,6 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
-    RunContext,
     RunUsage,
     ToolApproved,
     UsageLimitExceeded,
@@ -122,6 +119,7 @@ from .naming import (
     settle_title,
     start_title,
 )
+from .overhead import MeasureOverhead
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
@@ -231,7 +229,10 @@ def _build_agent(
         # its way to the model: a tool result rides into context whole, and the one
         # reduction that exists (conversation compaction) fires between turns, in the
         # orchestrator prelude, against measured context pressure.
-        capabilities=[ReinjectSystemPrompt(replace_existing=True)],
+        # `MeasureOverhead` is listed *after* `ReinjectSystemPrompt` so it sizes the
+        # request as it actually ships rather than before the system prompt is
+        # reasserted. It observes and returns the request context untouched.
+        capabilities=[ReinjectSystemPrompt(replace_existing=True), MeasureOverhead()],
     )
 
     # Feature-contributed dynamic instructions (each manifest's `instructions` export —
@@ -242,10 +243,14 @@ def _build_agent(
     # every request — keep them small and low-churn, or they invalidate the inference
     # engine's prompt-prefix cache for the whole history behind them (volatile context
     # belongs in a manifest's `prompt_context` export instead, delivered at the tail).
+    #
+    # `name=` is what makes the context readout's per-provider rows possible: the library
+    # stamps the resolved part with that name, so `agent/overhead.py` reads each block off
+    # the assembled request instead of measuring providers as they run.
     for provider in instruction_providers:
-        agent.instructions(_attributed(provider))
+        agent.instructions(name=_block_id(provider))(provider)
 
-    @agent.instructions
+    @agent.instructions(name="date")
     def _current_date() -> str:
         """Give the agent today's date as a dynamic instruction — re-resolved fresh each
         turn (always current, no stale pinned copy) and kept out of history. Uses the
@@ -259,44 +264,13 @@ def _build_agent(
     return agent
 
 
-def _attributed(provider: InstructionProvider) -> InstructionProvider:
-    """Wrap an instruction provider so the brief it contributes can be attributed to it.
-
-    The context readout breaks the standing brief down by which feature put text there —
-    the one form of the figure an operator can act on, since each block corresponds to
-    something they can switch off. That attribution is only available *here*: the library
-    concatenates every provider's return value into one instructions string, and by the
-    time the request exists there is no seam left to cut on. So each provider's own
-    output is measured as it is produced and left on the Run for `agent/overhead.py` to
-    read at the end of the step.
-
-    Records characters, never the text: this is a gauge annotation, and a copy of the
-    brief on the Run would be one more place a prompt lives.
-    """
-    block = _block_id(provider)
-
-    @wraps(provider)
-    async def attributed(ctx: RunContext[RunDeps]) -> str:
-        # Awaited only when there is something to await: `InstructionProvider` describes
-        # the async shape, but the library accepts a plain sync function and features
-        # write them, so a blanket `await` here would break every synchronous provider's
-        # turn for the sake of a readout row.
-        produced = provider(ctx)
-        text = await produced if isawaitable(produced) else produced
-        # Defensive on both hops: an agent built without deps (a test harness) and a
-        # provider that returned a non-string both cost the block's row, not the turn.
-        run = getattr(getattr(ctx, "deps", None), "run", None)
-        if run is not None and isinstance(text, str):
-            run.instruction_blocks[block] = len(text)
-        return text
-
-    return attributed
-
-
 def _block_id(provider: InstructionProvider) -> str:
     """The slug a provider's contribution is filed under — its own name, minus the
     `_instructions` suffix the convention gives them (`skill_catalog_instructions` →
     `skill_catalog`).
+
+    Handed to `agent.instructions(name=…)`, so it becomes the name the library stamps on
+    the part this provider resolves to and the row `agent/overhead.py` reports.
 
     Derived rather than declared because `InstructionProvider` is a plain callable and
     giving every manifest a label field would be ceremony for a readout row. A rename
