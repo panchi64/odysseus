@@ -592,13 +592,12 @@ function AssistantTurn(props: {
       </div>
 
       <Stack gap={3}>
-        {/* What's happening now (streaming) / what it took (settled — and only
-            while the work log it summarizes is folded away). */}
+        {/* What's happening now. What it took, once settled, is the work log's
+            own header — see `WorkLogHeader`. */}
         <TurnProgressRail
           blocks={m().blocks}
           streaming={m().streaming}
           queued={m().queued}
-          collapsed={forceOpen() !== true}
         />
         {/* The turn's ordered, interleaved blocks — the source of truth. */}
         <TurnBlocks

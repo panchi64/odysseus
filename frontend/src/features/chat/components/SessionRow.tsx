@@ -1,5 +1,13 @@
 import { Show, type JSX } from "solid-js";
-import { Button, LedEdge, Text, TypewriterText, cx, type LedTone } from "~/ui";
+import {
+  Button,
+  LedEdge,
+  REVEAL_ON_GROUP_HOVER,
+  Text,
+  TypewriterText,
+  cx,
+  type LedTone,
+} from "~/ui";
 import { REVEAL_SPEED_MS } from "../data";
 import type { ChatActivity } from "../model";
 
@@ -115,11 +123,7 @@ export function SessionRow(props: SessionRowProps): JSX.Element {
         aria-label={props.pinned ? "Unpin thread" : "Pin thread"}
         aria-pressed={props.pinned}
         onClick={() => props.onTogglePin()}
-        class={cx(
-          "shrink-0",
-          !props.pinned &&
-            "opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
-        )}
+        class={cx("shrink-0", !props.pinned && REVEAL_ON_GROUP_HOVER)}
       />
     </LedEdge>
   );
