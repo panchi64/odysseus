@@ -16,9 +16,13 @@ access token is about to expire, refreshing it, and **re-sealing the result befo
 returning it** — so a provider that rotates the refresh token (Google does) never leaves
 the new one unsealed or, worse, only in memory to be lost on restart.
 
-The exchange itself is ``authlib``'s async OAuth2 client over the ``httpx`` this app
-already carries — the token endpoints are fixed, well-known URLs, not operator input, so
-they are not an SSRF surface the way a JMAP server URL is.
+The exchange itself is ``authlib``'s async OAuth2 client, which since authlib 1.8 is an
+``httpx2.AsyncClient`` subclass rather than an ``httpx`` one — a **different** client stack
+from the pooled ``httpx`` client the rest of this app shares (``core/net.py``), and one it
+builds for itself per exchange. That costs nothing here: an OAuth exchange is rare, brief,
+and to a fixed, well-known token endpoint rather than operator input, so it is neither worth
+pooling nor an SSRF surface the way a JMAP server URL is. Nothing is passed to the
+constructor, which is what keeps this indifferent to which generation authlib rides.
 """
 
 from __future__ import annotations
