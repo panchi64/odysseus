@@ -1,5 +1,13 @@
 import { Show, type JSX } from "solid-js";
-import { Button, Icon, Menu, Text, copyToClipboard, type MenuItem } from "~/ui";
+import {
+  Button,
+  Icon,
+  Menu,
+  REVEAL_ON_GROUP_HOVER,
+  Text,
+  copyToClipboard,
+  type MenuItem,
+} from "~/ui";
 import type { ChatMessage } from "../model";
 import {
   answerText,
@@ -8,12 +16,17 @@ import {
   reasoningText,
 } from "../blocks";
 
-/** The one hover/focus reveal in a turn. Metadata and actions surface together on
- *  the same gesture — `opacity`, not `hidden`, so nothing reflows when they appear
- *  and `focus-within` keeps every control reachable from the keyboard. Exported so
- *  the turn's own model/time line uses this mechanism rather than a second one. */
-export const TURN_REVEAL_CLASS =
-  "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100";
+/** The one hover/focus reveal in a turn: metadata and actions surface together on
+ *  the same gesture. The mechanics live in `~/ui`'s `REVEAL_ON_GROUP_HOVER`,
+ *  which four surfaces now share — the turn wrapper is the unnamed `group` this
+ *  hangs off. Re-exported under the old name so the turn's own model/time line
+ *  keeps reading as "this turn's reveal" at its call site.
+ *
+ *  It matters that this is not merely `opacity-0`: on a touch device there is no
+ *  hover state, so an unconditional reveal deletes the control outright — and one
+ *  of the things behind this menu is Expand all, the only way to open a turn's
+ *  layers at once. */
+export const TURN_REVEAL_CLASS = REVEAL_ON_GROUP_HOVER;
 
 /** Hover/focus-revealed action row for a chat turn: COPY, and everything else
  *  behind one overflow menu.

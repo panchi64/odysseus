@@ -12,6 +12,7 @@
 // utils
 export { cx, type ClassValue } from "./cx";
 export { copyToClipboard } from "./clipboard";
+export { REVEAL_BASE, REVEAL_ON_GROUP_HOVER } from "./reveal";
 
 // theme
 export {

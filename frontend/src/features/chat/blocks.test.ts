@@ -7,7 +7,7 @@ import {
   planTurnLayout,
   runningTools,
 } from "./blocks";
-import type { AssistantBlock, ToolStatus } from "./model";
+import type { AssistantBlock, HostCommandPhase, ToolStatus } from "./model";
 
 /** A tool block, named so an assertion can point at it by name. */
 function tool(id: string, name: string, status: ToolStatus): AssistantBlock {
@@ -18,10 +18,21 @@ function text(id: string): AssistantBlock {
   return { kind: "text", id, text: "done" };
 }
 
-/** The layout of a streaming turn, as the kinds it puts on the rail — "worklog"
- *  for a fold, the group's own id for anything left inline. */
-function plan(blocks: AssistantBlock[]): string[] {
-  return planTurnLayout(groupBlocks(blocks), { streaming: true }).map((item) =>
+function host(id: string, phase: HostCommandPhase): AssistantBlock {
+  return {
+    kind: "host_command",
+    id,
+    command: { toolCallId: id, command: "ls", phase },
+  };
+}
+
+/** The layout of a turn, as the kinds it puts on the rail — "worklog" for a fold,
+ *  the group's own id for anything left inline. Defaults to a streaming turn;
+ *  pass `false` for a settled one, which is the harder case for any rule that
+ *  keeps something visible — `planTurnLayout`'s own tail guard only runs while
+ *  streaming, so a settled turn has nothing else propping the block up. */
+function plan(blocks: AssistantBlock[], streaming = true): string[] {
+  return planTurnLayout(groupBlocks(blocks), { streaming }).map((item) =>
     item.type === "worklog" ? "worklog" : item.group.id,
   );
 }
@@ -58,12 +69,14 @@ describe("parallel tool calls stay visible while they run", () => {
   });
 
   test("the same batch, all settled, folds as before", () => {
-    // The counterpart: a finished batch must still recede into the work log.
+    // The counterpart: a cleanly finished batch must still recede into the work
+    // log. (Every call here is `ok` on purpose — a failure among them would be
+    // pinned inline by its own rule, which is the next describe block.)
     expect(
       plan([
         tool("a", "web_search", "ok"),
         tool("b", "web_search", "ok"),
-        tool("c", "web_search", "error"),
+        tool("c", "web_search", "ok"),
         text("t"),
       ]),
     ).toEqual(["worklog", "t"]);
@@ -80,6 +93,87 @@ describe("parallel tool calls stay visible while they run", () => {
       { streaming: true },
     );
     expect(layoutItemKey(items[0])).toBe("w:a");
+  });
+});
+
+describe("a failed call keeps its run inline", () => {
+  // The defect these cover: the card auto-expands on error, but the work log
+  // folded shut around it — so the one event that should interrupt was the one
+  // event buried, and a swallowed tool failure is how a contaminated answer gets
+  // trusted. Each fixture puts the failure MID-RUN with enough collapsible
+  // groups around it that dropping the guard really does fold over it.
+  test("a settled turn with a failure does not fold", () => {
+    // The case that matters most: nothing is streaming, so `planTurnLayout`'s
+    // trailing-group guard is not running and only the failure rule is holding
+    // this open.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          tool("b", "files_read_file", "error"),
+          tool("c", "web_search", "ok"),
+          tool("d", "web_search", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("a failure mid-stream does not fold", () => {
+    expect(
+      plan([
+        tool("a", "web_search", "ok"),
+        tool("b", "files_read_file", "error"),
+        tool("c", "web_search", "ok"),
+        text("t"),
+      ]),
+    ).toEqual(["a", "b", "c", "t"]);
+  });
+
+  test("a settled turn with no failure still folds", () => {
+    // The counterpart that proves the rule is doing the work above, rather than
+    // settled turns simply never folding.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          tool("b", "files_read_file", "ok"),
+          tool("c", "web_search", "ok"),
+          tool("d", "web_search", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog"]);
+  });
+
+  test("a failed host command keeps its run inline", () => {
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          host("b", "error"),
+          tool("c", "web_search", "ok"),
+          tool("d", "web_search", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("a denied host command is a decision, not a failure, and folds", () => {
+    // The operator already dealt with this one; keeping it pinned forever would
+    // mean every refusal permanently un-folds the turn it happened in.
+    expect(
+      plan(
+        [
+          tool("a", "web_search", "ok"),
+          host("b", "denied"),
+          tool("c", "web_search", "ok"),
+          tool("d", "web_search", "ok"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog"]);
   });
 });
 

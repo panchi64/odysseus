@@ -1,7 +1,7 @@
-import { Show, createMemo, type JSX } from "solid-js";
-import { Collapse, Frames, Reveal, Row, Text } from "~/ui";
+import { Show, type JSX } from "solid-js";
+import { Collapse, Frames, Row, Text } from "~/ui";
 import type { AssistantBlock } from "../model";
-import { runningTools, workCounts } from "../blocks";
+import { runningTools } from "../blocks";
 import { toolPresentation } from "../toolPresentation";
 
 /** What the agent is doing *right now* — live tool calls first, then the trailing
@@ -48,67 +48,50 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
   }
 }
 
-/** The turn's tempo line: while streaming, a hard-stepped throbber + a label for
- *  the live phase ("Thinking", "Running web search", "Writing"). Once settled, a
- *  compact count of the work it took (the per-step rhythm lives in the block
- *  rail). Renders nothing for a plain turn with no work. */
+/** The turn's tempo line: a hard-stepped throbber and a label for the live phase
+ *  ("Thinking", "Running web search", "Writing"), for as long as the turn runs.
+ *
+ *  **It is the turn's only *worded* status, and it exists only while the turn is
+ *  live.** It used to also print a settled "N Tools · M Thinks" summary, which
+ *  sat directly above either the rows it was counting or a work log whose own
+ *  header now names those tools by name — a third telling of a fact the operator
+ *  could already read twice. The shape summary in the collapsed work log
+ *  (`WorkLogHeader`) is the settled answer; this line is the live one.
+ *
+ *  Everything else that reports a running call does so without words — the rail's
+ *  light and the tool row's glyph tone. That division is the point: one sentence,
+ *  and the rest in light. */
 export function TurnProgressRail(props: {
   blocks: AssistantBlock[] | undefined;
   streaming?: boolean;
-  /** Whether the turn's work log is folded away. The settled "N TOOLS · M THINKS"
-   *  line stands in for the log; with the log open it restates what is already on
-   *  screen directly beneath it, so it is withheld. */
-  collapsed?: boolean;
   /** True until the run's first event arrives — waiting behind the backend's
    *  concurrency limit, not yet actually executing. Rendered as an explicit
    *  "Queued" state instead of the throbber, which would otherwise look
    *  identical to a model that's just slow to produce its first token. */
   queued?: boolean;
 }): JSX.Element {
-  const counts = createMemo(() => workCounts(props.blocks));
-  const hasWork = () => counts().thinks > 0 || counts().tools > 0;
-
-  /* The line has something to say while the turn runs, and afterwards only if
-     there was work worth counting. For a plain answer — the common case — that
-     means it goes from "Thinking" to nothing at all, and everything below it
-     jumps up by the height of the line plus its stack gap the instant the run
-     ends. `Collapse` turns that into the region closing, which is a movement the
-     eye can follow rather than a jump it has to recover from. */
-  const showing = () =>
-    Boolean(props.streaming) || (hasWork() && Boolean(props.collapsed));
-
+  /* The line has something to say only while the turn runs, so at the end it goes
+     from "Thinking" to nothing at all — and everything below it would jump up by
+     the height of the line plus its stack gap the instant the run ends.
+     `Collapse` turns that into the region closing, which is a movement the eye
+     can follow rather than a jump it has to recover from. */
   return (
-    <Collapse open={showing()}>
-      <Show
-        when={props.streaming}
-        fallback={
-          /* The settled summary is machine output — counts a process emitted,
-             not a sentence anyone wrote (§2) — so it stays mono and it
-             materializes rather than replacing the live label in place. */
-          <Reveal>
-            <Text variant="micro" tone="dim">
-              {counts().tools} {counts().tools === 1 ? "Tool" : "Tools"} ·{" "}
-              {counts().thinks} {counts().thinks === 1 ? "Think" : "Thinks"}
+    <Collapse open={Boolean(props.streaming)}>
+      <Row gap={2} align="center" aria-live="polite">
+        <Show
+          when={!props.queued}
+          fallback={
+            <Text variant="label" tone="dim">
+              Queued
             </Text>
-          </Reveal>
-        }
-      >
-        <Row gap={2} align="center" aria-live="polite">
-          <Show
-            when={!props.queued}
-            fallback={
-              <Text variant="label" tone="dim">
-                Queued
-              </Text>
-            }
-          >
-            <Frames class="text-info" />
-            <Text variant="label" tone="info">
-              {activeLabel(props.blocks)}
-            </Text>
-          </Show>
-        </Row>
-      </Show>
+          }
+        >
+          <Frames class="text-info" />
+          <Text variant="label" tone="info">
+            {activeLabel(props.blocks)}
+          </Text>
+        </Show>
+      </Row>
     </Collapse>
   );
 }
