@@ -2,6 +2,7 @@ import { Show, createMemo, type JSX } from "solid-js";
 import { Collapse, Frames, Reveal, Row, Text } from "~/ui";
 import type { AssistantBlock } from "../model";
 import { runningTools, workCounts } from "../blocks";
+import { toolPresentation } from "../toolPresentation";
 
 /** What the agent is doing *right now* — live tool calls first, then the trailing
  *  block, which is the one receiving deltas when no tool is out. Calls go out in
@@ -9,8 +10,15 @@ import { runningTools, workCounts } from "../blocks";
  *  drop the others and fall back to "Working" the moment that one returned. */
 function activeLabel(blocks: AssistantBlock[] | undefined): string {
   const running = runningTools(blocks);
-  if (running.length > 1) return `RUNNING ${running.length} TOOLS`;
-  if (running.length === 1) return `RUNNING ${running[0].name}`;
+  // Sentence case, like every other branch below: this line renders in the sans
+  // `label` variant — the interface's own voice, which the design system keeps in
+  // sentence case — and the tool label spliced in is sentence case too, so
+  // shouting the prefix would put two registers inside one string.
+  if (running.length > 1) return `Running ${running.length} tools`;
+  // The card's own label, not the namespaced registry name: this line and the
+  // card beneath it are describing the same call, so they should say the same word.
+  if (running.length === 1)
+    return `Running ${toolPresentation(running[0].name).label}`;
   const last = blocks?.[blocks.length - 1];
   // No blocks yet = the run was created but nothing has streamed back: the backend
   // is still preparing (context assembly, model spin-up). Say so rather than
@@ -41,7 +49,7 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
 }
 
 /** The turn's tempo line: while streaming, a hard-stepped throbber + a label for
- *  the live phase ("Thinking", "RUNNING web_search", "Writing"). Once settled, a
+ *  the live phase ("Thinking", "Running web search", "Writing"). Once settled, a
  *  compact count of the work it took (the per-step rhythm lives in the block
  *  rail). Renders nothing for a plain turn with no work. */
 export function TurnProgressRail(props: {

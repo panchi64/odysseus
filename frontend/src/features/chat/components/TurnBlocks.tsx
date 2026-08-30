@@ -503,7 +503,7 @@ function WorkLogAccordion(
           <Show when={!props.open && peek()}>
             {(p) => (
               <Text variant="micro" tone="dim" class="min-w-0 flex-1 truncate">
-                {p().name}
+                {p().label}
                 {p().rationale ? ` — ${p().rationale}` : ""}
               </Text>
             )}

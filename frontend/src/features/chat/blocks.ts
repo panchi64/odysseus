@@ -3,6 +3,7 @@
  *  transcript assembly) stay testable and live in one place. */
 
 import type { AssistantBlock, BlockKind, ToolInvocation } from "./model";
+import { toolRowLabel } from "./toolPresentation";
 
 /** A run of consecutive collapsible work only folds into a WORK LOG accordion
  *  once it reaches this many groups. Below it, the run stays inline — a lone
@@ -233,20 +234,26 @@ export function planTurnLayout(
 }
 
 /** The latest tool/host call in a set of groups, with the reasoning that led to
- *  it — the peek the WORK LOG accordion shows while collapsed. */
+ *  it — the peek the WORK LOG accordion shows while collapsed.
+ *
+ *  `label` is what the folded row *reads as*, not a registry name: a tool call is
+ *  phrased the way its own card phrases it ("Read · backend/app.py"), and a host
+ *  command is already a human string. Resolving it here rather than in the
+ *  accordion keeps the two branches from needing different treatment at the
+ *  render site. */
 export function peekLatestTool(
   groups: BlockGroup[],
-): { name: string; rationale?: string } | null {
+): { label: string; rationale?: string } | null {
   const flat = groups.flatMap((g) => g.blocks);
   for (let i = flat.length - 1; i >= 0; i--) {
     const b = flat[i];
-    const name =
+    const label =
       b.kind === "tool"
-        ? b.tool.name
+        ? toolRowLabel(b.tool)
         : b.kind === "host_command"
           ? b.command.command
           : null;
-    if (name == null) continue;
+    if (label == null) continue;
     // The reasoning that led to *this* call is the thinking block immediately
     // before it; condense to a line. If another block sits between (e.g. a prior
     // tool), there's no direct rationale — don't borrow an unrelated one.
@@ -255,7 +262,7 @@ export function peekLatestTool(
       prev?.kind === "thinking"
         ? prev.text.replace(/\s+/g, " ").trim()
         : undefined;
-    return { name, rationale };
+    return { label, rationale };
   }
   return null;
 }
