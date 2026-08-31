@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from tools import RunDeps
 
-from .engine import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator
+from .engine import build_chat_orchestrator, build_resume_orchestrator
+from .parking import ParkedTurn
 from .translate import stream_agent_run
 
 __all__ = [

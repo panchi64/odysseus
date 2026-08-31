@@ -25,7 +25,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
-import agent.engine as engine
+import agent.gating as gating
 from agent import build_chat_orchestrator
 from prompts.utility import REVIEW_INSTRUCTIONS
 from runs import RunRegistry, RunStatus
@@ -251,12 +251,12 @@ def _gated_categories():
 
 
 async def _auto_run(reg: RunRegistry, monkeypatch, outcome_verdict: ReviewVerdict | None):
-    """One Auto turn whose reviewer is stubbed at the engine's own seam."""
+    """One Auto turn whose reviewer is stubbed at the gate's own seam."""
     if outcome_verdict is None:
-        monkeypatch.setattr(engine, "resolve_reviewer", lambda caps, owner: _none())
+        monkeypatch.setattr(gating, "resolve_reviewer", lambda caps, owner: _none())
     else:
         monkeypatch.setattr(
-            engine, "resolve_reviewer", lambda caps, owner: _reviewer(outcome_verdict)
+            gating, "resolve_reviewer", lambda caps, owner: _reviewer(outcome_verdict)
         )
     orch = build_chat_orchestrator(
         "delete the thing",
@@ -333,7 +333,7 @@ class TestTheEngineRunsIt:
     async def test_no_other_level_reviews_at_all(self, monkeypatch):
         # Edit asks the operator; the review never runs, so no review event is emitted
         # and nothing was decided on their behalf.
-        monkeypatch.setattr(engine, "resolve_reviewer", lambda caps, owner: _none())
+        monkeypatch.setattr(gating, "resolve_reviewer", lambda caps, owner: _none())
         orch = build_chat_orchestrator(
             "delete the thing",
             model=TestModel(custom_output_text="done"),

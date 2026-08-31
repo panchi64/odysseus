@@ -1,4 +1,10 @@
-"""Running Auto's review inside a live turn — the engine's half of the decision.
+"""Ruling on the calls a turn deferred — the engine's half of the decision.
+
+A model turn that wants a sensitive tool ends with the call *unexecuted* and the question
+open: does this run, does it get refused, or does it go to the operator? Answering it is
+this module's whole job. :func:`settle_deferred` walks the batch and returns the two piles
+the turn continues on — the calls settled without a human, and the ones that need one —
+so ``engine.py`` is left with control flow rather than policy.
 
 ``services/permissions`` owns the rules: what an action reaches, whether a deterministic
 allowlist clears it, and what a model's three scores add up to. None of that knows about
@@ -25,25 +31,104 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai import ToolApproved, ToolDenied
+from pydantic_ai.messages import ModelMessage, ToolCallPart
 
 from core.config import get_settings
 from core.container import ServiceContainer
 from runs import Run
 from runs.events import ReviewCompleted, ReviewStarted
+from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.permissions import (
     Decision,
     Reviewer,
     ReviewOutcome,
+    blocked_message,
     capability_of,
+    decide,
     make_utility_reviewer,
     review,
+    review_refusal,
     review_transcript,
 )
 from services.registry import ModelRegistry
 from tools.deps import RunDeps
 
 logger = logging.getLogger(__name__)
+
+
+async def settle_deferred(
+    run: Run,
+    approvals: Sequence[ToolCallPart],
+    *,
+    caps: ServiceContainer,
+    conversation_id: str | None,
+    deps: RunDeps,
+    messages: list[ModelMessage],
+    permission: str,
+) -> tuple[dict[str, ToolApproved | ToolDenied], list[ToolCallPart]]:
+    """Rule on every call this hop deferred, returning ``(settled, manual)``.
+
+    ``settled`` is the decisions the turn can carry on with immediately — an allow the
+    model never notices, or a denial it is told in place of the tool's result and re-plans
+    around. ``manual`` is what is left for the operator, and a non-empty one is what parks
+    the turn.
+
+    An explicit standing decision outranks any policy, so a conversation grant is consulted
+    first — and its answer is spelled in the same vocabulary the level's is, leaving one
+    dispatch below rather than two. Grants are conversation-scoped, so a stateless turn
+    always asks.
+
+    Two refusals, not one, because a model that read them as the same fact would take the
+    wrong next step: the level does not permit this act at all (the operator already
+    answered by choosing the level), or the Auto review found it unrecoverable.
+    """
+    granted: set[str] = set()
+    grants = caps.get_optional(ApprovalGrantStore)
+    if grants is not None and conversation_id is not None:
+        granted = await grants.active(run.owner_id, conversation_id)
+    settled: dict[str, ToolApproved | ToolDenied] = {}
+    manual: list[ToolCallPart] = []
+    # Resolved lazily and at most once per batch: building a reviewer is a registry
+    # resolution and a model construction, and the deterministic stage settles most
+    # calls without ever needing one.
+    reviewer: Reviewer | None = None
+    reviewer_resolved = False
+    for call in approvals:
+        decision = (
+            Decision.ALLOW
+            if covered_by_grant(call.tool_name, granted)
+            else decide(permission, call.tool_name)
+        )
+        reviewed: ReviewOutcome | None = None
+        if decision is Decision.REVIEW:
+            # Auto: the operator asked for their answers to be given for them, so a
+            # judge and then a reviewer give one. Both ends land on the stream, so the
+            # operator can always read afterwards why something ran without them.
+            if not reviewer_resolved:
+                reviewer = await resolve_reviewer(caps, run.owner_id)
+                reviewer_resolved = True
+            reviewed = await review_call(
+                run,
+                tool_call_id=call.tool_call_id,
+                tool=call.tool_name,
+                args=call.args_as_dict(),
+                deps=deps,
+                messages=messages,
+                reviewer=reviewer,
+            )
+            decision = reviewed.decision
+        if decision is Decision.ALLOW:
+            settled[call.tool_call_id] = ToolApproved()
+        elif decision is Decision.BLOCK:
+            settled[call.tool_call_id] = ToolDenied(
+                message=review_refusal(call.tool_name, reviewed.reason)
+                if reviewed is not None
+                else blocked_message(permission, call.tool_name)
+            )
+        else:
+            manual.append(call)
+    return settled, manual
 
 
 async def resolve_reviewer(caps: ServiceContainer, owner_id: str) -> Reviewer | None:

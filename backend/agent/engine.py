@@ -24,9 +24,11 @@ Five neighbours carry the concerns that aren't that, each with its own reason to
   orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
 - ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
   operator is told.
-- ``gating.py`` — running the Auto level's review on a deferred call: resolving a
-  reviewer from the run's capabilities and announcing both ends of the review on the
-  stream. The rules it applies are ``services/permissions``'.
+- ``gating.py`` — ruling on the calls a turn deferred: grants, the level's own answer,
+  and the Auto level's review (announced on the stream). The rules it applies are
+  ``services/permissions``'.
+- ``parking.py`` — the continuation payload a parked turn resumes from, and the park
+  itself (the approval events and the notify that must land before it).
 """
 
 from __future__ import annotations
@@ -47,8 +49,6 @@ from pydantic_ai import (
     ModelRequest,
     RunContext,
     RunUsage,
-    ToolApproved,
-    ToolDenied,
     UsageLimitExceeded,
     UsageLimits,
     UserPromptPart,
@@ -69,7 +69,6 @@ from prompts.agent import (
 )
 from runs import (
     DEFAULT_CONTEXT_THRESHOLDS,
-    ApprovalRequired,
     ContextThresholds,
     ConversationCompacted,
     LimitNotice,
@@ -79,7 +78,6 @@ from runs import (
     RunStatus,
     total_timings,
 )
-from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.context_budget import compose
 from services.conversations import (
     ConversationBinding,
@@ -91,14 +89,6 @@ from services.conversations import (
 from services.llm import TOOL_CALL_SETTINGS
 from services.modes import mode_spec
 from services.notifications import NotificationService
-from services.permissions import (
-    Decision,
-    Reviewer,
-    ReviewOutcome,
-    blocked_message,
-    decide,
-    review_refusal,
-)
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
@@ -113,7 +103,7 @@ from tools import (
 
 from .attachments import resolve_attachments
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
-from .gating import resolve_reviewer, review_call
+from .gating import settle_deferred
 from .history import (
     drop_dangling_tool_calls,
     merge_consecutive_requests,
@@ -131,13 +121,13 @@ from .model_errors import (
 )
 from .naming import (
     TitleContext,
-    approval_conversation_title,
     discard_title,
     maybe_title,
     settle_title,
     start_title,
 )
 from .overhead import MeasureOverhead
+from .parking import DEFAULT_BINDING, ParkedTurn, park_for_approval
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
@@ -152,60 +142,6 @@ logger = logging.getLogger(__name__)
 # A shared empty bag for the no-capabilities default — every capability-backed tool
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
-# A stateless turn's workspace binding: an unfiled Normal thread. The conservative
-# default — Normal never reaches the host — so a caller that forgets to resolve one
-# cannot accidentally hand a run the operator's own files.
-_DEFAULT_BINDING = ConversationBinding()
-
-
-@dataclass
-class ParkedTurn:
-    """The continuation of a run parked awaiting approval. Opaque to the
-    substrate; held on ``run.parked_payload`` and consumed by the approve route."""
-
-    agent: Agent
-    message_history: list[ModelMessage]
-    requests: DeferredToolRequests
-    announced: set[str] = field(default_factory=set)
-    # Deferred calls that never reached the operator: auto-approved by an active
-    # conversation grant, or refused outright by the thread's permission level. Not
-    # surfaced (no approval.required event for them) but merged back into the resume's
-    # decisions so the single DeferredToolResults still covers every deferred call.
-    settled: dict[str, ToolApproved | ToolDenied] = field(default_factory=dict)
-    # Persistence context, attached by the orchestrator: the conversation and
-    # the index from which messages are still unpersisted (so a resume records
-    # the parked turn's messages too, once it finally completes).
-    conversation_id: str | None = None
-    persist_from: int = 0
-    # When a *verifier* correction is what parked, the [start, end] message range
-    # to drop on the eventual persist (the rejected answer + the synthetic nudge),
-    # so the resume records a clean history too.
-    clean_drop: tuple[int, int] | None = None
-    # Auto-title context, carried so a first turn that parked for approval is still
-    # named once it resumes and completes (titling lives at the shared finalize
-    # point, not only in the initial chat turn). None ⇒ don't title on resume.
-    title: TitleContext | None = None
-    # Attachment context, carried so a turn that parked for approval still installs its
-    # durable attachment markers (and stamps the ids) when the resume finally persists it —
-    # keeping replayed history marker-only just like a direct turn.
-    attachment_ids: list[str] = field(default_factory=list)
-    persisted: list | None = None
-    # The turn's model-request budget (the operator's setting, else the config default),
-    # carried so the resume continues under the same ceiling the original turn ran with
-    # rather than silently reverting to the default. None ⇒ resolve from config.
-    request_limit: int | None = None
-    # The thread's binding, carried rather than re-read on resume. A resume that
-    # defaulted it to Normal would hand a parked code turn a different filesystem than the
-    # one it parked in — and the permission level rides along for the same reason it is
-    # read once per turn rather than per call: the operator may raise the level while this
-    # is parked, and a call they are about to approve must be judged by the rules that
-    # deferred it, not by rules that arrived afterwards.
-    binding: ConversationBinding = field(default_factory=ConversationBinding)
-    # Whether the model this turn runs on can read an image, carried for the same reason
-    # `binding` is: the resume must offer the tools the parked turn was offered. Re-reading
-    # it would resolve whatever is bound *now*, which need not be the model the parked
-    # agent still holds — so a re-read would be a second, disagreeing source for one fact.
-    vision: bool = True
 
 
 @dataclass
@@ -304,11 +240,6 @@ def _build_agent(
         return CURRENT_DATE.format(date=stamp)
 
     return agent
-
-
-def _summarize(name: str, args: dict[str, Any]) -> str:
-    rendered = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    return f"{name}({rendered})"
 
 
 def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
@@ -415,78 +346,6 @@ async def _maybe_compact(
     return await store.model_history(conversation_id)
 
 
-async def _park_for_approval(
-    run: Run,
-    agent: Agent,
-    messages: list[ModelMessage],
-    requests: DeferredToolRequests,
-    announced: set[str],
-    *,
-    settled: dict[str, ToolApproved | ToolDenied] | None = None,
-    notifications: NotificationService | None = None,
-    store: ConversationStore | None = None,
-    conversation_id: str | None = None,
-    request_limit: int | None = None,
-    binding: ConversationBinding = _DEFAULT_BINDING,
-    vision: bool = True,
-) -> None:
-    # Only the calls still awaiting the operator are announced; the ones a grant or the
-    # thread's level already settled ride silently on the parked payload and merge into
-    # the resume.
-    settled = settled or {}
-    pending_names: set[str] = set()
-    for call in requests.approvals:
-        if call.tool_call_id in settled:
-            continue
-        pending_names.add(call.tool_name)
-        args = call.args_as_dict()
-        # A tool may hand the operator a plain-language explanation via an
-        # `explanation` argument (the host-execution path requires one); surface
-        # it as a distinct field so the client need not parse it out of the args.
-        explanation = args.get("explanation")
-        run.emit(
-            ApprovalRequired(
-                tool_call_id=call.tool_call_id,
-                name=call.tool_name,
-                args=args,
-                summary=_summarize(call.tool_name, args),
-                explanation=explanation if isinstance(explanation, str) else None,
-            )
-        )
-    # Fire the ALWAYS-notify policy *before* `run.park(...)` makes the parked status
-    # externally visible — not after. This is the one await this function does before
-    # parking, and it must land first: `RunRegistry.cancel`'s parked branch assumes
-    # "awaiting_input ⇒ the task has already fully exited" and skips the hard-cancel
-    # path on that assumption. If the notify (and the conversation-title lookup it may
-    # need) instead ran *after* parking, a concurrent cancel/approve landing in that
-    # window would see the parked status while this coroutine is still suspended on a
-    # real await — violating that assumption and racing the run's own finalize.
-    if notifications is not None and pending_names:
-        title = await approval_conversation_title(store, run.owner_id, conversation_id)
-        try:
-            await notifications.notify(
-                run.owner_id,
-                "approval_needed",
-                f'"{title}" needs approval for {", ".join(sorted(pending_names))}',
-                conversation_id=conversation_id,
-                run_id=run.id,
-            )
-        except Exception:  # noqa: BLE001 — a notify failure must not break the park
-            logger.warning("approval_needed notification failed for run %s", run.id, exc_info=True)
-    run.park(
-        ParkedTurn(
-            agent,
-            messages,
-            requests,
-            announced,
-            settled=settled,
-            request_limit=request_limit,
-            binding=binding,
-            vision=vision,
-        )
-    )
-
-
 async def _drive_turn(
     run: Run,
     agent: Agent,
@@ -498,7 +357,7 @@ async def _drive_turn(
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    binding: ConversationBinding = _DEFAULT_BINDING,
+    binding: ConversationBinding = DEFAULT_BINDING,
     vision: bool = True,
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
@@ -686,63 +545,20 @@ async def _drive_turn(
             answer = output if isinstance(output, str) else None
             return _TurnResult(answer=answer, messages=messages)
 
-        # Rule on each deferred call. A tool the operator allowed for this conversation
-        # auto-approves without a prompt — an explicit standing decision outranks any
-        # policy, so the grant is consulted first and its answer is spelled in the same
-        # vocabulary the level's is, leaving one dispatch below rather than two. Grants are
-        # conversation-scoped, so a stateless (no-conversation) turn always asks.
-        granted: set[str] = set()
-        grants = caps.get_optional(ApprovalGrantStore)
-        if grants is not None and conversation_id is not None:
-            granted = await grants.active(run.owner_id, conversation_id)
-        settled: dict[str, ToolApproved | ToolDenied] = {}
-        manual = []
-        # Resolved lazily and at most once per batch: building a reviewer is a registry
-        # resolution and a model construction, and the deterministic stage settles most
-        # calls without ever needing one (`agent/gating.py`).
-        reviewer: Reviewer | None = None
-        reviewer_resolved = False
-        for call in output.approvals:
-            decision = (
-                Decision.ALLOW
-                if covered_by_grant(call.tool_name, granted)
-                else decide(binding.permission, call.tool_name)
-            )
-            reviewed: ReviewOutcome | None = None
-            if decision is Decision.REVIEW:
-                # Auto: the operator asked for their answers to be given for them, so a
-                # judge and then a reviewer give one. Both ends land on the stream, so the
-                # operator can always read afterwards why something ran without them.
-                if not reviewer_resolved:
-                    reviewer = await resolve_reviewer(caps, run.owner_id)
-                    reviewer_resolved = True
-                reviewed = await review_call(
-                    run,
-                    tool_call_id=call.tool_call_id,
-                    tool=call.tool_name,
-                    args=call.args_as_dict(),
-                    deps=deps,
-                    messages=messages,
-                    reviewer=reviewer,
-                )
-                decision = reviewed.decision
-            if decision is Decision.ALLOW:
-                settled[call.tool_call_id] = ToolApproved()
-            elif decision is Decision.BLOCK:
-                # Nothing to put in front of the operator, and two different reasons why:
-                # the level does not permit this act at all — they already answered by
-                # choosing the level — or the review found it unrecoverable. Two refusals,
-                # because a model that read them as one fact would take the wrong next
-                # step. Either way it is told in place of the tool's result and re-plans.
-                settled[call.tool_call_id] = ToolDenied(
-                    message=review_refusal(call.tool_name, reviewed.reason)
-                    if reviewed is not None
-                    else blocked_message(binding.permission, call.tool_name)
-                )
-            else:
-                manual.append(call)
+        # Rule on each deferred call — grants, then the level, then Auto's review. The
+        # rules and their announcement live in `gating.py`; what is left here is what the
+        # turn does with the two piles it hands back.
+        settled, manual = await settle_deferred(
+            run,
+            output.approvals,
+            caps=caps,
+            conversation_id=conversation_id,
+            deps=deps,
+            messages=messages,
+            permission=binding.permission,
+        )
         if manual:
-            await _park_for_approval(
+            await park_for_approval(
                 run,
                 agent,
                 messages,
@@ -794,7 +610,7 @@ async def _verify_and_correct(
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
     store: ConversationStore | None = None,
     request_limit: int | None = None,
-    binding: ConversationBinding = _DEFAULT_BINDING,
+    binding: ConversationBinding = DEFAULT_BINDING,
     vision: bool = True,
     drop_ref: list[tuple[int, int]] | None = None,
 ) -> _TurnResult:
@@ -936,7 +752,7 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
     parked counterpart of ``_on_cancel``'s flush for a still-running turn. Wired as
     ``run.on_park_cancel`` right after the parking ``_finalize`` call populates
     ``ParkedTurn``'s persistence context, so it's armed before any further ``await``
-    a concurrent cancel could otherwise slip through (see ``_park_for_approval``'s
+    a concurrent cancel could otherwise slip through (see ``park_for_approval``'s
     identical notify-before-park ordering concern). Called by
     ``RunRegistry.cancel``'s parked branch *after* it has already set the terminal
     ``cancelled`` status, so ``_finalize`` takes its normal persist branch rather
@@ -981,7 +797,7 @@ def build_chat_orchestrator(
     vision: bool = False,
     auto_compact: AutoCompactPolicy | None = None,
     disabled_tools: frozenset[str] = frozenset(),
-    binding: ConversationBinding = _DEFAULT_BINDING,
+    binding: ConversationBinding = DEFAULT_BINDING,
     request_limit: int | None = None,
 ) -> Orchestrator:
     """Build the orchestrator for one chat turn (one always-agent path).

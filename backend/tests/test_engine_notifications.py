@@ -1,4 +1,4 @@
-"""`_park_for_approval`/`_approval_conversation_title` in isolation: title wording,
+"""`park_for_approval`/`approval_conversation_title` in isolation: title wording,
 grant-covered filtering, conversation-title lookup, and the "a notifier failure must
 never break the park" guarantee — without driving a full model turn."""
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pydantic_ai import ToolApproved
 
-from agent.engine import ParkedTurn, _park_for_approval
+from agent.parking import ParkedTurn, park_for_approval
 from core.db import init_db, make_engine
 from core.vault import Vault
 from runs.run import Run, RunStatus
@@ -57,7 +57,7 @@ async def test_park_names_conversation_and_pending_tools(tmp_path):
     service = await _notification_service(tmp_path)
     run = _run()
 
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],
@@ -83,7 +83,7 @@ async def test_park_excludes_grant_covered_tool_names(tmp_path):
     service = await _notification_service(tmp_path)
     run = _run()
 
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],
@@ -106,7 +106,7 @@ async def test_park_skips_notifying_when_every_call_is_grant_covered(tmp_path):
     service = await _notification_service(tmp_path)
     run = _run()
 
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],
@@ -128,7 +128,7 @@ async def test_park_skips_notifying_when_every_call_is_grant_covered(tmp_path):
 async def test_park_is_a_no_op_notify_when_notifications_is_none():
     run = _run()
     # Must not raise — a run without a wired notifier simply doesn't notify.
-    await _park_for_approval(
+    await park_for_approval(
         run, None, [], _FakeRequests(_APPROVALS), set(), notifications=None, conversation_id="c1"
     )
     assert run.status is RunStatus.awaiting_input
@@ -147,7 +147,7 @@ async def test_park_uses_the_conversation_title_when_one_exists(tmp_path):
     service = await _notification_service(tmp_path)
     run = _run(conversation_id=conv_id)
 
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],
@@ -170,7 +170,7 @@ async def test_park_falls_back_to_a_generic_label_without_a_title(tmp_path):
 
     # No store at all — title lookup degrades to the generic fallback rather than
     # failing the notify.
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],
@@ -193,7 +193,7 @@ async def test_a_raising_notifier_never_breaks_the_park():
 
     run = _run()
     # Must not raise — the parked run's own outcome must survive a notify failure.
-    await _park_for_approval(
+    await park_for_approval(
         run,
         None,
         [],

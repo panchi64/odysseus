@@ -18,6 +18,9 @@ venv/
 data/
 !services/hwfit/data/
 !services/hwfit/data/hf_models.json
+# …but `data/` is also how a frontend feature names its backend seam. Source is not
+# user data, and a silently untracked source directory is a trap worth one line here.
+!frontend/src/**/data/
 logs/
 *.log
 *.db

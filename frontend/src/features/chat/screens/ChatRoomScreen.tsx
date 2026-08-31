@@ -17,12 +17,9 @@ import {
   EmptyState,
   ErrorBoundary,
   Frames,
-  Input,
   Menu,
-  Modal,
   ResizeHandle,
   Reveal,
-  Stack,
   Text,
   Tooltip,
   TypewriterText,
@@ -43,7 +40,6 @@ import {
   forkConversation,
   mainChat,
   refreshSessions,
-  renameConversation,
   regenerateTitle,
   titleReveals,
   useChatSessions,
@@ -62,14 +58,13 @@ import { assembleTranscript } from "../blocks";
 import type { ChatMessage } from "../model";
 import {
   activeDownload,
-  clampWidth,
   downloadBlob,
-  panelWidth,
-  setAvailableWidth,
-  setPanelWidth,
   useViewerPersistence,
   type PanelKind,
 } from "../viewerPersistence";
+import { createPanelResize, observeAvailableWidth } from "../panelResize";
+import { createTranscriptFollow } from "../transcriptScroll";
+import { createRenameConversation } from "../components/RenameConversationModal";
 import { registerKeymap } from "~/lib/keymap";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
 import { MessageItem } from "../components/MessageItem";
@@ -141,78 +136,12 @@ export function ChatRoomScreen(): JSX.Element {
       ? "Choose a directory for this code session"
       : sendBlockedReason();
 
-  // Follow the stream: keep the transcript pinned to the bottom while the answer
-  // arrives, yield the moment the operator scrolls up to read back, and re-attach
-  // when they scroll near the bottom again. A floating control jumps back down
-  // once they've scrolled far up.
-  let scrollEl: HTMLDivElement | undefined;
-  const [pinned, setPinned] = createSignal(true);
-  const [showJump, setShowJump] = createSignal(false);
-  const scrollToBottom = () => {
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-  };
-  const jumpToLatest = () => {
-    setPinned(true);
-    setShowJump(false);
-    queueMicrotask(scrollToBottom);
-  };
-  const onScroll = () => {
-    if (!scrollEl) return;
-    const distance =
-      scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
-    setPinned(distance < 80); // within 80px counts as attached
-    setShowJump(distance > 240); // surface the jump control past ~one screenful
-  };
-  // Ticks on every fragment that grows the in-flight turn — answer + reasoning
-  // tokens, tool args/result/status, and host-command output — so the follow
-  // effect re-runs as content streams in, not only when a message is added.
-  const streamTick = createMemo(() => {
-    const last = stream.messages[stream.messages.length - 1];
-    if (!last) return stream.messages.length;
-    let n = stream.messages.length + (last.content?.length ?? 0);
-    for (const b of last.blocks ?? []) {
-      switch (b.kind) {
-        case "thinking":
-        case "text":
-          n += b.text.length;
-          break;
-        case "tool":
-          n +=
-            b.tool.status.length +
-            b.tool.args.length +
-            (b.tool.result?.length ?? 0) +
-            (b.tool.error?.length ?? 0);
-          break;
-        case "host_command":
-          n +=
-            b.command.phase.length +
-            (b.command.stdout?.length ?? 0) +
-            (b.command.stderr?.length ?? 0);
-          break;
-        default:
-          n += 1; // approval / view chips: a new block is enough
-      }
-    }
-    return n;
-  });
-  createEffect(() => {
-    streamTick();
-    // untrack(pinned): only new content drives a scroll, so re-attaching by
-    // scrolling down doesn't itself snap — the next fragment catches up.
-    if (untrack(pinned)) queueMicrotask(scrollToBottom);
-  });
-  // The operator initiating a turn (send / regenerate / edit) re-attaches the
-  // follow, so the new answer is tracked even if they had scrolled up.
-  let wasSending = false;
-  createEffect(() => {
-    const sending = stream.sending();
-    if (sending && !wasSending) jumpToLatest();
-    wasSending = sending;
-  });
-  // Switching threads re-attaches and jumps to the latest message.
-  createEffect(() => {
-    currentId();
-    jumpToLatest();
+  // Follow the stream: pinned to the bottom while the answer arrives, yielding the
+  // moment the operator scrolls up to read back (see `transcriptScroll.ts`).
+  const transcript = createTranscriptFollow({
+    messages: stream.messages,
+    sending: stream.sending,
+    conversationId: currentId,
   });
 
   // Header reflects the selected thread (messages resolve through the seam).
@@ -321,35 +250,10 @@ export function ChatRoomScreen(): JSX.Element {
   const openViewport = () => {
     if (!state().open) patch({ open: true });
   };
-  // The aside's width while dragging: updated per pointermove tick (in-memory
-  // only) so the drag never writes localStorage on every move; `setPanelWidth`
-  // (the persisting setter) is only called once the drag settles, on
-  // `onResizeEnd`, and the override is dropped so the slot follows the stored
-  // width again. An override rather than a seeded copy, so the panel swapping
-  // (a browser session opening or ending) re-reads that panel's own width
-  // instead of keeping the width the other one was dragged to.
-  //
-  // It carries the *kind* it started on, for two reasons. Null means no drag
-  // happened, so a bare click on the splitter can't persist a window-clamped read
-  // over a wider stored preference. And a browser session ending mid-drag must not
-  // land the browser's width on the View's key — where the width goes is decided
-  // when the drag starts, not when the pointer happens to come up.
-  const [drag, setDrag] = createSignal<{
-    kind: PanelKind;
-    width: number;
-  } | null>(null);
-  const liveWidth = () => drag()?.width ?? panelWidth(panelKind());
-  const onResize = (dx: number): void => {
-    const started = drag();
-    const kind = started?.kind ?? panelKind();
-    const from = started?.width ?? panelWidth(kind);
-    setDrag({ kind, width: clampWidth(from - dx, kind) });
-  };
-  const onResizeEnd = (): void => {
-    const settled = drag();
-    if (settled) setPanelWidth(settled.kind, settled.width);
-    setDrag(null);
-  };
+  // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
+  // live width is an override rather than a seeded copy, and why the drag remembers
+  // which panel it started on).
+  const { liveWidth, onResize, onResizeEnd } = createPanelResize(panelKind);
   // The newest version's key (the one collectViewItems flags as latest). Following
   // it (pinnedKey null) means freshly-minted versions keep advancing the view
   // instead of leaving it stranded on a now-stale pick.
@@ -412,24 +316,11 @@ export function ChatRoomScreen(): JSX.Element {
     }
   });
 
-  // How much width the conversation and the panel have to share. Measured off the row
-  // itself rather than the window, because the nav rail and the shell's padding are
-  // already spent by the time the layout gets here — clamping the panel against the
-  // window reserves a transcript that isn't there and lets the aside overflow the
-  // shell. A `ResizeObserver` rather than a `resize` listener, since the rail is
-  // drag-sizable and the window never fires for that.
+  // How much width the conversation and the panel have to share — measured off the row
+  // itself rather than the window (see `panelResize.ts`).
   let rowEl: HTMLDivElement | undefined;
   onMount(() => {
-    if (!rowEl) return;
-    // Seeded synchronously, before the observer's first async callback: the panel is
-    // laid out from this number, and starting at "unmeasured" would paint one frame at
-    // a width the row cannot hold.
-    setAvailableWidth(rowEl.clientWidth);
-    const observer = new ResizeObserver(([entry]) => {
-      setAvailableWidth(entry.contentRect.width);
-    });
-    observer.observe(rowEl);
-    onCleanup(() => observer.disconnect());
+    if (rowEl) observeAvailableWidth(rowEl);
   });
 
   // The panel renders in a desktop-only aside above `lg`; below it (or in
@@ -505,7 +396,7 @@ export function ChatRoomScreen(): JSX.Element {
       combo: "mod+shift+u",
       when: () => viewportShown(),
       run: () => {
-        if (panelHasFocus()) scrollEl?.focus();
+        if (panelHasFocus()) transcript.element()?.focus();
         else panelEl()?.focus();
       },
     },
@@ -528,7 +419,7 @@ export function ChatRoomScreen(): JSX.Element {
       when: () => panelHasFocus() && !otherDialogOpen(),
       run: () => {
         if (sheetOpen()) closeSheet();
-        else scrollEl?.focus();
+        else transcript.element()?.focus();
       },
     },
   ]);
@@ -545,26 +436,10 @@ export function ChatRoomScreen(): JSX.Element {
     untrack(() => attachments.clear());
   });
 
-  // Rename
-  const [renameOpen, setRenameOpen] = createSignal(false);
-  const [renameValue, setRenameValue] = createSignal("");
-  const openRename = () => {
-    setRenameValue(currentSummary()?.title ?? "");
-    setRenameOpen(true);
-  };
-  const submitRename = async () => {
-    const id = currentId();
-    if (!id) return;
-    const title = renameValue().trim();
-    if (!title) return;
-    setRenameOpen(false);
-    try {
-      await renameConversation(id, title);
-      toast.success("Conversation renamed");
-    } catch {
-      toast.error("Unable to rename the conversation.");
-    }
-  };
+  const rename = createRenameConversation({
+    conversationId: currentId,
+    currentTitle: () => currentSummary()?.title,
+  });
 
   const [retitling, setRetitling] = createSignal(false);
   // A "working" throbber sits on the title while the backend names the thread —
@@ -796,7 +671,7 @@ export function ChatRoomScreen(): JSX.Element {
                     label: "Rename conversation",
                     icon: "edit",
                     disabled: !currentId(),
-                    onSelect: openRename,
+                    onSelect: rename.open,
                   },
                   {
                     label: "Regenerate title",
@@ -833,9 +708,9 @@ export function ChatRoomScreen(): JSX.Element {
 
         <div class="relative flex min-h-0 flex-1 flex-col">
           <div
-            ref={scrollEl}
+            ref={transcript.ref}
             tabindex={-1}
-            onScroll={onScroll}
+            onScroll={transcript.onScroll}
             /* `px-4` is not cosmetic: a scroll container clips at its padding
                box, so this is the room the live rail's LED bloom spills into.
                Without it the glow is cut off a few pixels from the rule and
@@ -935,12 +810,12 @@ export function ChatRoomScreen(): JSX.Element {
               </ErrorBoundary>
             </div>
           </div>
-          <Show when={showJump()}>
+          <Show when={transcript.showJump()}>
             <Button
               variant="default"
               size="sm"
               leading="chevron-down"
-              onClick={jumpToLatest}
+              onClick={transcript.jumpToLatest}
               class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface"
             >
               Jump to latest
@@ -1128,32 +1003,7 @@ export function ChatRoomScreen(): JSX.Element {
         </ConstructionReveal>
       </Portal>
 
-      <Modal
-        open={renameOpen()}
-        onClose={() => setRenameOpen(false)}
-        title="Rename conversation"
-      >
-        <Stack gap={3}>
-          <Input
-            label="Title"
-            value={renameValue()}
-            onInput={(e) => setRenameValue(e.currentTarget.value)}
-            placeholder="Conversation title"
-          />
-          <div class="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setRenameOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              disabled={!renameValue().trim()}
-              onClick={submitRename}
-            >
-              Save
-            </Button>
-          </div>
-        </Stack>
-      </Modal>
+      {rename.element}
     </div>
   );
 }
