@@ -1,8 +1,10 @@
 """Pillar I — the RunRegistry: launch, track, bound, and cancel Runs.
 
-In-process: Runs are asyncio tasks tracked in a dict, gated by a global
+In-process: Runs are asyncio tasks tracked in a dict, gated by a **per-lane**
 concurrency semaphore (bursts queue at the gate — the ``queued`` state, which
-also prevents overlapping overload). The registry owns the lifecycle mechanics —
+also prevents overlapping overload). Which lane a run waits in follows from its
+``kind`` — see ``runs/lanes.py`` for why the operator's own turn does not share a
+pool with unattended work. The registry owns the lifecycle mechanics —
 queued→running, the terminal-state mapping, the wall-clock + inactivity bounds,
 and cancellation — so every orchestrator inherits them for free.
 """
@@ -18,6 +20,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from .events import LimitNotice, RunEnded, RunError, RunMetrics, RunStarted, now_utc
+from .lanes import LaneGate, LaneLimits
 from .run import Orchestrator, Run, RunStatus
 from .stream import RunStream
 
@@ -105,14 +108,14 @@ class RunRegistry:
     def __init__(
         self,
         *,
-        max_concurrency: int = 8,
+        lanes: LaneLimits | None = None,
         wall_clock_timeout_s: float | None = None,
         inactivity_timeout_s: float | None = None,
         max_retained: int = 200,
         on_terminal: Callable[[Run], None] | None = None,
     ) -> None:
         self._runs: dict[str, Run] = {}
-        self._sem = asyncio.Semaphore(max_concurrency)
+        self._lanes = LaneGate(lanes)
         self._wall_clock = wall_clock_timeout_s
         self._inactivity = inactivity_timeout_s
         self._max_retained = max_retained
@@ -329,8 +332,9 @@ class RunRegistry:
         resuming: bool = False,
     ) -> None:
         try:
-            # Bursts wait here while ``queued`` — bounded concurrency.
-            async with self._sem:
+            # Bursts wait here while ``queued`` — bounded concurrency, in this run's own
+            # lane, so a saturated lane never holds up work in another one.
+            async with self._lanes.slot(run.kind):
                 run.status = RunStatus.running
                 run.touch()
                 if not resuming:

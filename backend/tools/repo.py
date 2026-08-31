@@ -9,7 +9,9 @@ model-facing text:
   the capability is constructed once at app assembly and the workspace is per-run; a
   provider re-resolves each turn and can therefore read the run's own worktree. The
   content is static per project, so it stays cache-stable at the prompt head even though
-  it is resolved dynamically.
+  it is resolved dynamically. The loading itself is ours rather than the capability's
+  (`repo_instructions.py`) for one reason: it has to be *budgeted*, and the capability
+  reads whatever is on disk.
 - **the inventory tool** — reports where the repo keeps its coding-assistant assets
   (`.claude/`, `.agents/`, `.codex/` and their `skills/`, `agents/`, `settings.json`). It
   locates them; reading them is the file tools' job. Rebound per run like every other
@@ -31,6 +33,7 @@ from services.projects.worktree import WorktreeBusyError
 
 from .deps import RunDeps
 from .rebound import WorkspaceToolset
+from .repo_instructions import repo_instruction_text
 from .workspace import run_workspace
 
 #: The tool's own name inside the toolset; namespaced to `repo_inventory_agent_context`.
@@ -47,6 +50,11 @@ def _capability(root: Path) -> RepoContext[RunDeps]:
         # Off: it hooks the file tools' results to surface a nested directory's
         # instruction file, and those results ride into context untrimmed here.
         nested_traversal=False,
+        # Off because it is *ours*: the capability would load the instruction files whole,
+        # and the prompt head is the one place a file of unbounded size must not land.
+        # `repo_instructions.py` does the same load under a byte budget; what remains of
+        # the capability's own brief is the inventory tool's one-line hint.
+        autoload_instructions=False,
     )
 
 
@@ -60,7 +68,15 @@ async def repo_instructions(ctx: RunContext[RunDeps]) -> str:
         return ""
     if workspace is None or workspace.kind != "worktree":
         return ""
-    return _capability(workspace.root).get_instructions() or ""
+    return _brief(workspace.root)
+
+
+def _brief(root: Path) -> str:
+    """The budgeted instruction files, then the capability's own inventory hint — the
+    same order and the same joiner its `get_instructions` uses, so moving the loading out
+    from under it changed what is *bounded*, not what the model reads."""
+    parts = (repo_instruction_text(root), _capability(root).get_instructions() or "")
+    return "\n\n".join(part for part in parts if part)
 
 
 def _toolset_for(root: Path) -> AbstractToolset[RunDeps]:

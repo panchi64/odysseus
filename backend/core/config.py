@@ -68,7 +68,16 @@ class Settings(BaseSettings):
     unlock_passphrase: str | None = None
 
     # Run substrate bounds. Timeouts are seconds; None disables.
+    #
+    # Concurrency is per **lane** (`runs/lanes.py`), never one shared pool: the operator's
+    # own turn must not queue behind a scheduled task or behind threads the agent opened
+    # for itself. `run_max_concurrency` keeps its name and its number for the lane the
+    # operator is actually sitting in front of; the two unattended lanes are narrower on
+    # purpose, because nobody is waiting on them and their failure mode is volume. The
+    # host's real ceiling is the sum, which is the honest way to state what it always was.
     run_max_concurrency: int = 8
+    run_background_concurrency: int = 2
+    run_linked_concurrency: int = 3
     # Off by default: a turn is already bounded by `agent_request_limit` (it cannot loop
     # forever), so a wall clock mostly fires on a run that is legitimately slow — a local
     # model, a long sandboxed tool call — which is precisely the run we want to let
@@ -113,6 +122,12 @@ class Settings(BaseSettings):
     # unused before it is killed; `reap_interval` is how often the reaper sweeps.
     sandbox_session_idle_ttl_s: float = 1800.0
     sandbox_session_reap_interval_s: float = 60.0
+    # And how many conversations may hold one at once. The TTL bounds a session in time;
+    # without a count, threads worked on in rotation all stay inside the window and every
+    # one of them keeps a container. Past the cap, the least-recently-used idle session is
+    # sealed to make room — the same reap the TTL performs, triggered by pressure instead
+    # of by the clock, and just as invisible to the conversation it hits.
+    sandbox_max_sessions: int = 8
     # A small pool of idle, conversation-unattached containers pre-created off
     # the critical path (after boot image warm-up) so a conversation's first
     # code_execute claims one instead of paying the container-create round

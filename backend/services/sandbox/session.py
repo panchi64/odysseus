@@ -34,6 +34,7 @@ from collections.abc import Iterable
 from fnmatch import fnmatch
 from pathlib import Path
 
+from core.concurrency import gather_bounded
 from core.vault import Vault
 
 from .base import SandboxError, SandboxResult, SandboxSpec, contained_path
@@ -56,10 +57,12 @@ logger = logging.getLogger(__name__)
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
-# How many stale sessions a sweep will seal concurrently (tar+gzip+AEAD is CPU/IO
-# work off-thread) — bounded so a mass reap doesn't itself thrash the host, but
-# no longer serial, so unrelated conversations aren't stalled behind one another.
-_SWEEP_SEAL_CONCURRENCY = 3
+# How many reaped sessions are sealed concurrently (tar+gzip+AEAD is CPU/IO work
+# off-thread) — bounded so a mass reap doesn't itself thrash the host, but no longer
+# serial, so unrelated conversations aren't stalled behind one another. Shared by both
+# reasons a session is reaped: the idle sweep, and a new session displacing an old one
+# at the live-session cap.
+_SEAL_CONCURRENCY = 3
 
 # How many times one `run` will bring the container up and exec. Two: the first attempt,
 # and one rebuild-and-retry after a fault in the runtime itself. A third would be waiting
@@ -538,8 +541,14 @@ class _Spare:
         self.created = time.monotonic()
 
 
+#: A session taken out of the live map and awaiting its seal, with the event that
+#: releases whoever is waiting on *that* key's teardown. See ``_detach``.
+type _Detached = tuple[str, SandboxSession, asyncio.Event]
+
+
 class SandboxSessionManager:
-    """Maps a conversation to its live :class:`SandboxSession`, reaping idle ones.
+    """Maps a conversation to its live :class:`SandboxSession`, reaping idle ones —
+    idle for too long, or least-recently-used once there are too many.
 
     Built only when a container runtime is present (fail-closed detection lives in
     ``detect``), so its existence means code execution is available."""
@@ -563,6 +572,7 @@ class SandboxSessionManager:
         preview_startup_timeout_s: float = 20.0,
         spare_enabled: bool = True,
         spare_count: int = 1,
+        max_sessions: int = 8,
     ) -> None:
         self._backend = backend
         self._vault = vault
@@ -574,6 +584,11 @@ class SandboxSessionManager:
         self._preview_startup_timeout_s = preview_startup_timeout_s
         self._spare_enabled = spare_enabled
         self._spare_count = spare_count
+        # How many conversations may hold a live container at once. The idle TTL bounds
+        # a session in *time*; this bounds the set in *count*, which the TTL alone never
+        # does — a dozen threads worked on in rotation each stay inside the window and
+        # nothing is ever reaped. See `_over_cap`.
+        self._max_sessions = max(1, max_sessions)
         self._sessions: dict[str, SandboxSession] = {}
         # token → safe session key, so the proxy route resolves a preview in O(1).
         self._previews: dict[str, str] = {}
@@ -615,7 +630,15 @@ class SandboxSessionManager:
         claiming a pre-warmed spare (sandbox-06) if one is available. If this key
         is mid-teardown from a concurrent sweep/purge, waits for THAT teardown
         specifically rather than racing a second session onto the same workspace
-        path; every other key proceeds immediately (sandbox-02)."""
+        path; every other key proceeds immediately (sandbox-02).
+
+        Admitting a new session is also where the **cap** is applied: N live conversations
+        is otherwise N containers, and the idle TTL alone only bounds that in time, never
+        in count — thirty minutes of steady work across a dozen threads reaps nothing. So
+        a new arrival reaps the least-recently-used idle sessions back down to the ceiling
+        before it returns, which makes the ceiling a policy instead of an accident. Nothing
+        is lost by the reap: a reaped session's files are sealed and restored the next time
+        that conversation runs code, exactly as after an idle reap."""
         safe = _safe_key(key)
         while True:
             async with self._lock:
@@ -631,8 +654,86 @@ class SandboxSessionManager:
                     session.touch()
                     if spare is not None:
                         self._kick_replenish()
-                    return session
+                    evicted = self._detach(self._over_cap(keep=safe))
+                    break
             await other.wait()
+        # Outside the lock, and awaited rather than backgrounded: the caller is about to
+        # start a container, so returning before the ones it displaced are actually gone
+        # would leave the host over the cap at exactly the moment the cap matters.
+        await self._seal_detached(evicted)
+        return session
+
+    def _over_cap(self, *, keep: str) -> list[str]:
+        """The session keys to reap so the live set fits under the cap, longest-idle
+        first. Called under the manager lock.
+
+        A busy session is never a candidate — killing a container mid-exec would fail the
+        tool call the operator is watching, and the cap is a resource ceiling, not a
+        deadline. If everything live is busy the set simply runs over, and the ordinary
+        idle sweep collects the overflow once the work finishes; the same choice
+        ``ConversationStore._trim_cache`` makes about pinned trees, for the same reason.
+
+        Reaping also *seals*, so it needs the vault key. With the vault locked there is
+        nothing to do but run over the cap: tearing a container down without sealing would
+        strand the agent's plaintext files on disk, which is a worse answer than a
+        container too many."""
+        if not self._vault.is_unlocked:
+            return []
+        overflow = len(self._sessions) - self._max_sessions
+        if overflow <= 0:
+            return []
+        now = time.monotonic()
+        idle = sorted(
+            (
+                (session.idle_seconds(now), key)
+                for key, session in self._sessions.items()
+                if key != keep and not session.is_busy
+            ),
+            reverse=True,
+        )
+        return [key for _, key in idle[:overflow]]
+
+    def _detach(self, keys: Iterable[str]) -> list[_Detached]:
+        """Take sessions out of the live map, leaving a per-key teardown tombstone
+        behind. Called under the manager lock, by both reasons a session is reaped: the
+        idle sweep and the live-session cap.
+
+        Detaching and sealing are separate halves on purpose. The map mutation has to be
+        atomic against a concurrent ``acquire()``/``purge()`` — otherwise a second session
+        is minted onto a workspace mid-teardown — while the seal itself is slow and must
+        not hold the lock for the sum of every teardown (sandbox-02). The returned events
+        are what the *same* key's acquire/purge waits on; every other key proceeds."""
+        detached: list[_Detached] = []
+        for key in keys:
+            session = self._sessions.pop(key, None)
+            if session is None:
+                continue
+            self._mark_preview_stopped(session)
+            self._drop_preview_tokens(key)
+            event = asyncio.Event()
+            self._tearing_down[key] = event
+            detached.append((key, session, event))
+        return detached
+
+    async def _seal_detached(self, detached: list[_Detached]) -> None:
+        """Seal and tear down detached sessions off the manager lock, a few at a time,
+        then release each one's tombstone. One failed teardown must not strand the others
+        — or, worse, leave a tombstone set forever and hang every later acquire for that
+        conversation — so each leg isolates its own failure and releases in a ``finally``."""
+        if not detached:
+            return
+
+        async def seal(key: str, session: SandboxSession, event: asyncio.Event) -> None:
+            try:
+                await session.shutdown()
+            except Exception:  # noqa: BLE001 — one bad teardown must not stall the rest
+                pass
+            finally:
+                async with self._lock:
+                    self._tearing_down.pop(key, None)
+                event.set()
+
+        await gather_bounded([seal(*item) for item in detached], _SEAL_CONCURRENCY)
 
     def _claim_spare(self, safe: str) -> _Spare | None:
         """Pop a spare for this key, but only for a **truly cold** conversation —
@@ -916,33 +1017,12 @@ class SandboxSessionManager:
             # acquire()/start_preview()/purge() for the sum of every seal (sandbox-02).
             # A per-key tombstone in `_tearing_down` lets that *same* key's acquire/
             # purge wait for its own teardown specifically, never anyone else's.
-            detached: list[tuple[str, SandboxSession, asyncio.Event]] = []
-            for key in stale:
-                session = self._sessions.pop(key)
-                self._mark_preview_stopped(session)
-                self._drop_preview_tokens(key)
-                event = asyncio.Event()
-                self._tearing_down[key] = event
-                detached.append((key, session, event))
+            detached = self._detach(stale)
             stale_spares = [s for s in self._spares if now - s.created >= self._idle_ttl]
             for spare in stale_spares:
                 self._spares.remove(spare)
 
-        if detached:
-            sem = asyncio.Semaphore(_SWEEP_SEAL_CONCURRENCY)
-
-            async def _seal(key: str, session: SandboxSession, event: asyncio.Event) -> None:
-                try:
-                    async with sem:
-                        await session.shutdown()
-                except Exception:  # noqa: BLE001 — one bad teardown must not stall the reaper
-                    pass
-                finally:
-                    async with self._lock:
-                        self._tearing_down.pop(key, None)
-                    event.set()
-
-            await asyncio.gather(*(_seal(key, session, event) for key, session, event in detached))
+        await self._seal_detached(detached)
 
         for spare in stale_spares:
             await force_remove_container(spare.runtime, spare.container)

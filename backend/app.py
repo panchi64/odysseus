@@ -43,7 +43,7 @@ from routes import (
     tokens,
     tools,
 )
-from runs import RunRegistry
+from runs import LaneLimits, RunRegistry
 from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.conversations import ConversationStore
@@ -155,7 +155,11 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     app.state.run_terminal_tasks = run_terminal.tasks
 
     app.state.runs = RunRegistry(
-        max_concurrency=settings.run_max_concurrency,
+        lanes=LaneLimits(
+            interactive=settings.run_max_concurrency,
+            background=settings.run_background_concurrency,
+            linked=settings.run_linked_concurrency,
+        ),
         wall_clock_timeout_s=settings.run_wall_clock_timeout_s,
         inactivity_timeout_s=settings.run_inactivity_timeout_s,
         on_terminal=run_terminal,
@@ -255,6 +259,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
             preview_startup_timeout_s=settings.sandbox_preview_startup_timeout_s,
             spare_enabled=settings.sandbox_spare_enabled,
             spare_count=settings.sandbox_spare_count,
+            max_sessions=settings.sandbox_max_sessions,
         )
         if backend is not None
         else None

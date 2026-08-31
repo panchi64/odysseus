@@ -81,6 +81,11 @@ logger = logging.getLogger(__name__)
 # costs one rehydrate from the database, not an error.
 _DEFAULT_MAX_CACHED_CONVERSATIONS = 64
 
+# How many owner memo rows are kept per cached tree. An owner row is two short strings
+# against a whole decrypted conversation, so the memo can outlive the trees it was
+# populated alongside by a wide margin and still cost nothing worth counting.
+_OWNER_MEMO_MULTIPLE = 8
+
 _MESSAGE = TypeAdapter(ModelMessage)
 _TEXT_PARTS = {"TextPart", "UserPromptPart", "SystemPromptPart"}
 
@@ -736,8 +741,14 @@ class ConversationStore:
         # nothing. Never evict one of these; the count drains to zero as the writes land.
         self._pending: Counter[str] = Counter()
         # conversation id → owner. Immutable per conversation, so it is memoized rather
-        # than re-read on the write-behind path once per persisted turn.
-        self._owners: dict[str, str] = {}
+        # than re-read on the write-behind path once per persisted turn. Bounded like the
+        # tree cache and for the same reason — a memo that only ever grows is a leak with
+        # a nicer name, and this one is written from the drainer, which touches every
+        # conversation the process ever persists a turn for. Entries are two short strings,
+        # so its cap is a multiple of the tree cap rather than the same number: the point
+        # is a ceiling, and evicting a row that a later turn re-reads costs one query.
+        self._owners: OrderedDict[str, str] = OrderedDict()
+        self._max_memoized_owners = max_cached_conversations * _OWNER_MEMO_MULTIPLE
         self._locks: dict[str, asyncio.Lock] = {}
         self._worker: WriteBehindWorker[_PersistJob] = WriteBehindWorker(
             self._persist,
@@ -834,7 +845,7 @@ class ConversationStore:
 
         conversation_id = await in_session(self._engine, work)
         self._cache_put(conversation_id, _Tree())
-        self._owners[conversation_id] = owner_id
+        self._remember_owner(conversation_id, owner_id)
         return conversation_id
 
     async def exists(self, conversation_id: str, owner_id: str) -> bool:
@@ -1815,6 +1826,7 @@ class ConversationStore:
         purely to re-read an immutable column."""
         cached = self._owners.get(conversation_id)
         if cached is not None:
+            self._owners.move_to_end(conversation_id)
             return cached
 
         def work(session: Session) -> str | None:
@@ -1823,8 +1835,16 @@ class ConversationStore:
 
         owner_id = await in_session(self._engine, work)
         if owner_id is not None:
-            self._owners[conversation_id] = owner_id
+            self._remember_owner(conversation_id, owner_id)
         return owner_id
+
+    def _remember_owner(self, conversation_id: str, owner_id: str) -> None:
+        """Memoize an owner as the most-recently-used row, dropping the oldest past the
+        cap. Pure cache: `_owner_of` re-reads the column on a miss."""
+        self._owners[conversation_id] = owner_id
+        self._owners.move_to_end(conversation_id)
+        while len(self._owners) > self._max_memoized_owners:
+            self._owners.popitem(last=False)
 
     def _submit(self, job: _PersistJob) -> None:
         """Queue durable work and pin its conversation in the cache until it lands.

@@ -150,6 +150,10 @@ class ConversationResearchThreads(ResearchThreads):
             context_thresholds=await get_context_thresholds(self._settings, owner_id),
             auto_compact=await resolve_auto_compact_policy(self._settings, owner_id),
             owner_id=owner_id,
+            # A thread the agent opened for itself: foreground for the model, background
+            # for the operator. Its own lane (`runs/lanes.py`) so a handful of them can
+            # neither starve the operator's turn nor be starved by the scheduler.
+            kind="linked",
         )
         return StartedResearch(
             conversation_id=conversation_id,

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from runs import ConversationBusyError, RunRegistry, RunStatus
+from runs import ConversationBusyError, LaneLimits, RunRegistry, RunStatus
 from runs.events import AnswerDelta
 
 
@@ -182,7 +182,8 @@ async def test_keepalive_does_not_hide_a_failure_raised_inside_it():
 
 
 async def test_concurrency_limit_queues_bursts():
-    reg = RunRegistry(max_concurrency=1)
+    # Both runs are the same kind, so they share one lane and the second waits.
+    reg = RunRegistry(lanes=LaneLimits(background=1))
     started1, release1 = asyncio.Event(), asyncio.Event()
     started2, release2 = asyncio.Event(), asyncio.Event()
 

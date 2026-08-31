@@ -386,6 +386,62 @@ async def test_reaper_spares_fresh_and_busy_sessions(tmp_path):
         session._lock.release()
 
 
+# --- the live-session cap: a ceiling in count, not only in time --------------
+async def test_a_new_session_displaces_the_least_recently_used_one_at_the_cap(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=2)
+    first = await manager.acquire("conv-a")
+    second = await manager.acquire("conv-b")
+    second.workspace.mkdir(parents=True, exist_ok=True)
+    (second.workspace / "notes.txt").write_text("keep me")
+    await asyncio.sleep(0.01)
+    first.touch()  # conv-b is now the least recently used
+
+    third = await manager.acquire("conv-c")
+
+    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-c")}
+    assert third is manager._sessions[_safe_key("conv-c")]
+    # Displaced, not discarded: sealed exactly as an idle reap seals, and the files come
+    # back the next time that conversation runs code.
+    assert second.sealed.exists()
+    assert not second.workspace.exists()
+    revived = await manager.acquire("conv-b")
+    revived._ensure_workspace()
+    assert (revived.workspace / "notes.txt").read_text() == "keep me"
+
+
+async def test_the_cap_never_displaces_a_session_with_a_call_in_flight(tmp_path):
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    busy = await manager.acquire("conv-a")
+    await busy._lock.acquire()  # simulate a call in flight
+    try:
+        await manager.acquire("conv-b")
+        # Over the cap rather than failing the tool call the operator is watching; the
+        # idle sweep collects the overflow once the work finishes.
+        assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    finally:
+        busy._lock.release()
+
+
+async def test_the_cap_defers_while_the_vault_is_locked(tmp_path):
+    vault = Vault(tmp_path / "k.json")
+    await vault.setup("pw")
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    first = await manager.acquire("conv-a")
+    first.workspace.mkdir(parents=True, exist_ok=True)
+    (first.workspace / "f.txt").write_text("data")
+    vault.lock()
+
+    await manager.acquire("conv-b")
+
+    # Reaping seals, sealing needs the key — a container too many beats stranding the
+    # agent's plaintext files on disk.
+    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert first.workspace.exists()
+    assert not first.sealed.exists()
+
+
 # --- a sweep's sealing must not stall unrelated conversations (sandbox-02) ---
 async def test_sweep_does_not_block_acquire_for_an_unrelated_conversation(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)

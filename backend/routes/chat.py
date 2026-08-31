@@ -34,7 +34,13 @@ from core.container import ServiceContainer
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from routes import deps
 from routes.deps import OPERATOR_ID
-from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds, ConversationBusyError, RunRegistry
+from runs import (
+    CHAT_TURN_KINDS,
+    DEFAULT_CONTEXT_THRESHOLDS,
+    ContextThresholds,
+    ConversationBusyError,
+    RunRegistry,
+)
 from runs.registry import _UNSET
 from services.conversations import ConversationBinding, ConversationStore
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
@@ -278,6 +284,7 @@ def compose_turn(
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS,
     inactivity_timeout_s: float | None | object = _UNSET,
     wall_clock_timeout_s: float | None | object = _UNSET,
+    kind: str = "chat",
 ) -> ChatCreated:
     """Build the chat orchestrator from pre-resolved models/capabilities and submit
     the Run — the one composition path a live chat turn (`_submit_turn`, resolving
@@ -290,7 +297,13 @@ def compose_turn(
     is a regenerate (re-run from a history that already ends in the user request).
     ``ephemeral`` threads (e.g. the compare panes) are hidden from the listing and
     show no title, so auto-titling them is invisible work that only holds the run
-    open after the answer — skip it by passing no title model."""
+    open after the answer — skip it by passing no title model.
+
+    ``kind`` says who asked for the turn — the operator (``chat``, the default), the
+    scheduler (``task``), or the agent itself (``linked``). Every one of them composes the
+    identical orchestrator; the kind decides only which concurrency lane the run waits in
+    (``runs/lanes.py``), so unattended work can never hold up the turn someone is sitting
+    in front of."""
     resolved, utility_model, background_settings, context_window, vision = models
     orchestrator = build_chat_orchestrator(
         prompt,
@@ -325,7 +338,7 @@ def compose_turn(
     )
     try:
         run = registry.submit(
-            kind="chat",
+            kind=kind,
             owner_id=owner_id,
             orchestrator=orchestrator,
             conversation_id=conversation_id,
@@ -447,11 +460,17 @@ def _enqueue_steering(
     with no run registered yet, the run isn't a chat turn, or the send carries
     attachments — steering is text-only). Synchronous end to end: no ``await``
     between finding the run and enqueueing, so the run can't reach terminal (or
-    drain) in between."""
+    drain) in between.
+
+    "Is a chat turn" is membership in the composed kinds, not equality with ``chat``: a
+    scheduled task's run and a research thread the agent opened both drive a conversation
+    the operator can open and both drain the queued-message inbox, so both take steering.
+    Only a run some other orchestrator submitted — which would never read the queue — is
+    refused."""
     if body.attachment_ids:
         return None
     run = registry.active_run_for(conversation_id, OPERATOR_ID)
-    if run is None or run.kind != "chat":
+    if run is None or run.kind not in CHAT_TURN_KINDS:
         return None
     message = run.enqueue_message(body.prompt)
     return ChatCreated(

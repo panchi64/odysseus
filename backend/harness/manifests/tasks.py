@@ -136,6 +136,9 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             # does carry history.
             auto_compact=await resolve_auto_compact_policy(settings_store, view.owner_id),
             owner_id=view.owner_id,
+            # Unattended by definition, so it queues in the background lane and can never
+            # hold a slot the operator's own next turn is waiting for (`runs/lanes.py`).
+            kind="task",
         )
         # Registered before the very first `await` below — the newly submitted Run's
         # task hasn't had a chance to run yet (`RunRegistry.submit` only schedules

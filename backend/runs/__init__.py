@@ -58,6 +58,7 @@ from .events import (
     ViewLiveStopped,
     ViewSnapshot,
 )
+from .lanes import CHAT_TURN_KINDS, LANE_BY_KIND, LaneLimits, lane_for
 from .overhead import BriefBlock, ToolGroupOverhead, TurnOverhead
 from .registry import ConversationBusyError, RunRegistry, RunTimeout
 from .run import Orchestrator, QueuedMessage, Run, RunStatus
@@ -72,6 +73,10 @@ __all__ = [
     "EventBody",
     "RunRegistry",
     "RunTimeout",
+    "LaneLimits",
+    "LANE_BY_KIND",
+    "CHAT_TURN_KINDS",
+    "lane_for",
     "ConversationBusyError",
     "Run",
     "RunStatus",
