@@ -1,66 +1,57 @@
 /**
- * The streaming controller — one thread's live state, and the run driving it.
+ * The thread controller — one conversation's live state, and the ops the room drives it
+ * with.
  *
- * Everything here is about a *run*: opening its SSE reader, keeping the optimistic
- * transcript in step with what the backend actually accepted, and surviving a dropped
- * transport. What each event *means* is `fold.ts`'s job, what the operator can do to an
- * already-recorded turn is `branching.ts`'s, and reconciling with the persisted tree
- * once a run settles is `resume.ts`'s; keeping those out leaves this file with one
- * question — is a turn in flight, and where is it up to.
+ * What is left here after the split is the *assembly*: the signals a thread's UI reads,
+ * the ops that start and stop a turn, and the wiring that lets six single-purpose modules
+ * behave as one object. Each of those modules answers a question this file deliberately no
+ * longer does — driving a run's transport (`drive.ts`), what a frame changes on screen
+ * (`fold.ts`), a message sent into a run already going (`steering.ts`), deciding the calls
+ * a run parked on (`approvals.ts`), reconciling with what was persisted (`resume.ts`),
+ * acting on a turn already recorded (`branching.ts`), and being pointed at a different
+ * thread (`binding.ts`).
  *
  * **The optimistic store is authoritative for the thread it is on.** A turn's messages are
- * persisted only when it finishes, so a refetch mid-stream reads an empty conversation. The
- * reseed effect therefore refuses to clobber a live thread, and `adoptServerMeta` takes
- * only ids and version metadata from the backend rather than reseating wholesale — except
- * where the histories genuinely disagree in length, which means a turn produced nothing to
- * persist.
+ * persisted only when it finishes, so a refetch mid-stream reads an empty conversation.
+ * That rule is why `binding.ts` refuses to re-seed a live thread and why `resume.ts` adopts
+ * ids rather than reseating wholesale.
  *
- * **Detached is not ended.** When the transport exhausts its reconnect budget the run may
- * still be alive server-side. That state keeps `activeRunId` and `sending` reporting it as
- * in flight, so the composer stays guarded and the visibility/online listeners still have
- * something to reattach to; only a cancel, a supersede, or a successful reattach settles it.
- *
- * **A generation counter guards every teardown.** A reattach or a thread switch supersedes
- * the drive in flight; that drive's `finally` must not clear state the new one now owns.
+ * **The ops form a cycle, and it is a real one.** A run's teardown reconciles the thread,
+ * reconciling can discover a live run and start a drive, and a drive hands undelivered
+ * steering text back. Two of the wirings below therefore reach the drive at *call* time
+ * rather than holding its handle, which is what makes the cycle two named edges instead of
+ * one closure in which every part can reach every other.
  */
 
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { api, isApiError } from "~/lib/api";
 import { effectiveSelection, type ModelSelection } from "~/lib/stores/models";
-import {
-  StreamDetachedError,
-  streamRun,
-  type PlanItem,
-  type RunEvent,
-} from "~/lib/stream";
+import type { PlanItem } from "~/lib/stream";
 import type { SessionMode } from "~/lib/modes";
 import { toast } from "~/ui";
 import { CONTINUE_PROMPT } from "../data/constants";
-import {
-  bumpGrantsRevision,
-  fetchBrowserSession,
-  fetchPlan,
-} from "../data/conversations";
 import type { ChatCreatedDTO, ConversationDetailDTO } from "../data/wire";
 import type {
   ActiveRun,
-  ApprovalDecision,
   ChatMessage,
   ContextUsage,
   ConversationStats,
-  HostCommandBlock,
   PermissionLevel,
   ViewSnapshotRef,
 } from "../model";
+import { createApprovalOps } from "./approvals";
+import { createThreadBinding } from "./binding";
 import {
   createBranchingOps,
   reseatFromDetail,
   type TranscriptStore,
 } from "./branching";
+import { createRunDrive } from "./drive";
 import { createFolder, type FoldState } from "./fold";
 import { createPatchById, nextId } from "./patch";
 import { createResumeOps } from "./resume";
+import { createSteeringOps } from "./steering";
 
 export interface ChatStreamOptions {
   /** Fired once when a brand-new conversation receives its backend id. */
@@ -117,40 +108,9 @@ export function createChatStream(
   const [browserStream, setBrowserStream] = createSignal<string | null>(null);
   const [sending, setSending] = createSignal(false);
   // True when this room's last run ended in `run.error`; cleared when the next run
-  // starts (in `driveRun`). The main room mirrors it to the global `runErrored` echo
+  // starts (in the drive). The main room mirrors it to the global `runErrored` echo
   // so the favicon can flag a failed run — compare panes keep it local.
   const [errored, setErrored] = createSignal(false);
-  // True when the live run's SSE transport exhausted its reconnect budget —
-  // the run may still be alive server-side, but this client lost its
-  // connection to it. Cleared when the next run/reattach starts (`driveRun`).
-  // Mirrors `errored`'s pattern, but distinct: a detached turn isn't "over",
-  // so the composer and the resume()/reattach paths must keep treating it as
-  // in-flight rather than settled.
-  const [detached, setDetached] = createSignal(false);
-  // True while the room has a live, undecided approval — folded by `approval.required`
-  // (both the generic approval card and the host-command terminal's pending phase) and
-  // gated on `sending()` so it clears the moment the run stops being in flight, whether
-  // by resolution (the approval/host-command block is filtered/re-phased out of
-  // `messages` on submit — see `resolveApproval`/`resolveHostCommands`), a cancel, or the
-  // run ending. A derived memo rather than its own set/clear pair: the blocks are already
-  // the single source of truth for "is something still pending", so this only reads them.
-  //
-  // Scoped to the turn in flight, and not out of tidiness: a park is by definition the
-  // *live* turn waiting, since a turn cannot end with a call still undecided — so every
-  // earlier turn in the transcript is a message × block walk that can only ever answer
-  // no, re-run on every block the run pushes. `detached` counts as live for the same
-  // reason `sending` stays true through one: the run may still be parked server-side.
-  const awaitingApproval = createMemo(() => {
-    if (!sending()) return false;
-    const live = messages.findLast((m) => m.streaming || m.detached);
-    return (
-      live?.blocks?.some(
-        (b) =>
-          (b.kind === "approval" && !b.approval.stale) ||
-          (b.kind === "host_command" && b.command.phase === "pending"),
-      ) ?? false
-    );
-  });
   // A brand-new thread is auto-named during its first turn; this drives a "working"
   // throbber on the title from that turn's start until the name lands
   // (`conversation.titled`, which the reveal then animates) or the turn ends without
@@ -171,20 +131,9 @@ export function createChatStream(
   // so pinning it to the turn that happened to create it would strand it. `plan.updated`
   // carries the whole list, so applying an event is a replace, never a merge.
   const [plan, setPlan] = createSignal<PlanItem[]>([]);
-  // True while a reattach (replay from a known run) is folding in — drives the
-  // "RESYNCING…" affordance, distinct from a fresh turn's `sending`.
-  const [reattaching, setReattaching] = createSignal(false);
-  // Text of steering messages that were still queued when their run reached
-  // terminal (cancel/error/timeout) — never delivered to the model. The screen
-  // hands it back to the composer as a prefill so the operator's words aren't
-  // lost; cleared once consumed.
-  const [undeliveredDraft, setUndeliveredDraft] = createSignal<string | null>(
-    null,
-  );
-  let controller: AbortController | null = null;
-  // The run-scoped bookkeeping the fold advances and this controller resets: the
-  // high-water seq, the bubble events land on, the plan's revision counter, and the
-  // run currently streaming. One object, shared by reference with the folder.
+  // The run-scoped bookkeeping the fold advances and the drive resets: the high-water
+  // seq, the bubble events land on, the plan's revision counter, and the run currently
+  // streaming. One object, shared by reference with the folder.
   const foldState: FoldState = {
     maxFoldedSeq: 0,
     foldTarget: null,
@@ -194,11 +143,6 @@ export function createChatStream(
   // The last run a cold-read reattach was kicked off for, so the load effect fires
   // at most once per run even if the session resource re-emits the same value.
   let reattachedRunId: string | null = null;
-  // Bumped whenever a drive is superseded (reattach aborts the prior reader, or a
-  // thread switch tears it down). A driveRun whose generation is stale skips its
-  // teardown so an aborted stalled reader can't clear the state — or refetch the
-  // wrong thread — out from under the drive that replaced it.
-  let driveGen = 0;
   // Set when the operator cancels the in-flight run, so the just-ended drive's
   // `adoptServerMeta` skips its reseat: a cancelled turn persists nothing, so the
   // backend history is *shorter* than the optimistic store, and reseating to it
@@ -227,370 +171,96 @@ export function createChatStream(
     setErrored,
   });
 
-  // Re-seed when the conversation changes. Guard: don't wipe a live thread while
-  // its server history is still loading (the just-created thread re-loads with
-  // identical content, so skipping avoids an empty flash).
-  const INIT = Symbol("init");
-  let lastKey: string | null | typeof INIT = INIT;
-  let lastSource: ChatMessage[] | undefined | typeof INIT = INIT;
-  createEffect(() => {
-    const k = key();
-    const source = initial();
-    if (k === lastKey && source === lastSource) return;
-    // Record the transition before any early return below, or the bookkeeping
-    // goes stale: skipping these on the authoritative-store guard left `lastKey`
-    // pinned at its pre-adoption value, so a later transition back to that value
-    // (e.g. compare's teardown reverting the key to null) read as "no change"
-    // and the transcript never cleared.
-    lastKey = k;
-    lastSource = source;
-    // The live store is authoritative for the thread we're already on: never let
-    // a (re)fetch of its server history clobber it. This keeps a freshly-created
-    // thread's streamed messages — including live-only fields the history
-    // projection doesn't carry (preview, artifacts, runId) — when it adopts its
-    // backend id, and avoids an empty flash while that history loads.
-    if (k === activeConversationId && messages.length > 0) return;
-    controller?.abort();
-    controller = null;
-    driveGen++; // supersede any in-flight drive so its finally skips teardown
-    setSending(false);
-    setReattaching(false);
-    setDetached(false);
-    // A new thread starts a fresh event sequence; drop the prior run's fold/resume
-    // bookkeeping so its seqs don't suppress the next run's events.
-    foldState.maxFoldedSeq = 0;
-    foldState.activeRunId = null;
-    foldState.foldTarget = null;
-    // Forget which run we've already reattached-to: leaving this thread (still
-    // detached/mid-stream) and returning later must let the cold-reattach effect
-    // fire again for the same run id, rather than permanently ignoring a run it
-    // saw once, in some earlier visit, before this stream instance existed.
-    reattachedRunId = null;
-    activeConversationId = k;
-    // A null key is a new, unsaved conversation: it has no persisted history, so
-    // the only `source` here is the seam resource's *retained* value from the
-    // thread we just left (Solid keeps a resource's last value once its id goes
-    // null). Seeding from it would keep a just-deleted thread's messages on
-    // screen, so a null key always starts empty.
-    const seed = k === null ? [] : source ? source.slice() : [];
-    setMessages(reconcile(seed));
-    // Seed the meter from the loaded thread's reconstructed state (null for a new
-    // conversation, or one whose usage/window couldn't be determined).
-    setUsage(k === null ? null : (options.initialContext?.() ?? null));
-    // Seeded from the loaded thread, not cleared: the backend rebuilds the readout
-    // from the stored messages, so an existing conversation reports what it has spent
-    // before its next turn runs rather than starting the line blank.
-    setStats(k === null ? null : (options.initialStats?.() ?? null));
-    // Seed the git-style snapshot history from the loaded thread (empty for a new
-    // conversation); the live `view.snapshot` event appends to it from here.
-    setSnapshots(k === null ? [] : (options.initialSnapshots?.() ?? []));
-    // A live browser belongs to the thread, not to the client — so a switch clears the
-    // previous thread's and asks the backend whether *this* one has one.
-    setBrowserStream(null);
-    // The plan is owned by the backend and survives reloads, so a thread switch clears
-    // the old one and refetches rather than carrying the previous thread's list over.
-    setPlan([]);
-    if (k !== null) {
-      const requested = k;
-      // Snapshot the live-update counter: opening a thread whose run is mid-turn races
-      // the backfill against `plan.updated`, and the fetch answers with pre-mutation
-      // state. Without this the slower fetch wins and the panel goes stale until the
-      // next mutation — which may never come.
-      const seenAtRequest = foldState.planRevision;
-      void fetchPlan(requested)
-        .then((items) => {
-          // Drop it if the operator has since left the thread, or the stream already
-          // said something newer.
-          if (key() === requested && foldState.planRevision === seenAtRequest)
-            setPlan(items);
-        })
-        .catch(() => {
-          // The panel is an aid, not the transcript — a failed backfill leaves it
-          // empty and the next `plan.updated` fills it in.
-        });
-      void fetchBrowserSession(requested)
-        .then((path) => {
-          // Only if the operator is still on this thread, and the stream hasn't already
-          // announced a session (which would be newer than this answer).
-          if (key() === requested && browserStream() === null)
-            setBrowserStream(path);
-        })
-        .catch(() => {
-          // Browser control may not be wired at all; no panel is the right answer.
-        });
-    }
+  // Steering: a message sent into a run that is already going, and the text handed
+  // back when one never reached the model. It reaches the drive declared below
+  // through a call-time closure rather than a handle — the cycle is real (a queue
+  // attempt can turn into a fresh turn to drive, and a drive's teardown hands back
+  // what it never delivered), and naming the edge is better than merging the two.
+  const steering = createSteeringOps({
+    messages,
+    setMessages,
+    patchById,
+    conversationId: () => activeConversationId,
+    adoptConversationId: (id) => {
+      activeConversationId = id;
+    },
+    activeRunId: () => foldState.activeRunId,
+    setSending,
+    selection: () => options.selection?.() ?? effectiveSelection(),
+    driveRun: (runId, assistantId) => drive.driveRun(runId, assistantId),
   });
-
-  /** Drop any still-pending steering bubbles and hand their text back to the
-   *  composer (`undeliveredDraft`). Idempotent — a no-op when nothing is
-   *  pending — so the drive teardown and `cancel` can both call it safely. */
-  function restoreUndelivered(): void {
-    const leftovers = messages.filter((m) => m.queuedPending);
-    if (leftovers.length === 0) return;
-    setMessages(reconcile(messages.filter((m) => !m.queuedPending)));
-    const text = leftovers.map((m) => m.content).join("\n");
-    setUndeliveredDraft((prev) => (prev ? `${prev}\n${text}` : text));
-    toast.warn(
-      "Your queued message wasn't delivered — it's back in the input.",
-    );
-  }
-
-  /** Drive a started run to completion: open the SSE, fold every event onto the
-   *  given assistant message, and on end clear streaming/sending, fire the
-   *  lifecycle callbacks, and refresh the session list. Shared by `send` and the
-   *  branching ops (regenerate/edit) so the run tail lives in one place.
-   *  `wasNew` reports a freshly-created conversation so its id can be adopted. */
-  async function driveRun(
-    runId: string,
-    assistantId: string,
-    wasNew = false,
-    fromSeq?: number,
-    onConnected?: () => void,
-  ): Promise<void> {
-    const myGen = ++driveGen;
-    cancelled = false; // a fresh run clears any prior cancel signal
-    foldState.activeRunId = runId;
-    setErrored(false); // a fresh run supersedes any prior failure
-    setDetached(false); // a fresh run/reattach supersedes any prior detach
-    // Re-anchor the fold high-water mark to this run's sequence. Each run owns a
-    // fresh event stream whose seq restarts at 1, so a new turn (fromSeq omitted →
-    // 0) must drop the *previous* run's mark — otherwise its early events (seq ≤
-    // that stale mark) are suppressed in `foldEvent` and the answer streams in
-    // blank until the counter catches up (or never, if this turn is shorter). A
-    // reattach passes `fromSeq` = the last seq it folded, replaying only the gap.
-    foldState.maxFoldedSeq = fromSeq ?? 0;
-    // Events start folding onto the placeholder; a `message.injected` boundary
-    // retargets this as the run's segments split.
-    foldState.foldTarget = assistantId;
-    patchById(assistantId, (m) => {
-      m.runId = runId;
-      m.detached = false; // a fresh drive/reattach supersedes any prior detach
-    });
-    let connected = false;
-    let detachedNow = false;
-    try {
-      controller = new AbortController();
-      await streamRun(runId, {
-        signal: controller.signal,
-        fromSeq,
-        onEvent: (ev: RunEvent) => {
-          // First event = the transport is live again; let a reattach drop its
-          // "RESYNCING…" badge here, so it shows only across the reconnect latency.
-          // It's also the queued→streaming transition: the backend only starts
-          // emitting once the run actually clears the concurrency semaphore, so
-          // the first frame (of any kind) is what tells us it's no longer queued.
-          if (!connected) {
-            connected = true;
-            patchById(assistantId, (m) => (m.queued = false));
-            onConnected?.();
-          }
-          foldEvent(assistantId, ev);
-        },
-      });
-    } catch (err) {
-      if (myGen !== driveGen) {
-        // superseded — nothing to surface
-      } else if (err instanceof StreamDetachedError) {
-        // The transport gave up reconnecting, but the run may still be alive
-        // server-side: don't treat the turn as ended. Leave it in a distinct
-        // "detached" state (not streaming, not settled) with a re-attach
-        // affordance, and keep `activeRunId`/`sending` as-is so the composer
-        // stays guarded and the visibility/online resume listeners still see
-        // an in-flight run to reattach to.
-        detachedNow = true;
-        setDetached(true);
-        patchById(foldState.foldTarget ?? assistantId, (m) => {
-          m.streaming = false;
-          m.queued = false;
-          m.detached = true;
-        });
-        toast.error(
-          "Connection lost. The response may still be running — reconnect to continue.",
-        );
-      } else {
-        toast.error(
-          (err as { detail?: string })?.detail ??
-            "Unable to reach the assistant.",
-        );
-      }
-    } finally {
-      // Skip teardown when superseded by a reattach/thread-switch (that drive
-      // owns the state now, and clearing it here would race it) or when this
-      // drive ended detached — the run isn't actually over, so `activeRunId`/
-      // `sending` must keep reporting it as in-flight until it's re-attached,
-      // cancelled, or superseded.
-      if (myGen === driveGen && !detachedNow) {
-        foldState.activeRunId = null;
-        patchById(foldState.foldTarget ?? assistantId, (m) => {
-          m.streaming = false;
-          m.detached = false; // the turn is genuinely over — clear any stale banner
-          m.queued = false; // defensive: covers a resolve with no frames ever folded
-        });
-        // Steering messages the run never consumed (it was cancelled/errored/
-        // timed out before their boundary): hand the text back to the composer
-        // rather than silently dropping the operator's words.
-        restoreUndelivered();
-        setSending(false);
-        setTitlePending(false); // turn ended — clear even if no title landed
-        if (wasNew && activeConversationId) {
-          options.onConversationStarted?.(activeConversationId);
-        }
-        options.onTurnComplete?.();
-        // Adopt the backend's authoritative ids + version metadata for the turn
-        // just recorded — without this the live message keeps its client id and a
-        // stale version count, so the ‹k/n› cycler never appears and a later
-        // regenerate/edit/delete/pin would address an id the backend doesn't know.
-        await resume.adoptServerMeta();
-      }
-    }
-  }
-
-  /** Reattach to a run that's already streaming (or just finished) and fold what
-   *  we missed, then continue live. Two callers:
-   *  - resume after a stalled/dropped transport (a backgrounded tab): the
-   *    assistant message still exists, so replay from `fromSeq` = the last seq we
-   *    folded — only the tail re-applies (the seq guard drops the overlap).
-   *  - a cold read mid-stream (page reload): no assistant turn exists yet, so seed
-   *    an empty one bound to the run and replay the whole buffer (`fromSeq` 0).
-   *  Reuses `driveRun`, so the shared finally clears streaming/sending and
-   *  reconciles the persisted turn once the run ends. */
-  async function reattachRun(
-    runId: string,
-    opts: { fromSeq: number },
-  ): Promise<void> {
-    // Abort a stalled/old reader first so it can't keep folding beside the new one
-    // (its drive is superseded by the generation bump inside the next driveRun).
-    controller?.abort();
-    controller = null;
-    // The *last* matching turn: a steered run splits into several assistant
-    // segments sharing one runId, and only the newest is the live one.
-    let assistantId = messages.findLast(
-      (m) => m.runId === runId && m.role === "assistant",
-    )?.id;
-    const seeded = assistantId === undefined;
-    if (assistantId === undefined) {
-      assistantId = nextId("a");
-      const assistantMsg: ChatMessage = {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        blocks: [],
-        streaming: true,
-        runId,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages(produce((m) => m.push(assistantMsg)));
-    } else {
-      patchById(assistantId, (m) => {
-        m.streaming = true;
-        m.detached = false; // re-attaching supersedes the "connection lost" banner
-      });
-    }
-    // `driveRun` re-anchors `maxFoldedSeq` to the `fromSeq` passed below, so the
-    // resume replays only the gap after the last folded event.
-    setSending(true);
-    setReattaching(true);
-    try {
-      // Clears RESYNCING on the first folded event; the finally is the safety net
-      // for a reattach that never connects (e.g. an immediate 404).
-      await driveRun(runId, assistantId, false, opts.fromSeq, () =>
-        setReattaching(false),
-      );
-    } finally {
-      setReattaching(false);
-    }
-    // Skip the recovery when the attempt itself ended detached (reconnect budget
-    // exhausted, not a 404/empty buffer) — the run may still be alive, so reseating
-    // from the (possibly reply-less) persisted detail here would discard the
-    // re-attach affordance for no reason; leave the seed detached and let the
-    // operator/resume retry.
-    if (!detached() && seeded && foldState.maxFoldedSeq === opts.fromSeq)
-      await resume.recoverLostRun();
-  }
 
   // Everything that reconciles the optimistic store with what the backend persisted.
   // It lives next door because all four are one move — read the detail, act on it only
   // if the operator is still on that thread — and that guard belongs in one place.
+  // Same call-time edge to the drive, for the same reason: reconciling can discover a
+  // run that is still live and hand it straight back to be driven.
   const resume = createResumeOps({
     conversationId: () => activeConversationId,
     fetchDetail: (id) => api.get<ConversationDetailDTO>(`/conversations/${id}`),
     messages,
     setMessages,
     reseat,
-    reattachRun: (runId, opts) => reattachRun(runId, opts),
+    reattachRun: (runId, opts) => drive.reattachRun(runId, opts),
     wasCancelled: () => cancelled,
   });
 
-  /** Send while a run is live: the backend queues the message into that run
-   *  (injected at its next boundary) — or, if the run ended in the meantime,
-   *  starts a fresh turn; the response tells us which, so this client never
-   *  picks. The optimistic bubble renders QUEUED until `message.injected`
-   *  promotes it (or a withdraw/terminal removes it). */
-  async function sendWhileStreaming(text: string): Promise<void> {
-    if (activeConversationId === null) {
-      // The first turn's POST hasn't resolved yet, so there's no conversation to
-      // queue against. The composer already cleared itself — hand the text back
-      // rather than dropping it.
-      setUndeliveredDraft((prev) => (prev ? `${prev}\n${text}` : text));
-      return;
-    }
-    const userMsg: ChatMessage = {
-      id: nextId("u"),
-      role: "user",
-      content: text.trim(),
-      createdAt: new Date().toISOString(),
-      queuedPending: true,
-    };
-    setMessages(produce((m) => m.push(userMsg)));
-    let created: ChatCreatedDTO;
-    try {
-      created = await api.post<ChatCreatedDTO>("/chat", {
-        prompt: text.trim(),
-        conversation_id: activeConversationId,
-      });
-    } catch (err) {
-      // Not accepted (a regenerate/edit holds the claim, or transport failed):
-      // roll the bubble back so the transcript only shows what the backend has.
-      setMessages(reconcile(messages.filter((m) => m.id !== userMsg.id)));
-      toast.error(
-        isApiError(err) && err.status === 409
-          ? "Can't queue this message right now — try again in a moment."
-          : ((err as { detail?: string })?.detail ??
-              "Unable to reach the assistant."),
-      );
-      return;
-    }
-    if (created.queued_message_id) {
-      // Queued into the live run. The `message.queued` fold may have already
-      // tagged the bubble via the open stream; this is the fallback tag.
-      patchById(userMsg.id, (m) => {
-        if (!m.queuedMessageId) m.queuedMessageId = created.queued_message_id!;
-      });
-      return;
-    }
-    // The run went terminal just before the POST landed: the backend started a
-    // fresh run for this message instead. Promote the bubble to a normal turn
-    // and drive the new run like any other send.
-    patchById(userMsg.id, (m) => (m.queuedPending = false));
-    const assistantId = nextId("a");
-    setMessages(
-      produce((m) =>
-        m.push({
-          id: assistantId,
-          role: "assistant",
-          model: (options.selection?.() ?? effectiveSelection())?.model,
-          content: "",
-          blocks: [],
-          streaming: true,
-          queued: true,
-          createdAt: new Date().toISOString(),
-        }),
-      ),
-    );
-    setSending(true);
-    activeConversationId = created.conversation_id;
-    await driveRun(created.run_id, assistantId, false);
-  }
+  const drive = createRunDrive({
+    messages,
+    setMessages,
+    patchById,
+    state: foldState,
+    foldEvent,
+    setSending,
+    setErrored,
+    setTitlePending,
+    clearCancelled: () => {
+      cancelled = false;
+    },
+    restoreUndelivered: steering.restoreUndelivered,
+    conversationId: () => activeConversationId,
+    adoptServerMeta: resume.adoptServerMeta,
+    recoverLostRun: resume.recoverLostRun,
+    onConversationStarted: (id) => options.onConversationStarted?.(id),
+    onTurnComplete: () => options.onTurnComplete?.(),
+  });
+
+  // Deciding the calls a run parked on, and whether anything is still parked.
+  const approvals = createApprovalOps({
+    messages,
+    patchById,
+    sending,
+    reconcileStaleDecision: () => resume.reconcileStaleDecision(),
+  });
+
+  // Re-seed when the conversation changes, and never over a live one.
+  createThreadBinding({
+    key,
+    initial,
+    messages,
+    boundTo: () => activeConversationId,
+    onBind: (id) => {
+      // Forget which run we've already reattached-to: leaving this thread (still
+      // detached/mid-stream) and returning later must let the cold-reattach effect
+      // fire again for the same run id, rather than permanently ignoring a run it
+      // saw once, in some earlier visit, before this stream instance existed.
+      reattachedRunId = null;
+      activeConversationId = id;
+    },
+    supersede: drive.supersede,
+    setSending,
+    state: foldState,
+    setMessages,
+    setUsage,
+    setStats,
+    setSnapshots,
+    setBrowserStream,
+    browserStream,
+    setPlan,
+    initialContext: options.initialContext,
+    initialStats: options.initialStats,
+    initialSnapshots: options.initialSnapshots,
+  });
 
   async function send(
     text: string,
@@ -611,7 +281,7 @@ export function createChatStream(
         return;
       }
       if (!text.trim()) return;
-      await sendWhileStreaming(text);
+      await steering.sendWhileStreaming(text);
       return;
     }
     setSending(true);
@@ -703,7 +373,7 @@ export function createChatStream(
         m.blocked = false;
         m.blockedDetail = undefined;
       });
-    await driveRun(created.run_id, assistantId, wasNew);
+    await drive.driveRun(created.run_id, assistantId, wasNew);
   }
 
   /** Resume a turn a bound stopped (inactivity/wall-clock timeout or cancel) by
@@ -742,8 +412,9 @@ export function createChatStream(
       }
     }
     foldState.activeRunId = null;
-    controller?.abort();
-    controller = null;
+    // `stop`, not `supersede`: the turn really is over, so the drive still has to
+    // run its own teardown and reconcile what was persisted.
+    drive.stop();
     setMessages(
       produce((m) => {
         // A cancelled turn may currently be `streaming` (normal in-flight) or
@@ -758,143 +429,11 @@ export function createChatStream(
       }),
     );
     setSending(false);
-    setDetached(false);
     // A cancel with steering messages still queued: they'll never be injected
     // now, so restore them to the composer. (The drive's own teardown also calls
     // this; it's idempotent, and this covers the detached case it skips.)
-    restoreUndelivered();
+    steering.restoreUndelivered();
   }
-
-  /** Withdraw a steering message that's still queued on the live run. No
-   *  optimistic removal: a 404 means the run consumed it in the meantime — the
-   *  message is part of the turn and its bubble must stay. On success the
-   *  bubble drops here and the `message.withdrawn` fold is a no-op. */
-  async function withdrawQueued(queuedMessageId: string): Promise<void> {
-    const runId = foldState.activeRunId;
-    if (!runId) return;
-    try {
-      await api.del(`/runs/${runId}/messages/${queuedMessageId}`);
-      setMessages(
-        reconcile(
-          messages.filter(
-            (m) => !(m.queuedMessageId === queuedMessageId && m.queuedPending),
-          ),
-        ),
-      );
-    } catch (err) {
-      if (isApiError(err) && err.status === 404) {
-        toast.warn(
-          "Too late to withdraw — the message already reached the model.",
-        );
-      } else {
-        toast.error(
-          (err as { detail?: string })?.detail ??
-            "Unable to withdraw the message.",
-        );
-      }
-    }
-  }
-
-  /** Rewrite a steering message that's still queued on the live run (it keeps
-   *  its id and place in the queue). No optimistic update: the bubble changes
-   *  only once the backend accepts, and a 404 means the run consumed the
-   *  message in the meantime — the original text is what the model saw, so the
-   *  bubble must keep it. */
-  async function editQueued(
-    queuedMessageId: string,
-    text: string,
-  ): Promise<void> {
-    const runId = foldState.activeRunId;
-    if (!runId) return;
-    try {
-      await api.patch(`/runs/${runId}/messages/${queuedMessageId}`, { text });
-      setMessages(
-        produce((list) => {
-          const bubble = list.find(
-            (m) => m.queuedMessageId === queuedMessageId && m.queuedPending,
-          );
-          if (bubble) bubble.content = text;
-        }),
-      );
-    } catch (err) {
-      if (isApiError(err) && err.status === 404) {
-        toast.warn("Too late to edit — the message already reached the model.");
-      } else {
-        toast.error(
-          (err as { detail?: string })?.detail ?? "Unable to edit the message.",
-        );
-      }
-    }
-  }
-
-  /** POST a batch of approval decisions for a message's run, then apply an
-   *  optimistic patch. The open run stream resumes with the results — the parked
-   *  run requires a decision covering *every* pending call, which is why each
-   *  surface batches its decisions into one POST. */
-  async function submitDecisions(
-    messageId: string,
-    decisions: ApprovalDecision[],
-    optimistic: (m: ChatMessage) => void,
-  ): Promise<void> {
-    const msg = messages.find((m) => m.id === messageId);
-    if (!msg?.runId) return;
-    try {
-      await api.post(`/runs/${msg.runId}/approve`, { decisions });
-      patchById(messageId, optimistic);
-      // A recorded conversation grant must show on the strip now, not on the next
-      // stream toggle — nudge the grants resource to refetch.
-      if (decisions.some((d) => d.scope === "conversation")) {
-        bumpGrantsRevision();
-      }
-    } catch (err) {
-      if (isApiError(err) && err.status === 409) {
-        // The decision was already made elsewhere (a second tab, a retried
-        // request that landed after the run resumed) — resubmitting would just
-        // 409 forever. Mark the pending cards stale (non-interactive, with a
-        // note) instead of leaving them re-clickable, then refetch so the
-        // transcript catches up to whatever actually happened.
-        patchById(messageId, (m) => {
-          for (const b of m.blocks ?? []) {
-            if (b.kind === "approval") b.approval.stale = true;
-            else if (b.kind === "host_command" && b.command.phase === "pending")
-              b.command.phase = "stale";
-          }
-        });
-        toast.error("This decision was already made elsewhere.");
-        void resume.reconcileStaleDecision();
-        return;
-      }
-      // A transient failure (network blip, 5xx): the decision may not have
-      // landed at all, so keep the card interactive and let the operator retry.
-      toast.error(
-        (err as { detail?: string })?.detail ??
-          "Unable to submit the decision.",
-      );
-    }
-  }
-
-  /** Decide a message's pending approvals; the cards clear once submitted. */
-  const resolveApproval = (messageId: string, decisions: ApprovalDecision[]) =>
-    submitDecisions(messageId, decisions, (m) => {
-      if (m.blocks) m.blocks = m.blocks.filter((b) => b.kind !== "approval");
-    });
-
-  /** Decide a message's host-command approvals. Approved commands begin running
-   *  and denied ones close out optimistically; the stream confirms the outcome. */
-  const resolveHostCommands = (
-    messageId: string,
-    decisions: ApprovalDecision[],
-  ) =>
-    submitDecisions(messageId, decisions, (m) => {
-      for (const d of decisions) {
-        const b = m.blocks?.find(
-          (x): x is HostCommandBlock =>
-            x.kind === "host_command" &&
-            x.command.toolCallId === d.tool_call_id,
-        );
-        if (b) b.command.phase = d.approved ? "running" : "denied";
-      }
-    });
 
   // Branching, version-cycling and the rest of what can be done to a recorded turn.
   // They act on the conversation tree rather than on the run in flight, so they take
@@ -909,7 +448,7 @@ export function createChatStream(
     setSending,
     patchById,
     overrideSelection: () => options.selection?.(),
-    driveRun: (runId, assistantId) => driveRun(runId, assistantId),
+    driveRun: (runId, assistantId) => drive.driveRun(runId, assistantId),
     reattachToLiveRun: resume.reattachToLiveRun,
     cancel,
     onTurnComplete: () => options.onTurnComplete?.(),
@@ -926,10 +465,8 @@ export function createChatStream(
     if (!ar || ar.id === reattachedRunId || ar.id === foldState.activeRunId)
       return;
     reattachedRunId = ar.id;
-    void reattachRun(ar.id, { fromSeq: 0 });
+    void drive.reattachRun(ar.id, { fromSeq: 0 });
   });
-
-  onCleanup(() => controller?.abort());
 
   return {
     messages,
@@ -946,13 +483,13 @@ export function createChatStream(
     /** True while the live run's transport is detached (reconnect budget
      *  exhausted) — the run may still be alive server-side, awaiting a
      *  manual/automatic re-attach rather than being over. */
-    detached,
+    detached: drive.detached,
     /** True while a sensitive tool call has parked this run awaiting the
      *  operator's decision — the main room mirrors it to the global
      *  `awaitingApproval` echo (nav rail warn tone, favicon attention tint). */
-    awaitingApproval,
+    awaitingApproval: approvals.awaitingApproval,
     titlePending,
-    reattaching,
+    reattaching: drive.reattaching,
     usage,
     stats,
     plan,
@@ -965,16 +502,16 @@ export function createChatStream(
     continueTurn,
     cancel,
     /** Withdraw a queued (not-yet-injected) steering message from the live run. */
-    withdrawQueued,
+    withdrawQueued: (id: string) => steering.withdrawQueued(id),
     /** Rewrite a queued (not-yet-injected) steering message in place. */
-    editQueued,
+    editQueued: (id: string, text: string) => steering.editQueued(id, text),
     /** Text of queued messages the run never consumed (restored on terminal) —
      *  the screen prefills the composer with it, then clears it. */
-    undeliveredDraft,
-    clearUndeliveredDraft: () => setUndeliveredDraft(null),
-    reattachRun,
-    resolveApproval,
-    resolveHostCommands,
+    undeliveredDraft: steering.undeliveredDraft,
+    clearUndeliveredDraft: steering.clearUndeliveredDraft,
+    reattachRun: drive.reattachRun,
+    resolveApproval: approvals.resolveApproval,
+    resolveHostCommands: approvals.resolveHostCommands,
     regenerate: branching.regenerate,
     edit: branching.edit,
     switchVersion: branching.switchVersion,
