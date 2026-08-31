@@ -105,6 +105,32 @@ describe("workShape reports the run's last step", () => {
   });
 });
 
+describe("a fold made only of injected context still names itself", () => {
+  test("the header says which block, and that it was put there", () => {
+    // A turn whose whole preamble folds must not summarize as nothing — and the word
+    // "injected" is what keeps the fold's own header from reading like work the model
+    // chose to do.
+    const s = shape([
+      {
+        kind: "context",
+        id: "c1",
+        injection: {
+          contributor: "skill_catalog",
+          placement: "instructions",
+          tokens: 900,
+          text: "…",
+          truncated: false,
+        },
+      },
+    ]);
+    expect(s.latest).toEqual({
+      icon: "inject",
+      label: "Skills",
+      detail: "injected",
+    });
+  });
+});
+
 describe("workShape reports how much is folded", () => {
   test("steps counts the rows expanding would reveal, one per group", () => {
     expect(shape([think("a"), tool("b", "web_search"), think("c")]).steps).toBe(

@@ -23,6 +23,7 @@
  *  testable and live in one place. */
 
 import type { IconName } from "~/ui";
+import { INJECTION_ICON, segmentLabel } from "./contextLabels";
 import { toolEntry } from "./toolPresentation";
 import type { AssistantBlock } from "./model";
 import type { BlockGroup } from "./blocks";
@@ -86,6 +87,12 @@ function stepOf(block: AssistantBlock): WorkStep | undefined {
       const { icon, label } = toolEntry(HOST_TOOL);
       return { icon, label, detail: block.command.command };
     }
+    case "context":
+      return {
+        icon: INJECTION_ICON,
+        label: segmentLabel(block.injection.contributor),
+        detail: "injected",
+      };
     case "view_version":
       return { icon: VIEW_ICON, label: VIEW_LABEL, detail: block.title };
     case "view_live":

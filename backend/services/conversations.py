@@ -64,6 +64,7 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
+from runs.events import LastRequestUsage
 from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
 from services.conversation_view import MessageView, project_tree
@@ -495,6 +496,39 @@ def context_footprint(messages: list[ModelMessage]) -> int | None:
         if isinstance(message, ModelResponse):
             usage = message.usage
             return usage.input_tokens + (usage.output_tokens or 0) if usage.input_tokens else None
+    return None
+
+
+def last_request_usage(messages: list[ModelMessage]) -> LastRequestUsage | None:
+    """The most recent model response's own figures — the route it took and what the
+    provider's cache did with its prompt.
+
+    The same backwards walk :func:`context_footprint` makes, over the same list, for the
+    same reason: everything else the readout reports is cumulative over the path, and
+    these two are properties of one request. A fallback chain's second model and a cold
+    cache both vanish into a running total, which is precisely when an operator wants to
+    know about them.
+
+    None when the path holds no response at all. A response that reported no usage still
+    answers with its route, since which model spoke is known whether or not it said what
+    that cost — and every token field stays null rather than zero, matching the frame it
+    rides on."""
+    for message in reversed(messages):
+        if not isinstance(message, ModelResponse):
+            continue
+        usage = message.usage
+        provider = getattr(message, "provider_name", None)
+        model = getattr(message, "model_name", None)
+        return LastRequestUsage(
+            route=f"{provider}:{model}" if provider and model else model,
+            # Zero is what a local server reports when it means "not measured", which is
+            # indistinguishable from a real zero and so is treated as absent here exactly
+            # as it is in `context_footprint` above.
+            input_tokens=usage.input_tokens or None,
+            output_tokens=usage.output_tokens or None,
+            cache_read_tokens=usage.cache_read_tokens or None,
+            cache_write_tokens=usage.cache_write_tokens or None,
+        )
     return None
 
 

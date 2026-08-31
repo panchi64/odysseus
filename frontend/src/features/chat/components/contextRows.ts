@@ -1,4 +1,5 @@
 import type { ContextSegment } from "~/lib/stream";
+import { segmentLabel } from "../contextLabels";
 import type { ContextUsage } from "../model";
 
 /** A line in the breakdown: one of the three groups the window is filled by, or the
@@ -44,25 +45,6 @@ const GROUPS = [
   label: string;
   fill: string;
 }[];
-
-/** The few slugs whose de-slugged form would be wrong or unhelpful. Everything else —
- *  every tool category, every instruction provider the backend grows later — reads
- *  correctly from its own id, which is what keeps this list from becoming a registry
- *  that has to be edited every time a feature ships a tool. */
-const LABELS: Record<string, string> = {
-  base: "Base prompt",
-  external: "MCP & connectors",
-  repo: "Project instructions",
-};
-
-/** A backend slug as a row label: an override if it has one, else its own words
- *  (`skill_catalog` → "Skill catalog"). */
-export function segmentLabel(id: string): string {
-  const named = LABELS[id];
-  if (named) return named;
-  const words = id.replace(/_/g, " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
 
 /** The panel's rows, in bar order, from the backend's composition.
  *

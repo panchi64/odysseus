@@ -4,6 +4,7 @@ import type {
   ApprovalBlock,
   ApprovalDecision,
   BlockKind,
+  ContextBlock,
   HostCommandBlock,
   TextBlock,
   ThinkingBlock,
@@ -15,6 +16,7 @@ import type { BlockGroup, LayoutItem } from "../blocks";
 import { LIVE_KEY, snapshotKey, versionIcon, type ViewItem } from "../viewport";
 import { AnswerText } from "./AnswerText";
 import { ApprovalCard } from "./ApprovalCard";
+import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { ToolCallCard } from "./ToolCallCard";
@@ -61,6 +63,7 @@ export type TopSpacing = "none" | "gap" | "connect";
 const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
   "thinking",
   "tool",
+  "context",
   "host_command",
   "approval",
 ]);
@@ -198,6 +201,18 @@ export function BlockRow(
         <Rail active={props.active} top={props.top}>
           <ToolCallCard
             tool={(g().blocks[0] as ToolBlock).tool}
+            open={props.forceOpen}
+          />
+        </Rail>
+      </Match>
+      <Match when={g().kind === "context"}>
+        {/* On the rail, because it happened in the turn's sequence — but never `active`:
+            the rail's light means "this is running now", and an injection is a settled
+            fact the moment it exists. Lighting it would spend the one signal the
+            interface delivers in light on something with no duration. */}
+        <Rail top={props.top}>
+          <ContextInjectionCard
+            injection={(g().blocks[0] as ContextBlock).injection}
             open={props.forceOpen}
           />
         </Rail>

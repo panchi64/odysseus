@@ -1,12 +1,13 @@
 import { For, Show, createSignal, type JSX } from "solid-js";
 import { compactCount, pct } from "~/lib/format";
 import { Icon, Text } from "~/ui";
-import type { ContextUsage } from "../model";
+import type { ContextUsage, LastRequest } from "../model";
 import {
   contextRows,
   type ContextDetail,
   type ContextRow,
 } from "./contextRows";
+import { LastRequestPanel } from "./LastRequestPanel";
 
 /** The same severity the ring carries, on the panel's headline figure. It differs from
  *  the ring's map in one place: at rest the ring is `dim` (a gauge with nothing to say
@@ -37,7 +38,14 @@ const tokens = (n: number) => n.toLocaleString("en-US");
  *  so a fresh thread shows two lines and a long tool-heavy one grows the rest as they
  *  start costing the window. Nothing here renders a placeholder for a row that did not
  *  arrive. */
-export function ContextBreakdown(props: { usage: ContextUsage }): JSX.Element {
+export function ContextBreakdown(props: {
+  usage: ContextUsage;
+  /** The last model request on its own, when the thread has produced one. Rendered
+   *  beneath the split rather than on the composer's line, for the reason
+   *  `LastRequestPanel` states: those figures are per-request and that line is
+   *  cumulative. */
+  lastRequest?: LastRequest | null;
+}): JSX.Element {
   const rows = () => contextRows(props.usage);
   const percent = () => props.usage.fraction * 100;
   return (
@@ -85,6 +93,10 @@ export function ContextBreakdown(props: { usage: ContextUsage }): JSX.Element {
       <Text variant="micro" tone="dim">
         {tokens(props.usage.used)} of {tokens(props.usage.window)} tokens
       </Text>
+
+      <Show when={props.lastRequest}>
+        {(request) => <LastRequestPanel request={request()} />}
+      </Show>
     </>
   );
 }

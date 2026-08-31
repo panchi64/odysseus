@@ -167,6 +167,35 @@ class ContextWindow(_Body):
         return cls(used=used, window=window, fraction=fraction, level=level, parts=parts)
 
 
+class LastRequestUsage(_Body):
+    """What the thread's most recent model request cost, on its own.
+
+    Spelled out rather than named ``RequestUsage``, which is what Pydantic AI calls the
+    provider-reported usage this is partly built from — two types with one name, one of
+    them ours and one of them the library's, is a confusion that would land the first time
+    a module needed both.
+
+    Everything else on :class:`RunMetrics` is conversation-cumulative, which is the right
+    default for a readout under the composer and the wrong one for the two questions this
+    answers: *which* endpoint served that last request, and how much of its prompt the
+    provider had already cached. A cumulative figure cannot answer either — a fallback
+    chain's second model and a cold cache both disappear into a running total.
+
+    ``route`` is the model that actually answered, prefixed by its provider when one is
+    reported (``openai:qwen3-32b``). On a fallback chain that is not necessarily the model
+    the thread is bound to, which is exactly why it is worth reporting.
+
+    Every token field is **absent, never zero**, on the same rule the frame below it
+    follows: null means the provider said nothing, and most OpenAI-compatible and local
+    endpoints say nothing about caching at all."""
+
+    route: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+
+
 class RunMetrics(_Body):
     """What the thread has cost so far — the readout under the composer.
 
@@ -229,6 +258,12 @@ class RunMetrics(_Body):
     # a request is being assembled), so it rides on the frame rather than being derived
     # from it.
     context_parts: ContextComposition | None = None
+
+    # The last model request on its own — the route it took and what the provider's cache
+    # did with it. Sits beside the cumulative figures rather than replacing any of them:
+    # the two answer different questions and the totals above are what the composer's line
+    # reads. Null on a thread that has never produced a response. Additive to v1; no bump.
+    last_request: LastRequestUsage | None = None
 
     @computed_field
     @property
@@ -520,6 +555,51 @@ class ConversationLinked(_Body):
     title: str | None = None
 
 
+# --- Context -----------------------------------------------------------------
+#: The most text one injection puts on the wire. The token figure is always the whole
+#: block's, so a capped ``text`` costs the operator the tail of a long file and nothing
+#: else — while an uncapped one would put a 60KB instruction file into the run's replay
+#: buffer on every turn that reads it, to be re-sent in full to every reattaching client.
+INJECTED_TEXT_LIMIT = 8_000
+
+
+class ContextInjected(_Body):
+    """Something the chassis put in front of the model that nobody in the conversation
+    wrote — a project's instruction files, the skill catalog, the plan reminder, the
+    date.
+
+    The gauge already says these cost the window; this says *when they arrived and what
+    they said*. Those are different questions, and only the second one answers "why did
+    the model act as if it had been told that" — which, on a thread where the operator
+    reads every message and still cannot account for the model's behaviour, is the whole
+    question. Emitted as the turn is assembled, so it lands in the work log ahead of the
+    work it shaped.
+
+    ``contributor`` is the same slug :class:`ContextSegment` uses for the standing
+    brief's rows, and deliberately so: the popover's "Skill catalog · ~4k" and this
+    event's row are the same block seen from two distances, and a client that named them
+    differently would make the operator work out that they are one thing. The wording
+    stays the client's, for the reason stated there.
+
+    ``placement`` is where in the request it landed — ``instructions`` at the head
+    (re-sent every turn, never retained in history) or ``prompt`` at the tail of the
+    turn's own user message (volatile content kept out of the cacheable prefix). It is on
+    the wire because it is the difference between a block that costs the operator a cache
+    invalidation and one that does not.
+
+    ``tokens`` is the coarse estimate the rest of the readout uses, over the **whole**
+    block — never over the possibly-truncated ``text``. Additive to v1; no bump."""
+
+    type: Literal["context.injected"] = "context.injected"
+    contributor: str
+    placement: Literal["instructions", "prompt"]
+    tokens: int
+    # The resolved block, capped at `INJECTED_TEXT_LIMIT` characters. `truncated` says so
+    # rather than leaving the operator to guess whether a file simply ends there.
+    text: str
+    truncated: bool = False
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -623,6 +703,7 @@ EventBody = Annotated[
     | ConversationTitled
     | ConversationCompacted
     | ConversationLinked
+    | ContextInjected
     | ApprovalRequired
     | MessageQueued
     | MessageEdited

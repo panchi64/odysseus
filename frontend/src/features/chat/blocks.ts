@@ -35,7 +35,10 @@ export function hasReasoning(blocks: AssistantBlock[] | undefined): boolean {
 export function hasLayers(blocks: AssistantBlock[] | undefined): boolean {
   return (blocks ?? []).some(
     (b) =>
-      b.kind === "thinking" || b.kind === "tool" || b.kind === "host_command",
+      b.kind === "thinking" ||
+      b.kind === "tool" ||
+      b.kind === "context" ||
+      b.kind === "host_command",
   );
 }
 
@@ -60,6 +63,13 @@ export function assembleTranscript(
         parts.push(`${t.name}(${t.args}) -> ${outcome}`);
         break;
       }
+      case "context":
+        // Named as an injection rather than transcribed as a message, so a pasted
+        // transcript can't read as something the operator or the model said.
+        parts.push(
+          `CONTEXT INJECTED (${b.injection.contributor})\n${b.injection.text}`,
+        );
+        break;
       case "host_command": {
         const c = b.command;
         const out = c.error ?? c.stdout ?? "";
@@ -197,6 +207,10 @@ function pinsRunInline(group: BlockGroup): boolean {
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking") return true;
   if (group.kind === "view_version" || group.kind === "view_live") return true;
+  // Injected context is the frame around the work, never the work — it has no state to
+  // watch, nothing to act on, and it arrives in a clump at the head of every turn. If
+  // anything in a turn should fold, it is this.
+  if (group.kind === "context") return true;
   if (group.kind === "tool" || group.kind === "host_command")
     return !pinsRunInline(group);
   return false;

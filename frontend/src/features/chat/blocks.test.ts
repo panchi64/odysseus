@@ -250,6 +250,66 @@ describe("liveToolGroupIds", () => {
   });
 });
 
+describe("injected context recedes into the fold", () => {
+  /** One block the chassis put in front of the model. */
+  function injected(id: string, contributor: string): AssistantBlock {
+    return {
+      kind: "context",
+      id,
+      injection: {
+        contributor,
+        placement: "instructions",
+        tokens: 120,
+        text: "…",
+        truncated: false,
+      },
+    };
+  }
+
+  test("a turn's preamble folds instead of leading with itself", () => {
+    // Every turn opens with a clump of these. Left inline they would push the answer
+    // down the page behind three rows of frame — and unlike a tool call there is
+    // nothing in them to watch, act on, or wait for.
+    expect(
+      plan(
+        [
+          injected("c1", "repo"),
+          injected("c2", "skill_catalog"),
+          injected("c3", "date"),
+          text("t"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog", "t"]);
+  });
+
+  test("it counts toward a fold the work alone would not reach", () => {
+    // Two settled calls stay inline on their own (below WORK_LOG_MIN_RUN); with the
+    // turn's own preamble ahead of them the run is long enough to fold, which is the
+    // honest reading — the operator has three-plus rows of process either way.
+    expect(WORK_LOG_MIN_RUN).toBe(3);
+    expect(
+      plan(
+        [
+          injected("c1", "repo"),
+          tool("a", "files_read_file", "ok"),
+          tool("b", "web_search", "ok"),
+          text("t"),
+        ],
+        false,
+      ),
+    ).toEqual(["worklog", "t"]);
+  });
+
+  test("a live call still breaks the fold open around it", () => {
+    // The pin rules are about the *work*, and an injection must not smother them: a
+    // call still in flight stays on screen with its spinner whatever sits beside it.
+    expect(
+      plan([injected("c1", "repo"), tool("a", "web_search", "running")], false),
+    ).toEqual(["c1", "a"]);
+  });
+});
+
 describe("runningTools", () => {
   test("collects in-flight calls across the turn, in order", () => {
     // The running call is first and the trailing block isn't one — the case a tail-only

@@ -1,7 +1,7 @@
 import { type JSX } from "solid-js";
 import { pct } from "~/lib/format";
 import { ConstructionReveal, Popover, ProgressRing } from "~/ui";
-import type { ContextUsage } from "../model";
+import type { ContextUsage, LastRequest } from "../model";
 import { ContextBreakdown } from "./ContextBreakdown";
 
 export interface ContextRingProps {
@@ -10,6 +10,11 @@ export interface ContextRingProps {
    *  to measure has nothing to say. The window being genuinely unknown is the send
    *  gate's to report, not this one's. */
   usage: ContextUsage;
+  /** The last model request's own figures, for the panel — the route it took and what
+   *  the provider's cache did with it. Null on a thread that has produced no response.
+   *  The ring itself never renders this: it is a second measurement of the same request
+   *  the split describes, and it belongs where the operator is already reading one. */
+  lastRequest?: LastRequest | null;
 }
 
 /** The backend's severity, as a tone.
@@ -86,7 +91,10 @@ export function ContextRing(props: ContextRingProps): JSX.Element {
               content within the framed box, and a second `p-*` on the same node is a
               Tailwind conflict resolved by stylesheet order rather than by intent. */}
           <div class="flex flex-col gap-3 px-4 py-3.5">
-            <ContextBreakdown usage={props.usage} />
+            <ContextBreakdown
+              usage={props.usage}
+              lastRequest={props.lastRequest}
+            />
           </div>
         </ConstructionReveal>
       )}

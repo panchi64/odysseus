@@ -332,6 +332,15 @@ function toStats(dto: RunMetricsDTO): ConversationStats {
     toolMs: dto.tool_ms,
     ttftAvgMs: dto.ttft_avg_ms,
     tokensPerSecond: dto.output_tokens_per_second,
+    lastRequest: dto.last_request
+      ? {
+          route: dto.last_request.route,
+          inputTokens: dto.last_request.input_tokens,
+          outputTokens: dto.last_request.output_tokens,
+          cacheReadTokens: dto.last_request.cache_read_tokens,
+          cacheWriteTokens: dto.last_request.cache_write_tokens,
+        }
+      : null,
   };
 }
 
@@ -1301,6 +1310,28 @@ export function createChatStream(
             b.tool.error = ev.error;
             b.tool.progress = undefined; // the run is over — drop the spin-up note
           }
+        });
+        break;
+      case "context.injected":
+        // A block the chassis put in front of the model. It lands on the rail in the
+        // order it happened — which is ahead of the work it shaped, since the turn's
+        // context is assembled before the model sees any of it. Keyed by `seq` because
+        // the same contributor can legitimately inject twice in one turn (a plan that
+        // grew a task between steps is a new injection, not a repeat), and `seq` is the
+        // only identifier on the wire that is unique per event and stable across a
+        // replay.
+        patchById(assistantId, (m) => {
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "context",
+            id: `ctx-${ev.seq}`,
+            injection: {
+              contributor: ev.contributor,
+              placement: ev.placement,
+              tokens: ev.tokens,
+              text: ev.text,
+              truncated: ev.truncated,
+            },
+          });
         });
         break;
       case "plan.updated":

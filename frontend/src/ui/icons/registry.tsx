@@ -86,6 +86,7 @@ export type IconName =
   | "archive"
   | "library"
   | "pen"
+  | "inject"
   | "compare"
   | "branch"
   | "research"
@@ -147,6 +148,18 @@ export const icons: Record<IconName, IconEntry> = {
     </>
   ),
   pen: () => <path d="M2 14s1-3 3-5l5-5 2 2-5 5c-2 2-5 3-5 3z" />,
+  // Something placed *into* a frame from outside it: an open-sided box with an arrow
+  // entering. Drawn rather than borrowed because the meaning it has to carry — context
+  // the chassis put in front of the model, as opposed to a call the model made — is one
+  // no icon set has a word for, and the whole job of the glyph is to be unmistakably not
+  // one of the tool families beside it on the rail.
+  inject: () => (
+    <>
+      <path d="M9.5 3H12.5a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H9.5" />
+      <path d="M2.5 8h5.5" />
+      <path d="M6 5.5 8.5 8 6 10.5" />
+    </>
+  ),
 
   // ── Iconoir-sourced glyphs (24px grid, via scripts/gen-iconoir.ts) ─────
   "chevron-right": g24(() => (

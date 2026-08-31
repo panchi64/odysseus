@@ -994,7 +994,12 @@ export function ChatRoomScreen(): JSX.Element {
                       say. The genuinely-unknown case is not lost: it is the send
                       gate's, which blocks SEND and explains why. */}
                   <Show when={stream.usage()}>
-                    {(usage) => <ContextRing usage={usage()} />}
+                    {(usage) => (
+                      <ContextRing
+                        usage={usage()}
+                        lastRequest={stream.stats()?.lastRequest}
+                      />
+                    )}
                   </Show>
                 </>
               }

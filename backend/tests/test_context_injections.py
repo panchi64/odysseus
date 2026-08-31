@@ -1,0 +1,242 @@
+"""What the chassis put in front of the model, said out loud.
+
+Every turn carries text nobody in the conversation wrote — a project's instruction files,
+the skill catalog, the plan reminder, the date. The gauge has always been able to say what
+those cost; these tests pin the other half, which is what they *said* and when they
+arrived, because that is the half that accounts for a model behaving as though it had been
+told something the transcript never mentions.
+
+Three properties carry the feature and each has its own section below: an injection is
+announced once per turn per distinct text (a five-step turn must not echo its own preamble
+five times), the token figure is over the whole block even when the wire caps the text, and
+the contributor slug is the same one the context gauge files that block under — so the two
+surfaces can never name one block two ways.
+"""
+
+from __future__ import annotations
+
+from pydantic_ai import InstructionPart, ModelRequest, ModelResponse
+from pydantic_ai.messages import AgentInstructionSource, InstructionId, TextPart, UserPromptPart
+from pydantic_ai.usage import RequestUsage
+
+from agent.injections import (
+    AnnounceInjections,
+    announce_injection,
+    contributor_id,
+    injected_tokens,
+)
+from runs import INJECTED_TEXT_LIMIT, Run, RunStream
+from services.conversations import last_request_usage
+
+
+def _run() -> Run:
+    return Run(id="r", kind="chat", owner_id="operator", stream=RunStream())
+
+
+def _injections(run: Run) -> list:
+    return [e.body for e in run.stream.replay() if e.body.type == "context.injected"]
+
+
+def _part(name: str | None, content: str) -> InstructionPart:
+    if name is None:
+        return InstructionPart(content=content)
+    return InstructionPart(
+        content=content, name=name, id=InstructionId(AgentInstructionSource(), name=name)
+    )
+
+
+# ── The slug ─────────────────────────────────────────────────────────────────────
+
+
+def test_a_provider_is_filed_under_its_own_name_minus_the_convention():
+    """One derivation for the instruction name, the gauge's block id and the injection's
+    contributor — which is what stops the popover and the work log from naming the same
+    block two different things."""
+    def skill_catalog_instructions() -> str: ...
+    def repo_instructions() -> str: ...
+    def plan_context() -> str: ...
+
+    assert contributor_id(skill_catalog_instructions) == "skill_catalog"
+    assert contributor_id(repo_instructions) == "repo"
+    assert contributor_id(plan_context) == "plan"
+
+
+def test_a_provider_with_nothing_left_after_the_strip_is_still_a_row():
+    """A name that is all convention and no word strips to the empty string, which is not
+    a slug — a row with no id is a row the client can neither label nor key."""
+    underscore = type("_", (), {"__name__": "_", "__call__": lambda self: ""})()
+    assert contributor_id(underscore) == "base"
+
+
+# ── Announced once, and again only when it changed ───────────────────────────────
+
+
+async def test_the_same_block_is_announced_once_across_a_turns_requests():
+    """The hook fires on every model request, so a five-step turn resolves the same brief
+    five times. Repeating it would bury the turn's actual work under a fivefold echo of
+    its own preamble."""
+    run = _run()
+    announcer = AnnounceInjections()
+    parts = [_part("skill_catalog", "Skills: a, b, c")]
+    for _ in range(5):
+        announcer.announce(run, parts)
+    assert [i.contributor for i in _injections(run)] == ["skill_catalog"]
+
+
+async def test_a_block_that_changed_mid_turn_is_announced_again():
+    """A plan reminder that grew a task between steps genuinely is a new injection, and
+    watching it arrive is the point of putting these on the timeline at all."""
+    run = _run()
+    announcer = AnnounceInjections()
+    announcer.announce(run, [_part("plan", "1. read the file")])
+    announcer.announce(run, [_part("plan", "1. read the file\n2. write the fix")])
+    assert [i.text for i in _injections(run)] == [
+        "1. read the file",
+        "1. read the file\n2. write the fix",
+    ]
+
+
+async def test_our_own_fixed_brief_is_not_announced():
+    """An unnamed part is our literal instructions, or a separator the library joined
+    parts with: identical on every turn of every thread, already reported by the gauge as
+    `base`, and the one injection an operator can neither act on nor switch off."""
+    run = _run()
+    AnnounceInjections().announce(run, [_part(None, "B" * 400), _part("repo", "CLAUDE.md says")])
+    assert [i.contributor for i in _injections(run)] == ["repo"]
+
+
+async def test_a_provider_that_resolved_to_nothing_injected_nothing():
+    """Most providers no-op on most threads (`repo` outside a worktree, `mode` where the
+    mode has nothing of its own to say). An empty row would be a row about nothing."""
+    run = _run()
+    AnnounceInjections().announce(run, [_part("mode", "")])
+    assert _injections(run) == []
+
+
+async def test_nothing_to_read_is_not_a_crash():
+    run = _run()
+    AnnounceInjections().announce(run, None)
+    assert _injections(run) == []
+
+
+# ── The figure, and what the wire carries ────────────────────────────────────────
+
+
+async def test_the_token_figure_covers_the_whole_block_even_when_the_text_is_capped():
+    """The cap exists so a 60KB instruction file doesn't ride the replay buffer to every
+    reattaching client. It must not make the block look cheaper than it was — the operator
+    reads the figure to decide whether to switch the contributor off."""
+    run = _run()
+    whole = "x " * INJECTED_TEXT_LIMIT
+    announce_injection(run, "repo", whole, "instructions")
+
+    (injected,) = _injections(run)
+    assert injected.truncated is True
+    assert len(injected.text) <= INJECTED_TEXT_LIMIT
+    assert injected.tokens == injected_tokens(whole)
+    assert injected.tokens > injected_tokens(injected.text)
+
+
+async def test_a_block_inside_the_cap_is_carried_whole_and_says_so():
+    run = _run()
+    announce_injection(run, "date", "Today is Sunday, August 30, 2026.", "instructions")
+
+    (injected,) = _injections(run)
+    assert injected.text == "Today is Sunday, August 30, 2026."
+    assert injected.truncated is False
+    assert injected.placement == "instructions"
+
+
+async def test_where_it_landed_travels_with_it():
+    """Head and tail cost differently — churn at the head invalidates the prompt-prefix
+    cache from byte 0 — so which one it was is not something the client should guess."""
+    run = _run()
+    announce_injection(run, "plan", "1. read the file", "prompt")
+    assert _injections(run)[0].placement == "prompt"
+
+
+# ── The whole chain, on a real turn ──────────────────────────────────────────────
+
+
+async def test_a_live_turn_announces_both_seams_before_it_answers():
+    """Instructions resolve inside the library and are read back off the request; per-turn
+    prompt context resolves in the engine before the agent starts. Two seams, one event
+    type — and both must land ahead of the work they shaped."""
+    from pydantic_ai.models.test import TestModel
+
+    from agent import build_chat_orchestrator
+    from runs import RunRegistry, RunStatus
+
+    async def skill_catalog_instructions(_ctx) -> str:
+        return "Skills available: writing, research."
+
+    async def plan_context(_caps, _owner_id, _conversation_id) -> str:
+        return "Your current plan: 1. answer the question."
+
+    orch = build_chat_orchestrator(
+        "hi",
+        model=TestModel(custom_output_text="ok", call_tools=[]),
+        categories={},
+        instruction_providers=[skill_catalog_instructions],
+        prompt_context_providers=[plan_context],
+        context_window=100_000,
+    )
+    run = RunRegistry().submit(kind="chat", owner_id="operator", orchestrator=orch)
+    await run.wait()
+    assert run.status is RunStatus.done
+
+    events = run.stream.replay()
+    injected = {e.body.contributor: e.body for e in events if e.body.type == "context.injected"}
+    assert injected.keys() >= {"skill_catalog", "plan", "date"}
+    assert injected["skill_catalog"].placement == "instructions"
+    assert injected["skill_catalog"].text == "Skills available: writing, research."
+    assert injected["plan"].placement == "prompt"
+    assert injected["plan"].text == "Your current plan: 1. answer the question."
+
+    # Ahead of the work: an injection the operator finds *after* the answer explains
+    # nothing about an answer they have already read.
+    first_answer = next(e.seq for e in events if e.body.type == "answer.delta")
+    assert all(e.seq < first_answer for e in events if e.body.type == "context.injected")
+
+
+# ── The request beside the split ─────────────────────────────────────────────────
+
+
+def _response(**usage) -> ModelResponse:
+    return ModelResponse(
+        parts=[TextPart(content="ok")],
+        model_name="qwen3-32b",
+        provider_name="lmstudio",
+        usage=RequestUsage(**usage),
+    )
+
+
+def test_the_last_request_reports_the_route_that_actually_answered():
+    """On a fallback chain the model that answered is not necessarily the one the thread
+    is bound to, and a cumulative total cannot tell the two apart."""
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content="hi")]),
+        _response(input_tokens=100),
+        ModelRequest(parts=[UserPromptPart(content="again")]),
+        _response(input_tokens=400, output_tokens=20, cache_read_tokens=380),
+    ]
+    last = last_request_usage(messages)
+    assert last is not None
+    assert last.route == "lmstudio:qwen3-32b"
+    assert last.input_tokens == 400
+    assert last.output_tokens == 20
+    assert last.cache_read_tokens == 380
+
+
+def test_an_endpoint_that_reports_no_caching_reports_absent_not_zero():
+    """A 0 here would read as "your caching is broken" rather than "nobody said", and
+    most OpenAI-compatible and local endpoints say nothing at all."""
+    last = last_request_usage([_response(input_tokens=100)])
+    assert last is not None
+    assert last.cache_read_tokens is None
+    assert last.cache_write_tokens is None
+    assert last.output_tokens is None
+
+
+def test_a_thread_with_no_response_has_no_request_to_report():
+    assert last_request_usage([ModelRequest(parts=[UserPromptPart(content="hi")])]) is None

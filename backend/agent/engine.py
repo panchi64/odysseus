@@ -83,6 +83,7 @@ from services.conversations import (
     ConversationStore,
     context_footprint,
     conversation_totals,
+    last_request_usage,
 )
 from services.llm import TOOL_CALL_SETTINGS
 from services.modes import mode_spec
@@ -108,6 +109,7 @@ from .history import (
     split_injected_requests,
     with_tail_context,
 )
+from .injections import AnnounceInjections, announce_injection, contributor_id
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .model_errors import (
     context_limit_message,
@@ -242,10 +244,17 @@ def _build_agent(
         # its way to the model: a tool result rides into context whole, and the one
         # reduction that exists (conversation compaction) fires between turns, in the
         # orchestrator prelude, against measured context pressure.
-        # `MeasureOverhead` is listed *after* `ReinjectSystemPrompt` so it sizes the
-        # request as it actually ships rather than before the system prompt is
-        # reasserted. It observes and returns the request context untouched.
-        capabilities=[ReinjectSystemPrompt(replace_existing=True), MeasureOverhead()],
+        # `MeasureOverhead` and `AnnounceInjections` are listed *after*
+        # `ReinjectSystemPrompt` so they read the request as it actually ships rather than
+        # before the system prompt is reasserted. Both observe and return the request
+        # context untouched, and they are two capabilities rather than one pass over the
+        # same parts because they answer different questions and change for different
+        # reasons: one sizes the brief for the gauge, the other reports what it said.
+        capabilities=[
+            ReinjectSystemPrompt(replace_existing=True),
+            MeasureOverhead(),
+            AnnounceInjections(),
+        ],
     )
 
     # Feature-contributed dynamic instructions (each manifest's `instructions` export —
@@ -259,9 +268,10 @@ def _build_agent(
     #
     # `name=` is what makes the context readout's per-provider rows possible: the library
     # stamps the resolved part with that name, so `agent/overhead.py` reads each block off
-    # the assembled request instead of measuring providers as they run.
+    # the assembled request instead of measuring providers as they run — and
+    # `agent/injections.py` reads the same name to announce what the block said.
     for provider in instruction_providers:
-        agent.instructions(name=_block_id(provider))(provider)
+        agent.instructions(name=contributor_id(provider))(provider)
 
     @agent.instructions(name="mode")
     def _mode_posture(ctx: RunContext[RunDeps]) -> str:
@@ -283,24 +293,6 @@ def _build_agent(
         return CURRENT_DATE.format(date=stamp)
 
     return agent
-
-
-def _block_id(provider: InstructionProvider) -> str:
-    """The slug a provider's contribution is filed under — its own name, minus the
-    `_instructions` suffix the convention gives them (`skill_catalog_instructions` →
-    `skill_catalog`).
-
-    Handed to `agent.instructions(name=…)`, so it becomes the name the library stamps on
-    the part this provider resolves to and the row `agent/overhead.py` reports.
-
-    Derived rather than declared because `InstructionProvider` is a plain callable and
-    giving every manifest a label field would be ceremony for a readout row. A rename
-    therefore renames the row, which is the honest failure: the client de-slugs whatever
-    it is given, so the worst case is a row reading "Skill catalog" instead of "Skills"
-    — never a wrong number.
-    """
-    name = getattr(provider, "__name__", "") or "instructions"
-    return name.strip("_").removesuffix("_instructions").removeprefix("instructions_") or "base"
 
 
 def _summarize(name: str, args: dict[str, Any]) -> str:
@@ -351,6 +343,9 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
         # The split of that footprint. Scaled to the provider's own total, so the parts
         # always add up to the figure beside them even though each is an estimate.
         context_parts=compose(footprint, run.context_overhead, messages),
+        # The last request on its own — read off the same path as everything else, so a
+        # reload reports the route and the cache figures the live turn did.
+        last_request=last_request_usage(messages),
     )
 
 
@@ -1194,11 +1189,18 @@ def build_chat_orchestrator(
         # never persisted, so it's re-resolved fresh each turn with exactly one copy
         # in context — and, unlike an instruction, its churn never touches the head
         # of the request, keeping the whole history a byte-stable cacheable prefix.
-        context_texts = [
-            text
-            for provider in prompt_context_providers
-            if (text := await provider(capabilities, run.owner_id, conversation_id))
-        ]
+        #
+        # Announced here rather than from the capability the head's blocks are read
+        # from: these resolve before the agent starts, so there is no request to read
+        # them back off. One event type either way — the operator's question is what
+        # they were not shown, not which seam delivered it.
+        context_texts: list[str] = []
+        for provider in prompt_context_providers:
+            text = await provider(capabilities, run.owner_id, conversation_id)
+            if not text:
+                continue
+            context_texts.append(text)
+            announce_injection(run, contributor_id(provider), text, "prompt")
         if context_texts:
             if prompt is not None:
                 base = user_prompt if isinstance(user_prompt, list) else [user_prompt]

@@ -30,6 +30,7 @@ from services.conversations import (
     ConversationSummaryView,
     context_footprint,
     conversation_totals,
+    last_request_usage,
 )
 from services.modes import mode_spec
 from services.permissions import DEFAULT_PERMISSION
@@ -335,6 +336,7 @@ async def _detail(
             ttft_samples=timings.ttft_samples,
             context_window=window,
             context_used=used,
+            last_request=last_request_usage(history),
         )
     run = deps.registry(request).active_run_for(conversation_id, OPERATOR_ID)
     active_run = (

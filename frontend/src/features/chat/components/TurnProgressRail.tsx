@@ -33,6 +33,11 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
     // already returned.
     case "tool":
       return "Working";
+    // Injections all land before the model has said anything, so a context block at the
+    // tail means the turn is still being assembled — the phase the no-blocks branch above
+    // could only guess at, now that it has something to point to.
+    case "context":
+      return "Assembling context";
     case "host_command":
       return last.command.phase === "pending"
         ? "Awaiting approval"

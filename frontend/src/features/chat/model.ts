@@ -41,6 +41,24 @@ export interface ConversationStats {
   ttftAvgMs: number | null;
   /** Generation throughput, output tokens per second of model time. */
   tokensPerSecond: number | null;
+  /** The last model request on its own — the route it took and what the provider's
+   *  cache did with it. Null on a thread that has never produced a response. Kept
+   *  apart from the cumulative figures above because a running total cannot answer
+   *  either question: a fallback chain's second model and a cold cache both vanish
+   *  into a sum. */
+  lastRequest: LastRequest | null;
+}
+
+/** One request's own figures — see `ConversationStats.lastRequest`. Every token field
+ *  is null when the provider reported nothing, never 0. */
+export interface LastRequest {
+  /** The model that actually answered, prefixed by its provider when one is reported
+   *  (`openai:qwen3-32b`). Not necessarily the model the thread is bound to. */
+  route: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
 }
 
 /** "compaction" is not a turn either party took — it is the chassis marking where the
@@ -190,6 +208,7 @@ export type AssistantBlock =
   | ThinkingBlock
   | TextBlock
   | ToolBlock
+  | ContextBlock
   | HostCommandBlock
   | ApprovalBlock
   | ViewVersionBlock
@@ -215,6 +234,30 @@ export interface ToolBlock {
   id: string;
   tool: ToolInvocation;
 }
+/** Text the chassis put in front of the model that nobody in the thread wrote — the
+ *  project's instruction files, the skill catalog, the plan reminder, the date
+ *  (`context.injected`).
+ *
+ *  It sits on the same rail as the work because it happened in the same sequence, and it
+ *  must read as categorically *not* work: the model did not do this, we did it to the
+ *  model. `ContextInjectionCard` carries that distinction visually. */
+export interface ContextBlock {
+  kind: "context";
+  id: string;
+  injection: ContextInjection;
+}
+
+/** One injected block: which contributor put it there, where in the request it landed,
+ *  what it cost, and what it said. `truncated` marks a `text` the wire capped — the
+ *  `tokens` figure is always over the whole block. */
+export interface ContextInjection {
+  contributor: string;
+  placement: "instructions" | "prompt";
+  tokens: number;
+  text: string;
+  truncated: boolean;
+}
+
 /** A host-machine command, rendered as a persistent terminal. */
 export interface HostCommandBlock {
   kind: "host_command";

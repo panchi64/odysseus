@@ -84,6 +84,23 @@ export interface ContextWindow {
  *  derived figure below (the ratio, the average, the rate) is computed server-side.
  *  Null means unmeasured and is never interchangeable with 0 — see `RunMetrics` in
  *  `backend/runs/events.py`. */
+/** What the thread's most recent model request cost, on its own — everything else on
+ *  `RunMetrics` is cumulative over the conversation.
+ *
+ *  The two questions a running total cannot answer: which endpoint served that last
+ *  request (a fallback chain's second model disappears into a sum) and how much of its
+ *  prompt the provider had cached (a cold turn disappears into a warm average). Null
+ *  fields mean the provider reported nothing, never zero. */
+export interface LastRequestUsage {
+  /** The model that actually answered, prefixed by its provider when one is reported
+   *  (`openai:qwen3-32b`). Not necessarily the model the thread is bound to. */
+  route: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+}
+
 export interface RunMetrics extends Base {
   type: "run.metrics";
   steps: number;
@@ -114,6 +131,9 @@ export interface RunMetrics extends Base {
   context_used: number | null;
   /** The context-window fullness after this turn, or null when unmeasurable. */
   context: ContextWindow | null;
+  /** The last model request on its own. Null on a thread that has never produced a
+   *  response; optional here only so an older backend still renders. */
+  last_request?: LastRequestUsage | null;
 }
 export interface RunEnded extends Base {
   type: "run.ended";
@@ -275,6 +295,31 @@ export interface ConversationLinked extends Base {
   title: string | null;
 }
 
+// --- Context ---------------------------------------------------------------
+/** Something the chassis put in front of the model that nobody in the conversation
+ *  wrote — a project's instruction files, the skill catalog, the plan reminder, the date.
+ *
+ *  The context gauge says what these *cost*; this says what they *said*, and when they
+ *  arrived. It is emitted as the turn is assembled, so it lands in the work log ahead of
+ *  the work it shaped — and it must never render as a tool call: a tool call is the model
+ *  reaching out, this is the chassis reaching in.
+ *
+ *  `contributor` is the same slug `ContextSegment.id` carries for the standing brief's
+ *  rows, so the gauge's "Skill catalog · ~4k" and this row are visibly one block seen
+ *  from two distances. `placement` is where it landed in the request — `instructions` at
+ *  the head (re-sent every turn, invalidating the prompt-prefix cache when it churns) or
+ *  `prompt` at the tail of the turn's own message (volatile content kept out of that
+ *  cacheable prefix). `tokens` is a coarse estimate over the **whole** block; `text` is
+ *  capped for the wire and says so via `truncated`. */
+export interface ContextInjected extends Base {
+  type: "context.injected";
+  contributor: string;
+  placement: "instructions" | "prompt";
+  tokens: number;
+  text: string;
+  truncated: boolean;
+}
+
 // --- Notices ---------------------------------------------------------------
 export interface CitationAdded extends Base {
   type: "citation.added";
@@ -370,6 +415,7 @@ export type RunEvent =
   | ConversationTitled
   | ConversationCompacted
   | ConversationLinked
+  | ContextInjected
   | CitationAdded
   | ApprovalRequired
   | MessageQueued

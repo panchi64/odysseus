@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ContextSegment } from "~/lib/stream";
 import type { ContextUsage } from "../model";
-import { contextRows, segmentLabel } from "./contextRows";
+import { contextRows } from "./contextRows";
 
 const segment = (
   id: string,
@@ -106,21 +106,5 @@ describe("the rows are the backend's figures, laid out", () => {
     const rows = contextRows(usage({ used: 120_000, window: 100_000 }));
     expect(rows.at(-1)!.tokens).toBe(0);
     expect(rows.at(-1)!.share).toBe(0);
-  });
-});
-
-describe("a slug becomes a label without a registry to maintain", () => {
-  test("an unknown id reads as its own words", () => {
-    // Every tool category and instruction provider the backend grows later has to
-    // render correctly with no edit here — otherwise this list becomes a second
-    // catalog to keep in step with the real one.
-    expect(segmentLabel("skill_catalog")).toBe("Skill catalog");
-    expect(segmentLabel("files")).toBe("Files");
-    expect(segmentLabel("tool_results")).toBe("Tool results");
-  });
-
-  test("the few slugs whose own words would mislead are named", () => {
-    expect(segmentLabel("base")).toBe("Base prompt");
-    expect(segmentLabel("external")).toBe("MCP & connectors");
   });
 });
