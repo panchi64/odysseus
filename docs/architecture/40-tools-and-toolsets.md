@@ -184,6 +184,39 @@ The `AE-3` sensitivity model rests on a *known* list (shell, email, vault…). T
 
 Consistent with the whole posture: unknowns are contained until the operator deliberately, per-tool, relaxes them — never the agent. Lands with `MCP-*` / `INTEG-*`.
 
+### 4.5 The Auto level's review — deterministic first, then a model
+
+Three of the four permission levels answer a deferred call without help: Plan refuses it, Manual and Edit put it in front of the operator. **Auto is the level whose entire meaning is that the operator's answers are given for them**, so it needs something to give them — a review, in two stages, deterministic first (`services/permissions/`).
+
+```
+a deferred call at the Auto level
+  → capability.py    what this call would do at its WORST, extracted from its arguments
+  │                    a shell command: its programs, paths, env writes, network reach
+  │                    (shell_ast.py walks the real bash grammar via tree-sitter-bash)
+  │                  a file write: the one resolved target path
+  │                  an MCP call: the connector, the tool, and the argument KEYS
+  → judge.py         a strict read-only allowlist over that capability.  Its only power
+  │                    is to APPROVE; everything else escalates rather than being refused.
+  │                    An unrecognised AST shape, an env assignment, or a variable it
+  │                    cannot interpolate never passes — the extraction was incomplete,
+  │                    and an allowlist cannot be applied to part of a command.
+  → reviewer.py      one structured call on the `utility` model, scoring three axes:
+  │                    risk           low | high | too_destructive
+  │                    authorization  explicitly_no | neutral | explicitly_yes
+  │                    correctness    a sentence, or null
+  → decide.py        too_destructive blocks.  low runs unless the operator said no.
+                     high runs only on an explicit yes.  Everything else parks.
+```
+
+Four properties are load-bearing and each is there for a reason that is easy to lose:
+
+- **The cheap stage settles the common case.** `git status`, `ls src`, `grep -rn foo .` clear with no model call at all. That is what makes the allowlist affordable to keep narrow — narrowing it costs latency, widening it costs the operator's trust, and only one of those is recoverable.
+- **The reviewer is told the rubric and never the passing score.** The combination lives in `decide.py` and is written down nowhere the model can read it. A reviewer that knows the threshold optimises for the threshold, which turns three independent observations into one negotiated verdict.
+- **Its transcript carries user and assistant messages only — never tool results.** Everything the model has read from a file, a page or an MCP server is content someone else wrote, and a reviewer that saw it could be argued into approving the very call that untrusted text asked for. Same posture `XC-SEC-5` takes everywhere else, applied to the one call whose output is a permission. What it *does* see is fenced as untrusted on top of that.
+- **Every failure parks.** No utility model bound, a reviewer timeout, an unparseable answer — all of them return the call to the operator. This is the one place in the codebase where the conservative branch has to be the default (`XC-DEG-*`): a review that cannot run is not a review that passes.
+
+**And it is visible.** `review.started` / `review.completed` (additive to the frozen v1 protocol, no bump) carry the extracted worst case, the verdict, which stage settled it, and the three axes — rendered in the work log beside the call they judged. A level that answers for the operator is only worth having if they can read afterwards what was decided and why; without that, a tool call they never approved is indistinguishable from a gate that failed open.
+
 ---
 
 ## 5. How it all composes (one run)
@@ -191,7 +224,7 @@ Consistent with the whole posture: unknowns are contained until the operator del
 1. The orchestrator assembles `RunDeps` (run, owner, disabled-tool set, capability handles) — `agent/engine.py:run_chat_turn`.
 2. `build_agent_toolsets()` produces the gated, namespaced stack; the `Agent` is built with it (`deps_type=RunDeps`, `output_type=[str, DeferredToolRequests]`).
 3. The model runs its multi-step loop; for each call, the `_enabled_gate` and tool args are evaluated against `ctx.deps`. A non-sensitive tool executes and may emit `tool.progress`.
-4. A **sensitive** tool does *not* execute — the turn ends with `DeferredToolRequests`; the run parks (§4.1) and waits for `POST …/approve`.
+4. A **sensitive** tool does *not* execute — the turn ends with `DeferredToolRequests`. The engine rules on each deferred call: a standing conversation grant runs it, the thread's permission level refuses or parks it, and at the Auto level the review settles it (§4.5). What is still unanswered parks (§4.1) and waits for `POST …/approve`.
 5. `execute_code` runs in the sandbox if present, else reports disabled (§4.2); `run_host_command` always parks for approval first.
 
 The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` sensitivity + enable/disable, `AE-4` model-discerns) is a **dozen lines of toolset composition plus a per-tool `requires_approval` flag** — keyed on one deps object, with every harder case (host exec, scheduled tasks, external tools) reusing the *same* deferred-tool pause rather than inventing new control flow.
@@ -205,6 +238,7 @@ The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` 
 | Toolset stack (namespacing + enabled gate + approval gate) | ✅ built (`tools/toolsets.py`) |
 | `builtin`, `memory`, `code` categories | ✅ built |
 | D20 approval pause/resume (engine + `/runs/{id}/approve`) | ✅ built |
+| Auto-level review (shell judge + utility-model reviewer) | ✅ built (`services/permissions/`, `agent/gating.py`) |
 | D23 sandbox isolation + host escape hatch | ✅ built (`services/sandbox`, `tools/code.py`) |
 | Privilege gate (D14) | 🔭 seam reserved — empty until a second user exists |
 | Relevance pre-filter (D3) | 🔭 seam reserved — deliberately omitted |

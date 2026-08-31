@@ -6,6 +6,7 @@ import type {
   BlockKind,
   ContextBlock,
   HostCommandBlock,
+  ReviewBlock,
   TextBlock,
   ThinkingBlock,
   ToolBlock,
@@ -19,6 +20,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { ReviewCard } from "./ReviewCard";
 import { ToolCallCard } from "./ToolCallCard";
 import {
   classifyViewItem,
@@ -64,6 +66,7 @@ const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
   "thinking",
   "tool",
   "context",
+  "review",
   "host_command",
   "approval",
 ]);
@@ -213,6 +216,17 @@ export function BlockRow(
         <Rail top={props.top}>
           <ContextInjectionCard
             injection={(g().blocks[0] as ContextBlock).injection}
+            open={props.forceOpen}
+          />
+        </Rail>
+      </Match>
+      <Match when={g().kind === "review"}>
+        {/* On the rail, because it happened in the turn's sequence, and never `active`:
+            the rail's light means "the model is doing this now", and a review is the
+            chassis answering for the operator — the opposite kind of event. */}
+        <Rail top={props.top}>
+          <ReviewCard
+            review={(g().blocks[0] as ReviewBlock).review}
             open={props.forceOpen}
           />
         </Rail>

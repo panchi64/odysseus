@@ -38,6 +38,7 @@ export function hasLayers(blocks: AssistantBlock[] | undefined): boolean {
       b.kind === "thinking" ||
       b.kind === "tool" ||
       b.kind === "context" ||
+      b.kind === "review" ||
       b.kind === "host_command",
   );
 }
@@ -70,6 +71,17 @@ export function assembleTranscript(
           `CONTEXT INJECTED (${b.injection.contributor})\n${b.injection.text}`,
         );
         break;
+      case "review": {
+        // The verdict and its grounds both, because a pasted transcript is often exactly
+        // what an operator sends when asking why something ran — and "REVIEWED: allow"
+        // without the reason answers none of that.
+        const r = b.review;
+        const verdict = r.decision ?? "in progress";
+        parts.push(
+          `REVIEWED ${r.name}: ${verdict}${r.reason ? ` — ${r.reason}` : ""}\n${r.summary}`,
+        );
+        break;
+      }
       case "host_command": {
         const c = b.command;
         const out = c.error ?? c.stdout ?? "";
@@ -165,6 +177,15 @@ function hasImages(group: BlockGroup): boolean {
   return group.blocks.some((b) => b.kind === "tool" && b.tool.images?.length);
 }
 
+/** A review that refused the call it judged. Distinct from a review that *parked* one:
+ *  a park is followed by an approval card, which pins itself and carries the question;
+ *  a refusal is followed by nothing at all, so this row is the only account of it. */
+function hasRefusal(group: BlockGroup): boolean {
+  return group.blocks.some(
+    (b) => b.kind === "review" && b.review.decision === "block",
+  );
+}
+
 /** Work that must stay on screen whatever else folds: still in flight, waiting on
  *  a decision, failed, or carrying something to look at.
  *
@@ -211,6 +232,12 @@ function isCollapsible(group: BlockGroup): boolean {
   // watch, nothing to act on, and it arrives in a clump at the head of every turn. If
   // anything in a turn should fold, it is this.
   if (group.kind === "context") return true;
+  // A review that cleared or parked a call folds with the work it judged: the operator
+  // can open the log and read it, and nothing about it needs them *now*. A review that
+  // *refused* one does not — a call the chassis blocked outright on the operator's
+  // behalf is the single thing in a turn they are most likely to disagree with, and
+  // burying it inside a fold would make Auto's promise unverifiable in practice.
+  if (group.kind === "review") return !hasRefusal(group);
   if (group.kind === "tool" || group.kind === "host_command")
     return !pinsRunInline(group);
   return false;

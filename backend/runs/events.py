@@ -621,6 +621,48 @@ class ApprovalRequired(_Body):
     explanation: str | None = None
 
 
+class ReviewStarted(_Body):
+    """An action at the Auto level is being ruled on in the operator's place.
+
+    Auto's proposition is that the operator's approvals are given for them. The only thing
+    that makes that acceptable is that they can see it happening and read afterwards what
+    was decided and why — so the review announces itself before it runs, rather than a
+    tool call simply appearing to have been made.
+
+    ``summary`` is the action's extracted worst case, in the same words the reviewer is
+    judging and the operator can read. Additive to v1; no bump."""
+
+    type: Literal["review.started"] = "review.started"
+    tool_call_id: str
+    name: str
+    summary: str
+
+
+class ReviewCompleted(_Body):
+    """How the review ruled, on the three axes it ruled on.
+
+    ``decision`` is the outcome the run then took — ``allow`` ran the call without a
+    prompt, ``ask`` parked it for the operator anyway, ``block`` refused it outright. It
+    carries deliberately more than the outcome: ``stage`` says whether a deterministic
+    allowlist or a model settled it, and the three axes say what the model saw. An
+    operator reading only "allowed" learns nothing they can act on; one reading
+    "low risk, neutral authorization, cleared by the shell judge" can tell an
+    over-permissive rule from a well-judged call.
+
+    The axes are null when the model stage never ran — the judge cleared it, or nothing
+    was available to review with. Additive to v1; no bump."""
+
+    type: Literal["review.completed"] = "review.completed"
+    tool_call_id: str
+    name: str
+    decision: Literal["allow", "ask", "block"]
+    stage: Literal["judge", "reviewer"]
+    reason: str
+    risk: Literal["low", "high", "too_destructive"] | None = None
+    authorization: Literal["explicitly_no", "neutral", "explicitly_yes"] | None = None
+    correctness: str | None = None
+
+
 class MessageQueued(_Body):
     """The operator sent a message while this run was still executing; it is
     queued for injection at the run's next model-request boundary. ``text`` rides
@@ -705,6 +747,8 @@ EventBody = Annotated[
     | ConversationLinked
     | ContextInjected
     | ApprovalRequired
+    | ReviewStarted
+    | ReviewCompleted
     | MessageQueued
     | MessageEdited
     | MessageWithdrawn

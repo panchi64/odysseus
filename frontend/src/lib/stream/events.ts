@@ -334,6 +334,40 @@ export interface ApprovalRequired extends Base {
   summary: string;
   explanation: string | null;
 }
+/** An action at the Auto permission level is being ruled on in the operator's place.
+ *
+ *  Announced *before* it is ruled on, so a review that takes a model call reads as work
+ *  in progress rather than as a stalled turn. `summary` is the action's worst case as the
+ *  backend extracted it — the same words the reviewer is judging, so the operator and the
+ *  model are looking at one description rather than two. */
+export interface ReviewStarted extends Base {
+  type: "review.started";
+  tool_call_id: string;
+  name: string;
+  summary: string;
+}
+/** How the review ruled, and on what.
+ *
+ *  `decision` is what the run then did: `allow` ran the call with no prompt, `ask` parked
+ *  it for the operator anyway, `block` refused it outright. It deliberately carries more
+ *  than the outcome — `stage` says whether a deterministic allowlist or a model settled
+ *  it, and the three axes say what the model saw. "Allowed" alone tells the operator
+ *  nothing they can act on; "low risk, neutral authorization, cleared by the shell judge"
+ *  lets them tell an over-permissive rule from a well-judged call.
+ *
+ *  The axes are null when the model stage never ran — the judge cleared it, or there was
+ *  nothing to review with. */
+export interface ReviewCompleted extends Base {
+  type: "review.completed";
+  tool_call_id: string;
+  name: string;
+  decision: "allow" | "ask" | "block";
+  stage: "judge" | "reviewer";
+  reason: string;
+  risk: "low" | "high" | "too_destructive" | null;
+  authorization: "explicitly_no" | "neutral" | "explicitly_yes" | null;
+  correctness: string | null;
+}
 /** The operator sent a message while the run was still executing; it is queued
  *  for injection at the run's next model-request boundary. `text` rides inline
  *  so a reattaching client rebuilds the pending bubble purely from replay. */
@@ -418,6 +452,8 @@ export type RunEvent =
   | ContextInjected
   | CitationAdded
   | ApprovalRequired
+  | ReviewStarted
+  | ReviewCompleted
   | MessageQueued
   | MessageEdited
   | MessageWithdrawn

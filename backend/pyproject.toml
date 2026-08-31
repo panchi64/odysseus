@@ -64,6 +64,16 @@ dependencies = [
     "icalendar>=6.1",
     "caldav>=1.4",
     "python-dateutil>=2.9",
+    # The Auto permission level's deterministic stage (services/permissions/shell_ast.py)
+    # reads a shell command's worst case off its syntax before deciding whether it needs a
+    # model's opinion, and the cases that matter are exactly the ones a regex gets wrong —
+    # a `;` inside a quoted string, a `$(…)` inside a `"…"`. tree-sitter-bash is the real
+    # grammar, maintained, and it recovers from errors instead of raising, so a command it
+    # cannot parse comes back as a tree with error nodes we can see and refuse to vouch
+    # for. Chosen over bashlex, which is pure-Python but unmaintained since ~2019 and
+    # brittle on ordinary bashisms.
+    "tree-sitter>=0.23",
+    "tree-sitter-bash>=0.23",
 ]
 
 # Whole-DB SQLCipher was ruled out (no portable 3.14 wheels); at-rest

@@ -44,6 +44,7 @@ import type {
   HostCommand,
   HostCommandBlock,
   HostCommandPhase,
+  ReviewBlock,
   SessionMode,
   SnapshotDiff,
   SnapshotFile,
@@ -1190,6 +1191,19 @@ export function createChatStream(
     );
   }
 
+  /** The review row for one call, keyed by tool_call_id — `review.started` opens it and
+   *  `review.completed` fills in the verdict on the same block, so the row the operator
+   *  saw appear is the row that ends up carrying the answer. */
+  function findReview(
+    m: ChatMessage,
+    toolCallId: string,
+  ): ReviewBlock | undefined {
+    return m.blocks?.find(
+      (b): b is ReviewBlock =>
+        b.kind === "review" && b.review.toolCallId === toolCallId,
+    );
+  }
+
   /** Upsert a host-command *block*, keyed by tool_call_id. The host call's
    *  `tool.started`, `approval.required`, and `tool.completed` events all land
    *  here, each filling in the part it carries onto the same terminal block. */
@@ -1332,6 +1346,38 @@ export function createChatStream(
               truncated: ev.truncated,
             },
           });
+        });
+        break;
+      case "review.started":
+        // The chassis is about to answer for the operator. The row opens now rather than
+        // on the verdict, so a review that costs a model call reads as work in flight —
+        // and so it lands ahead of the tool row it judges, which is where it belongs.
+        patchById(assistantId, (m) => {
+          if (findReview(m, ev.tool_call_id)) return;
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "review",
+            id: `review-${ev.tool_call_id}`,
+            review: {
+              toolCallId: ev.tool_call_id,
+              name: ev.name,
+              summary: ev.summary,
+            },
+          });
+        });
+        break;
+      case "review.completed":
+        patchById(assistantId, (m) => {
+          const b = findReview(m, ev.tool_call_id);
+          if (!b) return;
+          b.review.decision = ev.decision;
+          b.review.stage = ev.stage;
+          b.review.reason = ev.reason;
+          // Null on the wire means the model stage never ran — the deterministic judge
+          // cleared it, or there was nothing to review with. Undefined here so the card
+          // renders the axes only when there are axes.
+          b.review.risk = ev.risk ?? undefined;
+          b.review.authorization = ev.authorization ?? undefined;
+          b.review.correctness = ev.correctness ?? undefined;
         });
         break;
       case "plan.updated":

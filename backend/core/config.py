@@ -170,6 +170,20 @@ class Settings(BaseSettings):
     # conversation for this long before lapsing back to strict per-call approval.
     approval_grant_ttl_s: float = 86400.0
 
+    # Auto review (`services/permissions`). At the Auto level a deferred call is settled
+    # by a deterministic shell judge and then, if that declines, by one structured call on
+    # the utility model. `review_timeout_s` bounds that call — it runs inside a live turn
+    # with the operator watching, so a stuck reviewer would hold the run open on a call
+    # nobody has been asked about, which is worse than the park it was avoiding. A timeout
+    # therefore parks, like every other way the review can fail. `review_max_tokens` is
+    # the output cap, sized like the title call's: reasoning is requested off, but a
+    # runtime that ignores the lever reasons anyway and the cap has to leave room for a
+    # think block plus three short fields. `review_transcript_messages` is how much of the
+    # thread the reviewer reads, counted from the end.
+    review_timeout_s: float = 30.0
+    review_max_tokens: int = 2048
+    review_transcript_messages: int = 12
+
     # Web search. `web_search_result_limit` caps results from the SearXNG provider;
     # `web_search_timeout_s` bounds one query (its own budget, not the fetch timeout).
     web_search_result_limit: int = 10
@@ -301,7 +315,6 @@ class Settings(BaseSettings):
     offline_fail_threshold: int = 3
     offline_recover_threshold: int = 2
     offline_anchors: list[str] = ["1.1.1.1:443", "8.8.8.8:443", "9.9.9.9:443"]
-
 
     # Auto-titling: name a fresh thread from its first exchange (a best-effort
     # reasoning-off utility call). On by default; the operator can rename either way.

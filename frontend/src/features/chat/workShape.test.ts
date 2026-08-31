@@ -131,6 +131,35 @@ describe("a fold made only of injected context still names itself", () => {
   });
 });
 
+describe("a folded review names the call it judged", () => {
+  function review(id: string, decision?: "allow" | "ask" | "block") {
+    return {
+      kind: "review" as const,
+      id,
+      review: {
+        toolCallId: id,
+        name: "shell_run_command",
+        summary: "Runs the shell command: git status",
+        decision,
+      },
+    };
+  }
+
+  test("the header borrows the judged tool's own glyph and word", () => {
+    // "Review · Shell · review: allow" says what happened; a header reading
+    // "Review" alone would say only that something did.
+    expect(shape([review("r1", "allow")]).latest).toEqual({
+      icon: "review",
+      label: "Shell",
+      detail: "review: allow",
+    });
+  });
+
+  test("a review still in flight says so rather than reading as settled", () => {
+    expect(shape([review("r1")]).latest?.detail).toBe("reviewing");
+  });
+});
+
 describe("workShape reports how much is folded", () => {
   test("steps counts the rows expanding would reveal, one per group", () => {
     expect(shape([think("a"), tool("b", "web_search"), think("c")]).steps).toBe(

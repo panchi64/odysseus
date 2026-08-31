@@ -209,6 +209,7 @@ export type AssistantBlock =
   | TextBlock
   | ToolBlock
   | ContextBlock
+  | ReviewBlock
   | HostCommandBlock
   | ApprovalBlock
   | ViewVersionBlock
@@ -256,6 +257,40 @@ export interface ContextInjection {
   tokens: number;
   text: string;
   truncated: boolean;
+}
+
+/** An action the chassis ruled on in the operator's place, at the Auto permission level
+ *  (`review.started` / `review.completed`).
+ *
+ *  It sits immediately ahead of the call it judged, and it is the whole of what makes Auto
+ *  acceptable: a level whose proposition is "give my answers for me" is only worth having
+ *  if the operator can read afterwards what was decided and on what grounds. Absent it,
+ *  a tool call they never approved is indistinguishable from a gate that failed open. */
+export interface ReviewBlock {
+  kind: "review";
+  id: string;
+  review: Review;
+}
+
+/** One review: what the action would do at its worst, how it was ruled on, and — when a
+ *  model rather than the deterministic judge ruled — the three axes it scored.
+ *
+ *  `decision` is undefined only while the review is in flight, which is a real state on a
+ *  live turn: the row appears the moment the review starts, so a thread that pauses for a
+ *  second on a model call reads as "being checked" and not as a stall. */
+export interface Review {
+  toolCallId: string;
+  /** The namespaced tool the model asked for. */
+  name: string;
+  /** The action's worst case, in the same words the reviewer judged. */
+  summary: string;
+  decision?: "allow" | "ask" | "block";
+  /** Which stage settled it: the deterministic allowlist, or the model. */
+  stage?: "judge" | "reviewer";
+  reason?: string;
+  risk?: "low" | "high" | "too_destructive";
+  authorization?: "explicitly_no" | "neutral" | "explicitly_yes";
+  correctness?: string;
 }
 
 /** A host-machine command, rendered as a persistent terminal. */

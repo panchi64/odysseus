@@ -20,15 +20,25 @@ things put a call in that list, and telling them apart is the whole job of this 
 standing conversation grant produces — the operator's explicit "stop asking me about this
 one", which the engine resolves *before* consulting the level, because a decision the
 operator already made outranks a policy. Expressing it in the same vocabulary is what
-keeps the engine to one dispatch, and it is the verdict Auto's review stage returns for a
-call it clears once that stage lands.
+keeps the engine to one dispatch, and it is also the verdict Auto's review returns for a
+call it clears.
+
+**The second half of this module is that review** (:func:`review`), which is what
+``REVIEW`` resolves to: the deterministic stage first (``judge.py``), the model second
+(``reviewer.py``), and the arithmetic over their answers here — deliberately *here*,
+where a reader can see the whole rule at once and where the reviewer cannot read it.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
+from services.permissions.capability import Capability
+from services.permissions.judge import judge
 from services.permissions.levels import ApprovalPolicy, beyond_scope, permission_spec
+from services.permissions.reviewer import Reviewer, ReviewRequest, ReviewVerdict
 
 
 class Decision(StrEnum):
@@ -37,14 +47,15 @@ class Decision(StrEnum):
     #: Run it, with no operator round-trip. Never the answer to a *level's* question —
     #: only to the operator's own standing grant, and to a review that cleared it.
     ALLOW = "allow"
-    #: Judge and review it (Auto). Parks while there is no review stage to run it
-    #: through — a missing judge degrades towards asking, never towards allowing.
+    #: Judge and review it (Auto) — :func:`review` settles it into one of the other
+    #: three. Not itself an outcome: a caller that cannot run the review parks.
     REVIEW = "review"
     #: Park the run and put the call in front of the operator.
     ASK = "ask"
-    #: Refuse it and tell the model why. The level does not permit this act at all, so
-    #: there is nothing for the operator to decide — under Plan the operator's answer is
-    #: already on the record, in the level they chose.
+    #: Refuse it and tell the model why. Either the level does not permit this act at all
+    #: — under Plan the operator's answer is already on the record, in the level they
+    #: chose — or the review found it unrecoverable. Two different refusals, two
+    #: different messages (:func:`blocked_message`, :func:`review_refusal`).
     BLOCK = "block"
 
 
@@ -86,4 +97,97 @@ def blocked_message(level: str, tool: str) -> str:
         f"This conversation is at the {permission_spec(level).level} permission level, so "
         f"{tool} was not run and the operator was not asked. Nothing here can change "
         "anything until they raise the level; say what you would do instead."
+    )
+
+
+# --- Auto's review ------------------------------------------------------------------
+#: Which stage settled a review — the deterministic allowlist, or the model.
+type ReviewStage = Literal["judge", "reviewer"]
+
+
+@dataclass(frozen=True)
+class ReviewOutcome:
+    """What the two stages made of one call, and why.
+
+    ``reason`` is not decoration. Auto's whole proposition is that the operator's answers
+    are given for them, and the only thing that makes that acceptable is being able to
+    read afterwards *what was decided and on what grounds* — so the reason travels onto
+    the work log's review row beside the call it judged.
+    """
+
+    decision: Decision
+    stage: ReviewStage
+    reason: str
+    #: The model stage's three axes, when it ran. None when the deterministic stage
+    #: settled it, or when the model stage could not be reached at all.
+    verdict: ReviewVerdict | None = None
+
+
+async def review(
+    capability: Capability,
+    *,
+    reviewer: Reviewer | None,
+    transcript: str = "",
+) -> ReviewOutcome:
+    """Rule on one call at the Auto level: the deterministic stage, then the model.
+
+    The combination, stated once here and written down nowhere the reviewer can read it
+    (``reviewer.py``):
+
+    - the deterministic stage's approval **runs**, with no model call at all;
+    - ``too_destructive`` **blocks**, whatever the operator is judged to have asked for —
+      an unrecoverable act is not something a conversation can authorize into being
+      recoverable, and this is the one place authorization does not enter the arithmetic;
+    - ``low`` risk **runs** unless the operator said no;
+    - ``high`` risk runs **only** on an explicit yes;
+    - everything else **parks**, and so does every way this can fail.
+
+    Note what is deliberately absent: ``correctness`` moves nothing. It is an observation
+    for the operator to read on the review row, not a fourth term — a reviewer that could
+    veto on "this looks like the wrong path" would be second-guessing the model's work
+    rather than ruling on its permission, and those are different jobs.
+    """
+    verdict_of_judge = judge(capability)
+    if verdict_of_judge.approved:
+        return ReviewOutcome(Decision.ALLOW, "judge", verdict_of_judge.reason)
+    if reviewer is None:
+        # No utility model bound, or none reachable from here. The conservative branch is
+        # the default at exactly this point, because the alternative is an action nobody
+        # — no operator, no judge, no reviewer — ever agreed to.
+        return ReviewOutcome(
+            Decision.ASK, "judge", f"{verdict_of_judge.reason}; no reviewer is available"
+        )
+    verdict = await reviewer(ReviewRequest(capability=capability, transcript=transcript))
+    if verdict is None:
+        return ReviewOutcome(
+            Decision.ASK, "reviewer", f"{verdict_of_judge.reason}; the review did not complete"
+        )
+    return ReviewOutcome(_verdict_decision(verdict), "reviewer", _verdict_reason(verdict), verdict)
+
+
+def _verdict_decision(verdict: ReviewVerdict) -> Decision:
+    if verdict.risk == "too_destructive":
+        return Decision.BLOCK
+    if verdict.risk == "low":
+        return Decision.ASK if verdict.authorization == "explicitly_no" else Decision.ALLOW
+    return Decision.ALLOW if verdict.authorization == "explicitly_yes" else Decision.ASK
+
+
+def _verdict_reason(verdict: ReviewVerdict) -> str:
+    reason = f"{verdict.risk} risk, authorization {verdict.authorization}"
+    return f"{reason}; {verdict.correctness}" if verdict.correctness else reason
+
+
+def review_refusal(tool: str, reason: str) -> str:
+    """What the model is told when the review refuses a call outright.
+
+    Distinct from :func:`blocked_message` because the two refusals are different facts and
+    a model that confused them would take the wrong next step: a level's refusal says
+    *this kind of act is not available in this thread*, and this one says *this particular
+    act cannot be undone*. The second leaves a smaller, safer version of the same act open.
+    """
+    return (
+        f"{tool} was not run: the review found it {reason}, and an action that cannot be "
+        "undone is never taken without the operator asking for it in so many words. "
+        "Propose a reversible version, or say what you need them to confirm."
     )

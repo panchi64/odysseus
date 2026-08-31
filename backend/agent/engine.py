@@ -13,7 +13,7 @@ we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
 :class:`ParkedTurn` so an approve decision can resume exactly where it left off.
 
 What lives *here* is the turn's control flow and the two orchestrators that wrap it.
-Four neighbours carry the concerns that aren't that, each with its own reason to change:
+Five neighbours carry the concerns that aren't that, each with its own reason to change:
 
 - ``history.py`` — the surgeries on a message list before it reaches a model or the
   store. Pure functions; each encodes one fact about how the library or a provider
@@ -24,6 +24,9 @@ Four neighbours carry the concerns that aren't that, each with its own reason to
   orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
 - ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
   operator is told.
+- ``gating.py`` — running the Auto level's review on a deferred call: resolving a
+  reviewer from the run's capabilities and announcing both ends of the review on the
+  stream. The rules it applies are ``services/permissions``'.
 """
 
 from __future__ import annotations
@@ -88,7 +91,14 @@ from services.conversations import (
 from services.llm import TOOL_CALL_SETTINGS
 from services.modes import mode_spec
 from services.notifications import NotificationService
-from services.permissions import Decision, blocked_message, decide
+from services.permissions import (
+    Decision,
+    Reviewer,
+    ReviewOutcome,
+    blocked_message,
+    decide,
+    review_refusal,
+)
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
@@ -103,6 +113,7 @@ from tools import (
 
 from .attachments import resolve_attachments
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
+from .gating import resolve_reviewer, review_call
 from .history import (
     drop_dangling_tool_calls,
     merge_consecutive_requests,
@@ -686,25 +697,49 @@ async def _drive_turn(
             granted = await grants.active(run.owner_id, conversation_id)
         settled: dict[str, ToolApproved | ToolDenied] = {}
         manual = []
+        # Resolved lazily and at most once per batch: building a reviewer is a registry
+        # resolution and a model construction, and the deterministic stage settles most
+        # calls without ever needing one (`agent/gating.py`).
+        reviewer: Reviewer | None = None
+        reviewer_resolved = False
         for call in output.approvals:
             decision = (
                 Decision.ALLOW
                 if covered_by_grant(call.tool_name, granted)
                 else decide(binding.permission, call.tool_name)
             )
+            reviewed: ReviewOutcome | None = None
+            if decision is Decision.REVIEW:
+                # Auto: the operator asked for their answers to be given for them, so a
+                # judge and then a reviewer give one. Both ends land on the stream, so the
+                # operator can always read afterwards why something ran without them.
+                if not reviewer_resolved:
+                    reviewer = await resolve_reviewer(caps, run.owner_id)
+                    reviewer_resolved = True
+                reviewed = await review_call(
+                    run,
+                    tool_call_id=call.tool_call_id,
+                    tool=call.tool_name,
+                    args=call.args_as_dict(),
+                    deps=deps,
+                    messages=messages,
+                    reviewer=reviewer,
+                )
+                decision = reviewed.decision
             if decision is Decision.ALLOW:
                 settled[call.tool_call_id] = ToolApproved()
             elif decision is Decision.BLOCK:
-                # The level does not permit this at all, so there is nothing to put in
-                # front of the operator — they already answered by choosing the level.
-                # The model is told, in place of the tool's result, and re-plans.
+                # Nothing to put in front of the operator, and two different reasons why:
+                # the level does not permit this act at all — they already answered by
+                # choosing the level — or the review found it unrecoverable. Two refusals,
+                # because a model that read them as one fact would take the wrong next
+                # step. Either way it is told in place of the tool's result and re-plans.
                 settled[call.tool_call_id] = ToolDenied(
-                    message=blocked_message(binding.permission, call.tool_name)
+                    message=review_refusal(call.tool_name, reviewed.reason)
+                    if reviewed is not None
+                    else blocked_message(binding.permission, call.tool_name)
                 )
             else:
-                # ASK, and — until the review stage exists — REVIEW too: a level whose
-                # policy is to review has no judge to run this through yet, and the
-                # direction a missing judge degrades in is towards the operator.
                 manual.append(call)
         if manual:
             await _park_for_approval(

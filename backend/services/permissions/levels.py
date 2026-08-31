@@ -129,8 +129,8 @@ PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
         level="edit", write_scope=WriteScope.WORKSPACE, approval_policy=ApprovalPolicy.ASK
     ),
     # The same reach as Edit, with the operator's decision replaced by a review rather
-    # than removed. Until that review exists it degrades to asking, which is the direction
-    # a missing judge has to degrade in.
+    # than removed: a deterministic judge, then a model reviewer, parking on any doubt
+    # and on every way the review can fail (`decide.py`).
     "auto": PermissionSpec(
         level="auto", write_scope=WriteScope.WORKSPACE, approval_policy=ApprovalPolicy.REVIEW
     ),
