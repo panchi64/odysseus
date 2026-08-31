@@ -14,11 +14,7 @@ from services.corpus.adapter import CorpusHit, SourceAdapter, SourceStatus
 from services.corpus.chunk_store import CorpusChunkStore
 from services.corpus.folder import FolderAdapter
 from services.corpus.index import CorpusIndex, CorpusStats
-from services.corpus.wrappers import (
-    ConversationAdapter,
-    MemoryAdapter,
-    StubSurfaceAdapter,
-)
+from services.corpus.wrappers import ConversationAdapter, MemoryAdapter
 
 __all__ = [
     "ConversationAdapter",
@@ -30,5 +26,4 @@ __all__ = [
     "MemoryAdapter",
     "SourceAdapter",
     "SourceStatus",
-    "StubSurfaceAdapter",
 ]

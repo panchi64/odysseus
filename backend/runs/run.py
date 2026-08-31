@@ -1,6 +1,6 @@
 """Pillar I — the Run: one identified, background-executing unit of work.
 
-Chat turns, agent tasks, and research jobs are all Runs; they differ only in
+Chat turns and agent tasks are all Runs; they differ only in
 the orchestrator that drives them. A Run owns its id/owner/status, its event
 stream (buffer + broker), and — once running — the asyncio task executing it.
 Status follows ``queued → running → {done | blocked | error | cancelled}``,

@@ -1,7 +1,7 @@
 """Substrate HTTP surface: observe, stream, and cancel a Run.
 
 These are the transport-level endpoints every orchestrator inherits. Creating a
-Run is a feature concern (chat/agent/research routes), not here — those call
+Run is a feature concern (the chat and agent routes), not here — those call
 ``request.app.state.runs.submit(...)`` and hand the client back the run id.
 """
 

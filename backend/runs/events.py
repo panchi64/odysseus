@@ -499,6 +499,27 @@ class ConversationCompacted(_Body):
     after_message_id: str | None = None
 
 
+class ConversationLinked(_Body):
+    """This turn opened another conversation, and the operator should know why.
+
+    A thread that spawns a thread is the one case where work leaves the surface the
+    operator is watching: the new one appears in their session list a moment later, and
+    without this it appears with no account of where it came from. ``relation`` names what
+    the new thread is *for* rather than what created it — today only ``"research"``, and
+    stated as a string rather than an enum because a second kind of linked thread should
+    be a new value, not a protocol change.
+
+    Emitted by the tool that opened it, mid-run, so a live client sees it as it happens.
+    Additive to v1; no bump."""
+
+    type: Literal["conversation.linked"] = "conversation.linked"
+    conversation_id: str
+    relation: str
+    # What the new thread was opened to do — its title, which for a research thread is the
+    # question. Null only if it was opened without one.
+    title: str | None = None
+
+
 # --- Notices -----------------------------------------------------------------
 class CitationAdded(_Body):
     type: Literal["citation.added"] = "citation.added"
@@ -574,7 +595,9 @@ class LimitNotice(_Body):
     type: Literal["limit.notice"] = "limit.notice"
     # "steps" | "tool_calls" | "tokens" | "time" | "loop" | "verify" | "context" | "search"
     # ("context" = the model's context window was exceeded; the run stops, it isn't degraded.
-    # "search" = deep research's two-empty-rounds abort.)
+    # "search" was the deep-research pipeline's two-empty-rounds abort; nothing emits it now
+    # that research is an ordinary thread, and it stays in the vocabulary because removing a
+    # value a client already handles is a narrowing, which this protocol does not do.)
     limit: str
     message: str
 
@@ -599,6 +622,7 @@ EventBody = Annotated[
     | BrowserLive
     | ConversationTitled
     | ConversationCompacted
+    | ConversationLinked
     | ApprovalRequired
     | MessageQueued
     | MessageEdited

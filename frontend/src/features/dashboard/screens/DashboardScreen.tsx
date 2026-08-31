@@ -116,7 +116,7 @@ export function DashboardScreen(): JSX.Element {
     <div class="flex min-h-full flex-col gap-6">
       <PageHeader
         title="Odysseus"
-        subtitle="Your private, self-hosted AI workspace — chat, research, memory, and more."
+        subtitle="Your private, self-hosted AI workspace — chat, code, research, memory, and more."
         assetId="ODY-HUD-00.1 EDITION 02"
         actions={
           <Show
@@ -202,8 +202,8 @@ export function DashboardScreen(): JSX.Element {
               {(list) => (
                 <For each={list()}>
                   {(run) => {
-                    // A run with no linked conversation (e.g. a bare research run)
-                    // renders as a plain row — nothing to navigate to.
+                    // A run with no linked conversation (a stateless one) renders
+                    // as a plain row — nothing to navigate to.
                     const clickable = () => !!run.conversationId;
                     return (
                       <ListRow

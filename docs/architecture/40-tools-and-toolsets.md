@@ -8,7 +8,7 @@
 
 **A tool is a thin adapter; the catalog the model sees is a policy.** Two ideas, kept apart:
 
-- **What a tool *is*** — a typed function the model can call. It owns *no* logic: it validates args (Pydantic AI does this), reaches a capability through `RunContext.deps`, and shapes the result. The actual work lives in `services/`, where a REST route or the research pipeline reaches the same capability directly. A tool is the model's *doorway* to a capability, never the capability itself.
+- **What a tool *is*** — a typed function the model can call. It owns *no* logic: it validates args (Pydantic AI does this), reaches a capability through `RunContext.deps`, and shapes the result. The actual work lives in `services/`, where a REST route reaches the same capability directly. A tool is the model's *doorway* to a capability, never the capability itself.
 - **What the model *sees*** — not the raw catalog, but the catalog **after our access policy runs**: namespaced, operator-disabled tools dropped, sensitivity attached. That policy is a short **stack of toolset wrappers** evaluated against the run's deps. It is the single most leveraged mapping in the design.
 
 Everything below is those two ideas worked out.

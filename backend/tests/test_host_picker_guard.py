@@ -1,8 +1,8 @@
 """Regression guard for the host file chooser: it is **agent-unreachable by
-construction**, the same invariant the Operator Shell carries. Nothing under `tools/`,
-`agent/`, or `research/` may reference `services/host_picker.py` — a model that could
-open dialogs on the operator's desktop (and read back whatever path came out) would be
-acting on the host outside every sensitive-action approval gate.
+construction**, the same invariant the Operator Shell carries. Nothing under `tools/` or
+`agent/` may reference `services/host_picker.py` — a model that could open dialogs on the
+operator's desktop (and read back whatever path came out) would be acting on the host
+outside every sensitive-action approval gate.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 _FORBIDDEN = ("host_picker", "PickerAvailability")
-_SCAN_DIRS = ("tools", "agent", "research")
+_SCAN_DIRS = ("tools", "agent")
 
 
 def _source_files() -> list[Path]:

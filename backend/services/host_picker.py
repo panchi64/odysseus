@@ -13,7 +13,7 @@ no OS-specific facility is load-bearing for any core function, and the helpers b
 a convenience layer that degrades to typing.
 
 **Agent-unreachable by construction**: imported only by its route and the app wiring,
-never by ``tools/``/``agent/``/``research/`` (enforced by
+never by ``tools/`` or ``agent/`` (enforced by
 ``tests/test_host_picker_guard.py``). A model that could open host dialogs — or read back
 arbitrary paths — would be reaching outside every approval gate.
 

@@ -43,19 +43,17 @@ from models._fields import utcnow
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.project import Project
-from models.research import ResearchRun
 from models.task import ScheduledTask
 from services.settings_store import ACTIVE_PROJECT_KEY, SettingsStore
 
 #: Every entity that carries a `project_id`. Written out because there is no shared base
 #: class — each model declares `owner_id` inline too — and because deleting a project has
 #: to unfile *all* of them or the ones it misses vanish from every listing forever.
-#: `tests/test_projects.py` pins this against the live schema, so a sixth scoped entity
+#: `tests/test_projects.py` pins this against the live schema, so a fourth scoped entity
 #: fails there rather than silently losing its rows on the next project delete.
 SCOPED_MODELS: tuple[type[SQLModel], ...] = (
     Conversation,
     ScheduledTask,
-    ResearchRun,
     CorpusSource,
 )
 

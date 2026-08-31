@@ -483,7 +483,7 @@ QWEN3-30B-A3B-Q4 · 18.2 GB    ← meta,    mono 11, dim, uppercase
 
 `surface` fill, `radius-2`, `space-4` padding, `shadow-1` (which carries its own hairline ring). No border. Optional header: sans `label` left, meta/status right. Selected state lifts to `surface-raised` — never a 2px border.
 
-`Composer` takes a `bare` prop too, but it means something narrower: **it drops the fill and keeps the bloom.** For a composer sitting inside another surface (the research intake, in a `Panel`), a fill on a fill is the box-in-a-box §7 exists to stop, and it reads as a grey slab. The bloom is not part of that problem — it is *light, not a surface*, and it is the thing that says "type here". A bare `Panel` around a bare `Composer` leaves exactly one thing on the page: the aura.
+`Composer` takes a `bare` prop too, but it means something narrower: **it drops the fill and keeps the bloom.** For a composer sitting inside another surface (nested in a `Panel`), a fill on a fill is the box-in-a-box §7 exists to stop, and it reads as a grey slab. The bloom is not part of that problem — it is *light, not a surface*, and it is the thing that says "type here". A bare `Panel` around a bare `Composer` leaves exactly one thing on the page: the aura.
 
 A `bare` panel also keeps its **state** shadow (`active`/`alert`) while dropping the resting `shadow-1`. `shadow-1` exists to define a surface and there isn't one; a live or failing state is semantics, and a panel that drops its fill shouldn't go silent about being live.
 
@@ -593,7 +593,7 @@ Anatomy, top to bottom, inside one `surface` card on `radius-2` with `shadow-1`:
 
 It takes one of two forms, and the difference is what sits above it (`edge`):
 
-- **`bloom` — the wide ambient aura (§6.2).** For a composer that is the screen: the home launchpad, the research intake. Nothing is behind it for the light to fall on, and the aura reads as the field floating in space.
+- **`bloom` — the wide ambient aura (§6.2).** For a composer that is the screen: the home launchpad. Nothing is behind it for the light to fall on, and the aura reads as the field floating in space.
 - **`led` — a strip light on the top edge (§10.9, `side="top"`, `tone="neutral"`).** For the composer docked under a live transcript. The bloom's ~90px of upward reach lands squarely on the last thing the model said and washes it out; a rule of light does the same job in one line and separates the input from the conversation instead of bleeding into it. The card squares its top corners to meet the strip, and keeps `shadow-1` — the bloom's hairline ring goes with the bloom, and in Paper that ring is the only thing between a white card and a white page.
 
 **Docked, it floats.** No rule welded to the bottom edge — the sticky wrapper carries the page background so the transcript scrolls out of sight behind a card that sits above it. No gradient scrim: the ground colour does the job.

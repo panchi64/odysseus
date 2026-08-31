@@ -48,10 +48,15 @@ export const AREAS: NavArea[] = [
  * The destinations kept outside the one area.
  *
  * Chat sits first because the rail beneath it *is* chat — its thread list. The
- * three below it are the surfaces still worth a page and not mail: the corpus
- * the assistant reads from, the research it produces, and the compare bench.
- * Each is a place with its own screen, so a rail row is the honest affordance;
- * none is a group, so none is an area.
+ * two below it are the surfaces still worth a page and not mail: the corpus the
+ * assistant reads from, and the compare bench. Each is a place with its own
+ * screen, so a rail row is the honest affordance; none is a group, so none is an
+ * area.
+ *
+ * Research is deliberately **not** here any more. It stopped being a surface that
+ * produces reports and became a *mode a thread can be in*, so its home is the
+ * thread list beneath Chat — a page of its own would list the same conversations
+ * twice under two names.
  *
  * MCP is deliberately **not** here. Registering a tool server and deciding which
  * of its tools may run is configuration — a value you set and leave — so it is a
@@ -82,16 +87,6 @@ export const PINS: NavPin[] = [
       connected: true,
       description:
         "The unified retrieval corpus — every source the assistant can search (RAG)",
-    },
-  },
-  {
-    slot: "top",
-    item: {
-      label: "Research",
-      href: "/research",
-      icon: "research",
-      connected: true,
-      description: "Deep, multi-source research reports, kept as reference",
     },
   },
   {

@@ -1,8 +1,8 @@
-"""Run-wide query/URL dedupe (DR-1.4) — normalized-exact, scoped to one run."""
+"""Run-wide query/URL dedupe — normalized-exact, scoped to one run."""
 
 from __future__ import annotations
 
-from research.dedupe import DedupeSets, canonicalize_url, normalize_query
+from services.search import DedupeSets, canonicalize_url, normalize_query
 
 
 def test_normalize_query_folds_case_and_whitespace():

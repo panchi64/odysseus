@@ -121,16 +121,16 @@ export interface ComposerProps {
    *  sit directly on whatever is behind them, with the aura still marking them
    *  as the point of action.
    *
-   *  For a composer that sits inside another surface (the research intake, in a
-   *  `Panel`): a fill on a fill is the box-in-a-box §7 exists to stop, and it
-   *  reads as a grey slab. The bloom is not part of that problem — it is light,
-   *  not a surface, and it is the thing that says "type here". */
+   *  For a composer that sits inside another surface (nested in a `Panel`, say):
+   *  a fill on a fill is the box-in-a-box §7 exists to stop, and it reads as a
+   *  grey slab. The bloom is not part of that problem — it is light, not a
+   *  surface, and it is the thing that says "type here". */
   bare?: boolean;
   /** How the composer marks itself as the point of action.
    *
    *  `bloom` (default) is the wide ambient aura — right where the composer is
-   *  the whole screen, floating in space (the home launchpad, the research
-   *  intake). `led` swaps it for a lit strip across the **top** edge: inside a
+   *  the whole screen, floating in space (the home launchpad). `led` swaps it
+   *  for a lit strip across the **top** edge: inside a
    *  live conversation the aura had ~90px of upward reach and washed over the
    *  last thing the model said, and a rail says "the input starts here" without
    *  spilling onto the transcript. */

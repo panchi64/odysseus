@@ -21,7 +21,7 @@ const fillBg: Record<NonNullable<ProgressBarProps["tone"]>, string> = {
 };
 
 /** Determinate progress as a mechanical bar — used for downloads, uploads,
- *  research rounds. Never a spinner. */
+ *  index passes. Never a spinner. */
 export function ProgressBar(props: ProgressBarProps): JSX.Element {
   const [local] = splitProps(props, [
     "value",

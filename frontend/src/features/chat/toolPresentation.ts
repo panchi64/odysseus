@@ -206,7 +206,7 @@ const TOOLS: Record<string, ToolEntry> = {
   research_read: {
     icon: "research",
     label: "Read research",
-    keys: ["research_id"],
+    keys: ["conversation_id"],
   },
   research_start: { icon: "research", label: "Research", keys: ["question"] },
 

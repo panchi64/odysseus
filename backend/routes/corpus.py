@@ -28,7 +28,6 @@ _SURFACE_ICONS = {
     "surf-uploads": "upload",
     "surf-memory": "database",
     "surf-conversations": "chat",
-    "surf-research": "research",
 }
 
 

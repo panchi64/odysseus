@@ -257,7 +257,7 @@ export function RagConfigScreen(): JSX.Element {
               <EmptyState
                 icon="library"
                 message="No surfaces"
-                hint="Uploads, memory and research index here automatically."
+                hint="Uploads, memory and conversations index here automatically."
               />
             }
           >

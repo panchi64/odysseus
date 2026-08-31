@@ -14,7 +14,7 @@ const STATIC_TITLES: Record<string, string> = {
 function titleFor(pathname: string): string {
   if (STATIC_TITLES[pathname]) return STATIC_TITLES[pathname];
   // The same longest-prefix resolution the rail uses, so a detail route
-  // (`/research/r-007`) is titled by the surface it belongs to and the title can
+  // (`/rag/src-007`) is titled by the surface it belongs to and the title can
   // never disagree with the highlighted row.
   return itemForPath(pathname)?.label ?? "Not Found";
 }

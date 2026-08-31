@@ -44,7 +44,7 @@ Everything is built on three layers. Read them in this order.
 
 ### Pillar I — The Run substrate (the chassis)
 
-A **Run** is the central abstraction: one server-side, identified, background-executing unit of work for one user request. Chat turns, agent tasks, and deep-research jobs are all Runs — they differ only in which *orchestrator* drives them, not in how they are launched, streamed, observed, resumed, or cancelled.
+A **Run** is the central abstraction: one server-side, identified, background-executing unit of work for one user request. Chat turns (in every mode, research included) and agent tasks are all Runs — they differ only in which *orchestrator* drives them, not in how they are launched, streamed, observed, resumed, or cancelled.
 
 A Run owns:
 
@@ -52,9 +52,9 @@ A Run owns:
 - a **typed, sequence-numbered event stream** (Pillar II) published to an in-process broker,
 - an **in-memory event buffer** so a client that disconnects and reconnects can replay what it missed (`AE-7`) — this lives only as long as the server process, which is exactly what the spec requires,
 - a background **asyncio task** tracked in a `RunRegistry`, decoupled from any client connection: closing the browser does not stop the work (`AE-7.1`),
-- **bounds**: a max-step ceiling (`AE-1.5`), optional tool-call ceiling (`AE-1.6`), an inactivity watchdog and an opt-in wall-clock limit (`XC-PERF-2`), and cancellation that takes effect at the next step boundary (`DR-3.3`, `CHAT-5`). The step ceiling and the watchdog apply to every run; the wall clock is off unless the deploy or the operator sets one, since a turn that is merely slow is a turn we want to let finish. Research supplies its own.
+- **bounds**: a max-step ceiling (`AE-1.5`), optional tool-call ceiling (`AE-1.6`), an inactivity watchdog and an opt-in wall-clock limit (`XC-PERF-2`), and cancellation that takes effect at the next step boundary (`DR-3.3`, `CHAT-5`). The step ceiling and the watchdog apply to every run; the wall clock is off unless the deploy or the operator sets one, since a turn that is merely slow is a turn we want to let finish. A mode may raise the step ceiling for itself — research does — but never lower the operator's own.
 
-Because every long-running feature is a Run, continuity/resume/cancel/timeout/metrics are written **once** and inherited by chat, agent, and research alike. ⟦OPEN: D1 transport, D2 concurrency model⟧
+Because every long-running feature is a Run, continuity/resume/cancel/timeout/metrics are written **once** and inherited everywhere. ⟦OPEN: D1 transport, D2 concurrency model⟧
 
 → detail: [`10-run-substrate.md`](./10-run-substrate.md)
 
@@ -85,7 +85,7 @@ Three nested concerns:
 
    This is the single most leveraged mapping in the design: the spec's entire access-control + namespacing story is *composition of library primitives keyed on per-run dependencies*, not bespoke machinery. Per **D3** we deliberately omit relevance pre-filtering (`AE-4.1`, a waivable SHOULD-performance) — capable native-tool-call models on one powerful host select their own tools, and `AE-4.2` is trivially met since every tool is always present.
 
-3. **Capabilities** (`services/`) are the actual implementations — web search, vector store, memory, embeddings, the model registry, mail — each an async interface with a graceful-degradation story (`XC-DEG-*`). **Tools are thin adapters over capabilities.** The same capability is reused by a tool (agent calls it), by the research pipeline (calls it directly), and by a plain REST route (user calls it directly). Logic never hides inside a tool.
+3. **Capabilities** (`services/`) are the actual implementations — web search, vector store, memory, embeddings, the model registry, mail — each an async interface with a graceful-degradation story (`XC-DEG-*`). **Tools are thin adapters over capabilities.** The same capability is reused by a tool (agent calls it) and by a plain REST route (user calls it directly). Logic never hides inside a tool.
 
 → details: [`30-agent-engine.md`](./30-agent-engine.md), [`40-tools-and-toolsets.md`](./40-tools-and-toolsets.md), [`50-capabilities.md`](./50-capabilities.md)
 
@@ -121,12 +121,11 @@ backend/
                     #             history processors, event translation
   tools/            # tool definitions grouped by AE-2 category — thin adapters over services/
   services/         # capabilities: llm, embeddings, vectorstore, search, memory, registry, mail, dav, notify
-  research/         # the deep-research orchestrator (its own pipeline on the Run substrate, reusing services/)
   routes/           # thin FastAPI routers, one per feature surface
   tests/
 ```
 
-Dependency direction is strictly downward: `routes → agent/research → tools → services → core`. `runs/` is foundation the orchestrators sit on. Nothing in `services/` imports an orchestrator.
+Dependency direction is strictly downward: `routes → agent → tools → services → core`. `runs/` is foundation the orchestrators sit on. Nothing in `services/` imports an orchestrator.
 
 ---
 
@@ -140,7 +139,7 @@ Dependency direction is strictly downward: `routes → agent/research → tools 
 6. On the model's final output, the **meta-loop** optionally verifies deliverables and may make one bounded corrective re-attempt; then the orchestrator emits final metrics and an explicit end-of-turn, and persists the updated `ModelMessage` history.
 7. Throughout, the inactivity watchdog — and a wall-clock limit, where one is configured — can cut the run off; a `POST /runs/{id}/cancel` stops it at the next step boundary. Disconnect at any point leaves the run running and resumable.
 
-Deep research is the same skeleton with a different orchestrator: a rounds-based pipeline (plan → search → read → analyze → write) emitting phase/progress events on the same substrate, reusing the same search/LLM capabilities, bounded by rounds + time (`DR-3`).
+Deep research is **not** a different skeleton. It was once a rounds-based pipeline of its own — plan, search, read, analyze, write, bounded by rounds and time — and is now a *mode a conversation is in*: the same flow above, with a prompt that says gather before you conclude, a higher round-trip ceiling, and the web-heavy end of the catalog. A thread may open another thread in that mode (`research_start`), which is an ordinary turn in a new conversation and notifies like one.
 
 ---
 

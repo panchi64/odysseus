@@ -26,6 +26,7 @@ from core.container import ServiceContainer
 from runs import Run
 from services.modes import DEFAULT_MODE, ModeId
 from services.permissions import DEFAULT_PERMISSION, PermissionLevel
+from services.search import DedupeSets
 from services.workspace import RunWorkspace
 
 
@@ -68,6 +69,11 @@ class RunDeps:
     # accumulating in the app-wide toolset. A conversation's browser outlives the run, so
     # without this every browse tool call would re-announce the same live session.
     announced_browsers: set[str] = field(default_factory=set, repr=False, compare=False)
+    # The queries this run has already searched and the pages it has already fetched, so
+    # the web tools can refuse a repeat before it costs a round trip. Per-run for the same
+    # reason as the two above — and deliberately per *run* rather than per conversation:
+    # "I already read this" is a fact about the investigation in flight, not a durable one.
+    web_dedupe: DedupeSets = field(default_factory=DedupeSets, repr=False, compare=False)
 
     @property
     def sandbox_key(self) -> str:

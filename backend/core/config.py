@@ -365,22 +365,6 @@ class Settings(BaseSettings):
     auto_compact_max_tokens: int = 4096
     auto_compact_timeout_s: float = 120.0
 
-    # Deep research (DR-*): a run is a deterministic rounds loop with a dynamic
-    # per-round fan-out of search/read workers, bounded by whichever of rounds or wall-
-    # clock time comes first (DR-3.1). `research_max_concurrency` caps how many workers
-    # run at once within a round (DR-3.4); `research_round_floor` is the minimum number
-    # of rounds before the comprehensiveness judge is even consulted, so a run can't
-    # declare victory after a single lucky round (DR-3.2). `research_empty_rounds_abort`
-    # is how many consecutive rounds of zero usable search results it takes to conclude
-    # search is unavailable and stop with a clear message rather than an empty or
-    # fabricated report (DR-4.1). All operator-configurable (DR-6.1); these are the
-    # defaults.
-    research_max_rounds: int = 4
-    research_time_limit_s: float = 900.0
-    research_round_floor: int = 2
-    research_max_concurrency: int = 4
-    research_empty_rounds_abort: int = 2
-
 
 @lru_cache
 def get_settings() -> Settings:

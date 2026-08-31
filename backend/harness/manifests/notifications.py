@@ -62,10 +62,15 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             logger.exception("notifications: failed to resolve run %s at terminal", run.id)
 
     async def _notify_conversation_terminal(run: Run, watched: bool) -> None:
-        """Only conversation-linked runs notify (a stateless/detached run — research
-        included — has no thread to deep-link to); cancelled and blocked outcomes
-        stay silent — the operator asked for the cancel, and a bound/limit stop
-        isn't a noteworthy failure."""
+        """Only conversation-linked runs notify (a stateless/detached run has no thread
+        to deep-link to); cancelled and blocked outcomes stay silent — the operator asked
+        for the cancel, and a bound/limit stop isn't a noteworthy failure.
+
+        This is also what announces a **research thread** finishing, which used to need a
+        policy of its own: research was a conversation-less run against a store, so its
+        completion had to be special-cased. A research thread is a thread, nobody is
+        streaming the run the agent started in the background, and so the ordinary
+        "finished while you weren't watching" branch says exactly the right thing."""
         if run.conversation_id is None or run.status in (RunStatus.cancelled, RunStatus.blocked):
             return
         try:

@@ -12,6 +12,18 @@ and the model tries a different source — bounded by the tool's retry budget. A
 *missing* capability (web not wired, or no provider configured) returns a plain
 message instead, the same graceful-degradation shape as the memory tools — a retry
 can't fix it.
+
+**A repeat is refused before it costs anything.** A thread that reads widely — a research
+thread most of all — loops: it re-asks a query it already asked, or re-fetches a page
+whose text is already sitting in its own context, and pays a full network round trip and a
+second copy of the result for nothing. The run's :class:`~services.search.DedupeSets`
+(``RunDeps.web_dedupe``) is checked *before* the call and committed only *after* it
+succeeds, so a search that failed or a page that refused to render stays eligible. The
+refusal says plainly that the answer is already in the transcript, because a bare "no
+results" would read as "the web has nothing" and send the model looking again.
+
+Continuing a long page is the one deliberate re-fetch: ``offset > 0`` is the documented
+way to page through a truncated result, so it is never deduped.
 """
 
 from __future__ import annotations
@@ -46,10 +58,20 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         svc = ctx.deps.caps.get_optional(SearchService)
         if svc is None:
             return "Web search is unavailable."
+        dedupe = ctx.deps.web_dedupe
+        if not dedupe.peek_query(query):
+            return (
+                f"Already searched {query!r} in this run — its results are above. "
+                "Ask a different question or read one of the results you already have."
+            )
         try:
-            return await svc.search(ctx.deps.owner_id, query, limit=limit, time_range=time_range)
+            results = await svc.search(
+                ctx.deps.owner_id, query, limit=limit, time_range=time_range
+            )
         except DegradedCapabilityError as exc:
             return f"Web search is unavailable: {exc}"
+        dedupe.try_query(query)
+        return results
 
     @toolset.tool(retries=2)
     async def fetch(
@@ -67,8 +89,18 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         svc = ctx.deps.caps.get_optional(BrowserFetcher)
         if svc is None:
             return "Web fetch is unavailable."
+        dedupe = ctx.deps.web_dedupe
+        # `offset` is how a truncated page is continued, so a paging call is a different
+        # read of the same URL rather than a repeat of one.
+        first_read = offset == 0
+        if first_read and not dedupe.peek_url(url):
+            return (
+                f"Already fetched {url} in this run — its content is above. Re-read it "
+                "there, pass `offset` to continue past where it was truncated, or pick "
+                "a different source."
+            )
         try:
-            return await svc.fetch(ctx.deps.owner_id, url, offset=offset, goal=goal)
+            page = await svc.fetch(ctx.deps.owner_id, url, offset=offset, goal=goal)
         except SSRFError as exc:
             # A refused target is a hard boundary, not a "try again" — tell the model
             # plainly so it moves on instead of probing variants of a blocked address.
@@ -76,5 +108,8 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         except WebFetchError as exc:
             # Recoverable: the page couldn't be read — let the model pick another source.
             raise ModelRetry(str(exc)) from exc
+        if first_read:
+            dedupe.try_url(url)
+        return page
 
     return toolset

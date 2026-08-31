@@ -1545,6 +1545,18 @@ export function createChatStream(
         // for the beat before that.
         revealTitle(ev.conversation_id, ev.title);
         break;
+      case "conversation.linked":
+        // The turn spawned a thread of its own. Pull the list now rather than at
+        // the end of the turn: the new thread is already running, and a session
+        // that exists but isn't listed for another few minutes reads as work that
+        // went nowhere. The toast is the account of *why* a row appeared.
+        refreshSessions();
+        toast.info(
+          ev.title
+            ? `Research thread started — ${ev.title}`
+            : "Research thread started.",
+        );
+        break;
       case "run.error":
         toast.error(ev.message || "The run failed.");
         patchById(assistantId, (m) => (m.streaming = false));

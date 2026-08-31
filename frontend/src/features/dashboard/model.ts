@@ -38,7 +38,7 @@ export interface Overview {
 /** A run still in flight (not yet terminal) — the IN FLIGHT panel's unit. */
 export interface ActiveRun {
   id: string;
-  /** Display tag: CHAT / RESEARCH / AGENT. */
+  /** Display tag: CHAT / AGENT. */
   kind: string;
   /** Human one-liner for the row. */
   label: string;
@@ -46,7 +46,6 @@ export interface ActiveRun {
   /** Compact status readout, e.g. RUNNING / QUEUED / NEEDS APPROVAL. */
   detail: string;
   /** The conversation this run belongs to, when it's chat-linked — the row is
-   *  clickable straight through to it. Absent for a run with no conversation
-   *  (e.g. a research run not yet tied to a thread). */
+   *  clickable straight through to it. Absent for a stateless run. */
   conversationId?: string;
 }

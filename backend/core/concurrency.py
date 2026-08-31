@@ -1,8 +1,8 @@
 """Bounded fan-out.
 
 Several places in the backend have the same shape: a list of independent awaitables that
-should run concurrently, but not *all* concurrently — a research round's per-query legs, a
-mail listing's per-message fetches, a reaper's per-session teardowns. Unbounded
+should run concurrently, but not *all* concurrently — a mail listing's per-message
+fetches, a reaper's per-session teardowns. Unbounded
 ``asyncio.gather`` over a page of remote calls is a burst the far side may rate-limit;
 running them one at a time turns one round trip into fifty.
 

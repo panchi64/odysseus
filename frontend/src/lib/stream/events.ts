@@ -263,6 +263,17 @@ export interface ConversationCompacted extends Base {
    *  guess and could land somewhere a reload disagrees with. Null ⇒ append. */
   after_message_id: string | null;
 }
+/** This turn opened another conversation — today only a research thread, started
+ *  by `research_start`. The new thread appears in the session list a moment
+ *  later; without this it would appear with no account of where it came from.
+ *  `relation` says what the new thread is *for*, as a string rather than a union
+ *  so a second kind of linked thread is a new value and not a wire change. */
+export interface ConversationLinked extends Base {
+  type: "conversation.linked";
+  conversation_id: string;
+  relation: string;
+  title: string | null;
+}
 
 // --- Notices ---------------------------------------------------------------
 export interface CitationAdded extends Base {
@@ -324,8 +335,9 @@ export interface PlanUpdated extends Base {
 export interface LimitNotice extends Base {
   type: "limit.notice";
   /** "context" = the model's context window was exceeded; the run stops (it isn't
-   *  silently degraded). "search" = deep research's two-empty-rounds abort
-   *  (DR-4.1). The bound stops mirror backend/runs/events.py. */
+   *  silently degraded). "search" was the deep-research pipeline's two-empty-rounds
+   *  abort — nothing emits it now that research is an ordinary thread, and it stays
+   *  handled because the wire never narrows. Mirrors backend/runs/events.py. */
   limit:
     | "steps"
     | "tool_calls"
@@ -357,6 +369,7 @@ export type RunEvent =
   | BrowserLive
   | ConversationTitled
   | ConversationCompacted
+  | ConversationLinked
   | CitationAdded
   | ApprovalRequired
   | MessageQueued

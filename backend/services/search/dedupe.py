@@ -1,10 +1,20 @@
 """Run-wide dedupe: a query or URL is dropped before any network call.
 
-DR-1.4: a source MUST NOT be fetched more than once within a run, and the same query
-MUST NOT be repeated. Dedupe is normalized-exact — case/whitespace-folded queries,
-canonicalized URLs — scoped to one run (a fresh :class:`DedupeSets` per run). It is
-the caller's job to check ``try_query``/``try_url`` *before* making the search/fetch
-call, so a repeat costs nothing, not just "isn't recorded twice".
+A source is not fetched twice within one run, and the same query is not asked twice.
+Dedupe is normalized-exact — case/whitespace-folded queries, canonicalized URLs — and
+scoped to one run (a fresh :class:`DedupeSets` per run, carried on ``RunDeps``), because
+"already read" is a fact about *this* investigation and not a durable one: the page may
+well have changed by tomorrow.
+
+The check belongs *before* the network call, so a repeat costs nothing rather than merely
+"isn't recorded twice". The seen-set is committed *after* the call succeeds, which is what
+:meth:`DedupeSets.peek_query` and :meth:`DedupeSets.peek_url` are for — a search that
+failed or a page that refused to render was never actually read, and burning its key would
+tell the model it has evidence it does not have.
+
+This began as the deep-research pipeline's own bookkeeping, where one orchestrator owned
+the whole gathering loop. Gathering is now something any thread does through the ordinary
+web tools, so the discipline moved down beside the capability it constrains.
 """
 
 from __future__ import annotations

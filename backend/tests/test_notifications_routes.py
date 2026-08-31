@@ -123,7 +123,6 @@ async def test_notification_out_is_camel_case():
             "body",
             "conversationId",
             "runId",
-            "researchId",
             "createdAt",
             "readAt",
             "resolvedAt",

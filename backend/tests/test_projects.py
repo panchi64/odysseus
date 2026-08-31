@@ -22,14 +22,11 @@ from core.exceptions import InvalidInputError, NotFoundError
 from core.vault import Vault
 from models.conversation import Conversation
 from models.corpus import CorpusSource
-from models.research import ResearchRun
 from models.task import ScheduledTask
-from research import ResearchPlan
-from routes.research import ClarifyVerdict
 from services.projects import ProjectStore, project_clause, visible_project_ids
 from services.projects.store import SCOPED_MODELS
 from services.settings_store import SettingsStore
-from tests._helpers import client_app, patch_model_resolution
+from tests._helpers import client_app
 
 
 async def _store(tmp_path) -> ProjectStore:
@@ -121,11 +118,15 @@ class TestDeletingAProject:
         def seed(session: Session) -> None:
             session.add(Conversation(id="c-1", owner_id="operator", project_id=project.id))
             session.add(
-                ResearchRun(
-                    id="r-1",
+                ScheduledTask(
+                    id="t-1",
                     owner_id="operator",
                     project_id=project.id,
-                    question_enc="q",
+                    kind="agent",
+                    title_enc="t",
+                    prompt_enc="p",
+                    schedule_type="run_at",
+                    output="notification",
                 )
             )
             session.commit()
@@ -136,7 +137,7 @@ class TestDeletingAProject:
         def read(session: Session) -> list[str | None]:
             return [
                 session.get(Conversation, "c-1").project_id,  # type: ignore[union-attr]
-                session.get(ResearchRun, "r-1").project_id,  # type: ignore[union-attr]
+                session.get(ScheduledTask, "t-1").project_id,  # type: ignore[union-attr]
             ]
 
         # A deleted id can never be active again, so rows still pointing at it would
@@ -296,32 +297,6 @@ class TestScopedSurfaces:
             await self._seed(app)
             assert await self._listed(client, "all") == ["c-a", "c-b", "c-unfiled"]
 
-    async def test_research_scopes_the_same_way(self):
-        async with client_app() as (client, app):
-            # Sealed with the app's own vault: these rows are read back through the
-            # routes, which decrypt, so a placeholder string is not a valid fixture.
-            seal = app.state.vault.encrypt_str
-
-            def work(session: Session) -> None:
-                for rid, pid in (("r-unfiled", None), ("r-b", "proj-b")):
-                    session.add(
-                        ResearchRun(
-                            id=rid, owner_id="operator", project_id=pid, question_enc=seal("Q")
-                        )
-                    )
-                session.commit()
-
-            await in_session(app.state.db_engine, work)
-            headers = {"X-Ody-Project": "proj-a"}
-
-            research = (await client.get("/research", headers=headers)).json()
-            assert sorted(r["id"] for r in research["items"]) == ["r-unfiled"]
-
-
-async def _resolved(value):
-    """A ready-made awaitable, so a monkeypatched async collaborator can be a lambda."""
-    return value
-
 
 class TestCreationStampsTheScope:
     """A filter over a column nothing writes is dead weight that looks like a feature.
@@ -365,22 +340,6 @@ class TestCreationStampsTheScope:
                 )
             ).json()
             assert await self._filed(app, ScheduledTask, created["id"]) == project_id
-
-    async def test_a_research_run_is_filed(self, tmp_path, monkeypatch):
-        patch_model_resolution(monkeypatch)
-        # Skip the clarify/plan model calls — the subject here is the stamped column.
-        monkeypatch.setattr(
-            "routes.research.judge_clarification",
-            lambda *a, **k: _resolved(ClarifyVerdict(needs_clarification=False)),
-        )
-        monkeypatch.setattr(
-            "routes.research.produce_plan",
-            lambda *a, **k: _resolved(ResearchPlan(objective="o", angles=["a"])),
-        )
-        async with client_app() as (client, app):
-            project_id = await self._active(client, tmp_path, "work")
-            created = (await client.post("/research/intake", json={"question": "why?"})).json()
-            assert await self._filed(app, ResearchRun, created["id"]) == project_id
 
     async def test_a_corpus_folder_is_filed(self, tmp_path):
         async with client_app() as (client, app):

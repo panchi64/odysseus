@@ -1,7 +1,7 @@
 """The generic chunk store — CRUD + hybrid rank over ``corpus_chunk``.
 
-The shared backend for every *chunked* source (folders and uploads now; research
-later). It is the corpus counterpart of ``MemoryStore`` /
+The shared backend for every *chunked* source (folders and uploads today). It is
+the corpus counterpart of ``MemoryStore`` /
 ``ConversationSearch``: rows are encrypted at rest (text + vector), so recall is the
 same **hybrid, brute-force** pass — decrypt the owner's chunks for a source, score
 each dense (cosine over the per-chunk vector) and sparse (token overlap), and return

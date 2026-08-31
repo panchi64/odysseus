@@ -9,7 +9,7 @@ A self-hosted AI workspace that runs on your own hardware against your own data.
 
 ![Odysseus — the home overview: the launchpad composer, recent threads, in-flight runs, and live per-capability status along the bottom. Thread titles and previews are blurred; this is a live workspace.](md-assets/odysseus-screenshot.png)
 
-I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loop is done and so is most of the workspace around it: chat, deep research, a knowledge base, email, calendar, scheduled tasks, projects with a real coding mode, memory, MCP, a secrets vault, and encrypted backup all run today. What's left is a short list, and it's at the bottom.
+I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loop is done and so is most of the workspace around it: chat, research, a knowledge base, email, calendar, scheduled tasks, projects with a real coding mode, memory, MCP, a secrets vault, and encrypted backup all run today. What's left is a short list, and it's at the bottom.
 
 ## The idea
 
@@ -29,7 +29,7 @@ I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loo
 
 - **Projects and coding mode.** A project is a directory you work in, and the whole app scopes to it. A `coding` conversation works in a git worktree on a branch named for the thread; **your own checkout is written by exactly one thing — a merge you press.** Deleting a thread with unmerged commits is refused unless you say to discard it.
 - **Sandboxed code, the View, and previews.** The agent runs code in a host-isolated, per-conversation container that fails closed and never touches the host, and publishes output to the View — one versioned surface where each result is a snapshot you can star and return to, optionally fronted by a live reverse-proxied head.
-- **Deep Research.** Multi-round runs that clarify, plan, search, read, dedupe, and write a cited report, bounded by rounds and time — riding the same run substrate as chat, with "continue in chat" at the end.
+- **Research mode.** A thread that asks once what you actually want to know, reads widely before it concludes, never re-reads a source it has already read, and attributes every claim to the page it came from. It is a *conversation*, not a report generator, so you can push back on it halfway through — and the agent can open one for you from another thread and hand you the answer later.
 - **Knowledge Base.** Point it at folders of your own documents and retrieve from them by meaning; sources, index stats, reindex and rebuild are all yours to drive.
 - **Uploads.** Files as context, through a sealed file store with off-request text extraction, corpus-indexed.
 - **Compare.** One prompt fanned to two models side by side — each pane a real, resumable conversation rather than a preview.
@@ -94,7 +94,6 @@ backend/      Pydantic AI + FastAPI  (Python 3.14, uv-managed)
                 search · webfetch · corpus · projects · mail · calendar · skills · mcp ·
                 integrations · backup · scheduler · notifications · vault
   routes/       thin FastAPI routers, one per surface (overview is the home aggregate)
-  research/     the deep-research pipeline on the Run substrate
   migrations/   Alembic — schema auto-upgraded to head on startup
   evals/        retrieval + end-to-end evaluation harness
   tests/
@@ -104,7 +103,7 @@ docs/architecture/  backend design — the engine/chassis split, the three pilla
 docs/design-system.md  the frontend's visual language
 ```
 
-The central abstraction is a **Run**: one server-side, background-executing unit of work for a single request. Chat turns, agent tasks, and research jobs are all Runs, so I only have to write continuity, resume, cancellation, timeouts, and metrics **once** — everything inherits them. The backend is an **origin-agnostic API**: it makes no assumption about who serves the frontend. The whole thing rests on three pillars — the Run substrate, the event protocol, and the agent engine plus tools — detailed in [`docs/architecture/README.md`](docs/architecture/README.md). The tool layer has its own write-up in [`docs/architecture/40-tools-and-toolsets.md`](docs/architecture/40-tools-and-toolsets.md).
+The central abstraction is a **Run**: one server-side, background-executing unit of work for a single request. Chat turns and agent tasks are all Runs, so I only have to write continuity, resume, cancellation, timeouts, and metrics **once** — everything inherits them. The backend is an **origin-agnostic API**: it makes no assumption about who serves the frontend. The whole thing rests on three pillars — the Run substrate, the event protocol, and the agent engine plus tools — detailed in [`docs/architecture/README.md`](docs/architecture/README.md). The tool layer has its own write-up in [`docs/architecture/40-tools-and-toolsets.md`](docs/architecture/40-tools-and-toolsets.md).
 
 ## Running it
 

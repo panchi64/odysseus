@@ -7,11 +7,11 @@ do hybrid recall over their own encrypted tables, so they enroll into the corpus
 write path, so ``reindex`` delegates to their existing re-embed (memory) or is a no-op
 (the conversation index re-embeds via its own coordinator).
 
-The stub *surface* adapters exist so the ``/rag`` source list shows every planned surface
-from day one, but they hold no content yet (extraction pipelines are deferred):
-``retrieve`` returns nothing and ``status`` reports a stale, empty source. Each fills in as
-its surface is built — uploads already has a real adapter (``corpus/uploads.py``), so it is
-no longer stubbed here. Only research remains a stub.
+There was a stub adapter here too — a placeholder that listed a planned surface with no
+content, so the ``/rag`` list could show the whole picture before every extraction
+pipeline existed. Its last holder was deep research, which is now a *conversation* and so
+is already covered by the conversation adapter above; a placeholder with nothing left to
+hold is just a source the operator can never index, so it went with it.
 """
 
 from __future__ import annotations
@@ -117,44 +117,4 @@ class ConversationAdapter(SourceAdapter):
             status="indexed",
             last_indexed_at=None,
             href="/chat",
-        )
-
-
-class StubSurfaceAdapter(SourceAdapter):
-    """A planned in-app surface with no content yet — listed but empty.
-
-    Research gets one of these until its extraction pipeline lands (deferred).
-    ``retrieve`` returns nothing; ``status`` reports a stale, empty source so the ``/rag``
-    list shows it as awaiting build-out.
-    """
-
-    source_kind = "surface"
-
-    def __init__(self, source_id: str, label: str, icon: str, href: str) -> None:
-        self.SOURCE_ID = source_id
-        self._label = label
-        self._icon = icon
-        self._href = href
-
-    async def retrieve(
-        self,
-        owner_id: str,
-        query: str,
-        query_vec: np.ndarray | None,
-        query_model: str | None,
-        query_tokens: set[str],
-        *,
-        limit: int,
-    ) -> list[CorpusHit]:
-        return []
-
-    async def status(self, owner_id: str) -> SourceStatus:
-        return SourceStatus(
-            source_id=self.SOURCE_ID,
-            kind="surface",
-            label=self._label,
-            doc_count=0,
-            status="stale",
-            last_indexed_at=None,
-            href=self._href,
         )

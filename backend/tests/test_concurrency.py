@@ -1,5 +1,5 @@
-"""``gather_bounded`` — the shared bounded fan-out behind the research pipeline's round
-workers and a mail listing's per-message fetches."""
+"""``gather_bounded`` — the shared bounded fan-out behind a mail listing's per-message
+fetches and a reaper's per-session teardowns."""
 
 from __future__ import annotations
 

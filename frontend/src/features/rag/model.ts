@@ -5,7 +5,7 @@ import type { IconName } from "~/ui";
 export type RagIndexStatus = "indexed" | "indexing" | "stale" | "error";
 
 /** Where a source's content originates.
- *  - `surface`: an in-app corpus surface (uploads, memory, research) that is
+ *  - `surface`: an in-app corpus surface (uploads, memory, conversations) that is
  *    auto-indexed and managed where it lives. Not removable here — it's part of
  *    the system.
  *  - `folder`: an operator-added host path the server crawls and indexes.

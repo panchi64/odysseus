@@ -41,7 +41,7 @@ const arcStroke: Record<NonNullable<ProgressRingProps["tone"]>, string> = {
  *  mechanical, never-a-spinner reason.
  *
  *  It exists because a bar and a ring answer different questions. A bar reads as
- *  *travel* — how far through a download, a research round, an upload — and wants
+ *  *travel* — how far through a download, an upload, an index pass — and wants
  *  the horizontal room to say so. A ring reads as *fullness*, a dial against its own
  *  ceiling, and it holds that meaning at 16px in a row of controls where a bar would
  *  be a stripe with no legible scale. The context window is a fullness, and it sits

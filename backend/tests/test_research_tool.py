@@ -1,67 +1,86 @@
-"""The agent's own entry point into deep research.
+"""The agent's own entry point into research.
 
-Two things here are structural rather than behavioural, and both are the kind that
-break silently:
+Four things here are structural rather than behavioural, and all four break silently:
 
-- the launcher is registered under its **abstract** type, because `tools/` sits below
-  `research/` and a tool naming the concrete orchestrator would invert the dependency
-  order. If that registration regresses, the tool degrades to "unavailable" — which
-  looks like a configuration problem, not a wiring bug.
-- `start` **returns without awaiting the run**. A research run takes minutes; a tool
-  that waited would spend the whole turn on it.
+- the implementation is registered under its **abstract** type, because `tools/` sits
+  below the layer that composes a chat turn and a tool naming the concrete class would
+  invert the dependency order. If that registration regresses, the tool degrades to
+  "unavailable" — which looks like a configuration problem, not a wiring bug.
+- `start` **returns without awaiting the run**. Research takes minutes; a tool that
+  waited would spend the whole turn on it.
+- `start` announces the thread it opened on the parent's own stream, so a conversation
+  that appears in the operator's session list has an account of where it came from.
+- a **code** thread hands over its worktree to be copied, never worked in. Losing that
+  would put a second agent in the operator's own checkout with nothing to say so.
 """
 
 from __future__ import annotations
 
-import asyncio
+from pathlib import Path
 
 import pytest
 
-from services.research_launcher import (
-    LaunchedResearch,
-    ResearchLauncher,
-    ResearchSnapshot,
+from services.research_threads import (
+    ParentThread,
+    ResearchThreads,
+    ResearchThreadView,
     ResearchUnavailableError,
+    StartedResearch,
 )
+from services.workspace import RunWorkspace
 from tests._helpers import client_app
 from tools.deps import RunDeps
 from tools.research import research_toolset
 
 
-class _FakeLauncher(ResearchLauncher):
+class _FakeThreads(ResearchThreads):
     def __init__(self, *, fail: str | None = None) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, ParentThread]] = []
         self._fail = fail
-        self.finished = asyncio.Event()
 
-    async def launch(self, owner_id, question, context=""):
+    async def start(self, owner_id, question, *, context="", parent=None):
         if self._fail:
             raise ResearchUnavailableError(self._fail)
-        self.calls.append((question, context))
-        return LaunchedResearch(research_id="r1", run_id="run1", question=question)
+        self.calls.append((question, context, parent or ParentThread()))
+        return StartedResearch(conversation_id="c-res", run_id="run1", question=question)
 
-    async def snapshot(self, owner_id, research_id):
-        if research_id != "r1":
-            raise ResearchUnavailableError(f"No research entry {research_id!r}.")
-        return ResearchSnapshot(
-            research_id="r1",
+    async def read(self, owner_id, conversation_id):
+        if conversation_id != "c-res":
+            raise ResearchUnavailableError(f"No conversation {conversation_id!r}.")
+        return ResearchThreadView(
+            conversation_id="c-res",
             question="q",
             status="done",
-            report="# Findings",
-            sources=7,
-            findings=3,
+            answer="# Findings",
         )
 
 
-def _ctx(launcher: ResearchLauncher | None):
+class _FakeRun:
+    """Just enough Run to receive the `conversation.linked` notice."""
+
+    def __init__(self) -> None:
+        self.emitted: list[object] = []
+
+    def emit(self, body) -> None:
+        self.emitted.append(body)
+
+
+def _ctx(threads: ResearchThreads | None, *, workspace: RunWorkspace | None = None):
     from core.container import ServiceContainer
 
     caps = ServiceContainer()
-    if launcher is not None:
-        caps.add(launcher, as_type=ResearchLauncher)
+    if threads is not None:
+        caps.add(threads, as_type=ResearchThreads)
 
     class _Ctx:
-        deps = RunDeps(run=None, owner_id="operator", caps=caps)  # type: ignore[arg-type]
+        deps = RunDeps(
+            run=_FakeRun(),  # type: ignore[arg-type]
+            owner_id="operator",
+            caps=caps,
+            conversation_id="c-parent",
+            project_id="proj-1",
+            workspace=workspace,
+        )
 
     return _Ctx()
 
@@ -72,28 +91,58 @@ async def _call(toolset, name: str, ctx, **kwargs):
 
 class TestStart:
     async def test_returns_immediately_with_the_ids(self):
-        launcher = _FakeLauncher()
+        threads = _FakeThreads()
         result = await _call(
-            research_toolset(), "start", _ctx(launcher), question="Why X?", context="c"
+            research_toolset(), "start", _ctx(threads), question="Why X?", context="c"
         )
         assert result["started"] is True
-        assert result["research_id"] == "r1"
-        assert launcher.calls == [("Why X?", "c")]
+        assert result["conversation_id"] == "c-res"
+        assert [(q, c) for q, c, _ in threads.calls] == [("Why X?", "c")]
         # The result must *say* not to wait — otherwise the model polls, which is the
         # same waste one level up.
         assert "not wait" in result["detail"].lower()
 
+    async def test_the_new_thread_is_announced_on_the_parent_stream(self):
+        ctx = _ctx(_FakeThreads())
+        await _call(research_toolset(), "start", ctx, question="Why X?")
+        (event,) = ctx.deps.run.emitted  # type: ignore[attr-defined]
+        assert event.type == "conversation.linked"
+        assert (event.conversation_id, event.relation) == ("c-res", "research")
+
+    async def test_a_code_thread_hands_over_its_worktree_to_be_copied(self, tmp_path):
+        threads = _FakeThreads()
+        worktree = RunWorkspace(root=tmp_path, kind="worktree", files=None)  # type: ignore[arg-type]
+        await _call(
+            research_toolset(),
+            "start",
+            _ctx(threads, workspace=worktree),
+            question="q",
+        )
+        _, _, parent = threads.calls[0]
+        # The whole point: analysis happens on a copy, never in the operator's checkout.
+        assert parent.seed_from == Path(tmp_path)
+        assert parent.conversation_id == "c-parent"
+        assert parent.project_id == "proj-1"
+
+    async def test_a_sandbox_thread_seeds_nothing(self):
+        threads = _FakeThreads()
+        sandbox = RunWorkspace(root=Path("/work"), kind="sandbox", files=None)  # type: ignore[arg-type]
+        await _call(
+            research_toolset(), "start", _ctx(threads, workspace=sandbox), question="q"
+        )
+        assert threads.calls[0][2].seed_from is None
+
     async def test_an_unavailable_capability_degrades_rather_than_raising(self):
-        # Offline, or the web tools switched off. The model should be able to fall back
-        # to a plain search, so this is a result, not an exception.
+        # Offline, or no usable model. The model should be able to fall back to a plain
+        # search, so this is a result, not an exception.
         result = await _call(
             research_toolset(),
             "start",
-            _ctx(_FakeLauncher(fail="needs web_search")),
+            _ctx(_FakeThreads(fail="No usable model is configured")),
             question="q",
         )
         assert result["started"] is False
-        assert "web_search" in result["detail"]
+        assert "model" in result["detail"]
 
     async def test_degrades_when_research_is_not_deployed(self):
         result = await _call(research_toolset(), "start", _ctx(None), question="q")
@@ -101,25 +150,28 @@ class TestStart:
 
 
 class TestRead:
-    async def test_returns_the_report_once_terminal(self):
-        result = await _call(research_toolset(), "read", _ctx(_FakeLauncher()), research_id="r1")
+    async def test_returns_the_answer(self):
+        result = await _call(
+            research_toolset(), "read", _ctx(_FakeThreads()), conversation_id="c-res"
+        )
         assert result["status"] == "done"
-        assert result["report"] == "# Findings"
-        assert result["sources"] == 7
+        assert result["answer"] == "# Findings"
 
     async def test_an_unknown_id_asks_the_model_to_retry(self):
         from pydantic_ai import ModelRetry
 
         with pytest.raises(ModelRetry):
-            await _call(research_toolset(), "read", _ctx(_FakeLauncher()), research_id="nope")
+            await _call(
+                research_toolset(), "read", _ctx(_FakeThreads()), conversation_id="nope"
+            )
 
 
 class TestWiring:
-    async def test_the_launcher_resolves_by_its_abstract_type(self):
+    async def test_the_implementation_resolves_by_its_abstract_type(self):
         async with client_app() as (_client, app):
             # The whole point of the as_type registration: a tool asks for the
-            # abstraction, never the orchestrator that implements it.
-            assert app.state.capabilities.get_optional(ResearchLauncher) is not None
+            # abstraction, never the wiring that implements it.
+            assert app.state.capabilities.get_optional(ResearchThreads) is not None
 
     async def test_start_is_approval_gated(self):
         async with client_app() as (_client, app):

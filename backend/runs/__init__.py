@@ -1,7 +1,7 @@
 """Pillar I + II — the Run substrate and the event protocol (the chassis).
 
 A Run is one server-side, background-executing unit of work for one request.
-Chat, agent, and research all ride it, so continuity, resume, cancellation,
+Chat and agent work both ride it, so continuity, resume, cancellation,
 timeouts, and metrics are written once here and inherited everywhere.
 
 - :class:`RunRegistry` — launch/track/bound/cancel Runs (in-process asyncio).
@@ -28,6 +28,7 @@ from .events import (
     ContextThresholds,
     ContextWindow,
     ConversationCompacted,
+    ConversationLinked,
     ConversationTitled,
     Event,
     EventBody,
@@ -106,6 +107,7 @@ __all__ = [
     "ViewSnapshot",
     "BrowserLive",
     "ConversationCompacted",
+    "ConversationLinked",
     "ConversationTitled",
     "ApprovalRequired",
     "MessageQueued",
