@@ -14,16 +14,19 @@ message instead, the same graceful-degradation shape as the memory tools — a r
 can't fix it.
 
 **A repeat is refused before it costs anything.** A thread that reads widely — a research
-thread most of all — loops: it re-asks a query it already asked, or re-fetches a page
-whose text is already sitting in its own context, and pays a full network round trip and a
-second copy of the result for nothing. The run's :class:`~services.search.DedupeSets`
-(``RunDeps.web_dedupe``) is checked *before* the call and committed only *after* it
-succeeds, so a search that failed or a page that refused to render stays eligible. The
-refusal says plainly that the answer is already in the transcript, because a bare "no
-results" would read as "the web has nothing" and send the model looking again.
+thread most of all — loops: it re-asks a search it already ran, or re-fetches a page whose
+text is already sitting in its own context, and pays a full network round trip and a second
+copy of the result for nothing. The run's :class:`~services.search.DedupeSets`
+(``RunDeps.web_dedupe``) is *claimed* before the call and handed back if the call then
+failed, so a search that errored or a page that refused to render stays eligible while two
+parallel calls for the same thing cannot both slip past the check. The refusal says plainly
+that the answer is already in the transcript, because a bare "no results" would read as
+"the web has nothing" and send the model looking again.
 
-Continuing a long page is the one deliberate re-fetch: ``offset > 0`` is the documented
-way to page through a truncated result, so it is never deduped.
+A search's key is its whole request — the query *and* the arguments that change what comes
+back — so narrowing a question to the last day is a new read rather than a repeat of the
+same words. Continuing a long page is the same idea for ``fetch``: ``offset > 0`` is the
+documented way to page through a truncated result, so it is never deduped.
 """
 
 from __future__ import annotations
@@ -33,10 +36,17 @@ from typing import Literal
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from core.exceptions import DegradedCapabilityError, SSRFError, WebFetchError
-from services.search import SearchResults, SearchService
+from services.search import DedupeSets, SearchResults, SearchService
 from services.webfetch import BrowserFetcher, FetchedPage
 
 from .deps import RunDeps
+
+
+def _release(dedupe: DedupeSets, claim: str | None) -> None:
+    """Hand a claimed key back after a read that didn't happen. A no-op for the paging
+    fetch that never took one, so the failure paths don't each have to say so."""
+    if claim is not None:
+        dedupe.release(claim)
 
 
 def web_toolset() -> FunctionToolset[RunDeps]:
@@ -59,7 +69,8 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         if svc is None:
             return "Web search is unavailable."
         dedupe = ctx.deps.web_dedupe
-        if not dedupe.peek_query(query):
+        claim = dedupe.claim_search(query, limit=limit, time_range=time_range)
+        if claim is None:
             return (
                 f"Already searched {query!r} in this run — its results are above. "
                 "Ask a different question or read one of the results you already have."
@@ -69,8 +80,13 @@ def web_toolset() -> FunctionToolset[RunDeps]:
                 ctx.deps.owner_id, query, limit=limit, time_range=time_range
             )
         except DegradedCapabilityError as exc:
+            dedupe.release(claim)
             return f"Web search is unavailable: {exc}"
-        dedupe.try_query(query)
+        except BaseException:
+            # Anything else — including the turn being cancelled mid-call — means this
+            # search never produced results either, so it must stay askable.
+            dedupe.release(claim)
+            raise
         return results
 
     @toolset.tool(retries=2)
@@ -91,9 +107,10 @@ def web_toolset() -> FunctionToolset[RunDeps]:
             return "Web fetch is unavailable."
         dedupe = ctx.deps.web_dedupe
         # `offset` is how a truncated page is continued, so a paging call is a different
-        # read of the same URL rather than a repeat of one.
+        # read of the same URL rather than a repeat of one — and takes no key at all.
         first_read = offset == 0
-        if first_read and not dedupe.peek_url(url):
+        claim = dedupe.claim_url(url) if first_read else None
+        if first_read and claim is None:
             return (
                 f"Already fetched {url} in this run — its content is above. Re-read it "
                 "there, pass `offset` to continue past where it was truncated, or pick "
@@ -104,12 +121,15 @@ def web_toolset() -> FunctionToolset[RunDeps]:
         except SSRFError as exc:
             # A refused target is a hard boundary, not a "try again" — tell the model
             # plainly so it moves on instead of probing variants of a blocked address.
+            _release(dedupe, claim)
             return f"Refused: {exc}"
         except WebFetchError as exc:
             # Recoverable: the page couldn't be read — let the model pick another source.
+            _release(dedupe, claim)
             raise ModelRetry(str(exc)) from exc
-        if first_read:
-            dedupe.try_url(url)
+        except BaseException:
+            _release(dedupe, claim)
+            raise
         return page
 
     return toolset

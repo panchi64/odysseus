@@ -10,9 +10,11 @@ capability by type out of the run's bag, and this is the type it resolves — de
 here in ``services/``, implemented at the wiring layer, and registered under this abstract
 type so the concrete implementation is never named below its own layer.
 
-The interface stays deliberately narrow: two verbs, start and read. A research thread the
-agent opened is an ordinary conversation afterwards — the operator can open it, send into
-it, branch it, and rename it like any other, which is most of the point of the change.
+The interface stays deliberately narrow: two verbs, start and read, plus the one naming
+rule both the live feature and the carry-over of the retired entity have to agree on. A
+research thread the agent opened is an ordinary conversation afterwards — the operator can
+open it, send into it, branch it, and rename it like any other, which is most of the point
+of the change.
 """
 
 from __future__ import annotations
@@ -47,6 +49,12 @@ class ParentThread:
     #: The project the parent is filed under, inherited so the linked thread lands in the
     #: same scope rather than appearing unfiled next to work it belongs with.
     project_id: str | None = None
+    #: How much rope the *parent* has. Carried because a thread the agent opened must
+    #: never be able to do more than the thread that opened it: the new thread runs at the
+    #: stricter of this and what research mode would start a fresh thread at, so one
+    #: approved ``research_start`` cannot buy a standing level the operator never chose.
+    #: None means the caller had no level to hand over, and the mode's default stands.
+    permission: str | None = None
     #: A directory whose contents seed the new thread's sandbox, or None to start empty.
     seed_from: Path | None = None
 
@@ -105,3 +113,27 @@ class ResearchThreads(ABC):
     @abstractmethod
     async def read(self, owner_id: str, conversation_id: str) -> ResearchThreadView:
         """The thread's current state, with its latest answer."""
+
+
+#: How long a research thread's title may be before it is cut. A research question is often
+#: a paragraph and the session list is one line wide.
+_TITLE_MAX_CHARS = 80
+
+
+def title_for(question: str) -> str:
+    """A research thread's name in the session list — the question, folded to one line and
+    cut.
+
+    The question *is* the title, rather than the thread being auto-titled from its first
+    exchange like an operator's own: nobody wrote this thread's opening message, so without
+    the question in the row the operator meets it with no idea why it exists.
+
+    Declared beside the seam rather than beside either caller because both name a thread
+    this way — the ones this feature opens now, and the ones carried over from the retired
+    research entity (``services/research_carryover.py``) — and two copies of one cut would
+    drift into two differently-shaped session lists.
+    """
+    question = " ".join(question.split())
+    if len(question) <= _TITLE_MAX_CHARS:
+        return question
+    return question[: _TITLE_MAX_CHARS - 1] + "…"

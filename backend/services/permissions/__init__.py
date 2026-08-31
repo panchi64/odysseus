@@ -1,8 +1,8 @@
 """The permission axis: what a level is (:mod:`levels`), what it rules (:mod:`decide`),
 and — at the one level whose meaning is that the operator's answers are given for them —
-what an action would do (:mod:`capability`, :mod:`shell_ast`) and who says so
-(:mod:`judge`, :mod:`reviewer`). Imported through the package, so a caller names one home
-for all of it."""
+what an action would do (:mod:`capability`, :mod:`shell_ast`, :mod:`shell_flags`) and who
+says so (:mod:`judge` over the allowlist in :mod:`read_only`, then :mod:`reviewer`).
+Imported through the package, so a caller names one home for all of it."""
 
 from services.permissions.capability import ActionKind, Capability, capability_of
 from services.permissions.decide import (
@@ -16,6 +16,7 @@ from services.permissions.decide import (
 )
 from services.permissions.judge import Judgement, judge
 from services.permissions.levels import (
+    ACTING_PERMISSIONS,
     DEFAULT_PERMISSION,
     PERMISSION_LEVELS,
     PERMISSIONS,
@@ -24,10 +25,10 @@ from services.permissions.levels import (
     ApprovalPolicy,
     PermissionLevel,
     PermissionSpec,
-    WriteScope,
     beyond_scope,
     permission_level,
     permission_spec,
+    stricter_permission,
     tools_beyond_scope,
 )
 from services.permissions.reviewer import (
@@ -40,6 +41,7 @@ from services.permissions.reviewer import (
 from services.permissions.shell_ast import ShellCommand
 
 __all__ = [
+    "ACTING_PERMISSIONS",
     "DEFAULT_PERMISSION",
     "PERMISSIONS",
     "PERMISSION_LEVELS",
@@ -58,7 +60,6 @@ __all__ = [
     "ReviewVerdict",
     "Reviewer",
     "ShellCommand",
-    "WriteScope",
     "beyond_scope",
     "blocked_message",
     "capability_of",
@@ -70,5 +71,6 @@ __all__ = [
     "review",
     "review_refusal",
     "review_transcript",
+    "stricter_permission",
     "tools_beyond_scope",
 ]

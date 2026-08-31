@@ -135,6 +135,10 @@ async def _parent(ctx: RunContext[RunDeps]) -> ParentThread:
     same time. The parent's workspace is already resolved (and memoised) for this run, so
     naming its directory here costs nothing; a sandbox thread seeds nothing, because its
     container is not the operator's anything.
+
+    The parent's permission level rides along for a related reason: the operator approved
+    *this* thread at *that* level, and the thread it opens must not quietly come up with
+    more rope than the one that asked for it.
     """
     seed_from = None
     try:
@@ -148,5 +152,6 @@ async def _parent(ctx: RunContext[RunDeps]) -> ParentThread:
     return ParentThread(
         conversation_id=ctx.deps.conversation_id,
         project_id=ctx.deps.project_id,
+        permission=ctx.deps.permission,
         seed_from=seed_from,
     )

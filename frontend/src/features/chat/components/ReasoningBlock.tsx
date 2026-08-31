@@ -8,7 +8,7 @@ import {
 } from "solid-js";
 import { Collapse, Text } from "~/ui";
 import { THINK_ICON } from "../workShape";
-import { ProcessRow, Sep } from "./ProcessRow";
+import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
 /** The animation that plays when the stage clears. The component waits for this
  *  by name rather than holding a duration of its own — the timing lives in
@@ -45,17 +45,14 @@ export function ReasoningBlock(props: {
   /** Tokens are still streaming in. */
   streaming?: boolean;
 }): JSX.Element {
-  const [open, setOpen] = createSignal(false);
+  // Its own, adopting an explicit expand-all/collapse-all; local toggles work between
+  // two of those.
+  const { open, toggle } = createAdoptedOpen(props);
   // True through the fade-out, after the stream has stopped — the live layer
   // stays mounted so it has something to animate from.
   const [fading, setFading] = createSignal(false);
 
   const live = (): boolean => Boolean(props.active && props.streaming);
-
-  // Adopt an explicit expand-all/collapse-all; local toggles work between them.
-  createEffect(() => {
-    if (props.open !== undefined) setOpen(props.open);
-  });
 
   // Clear the stage exactly on the live -> settled edge. The layer stays mounted
   // until the animation reports itself finished (see `onAnimationEnd` below).
@@ -65,10 +62,6 @@ export function ReasoningBlock(props: {
       setFading(true);
     }),
   );
-
-  const toggle = (): void => {
-    setOpen((v) => !v);
-  };
 
   /* The trace's opening line, flattened — a trace is paragraphs of prose and the
      row is one line, so newlines have to go or the row's height follows the

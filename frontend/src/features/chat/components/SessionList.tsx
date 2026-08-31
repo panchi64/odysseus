@@ -1,6 +1,6 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import type { SessionMode } from "~/lib/modes";
-import { Collapse, EmptyState, Icon, Input, LoadingText, Text } from "~/ui";
+import { Disclosure, EmptyState, Input, LoadingText, Text } from "~/ui";
 import { createListView } from "~/lib/list";
 import { relativeTime } from "~/lib/format";
 import type { ChatSummary } from "../model";
@@ -106,11 +106,11 @@ function SessionRows(props: {
 
 /** One run of rows, with a disclosure header when the group has a name.
  *
- *  The header follows `AreaSection`'s pattern rather than inventing a third
- *  disclosure: plus/minus, not a chevron, because beside a label a chevron reads
- *  as "go there". It is a whole-width button here — unlike the nav areas there is
- *  nowhere for a workspace heading to navigate *to*, so the header and the toggle
- *  are one control instead of two siblings. */
+ *  `Disclosure`'s plus/minus marker rather than a header of its own: beside a label a
+ *  chevron reads as "go there", and the rail's area headers made the same call. It is a
+ *  whole-width trigger here — unlike the nav areas there is nowhere for a workspace
+ *  heading to navigate *to*, so the header and the toggle are one control instead of
+ *  two siblings. */
 function SessionGroupRows(props: {
   group: SessionGroup;
   currentId: string | null;
@@ -124,7 +124,13 @@ function SessionGroupRows(props: {
   const [override, setOverride] = createSignal<boolean>();
   const holdsCurrent = () =>
     props.group.sessions.some((s) => s.id === props.currentId);
-  const open = (): boolean => props.forceOpen || (override() ?? holdsCurrent());
+  // Memoized, because the header reads this four times over (the aria state, the
+  // toggle's next value, the glyph, the body) and the rail re-renders every three
+  // seconds while a run is live — so the scan through the section's rows was being
+  // paid four times a tick, per section.
+  const open = createMemo(
+    () => props.forceOpen || (override() ?? holdsCurrent()),
+  );
 
   return (
     <Show
@@ -139,37 +145,30 @@ function SessionGroupRows(props: {
     >
       {(label) => (
         <div class="pb-1">
-          <button
-            type="button"
-            aria-expanded={open()}
-            onClick={() => setOverride(!open())}
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-raised"
+          <Disclosure
+            label={label()}
+            marker="plusminus"
+            open={open()}
+            onToggle={() => setOverride(!open())}
+            // No gap of its own: `cx` is a plain joiner, so a second `gap-*` here
+            // would leave the winner to stylesheet order rather than to intent.
+            triggerClass="w-full px-3 py-1.5 hover:bg-raised"
+            // The rows are the body — no top margin between them and the header.
+            class=""
+            trailing={
+              // The count is what makes a closed section worth leaving closed —
+              // it says how much is in there without opening it.
+              <Text variant="micro" tone="dim" class="ml-auto pl-2">
+                {props.group.sessions.length}
+              </Text>
+            }
           >
-            <Icon
-              name={open() ? "minus" : "plus"}
-              size={14}
-              class="shrink-0 text-dim"
-            />
-            <Text
-              variant="label"
-              tone="default"
-              class="min-w-0 flex-1 truncate"
-            >
-              {label()}
-            </Text>
-            {/* The count is what makes a closed section worth leaving closed —
-                it says how much is in there without opening it. */}
-            <Text variant="micro" tone="dim">
-              {props.group.sessions.length}
-            </Text>
-          </button>
-          <Collapse open={open()}>
             <SessionRows
               sessions={props.group.sessions}
               currentId={props.currentId}
               onSelect={props.onSelect}
             />
-          </Collapse>
+          </Disclosure>
         </div>
       )}
     </Show>

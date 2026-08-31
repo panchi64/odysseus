@@ -33,6 +33,7 @@ import time
 from collections.abc import Iterable
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Protocol
 
 from core.concurrency import gather_bounded
 from core.vault import Vault
@@ -73,6 +74,22 @@ _RUNTIME_FAULT_ATTEMPTS = 2
 def _safe_key(key: str) -> str:
     """A container/dir-safe token for a conversation id (leading char guaranteed)."""
     return "s" + _SAFE.sub("-", key)
+
+
+class LiveWork(Protocol):
+    """Just enough of a ``runs.Run`` for a session to know whether the work that claimed
+    it is still going.
+
+    A protocol rather than the class because the sandbox has no business depending on the
+    run substrate to answer a question this small — and, more importantly, because a claim
+    read this way is **released by asking, never by a hand-back**. The caller that would
+    owe the hand-back is precisely the one that gets cancelled, times out, or dies with an
+    unhandled error, and a claim leaked on those paths pins a container for the life of
+    the process.
+    """
+
+    @property
+    def is_terminal(self) -> bool: ...
 
 
 async def _start_idle_container(
@@ -222,10 +239,55 @@ class SandboxSession:
         self._preview: PreviewHandle | None = None
         self._last_used = time.monotonic()
         self._lock = asyncio.Lock()
+        self._holders: list[LiveWork] = []
 
     @property
     def is_busy(self) -> bool:
+        """A call is in flight on this session *right now* — one exec, one preview
+        launch, one teardown. Deliberately narrow: it is the lock, and the lock spans a
+        single call, not the turn the call belongs to. See :attr:`is_claimed`."""
         return self._lock.locked()
+
+    def hold(self, holder: LiveWork | None) -> None:
+        """Claim this session for a unit of work, until that work reaches a terminal
+        state. Idempotent — re-claiming from the same run is what every later tool call
+        in a turn does. ``None`` claims nothing: it is a caller with no lifetime to tie a
+        container to (a proxy request, a route, a test), and it still costs the prune."""
+        self._holders = [h for h in self._holders if not h.is_terminal and h is not holder]
+        if holder is not None:
+            self._holders.append(holder)
+
+    @property
+    def is_claimed(self) -> bool:
+        """Whether a run that has not finished is still working in here.
+
+        The gap this covers is the one the lock cannot: a turn is a *sequence* of execs
+        with model thinking in between, and between two of them the session looks idle
+        while being very much in use. Pruned on read rather than on release, because the
+        run that would do the releasing is the one being cancelled."""
+        self._holders = [h for h in self._holders if not h.is_terminal]
+        return bool(self._holders)
+
+    @property
+    def is_displaceable(self) -> bool:
+        """Whether displacing this session at the live-session cap would take it from
+        nobody. Three ways it would not:
+
+        - a call is in flight, and killing the container mid-exec fails the tool call the
+          operator is watching;
+        - a run that has not finished is between tool calls, and the seal drops
+          ``node_modules``, ``.venv`` and ``.git`` by design — so the restore it comes
+          back through hands that run a workspace missing exactly what it just spent
+          minutes building;
+        - a preview is live, and reaping it drops the token the proxy resolves, turning a
+          page the operator may be looking at into a 404.
+
+        The idle sweep asks a deliberately different question (busy, plus the TTL): a
+        preview nobody has loaded in half an hour, or a run parked on an approval nobody
+        answered, *should* be collected eventually. Time bounds everything; the count
+        bounds only what nobody is using right now.
+        """
+        return not self.is_busy and not self.is_claimed and self._preview is None
 
     @property
     def is_warm(self) -> bool:
@@ -612,6 +674,10 @@ class SandboxSessionManager:
         self._spares: list[_Spare] = []
         self._spare_seq = 0
         self._replenish_task: asyncio.Task | None = None
+        # Seals in flight, owned by the manager rather than by whoever triggered them —
+        # see `_tear_down`. Held so they are not garbage-collected mid-archive and so
+        # `stop` can drain them.
+        self._teardowns: set[asyncio.Task] = set()
 
     @property
     def image_warmup_pending(self) -> bool:
@@ -625,12 +691,18 @@ class SandboxSessionManager:
         so a turn that never touched the sandbox triggers no workspace/history work."""
         return self._sessions.get(_safe_key(key))
 
-    async def acquire(self, key: str) -> SandboxSession:
+    async def acquire(self, key: str, *, holder: LiveWork | None = None) -> SandboxSession:
         """The session for a conversation, created (object only) on first use —
         claiming a pre-warmed spare (sandbox-06) if one is available. If this key
         is mid-teardown from a concurrent sweep/purge, waits for THAT teardown
         specifically rather than racing a second session onto the same workspace
         path; every other key proceeds immediately (sandbox-02).
+
+        ``holder`` is the run asking, and claiming it here is what makes the cap safe:
+        without it the only "in use" signal is the exec lock, which is held for one call
+        out of the dozens a turn makes. See :attr:`SandboxSession.is_claimed`. Optional
+        because not every caller is a turn — a proxy request resolving a preview, a route,
+        a test — and those genuinely have no lifetime to tie a container to.
 
         Admitting a new session is also where the **cap** is applied: N live conversations
         is otherwise N containers, and the idle TTL alone only bounds that in time, never
@@ -640,38 +712,45 @@ class SandboxSessionManager:
         is lost by the reap: a reaped session's files are sealed and restored the next time
         that conversation runs code, exactly as after an idle reap."""
         safe = _safe_key(key)
+        evicted: list[_Detached] = []
         while True:
             async with self._lock:
                 session = self._sessions.get(safe)
+                if session is None:
+                    other = self._tearing_down.get(safe)
+                    if other is None:
+                        spare = self._claim_spare(safe)
+                        session = self._new_session(safe, spare=spare)
+                        self._sessions[safe] = session
+                        if spare is not None:
+                            self._kick_replenish()
+                        # Only a *new* arrival applies the cap: finding a session already
+                        # live is the steady state, and re-reaping on every tool call
+                        # would make the cap a per-call sweep.
+                        evicted = self._detach(self._over_cap(keep=safe))
                 if session is not None:
                     session.touch()
-                    return session
-                other = self._tearing_down.get(safe)
-                if other is None:
-                    spare = self._claim_spare(safe)
-                    session = self._new_session(safe, spare=spare)
-                    self._sessions[safe] = session
-                    session.touch()
-                    if spare is not None:
-                        self._kick_replenish()
-                    evicted = self._detach(self._over_cap(keep=safe))
+                    session.hold(holder)
                     break
             await other.wait()
-        # Outside the lock, and awaited rather than backgrounded: the caller is about to
-        # start a container, so returning before the ones it displaced are actually gone
-        # would leave the host over the cap at exactly the moment the cap matters.
-        await self._seal_detached(evicted)
+        # Awaited rather than backgrounded, because the caller is about to start a
+        # container: returning before the ones it displaced are actually gone would leave
+        # the host over the cap at exactly the moment the cap matters. Awaited on a task
+        # of the manager's own rather than inline, because the sessions being sealed
+        # belong to *other* conversations — see `_tear_down`.
+        await self._tear_down(evicted)
         return session
 
     def _over_cap(self, *, keep: str) -> list[str]:
         """The session keys to reap so the live set fits under the cap, longest-idle
         first. Called under the manager lock.
 
-        A busy session is never a candidate — killing a container mid-exec would fail the
-        tool call the operator is watching, and the cap is a resource ceiling, not a
-        deadline. If everything live is busy the set simply runs over, and the ordinary
-        idle sweep collects the overflow once the work finishes; the same choice
-        ``ConversationStore._trim_cache`` makes about pinned trees, for the same reason.
+        Only a session nobody is using is a candidate — see
+        :attr:`SandboxSession.is_displaceable` for the three ways that is decided. The cap
+        is a resource ceiling, not a deadline: if everything live is in use the set simply
+        runs over, and the ordinary idle sweep collects the overflow once the work
+        finishes; the same choice ``ConversationStore._trim_cache`` makes about pinned
+        trees, for the same reason.
 
         Reaping also *seals*, so it needs the vault key. With the vault locked there is
         nothing to do but run over the cap: tearing a container down without sealing would
@@ -687,7 +766,7 @@ class SandboxSessionManager:
             (
                 (session.idle_seconds(now), key)
                 for key, session in self._sessions.items()
-                if key != keep and not session.is_busy
+                if key != keep and session.is_displaceable
             ),
             reverse=True,
         )
@@ -715,21 +794,57 @@ class SandboxSessionManager:
             detached.append((key, session, event))
         return detached
 
+    async def _tear_down(self, detached: list[_Detached]) -> None:
+        """Seal detached sessions on a task the *manager* owns, and wait for it.
+
+        The waiting is the caller's; the sealing is not. Both reasons a session is
+        detached tear down somebody else's conversation — the cap seals whoever was
+        least-recently-used, the sweep seals whoever went idle — and neither of them
+        should die because the task that happened to trigger it was cancelled. Sealing
+        is seconds of tar+gzip+AEAD, so the window is wide: the operator presses Stop on
+        their own run, the acquiring task unwinds, and an unrelated conversation is left
+        with a plaintext workspace on disk, no archive, and a live container that is in
+        nobody's map for any sweep to ever find.
+
+        ``shield`` is what separates the two: a cancelled caller stops waiting, and the
+        seal it started finishes regardless. :meth:`stop` drains what is still in flight
+        rather than cancelling it — a half-written archive is the one outcome worse than
+        a slow shutdown."""
+        if not detached:
+            return
+        task = asyncio.create_task(self._seal_detached(detached))
+        self._teardowns.add(task)
+        task.add_done_callback(self._teardowns.discard)
+        await asyncio.shield(task)
+
     async def _seal_detached(self, detached: list[_Detached]) -> None:
         """Seal and tear down detached sessions off the manager lock, a few at a time,
         then release each one's tombstone. One failed teardown must not strand the others
         — or, worse, leave a tombstone set forever and hang every later acquire for that
         conversation — so each leg isolates its own failure and releases in a ``finally``."""
-        if not detached:
-            return
 
         async def seal(key: str, session: SandboxSession, event: asyncio.Event) -> None:
+            sealed = False
             try:
                 await session.shutdown()
+                sealed = True
             except Exception:  # noqa: BLE001 — one bad teardown must not stall the rest
-                pass
+                logger.warning(
+                    "sandbox %s: teardown failed; leaving the session live for the sweep",
+                    key,
+                    exc_info=True,
+                )
             finally:
                 async with self._lock:
+                    if not sealed:
+                        # A seal that did not happen must not lose the session with it.
+                        # Dropped here it would be a container out of every map — no
+                        # sweep can reach it, no purge names it, and its workspace stays
+                        # plaintext on disk — so put it back and let the idle sweep try
+                        # again. Nothing can have taken the key meanwhile: holding
+                        # acquire and purge off until this line is what the tombstone
+                        # `_detach` left is for.
+                        self._sessions.setdefault(key, session)
                     self._tearing_down.pop(key, None)
                 event.set()
 
@@ -976,6 +1091,11 @@ class SandboxSessionManager:
         self._reaper = None
         self._warm = None
         self._replenish_task = None
+        # Drained, never cancelled: a seal interrupted mid-archive leaves a workspace
+        # neither sealed nor plaintext-free. Drained *before* taking the lock, which is
+        # what each of them needs to release its own tombstone.
+        if self._teardowns:
+            await asyncio.gather(*self._teardowns, return_exceptions=True)
         async with self._lock:
             for session in list(self._sessions.values()):
                 try:
@@ -1022,7 +1142,7 @@ class SandboxSessionManager:
             for spare in stale_spares:
                 self._spares.remove(spare)
 
-        await self._seal_detached(detached)
+        await self._tear_down(detached)
 
         for spare in stale_spares:
             await force_remove_container(spare.runtime, spare.container)

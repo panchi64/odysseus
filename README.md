@@ -9,7 +9,7 @@ A self-hosted AI workspace that runs on your own hardware against your own data.
 
 ![Odysseus — the home overview: the launchpad composer, recent threads, in-flight runs, and live per-capability status along the bottom. Thread titles and previews are blurred; this is a live workspace.](md-assets/odysseus-screenshot.png)
 
-I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loop is done and so is most of the workspace around it: chat, research, a knowledge base, email, calendar, scheduled tasks, projects with a real coding mode, memory, MCP, a secrets vault, and encrypted backup all run today. What's left is a short list, and it's at the bottom.
+I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loop is done and so is most of the workspace around it: chat, research, a knowledge base, email, calendar, scheduled tasks, projects with a real Code mode, memory, MCP, a secrets vault, and encrypted backup all run today. What's left is a short list, and it's at the bottom.
 
 ## The idea
 
@@ -27,7 +27,7 @@ I rebuilt the entire platform on top of **Pydantic AI + FastAPI**. The agent loo
 
 **Work surfaces.**
 
-- **Projects and coding mode.** A project is a directory you work in, and the whole app scopes to it. A `coding` conversation works in a git worktree on a branch named for the thread; **your own checkout is written by exactly one thing — a merge you press.** Deleting a thread with unmerged commits is refused unless you say to discard it.
+- **Projects and Code mode.** A project is a directory you work in, and the whole app scopes to it. A `code` conversation works in a git worktree on a branch named for the thread; **your own checkout is written by exactly one thing — a merge you press.** Deleting a thread with unmerged commits is refused unless you say to discard it.
 - **Sandboxed code, the View, and previews.** The agent runs code in a host-isolated, per-conversation container that fails closed and never touches the host, and publishes output to the View — one versioned surface where each result is a snapshot you can star and return to, optionally fronted by a live reverse-proxied head.
 - **Research mode.** A thread that asks once what you actually want to know, reads widely before it concludes, never re-reads a source it has already read, and attributes every claim to the page it came from. It is a *conversation*, not a report generator, so you can push back on it halfway through — and the agent can open one for you from another thread and hand you the answer later.
 - **Knowledge Base.** Point it at folders of your own documents and retrieve from them by meaning; sources, index stats, reindex and rebuild are all yours to drive.
@@ -138,7 +138,7 @@ Odysseus can do powerful things on your machine — sandboxed and (with approval
 
 - **Single operator.** All data and features belong to *you* — the sole user. Every request is authenticated before any feature is reached; every record is owner-stamped against a future multi-user seam.
 - **Sensitive actions require approval.** The agent pauses and asks before anything powerful or hard to reverse (running a shell command or code on the host, file writes, sending email, configuration, vault) takes effect. Sandboxed code is *not* sensitive — it's isolated and containerized from the host.
-- **Your checkout is yours.** In coding mode the agent works only on its own branch in a git worktree; the one thing that writes your working tree is a merge you press.
+- **Your checkout is yours.** In Code mode the agent works only on its own branch in a git worktree; the one thing that writes your working tree is a merge you press.
 - **Encrypted at rest.** All user data is AES-256 encrypted; auth secrets are one-way hashed. The key is derived from your password and lives only in memory — no OS keystore, nothing readable on disk, re-locked on restart.
 - **Untrusted content is data, not instructions.** External content (web pages, fetched URLs, files) is wrapped and marked so the model treats it as data before it enters a prompt.
 - **Local-first.** Nothing leaves the machine unless you configure an external provider or integration.

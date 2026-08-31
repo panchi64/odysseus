@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { SESSION_MODE_IDS, type SessionMode } from "~/lib/modes";
 import { NO_FLASH_SCRIPT } from "./no-flash";
-import { serializeOverrides, type AccentOverrides } from "./accent-overrides";
+import {
+  serializeOverrides,
+  THEMES,
+  SESSION_KEY,
+  type AccentOverrides,
+} from "./accent-overrides";
+import {
+  ACCENT_TOKEN_NAMES,
+  hasSessionSignature,
+  type AccentToken,
+} from "./accents";
 
 /**
  * The pre-paint script is hand-written ES5 that rebuilds, by eye, what
@@ -9,6 +20,14 @@ import { serializeOverrides, type AccentOverrides } from "./accent-overrides";
  * what keeps it honest: run the real script against stubbed globals and compare
  * its sheet to the store's, character for character.
  *
+ * **The comparison is only as good as what is fed to it**, which is why the main
+ * fixture is generated from `ACCENT_TOKEN_NAMES` and `SESSION_MODE_IDS` rather
+ * than written out. Hand-written cases can only ever exercise the tokens and
+ * modes that existed when someone wrote them: add a fifth accent meaning or a
+ * fourth session mode, forget the script's own hard-coded copies of those lists,
+ * and every hand-written case still passes while the shipped accent flashes on
+ * every cold load of the thing that was added. Generated, that is a failure.
+ *
  * It is also the only test the script has at all, which matters because it
  * splices `localStorage` into a stylesheet. The injection cases below are the
  * point, not decoration.
@@ -16,6 +35,35 @@ import { serializeOverrides, type AccentOverrides } from "./accent-overrides";
  * Pure by construction: the stubs are plain objects, so this stays inside the
  * "no DOM in `bun test`" rule without a jsdom.
  */
+
+/** Distinct, valid, and unrelated to any shipped value — a passing assertion must
+ *  not be able to be a default coincidentally matching. */
+function hexes(): () => string {
+  let n = 0;
+  return () =>
+    `#${((n += 0x2a5f1b) % 0x1000000).toString(16).padStart(6, "0")}`;
+}
+
+/** An override on **every** token and every session mode that carries a signature,
+ *  in both themes — the case that catches a list the pre-paint script did not grow
+ *  with the constants. */
+function everyOverride(): AccentOverrides {
+  const nextHex = hexes();
+  const session: Partial<Record<string, Partial<Record<SessionMode, string>>>> =
+    {};
+  const value: AccentOverrides = {};
+  for (const theme of THEMES) {
+    const tokens: Partial<Record<AccentToken, string>> = {};
+    for (const token of ACCENT_TOKEN_NAMES) tokens[token] = nextHex();
+    value[theme] = tokens;
+    const modes: Partial<Record<SessionMode, string>> = {};
+    for (const mode of SESSION_MODE_IDS)
+      if (hasSessionSignature(mode)) modes[mode] = nextHex();
+    session[theme] = modes;
+  }
+  value[SESSION_KEY] = session;
+  return value;
+}
 
 interface Painted {
   theme: string | undefined;
@@ -90,14 +138,8 @@ describe("the accent half agrees with serializeOverrides", () => {
       paper: { "accent-alert": "#778899" },
     },
     "a session signature": { sessionAccent: { phosphor: { code: "#b98cff" } } },
-    "both axes at once": {
-      phosphor: { accent: "#111111" },
-      paper: { "accent-info": "#222222" },
-      sessionAccent: {
-        phosphor: { research: "#3ddbd9", code: "#b98cff" },
-        paper: { code: "#6d28d9" },
-      },
-    },
+    // The one that has to keep passing as the constants grow — see the header.
+    "every token and every mode this build has": everyOverride(),
   };
 
   for (const [name, overrides] of Object.entries(cases))
@@ -106,6 +148,20 @@ describe("the accent half agrees with serializeOverrides", () => {
         serializeOverrides(overrides),
       );
     });
+
+  test("and that fixture really does reach all of them", () => {
+    // Guards the guard: a generated fixture that stopped generating anything would
+    // make the comparison above pass by having nothing to disagree about.
+    const css = serializeOverrides(everyOverride());
+    for (const theme of THEMES) {
+      for (const token of ACCENT_TOKEN_NAMES)
+        expect(css).toContain(`--${token}:`);
+      for (const mode of SESSION_MODE_IDS.filter(hasSessionSignature))
+        expect(css).toContain(
+          `html[data-theme="${theme}"][data-mode="${mode}"]`,
+        );
+    }
+  });
 
   test("writes no sheet at all when nothing is overridden", () => {
     // An empty `<style>` in every document is litter, and the store's own

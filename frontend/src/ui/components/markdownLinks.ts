@@ -19,9 +19,12 @@ import { hostLabel } from "~/lib/format";
  *     not a destination and never becomes an `href`: it is parked in
  *     `data-open-path` for Markdown.tsx's delegated handler to POST to
  *     `/host/open`, which refuses anything outside the operator's own project
- *     roots. Given a path is model-authored text, the check here is only that it
- *     is a path *shape* at all — the fence is the backend's, deliberately, since
- *     a rule about which files may be opened cannot live in the browser.
+ *     roots *and* anything inside them the host would run rather than show.
+ *     Given a path is model-authored text, the check here is only that it is a
+ *     path *shape* at all — the fence is the backend's, deliberately, since a
+ *     rule about which files may be opened cannot live in the browser: it is the
+ *     only side that knows what a project root contains, what a name resolves to
+ *     through a symlink, and whether the bit that makes a file a program is set.
  *   • `image` — emitted with its address parked in `data-remote-src` and no `src`
  *     at all, for Markdown.tsx to resolve through the backend proxy. An `<img>`
  *     is the one construct that *fetches the instant it has a src*, with no click
@@ -167,9 +170,12 @@ const FILENAME_SHAPE = /^[^\s/\\]+\.[a-z0-9]{1,10}$/i;
  * a fragment. Control characters go for the same reason they do above: what the
  * browser ignores when parsing is not what the eye read.
  *
- * Which files may actually be opened is decided by the backend against the
- * operator's project roots, and it has to be: the browser cannot know what is
- * inside one, and a fence drawn in a renderer is not a fence.
+ * Which files may actually be opened is decided by the backend — against the
+ * operator's project roots, and against what the host would *execute* rather
+ * than show — and it has to be: the browser cannot know what is inside a root or
+ * what a name resolves to on that filesystem, and a fence drawn in a renderer is
+ * not a fence. Screening suffixes here too would be the worse kind of duplicate:
+ * a second policy, drifting from the real one, and read as protection.
  */
 export function workspacePath(href: string | null | undefined): string | null {
   const raw = (href ?? "").trim();

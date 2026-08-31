@@ -17,6 +17,14 @@ describe("a slug becomes a label without a registry to maintain", () => {
     expect(segmentLabel("repo")).toBe("Project instructions");
   });
 
+  test("a slug with no words left in it still says something", () => {
+    // The label and the tool table's fallback are one rule now (`sentenceCase`), and
+    // this is the case that proved they weren't: the copy here upper-cased position 0
+    // of an empty string and rendered the row blank.
+    expect(segmentLabel("_")).toBe("_");
+    expect(segmentLabel("  ")).toBe("  ");
+  });
+
   test("the gauge's row and the work log's injection row are one word", () => {
     // Both surfaces name a contributor through this function, so the operator never has
     // to work out that "Skills · ~4k" in the popover and the injected block on the rail

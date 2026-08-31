@@ -30,6 +30,7 @@ from dataclasses import replace
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
 
 from services.permissions import beyond_scope
+from services.tool_sensitivity import declared_sensitivity
 
 from .agents import agents_toolset
 from .builtin import builtin_toolset
@@ -78,7 +79,11 @@ def _approval_gate(
     return [
         replace(tool_def, kind="unapproved")
         if tool_def.kind == "function"
-        and beyond_scope(ctx.deps.permission, tool_def.name)
+        and beyond_scope(
+            ctx.deps.permission,
+            tool_def.name,
+            declared=declared_sensitivity(tool_def.metadata),
+        )
         else tool_def
         for tool_def in tool_defs
     ]

@@ -18,6 +18,28 @@ down_revision: Union[str, Sequence[str], None] = '76cf84ae88af'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# Where a retired research row waits to become a conversation. It is a holding pen, not a
+# schema: no model declares it, nothing queries it, and the seeding step
+# (`services/research_carryover.py`) drops it the moment it is empty — so a fresh install,
+# which has no rows to carry, never sees it at all.
+_CARRYOVER = 'research_carryover'
+
+# What is carried, and what is not. The question and the report are the operator's — they
+# are the whole reason a research row was worth keeping. The frozen plan, the clarifying
+# questions, the per-run stats and the run id were the *pipeline's* scaffolding: they
+# describe rounds and workers that no longer exist and have nowhere to live in a
+# conversation, so they go with the machinery that produced them.
+_CARRIED = (
+    'id',
+    'owner_id',
+    'project_id',
+    'question_enc',
+    'report_enc',
+    'status',
+    'created_at',
+    'finished_at',
+)
+
 
 def upgrade() -> None:
     """Upgrade schema."""
@@ -27,29 +49,70 @@ def upgrade() -> None:
     # itself is the record and `conversations`/`messages` already store it.
     #
     # The table goes rather than being left behind, because a schema that still describes
-    # the old shape is the thing a future reader trusts. What it held is not silently
-    # lost: nothing migrates a finished report into a conversation (a report is not a
-    # transcript, and inventing turns that were never taken would be worse than losing
-    # the row), so this is a deliberate one-way drop of a retired feature's storage.
+    # the old shape is the thing a future reader trusts. What it held does **not** go with
+    # it: these rows are the operator's own reading, sometimes hours of it, and this
+    # migration runs unattended at startup against the live database — a drop here is a
+    # silent, unrecoverable deletion of their research history.
+    #
+    # So the rows are copied out first and the table dropped second, in this one revision.
+    # They cannot become conversations *here*: a message's text and blob are sealed with
+    # the vault, and schema upgrades run before unlock with no key (the same constraint
+    # `app._backfill_sealed_columns` works under). The ciphertext is carried across
+    # verbatim and turned into a real research thread at the first unlocked boot.
     #
     # `notifications.research_id` deliberately stays: it is nullable, nothing writes it
     # any more, and dropping it would rewrite the table to gain nothing.
-    with op.batch_alter_table('research', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_research_status'))
-        batch_op.drop_index(batch_op.f('ix_research_run_id'))
-        batch_op.drop_index(batch_op.f('ix_research_project_id'))
-        batch_op.drop_index(batch_op.f('ix_research_owner_id'))
-        batch_op.drop_index(batch_op.f('ix_research_created_at'))
-        batch_op.drop_index(batch_op.f('ix_research_conversation_id'))
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table('research'):
+        _carry_rows_out(bind)
 
-    op.drop_table('research')
+        with op.batch_alter_table('research', schema=None) as batch_op:
+            batch_op.drop_index(batch_op.f('ix_research_status'))
+            batch_op.drop_index(batch_op.f('ix_research_run_id'))
+            batch_op.drop_index(batch_op.f('ix_research_project_id'))
+            batch_op.drop_index(batch_op.f('ix_research_owner_id'))
+            batch_op.drop_index(batch_op.f('ix_research_created_at'))
+            batch_op.drop_index(batch_op.f('ix_research_conversation_id'))
+
+        op.drop_table('research')
+
+
+def _carry_rows_out(bind) -> None:
+    """Copy every research row into the holding pen, creating it only if there is
+    something to hold — an install with no research history must not inherit a table
+    that exists purely to be drained."""
+    columns = ', '.join(_CARRIED)
+    rows = bind.execute(sa.text(f'SELECT {columns} FROM research')).mappings().all()
+    if not rows:
+        return
+
+    op.create_table(
+        _CARRYOVER,
+        sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('project_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('question_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('report_enc', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+        sa.Column('status', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column('created_at', sa.DateTime(), nullable=False),
+        sa.Column('finished_at', sa.DateTime(), nullable=True),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    placeholders = ', '.join(f':{name}' for name in _CARRIED)
+    bind.execute(
+        sa.text(f'INSERT INTO {_CARRYOVER} ({columns}) VALUES ({placeholders})'),
+        [dict(row) for row in rows],
+    )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # The table comes back empty, which is the honest reverse: the rows it held were
-    # dropped, and a downgrade cannot conjure them. Recreated in full so an older build
-    # that still queries it finds the shape it expects rather than a missing relation.
+    # The reverse of the copy, not merely of the drop: the rows the upgrade set aside come
+    # back into the table they came from, so an older build that still queries `research`
+    # finds its own history rather than an empty relation. What cannot come back is what
+    # was never carried (the plan, the clarify exchange, the stats) and anything already
+    # seeded into a conversation — those rows left the pen when they became threads, and
+    # the threads are where they live now.
     op.create_table('research',
     sa.Column('id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
     sa.Column('owner_id', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
@@ -74,3 +137,15 @@ def downgrade() -> None:
         batch_op.create_index(batch_op.f('ix_research_project_id'), ['project_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_research_run_id'), ['run_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_research_status'), ['status'], unique=False)
+
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table(_CARRYOVER):
+        columns = ', '.join(_CARRIED)
+        placeholders = ', '.join(f':{name}' for name in _CARRIED)
+        rows = bind.execute(sa.text(f'SELECT {columns} FROM {_CARRYOVER}')).mappings().all()
+        if rows:
+            bind.execute(
+                sa.text(f'INSERT INTO research ({columns}) VALUES ({placeholders})'),
+                [dict(row) for row in rows],
+            )
+        op.drop_table(_CARRYOVER)

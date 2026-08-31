@@ -15,6 +15,12 @@ the two `services/workspace.py` can actually build.
 
 from __future__ import annotations
 
+from pydantic_ai.models.test import TestModel
+
+from agent import build_chat_orchestrator, engine
+from core.config import get_settings
+from runs import RunRegistry
+from services.conversations import ConversationBinding
 from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, MODES, mode_spec
 from tools.catalog import tool_catalog
 
@@ -91,6 +97,59 @@ class TestWhatEachModeCarries:
         assert MODES["research"].request_limit is not None
         assert MODES["normal"].request_limit is None
         assert MODES["code"].request_limit is None
+
+
+class TestTheRoundTripCeiling:
+    """A mode's floor is a floor under the number *nobody chose*, and nothing more.
+
+    The floor exists because a mode whose work genuinely cannot fit inside the shipped
+    default would otherwise stop at a bound nothing about this deployment picked. That
+    argument does not reach a number the operator typed: an operator who lowered the
+    ceiling to 10 must not find a research turn taking sixty round trips while the
+    settings page still reads 10.
+    """
+
+    async def _ceiling(self, monkeypatch, *, mode: str, request_limit: int | None) -> int:
+        seen: list[int] = []
+        real = engine.UsageLimits
+
+        def record(**kwargs):
+            seen.append(kwargs["request_limit"])
+            return real(**kwargs)
+
+        monkeypatch.setattr(engine, "UsageLimits", record)
+        registry = RunRegistry()
+        run = registry.submit(
+            kind="chat",
+            owner_id="operator",
+            orchestrator=build_chat_orchestrator(
+                "hi",
+                model=TestModel(custom_output_text="ok"),
+                binding=ConversationBinding(mode=mode),
+                request_limit=request_limit,
+            ),
+        )
+        await run.wait()
+        assert seen, "the turn never built its usage bounds"
+        return seen[0]
+
+    async def test_a_mode_floor_raises_the_bound_nobody_chose(self, monkeypatch):
+        # No operator setting: the config default is what the deploy shipped, and research
+        # says it cannot do its work inside it.
+        ceiling = await self._ceiling(monkeypatch, mode="research", request_limit=None)
+        assert ceiling == max(get_settings().agent_request_limit, MODES["research"].request_limit)
+
+    async def test_a_mode_without_a_floor_leaves_the_default_alone(self, monkeypatch):
+        ceiling = await self._ceiling(monkeypatch, mode="normal", request_limit=None)
+        assert ceiling == get_settings().agent_request_limit
+
+    async def test_an_operator_who_lowered_the_ceiling_is_not_overruled(self, monkeypatch):
+        # The whole point: 10 means 10, in every mode.
+        assert MODES["research"].request_limit > 10
+        assert await self._ceiling(monkeypatch, mode="research", request_limit=10) == 10
+
+    async def test_an_operator_ceiling_above_the_floor_is_honoured_too(self, monkeypatch):
+        assert await self._ceiling(monkeypatch, mode="research", request_limit=90) == 90
 
 
 # --- over HTTP: the vocabulary a thread is actually created with ----------------------

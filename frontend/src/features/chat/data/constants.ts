@@ -1,15 +1,15 @@
 /**
- * The two literals the chat seam agrees on with the backend.
+ * The literals the chat seam agrees on with the backend.
  *
- * They live apart from the mappers because three unrelated layers need them — the cold
- * mapper, the live fold, and the terminal card — and importing any one of those from the
- * others just to reach a string would tie modules together for no other reason.
+ * They live apart from the mappers because unrelated layers need them and importing one
+ * of those from another just to reach a string would tie modules together for no other
+ * reason.
+ *
+ * *Which tools render as a terminal* used to live here, as one tool name the cold
+ * mapper, the live fold and the terminal card each compared against. It is a property of
+ * a tool rather than a fact about the seam, and there is more than one such tool, so it
+ * is `ToolEntry.terminal` in `toolPresentation.ts` now — one table, asked once per site.
  */
-
-/** The one approval-gated tool that runs on the real host (vs. the sandbox). Its
- *  approval + execution render as a single persistent terminal, never a generic
- *  approval card or tool card. */
-export const HOST_COMMAND_TOOL = "code_run_host_command";
 
 /** The prompt a "Continue." turn sends — the operator's way to resume a turn that a
  *  bound (inactivity/wall-clock timeout or cancel) stopped before it finished. A plain

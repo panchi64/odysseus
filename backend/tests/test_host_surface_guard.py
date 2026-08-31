@@ -7,6 +7,11 @@ sensitive-action approval gate.
 
 Both halves are guarded together because they are one posture, and because the second is
 the easier mistake to make: opening a file *looks* like a helpful thing to hand a model.
+
+The needles are matched as substrings and ``host_open`` is a prefix, so the opener's
+type-policy module (``services/host_open_policy.py``) is covered by the same entry — an
+import of it names ``host_open`` too. Anything split out of these files must keep that
+prefix, or earn its own needle here.
 """
 
 from __future__ import annotations

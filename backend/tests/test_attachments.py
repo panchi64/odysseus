@@ -129,7 +129,7 @@ class _FakeSandboxSessions:
         self.session = _FakeSandboxSession()
         self.acquired: str | None = None
 
-    async def acquire(self, key: str) -> _FakeSandboxSession:
+    async def acquire(self, key: str, *, holder: object = None) -> _FakeSandboxSession:
         self.acquired = key
         return self.session
 

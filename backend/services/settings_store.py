@@ -128,9 +128,34 @@ async def get_agent_request_limit(store: SettingsStore, owner_id: str) -> int:
     """The operator's per-turn model-request ceiling — the runtime override if set (and
     valid), else the config default. Unlike the token caps this one is floored at 1, not
     0: a turn allowed zero model requests could never answer at all, so a stored 0 (or a
-    corrupted value) falls back to the default rather than bricking every turn."""
+    corrupted value) falls back to the default rather than bricking every turn.
+
+    This is the *effective* number, for the surface that shows the operator what their
+    setting is. A turn composes with :func:`get_agent_request_limit_override` instead,
+    because it has to tell an answer the operator chose from one nobody did."""
+    return await get_agent_request_limit_override(store, owner_id) or (
+        get_settings().agent_request_limit
+    )
+
+
+async def get_agent_request_limit_override(
+    store: SettingsStore, owner_id: str
+) -> int | None:
+    """The operator's per-turn ceiling **only if they set one**, else None.
+
+    The distinction is load-bearing where a mode carries a floor of its own
+    (``services/modes.py``): a floor may raise a default nobody chose, but it must not
+    overrule a number the operator explicitly lowered — otherwise the settings page says
+    10 while a research turn runs at 60. Collapsing "unset" into the config default here
+    would make those two cases indistinguishable downstream."""
     raw = await store.get(owner_id, AGENT_REQUEST_LIMIT_KEY)
-    return _positive_int_or(raw, get_settings().agent_request_limit)
+    if raw is None:
+        return None
+    # A stored 0, negative or non-numeric value is corruption rather than intent, and
+    # reads as unset — the same fallback every other getter in this module makes, phrased
+    # as "the operator has not given us a usable number".
+    value = _positive_int_or(raw, 0)
+    return value or None
 
 
 async def set_agent_request_limit(store: SettingsStore, owner_id: str, value: int) -> int:

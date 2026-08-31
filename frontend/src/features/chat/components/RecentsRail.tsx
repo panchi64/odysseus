@@ -1,6 +1,10 @@
 import { createEffect, createMemo, onCleanup, type JSX } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { Button, Text } from "~/ui";
+import {
+  activeSessionMode,
+  setActiveSessionMode,
+} from "~/lib/stores/sessionMode";
 import { mainChat, refreshSessions, useChatSessions } from "../data";
 import type { ChatActivity } from "../model";
 import { SessionList } from "./SessionList";
@@ -21,7 +25,9 @@ const ACTIVITY_POLL_MS = 3000;
  *  first. */
 export function RecentsRail(): JSX.Element {
   const sessions = useChatSessions();
-  const { currentId, setCurrentId, stream, mode, setMode } = mainChat();
+  const { currentId, setCurrentId, stream } = mainChat();
+  const mode = activeSessionMode;
+  const setMode = setActiveSessionMode;
   const location = useLocation();
   const navigate = useNavigate();
 

@@ -5,7 +5,7 @@ call: a call the library declined to execute and returned for someone to rule on
 things put a call in that list, and telling them apart is the whole job of this module:
 
 - **the level put it there.** The toolset marks every tool that reaches past the level's
-  write scope as needing approval (``tools/toolsets.py``), so the model's request for one
+  ceiling as needing approval (``tools/toolsets.py``), so the model's request for one
   comes back undone. This is the level's own question, and the level's approval policy
   answers it: withheld under Plan (so the call is refused outright rather than asked
   about), parked under Manual and Edit, reviewed under Auto.
@@ -18,10 +18,11 @@ things put a call in that list, and telling them apart is the whole job of this 
 
 **Why the vocabulary has four members when the knobs produce three.** ``ALLOW`` is what a
 standing conversation grant produces — the operator's explicit "stop asking me about this
-one", which the engine resolves *before* consulting the level, because a decision the
-operator already made outranks a policy. Expressing it in the same vocabulary is what
-keeps the engine to one dispatch, and it is also the verdict Auto's review returns for a
-call it clears.
+one" — and it is also the verdict Auto's review returns for a call it clears. Expressing
+both in the same vocabulary is what keeps the engine to one dispatch. Note where the grant
+sits in that dispatch (``agent/gating.py``): it answers a question this module *asked*,
+and never overturns a refusal. A grant is consent to skip a prompt, not consent to act in
+a thread the operator set to act in nothing.
 
 **The second half of this module is that review** (:func:`review`), which is what
 ``REVIEW`` resolves to: the deterministic stage first (``judge.py``), the model second
@@ -59,7 +60,7 @@ class Decision(StrEnum):
     BLOCK = "block"
 
 
-#: The three answers a level gives to a call that reached past its write scope.
+#: The three answers a level gives to a call that reached past its ceiling.
 _BY_POLICY = {
     ApprovalPolicy.WITHHOLD: Decision.BLOCK,
     ApprovalPolicy.ASK: Decision.ASK,
@@ -166,11 +167,23 @@ async def review(
 
 
 def _verdict_decision(verdict: ReviewVerdict) -> Decision:
-    if verdict.risk == "too_destructive":
-        return Decision.BLOCK
-    if verdict.risk == "low":
-        return Decision.ASK if verdict.authorization == "explicitly_no" else Decision.ALLOW
-    return Decision.ALLOW if verdict.authorization == "explicitly_yes" else Decision.ASK
+    """The arithmetic, one branch per risk word.
+
+    Written as a match on the *named* values rather than as a chain ending in an else,
+    because the else was `high`'s rule wearing "everything else"'s name: a fourth risk
+    word — a middle one, added because two levels of severity were not enough — would
+    have inherited the one branch that can return ALLOW on nothing more than an
+    authorization. Unnamed risk parks, which is what the docstring above always said.
+    """
+    match verdict.risk:
+        case "too_destructive":
+            return Decision.BLOCK
+        case "low":
+            return Decision.ASK if verdict.authorization == "explicitly_no" else Decision.ALLOW
+        case "high":
+            return Decision.ALLOW if verdict.authorization == "explicitly_yes" else Decision.ASK
+        case _:
+            return Decision.ASK
 
 
 def _verdict_reason(verdict: ReviewVerdict) -> str:

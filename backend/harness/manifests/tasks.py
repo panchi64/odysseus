@@ -26,7 +26,7 @@ from services.registry import ModelRegistry
 from services.scheduler import ScheduledTaskView, SchedulerService, TaskRunResult
 from services.settings_store import (
     SettingsStore,
-    get_agent_request_limit,
+    get_agent_request_limit_override,
     get_context_thresholds,
 )
 from services.tool_policy import effective_disabled_tools
@@ -121,11 +121,22 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             # interactive one does — a tool switched off is off everywhere, not just where
             # someone is watching.
             disabled_tools=await effective_disabled_tools(
-                settings_store, offline, view.owner_id
+                settings_store,
+                offline,
+                view.owner_id,
+                # `models[4]` is the resolved main model's vision fact, the same one
+                # `compose_turn` hands the engine for attachments. It is known here, so
+                # the permissive default has no business standing in for it: a tool that
+                # answers with an image is withheld from a model that cannot read one,
+                # whether or not anyone is watching the turn.
+                vision=models[4],
             ),
             # Same reasoning for the per-turn model-request ceiling: an unattended task
-            # runs under the operator's own setting, not a separate default.
-            request_limit=await get_agent_request_limit(settings_store, view.owner_id),
+            # runs under the operator's own setting when they set one, and otherwise
+            # under whatever the config default and the mode's floor work out to.
+            request_limit=await get_agent_request_limit_override(
+                settings_store, view.owner_id
+            ),
             # And the context gauge's boundaries, so a task's thread reddens at the same
             # fullness an interactive one does — the readout is read in the same UI.
             context_thresholds=await get_context_thresholds(settings_store, view.owner_id),

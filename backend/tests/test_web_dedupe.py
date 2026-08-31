@@ -6,17 +6,23 @@ copy of the result for nothing. The run-wide seen-set (`services/search/dedupe.p
 on `RunDeps`) is the discipline salvaged from the deep-research pipeline, now applied where
 any thread can benefit from it.
 
-Three properties are the ones that break silently:
+Five properties are the ones that break silently:
 
 - the check runs **before** the call, so a repeat costs no network at all;
-- the key is committed only **after** the call succeeded — a search that failed or a page
-  that refused to render was never read, and burning its key would tell the model it has
+- the key is *claimed* by that check rather than committed after it, so two calls the model
+  made in one parallel batch cannot both slip past it and both hit the network;
+- a claim is handed back when the call failed — a search that errored or a page that
+  refused to render was never read, and keeping its key would tell the model it has
   evidence it does not have;
+- the key covers everything that changes what comes back, so the same words asked over a
+  different window are a new search rather than a refused repeat;
 - ``offset > 0`` is the documented way to continue a truncated page, so a paging fetch is
   never mistaken for a repeat.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 from pydantic_ai import ModelRetry
@@ -29,12 +35,19 @@ from tools.search import web_toolset
 
 
 class _FakeSearch:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, gate: asyncio.Event | None = None) -> None:
         self.queries: list[str] = []
+        self.calls: list[tuple[str, int, str | None]] = []
         self._fail = fail
+        # Held open to park a call mid-flight, so a second one runs while the first is
+        # still awaiting — the shape a parallel tool-call batch produces.
+        self._gate = gate
 
     async def search(self, owner_id, query, *, limit=5, time_range=None):
         self.queries.append(query)
+        self.calls.append((query, limit, time_range))
+        if self._gate is not None:
+            await self._gate.wait()
         if self._fail:
             raise DegradedCapabilityError("no provider configured")
         return SearchResults(instruction="", results=[])
@@ -90,6 +103,47 @@ class TestSearch:
         await _call("search", ctx, query="a")
         await _call("search", ctx, query="b")
         assert svc.queries == ["a", "b"]
+
+    async def test_narrowing_the_window_is_a_new_search_not_a_repeat(self):
+        """`time_range` and `limit` change which results come back, so the same words over
+        a different window are a different read of the web. Refusing the second would tell
+        the model evidence is already above that was never fetched."""
+        svc = _FakeSearch()
+        ctx = _ctx(search=svc)
+        await _call("search", ctx, query="cpi release", time_range="year")
+        await _call("search", ctx, query="cpi release", time_range="day")
+        await _call("search", ctx, query="cpi release", limit=20, time_range="day")
+        assert svc.calls == [
+            ("cpi release", 5, "year"),
+            ("cpi release", 5, "day"),
+            ("cpi release", 20, "day"),
+        ]
+        # The identical request is still refused.
+        again = await _call("search", ctx, query="cpi release", time_range="day")
+        assert isinstance(again, str)
+        assert "already searched" in again.lower()
+
+    async def test_two_parallel_calls_for_one_query_reach_the_network_once(self):
+        """The model can ask for several tools in one batch. The check and the call
+        straddle an await, so a check that did not also *take* the key would let both
+        halves of a duplicated pair pass it and both pay for the round trip."""
+        gate = asyncio.Event()
+        svc = _FakeSearch(gate=gate)
+        ctx = _ctx(search=svc)
+        first = asyncio.create_task(_call("search", ctx, query="a"))
+        # Let the first call reach the (parked) provider before the second is made.
+        await asyncio.sleep(0)
+        try:
+            # A second call that reached the provider would park on the same gate and
+            # never return, so the bound turns "both hit the network" into a failure
+            # rather than a hang.
+            second = await asyncio.wait_for(_call("search", ctx, query="a"), timeout=1.0)
+        finally:
+            gate.set()
+            await first
+        assert svc.queries == ["a"]
+        assert isinstance(second, str)
+        assert "already searched" in second.lower()
 
     async def test_a_failed_search_leaves_the_query_askable(self):
         svc = _FakeSearch(fail=True)

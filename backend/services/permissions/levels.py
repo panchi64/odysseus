@@ -9,23 +9,23 @@ decision function that switches on the name — which works until a fifth combin
 wanted, at which point every switch has to grow a case and the ones that are missed fail
 silently. So a level is stored and shown as a name, and *resolved* to a pair:
 
-- a **write scope** — how far the model may reach without permission at all. Today two
-  values, and the room for a third (a level that may touch the host) is the point;
-- an **approval policy** — what happens to an act that reaches past that scope: withhold
+- a **ceiling** on :class:`~services.tool_sensitivity.Sensitivity` — how far the model may
+  reach without permission at all. ``read`` permits observation only; ``workspace_write``
+  also permits changing what this installation owns; the room for a third (a level that
+  may touch the host) is the point;
+- an **approval policy** — what happens to an act that reaches past that ceiling: withhold
   the tool outright, park for the operator, or send it to review.
 
 The four levels are presets over that pair. A fifth is a row here, and nothing else moves.
 
-**A scope is expressed as a ceiling on** :class:`~services.tool_sensitivity.Sensitivity`,
-which is what makes the pair decidable: the classes already say what a tool *does*, so
-"may this run without asking?" is a comparison rather than a list of tool names to keep in
-step. ``none`` permits observation only; ``workspace`` also permits changing what this
-installation owns.
+The ceiling is a sensitivity class rather than a name of its own because that is what
+makes the pair decidable: the classes already say what a tool *does*, so "may this run
+without asking?" is a comparison rather than a list of tool names to keep in step.
 
 **What a level cannot do is take a gate away.** Levels widen; they never narrow. A tool
 that gates itself — the global-recall pause, a skill edit — is still answered at every
 level, because the reason it gates is not the one this axis reasons about (a recall pulls
-untrusted content into the model's context; it changes nothing the write scope describes).
+untrusted content into the model's context; it changes nothing the ceiling describes).
 What clears a tool's own gate is the operator: at the prompt, through a standing
 conversation grant, or — at the one level whose entire meaning is that they asked for
 their answers to be given for them — through the review. That asymmetry is what keeps
@@ -44,7 +44,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from services.tool_sensitivity import Sensitivity, classified, sensitivity_of, tools_above
+from services.tool_sensitivity import (
+    EXTERNAL_PREFIX,
+    Sensitivity,
+    classified,
+    sensitivity_of,
+    tools_above,
+)
 
 #: The stored vocabulary. A plain string on the conversation row, like the mode: a
 #: restored backup or a row written by another build must still load.
@@ -62,18 +68,8 @@ DEFAULT_PERMISSION: PermissionLevel = "edit"
 STRICTEST_PERMISSION: PermissionLevel = "plan"
 
 
-class WriteScope(StrEnum):
-    """How far a level lets the model reach with no permission asked."""
-
-    #: Observation only. Nothing anywhere is different afterwards.
-    NONE = "none"
-    #: The run's own files, its plan, this installation's records — state we own, can
-    #: show the operator, and can undo from here.
-    WORKSPACE = "workspace"
-
-
 class ApprovalPolicy(StrEnum):
-    """What becomes of an act that reaches past the level's write scope."""
+    """What becomes of an act that reaches past the level's ceiling."""
 
     #: Never offered. The tool is dropped from the catalog before the model sees it, so
     #: there is nothing to ask about — the only form of read-only that survives a model
@@ -85,28 +81,18 @@ class ApprovalPolicy(StrEnum):
     REVIEW = "review"
 
 
-#: What each scope permits without asking, as the highest sensitivity class that passes.
-_CEILINGS: Mapping[WriteScope, Sensitivity] = {
-    WriteScope.NONE: Sensitivity.READ,
-    WriteScope.WORKSPACE: Sensitivity.WORKSPACE_WRITE,
-}
-
-
 @dataclass(frozen=True)
 class PermissionSpec:
     """One named level, as the pair it resolves to."""
 
     #: The stored value, and the identity — ``PERMISSIONS[spec.level] is spec``.
     level: PermissionLevel
-    #: How far the model reaches without asking.
-    write_scope: WriteScope
-    #: What happens when it reaches further.
+    #: The highest sensitivity class that passes unasked. ``read`` reaches nothing;
+    #: ``workspace_write`` also reaches the run's own files, its plan and this
+    #: installation's records — state we own, can show the operator, and can undo.
+    ceiling: Sensitivity
+    #: What happens when a tool reaches further.
     approval_policy: ApprovalPolicy
-
-    @property
-    def ceiling(self) -> Sensitivity:
-        """The highest sensitivity class this level's write scope lets pass unasked."""
-        return _CEILINGS[self.write_scope]
 
 
 PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
@@ -115,26 +101,45 @@ PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
     # and accepts. Asking instead would make the read-only promise depend on the model
     # agreeing to it, which is the one moment it stops holding.
     "plan": PermissionSpec(
-        level="plan", write_scope=WriteScope.NONE, approval_policy=ApprovalPolicy.WITHHOLD
+        level="plan", ceiling=Sensitivity.READ, approval_policy=ApprovalPolicy.WITHHOLD
     ),
     # Read-only until told otherwise, one act at a time. The tools stay in the catalog —
     # the model must be able to propose the thing it needs permission for.
     "manual": PermissionSpec(
-        level="manual", write_scope=WriteScope.NONE, approval_policy=ApprovalPolicy.ASK
+        level="manual", ceiling=Sensitivity.READ, approval_policy=ApprovalPolicy.ASK
     ),
     # The working default: change the workspace freely, stop at its edge. Running a
     # program, reaching a mail or calendar server, driving the operator's own browser
     # session and reading a credential all sit past that edge.
     "edit": PermissionSpec(
-        level="edit", write_scope=WriteScope.WORKSPACE, approval_policy=ApprovalPolicy.ASK
+        level="edit", ceiling=Sensitivity.WORKSPACE_WRITE, approval_policy=ApprovalPolicy.ASK
     ),
     # The same reach as Edit, with the operator's decision replaced by a review rather
     # than removed: a deterministic judge, then a model reviewer, parking on any doubt
     # and on every way the review can fail (`decide.py`).
     "auto": PermissionSpec(
-        level="auto", write_scope=WriteScope.WORKSPACE, approval_policy=ApprovalPolicy.REVIEW
+        level="auto", ceiling=Sensitivity.WORKSPACE_WRITE, approval_policy=ApprovalPolicy.REVIEW
     ),
 }
+
+
+#: How permissive each policy is, once the ceiling has been compared. Withholding the tool
+#: is the least a level can do with an act it does not permit; parking asks the operator;
+#: reviewing answers for them. Only meaningful *within* one ceiling — a level that reaches
+#: further is more permissive whatever it does at the boundary.
+_POLICY_PERMISSIVENESS: Mapping[ApprovalPolicy, int] = {
+    ApprovalPolicy.WITHHOLD: 0,
+    ApprovalPolicy.ASK: 1,
+    ApprovalPolicy.REVIEW: 2,
+}
+
+#: The levels that can change something without being asked first — derived from the pair
+#: rather than named, so a fifth preset is a row in :data:`PERMISSIONS` and nothing else
+#: moves. A ``read`` ceiling is the definition of a level that cannot act: it reaches
+#: nothing but observation, so raising a thread *to* it would be a no-op with extra steps.
+ACTING_PERMISSIONS: frozenset[PermissionLevel] = frozenset(
+    level for level, spec in PERMISSIONS.items() if spec.ceiling is not Sensitivity.READ
+)
 
 
 def permission_level(level: str) -> PermissionLevel:
@@ -157,7 +162,29 @@ def permission_spec(level: str) -> PermissionSpec:
     return PERMISSIONS[permission_level(level)]
 
 
-# The Planning toolset's writes — permitted at every level, whatever its write scope
+def _permissiveness(spec: PermissionSpec) -> tuple[int, int]:
+    """How far a level goes, as a comparable pair: how far it reaches unasked, then what it
+    does with an act that reaches further. Derived from the two knobs for the same reason
+    everything else here is — a fifth preset orders itself instead of being slotted into a
+    hand-written list somebody has to remember to edit."""
+    return (spec.ceiling.escalation, _POLICY_PERMISSIVENESS[spec.approval_policy])
+
+
+def stricter_permission(a: str, b: str) -> PermissionLevel:
+    """Whichever of ``a`` and ``b`` permits the less.
+
+    For the caller that opens a thread *from inside another one*: the spawned thread must
+    never be able to do more than the thread that spawned it, whatever level its mode
+    would start a fresh thread at. Taking the stricter of the two is what stops one
+    approved spawn from buying a standing level the operator never chose. A tie resolves
+    to ``a``, since neither permits more than the other."""
+    return min(
+        (permission_level(a), permission_level(b)),
+        key=lambda level: _permissiveness(PERMISSIONS[level]),
+    )
+
+
+# The Planning toolset's writes — permitted at every level, whatever its ceiling
 # says. A read-only turn exists to end in a plan, so a level that made the model ask
 # before recording what it had decided would leave it no way to finish; and a level that
 # asks before *acting* has no business interrupting the model's own scratchpad. The names
@@ -176,8 +203,14 @@ PLANNING_TOOLS = frozenset(
 )
 
 
-def beyond_scope(level: str, tool: str) -> bool:
+def beyond_scope(level: str, tool: str, *, declared: Sensitivity | None = None) -> bool:
     """Whether ``tool`` reaches past what ``level`` permits unasked.
+
+    ``declared`` is the class the toolset stated about the tool itself
+    (:func:`~services.tool_sensitivity.declared_sensitivity`). It wins over both the name
+    registry and the fallback below, because it is knowledge where they are inference —
+    and it is the only answer available for a toolset this installation composes at run
+    time rather than ships in the catalog.
 
     The one question both halves of the enforcement ask, so they cannot disagree about
     where the line is: the toolset marks every tool past it as needing approval, and the
@@ -186,19 +219,37 @@ def beyond_scope(level: str, tool: str) -> bool:
 
     **A tool this installation cannot classify is elevated only by a level that permits
     nothing.** The unclassifiable names are the operator's own MCP and connector tools —
-    every tool in the catalog proper carries a class, and a test fails if one stops doing
-    so — and those already carry a per-tool decision of the operator's: the trust list
-    (``services/external_tools.py``), which pauses an untrusted one and lets a trusted one
-    through. Manufacturing a second gate on top of a guess would replace that explicit
-    answer with an inferred one. Where the level's promise is that the thread changes
-    *nothing*, the guess is load-bearing and the promise wins — there is no other way to
-    keep it against a tool nothing here can bound.
+    every tool in the catalog proper carries a class, and ``tests/test_tool_sensitivity.py``
+    fails in *both* directions if one stops doing so — and those already carry a per-tool
+    decision of the operator's: the trust list (``services/external_tools.py``), which
+    pauses an untrusted one from inside the call and lets a trusted one through.
+    Manufacturing a second gate on top of a guess would replace that explicit answer with
+    an inferred one, and would make "trusted" mean nothing at the two levels where the
+    operator uses it. Where the level's promise is that the thread changes *nothing*, the
+    guess is load-bearing and the promise wins — there is no other way to keep it against
+    a tool nothing here can bound.
+
+    **Everything else unclassified fails closed**, and the split between the two is the
+    prefix the external surface already carries. Deferring to the trust list is an answer
+    only where there *is* one; for any other unknown name — a tool added to the catalog
+    without a class, a rename that outran the registry — there is nothing to defer to, and
+    treating "we have never heard of this" as "it may act unasked" is the one reading that
+    cannot be justified. So it takes :func:`~services.tool_sensitivity.sensitivity_of`'s
+    own conservative fallback and reaches
+    :func:`~services.permissions.decide.decide` like anything else past the ceiling.
+
+    In a correct build that branch is unreachable — ``tests/test_tool_sensitivity.py``
+    fails in both directions if a catalog tool loses its class — which is exactly why it
+    is written the safe way: the cost of it never firing is nothing, and the cost of it
+    firing open is a tool acting unasked at the two levels that let the model act at all.
     """
     if tool in PLANNING_TOOLS:
         return False
     spec = permission_spec(level)
-    if not classified(tool):
-        return spec.write_scope is WriteScope.NONE
+    if declared is not None:
+        return declared.above(spec.ceiling)
+    if not classified(tool) and tool.startswith(EXTERNAL_PREFIX):
+        return spec.ceiling is Sensitivity.READ
     return sensitivity_of(tool).above(spec.ceiling)
 
 

@@ -4,7 +4,6 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  onCleanup,
   onMount,
   untrack,
   type JSX,
@@ -45,7 +44,9 @@ import {
   useChatSessions,
 } from "../data";
 import { isApiError } from "~/lib/api";
+import { sessionModeSpec } from "~/lib/modes";
 import { sendBlockedReason, setSelectedModel } from "~/lib/stores/models";
+import { activeSessionMode, codeProjectId } from "~/lib/stores/sessionMode";
 import { createComposerAttachments } from "~/features/uploads/data";
 import { BrowserPanel } from "../components/BrowserPanel";
 import { ViewportPanel } from "../components/ViewportPanel";
@@ -53,16 +54,9 @@ import { BranchChip } from "../components/BranchChip";
 import { PermissionControl } from "../components/PermissionControl";
 import { ContextRing } from "../components/ContextRing";
 import { ModelPicker } from "~/app/ModelPicker";
-import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
 import { assembleTranscript } from "../blocks";
 import type { ChatMessage } from "../model";
-import {
-  activeDownload,
-  downloadBlob,
-  useViewerPersistence,
-  type PanelKind,
-} from "../viewerPersistence";
-import { createPanelResize, observeAvailableWidth } from "../panelResize";
+import { useChatViewport } from "../useChatViewport";
 import { createTranscriptFollow } from "../transcriptScroll";
 import { createRenameConversation } from "../components/RenameConversationModal";
 import { registerKeymap } from "~/lib/keymap";
@@ -120,19 +114,22 @@ export function ChatRoomScreen(): JSX.Element {
     stream,
     warmResolved,
     markWarmResolved,
-    mode,
-    codeProjectId,
     permission,
     setPermission,
   } = mainChat();
+  // Straight from the app-wide store, not through the room controller: the mode is
+  // the window's, and re-exposing it on the chat handle only hid that.
+  const mode = activeSessionMode;
 
   /** Why SEND is unavailable, or null. The model/context gate, plus the one thing
-   *  only this screen can know: a code thread is cut from a directory's repository,
+   *  only this screen can know: a worktree thread is cut from a directory's repository,
    *  so a send that names no directory is a turn the backend will refuse with a 422.
    *  Saying so before the message is committed is the same courtesy the context gate
    *  already extends — the alternative is losing a typed message to an error. */
   const sendBlocked = (): string | null =>
-    mode() === "code" && currentId() === null && !codeProjectId()
+    sessionModeSpec(mode()).workspace === "worktree" &&
+    currentId() === null &&
+    !codeProjectId()
       ? "Choose a directory for this code session"
       : sendBlockedReason();
 
@@ -214,211 +211,59 @@ export function ChatRoomScreen(): JSX.Element {
     refreshSessions();
   });
 
-  // Viewport: a collapsible, resizable pane beside the conversation (or, below
-  // `lg` / in fullscreen, a full-screen sheet) — the seam where documents, live
-  // previews, and artifacts mount. The dragged width is a genuine cross-thread
-  // preference (global); every other preference (open, pinned version,
-  // PREVIEW/CODE tab, font size, wrap, fullscreen, seen count) is **per
-  // conversation**, via the shared `useViewerPersistence` seam — a manual close
-  // on one thread must not be undone by a different thread's auto-open.
-  const conversationKey = () => currentId() ?? "new";
-  const { state, patch } = useViewerPersistence(conversationKey);
+  // The viewport pane beside the conversation — everything about what it holds, how
+  // wide it is, whether it renders as an aside or a sheet, and where focus goes when
+  // it closes. It is a concern of its own, so it lives in one.
+  const viewport = useChatViewport(currentId, stream);
 
-  // The conversation's View, derived from this thread's transcript blocks
-  // (presentation-only, so it's automatically thread-scoped). The viewport renders
-  // these; the transcript shows compact chips that open them here.
-  const viewItems = createMemo(() =>
-    collectViewItems(stream.messages, stream.snapshots()),
-  );
-  // The viewport only makes sense with something to show. Gate the effective open
-  // state on having items so a persisted-open thread that's since lost its items
-  // (or a fresh chat that never had any) never shows an empty panel.
-  // What the panel has to show: the thread's View versions, or a live agent browser.
-  // The browser is not a View item — it has no version, no code and no history — so it
-  // has to be counted here or the slot would stay shut through a whole browsing session.
-  const hasPanelContent = () =>
-    viewItems().length > 0 || stream.browserStream() !== null;
-  const viewportShown = () => state().open && hasPanelContent();
-  // Which panel is in the slot — the browser takes it whenever there is a live one
-  // (`renderPanel` below). It is what the slot is *sized* by, so it is derived here
-  // rather than read off the render.
-  const panelKind = (): PanelKind =>
-    stream.browserStream() !== null ? "browser" : "view";
-  const toggleViewport = () => {
-    patch({ open: !state().open });
-  };
-  const openViewport = () => {
-    if (!state().open) patch({ open: true });
-  };
-  // The aside's width, and the drag that changes it (see `panelResize.ts` for why the
-  // live width is an override rather than a seeded copy, and why the drag remembers
-  // which panel it started on).
-  const { liveWidth, onResize, onResizeEnd } = createPanelResize(panelKind);
-  // The newest version's key (the one collectViewItems flags as latest). Following
-  // it (pinnedKey null) means freshly-minted versions keep advancing the view
-  // instead of leaving it stranded on a now-stale pick.
-  const latestViewKey = (): string | null =>
-    viewItems().find((i) => i.isLatest)?.key ?? null;
-  // The item actually shown: the pin if still present, else the newest.
-  const resolvedViewKey = (): string | null =>
-    state().pinnedKey ?? latestViewKey();
-
-  const requestPin = (key: string | null) => patch({ pinnedKey: key });
-  const requestTab = (tab: "preview" | "code") => patch({ activeTab: tab });
-  // Pin a version — except picking the current latest clears the pin (null), so the
-  // viewport resumes following new versions as the agent mints them.
-  const selectView = (key: string) =>
-    requestPin(key === latestViewKey() ? null : key);
-  // Open a View item in the viewport — from a transcript chip or a timeline tab.
-  const openViewTo = (key: string) => {
-    selectView(key);
-    openViewport();
-  };
-  // First-time-only auto-open: when a thread first produces a View item, open the
-  // viewport once; `claimAutoOpen` is one-shot per conversation, so a later manual
-  // close is respected and subsequent items update it silently.
-  createEffect(() => {
-    const id = currentId();
-    if (id !== null && viewItems().length > 0 && claimAutoOpen(id)) {
-      openViewport();
-    }
-  });
-  // The browser gets its own one-shot, keyed on the *session* rather than the thread.
-  // The conversation-scoped claim is about one artifact accumulating versions, where a
-  // manual close means "not this, thanks" for the rest of the thread; a browser session
-  // is a different kind of event — it starts hours later, it is a place the agent went
-  // rather than a new version of what it was already showing, and a thread that spent
-  // its shot on a View item would otherwise browse the whole session behind a closed
-  // panel. Re-announcements of the same session share one claim, so a close during a
-  // session is still respected until the next one.
-  createEffect(() => {
-    const path = stream.browserStream();
-    if (path !== null && claimAutoOpen(`browser:${path}`)) openViewport();
-  });
-  // The badge on the header eye toggle: items minted after the "seen through"
-  // pointer (`seenKey`). Counting from a key's position — not a raw count —
-  // means a rewind that shrinks the list and a later regrow past the old count
-  // can't coincidentally read as "seen"; a dropped key (rewound away) resolves
-  // to index -1, i.e. nothing seen. Cleared (advanced to the newest key)
-  // whenever the panel is visible and following the latest — a pinned older
-  // version leaves later unseen items counted until the operator returns to
-  // following latest.
-  const unseenCount = () => {
-    const items = viewItems();
-    const idx = items.findIndex((i) => i.key === state().seenKey);
-    return Math.max(0, items.length - (idx + 1));
-  };
-  createEffect(() => {
-    if (viewportShown() && state().pinnedKey === null) {
-      const latest = viewItems().at(-1)?.key ?? null;
-      if (latest !== null && state().seenKey !== latest)
-        patch({ seenKey: latest });
-    }
-  });
-
-  // How much width the conversation and the panel have to share — measured off the row
-  // itself rather than the window (see `panelResize.ts`).
-  let rowEl: HTMLDivElement | undefined;
-  onMount(() => {
-    if (rowEl) observeAvailableWidth(rowEl);
-  });
-
-  // The panel renders in a desktop-only aside above `lg`; below it (or in
-  // fullscreen at any width) it renders in a full-screen sheet instead.
-  const [isDesktop, setIsDesktop] = createSignal(true);
-  onMount(() => {
-    const mq = window.matchMedia("(min-width: 64rem)");
-    const update = () => setIsDesktop(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    onCleanup(() => mq.removeEventListener("change", update));
-  });
-  const sheetOpen = () =>
-    viewportShown() && (state().fullscreen || !isDesktop());
-  const asideOpen = () => viewportShown() && !sheetOpen();
-  let sheetTrigger: HTMLButtonElement | undefined;
-  const closeSheet = () => {
-    if (isDesktop()) patch({ fullscreen: false });
-    else patch({ fullscreen: false, open: false });
-    sheetTrigger?.focus();
-  };
-
-  // Focus: the panel container (either mount) and the transcript scroll
-  // container are the two jump targets for mod+shift+u; the panel-scoped
-  // bindings below fire only while focus is inside the panel container.
-  const [panelEl, setPanelEl] = createSignal<HTMLDivElement>();
-  const panelHasFocus = () => {
-    const el = panelEl();
-    return el !== undefined && el.contains(document.activeElement);
-  };
   // Any *other* portal-rendered dialog (the rename Modal, an attachment
   // Lightbox) already owns Esc — back off so this registry doesn't double-handle.
+  // The sheet marks itself `data-view-sheet` below so it is not counted here.
   const otherDialogOpen = () =>
     document.querySelector(
       '[role="dialog"][aria-modal="true"]:not([data-view-sheet])',
     ) !== null;
 
-  const pinPrev = () => {
-    const items = viewItems();
-    if (items.length === 0) return;
-    const idx = items.findIndex((i) => i.key === resolvedViewKey());
-    // A missing key (a persisted pin whose version no longer exists) follows
-    // latest, same as pinNext's fallback — so "previous" steps back from the
-    // newest item instead of jumping to the oldest.
-    const effIdx = idx === -1 ? items.length - 1 : idx;
-    const target = items[Math.max(0, effIdx - 1)];
-    if (target) selectView(target.key);
-  };
-  const pinNext = () => {
-    const items = viewItems();
-    if (items.length === 0) return;
-    const idx = items.findIndex((i) => i.key === resolvedViewKey());
-    if (idx === -1 || idx >= items.length - 1) requestPin(null);
-    else selectView(items[idx + 1].key);
-  };
-  const triggerActiveDownload = () => {
-    const d = activeDownload();
-    if (!d) return;
-    void (async () => downloadBlob(d.name, await d.getBlob()))();
-  };
-  // Flip the shown snapshot's keeper bookmark. Relays to the backend; the stream
-  // store applies the optimistic update and reverts on failure.
-  const toggleKeeper = (item: ViewItem) => {
-    if (item.snapshot)
-      void stream.toggleSnapshotKeeper(item.snapshot.snapshotId, !item.keeper);
-  };
-
   registerKeymap(() => [
     // ⌘/Ctrl+Shift+O starts a new conversation from anywhere, even mid-thread.
     { combo: "mod+shift+o", run: startNew },
-    { combo: "mod+shift+v", run: toggleViewport },
+    { combo: "mod+shift+v", run: viewport.toggle },
     {
+      // The panel container (either mount) and the transcript scroll container are
+      // the two jump targets; the panel-scoped bindings below fire only while focus
+      // is inside the panel.
       combo: "mod+shift+u",
-      when: () => viewportShown(),
+      when: () => viewport.shown(),
       run: () => {
-        if (panelHasFocus()) transcript.element()?.focus();
-        else panelEl()?.focus();
+        if (viewport.hasFocus()) transcript.element()?.focus();
+        else viewport.focusPanel();
       },
     },
     {
       combo: "p",
-      when: panelHasFocus,
+      when: viewport.hasFocus,
       run: () =>
-        requestTab(state().activeTab === "preview" ? "code" : "preview"),
+        viewport.requestTab(
+          viewport.state().activeTab === "preview" ? "code" : "preview",
+        ),
     },
-    { combo: "[", when: panelHasFocus, run: pinPrev },
-    { combo: "]", when: panelHasFocus, run: pinNext },
+    { combo: "[", when: viewport.hasFocus, run: viewport.pinPrev },
+    { combo: "]", when: viewport.hasFocus, run: viewport.pinNext },
     {
       combo: "f",
-      when: panelHasFocus,
-      run: () => patch({ fullscreen: !state().fullscreen }),
+      when: viewport.hasFocus,
+      run: () => viewport.patch({ fullscreen: !viewport.state().fullscreen }),
     },
-    { combo: "d", when: panelHasFocus, run: triggerActiveDownload },
+    {
+      combo: "d",
+      when: viewport.hasFocus,
+      run: viewport.triggerActiveDownload,
+    },
     {
       combo: "escape",
-      when: () => panelHasFocus() && !otherDialogOpen(),
+      when: () => viewport.hasFocus() && !otherDialogOpen(),
       run: () => {
-        if (sheetOpen()) closeSheet();
+        if (viewport.sheetOpen()) viewport.closeSheet();
         else transcript.element()?.focus();
       },
     },
@@ -555,21 +400,24 @@ export function ChatRoomScreen(): JSX.Element {
   // `onClose` is passed in per mount site: the aside's own Collapse just
   // toggles the panel, but the sheet's Collapse (routed through the same
   // ViewActionRow) must reset `fullscreen` and return focus to the trigger —
-  // `closeSheet` does both, `toggleViewport` does neither.
+  // `viewport.closeSheet` does both, `viewport.toggle` does neither.
   // While the agent has a live browser, it takes the slot. A browser is a place the
   // agent *is*, not an artifact it produced, so it gets none of the View's version
   // chrome — and it is transient, so the versioned View comes straight back when the
   // session ends rather than the operator having to switch back to it.
+  const toggleFullscreen = () =>
+    viewport.patch({ fullscreen: !viewport.state().fullscreen });
+
   const renderPanel = (onClose: () => void) => (
     <Show when={stream.browserStream()} fallback={renderViewportPanel(onClose)}>
       {(path) => (
         <BrowserPanel
           streamPath={path()}
           onEnded={stream.clearBrowserStream}
-          fullscreen={state().fullscreen}
-          onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
+          fullscreen={viewport.state().fullscreen}
+          onToggleFullscreen={toggleFullscreen}
           onClose={onClose}
-          panelRef={setPanelEl}
+          panelRef={viewport.panelRef}
         />
       )}
     </Show>
@@ -577,25 +425,27 @@ export function ChatRoomScreen(): JSX.Element {
 
   const renderViewportPanel = (onClose: () => void) => (
     <ViewportPanel
-      items={viewItems()}
-      selectedKey={state().pinnedKey}
-      onSelect={selectView}
-      activeTab={state().activeTab}
-      onSelectTab={requestTab}
-      fontStep={state().fontStep}
-      onFontStep={(step) => patch({ fontStep: step })}
-      softWrap={state().softWrap}
-      onToggleWrap={() => patch({ softWrap: !state().softWrap })}
-      fullscreen={state().fullscreen}
-      onToggleFullscreen={() => patch({ fullscreen: !state().fullscreen })}
+      items={viewport.items()}
+      selectedKey={viewport.state().pinnedKey}
+      onSelect={viewport.selectView}
+      activeTab={viewport.state().activeTab}
+      onSelectTab={viewport.requestTab}
+      fontStep={viewport.state().fontStep}
+      onFontStep={(step) => viewport.patch({ fontStep: step })}
+      softWrap={viewport.state().softWrap}
+      onToggleWrap={() =>
+        viewport.patch({ softWrap: !viewport.state().softWrap })
+      }
+      fullscreen={viewport.state().fullscreen}
+      onToggleFullscreen={toggleFullscreen}
       onClose={onClose}
-      onKeeper={toggleKeeper}
-      panelRef={setPanelEl}
+      onKeeper={viewport.toggleKeeper}
+      panelRef={viewport.panelRef}
     />
   );
 
   return (
-    <div ref={rowEl} class="flex h-full min-h-0">
+    <div ref={viewport.rowRef} class="flex h-full min-h-0">
       {/* Conversation — the thread list now lives in the app rail's RECENTS, so
           the body is free for the conversation plus the viewport pane. */}
       <section class="flex min-h-full min-w-0 flex-1 flex-col">
@@ -646,16 +496,18 @@ export function ChatRoomScreen(): JSX.Element {
                 the exception, not the new default. */}
             <Tooltip label="Viewport" side="bottom">
               <Button
-                ref={(el) => (sheetTrigger = el)}
+                ref={viewport.triggerRef}
                 variant="ghost"
                 leading="eye"
                 aria-label="Toggle viewport panel"
-                onClick={toggleViewport}
-                disabled={!hasPanelContent()}
-                class={hasPanelContent() ? undefined : "hidden lg:inline-flex"}
+                onClick={viewport.toggle}
+                disabled={!viewport.hasContent()}
+                class={
+                  viewport.hasContent() ? undefined : "hidden lg:inline-flex"
+                }
               >
-                <Show when={unseenCount() > 0}>
-                  {unseenCount() > 9 ? "9+" : unseenCount()}
+                <Show when={viewport.unseenCount() > 0}>
+                  {viewport.unseenCount() > 9 ? "9+" : viewport.unseenCount()}
                 </Show>
               </Button>
             </Tooltip>
@@ -777,9 +629,9 @@ export function ChatRoomScreen(): JSX.Element {
                               text,
                             );
                         }}
-                        onOpenInView={openViewTo}
-                        viewItems={viewItems}
-                        seenKey={() => state().seenKey}
+                        onOpenInView={viewport.openViewTo}
+                        viewItems={viewport.items}
+                        seenKey={() => viewport.state().seenKey}
                         onReattach={() => {
                           if (message.runId)
                             void stream.reattachRun(message.runId, {
@@ -939,21 +791,24 @@ export function ChatRoomScreen(): JSX.Element {
             `divider="hover"` because the panel already brackets itself: at rest
             the frame's left rule is the edge, and the splitter only paints when
             the operator reaches for it. */}
-        <Reveal when={asideOpen()} class="flex h-full shrink-0">
+        <Reveal when={viewport.asideOpen()} class="flex h-full shrink-0">
           <ResizeHandle
             aria-label="Resize viewport panel"
             divider="hover"
-            onResize={onResize}
-            onResizeEnd={onResizeEnd}
+            onResize={viewport.onResize}
+            onResizeEnd={viewport.onResizeEnd}
           />
         </Reveal>
         <ConstructionReveal
-          when={asideOpen()}
+          when={viewport.asideOpen()}
           class="h-full shrink-0"
           contentClass="h-full"
         >
-          <aside class="min-w-0 shrink-0" style={{ width: `${liveWidth()}px` }}>
-            {renderPanel(toggleViewport)}
+          <aside
+            class="min-w-0 shrink-0"
+            style={{ width: `${viewport.liveWidth()}px` }}
+          >
+            {renderPanel(viewport.toggle)}
           </aside>
         </ConstructionReveal>
       </div>
@@ -969,7 +824,7 @@ export function ChatRoomScreen(): JSX.Element {
           fill of its own. */}
       <Portal>
         <ConstructionReveal
-          when={sheetOpen()}
+          when={viewport.sheetOpen()}
           class="fixed inset-0 z-50"
           contentClass="h-full"
         >
@@ -988,7 +843,7 @@ export function ChatRoomScreen(): JSX.Element {
                 variant="ghost"
                 size="sm"
                 leading="chevron-left"
-                onClick={closeSheet}
+                onClick={viewport.closeSheet}
               >
                 Back to chat
               </Button>
@@ -998,7 +853,7 @@ export function ChatRoomScreen(): JSX.Element {
                 </Text>
               </span>
             </header>
-            <div class="min-h-0 flex-1">{renderPanel(closeSheet)}</div>
+            <div class="min-h-0 flex-1">{renderPanel(viewport.closeSheet)}</div>
           </div>
         </ConstructionReveal>
       </Portal>

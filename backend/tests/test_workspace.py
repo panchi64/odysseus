@@ -65,10 +65,13 @@ class _FakeSessions:
 
     def __init__(self, root: Path) -> None:
         self._root = root
+        self.holders: dict[str, object] = {}
 
-    async def acquire(self, key: str) -> _FakeSession:
+    async def acquire(self, key: str, *, holder: object = None) -> _FakeSession:
         path = self._root / key
         path.mkdir(parents=True, exist_ok=True)
+        if holder is not None:
+            self.holders[key] = holder
         return _FakeSession(path)
 
 
@@ -160,6 +163,18 @@ class TestNormalMode:
         # A code turn's first resolution runs `git worktree add`; a turn makes many
         # file-tool calls, and it must not run once per call.
         assert first is second
+
+    async def test_the_run_claims_the_container_it_is_about_to_work_in(self, tmp_path):
+        # Without the claim the only "in use" signal is the exec lock, held for one call
+        # out of the dozens a turn makes — and the live-session cap would be free to seal
+        # the workspace away in a gap between two of them, taking `node_modules`, `.venv`
+        # and `.git` with it (the seal drops those by design).
+        caps = _caps(tmp_path)
+        ctx = _ctx(caps, conversation_id="conv-a")
+        await run_workspace(ctx)
+        sessions = caps.get_optional(SandboxSessionManager)
+        assert sessions is not None
+        assert sessions.holders["conv-a"] is ctx.deps.run
 
 
 # --- code mode: the worktree, and the one-workspace invariant ------------------------

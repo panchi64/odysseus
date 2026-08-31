@@ -12,6 +12,12 @@ things worth pinning are the ones that would quietly stop being true:
   stored word;
 - it inherits the **parent's project**, so it lands in the scope of the work that
   prompted it instead of appearing unfiled beside it;
+- it can never be allowed to do **more than its parent**, or one approved `research_start`
+  would buy a standing level the operator never chose;
+- it **refuses rather than degrades** when the web tools are withheld, because a thread
+  that answers from model memory reads, in the session list, exactly like one that looked;
+- it runs under a **wall clock**, since nobody is watching it and the linked lane is only
+  so wide;
 - `start` **returns before the turn finishes**, which is the whole reason the tool is
   non-blocking;
 - `read` answers from the thread itself, and refuses an id it does not own rather than
@@ -22,6 +28,8 @@ from __future__ import annotations
 
 import pytest
 
+from core.config import get_settings
+from services.modes import mode_spec
 from services.research_threads import ParentThread, ResearchThreads, ResearchUnavailableError
 from tests._helpers import client_app, patch_model_resolution
 
@@ -83,6 +91,99 @@ class TestStarting:
         async with client_app() as (_client, app):
             with pytest.raises(ResearchUnavailableError):
                 await _threads(app).start("operator", "   ")
+
+    async def test_the_thread_is_bounded_by_a_wall_clock(self, monkeypatch):
+        """Nobody is sitting in front of this run. The inactivity watchdog cannot end it —
+        a model streaming tokens refreshes that clock on every frame — and the linked lane
+        is only `run_linked_concurrency` wide, so an unbounded thread blocks every later
+        `research_start` for as long as it cares to run."""
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            submitted: dict = {}
+            real_submit = app.state.runs.submit
+
+            def spy(**kwargs):
+                submitted.update(kwargs)
+                return real_submit(**kwargs)
+
+            monkeypatch.setattr(app.state.runs, "submit", spy)
+            started = await _threads(app).start("operator", "Why?")
+            bound = submitted["wall_clock_timeout_s"]
+            assert bound is not None
+            assert bound == get_settings().research_wall_clock_timeout_s
+            await _settle(app, started.run_id)
+
+
+class TestInheritingTheParentsRope:
+    async def test_a_parent_that_may_not_act_opens_a_thread_that_may_not_either(
+        self, monkeypatch
+    ):
+        """Research mode starts a *fresh* thread at Edit. A thread the agent opened is not
+        fresh: the operator approved one `research_start` in a Plan thread, not a standing
+        level for a second thread to act at."""
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            started = await _threads(app).start(
+                "operator", "Why?", parent=ParentThread(permission="plan")
+            )
+            binding = await app.state.conversations.binding(started.conversation_id)
+            assert binding.permission == "plan"
+            await _settle(app, started.run_id)
+
+    async def test_a_parent_with_more_rope_does_not_raise_the_new_thread(self, monkeypatch):
+        """The other direction: taking the *stricter* of the two, so an Auto parent still
+        opens a thread at what research mode asks for rather than at review-everything."""
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            started = await _threads(app).start(
+                "operator", "Why?", parent=ParentThread(permission="auto")
+            )
+            binding = await app.state.conversations.binding(started.conversation_id)
+            assert binding.permission == "edit"
+            await _settle(app, started.run_id)
+
+    async def test_no_parent_level_leaves_the_modes_default(self, monkeypatch):
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            started = await _threads(app).start("operator", "Why?")
+            binding = await app.state.conversations.binding(started.conversation_id)
+            assert binding.permission == mode_spec("research").default_permission
+            await _settle(app, started.run_id)
+
+
+class TestRefusingRatherThanDegrading:
+    async def test_refuses_when_the_operator_disabled_a_web_tool(self, monkeypatch):
+        """Research is nothing but search and fetch, so the operator's own disabled set
+        binds it exactly as it binds a chat turn. Refused up front rather than degraded: a
+        thread with no way to gather still answers — from the model's memory — and lands in
+        the session list looking like research that looked."""
+        async with client_app() as (client, app):
+            patch_model_resolution(monkeypatch)
+            switched_off = await client.put("/tools/web_search", json={"enabled": False})
+            assert switched_off.status_code == 200
+
+            with pytest.raises(ResearchUnavailableError) as exc_info:
+                await _threads(app).start("operator", "Why?")
+            assert "web_search" in str(exc_info.value)
+            # Nothing was created for a thread that never started.
+            assert (await client.get("/conversations")).json() == []
+
+    async def test_refuses_while_offline_suspends_the_web_tools(self, monkeypatch):
+        """The other half of the effective set: offline mode's automatic suspension is not
+        something the operator chose, and research honours it the same way. Both names are
+        reported, so the message says what is actually missing."""
+        async with client_app() as (_client, app):
+            patch_model_resolution(monkeypatch)
+            monkeypatch.setattr(
+                app.state.offline,
+                "web_tools_disabled",
+                lambda: frozenset({"web_search", "web_fetch"}),
+            )
+
+            with pytest.raises(ResearchUnavailableError) as exc_info:
+                await _threads(app).start("operator", "Why?")
+            detail = str(exc_info.value)
+            assert "web_search" in detail and "web_fetch" in detail
 
 
 class TestReading:

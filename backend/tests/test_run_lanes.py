@@ -40,7 +40,10 @@ def test_every_composed_kind_has_a_lane():
 
 
 async def test_a_saturated_background_lane_does_not_queue_the_operators_turn():
-    reg = RunRegistry(lanes=LaneLimits(interactive=1, background=1, linked=1))
+    # Three slots on the host, one per lane: the operator's is the one the unattended
+    # lanes cannot reach, which is the whole guarantee — stated as a share of a ceiling,
+    # because a lane that could add slots to the host would be buying it with resources.
+    reg = RunRegistry(lanes=LaneLimits(total=3, interactive=1, background=1, linked=1))
     task_started, release_task = asyncio.Event(), asyncio.Event()
     linked_started, release_linked = asyncio.Event(), asyncio.Event()
     chat_started, release_chat = asyncio.Event(), asyncio.Event()
@@ -91,3 +94,117 @@ async def test_two_interactive_turns_still_share_their_own_lane():
     release.set()
     await first.wait()
     await second.wait()
+
+
+# --- the ceiling: lanes redistribute it, they never add to it ----------------
+def test_the_default_lanes_leave_the_operator_a_floor_inside_one_ceiling():
+    limits = LaneLimits()
+    # The point of the split, stated as arithmetic: peak concurrency is the ceiling, not
+    # the sum of the lanes, and what protects the operator is how little the unattended
+    # lanes may take of it.
+    assert limits.ceiling == limits.interactive
+    assert limits.background + limits.linked < limits.ceiling
+    assert limits.attended_floor == limits.ceiling - limits.background - limits.linked
+
+
+async def test_a_lane_cannot_push_the_host_past_its_ceiling():
+    # Two lanes, four slots between them, but a ceiling of two: a third run waits even
+    # though its own lane is empty. Lanes decide *who* holds the host's slots; only the
+    # ceiling decides how many there are.
+    reg = RunRegistry(lanes=LaneLimits(total=2, interactive=2, background=2, linked=1))
+    release = asyncio.Event()
+    started = [asyncio.Event() for _ in range(3)]
+
+    runs = [
+        reg.submit(kind="task", owner_id="operator", orchestrator=_blocking(started[0], release)),
+        reg.submit(kind="task", owner_id="operator", orchestrator=_blocking(started[1], release)),
+        reg.submit(kind="chat", owner_id="operator", orchestrator=_blocking(started[2], release)),
+    ]
+    await started[0].wait()
+    await started[1].wait()
+    await asyncio.sleep(0)  # let the third run reach its gate
+
+    assert not started[2].is_set()
+    assert runs[2].status is RunStatus.queued
+
+    release.set()
+    for run in runs:
+        await run.wait()
+    assert all(run.status is RunStatus.done for run in runs)
+
+
+# --- the permit is released on every exit, not only the happy one ------------
+async def test_a_failed_run_releases_its_lane_permit():
+    # A one-wide lane whose permit leaked on an exception would take the operator's lane
+    # out of service for the life of the process, with nothing to see but queued turns.
+    reg = RunRegistry(lanes=LaneLimits(interactive=1))
+
+    async def boom(run) -> None:
+        raise RuntimeError("the model refused")
+
+    failed = reg.submit(kind="chat", owner_id="operator", orchestrator=boom)
+    await failed.wait()
+    assert failed.status is RunStatus.error
+
+    started, release = asyncio.Event(), asyncio.Event()
+    after = reg.submit(kind="chat", owner_id="operator", orchestrator=_blocking(started, release))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    release.set()
+    await after.wait()
+
+
+async def test_a_cancelled_run_releases_its_lane_permit():
+    # Stopping a turn is the most-used control in the app; a permit lost to it would
+    # narrow the lane a little further every time the operator pressed it.
+    reg = RunRegistry(lanes=LaneLimits(interactive=1))
+    first_started, never = asyncio.Event(), asyncio.Event()
+
+    first = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=_blocking(first_started, never)
+    )
+    second_started, release = asyncio.Event(), asyncio.Event()
+    second = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=_blocking(second_started, release)
+    )
+    await first_started.wait()
+    assert second.status is RunStatus.queued
+
+    await reg.cancel(first.id)
+    await first.wait()
+    assert first.status is RunStatus.cancelled
+
+    await asyncio.wait_for(second_started.wait(), timeout=1.0)
+    release.set()
+    await second.wait()
+    assert second.status is RunStatus.done
+
+
+async def test_a_run_cancelled_while_queued_releases_the_permit_it_was_waiting_for():
+    # Cancellation delivered *at the gate* unwinds a half-taken pair — the lane permit is
+    # already held while the ceiling is still being waited on, and dropping it there is
+    # the difference between a lane that recovers and one that quietly shrinks.
+    reg = RunRegistry(lanes=LaneLimits(total=1, interactive=2))
+    first_started, release_first = asyncio.Event(), asyncio.Event()
+
+    first = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=_blocking(first_started, release_first)
+    )
+    waiting = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=_blocking(asyncio.Event(), asyncio.Event())
+    )
+    await first_started.wait()
+    assert waiting.status is RunStatus.queued
+
+    await reg.cancel(waiting.id)
+    await waiting.wait()
+    release_first.set()
+    await first.wait()
+
+    third_started, release_third = asyncio.Event(), asyncio.Event()
+    third = reg.submit(
+        kind="chat", owner_id="operator", orchestrator=_blocking(third_started, release_third)
+    )
+    await asyncio.wait_for(third_started.wait(), timeout=1.0)
+    release_third.set()
+    await third.wait()

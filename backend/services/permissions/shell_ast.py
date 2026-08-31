@@ -29,6 +29,7 @@ from pathlib import Path
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
+from services.permissions.shell_flags import attached_value, is_flag
 from services.sandbox.base import SandboxError, contained_path
 
 #: One parser, built once. `tree_sitter.Parser` is a thin handle over an immutable grammar
@@ -68,8 +69,8 @@ class ShellCommand:
     of each one. A flat word list answers a different, weaker question.
 
     ``arguments`` is every literal argument in order, flags included — flags are kept
-    because a flag is what separates `find .` from `find . -delete`, even though a flag
-    can never name a path and so never widens the worst case on its own.
+    because a flag is what separates `find .` from `find . -delete`, and because a flag is
+    where a path hides when someone would rather it were not seen.
     """
 
     program: str
@@ -248,7 +249,13 @@ class _Walk:
                 self._path(target, self.writes)
 
     def _argument(self, node: Node) -> str | None:
-        """One argument's literal text, recorded against the worst case as it goes."""
+        """One argument's literal text, recorded against the worst case as it goes.
+
+        A flag reaches exactly as far as the value glued to it — `--output=/etc/passwd`
+        and `-o/etc/passwd` name that file as plainly as writing it on its own would, and
+        a walk that dismissed every word starting with `-` could not see either. What the
+        flag *means* is not this file's question; that the word it carries is a path is.
+        """
         if node.type in _DYNAMIC:
             self.unbounded.append(_DYNAMIC[node.type])
             return None
@@ -256,18 +263,32 @@ class _Walk:
         if value is None:
             self.unbounded.append(f"an argument of a kind not read here ({node.type})")
             return None
-        if "://" in value:
-            self.network = True
-        elif not value.startswith("-") and (
-            # Only an argument that *names a directory* can leave the workspace: a bare
-            # word is at worst a file beside the ones already there. Recording every bare
-            # word as a read would bury the two that matter under a page of grep patterns.
-            "/" in value or value.startswith("~") or value in {".", ".."}
-        ):
-            self._path(value, self.reads)
+        if is_flag(value):
+            attached = attached_value(value)
+            if attached is not None:
+                self._reach(attached)
+        else:
+            self._reach(value)
         return value
+
+    def _reach(self, word: str) -> None:
+        """What one word — an operand, or the value carried on a flag — would touch."""
+        if "://" in word:
+            self.network = True
+        elif _names_a_path(word):
+            self._path(word, self.reads)
 
     def _path(self, raw: str, into: list[str]) -> None:
         into.append(raw)
         if escapes_workspace(self._root, raw):
             self.escapes.append(raw)
+
+
+def _names_a_path(word: str) -> bool:
+    """Whether a word could reach out of the directory the command runs in.
+
+    Only a word that *names a directory* can leave the workspace: a bare word is at worst
+    a file beside the ones already there. Recording every bare word as a read would bury
+    the two that matter under a page of grep patterns.
+    """
+    return "/" in word or word.startswith("~") or word in {".", ".."}

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic_ai_harness.repo_context._loader import ContextFile
 
+from tools.repo import _MAX_BRIEFS, _briefs, _run_brief
 from tools.repo_instructions import (
     INSTRUCTIONS_BYTE_BUDGET,
     repo_instruction_text,
@@ -73,3 +74,39 @@ def test_an_oversized_file_cannot_swallow_the_prompt_head(tmp_path):
     # The whole rendering, framing included, stays within a small multiple of the budget:
     # what must not happen is the file arriving at its own size.
     assert len(text.encode("utf-8")) < INSTRUCTIONS_BYTE_BUDGET + 1_000
+
+
+# --- the brief is built once per run, not once per model request ----------------------
+
+
+def test_a_runs_brief_is_read_from_disk_once_however_many_requests_it_makes(tmp_path):
+    """The provider re-resolves on every model request and a turn makes up to
+    `agent_request_limit` of them — twenty-five walks of the worktree, twenty-five SHA256
+    passes and twenty-five budget encodes, for content the module calls static per
+    project. Worse, an agent that edited the project's own `CLAUDE.md` mid-turn would
+    rewrite the prompt head under itself and invalidate the whole turn's prefix cache."""
+    (tmp_path / "CLAUDE.md").write_text("Run the tests with `uv run pytest`.\n")
+    first = _run_brief("run-1", tmp_path)
+
+    (tmp_path / "CLAUDE.md").write_text("Something else entirely.\n")
+
+    assert _run_brief("run-1", tmp_path) == first
+    assert "uv run pytest" in first
+
+
+def test_the_next_turn_reads_the_file_again(tmp_path):
+    # A turn boundary is the one place the file may legitimately have changed since it
+    # was read — the agent's own edit landed, or the operator's did.
+    (tmp_path / "CLAUDE.md").write_text("Run the tests with `uv run pytest`.\n")
+    _run_brief("run-1", tmp_path)
+
+    (tmp_path / "CLAUDE.md").write_text("Run the tests with `just test`.\n")
+
+    assert "just test" in _run_brief("run-2", tmp_path)
+
+
+def test_the_memo_does_not_grow_with_every_run_the_process_ever_serves(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("Keep it short.\n")
+    for n in range(_MAX_BRIEFS * 3):
+        _run_brief(f"run-{n}", tmp_path)
+    assert len(_briefs) <= _MAX_BRIEFS

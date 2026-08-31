@@ -25,10 +25,18 @@ request, so a five-step turn resolves the same brief five times; repeating it wo
 the turn's real work under a fivefold echo of its preamble. What is *not* deduplicated is
 a contributor whose text changed mid-turn — a plan reminder that grew a task genuinely is
 a new injection, and seeing it arrive is the point.
+
+**The dedup key is a digest, never the block itself.** The capability lives as long as the
+agent does — and a turn parked for approval holds it for as long as the operator takes to
+answer — so a key built from the full text would pin one retained copy of every distinct
+brief for that whole time, a repo brief being budgeted at 64KB. A digest answers the only
+question the key is asked (has this exact text already been announced) at a fixed
+thirty-odd bytes.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -112,9 +120,9 @@ class AnnounceInjections(AbstractCapability[RunDeps]):
     Observes only: the request context is returned exactly as it arrived.
     """
 
-    #: Contributor and text already announced on this turn, as ``id\x00text`` — see the
-    #: module docstring on why the text is part of the key.
-    seen: set[str] = field(default_factory=set)
+    #: Contributor and a digest of the text already announced on this turn — see the
+    #: module docstring on why the text is part of the key, and why only its digest is.
+    seen: set[tuple[str, str]] = field(default_factory=set)
 
     async def before_model_request(
         self, ctx: RunContext[RunDeps], request_context: ModelRequestContext
@@ -131,8 +139,15 @@ class AnnounceInjections(AbstractCapability[RunDeps]):
             name = part.id.name if part.id is not None else None
             if not name or not part.content:
                 continue
-            key = f"{name}\x00{part.content}"
+            key = (name, _digest(part.content))
             if key in self.seen:
                 continue
             self.seen.add(key)
             announce_injection(run, name, part.content, "instructions")
+
+
+def _digest(text: str) -> str:
+    """A short content fingerprint for the dedup key. BLAKE2b truncated to 128 bits:
+    this decides whether the operator sees a duplicate row, not whether anything is
+    trusted, and a collision at that width will not happen before the heat death."""
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=16).hexdigest()

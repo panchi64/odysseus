@@ -13,10 +13,10 @@ import logging
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent.summarize import compact_conversation
 from agent.title import title_from_history
@@ -34,7 +34,7 @@ from services.conversations import (
     last_request_usage,
 )
 from services.modes import DEFAULT_MODE, mode_spec
-from services.permissions import DEFAULT_PERMISSION
+from services.permissions import ACTING_PERMISSIONS, DEFAULT_PERMISSION, PermissionLevel
 from services.plans import accepted_plan_prompt, plan_payload
 from services.settings_store import (
     get_auto_compact,
@@ -799,11 +799,25 @@ async def read_plan(conversation_id: str, request: Request) -> list[PlanItemOut]
 
 
 class PlanAccept(BaseModel):
-    """Which level to raise the thread to. Only the two that can act: accepting a plan
-    and staying read-only is a no-op with extra steps, and dropping to Manual is a
-    downgrade the composer's own control already offers."""
+    """Which level to raise the thread to. Only one that can act: accepting a plan and
+    staying read-only is a no-op with extra steps, and dropping to Manual is a downgrade
+    the composer's own control already offers.
 
-    level: Literal["edit", "auto"] = "edit"
+    *Which* levels those are is the permission registry's answer, not a pair spelled out
+    here — a fifth preset is a row in ``services/permissions/levels.py`` and nothing in
+    this route moves."""
+
+    level: PermissionLevel = DEFAULT_PERMISSION
+
+    @field_validator("level")
+    @classmethod
+    def _must_be_able_to_act(cls, value: PermissionLevel) -> PermissionLevel:
+        if value not in ACTING_PERMISSIONS:
+            raise ValueError(
+                f"level must be one of {', '.join(sorted(ACTING_PERMISSIONS))} — "
+                "the levels a thread can act at"
+            )
+        return value
 
 
 class PlanAccepted(BaseModel):

@@ -258,7 +258,10 @@ async def test_context_overflow_stops_the_run_naming_the_limit():
 async def test_run_metrics_emitted_live_per_step_not_just_at_the_end():
     util = FunctionToolset()
 
-    @util.tool_plain
+    # Declares `read`: composed here rather than shipped, so the name registry has never
+    # heard of `util_ping` and would gate it. This test is about the metrics frames, and a
+    # gated tool would park the run before the second step it needs.
+    @util.tool_plain(metadata={"sensitivity": "read"})
     def ping() -> str:  # namespaced to `util_ping`; TestModel calls it, forcing a 2nd step
         return "pong"
 

@@ -1,11 +1,11 @@
-import { For, Show, createEffect, createSignal, type JSX } from "solid-js";
+import { For, Show, createSignal, type JSX } from "solid-js";
 import { Button, Panel, Row, Stack, StatusFlag, Text, type Status } from "~/ui";
-import { HOST_COMMAND_TOOL } from "../data";
 import type { ApprovalDecision, HostCommand, HostCommandPhase } from "../model";
 import {
   ConversationGrantToggle,
   createGrantToggle,
 } from "./ConversationGrantToggle";
+import { createAdoptedOpen } from "./ProcessRow";
 
 const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
   pending: { status: "warn", label: "Awaiting approval" },
@@ -17,16 +17,20 @@ const phaseFlag: Record<HostCommandPhase, { status: Status; label: string }> = {
 };
 
 /**
- * Host-machine commands rendered as persistent terminals. Each block shows the
- * exact command the agent wants to run on the operator's real host, gates it
- * behind APPROVE/DENY, and — once approved — keeps the same block to show the
- * runtime output (stdout/stderr/exit). The block never collapses into a separate
- * tool card, so the operator keeps one continuous readout of what ran.
+ * Commands rendered as persistent terminals. Each block shows the exact command the
+ * agent wants to run on the operator's machine, gates it behind APPROVE/DENY, and —
+ * once approved — keeps the same block to show the runtime output (stdout/stderr/exit).
+ * The block never collapses into a separate tool card, so the operator keeps one
+ * continuous readout of what ran.
+ *
+ * **More than one tool lands here**, which is why each command carries its own `name`:
+ * the sandboxed host command and the worktree shell both run something the operator has
+ * to see, and a conversation grant is recorded against a tool *name*. Keying the grant
+ * off one literal would have quietly recorded the wrong tool for the other.
  *
  * The backend resumes the parked run only on a decision covering *every* pending
  * command, so decisions are collected and submitted as a single batch once all
- * pending commands are answered. (Today `run_host_command` is the only
- * approval-gated tool, so a park is always exactly this set.)
+ * pending commands are answered.
  */
 export function HostCommandCard(props: {
   commands: HostCommand[];
@@ -50,13 +54,14 @@ export function HostCommandCard(props: {
 
   async function decide(toolCallId: string, approved: boolean): Promise<void> {
     if (submitting()) return;
-    // Lock in this command's grant choice now (host commands are all one tool, so the
-    // opt-in is keyed by that tool name) rather than re-reading the checkbox at submit.
+    // Lock in this command's grant choice now, keyed by the tool that actually asked,
+    // rather than re-reading the checkbox at submit.
+    const tool = props.commands.find((c) => c.toolCallId === toolCallId)?.name;
     const next = {
       ...decisions(),
       [toolCallId]: {
         approved,
-        scope: grant.scope(HOST_COMMAND_TOOL, approved),
+        scope: tool ? grant.scope(tool, approved) : ("once" as const),
       },
     };
     setDecisions(next);
@@ -88,8 +93,8 @@ export function HostCommandCard(props: {
             held={command.toolCallId in decisions() && !allDecided()}
             submitting={submitting()}
             open={props.open}
-            sessionAllowed={grant.isAllowed(HOST_COMMAND_TOOL)}
-            onToggleSession={(v) => grant.set(HOST_COMMAND_TOOL, v)}
+            sessionAllowed={grant.isAllowed(command.name)}
+            onToggleSession={(v) => grant.set(command.name, v)}
             onDecide={decide}
           />
         )}
@@ -118,10 +123,9 @@ function Terminal(props: {
   // throw on the property read below — fall back to a neutral flag.
   const flag = () =>
     phaseFlag[c().phase] ?? { status: "idle" as Status, label: c().phase };
-  const [showOutput, setShowOutput] = createSignal(true);
-  createEffect(() => {
-    if (props.open !== undefined) setShowOutput(props.open);
-  });
+  // The terminal rests open — its output is the point of it — and yields to the
+  // turn's expand-all/collapse-all like every other card.
+  const { open: showOutput } = createAdoptedOpen(props, true);
   // Decided locally, before the optimistic transition off "pending".
   const decidedPending = () =>
     c().phase === "pending" && props.decided !== undefined;

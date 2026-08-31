@@ -52,7 +52,7 @@ class FakeSessions:
     def __init__(self, session: FakeSession | None = None) -> None:
         self.session = session or FakeSession()
 
-    async def acquire(self, _key: str) -> FakeSession:
+    async def acquire(self, _key: str, *, holder: object = None) -> FakeSession:
         return self.session
 
 
@@ -176,7 +176,7 @@ async def test_open_without_a_sandbox_still_returns_instructions():
 
 async def test_open_survives_a_sandbox_failure():
     class FailingSessions:
-        async def acquire(self, _key):
+        async def acquire(self, _key, *, holder=None):
             raise SandboxError("no runtime")
 
     store = await _store()

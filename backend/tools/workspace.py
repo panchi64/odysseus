@@ -56,6 +56,11 @@ async def run_workspace(ctx: RunContext[RunDeps]) -> RunWorkspace | None:
         sessions=deps.caps.get_optional(SandboxSessionManager),
         projects=deps.caps.get_optional(ProjectStore),
         worktrees=deps.caps.get_optional(WorktreeManager),
+        # The run claims its container for as long as it lasts, not for the length of
+        # one tool call: the live-session cap would otherwise be free to seal a workspace
+        # away between two of them, and the seal drops exactly what an install or a clone
+        # just put there.
+        holder=deps.run,
     )
     deps.workspace = workspace
     return workspace

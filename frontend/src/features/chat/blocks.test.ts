@@ -40,7 +40,12 @@ function host(id: string, phase: HostCommandPhase): AssistantBlock {
   return {
     kind: "host_command",
     id,
-    command: { toolCallId: id, command: "ls", phase },
+    command: {
+      toolCallId: id,
+      name: "code_run_host_command",
+      command: "ls",
+      phase,
+    },
   };
 }
 

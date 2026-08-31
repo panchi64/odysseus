@@ -1,6 +1,8 @@
 import { createSignal } from "solid-js";
 import { SESSION_MODE_IDS, isSessionMode, type SessionMode } from "~/lib/modes";
 import { isServer } from "solid-js/web";
+import { readLS, removeLS, writeLS } from "~/lib/storage";
+import { sanitizeAxis } from "./accent-axis";
 import {
   ACCENT_TOKEN_NAMES,
   hasSessionSignature,
@@ -88,58 +90,37 @@ export type AccentOverrides = Partial<
   Record<ThemeMode, Partial<Record<AccentToken, string>>>
 > & { [SESSION_KEY]?: SessionAccentOverrides };
 
-/** Drop anything that isn't a known token holding a real hex colour. This runs
- *  over `localStorage`, which is user-writable and is concatenated into a
+/** Where each axis lives in the stored blob, and which keys it will accept. The two
+ *  descriptions are the whole of what separates the axes; the walking, the pruning and
+ *  the clear-on-default rule are `accent-axis.ts`'s, written once. */
+export const BASE_AXIS = {
+  path: (theme: ThemeMode) => [theme] as const,
+  accepts: isAccentToken,
+};
+
+export const SESSION_AXIS = {
+  path: (theme: ThemeMode) => [SESSION_KEY, theme] as const,
+  // Never Normal: its value *is* the base token, so it has no rule of its own to
+  // write and a stored one would be a second claim on the same declaration.
+  accepts: (key: string): key is SessionMode =>
+    isSessionMode(key) && hasSessionSignature(key),
+};
+
+/** Drop anything that isn't a known key holding a real hex colour, on either axis.
+ *  This runs over `localStorage`, which is user-writable and is concatenated into a
  *  stylesheet below — so the guard is load-bearing, not tidiness. */
 export function sanitize(raw: unknown): AccentOverrides {
-  if (!raw || typeof raw !== "object") return {};
-  const clean: AccentOverrides = {};
-  for (const theme of THEMES) {
-    const entry = (raw as Record<string, unknown>)[theme];
-    if (!entry || typeof entry !== "object") continue;
-    const perTheme: Partial<Record<AccentToken, string>> = {};
-    for (const [key, value] of Object.entries(entry as object)) {
-      if (!isAccentToken(key) || typeof value !== "string") continue;
-      const hex = normalizeHex(value);
-      if (hex) perTheme[key] = hex;
-    }
-    if (Object.keys(perTheme).length > 0) clean[theme] = perTheme;
-  }
-  const session = sanitizeSession(
-    (raw as Record<string, unknown>)[SESSION_KEY],
-  );
-  if (session) clean[SESSION_KEY] = session;
-  return clean;
-}
-
-/** The same guard for the second axis: a known theme, a known session mode, a
- *  real hex — and never Normal, whose value is the base token and has no rule of
- *  its own to write. */
-function sanitizeSession(raw: unknown): SessionAccentOverrides | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const clean: SessionAccentOverrides = {};
-  for (const theme of THEMES) {
-    const entry = (raw as Record<string, unknown>)[theme];
-    if (!entry || typeof entry !== "object") continue;
-    const perTheme: Partial<Record<SessionMode, string>> = {};
-    for (const [key, value] of Object.entries(entry as object)) {
-      if (!isSessionMode(key) || !hasSessionSignature(key)) continue;
-      if (typeof value !== "string") continue;
-      const hex = normalizeHex(value);
-      if (hex) perTheme[key] = hex;
-    }
-    if (Object.keys(perTheme).length > 0) clean[theme] = perTheme;
-  }
-  return Object.keys(clean).length > 0 ? clean : undefined;
+  const base = sanitizeAxis(raw, {}, THEMES, BASE_AXIS);
+  return sanitizeAxis(raw, base, THEMES, SESSION_AXIS);
 }
 
 function readStored(): AccentOverrides {
-  if (isServer || typeof localStorage === "undefined") return {};
+  if (isServer) return {};
   try {
-    return sanitize(
-      JSON.parse(localStorage.getItem(ACCENT_STORAGE_KEY) ?? "{}"),
-    );
+    return sanitize(JSON.parse(readLS(ACCENT_STORAGE_KEY) ?? "{}"));
   } catch {
+    // Only `JSON.parse` can throw here — `readLS` answers null when storage is
+    // unavailable — and a blob that isn't JSON is a blob with nothing to honour.
     return {};
   }
 }
@@ -195,14 +176,12 @@ function applyOverrides(value: AccentOverrides): void {
 }
 
 function persist(value: AccentOverrides): void {
-  if (isServer || typeof localStorage === "undefined") return;
-  try {
-    if (Object.keys(value).length > 0)
-      localStorage.setItem(ACCENT_STORAGE_KEY, JSON.stringify(value));
-    else localStorage.removeItem(ACCENT_STORAGE_KEY);
-  } catch {
-    /* storage unavailable — the palette is best-effort, like the draft cache */
-  }
+  // The guarded access itself is `lib/storage`'s — storage can throw (private mode,
+  // blocked, full) and the palette is best-effort either way, like the draft cache.
+  if (isServer) return;
+  if (Object.keys(value).length > 0)
+    writeLS(ACCENT_STORAGE_KEY, JSON.stringify(value));
+  else removeLS(ACCENT_STORAGE_KEY);
 }
 
 /** Repaint now; write to storage only if asked. The picker drags through

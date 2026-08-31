@@ -28,7 +28,7 @@ import type {
   ViewSnapshotRef,
   ViewVersionBlock,
 } from "../model";
-import { HOST_COMMAND_TOOL } from "./constants";
+import { terminalResult, type TerminalResult } from "../toolPresentation";
 import type {
   ActiveRunDTO,
   ConversationSummaryDTO,
@@ -132,39 +132,125 @@ export function hostPhaseFromResult(r: HostResult): HostCommandPhase {
   return r.ok === false || r.error != null ? "error" : "ok";
 }
 
-/** Map a persisted host-command tool call (cold history) to the terminal model.
+const STDOUT_LABEL = "[stdout]\n";
+const STDERR_LABEL = "[stderr]\n";
+const STDERR_BREAK = `\n${STDERR_LABEL}`;
+const NO_OUTPUT = "(no output)";
+const EXIT_CODE = /\n\[exit code: (-?\d+)\]$/;
+const TIMED_OUT = /^\[Command timed out after .*\]$/;
+
+/**
+ * The worktree shell's one labelled string, pulled apart into the terminal's slots.
+ *
+ * The shell harness composes the model's view itself — `[stdout]` and `[stderr]`
+ * sections, `[exit code: N]` appended only on a non-zero exit, `(no output)` when a
+ * command printed nothing, and a lone `[Command timed out after …]` when it was killed.
+ * The terminal card already has a slot for each of those and labels its own streams, so
+ * printing the markers as text would be furniture on top of furniture.
+ *
+ * **Anything it does not recognize becomes stdout verbatim.** This reads a format the
+ * harness owns rather than one we do, so the failure mode has to be a terminal showing
+ * the raw text — never a terminal showing nothing.
+ */
+export function parseShellOutput(text: string): Partial<HostCommand> {
+  const trimmed = text.trimEnd();
+  if (TIMED_OUT.test(trimmed))
+    return { phase: "error", timedOut: true, error: trimmed };
+
+  let body = text;
+  let exitCode = 0; // the marker is appended only on a non-zero exit
+  const exit = EXIT_CODE.exec(body);
+  if (exit) {
+    exitCode = Number(exit[1]);
+    body = body.slice(0, exit.index);
+  }
+
+  let stdout: string | undefined;
+  let stderr: string | undefined;
+  if (body === NO_OUTPUT) {
+    // Nothing was printed. The exit code below is still the whole story.
+  } else if (body.startsWith(STDOUT_LABEL)) {
+    const rest = body.slice(STDOUT_LABEL.length);
+    const at = rest.indexOf(STDERR_BREAK);
+    if (at === -1) stdout = rest;
+    else {
+      stdout = rest.slice(0, at);
+      stderr = rest.slice(at + STDERR_BREAK.length);
+    }
+  } else if (body.startsWith(STDERR_LABEL)) {
+    stderr = body.slice(STDERR_LABEL.length);
+  } else {
+    stdout = body;
+  }
+  return { phase: exitCode === 0 ? "ok" : "error", exitCode, stdout, stderr };
+}
+
+/** A finished terminal's outcome, from whatever its tool returned — `null` when the
+ *  result carries no outcome at all.
+ *
+ *  Which shape to expect comes from the tool table (`terminalResult`), not from a name
+ *  test here: the two terminal tools genuinely answer differently, and a `record` tool
+ *  returning a plain string means something else entirely (see `toHostCommand`). */
+export function toTerminalOutcome(
+  kind: TerminalResult,
+  result: unknown,
+): Partial<HostCommand> | null {
+  if (kind === "text")
+    return typeof result === "string" ? parseShellOutput(result) : null;
+  const r = parseHostResult(result);
+  return r
+    ? {
+        phase: hostPhaseFromResult(r),
+        exitCode: r.exit_code,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        timedOut: r.timed_out,
+        error: r.error,
+      }
+    : null;
+}
+
+/** Map a persisted terminal tool call (cold history) to the terminal model.
  *  A stored call has already run, so its phase comes from the recorded status. */
-export function toHostCommand(dto: ToolCallDTO): HostCommand {
-  const r = parseHostResult(dto.result);
-  // The tool always returns a structured dict when it actually executes, so a
-  // plain-string result means it never ran — i.e. it was denied, and the string
-  // is the denial message the model was handed. Surface that instead of a green OK.
+export function toHostCommand(
+  dto: ToolCallDTO,
+  kind: TerminalResult,
+): HostCommand {
+  const outcome = toTerminalOutcome(kind, dto.result);
+  // A `record` tool always returns a structured dict when it actually executes, so a
+  // plain-string result there means it never ran — it was denied, and the string is
+  // the denial message the model was handed. Surface that instead of a green OK. The
+  // shell's string IS its output, which is exactly why this is keyed on the kind.
   const denial =
-    !r && typeof dto.result === "string" && dto.result ? dto.result : undefined;
+    kind === "record" &&
+    !outcome &&
+    typeof dto.result === "string" &&
+    dto.result
+      ? dto.result
+      : undefined;
   const phase: HostCommandPhase = denial
     ? "denied"
     : dto.status === "running"
       ? "running"
       : dto.status === "error"
         ? "error"
-        : r
-          ? hostPhaseFromResult(r)
-          : "ok";
+        : (outcome?.phase ?? "ok");
   return {
     toolCallId: dto.id,
+    name: dto.name,
     command: typeof dto.args.command === "string" ? dto.args.command : "",
     explanation:
       typeof dto.args.explanation === "string"
         ? dto.args.explanation
         : undefined,
     phase,
-    exitCode: r?.exit_code,
-    stdout: r?.stdout,
-    stderr: r?.stderr,
-    timedOut: r?.timed_out,
+    exitCode: outcome?.exitCode,
+    stdout: outcome?.stdout,
+    stderr: outcome?.stderr,
+    timedOut: outcome?.timedOut,
     // Carry whatever diagnostic exists: the result hint, the denial message, or a
     // retry/validation error projected onto the tool call.
-    error: r?.error ?? denial ?? dto.error ?? undefined,
+    error: outcome?.error ?? denial ?? dto.error ?? undefined,
   };
 }
 
@@ -302,11 +388,14 @@ export function toMessage(dto: MessageDTO): ChatMessage {
       text: dto.reasoning,
     });
   for (const t of dto.tools) {
-    if (t.name === HOST_COMMAND_TOOL)
+    // The same question the live fold asks, off the same table — so a reload cannot
+    // turn a terminal back into a generic tool card.
+    const terminal = terminalResult(t.name);
+    if (terminal)
       blocks.push({
         kind: "host_command",
         id: `${dto.id}-${t.id}`,
-        command: toHostCommand(t),
+        command: toHostCommand(t, terminal),
       });
     else
       blocks.push({ kind: "tool", id: `${dto.id}-${t.id}`, tool: toTool(t) });

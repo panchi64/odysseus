@@ -18,6 +18,7 @@
  *  discovered per operator and cannot be enumerated here — from needing an entry,
  *  and what keeps a newly landed backend tool from rendering as a blank row. */
 
+import { sentenceCase } from "~/lib/format";
 import type { IconName } from "~/ui";
 import type { ToolInvocation } from "./model";
 
@@ -26,12 +27,31 @@ export interface ToolPresentation {
   label: string;
 }
 
+/** How a terminal-rendered tool reports what happened.
+ *
+ *  `record` — a structured result with each stream and the exit code separately, which
+ *  is what the sandboxed host command can report because it runs through a seam we own.
+ *  `text` — one labelled string, which is what the worktree shell hands back because
+ *  its harness composes the model's view itself. */
+export type TerminalResult = "record" | "text";
+
 export interface ToolEntry extends ToolPresentation {
   /** Argument keys in preference order; the first one present becomes the row's
    *  detail. Omitted where the generic order already picks the right one. */
   keys?: readonly string[];
   /** `[singular, plural]` for a counted result — "12 entries", "1 match". */
   noun?: readonly [string, string];
+  /** Present when the call renders as a **terminal** rather than as a tool card: the
+   *  command line, its approval, and its output as one continuous readout that never
+   *  splits into an approval card and a separate result.
+   *
+   *  It is here, on the table, and not as a name test in the fold. Running a command
+   *  is the thing the operator most needs to see happen, and there is more than one
+   *  tool that does it — the fold used to ask `name === code_run_host_command` in four
+   *  separate event cases, which is four places to remember when a second one lands,
+   *  and is why `shell_run_command` (code mode's only way to run anything, already
+   *  carrying the terminal glyph two rows below) fell through to a generic card. */
+  terminal?: TerminalResult;
 }
 
 /** The glyph for a category, for any tool without its own row below. Every
@@ -112,6 +132,7 @@ const TOOLS: Record<string, ToolEntry> = {
     icon: "terminal",
     label: "Host command",
     keys: ["explanation", "command"],
+    terminal: "record",
   },
 
   conversations_read: {
@@ -211,7 +232,15 @@ const TOOLS: Record<string, ToolEntry> = {
   research_start: { icon: "research", label: "Research", keys: ["question"] },
 
   shell_check_command: { icon: "terminal", label: "Check process" },
-  shell_run_command: { icon: "terminal", label: "Shell", keys: ["command"] },
+  shell_run_command: {
+    icon: "terminal",
+    label: "Shell",
+    keys: ["command"],
+    terminal: "text",
+  },
+  // Deliberately not a terminal: a background process is a handle the agent checks on
+  // later, not a command whose output the operator watches arrive. Its result is that
+  // handle, and a terminal showing one would be a terminal that never prints anything.
   shell_start_command: {
     icon: "terminal",
     label: "Start process",
@@ -263,13 +292,18 @@ function categoryOf(name: string): string {
 
 /** `files_read_file` → `Read file`; `external_linear_create_issue` → `Linear
  *  create issue`. Drops a *known* category prefix only — an unrecognized name is
- *  humanized whole rather than losing its first word to a bad guess. */
+ *  humanized whole rather than losing its first word to a bad guess.
+ *
+ *  The sentence-casing itself is `lib/format`'s, shared with the context breakdown's
+ *  row label: both are "a backend slug nobody wrote a label for", and the only thing
+ *  this adds is the prefix strip. */
 function humanize(name: string): string {
   const category = categoryOf(name);
   const bare =
     category in CATEGORY_ICONS ? name.slice(category.length + 1) : name;
-  const words = bare.replace(/_/g, " ").trim();
-  return words ? words[0].toUpperCase() + words.slice(1) : name;
+  // The full registry name is the fallback, not the stripped remainder: `files_` has
+  // nothing left after the prefix, and a blank row says less than the raw name does.
+  return sentenceCase(bare, name);
 }
 
 /** The full row for a tool — presentation plus the summarizer's hints. */
@@ -280,6 +314,13 @@ export function toolEntry(name: string): ToolEntry {
     icon: CATEGORY_ICONS[categoryOf(name)] ?? DEFAULT_ICON,
     label: humanize(name),
   };
+}
+
+/** How this tool's result becomes a terminal, or undefined for a tool that is not one.
+ *  The single question the live fold and the cold mapper both ask, so the two cannot
+ *  disagree about whether a reload turns a terminal back into a tool card. */
+export function terminalResult(name: string): TerminalResult | undefined {
+  return toolEntry(name).terminal;
 }
 
 /** The glyph and label a transcript row leads with. */

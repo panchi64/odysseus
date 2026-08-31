@@ -42,7 +42,7 @@ class _Manager:
         self._root = root
         self.sessions: dict[str, _Session] = {}
 
-    async def acquire(self, key: str) -> _Session:
+    async def acquire(self, key: str, *, holder: object = None) -> _Session:
         if key not in self.sessions:
             self.sessions[key] = _Session(self._root / key)
         return self.sessions[key]

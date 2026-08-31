@@ -85,7 +85,7 @@ async def _show_file(ctx: RunContext[RunDeps], file: str, title: str | None) -> 
     if sessions is None or store is None or history is None:
         return "The view is unavailable."
     try:
-        session = await sessions.acquire(ctx.deps.sandbox_key)
+        session = await sessions.acquire(ctx.deps.sandbox_key, holder=ctx.deps.run)
         content = session.read_file(file)
     except SandboxError as exc:
         return f"Could not read {file!r}: {exc}"
@@ -149,7 +149,7 @@ async def _show_live(
     # static preview, so it folds no separate version chip — the LIVE chip represents it.
     if ctx.deps.caps.get_optional(WorkspaceHistoryStore) is not None:
         try:
-            session = await sessions.acquire(ctx.deps.sandbox_key)
+            session = await sessions.acquire(ctx.deps.sandbox_key, holder=ctx.deps.run)
             await _capture_version(
                 ctx, session, title=title, preview_artifact_id=None, preview_kind=None
             )

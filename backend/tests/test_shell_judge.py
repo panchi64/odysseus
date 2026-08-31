@@ -1,10 +1,12 @@
 """The deterministic stage: what it reads off a command, and what it refuses to vouch for.
 
-Two halves, tested apart because they fail apart. The **extraction** says what a command
-would reach; the **judge** says whether that is a plain read of the workspace. A bug in the
-first is a command described as less than it is, which is the failure that matters — so
-most of what is pinned here is the extraction refusing to describe rather than the judge
-refusing to approve.
+Three halves, tested apart because they fail apart. The **extraction** says what a command
+would reach; the **allowlist** claims which programs only observe; the **judge** applies
+one to the other. A bug in the first is a command described as less than it is, and a bug
+in the second is a promise about a program that its man page does not make — both of them
+failures the third cannot catch, so most of what is pinned here is the extraction refusing
+to describe and the table's exceptions actually biting, rather than the judge refusing to
+approve.
 
 Every "not approved" below is an *escalation*, never a refusal: the call goes to the model
 reviewer. That is what makes the allowlist affordable to keep narrow, and it is why the
@@ -18,7 +20,8 @@ from pathlib import Path
 import pytest
 
 from services.permissions.capability import ActionKind, capability_of, shell_capability
-from services.permissions.judge import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS, judge
+from services.permissions.judge import judge
+from services.permissions.read_only import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS
 
 ROOT = Path("/tmp/odysseus-judge-workspace")
 
@@ -73,6 +76,26 @@ class TestWhatTheWalkReads:
     def test_a_quoted_literal_is_a_literal_and_an_interpolated_one_is_not(self):
         assert shell_capability("shell_run_command", 'cat "a.txt"', root=ROOT).bounded
         assert not shell_capability("shell_run_command", 'cat "$HOME/a.txt"', root=ROOT).bounded
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep --file=/etc/passwd foo",  # a long flag's value, after its `=`
+            "grep -f/etc/passwd foo",  # a short flag's value, glued to the letter
+            "grep -f /etc/passwd foo",  # ...and standing on its own, as an operand
+        ],
+    )
+    def test_a_path_attached_to_a_flag_is_still_a_path(self, command):
+        # The reading a flag hides behind. A walk that skipped every word starting with
+        # `-` saw `--output=/Users/me/.ssh/authorized_keys` as no path at all.
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert capability.escapes == ("/etc/passwd",)
+
+    def test_a_flag_that_carries_no_path_still_names_none(self):
+        # The other half: `-rn`, `-20` and `--oneline` must not become paths, or every
+        # ordinary read would escalate on its own flags.
+        for command in ("grep -rn needle src", "git log --oneline -20", "ls -la"):
+            assert shell_capability("shell_run_command", command, root=ROOT).reads == ()
 
 
 class TestUnknownShapesEscalate:
@@ -170,11 +193,77 @@ class TestTheAllowlist:
         assert not cleared("find . -delete")
         assert not cleared("find . -exec rm {} ;")
 
+    @pytest.mark.parametrize(
+        ("program", "flag"),
+        [
+            (program, flag)
+            for program, flags in sorted(READ_ONLY_PROGRAMS.items())
+            for flag in sorted(flags)
+        ],
+    )
+    def test_every_exception_the_table_claims_is_one_it_enforces(self, program, flag):
+        # A test per row, derived from the row rather than restating it: an entry whose
+        # denial set is decoration — a flag nothing matches, a program whose set was
+        # emptied — is a program the stage would clear while promising it could not.
+        assert not cleared(f"{program} {flag} x")
+
+    @pytest.mark.parametrize(
+        ("subcommand", "flag"),
+        [
+            (subcommand, flag)
+            for subcommand, flags in sorted(READ_ONLY_SUBCOMMANDS["git"].items())
+            for flag in sorted(flags)
+        ],
+    )
+    def test_a_reading_subcommand_has_its_own_exceptions(self, subcommand, flag):
+        # `git log` reads, and `git log --ext-diff` runs whatever the repository's own
+        # config names — so the subcommand allowlist needs the same per-entry denial the
+        # program allowlist has, or being a reading subcommand is where the check stops.
+        assert cleared(f"git {subcommand}")
+        assert not cleared(f"git {subcommand} {flag} x")
+
+    def test_a_denied_flag_cannot_be_smuggled_past_by_spelling(self):
+        # `-o`, `-oout.txt` and `--output=out.txt` are one flag written three ways. A
+        # table matched against raw tokens states a rule about the first and none at all
+        # about the other two.
+        for command in ("sort -o out", "sort -oout", "sort --output out", "sort --output=out"):
+            assert not cleared(command)
+
     def test_a_subcommand_program_is_cleared_on_its_subcommand(self):
         assert cleared("git show HEAD")
         assert not cleared("git reset --hard")
         # No subcommand at all is not a read — it is a form this stage has no rule for.
         assert not cleared("git --version")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --git-dir=other/.git log",  # a repository that is not this one
+            "git --exec-path=bin log",  # the binaries git itself runs
+            "git -c core.pager=x log",  # the config the subcommand obeys
+            "git -C src status",  # the directory the whole thing happens in
+            "git --no-pager log",  # harmless, and indistinguishable from the rest
+        ],
+    )
+    def test_nothing_is_read_past_a_flag_before_the_subcommand(self, command):
+        # Every one of these stays inside the workspace, so containment says nothing about
+        # them: what refuses them is the rule that a global flag redirects the act, and
+        # that a global flag taking a separate value moves where the subcommand even sits.
+        assert not cleared(command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "date -s 2020-01-01",  # a bare operand sets the clock on BSD
+            "hostname newhost",  # ...and here too
+            "uniq in.txt out.txt",  # the second operand is an output file
+        ],
+    )
+    def test_a_program_whose_writing_form_is_not_a_flag_is_not_on_the_list(self, command):
+        # The table can only state a rule about flags, so a program that writes from an
+        # operand cannot be described by one — and half a rule is worse than no row.
+        assert not cleared(command)
+        assert "not on the read-only list" in reason(command)
 
     def test_a_path_qualified_invocation_is_not_the_allowlisted_program(self):
         # `/bin/ls` and `./ls` are different binaries as far as the name says, and the
@@ -234,6 +323,15 @@ class TestTheOtherKindsOfAction:
             "code_execute", {"code": "ls -la", "language": "bash"}, root=ROOT
         ).kind is ActionKind.SHELL
 
+    def test_a_tool_whose_effect_is_its_own_is_never_called_fully_read(self):
+        # `bounded` promises that the fields beside it describe the *whole* act. For a
+        # tool whose effect is not written in its arguments they describe none of it, so
+        # an empty `unbounded` there would be the extraction claiming a completeness it
+        # has no basis for — the one mistake this module exists to avoid.
+        capability = capability_of("mail_send", {"to": "a@b.c"}, root=ROOT)
+        assert capability.kind is ActionKind.OPAQUE
+        assert not capability.bounded
+
     def test_an_external_call_is_named_by_its_keys_and_never_its_values(self):
         capability = capability_of(
             "external_notion_create_page", {"token": "hunter2", "title": "x"}, root=ROOT
@@ -259,5 +357,8 @@ class TestTheTablesStayHonest:
     def test_every_denied_flag_is_a_flag(self):
         # A "writing flag" that does not start with `-` could never match an argument,
         # so it would read as a guarantee while doing nothing.
-        for flags in READ_ONLY_PROGRAMS.values():
+        denials = [*READ_ONLY_PROGRAMS.values()]
+        denials += [flags for by_subcommand in READ_ONLY_SUBCOMMANDS.values()
+                    for flags in by_subcommand.values()]
+        for flags in denials:
             assert all(flag.startswith("-") for flag in flags)

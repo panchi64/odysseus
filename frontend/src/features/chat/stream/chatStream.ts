@@ -2,11 +2,11 @@
  * The streaming controller — one thread's live state, and the run driving it.
  *
  * Everything here is about a *run*: opening its SSE reader, keeping the optimistic
- * transcript in step with what the backend actually accepted, surviving a dropped
- * transport, and reconciling with the persisted tree when it ends. What each event *means*
- * is `fold.ts`'s job, and what the operator can do to an already-recorded turn is
- * `branching.ts`'s; keeping those out leaves this file with one question — is a turn in
- * flight, and where is it up to.
+ * transcript in step with what the backend actually accepted, and surviving a dropped
+ * transport. What each event *means* is `fold.ts`'s job, what the operator can do to an
+ * already-recorded turn is `branching.ts`'s, and reconciling with the persisted tree
+ * once a run settles is `resume.ts`'s; keeping those out leaves this file with one
+ * question — is a turn in flight, and where is it up to.
  *
  * **The optimistic store is authoritative for the thread it is on.** A turn's messages are
  * persisted only when it finishes, so a refetch mid-stream reads an empty conversation. The
@@ -42,7 +42,6 @@ import {
   fetchBrowserSession,
   fetchPlan,
 } from "../data/conversations";
-import { toActiveRun } from "../data/mappers";
 import type { ChatCreatedDTO, ConversationDetailDTO } from "../data/wire";
 import type {
   ActiveRun,
@@ -60,7 +59,8 @@ import {
   type TranscriptStore,
 } from "./branching";
 import { createFolder, type FoldState } from "./fold";
-import { nextId } from "./patch";
+import { createPatchById, nextId } from "./patch";
+import { createResumeOps } from "./resume";
 
 export interface ChatStreamOptions {
   /** Fired once when a brand-new conversation receives its backend id. */
@@ -134,17 +134,23 @@ export function createChatStream(
   // `messages` on submit — see `resolveApproval`/`resolveHostCommands`), a cancel, or the
   // run ending. A derived memo rather than its own set/clear pair: the blocks are already
   // the single source of truth for "is something still pending", so this only reads them.
-  const awaitingApproval = createMemo(
-    () =>
-      sending() &&
-      messages.some((m) =>
-        m.blocks?.some(
-          (b) =>
-            (b.kind === "approval" && !b.approval.stale) ||
-            (b.kind === "host_command" && b.command.phase === "pending"),
-        ),
-      ),
-  );
+  //
+  // Scoped to the turn in flight, and not out of tidiness: a park is by definition the
+  // *live* turn waiting, since a turn cannot end with a call still undecided — so every
+  // earlier turn in the transcript is a message × block walk that can only ever answer
+  // no, re-run on every block the run pushes. `detached` counts as live for the same
+  // reason `sending` stays true through one: the run may still be parked server-side.
+  const awaitingApproval = createMemo(() => {
+    if (!sending()) return false;
+    const live = messages.findLast((m) => m.streaming || m.detached);
+    return (
+      live?.blocks?.some(
+        (b) =>
+          (b.kind === "approval" && !b.approval.stale) ||
+          (b.kind === "host_command" && b.command.phase === "pending"),
+      ) ?? false
+    );
+  });
   // A brand-new thread is auto-named during its first turn; this drives a "working"
   // throbber on the title from that turn's start until the name lands
   // (`conversation.titled`, which the reveal then animates) or the turn ends without
@@ -207,15 +213,11 @@ export function createChatStream(
   const reseat = (detail: ConversationDetailDTO) =>
     reseatFromDetail(store, detail);
 
-  function patchById(id: string, fn: (m: ChatMessage) => void): void {
-    const i = messages.findIndex((m) => m.id === id);
-    if (i < 0) return;
-    setMessages(produce((m) => fn(m[i])));
-  }
+  const patchById = createPatchById(messages, setMessages);
 
   const foldEvent = createFolder({
     state: foldState,
-    messages,
+    patchById,
     setMessages,
     setSnapshots,
     setBrowserStream,
@@ -438,7 +440,7 @@ export function createChatStream(
         // just recorded — without this the live message keeps its client id and a
         // stale version count, so the ‹k/n› cycler never appears and a later
         // regenerate/edit/delete/pin would address an id the backend doesn't know.
-        await adoptServerMeta();
+        await resume.adoptServerMeta();
       }
     }
   }
@@ -497,130 +499,27 @@ export function createChatStream(
     } finally {
       setReattaching(false);
     }
-    // A freshly-seeded turn that folded nothing means the run was gone (evicted, or
-    // lost to a server restart): fall back to the persisted thread so a finished
-    // answer still shows rather than a blank assistant turn. Skip this when the
-    // attempt itself ended detached (reconnect budget exhausted, not a 404/empty
-    // buffer) — the run may still be alive, so reseating from the (possibly
-    // reply-less) persisted detail here would discard the re-attach affordance
-    // for no reason; leave the seed detached and let the operator/resume retry.
-    if (
-      !detached() &&
-      seeded &&
-      foldState.maxFoldedSeq === opts.fromSeq &&
-      activeConversationId !== null
-    ) {
-      try {
-        reseat(
-          await api.get<ConversationDetailDTO>(
-            `/conversations/${activeConversationId}`,
-          ),
-        );
-      } catch {
-        // Leave the seed; the next navigation/refresh reconciles it.
-      }
-    }
+    // Skip the recovery when the attempt itself ended detached (reconnect budget
+    // exhausted, not a 404/empty buffer) — the run may still be alive, so reseating
+    // from the (possibly reply-less) persisted detail here would discard the
+    // re-attach affordance for no reason; leave the seed detached and let the
+    // operator/resume retry.
+    if (!detached() && seeded && foldState.maxFoldedSeq === opts.fromSeq)
+      await resume.recoverLostRun();
   }
 
-  /** Reconcile the live store with the backend's projected active path after a
-   *  turn: adopt each turn's real node id + version index/count + pin by position
-   *  (the store mirrors the same active path), leaving live-only fields the cold
-   *  projection doesn't carry — `preview`, `runId` — untouched. A length mismatch
-   *  (e.g. a turn that produced no persisted answer) falls back to a full reseat.
-   *  Best-effort: a failed read leaves the optimistic store in place. */
-  async function adoptServerMeta(): Promise<void> {
-    if (activeConversationId === null) return;
-    const convAtStart = activeConversationId;
-    const lenAtStart = messages.length;
-    let detail: ConversationDetailDTO;
-    try {
-      detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${convAtStart}`,
-      );
-    } catch {
-      return;
-    }
-    // Bail if the store moved under us while the read was in flight: the operator
-    // started another turn (length changed — the composer re-enabled the instant
-    // streaming stopped) or switched threads. Reconciling now would reseat over the
-    // new turn's optimistic messages and freeze its stream; that turn reconciles
-    // itself when it completes.
-    if (activeConversationId !== convAtStart || messages.length !== lenAtStart)
-      return;
-    const server = detail.messages;
-    if (server.length !== messages.length) {
-      // A shorter backend history normally means a turn produced no persisted
-      // answer, so reseat to drop the optimistic turn. But a *cancelled* turn also
-      // persists nothing — there reseating would discard the in-flight turn the
-      // operator chose to keep (and blank a brand-new chat), so leave the store as
-      // is; the next completed turn reconciles it.
-      if (!cancelled) reseat(detail);
-      return;
-    }
-    setMessages(
-      produce((list) => {
-        for (let i = 0; i < list.length; i++) {
-          list[i].id = server[i].id;
-          list[i].versionIndex = server[i].version_index;
-          list[i].versionCount = server[i].version_count;
-          list[i].pinned = server[i].pinned;
-          // The store owns the stop marker (a continue retires it), so take its
-          // word here too — otherwise a turn cleared server-side stays warned
-          // locally until a full reseat.
-          list[i].blocked = server[i].blocked_reason != null;
-          list[i].blockedDetail = server[i].blocked_reason ?? undefined;
-        }
-      }),
-    );
-  }
-
-  /** After a 409 (the backend already has a run active on this conversation —
-   *  a parallel submit, a stale UI, or a second tab/device) look up the
-   *  conversation's current active run and reattach to it, so the turn that's
-   *  actually in flight becomes visible instead of silently going nowhere.
-   *  Best-effort: a failed lookup just leaves the composer free to retry. */
-  async function reattachToLiveRun(conversationId: string): Promise<void> {
-    try {
-      const detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${conversationId}`,
-      );
-      // Bail if the operator navigated to a different thread while the read was
-      // in flight — reattachRun's abort+seed-push would otherwise contaminate
-      // whatever conversation is live now with this one's run.
-      if (activeConversationId !== conversationId) return;
-      const ar = toActiveRun(detail.active_run);
-      if (ar) await reattachRun(ar.id, { fromSeq: 0 });
-    } catch {
-      // Best effort — the operator can retry manually.
-    }
-  }
-
-  /** After a submitted approval/host-command decision 409s (the run had already
-   *  resumed elsewhere — a second tab, a retried request — by the time this one
-   *  landed), the pending card's decision is moot. Refetch so the transcript
-   *  reconciles with whatever the winning decision actually did, re-attaching to
-   *  the run if it's still in flight. Unlike `reattachToLiveRun`, this always
-   *  reseats — the winning decision may have already finished the run entirely,
-   *  not just still be running. Best-effort: a failed refetch leaves the caller's
-   *  stale marker as the only signal, but never re-throws into an unhandled turn. */
-  async function reconcileStaleDecision(): Promise<void> {
-    if (activeConversationId === null) return;
-    const convAtStart = activeConversationId;
-    try {
-      const detail = await api.get<ConversationDetailDTO>(
-        `/conversations/${convAtStart}`,
-      );
-      // Bail if the operator switched threads while the read was in flight — a
-      // different thread is live now, so this stale decision's conversation
-      // must not overwrite its store.
-      if (activeConversationId !== convAtStart) return;
-      reseat(detail);
-      const ar = toActiveRun(detail.active_run);
-      if (ar) await reattachRun(ar.id, { fromSeq: 0 });
-    } catch {
-      // Best effort — the stale marker set by the caller still holds.
-    }
-  }
+  // Everything that reconciles the optimistic store with what the backend persisted.
+  // It lives next door because all four are one move — read the detail, act on it only
+  // if the operator is still on that thread — and that guard belongs in one place.
+  const resume = createResumeOps({
+    conversationId: () => activeConversationId,
+    fetchDetail: (id) => api.get<ConversationDetailDTO>(`/conversations/${id}`),
+    messages,
+    setMessages,
+    reseat,
+    reattachRun: (runId, opts) => reattachRun(runId, opts),
+    wasCancelled: () => cancelled,
+  });
 
   /** Send while a run is live: the backend queues the message into that run
    *  (injected at its next boundary) — or, if the run ended in the meantime,
@@ -781,7 +680,8 @@ export function createChatStream(
         toast.error("A response is still in progress in this conversation.");
         setSending(false);
         setTitlePending(false);
-        if (activeConversationId) void reattachToLiveRun(activeConversationId);
+        if (activeConversationId)
+          void resume.reattachToLiveRun(activeConversationId);
         return;
       }
       toast.error(
@@ -961,7 +861,7 @@ export function createChatStream(
           }
         });
         toast.error("This decision was already made elsewhere.");
-        void reconcileStaleDecision();
+        void resume.reconcileStaleDecision();
         return;
       }
       // A transient failure (network blip, 5xx): the decision may not have
@@ -1010,7 +910,7 @@ export function createChatStream(
     patchById,
     overrideSelection: () => options.selection?.(),
     driveRun: (runId, assistantId) => driveRun(runId, assistantId),
-    reattachToLiveRun,
+    reattachToLiveRun: resume.reattachToLiveRun,
     cancel,
     onTurnComplete: () => options.onTurnComplete?.(),
   });

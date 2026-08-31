@@ -65,7 +65,12 @@ class _FakeRun:
         self.emitted.append(body)
 
 
-def _ctx(threads: ResearchThreads | None, *, workspace: RunWorkspace | None = None):
+def _ctx(
+    threads: ResearchThreads | None,
+    *,
+    workspace: RunWorkspace | None = None,
+    permission: str = "edit",
+):
     from core.container import ServiceContainer
 
     caps = ServiceContainer()
@@ -80,6 +85,7 @@ def _ctx(threads: ResearchThreads | None, *, workspace: RunWorkspace | None = No
             conversation_id="c-parent",
             project_id="proj-1",
             workspace=workspace,
+            permission=permission,  # type: ignore[arg-type]
         )
 
     return _Ctx()
@@ -123,6 +129,16 @@ class TestStart:
         assert parent.seed_from == Path(tmp_path)
         assert parent.conversation_id == "c-parent"
         assert parent.project_id == "proj-1"
+
+    async def test_the_parents_own_level_is_handed_over(self):
+        """The level the operator approved *this* thread at. Without it the new thread
+        would come up at whatever research mode starts a fresh one at, turning one
+        approved `research_start` into rope the operator never handed out."""
+        threads = _FakeThreads()
+        await _call(
+            research_toolset(), "start", _ctx(threads, permission="manual"), question="q"
+        )
+        assert threads.calls[0][2].permission == "manual"
 
     async def test_a_sandbox_thread_seeds_nothing(self):
         threads = _FakeThreads()

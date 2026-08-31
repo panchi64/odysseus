@@ -1,4 +1,4 @@
-import type { SessionMode } from "~/lib/modes";
+import { sessionModeSpec, type SessionMode } from "~/lib/modes";
 import type { ChatSummary } from "./model";
 
 /**
@@ -45,7 +45,8 @@ export function groupSessions(
   sessions: ChatSummary[],
   mode: SessionMode,
 ): SessionGroup[] {
-  if (mode !== "code")
+  // The heading is the workspace, so only a mode that *has* one gets sections.
+  if (sessionModeSpec(mode).workspace !== "worktree")
     return sessions.length ? [{ id: mode, label: null, sessions }] : [];
 
   const groups: SessionGroup[] = [];

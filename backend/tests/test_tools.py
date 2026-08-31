@@ -49,7 +49,7 @@ async def test_deps_reach_tools():
     seen: dict[str, str] = {}
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
-    @toolset.tool
+    @toolset.tool(metadata={"sensitivity": "read"})
     def whoami(ctx: RunContext[RunDeps]) -> str:
         seen["owner"] = ctx.deps.owner_id
         return ctx.deps.owner_id

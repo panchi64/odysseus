@@ -28,6 +28,14 @@ aimed at the wrong thing.
   every other ingress in this codebase takes, applied to the one call whose output is a
   permission.
 
+  **Including the tool results a compaction folded.** A conversation compaction writes its
+  summary back as a *user* message (``services/conversations.py``), and that summary is
+  built from the whole thread, tool returns and all (``agent/summarize.py``) — so a page
+  the agent read once reaches this file wearing the one label the rubric treats as
+  authorising. It is dropped by the marker it is written with. The cost is real and is the
+  right way round: after a compaction the reviewer reads only the turns since, which is
+  less to authorize on, and less authorization parks.
+
 Even so, the transcript that *is* shown goes inside an untrusted fence: the assistant's
 prose is downstream of everything it has read, so it can carry an injected argument
 forward in its own words. Fencing it means such an argument arrives as something the
@@ -54,7 +62,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.untrusted import wrap_untrusted
-from prompts.utility import REVIEW_INSTRUCTIONS
+from prompts.utility import COMPACT_PREAMBLE, REVIEW_INSTRUCTIONS
 from services.permissions.capability import Capability
 
 logger = logging.getLogger(__name__)
@@ -108,18 +116,23 @@ def review_transcript(
     """The thread as the reviewer may see it: the operator's requests and the assistant's
     prose, in order, and nothing else.
 
-    Three kinds of part are dropped and each for its own reason. **Tool returns** are
+    Four kinds of part are dropped and each for its own reason. **Tool returns** are
     content from outside the conversation and are the injection vector this whole design
     is arranged around. **Tool calls** are the model's own requests, and the one being
     judged is already described far more precisely by its capability. **Thinking** is the
     model's private argument for what it is about to do, which is exactly the material a
     reviewer should not be weighing when deciding whether the *operator* asked for it.
+    And a **compaction summary** is a user-shaped message the operator never wrote: a
+    utility model's fold of the earlier thread, tool returns included, which would
+    otherwise carry every one of them back in under the "Operator:" label.
     """
     lines: list[str] = []
     for message in list(messages)[-limit:]:
         if isinstance(message, ModelRequest):
             text = "\n".join(
-                _prompt_text(part) for part in message.parts if isinstance(part, UserPromptPart)
+                _prompt_text(part)
+                for part in message.parts
+                if isinstance(part, UserPromptPart) and not _is_compaction_summary(part)
             ).strip()
             if text:
                 lines.append(f"Operator: {text[:chars]}")
@@ -130,6 +143,17 @@ def review_transcript(
             if text:
                 lines.append(f"Assistant: {text[:chars]}")
     return "\n\n".join(lines)
+
+
+def _is_compaction_summary(part: UserPromptPart) -> bool:
+    """Whether this user-shaped message is a compaction checkpoint rather than a request.
+
+    Recognised by the label the compaction writes in front of it, which is the same string
+    the operator's transcript and the run's own event use — a marker, not a heuristic. An
+    operator who types that line themselves loses their message from the reviewer's view,
+    which costs them a park and nothing else.
+    """
+    return _prompt_text(part).lstrip().startswith(COMPACT_PREAMBLE)
 
 
 def _prompt_text(part: UserPromptPart) -> str:
@@ -182,15 +206,20 @@ def make_utility_reviewer(
     operator watching, and a reviewer that hangs would hold a run open indefinitely on a
     call nobody has been asked about — worse than the park it was trying to avoid. So a
     slow model produces ``None``, and ``None`` means park.
+
+    The agent and its settings are built **here** rather than inside the closure. Nothing
+    about either varies per call, and building an agent means deriving a JSON schema from
+    :class:`ReviewVerdict` — paid once per reviewer, where one reviewer already serves a
+    whole batch of deferred calls (``agent/gating.py``), instead of once per call.
     """
+    agent = Agent(model, output_type=ReviewVerdict, instructions=REVIEW_INSTRUCTIONS)
+    settings: ModelSettings = {
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        **(model_settings or {}),
+    }
 
     async def review(request: ReviewRequest) -> ReviewVerdict | None:
-        agent = Agent(model, output_type=ReviewVerdict, instructions=REVIEW_INSTRUCTIONS)
-        settings: ModelSettings = {
-            "max_tokens": max_tokens,
-            "temperature": 0.0,
-            **(model_settings or {}),
-        }
         try:
             async with asyncio.timeout(timeout_s):
                 result = await agent.run(review_prompt(request), model_settings=settings)

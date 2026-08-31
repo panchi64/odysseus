@@ -83,6 +83,22 @@ async def test_the_same_block_is_announced_once_across_a_turns_requests():
     assert [i.contributor for i in _injections(run)] == ["skill_catalog"]
 
 
+async def test_the_dedup_key_keeps_no_copy_of_the_block_it_deduplicates():
+    """The capability lives as long as the agent does, and a turn parked for approval
+    holds it for as long as the operator takes to answer. A key built from the block
+    itself would pin one full copy of every distinct brief for that whole time — a repo
+    brief alone is budgeted at 64KB, and the hook fires on every request of the turn."""
+    run = _run()
+    announcer = AnnounceInjections()
+    brief = "".join(f"rule {n}\n" for n in range(8_000))
+    for _ in range(25):  # one model request each, the agent's own per-turn limit
+        announcer.announce(run, [_part("repo", brief)])
+
+    assert [i.contributor for i in _injections(run)] == ["repo"]  # still deduplicated
+    retained = sum(len(name) + len(digest) for name, digest in announcer.seen)
+    assert retained < 100 < len(brief)
+
+
 async def test_a_block_that_changed_mid_turn_is_announced_again():
     """A plan reminder that grew a task between steps genuinely is a new injection, and
     watching it arrive is the point of putting these on the timeline at all."""

@@ -1,11 +1,4 @@
-import {
-  For,
-  Show,
-  createEffect,
-  createMemo,
-  createSignal,
-  type JSX,
-} from "solid-js";
+import { For, Show, createMemo, type JSX } from "solid-js";
 import {
   Collapse,
   Icon,
@@ -17,7 +10,7 @@ import {
 import { num } from "~/lib/format";
 import type { ToolInvocation } from "../model";
 import { toolPresentation } from "../toolPresentation";
-import { ProcessRow, Sep } from "./ProcessRow";
+import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
 /** The family glyph carries the call's state as well as its kind, so a column of
  *  rows reads at a glance by shape and tone before a word is parsed.
@@ -68,10 +61,10 @@ export function ToolCallCard(props: {
   open?: boolean;
 }): JSX.Element {
   // Auto-expand error cards so the reason is immediately visible.
-  const [open, setOpen] = createSignal(props.tool.status === "error");
-  createEffect(() => {
-    if (props.open !== undefined) setOpen(props.open);
-  });
+  const { open, toggle } = createAdoptedOpen(
+    props,
+    props.tool.status === "error",
+  );
   const shown = createMemo(() => toolPresentation(props.tool.name));
   // The salient argument when one stood out, else the full summary — never
   // nothing, so a row is always about something.
@@ -88,7 +81,7 @@ export function ToolCallCard(props: {
     <div class="group/tool overflow-hidden rounded-panel bg-surface shadow-1">
       <ProcessRow
         open={open()}
-        onToggle={() => setOpen((v) => !v)}
+        onToggle={toggle}
         icon={shown().icon}
         iconClass={iconTone[props.tool.status]}
         label={shown().label}

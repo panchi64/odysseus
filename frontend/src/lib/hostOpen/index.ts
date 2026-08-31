@@ -15,9 +15,12 @@ import { toast } from "~/ui/components/Toast";
  * Nothing is shown when it works: the editor coming forward is the feedback, and
  * a toast confirming what the operator just watched happen is noise. A failure
  * always speaks, because the alternative is a control that silently does nothing
- * — and the two ways this fails are both worth reading. The backend refuses a
- * path outside the operator's own projects (the fence, since the path came from
- * model-written prose), and a host with no opener says so in a sentence.
+ * — and every way this fails is worth reading. Two of them are the fence, which
+ * matters because the path came from model-written prose: a path outside the
+ * operator's own projects, and one inside them that the host would *run* rather
+ * than show. The third is a host with no opener, which says so in a sentence.
+ * Each refusal names the file and the reason, so it is shown as written rather
+ * than replaced with a generic apology.
  */
 export async function openHostPath(path: string): Promise<void> {
   const wanted = path.trim();

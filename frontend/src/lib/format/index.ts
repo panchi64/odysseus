@@ -105,6 +105,22 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   return `${days}D AGO`;
 }
 
+/** A snake_case identifier as a phrase in sentence case — `tool_results` → "Tool
+ *  results".
+ *
+ *  The fallback both of the interface's slug registries lean on: a tool's row label when
+ *  the table has no entry for it, and a context contributor's row label when the override
+ *  list doesn't name it. Neither can enumerate what the backend will grow next, so both
+ *  have to read an unknown slug correctly from its own words — and when that was written
+ *  twice the two copies had already drifted, one of them rendering `_` as an empty row.
+ *
+ *  `fallback` is for a caller that has a better thing to show than nothing when the slug
+ *  is all punctuation — the tool table hands back the registry name it started from. */
+export function sentenceCase(slug: string, fallback = slug): string {
+  const words = slug.replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : fallback;
+}
+
 /** The base domain of a URL — host minus a leading `www.` — as a compact label for
  *  "where does this go". Falls back to the raw string when it doesn't parse.
  *

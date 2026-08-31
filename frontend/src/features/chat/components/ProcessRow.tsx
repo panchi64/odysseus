@@ -1,5 +1,47 @@
-import { Show, children, type JSX } from "solid-js";
+import {
+  Show,
+  children,
+  createEffect,
+  createSignal,
+  type Accessor,
+  type JSX,
+  type Setter,
+} from "solid-js";
 import { Icon, Text, cx, type IconName } from "~/ui";
+
+export interface AdoptedOpen {
+  open: Accessor<boolean>;
+  setOpen: Setter<boolean>;
+  /** The one thing every caller does with the setter. */
+  toggle: () => void;
+}
+
+/**
+ * A disclosure that is its own, until the turn says otherwise.
+ *
+ * Every collapsible card in a turn owns its open state *and* yields to the turn's
+ * expand-all / collapse-all — with local toggles working freely between two of those
+ * presses. Spelled out that is a signal plus an effect, and it was spelled out in five
+ * cards: the reasoning trace, the tool call, the host terminal, the injected context and
+ * the review row. Five copies of a rule is five chances for one of them to adopt
+ * `undefined` and snap shut, or to stop adopting at all.
+ *
+ * `initial` is the card's own resting state, read once at creation: a failed tool call
+ * opens itself so the reason is on screen, a host terminal shows its output, and
+ * everything else rests closed.
+ */
+export function createAdoptedOpen(
+  props: { open?: boolean },
+  initial = false,
+): AdoptedOpen {
+  const [open, setOpen] = createSignal(initial);
+  // `undefined` is "nobody is driving this" — the card keeps whatever it has, which is
+  // what lets a local toggle survive between two expand-all presses.
+  createEffect(() => {
+    if (props.open !== undefined) setOpen(props.open);
+  });
+  return { open, setOpen, toggle: () => setOpen((v) => !v) };
+}
 
 /** The `·` between segments of one row. Quiet enough to read as punctuation
  *  rather than as another value. */

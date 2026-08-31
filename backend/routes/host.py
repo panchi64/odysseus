@@ -106,8 +106,10 @@ async def open_in_editor(request: Request, body: OpenRequest) -> OpenResult:
 
     Operator-initiated, so it is a plain REST action rather than an approval-gated tool:
     the agent has no path to it, and the only thing it can influence is the *text* of a
-    path it wrote — which is exactly why containment against the operator's own project
-    roots is not optional. ``services/host_open`` refuses anything outside them.
+    path it wrote — which is exactly why the two fences in ``services/host_open`` are not
+    optional. It refuses anything outside the operator's project roots, and anything
+    inside them the host would *run* rather than show: the agent writes into those roots,
+    so being contained is no evidence that the file at the end is a file to read.
     """
     target = host_open.resolve_within(await _searchable_roots(request), body.path)
     try:

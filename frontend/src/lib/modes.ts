@@ -16,6 +16,15 @@ import type { IconName } from "~/ui";
  */
 export type SessionMode = "normal" | "research" | "code";
 
+/** Where a mode's threads do their work. The distinction the interface keeps asking
+ *  about — a `worktree` thread is cut from a directory on the operator's machine, so it
+ *  needs one named before it can start, it files under that directory in the rail, and
+ *  its branch is the thing the status strip reports. A `sandbox` thread has none of
+ *  that. Three surfaces used to ask by comparing the id to `"code"`, which said which
+ *  mode rather than what about it, and would have to be found again the day a fourth
+ *  mode is also rooted in a directory. */
+export type ModeWorkspace = "sandbox" | "worktree";
+
 export interface SessionModeSpec {
   id: SessionMode;
   /** Sentence case — the interface naming the thing to the operator. */
@@ -23,30 +32,40 @@ export interface SessionModeSpec {
   /** What the mode changes, said in one line: the workspace and the tools. */
   description: string;
   icon: IconName;
+  workspace: ModeWorkspace;
 }
 
-/** The three, in the order the rail lists them. Ordinary work first — it is what most
- *  threads are, and a switch whose default sits in the middle reads as a spectrum. */
-export const SESSION_MODES: readonly SessionModeSpec[] = [
-  {
+/** By id — the declaration, and what `sessionModeSpec` looks up. Keyed rather than a
+ *  list searched by id, so the lookup is total over the union: a `find` needs a
+ *  fallback, and a fallback is a mode silently resolving to a different one's rules. */
+const SPECS = {
+  normal: {
     id: "normal",
     label: "Normal",
     description: "General work in this thread's own sandbox.",
     icon: "chat",
+    workspace: "sandbox",
   },
-  {
+  research: {
     id: "research",
     label: "Research",
     description: "Reading the web and the corpus, with sources cited.",
     icon: "research",
+    workspace: "sandbox",
   },
-  {
+  code: {
     id: "code",
     label: "Code",
     description: "A git worktree of a directory on this machine.",
     icon: "code",
+    workspace: "worktree",
   },
-];
+} satisfies Record<SessionMode, SessionModeSpec>;
+
+/** The three, in the order the rail lists them — the declaration order above. Ordinary
+ *  work first: it is what most threads are, and a switch whose default sits in the
+ *  middle reads as a spectrum. */
+export const SESSION_MODES: readonly SessionModeSpec[] = Object.values(SPECS);
 
 export const SESSION_MODE_IDS: readonly SessionMode[] = SESSION_MODES.map(
   (spec) => spec.id,
@@ -67,6 +86,10 @@ export function sessionMode(value: string | undefined): SessionMode {
   return value && isSessionMode(value) ? value : DEFAULT_SESSION_MODE;
 }
 
+/** Everything this build knows about a mode, in one lookup. Total by construction —
+ *  there is no "unknown mode" arm to hide a missing row behind, because a value that
+ *  isn't one of the three never had this type. Whatever came off the wire goes through
+ *  `sessionMode()` first. */
 export function sessionModeSpec(mode: SessionMode): SessionModeSpec {
-  return SESSION_MODES.find((spec) => spec.id === mode) ?? SESSION_MODES[0];
+  return SPECS[mode];
 }

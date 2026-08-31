@@ -257,7 +257,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             timeout_s=timeout_s,
         )
         try:
-            session = await sessions.acquire(ctx.deps.sandbox_key)
+            session = await sessions.acquire(ctx.deps.sandbox_key, holder=ctx.deps.run)
             # A cold container takes a beat to spin up — longer still the first
             # time, when the image must be pulled. Announce that wait so the run
             # reads as the environment starting, not the model stalling; a warm

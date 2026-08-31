@@ -1,6 +1,6 @@
 import { For, Show, type Accessor, type JSX } from "solid-js";
 import { useLocation } from "@solidjs/router";
-import { Icon, ListRow, Text, Tooltip, cx } from "~/ui";
+import { DisclosureToggle, Icon, ListRow, Text, Tooltip, cx } from "~/ui";
 import type { NavArea } from "../nav";
 import { areaMeta, navMeta } from "./navMeta";
 
@@ -14,7 +14,9 @@ import { areaMeta, navMeta } from "./navMeta";
  *  but beside a link it reads as "go to that page"; plus/minus is the
  *  registration-crosshair disclosure of §5 and can't be misread. The two are
  *  siblings, not nested: a button inside a button is invalid HTML (the same
- *  reason ListRow's `right` slot is a span, not a button).
+ *  reason ListRow's `right` slot is a span, not a button) — which is the whole
+ *  reason this cannot simply *be* a `Disclosure`, and why the toggle comes from
+ *  there instead of being restated here.
  *
  *  `active` (the route sits in this area) and `open` are different: a peeked
  *  section is open but not active, and the active section is the one whose
@@ -49,15 +51,11 @@ export function AreaSection(props: {
           </Text>
           {areaMeta(props.area)}
         </a>
-        <button
-          type="button"
-          aria-expanded={props.open()}
-          aria-label={`${props.open() ? "Collapse" : "Expand"} ${props.area.label}`}
-          onClick={props.onToggle}
-          class="flex size-7 shrink-0 items-center justify-center text-dim transition-colors hover:bg-raised hover:text-text"
-        >
-          <Icon name={props.open() ? "minus" : "plus"} size={16} />
-        </button>
+        <DisclosureToggle
+          open={props.open()}
+          onToggle={props.onToggle}
+          label={props.area.label}
+        />
       </div>
       <Show when={props.open()}>
         <div class="pb-1">

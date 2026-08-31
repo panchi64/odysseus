@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
+from typing import Any
 
 
 class Sensitivity(StrEnum):
@@ -81,6 +82,9 @@ _ESCALATION: Mapping[Sensitivity, int] = {
 
 #: What a name this module has never heard of resolves to (see the module docstring).
 UNCLASSIFIED: Sensitivity = Sensitivity.EXTERNAL_EFFECT
+
+#: The prefix every operator-supplied MCP and connector tool is named under.
+EXTERNAL_PREFIX = "external_"
 
 
 #: Every registered tool, by namespaced name, grouped by what it can do. Grouped rather
@@ -247,3 +251,36 @@ def tools_above(floor: Sensitivity) -> frozenset[str]:
     :func:`sensitivity_of`.
     """
     return frozenset(name for name, s in _BY_NAME.items() if s.above(floor))
+
+
+#: The key a toolset uses to state its own tools' class on their ``ToolDefinition``.
+#: See :func:`declared_sensitivity` for why the seam exists.
+SENSITIVITY_METADATA_KEY = "sensitivity"
+
+
+def declared_sensitivity(metadata: Mapping[str, Any] | None) -> Sensitivity | None:
+    """The class a tool states about *itself*, or ``None`` when it states nothing.
+
+    The registry above is a rule about **names**, which is all a module below ``tools/``
+    can key on. That is exact for the catalog this installation ships — a test pins every
+    tool in it to a class, in both directions — and silent about anything assembled at
+    run time: a toolset composed in a test, and any future source of tools that is neither
+    the catalog nor the operator's external surface. Those are precisely the names the
+    name-registry has to treat as unknown, and unknown resolves to the class that reaches
+    furthest, so without this they would be gated as though they sent mail.
+
+    So a toolset may say what its tools are, on the definition itself, and the gate reads
+    the declaration in preference to the guess. A declaration is only ever *believed* for
+    tools the installation composes; it is not a channel a model or an external server can
+    reach, because neither writes ``ToolDefinition.metadata``.
+
+    An unreadable or unrecognised value is ``None`` — the name registry then answers, which
+    is the conservative direction — rather than an error, since a malformed declaration
+    must not be able to take a tool out of the catalog.
+    """
+    if not metadata:
+        return None
+    try:
+        return Sensitivity(metadata[SENSITIVITY_METADATA_KEY])
+    except (KeyError, ValueError, TypeError):
+        return None

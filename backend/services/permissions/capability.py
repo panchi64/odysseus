@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from services.permissions.shell_ast import ShellCommand, escapes_workspace, shell_reach
+from services.tool_sensitivity import EXTERNAL_PREFIX
 
 
 class ActionKind(StrEnum):
@@ -108,9 +109,6 @@ _PATH_ARG: dict[str, str] = {
     "files_create_directory": "path",
 }
 
-#: The prefix every operator-supplied MCP and connector tool is named under.
-_EXTERNAL_PREFIX = "external_"
-
 
 def shell_capability(tool: str, command: str, *, root: Path | None) -> Capability:
     """One shell command as a capability — the grammar walk, wrapped in the common shape."""
@@ -145,11 +143,11 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
     if path_arg is not None:
         return _file_capability(tool, args, path_arg, root)
 
-    if tool.startswith(_EXTERNAL_PREFIX):
+    if tool.startswith(EXTERNAL_PREFIX):
         # The slug and the far-side tool name, which is all this process knows: an MCP
         # server's arguments are its own vocabulary, and guessing at their meaning would
         # be inventing a boundary rather than describing one.
-        source, _, remote = tool.removeprefix(_EXTERNAL_PREFIX).partition("_")
+        source, _, remote = tool.removeprefix(EXTERNAL_PREFIX).partition("_")
         return Capability(
             tool=tool,
             kind=ActionKind.EXTERNAL,
@@ -162,6 +160,11 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
         tool=tool,
         kind=ActionKind.OPAQUE,
         summary=f"Calls {tool} with {_arg_shape(args)}",
+        # The name and the argument keys are the *whole* of what was read, and an action
+        # whose effect is its own is by definition not written in them. Leaving this empty
+        # would make `bounded` — the property whose entire job is to say "the fields here
+        # describe the whole act" — answer True about an act nothing here described.
+        unbounded=("this tool's effect is not written in its arguments",),
     )
 
 

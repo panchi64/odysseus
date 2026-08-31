@@ -177,7 +177,13 @@ export {
   type ComboboxOption,
 } from "./components/Combobox";
 export { Checkbox, type CheckboxProps } from "./components/Checkbox";
-export { Disclosure, type DisclosureProps } from "./components/Disclosure";
+export {
+  Disclosure,
+  DisclosureToggle,
+  type DisclosureMarker,
+  type DisclosureProps,
+  type DisclosureToggleProps,
+} from "./components/Disclosure";
 export { Toggle, type ToggleProps } from "./components/Toggle";
 export { Tabs, type TabsProps, type TabItem } from "./components/Tabs";
 export { Modal, type ModalProps } from "./components/Modal";

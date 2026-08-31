@@ -16,8 +16,10 @@ which is the only input this feature takes.
 
 That is why :func:`resolve_within` exists and why the route hands it the operator's own
 project roots. The path arrives from a click on model-written text, so it is untrusted
-content and containment is the whole gate — the same ``contained_path`` every file tool
-is fenced by, not a second check written out again here.
+content and containment is half the gate — the same ``contained_path`` every file tool is
+fenced by, not a second check written out again here. The other half is
+``services/host_open_policy``: the agent *writes into* those roots, so a contained path
+can still be a program, and what the host would run rather than show is refused by type.
 
 **Portable by construction** (`XC-PORT-1`): ``open`` on macOS, ``explorer`` on Windows,
 ``xdg-open`` or ``gio`` elsewhere, and nothing at all on a headless host — where the call
@@ -40,6 +42,7 @@ from pathlib import Path
 from typing import Literal
 
 from core.exceptions import InvalidInputError, NotFoundError, PermissionDeniedError
+from services.host_open_policy import ensure_openable
 from services.sandbox.base import SandboxError, contained_path
 
 logger = logging.getLogger(__name__)
@@ -89,7 +92,8 @@ def _unavailable_reason() -> str:
 
 
 def resolve_within(roots: Sequence[Path], path: str) -> Path:
-    """The file ``path`` names inside one of ``roots``, or a refusal.
+    """The file ``path`` names inside one of ``roots`` **and** may be handed to the host,
+    or a refusal.
 
     ``path`` is whatever the model wrote into its answer, so both spellings it uses have
     to work and neither may be trusted: the absolute path a code thread is told its files
@@ -97,16 +101,24 @@ def resolve_within(roots: Sequence[Path], path: str) -> Path:
     sandbox's own containment check, which is what makes one loop enough: ``root /
     "/etc/passwd"`` *is* ``/etc/passwd`` and ``root / "../../.ssh/id_rsa"`` resolves out
     of the tree, so the function every file tool is already fenced by refuses both —
-    rather than a second check written out here and drifting from the first.
+    rather than a second check written out here and drifting from the first. It resolves
+    symlinks on the way, so a ``notes.md`` inside a root pointing at ``~/.ssh/id_rsa``
+    lands outside the tree and is refused like any other escape.
 
     The first root that both contains the path and has something at it wins, which makes
     the caller's ordering the policy rather than a rule buried here: the route puts the
     active project first, and each project's worktree ahead of the operator's own
     checkout, so a file the agent just wrote opens as the copy it actually wrote.
 
-    Refusals are two different answers on purpose. Contained but absent is a stale path
-    in an old answer (**404**); contained by nothing is a path outside the operator's
-    projects (**403**), which is the case this whole function exists for.
+    The winner is then gated on *type* — see ``host_open_policy`` — because the agent
+    writes into these roots, so containment says nothing about whether the thing at the
+    end is read or executed. It runs on the resolved path, so a harmless-looking symlink
+    is judged as whatever it actually points at.
+
+    Refusals are three answers on purpose. Contained but absent is a stale path in an old
+    answer (**404**); contained by nothing is a path outside the operator's projects, and
+    contained but executable is a path inside them that would run — both **403**, because
+    both are this function refusing rather than failing to find.
     """
     wanted = path.strip()
     if not wanted:
@@ -119,6 +131,7 @@ def resolve_within(roots: Sequence[Path], path: str) -> Path:
             continue
         contained_anywhere = True
         if target.exists():
+            ensure_openable(target)
             return target
     if contained_anywhere:
         raise NotFoundError(f"nothing is at that path any more: {wanted}")

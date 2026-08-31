@@ -442,6 +442,125 @@ async def test_the_cap_defers_while_the_vault_is_locked(tmp_path):
     assert not first.sealed.exists()
 
 
+class _Work:
+    """A stand-in for the ``Run`` a session is claimed by — the sandbox only ever asks
+    whether the work is over."""
+
+    def __init__(self) -> None:
+        self.is_terminal = False
+
+
+async def test_the_cap_never_displaces_a_session_a_live_run_is_working_in(tmp_path):
+    # The lock is held for one exec; a turn is a dozen of them with the model thinking in
+    # between. Displacing in one of those gaps seals the workspace — and the seal drops
+    # `node_modules`/`.venv`/`.git` by design, so the run's next tool call would come back
+    # to a workspace missing exactly what it just spent minutes installing.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    turn = _Work()
+    working = await manager.acquire("conv-a", holder=turn)
+    (working.workspace / "node_modules").mkdir(parents=True, exist_ok=True)
+
+    await manager.acquire("conv-b")  # thinking, not executing: the lock is free
+
+    assert not working.is_busy  # the old signal says "reap me"
+    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert (working.workspace / "node_modules").exists()
+
+
+async def test_the_claim_lasts_exactly_as_long_as_the_run_does(tmp_path):
+    # And no longer: a claim released only by a hand-back would be leaked by every
+    # cancelled turn, and the cap would decay into no cap at all.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    turn = _Work()
+    working = await manager.acquire("conv-a", holder=turn)
+    working.workspace.mkdir(parents=True, exist_ok=True)
+    (working.workspace / "notes.txt").write_text("keep me")
+    await manager.acquire("conv-b")
+
+    turn.is_terminal = True  # stopped, failed or answered — the sandbox cannot tell
+
+    assert working.is_displaceable
+    await manager.acquire("conv-c")
+    assert _safe_key("conv-a") not in manager._sessions
+    assert working.sealed.exists()
+
+
+async def test_the_cap_never_displaces_a_conversation_serving_a_live_preview(tmp_path):
+    # Reaping drops the token the proxy resolves, so the page the operator is watching
+    # turns into a 404 — with the server killed out from under an iframe that has no
+    # reason to expect it. The idle sweep may still collect a preview nobody has loaded
+    # in half an hour; that is the difference between a deadline and a ceiling.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    serving = await manager.acquire("conv-a")
+    serving._preview = _fake_preview("tok-live")
+    manager._previews["tok-live"] = serving.key
+
+    await manager.acquire("conv-b")
+
+    assert set(manager._sessions) == {_safe_key("conv-a"), _safe_key("conv-b")}
+    assert manager.preview_status("tok-live") == "running"
+
+
+# --- an evicted session's seal belongs to the manager, not to whoever triggered it ---
+async def test_a_cancelled_acquire_does_not_abort_another_conversations_seal(tmp_path):
+    """Stop is the operator's most-used control, and at the cap the acquiring run is
+    sealing somebody *else's* conversation. Cancelled mid-seal, the archive is never
+    written, the plaintext workspace stays on disk, and the container is left out of
+    every map — no sweep can find it and no purge names it."""
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    displaced = await manager.acquire("conv-a")
+    displaced.workspace.mkdir(parents=True, exist_ok=True)
+    (displaced.workspace / "notes.txt").write_text("keep me")
+
+    sealing, resume = asyncio.Event(), asyncio.Event()
+    real_shutdown = displaced.shutdown
+
+    async def slow_shutdown() -> None:
+        sealing.set()
+        await resume.wait()
+        await real_shutdown()
+
+    displaced.shutdown = slow_shutdown  # type: ignore[method-assign]
+
+    acquiring = asyncio.create_task(manager.acquire("conv-b"))
+    await asyncio.wait_for(sealing.wait(), timeout=2.0)
+    in_flight = list(manager._teardowns)
+    acquiring.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await acquiring
+
+    resume.set()
+    await asyncio.gather(*in_flight)
+
+    assert displaced.sealed.exists()  # the seal finished on the manager's own task
+    assert not displaced.workspace.exists()  # no plaintext left behind
+    assert set(manager._sessions) == {_safe_key("conv-b")}
+
+
+async def test_a_failed_seal_leaves_the_session_live_for_the_sweeper(tmp_path):
+    # A session dropped from the map on a failed teardown is a container nothing will
+    # ever reap and a workspace nothing will ever seal. Put it back and let the idle
+    # sweep try again.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=1)
+    displaced = await manager.acquire("conv-a")
+
+    async def failing_shutdown() -> None:
+        raise RuntimeError("the archive could not be written")
+
+    displaced.shutdown = failing_shutdown  # type: ignore[method-assign]
+
+    await manager.acquire("conv-b")
+
+    assert manager._sessions[_safe_key("conv-a")] is displaced
+    assert not manager._tearing_down  # and not wedged behind a tombstone either
+    assert await manager.acquire("conv-a") is displaced
+
+
 # --- a sweep's sealing must not stall unrelated conversations (sandbox-02) ---
 async def test_sweep_does_not_block_acquire_for_an_unrelated_conversation(tmp_path, monkeypatch):
     vault = await _vault(tmp_path)

@@ -187,7 +187,7 @@ async def test_blocked_turn_persists_with_its_reason(tmp_path, monkeypatch):
     # marker the live stream rendered rather than a turn that silently never happened.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 
@@ -238,7 +238,7 @@ async def test_wall_clock_timeout_persists_the_partial_turn(tmp_path):
     toolset = FunctionToolset()
     hang = asyncio.Event()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     async def slow(x: int) -> int:
         await asyncio.wait_for(hang.wait(), timeout=2.0)
         return x
@@ -383,7 +383,7 @@ async def test_cancel_persists_the_partial_turn(tmp_path):
     started = asyncio.Event()
     hang = asyncio.Event()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     async def slow(x: int) -> int:
         started.set()
         await hang.wait()  # never set — cancelled before it would return
@@ -434,7 +434,7 @@ async def test_double_cancel_does_not_duplicate_the_persisted_turn(tmp_path):
     started = asyncio.Event()
     hang = asyncio.Event()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     async def slow(x: int) -> int:
         started.set()
         await hang.wait()  # never set — cancelled before it would return
@@ -526,7 +526,7 @@ async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path
     # registry's own generic handler records the run as `error`.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def boom(x: int) -> int:
         raise RuntimeError("tool exploded")
 
@@ -570,7 +570,7 @@ async def test_cooperative_cancel_flag_stops_the_turn(tmp_path):
     toolset = FunctionToolset()
     run_ref: list = [None]
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def flag(x: int) -> int:
         run_ref[0].cancel_requested = True
         return x
@@ -803,7 +803,7 @@ async def test_continuing_a_stopped_turn_retires_its_marker_for_good(tmp_path, m
     # itself, so the clear has to be as durable as the marker was.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 
@@ -848,7 +848,7 @@ async def test_clearing_an_unknown_id_retires_the_last_stop_on_the_path(tmp_path
     # leaving a warning the operator has visibly resolved.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 
@@ -884,7 +884,7 @@ async def test_a_second_stop_after_a_retired_one_stands_on_its_own(tmp_path, mon
     # marker on its own turn, with the first one staying retired underneath it.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 
@@ -938,7 +938,7 @@ async def test_clearing_one_marker_leaves_an_earlier_one_alone(tmp_path, monkeyp
     # the turn named — an earlier marker is still an unanswered prompt to resume.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 
@@ -981,7 +981,7 @@ async def test_the_fallback_retires_the_newest_stop_not_an_older_one(tmp_path, m
     # live stop would silently retire a stop further up the thread instead.
     toolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def noop(x: int) -> int:
         return x
 

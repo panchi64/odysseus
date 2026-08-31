@@ -144,6 +144,10 @@ export type HostCommandPhase =
  *  (warm) or the persisted tool call (cold), all keyed by `toolCallId`. */
 export interface HostCommand {
   toolCallId: string;
+  /** The namespaced tool that asked. More than one renders as a terminal — the
+   *  sandboxed host command and the worktree shell — and a conversation grant is
+   *  recorded against a tool *name*, so the card cannot assume which one it holds. */
+  name: string;
   /** The exact command line the agent asked to run on the host. */
   command: string;
   /** Plain-language description of the effect, shown for the approval decision. */

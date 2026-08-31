@@ -49,6 +49,7 @@ from services.registry import ModelRegistry
 from services.settings_store import (
     AutoCompactSettings,
     get_agent_request_limit,
+    get_agent_request_limit_override,
     get_auto_compact,
     get_context_thresholds,
     get_inactivity_timeout,
@@ -405,8 +406,11 @@ async def _submit_turn(
         auto_compact=await _resolve_auto_compact(request, conversation_id),
         # Resolved here rather than at each caller so every interactive turn — send,
         # regenerate, edit — runs under the operator's ceiling without threading it
-        # through three call sites.
-        request_limit=await get_agent_request_limit(deps.settings_store(request), OPERATOR_ID),
+        # through three call sites. The *override*, not the effective number: a mode's
+        # floor may raise a bound nobody chose, and must not overrule one they did.
+        request_limit=await get_agent_request_limit_override(
+            deps.settings_store(request), OPERATOR_ID
+        ),
         # Same again for the context gauge's boundaries: resolved once here so send,
         # regenerate and edit all report severity against the operator's own pair.
         context_thresholds=await get_context_thresholds(deps.settings_store(request), OPERATOR_ID),
@@ -544,12 +548,6 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
         if not await store.exists(body.conversation_id, OPERATOR_ID):
             raise HTTPException(status_code=404, detail="conversation not found")
         conversation_id = body.conversation_id
-        # The one binding fact a later turn may change. Written before the turn reads the
-        # thread's binding below, so this send runs at the level it asked for rather than
-        # at the previous one — and it stays, so the next send inherits it and a reload
-        # comes back to it.
-        if body.permission_level is not None:
-            await store.set_permission_level(conversation_id, body.permission_level)
     else:
         conversation_id = await store.create_conversation(
             OPERATOR_ID,
@@ -585,6 +583,15 @@ async def create_chat(body: ChatCreate, request: Request) -> ChatCreated:
             return queued
         raise HTTPException(status_code=409, detail=_CONVERSATION_BUSY_DETAIL) from None
     try:
+        # The one binding fact a later turn may change, written now that this request owns
+        # the thread and *before* `_submit_turn` reads the binding — so this send runs at
+        # the level it asked for, and the next one inherits it. Deliberately after the
+        # claim: a send that is rejected as busy, or diverted into the live run as
+        # steering, never gets a turn of its own to run at the new level, and moving the
+        # stored one anyway would leave the operator's control reading a level nothing is
+        # actually running at.
+        if body.conversation_id is not None and body.permission_level is not None:
+            await store.set_permission_level(conversation_id, body.permission_level)
         created = await _submit_turn(
             request,
             prompt=body.prompt,

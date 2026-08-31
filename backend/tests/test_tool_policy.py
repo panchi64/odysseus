@@ -16,6 +16,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+import harness.manifests.tasks as tasks_manifest
 import routes.chat as chat_routes
 import routes.runs as runs_routes
 from core.db import init_db, make_engine
@@ -42,6 +43,7 @@ from ._helpers import (
     swap_tool_catalog,
 )
 from .test_approval_routes import danger_categories as _approval_danger_categories
+from .test_task_routes import _await_task_run_finalized, _create_task
 
 OWNER = "operator"
 
@@ -324,6 +326,31 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
     }
 
 
+async def test_unattended_task_turn_composes_with_the_operator_set_and_the_model(monkeypatch):
+    """The other composition path. An unattended turn resolves its own model — so it knows
+    the same vision fact the interactive path does, and taking the permissive default
+    instead would hand a text-only model a tool whose whole output it cannot read."""
+    patch_model_resolution(monkeypatch, output_text="done")
+    async with client_app() as (client, _app):
+        await client.put("/tools/builtin_now", json={"enabled": False})
+
+        captured: dict[str, frozenset[str]] = {}
+        real = tasks_manifest.compose_turn
+
+        def spy(**kwargs):
+            captured["disabled"] = kwargs["disabled_tools"]
+            return real(**kwargs)
+
+        monkeypatch.setattr(tasks_manifest, "compose_turn", spy)
+        created = await _create_task(client)
+        fired = await client.post(f"/tasks/{created['id']}/run_now")
+        await _await_task_run_finalized(client, created["id"], fired.json()["taskRunId"])
+
+    # The stub model declares no vision, exactly as in the interactive test above.
+    assert VISION_ONLY_TOOLS <= captured["disabled"]
+    assert "builtin_now" in captured["disabled"]
+
+
 # --- the approval-resume path, specifically ------------------------------------------
 
 
@@ -344,7 +371,10 @@ def _danger_categories():
     a tool off *while parked* and watch the current policy reach the resumed deps."""
     categories = _approval_danger_categories()
 
-    @categories["danger"].tool_plain
+    # Declares `read`: this catalog is composed here rather than shipped, so without a
+    # declaration the level would gate `danger_safe_thing` too and the turn would park on
+    # two approvals instead of the one this test approves.
+    @categories["danger"].tool_plain(metadata={"sensitivity": "read"})
     def safe_thing() -> str:
         return "safe"
 

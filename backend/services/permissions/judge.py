@@ -23,11 +23,12 @@ operator's trust, and only one of those is recoverable.
   is whatever it is, and the honest reading of an argument whose value arrives at run time
   is that we did not read it.
 
-**What "read-only" means here, and the assumption underneath it.** Every allowlisted
-program observes and returns; none of them writes, and the few that *could* under a flag
-carry that flag as a denial beside them, so the table states the whole rule rather than
-half of it. Path arguments are measured against the run's workspace root and anything
-reaching outside it escalates.
+**What "read-only" means here, and the assumption underneath it.** The programs on the
+list observe and return; the flags that would make one of them do otherwise sit beside it
+in ``read_only.py``, so the table states the whole rule rather than half of it. A denial is
+matched against the *flag* a token names rather than against the token — `-o`, `-oout.txt`
+and `--output=out.txt` are one flag written three ways (``shell_flags.py``). Path arguments
+are measured against the run's workspace root and anything reaching outside it escalates.
 
 The assumption worth naming: the shell session persists its working directory between
 calls (``tools/shell.py``), and that directory is not visible from here, so a relative
@@ -39,100 +40,13 @@ which is what keeps the deterministic stage's base honest.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from services.permissions.capability import ActionKind, Capability
+from services.permissions.read_only import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS
 from services.permissions.shell_ast import ShellCommand
-
-#: Programs that only ever observe, each with the flags that would make it do otherwise.
-#: An empty set means the program cannot write however it is invoked.
-#:
-#: Grouped as one table because the exceptions are the interesting part: `find` is on the
-#: list *because* its writing forms are enumerable, and a reader can check that claim in
-#: one place. A program whose writing forms are not enumerable — `sed -i` hides behind a
-#: short-flag cluster, `awk` writes from inside its own program text, `xargs` runs someone
-#: else's — is simply absent, and escalates.
-READ_ONLY_PROGRAMS: Mapping[str, frozenset[str]] = {
-    "basename": frozenset(),
-    "cat": frozenset(),
-    "cksum": frozenset(),
-    "cmp": frozenset(),
-    "column": frozenset(),
-    "comm": frozenset(),
-    "cut": frozenset(),
-    "date": frozenset(),
-    "df": frozenset(),
-    "diff": frozenset(),
-    "dirname": frozenset(),
-    "du": frozenset(),
-    "echo": frozenset(),
-    "false": frozenset(),
-    "file": frozenset(),
-    # Everything `find` does beyond listing is one of these predicates, and they are exact
-    # tokens rather than clustered short flags, so the denial is complete.
-    "find": frozenset(
-        {
-            "-delete",
-            "-exec",
-            "-execdir",
-            "-ok",
-            "-okdir",
-            "-fls",
-            "-fprint",
-            "-fprint0",
-            "-fprintf",
-        }
-    ),
-    "grep": frozenset(),
-    "head": frozenset(),
-    "hostname": frozenset(),
-    "id": frozenset(),
-    "jq": frozenset(),
-    "ls": frozenset(),
-    "md5sum": frozenset(),
-    "nl": frozenset(),
-    "printf": frozenset(),
-    "pwd": frozenset(),
-    "readlink": frozenset(),
-    "realpath": frozenset(),
-    "rg": frozenset(),
-    "sha1sum": frozenset(),
-    "sha256sum": frozenset(),
-    "shasum": frozenset(),
-    "sort": frozenset(),
-    "stat": frozenset(),
-    "tail": frozenset(),
-    "tr": frozenset(),
-    "true": frozenset(),
-    "uname": frozenset(),
-    "uniq": frozenset(),
-    "wc": frozenset(),
-    "which": frozenset(),
-    "whoami": frozenset(),
-}
-
-#: Programs where the *subcommand* is the act. `git` is the one that matters: it is the
-#: most-run program in a code thread and most of what it does is read, but the same binary
-#: also commits, pushes and resets. The program is allowlisted only for these first words.
-READ_ONLY_SUBCOMMANDS: Mapping[str, frozenset[str]] = {
-    "git": frozenset(
-        {
-            "blame",
-            "cat-file",
-            "describe",
-            "diff",
-            "grep",
-            "log",
-            "ls-files",
-            "ls-tree",
-            "rev-parse",
-            "shortlog",
-            "show",
-            "status",
-        }
-    ),
-}
+from services.permissions.shell_flags import flag_names, is_flag
 
 
 @dataclass(frozen=True)
@@ -189,27 +103,54 @@ def _denial(command: ShellCommand) -> str | None:
     subcommands = READ_ONLY_SUBCOMMANDS.get(command.program)
     if subcommands is not None:
         return _subcommand_denial(command, subcommands)
-    writing_flags = READ_ONLY_PROGRAMS.get(command.program)
-    if writing_flags is None:
+    denied = READ_ONLY_PROGRAMS.get(command.program)
+    if denied is None:
         return f"runs {command.program}, which is not on the read-only list"
-    used = writing_flags.intersection(command.arguments)
-    if used:
-        return f"runs {command.program} with {sorted(used)[0]}, which writes"
-    return None
+    return _flag_denial(command.program, command.arguments, denied)
 
 
-def _subcommand_denial(command: ShellCommand, subcommands: frozenset[str]) -> str | None:
+def _subcommand_denial(
+    command: ShellCommand, subcommands: Mapping[str, frozenset[str]]
+) -> str | None:
     """Whether a subcommand-shaped program was invoked in one of its reading forms.
 
-    The subcommand is the first argument that is not a flag — `git -C src status` is
-    `status`, and `git --version` is no subcommand at all and escalates. Global flags that
-    take a value would shift that position, which is precisely why a program lands in this
-    table only when its reading subcommands are worth enumerating one by one.
+    **Nothing is read past a flag that precedes the subcommand.** Those flags are where the
+    act is redirected rather than described — `--git-dir=` and `--work-tree=` move the
+    repository, `--exec-path=` moves the binaries git runs, `-c` rewrites the config the
+    subcommand obeys, and `-C` moves the directory the whole thing happens in — and a
+    reader that skipped them would answer a question about a command that is not the one
+    being run. Worse, a global flag taking a *separate* value shifts where the subcommand
+    sits, so skipping flags means naming the wrong word as the act. Enumerating git's
+    global options here would be a second table to keep in step with git; refusing to read
+    past one costs a model call on `git --no-pager log` and cannot be wrong.
+
+    The subcommand is therefore the *first* argument, and it must be one of the reading
+    ones, invoked without the flags that would stop it from only reading.
     """
-    for argument in command.arguments:
-        if argument.startswith("-"):
-            continue
-        if argument in subcommands:
-            return None
-        return f"runs {command.program} {argument}, which is not a read-only subcommand"
-    return f"runs {command.program} with no subcommand this stage can name"
+    if not command.arguments:
+        return f"runs {command.program} with no subcommand this stage can name"
+    subcommand, *rest = command.arguments
+    if is_flag(subcommand):
+        return (
+            f"runs {command.program} with {subcommand} before its subcommand, "
+            "which can redirect what the subcommand acts on"
+        )
+    denied = subcommands.get(subcommand)
+    if denied is None:
+        return f"runs {command.program} {subcommand}, which is not a read-only subcommand"
+    return _flag_denial(f"{command.program} {subcommand}", rest, denied)
+
+
+def _flag_denial(what: str, arguments: Iterable[str], denied: frozenset[str]) -> str | None:
+    """The first denied flag ``arguments`` names, as a refusal — or None when none does.
+
+    Matched against the flags a token *names* rather than against the token, so a rule
+    written once as `-o` also covers `-oout.txt` and `--output=out.txt`. Where a token
+    reads two ways, every reading counts (``shell_flags.py``): the point of the table is
+    that a denied flag cannot be smuggled past it by spelling.
+    """
+    for argument in arguments:
+        used = flag_names(argument) & denied
+        if used:
+            return f"runs {what} with {sorted(used)[0]}, which does more than read"
+    return None

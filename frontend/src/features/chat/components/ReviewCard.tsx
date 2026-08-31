@@ -1,8 +1,8 @@
-import { Show, createEffect, createSignal, type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import { Collapse, StatusFlag, Text } from "~/ui";
 import type { Review } from "../model";
 import { toolPresentation } from "../toolPresentation";
-import { ProcessRow, Sep } from "./ProcessRow";
+import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
 /** The verdict in the operator's words, as the row's own second segment.
  *
@@ -56,10 +56,7 @@ export function ReviewCard(props: {
   review: Review;
   open?: boolean;
 }): JSX.Element {
-  const [open, setOpen] = createSignal(false);
-  createEffect(() => {
-    if (props.open !== undefined) setOpen(props.open);
-  });
+  const { open, toggle } = createAdoptedOpen(props);
   const judged = () => toolPresentation(props.review.name).label;
   const verdict = () =>
     props.review.decision ? VERDICT[props.review.decision] : "checking…";
@@ -69,7 +66,7 @@ export function ReviewCard(props: {
           one deliberately has none — the same posture the injection row takes. */}
       <ProcessRow
         open={open()}
-        onToggle={() => setOpen((v) => !v)}
+        onToggle={toggle}
         icon="review"
         iconClass={
           props.review.decision === "block" ? "text-alert" : "text-dim"

@@ -26,10 +26,13 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from agent.overhead import measure_overhead
+from core.db import init_db, make_engine
 from runs import Run, RunStream
+from services.context_budget import CHARS_PER_TOKEN_JSON
 from services.modes import MODES
 from services.permissions import PERMISSION_LEVELS
-from services.tool_policy import mode_disabled_tools, permission_disabled_tools
+from services.settings_store import SettingsStore
+from services.tool_policy import effective_disabled_tools
 from tools import RunDeps, build_agent_toolsets
 
 from ._helpers import full_tool_categories
@@ -41,11 +44,26 @@ from ._helpers import full_tool_categories
 CATALOG_CEILING_CHARS = 60_000
 
 
+class _AllOnline:
+    """Offline mode with nothing suspended — this file measures the catalog, not
+    connectivity, and the real service would make every case depend on a live probe."""
+
+    def web_tools_disabled(self) -> frozenset[str]:
+        return frozenset()
+
+
 async def _schema_chars(mode: str, permission: str) -> tuple[int, int]:
     """(tool count, schema characters) a real run in this mode and at this level would
     actually be handed — resolved through the composed toolset stack the engine hands the
-    Agent, not a re-derivation of the withholding rules."""
-    disabled = mode_disabled_tools(mode) | permission_disabled_tools(permission)
+    Agent, and through the same ``effective_disabled_tools`` every run path fills
+    ``RunDeps.disabled_tools`` from. Re-deriving the withheld set here would measure a
+    narrowing this file invented rather than the one the app performs, and would stay
+    green if the real path stopped applying the level at all."""
+    engine = make_engine("sqlite:///:memory:")
+    init_db(engine)
+    disabled = await effective_disabled_tools(
+        SettingsStore(engine), _AllOnline(), "operator", mode=mode, permission=permission
+    )
     run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
     deps = RunDeps(
         run=run,
@@ -64,8 +82,9 @@ async def test_the_whole_catalog_stays_inside_its_ceiling():
     count, chars = await _schema_chars("normal", "auto")
     assert count > 0
     assert chars < CATALOG_CEILING_CHARS, (
-        f"the tool catalog now costs {chars} characters (~{chars // 4} tokens) at the head "
-        "of every request — either take something out, or raise the ceiling on purpose"
+        f"the tool catalog now costs {chars} characters "
+        f"(~{int(chars / CHARS_PER_TOKEN_JSON)} tokens) at the head of every request — "
+        "either take something out, or raise the ceiling on purpose"
     )
 
 

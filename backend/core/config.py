@@ -69,12 +69,12 @@ class Settings(BaseSettings):
 
     # Run substrate bounds. Timeouts are seconds; None disables.
     #
-    # Concurrency is per **lane** (`runs/lanes.py`), never one shared pool: the operator's
-    # own turn must not queue behind a scheduled task or behind threads the agent opened
-    # for itself. `run_max_concurrency` keeps its name and its number for the lane the
-    # operator is actually sitting in front of; the two unattended lanes are narrower on
-    # purpose, because nobody is waiting on them and their failure mode is volume. The
-    # host's real ceiling is the sum, which is the honest way to state what it always was.
+    # Concurrency is carved into **lanes** (`runs/lanes.py`) rather than shared blindly:
+    # the operator's own turn must not queue behind a scheduled task or behind threads the
+    # agent opened for itself. `run_max_concurrency` keeps its name, its number and its
+    # meaning — the host ceiling, across every lane; the two unattended lanes are capped
+    # well below it on purpose, because nobody is waiting on them and their failure mode
+    # is volume, and slots they can never hold are slots the operator always can.
     run_max_concurrency: int = 8
     run_background_concurrency: int = 2
     run_linked_concurrency: int = 3
@@ -97,6 +97,15 @@ class Settings(BaseSettings):
     # tool-call cap. None disables the tool cap.
     agent_request_limit: int = 25
     agent_tool_calls_limit: int | None = None
+
+    # How long a research thread the *agent* opened may run before the substrate ends it.
+    # The one place a wall clock is on by default, because it is the one turn nobody is
+    # sitting in front of: the inactivity watchdog cannot end it (a model streaming tokens
+    # refreshes that clock on every frame), the request limit only bounds round trips, and
+    # the linked lane is `run_linked_concurrency` wide — so unbounded threads would block
+    # every later `research_start` for as long as they cared to run. Eighteen minutes: a
+    # thorough read of a dozen sources fits comfortably, a stuck one does not.
+    research_wall_clock_timeout_s: float | None = 1080.0
 
     # Execution sandbox. Agent code/shell runs isolated from the host; when no
     # runtime is available the capability is disabled (fail closed — never a host

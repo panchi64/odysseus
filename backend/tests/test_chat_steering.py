@@ -44,7 +44,11 @@ def _steering_toolset(queue_text: str) -> FunctionToolset:
     live product sees between two model requests."""
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
-    @toolset.tool
+    # Declares its class: this toolset is composed here rather than shipped in the
+    # catalog, so the name registry has never heard of `t_poke` and would otherwise gate
+    # it as the furthest-reaching thing it could be. The steering under test happens at
+    # the ordinary level, so the tool has to say it only reads.
+    @toolset.tool(metadata={"sensitivity": "read"})
     async def poke(ctx: RunContext[RunDeps]) -> str:
         # Async so it runs on the loop (like the real tools): enqueue emits on the
         # run's stream, which needs the running loop for its activity stamp.
@@ -328,7 +332,11 @@ async def test_edited_message_is_injected_with_new_text():
     # carry the edited wording, not the original.
     toolset: FunctionToolset[RunDeps] = FunctionToolset()
 
-    @toolset.tool
+    # Declares its class: this toolset is composed here rather than shipped in the
+    # catalog, so the name registry has never heard of `t_poke` and would otherwise gate
+    # it as the furthest-reaching thing it could be. The steering under test happens at
+    # the ordinary level, so the tool has to say it only reads.
+    @toolset.tool(metadata={"sensitivity": "read"})
     async def poke(ctx: RunContext[RunDeps]) -> str:
         message = ctx.deps.run.enqueue_message("rough draft")
         assert ctx.deps.run.edit_message(message.id, "polished ask")

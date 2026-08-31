@@ -40,7 +40,7 @@ class _CannedManager:
     def __init__(self, session: _CannedSession) -> None:
         self._session = session
 
-    async def acquire(self, key: str) -> _CannedSession:
+    async def acquire(self, key: str, *, holder: object = None) -> _CannedSession:
         return self._session
 
 
@@ -58,14 +58,17 @@ class FakeSession:
 
 
 class FakeSessionManager:
-    """Hands out one session and remembers which key it was acquired under."""
+    """Hands out one session and remembers which key — and which run — it was acquired
+    under."""
 
     def __init__(self) -> None:
         self.session = FakeSession()
         self.acquired: str | None = None
+        self.holder: object = None
 
-    async def acquire(self, key: str) -> FakeSession:
+    async def acquire(self, key: str, *, holder: object = None) -> FakeSession:
         self.acquired = key
+        self.holder = holder
         return self.session
 
 
@@ -142,8 +145,11 @@ async def test_execute_code_runs_in_the_conversation_session():
     manager = FakeSessionManager()
     run = await _run_one_tool("code_execute", sessions=manager)
 
-    # The session was keyed by the conversation (so follow-up calls reuse it).
+    # The session was keyed by the conversation (so follow-up calls reuse it) and claimed
+    # by the run, so the live-session cap cannot displace the container between this call
+    # and the next one — the seal drops `node_modules`, `.venv` and `.git` by design.
     assert manager.acquired == "conv-1"
+    assert manager.holder is run
     # It ran in that session, with network off, via the python interpreter.
     assert len(manager.session.specs) == 1
     spec = manager.session.specs[0]

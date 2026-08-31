@@ -15,7 +15,12 @@ moved down here with it.
 
 from __future__ import annotations
 
-from services.search.dedupe import DedupeSets, canonicalize_url, normalize_query
+from services.search.dedupe import (
+    DedupeSets,
+    canonicalize_url,
+    normalize_query,
+    search_key,
+)
 from services.search.service import SearchResult, SearchResults, SearchService
 
 __all__ = [
@@ -25,4 +30,5 @@ __all__ = [
     "SearchService",
     "canonicalize_url",
     "normalize_query",
+    "search_key",
 ]

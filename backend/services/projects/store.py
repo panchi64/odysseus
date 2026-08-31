@@ -144,6 +144,13 @@ class ProjectStore:
         self._db = db_engine
         self._vault = vault
         self._settings = settings
+        # owner → {project id: directory}, in most-recently-opened order — the whole
+        # answer `workspace_roots` gives, memoised. See it for why, and `_forget` for
+        # what clears it. Dropped on lock, so decrypted paths never outlive the key that
+        # protects them: a locked vault answers exactly as it did before this cache, by
+        # failing to decrypt rather than by serving what it read while unlocked.
+        self._roots: dict[str, dict[str, Path]] = {}
+        vault.register_on_lock(self._roots.clear)
 
     async def _view(self, row: Project) -> ProjectView:
         root = Path(self._vault.decrypt_str(row.root_path_enc))
@@ -198,7 +205,9 @@ class ProjectStore:
             session.refresh(row)
             return row
 
-        return await self._view(await in_session(self._db, work))
+        created = await in_session(self._db, work)
+        self._forget(owner_id)
+        return await self._view(created)
 
     @staticmethod
     def _resolve_root(root_path: str) -> Path:
@@ -271,14 +280,33 @@ class ProjectStore:
         Insertion order is load-bearing for the second of those: opening a path the model
         named means searching the operator's directories for it, and the one they worked
         in most recently is the one they meant.
+
+        **Memoised, because this is on the polling path.** The conversation rail re-reads
+        it on every refresh — which is every couple of seconds while anything is running
+        — and each read was a full table scan plus one AEAD decrypt per project, to
+        rebuild a map that only changes when a project is written. The memo is dropped by
+        every write that goes through this store (:meth:`_forget`) and by a vault lock, so
+        the only way to serve a stale answer is to write ``project`` rows around the store
+        entirely — which is the backup importer, already outside every cache in the app.
         """
+        cached = self._roots.get(owner_id)
+        if cached is not None:
+            return dict(cached)  # a copy: a caller's mutation must not edit the memo
 
         def work(session: Session) -> list[Project]:
             query = select(Project).where(Project.owner_id == owner_id)
             return list(session.exec(query.order_by(Project.last_opened_at.desc())).all())
 
         rows = await in_session(self._db, work)
-        return {row.id: Path(self._vault.decrypt_str(row.root_path_enc)) for row in rows}
+        roots = {row.id: Path(self._vault.decrypt_str(row.root_path_enc)) for row in rows}
+        self._roots[owner_id] = roots
+        return dict(roots)
+
+    def _forget(self, owner_id: str) -> None:
+        """Drop this owner's memoised roots. Called by every write that can change what
+        :meth:`workspace_roots` answers — which includes :meth:`activate`, because the
+        map's *order* is part of the answer and touching ``last_opened_at`` reorders it."""
+        self._roots.pop(owner_id, None)
 
     async def workspace_names(self, owner_id: str) -> dict[str, str]:
         """Each project id mapped to the **basename** of its directory.
@@ -318,7 +346,9 @@ class ProjectStore:
             session.refresh(stored)
             return stored
 
-        return await self._view(await in_session(self._db, work))
+        updated = await in_session(self._db, work)
+        self._forget(owner_id)
+        return await self._view(updated)
 
     async def delete(self, owner_id: str, project_id: str) -> None:
         """Remove the project and **unfile everything that was in it**.
@@ -344,6 +374,7 @@ class ProjectStore:
             session.commit()
 
         await in_session(self._db, work)
+        self._forget(owner_id)
         # Deleting the active project leaves nothing active rather than a dangling id.
         if await self.active_id(owner_id) == project_id:
             await self.activate(owner_id, None)
@@ -364,6 +395,7 @@ class ProjectStore:
                     session.commit()
 
             await in_session(self._db, touch)
+            self._forget(owner_id)  # `last_opened_at` moved: the map's order changed
         await self._settings.set(owner_id, ACTIVE_PROJECT_KEY, project_id or "")
 
     async def root_path(self, owner_id: str, project_id: str) -> Path:

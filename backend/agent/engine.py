@@ -365,17 +365,23 @@ async def _drive_turn(
 ) -> _TurnResult:
     settings = get_settings()
     spec = mode_spec(binding.mode)
-    # ``request_limit`` is the operator's runtime setting when the caller resolved one;
-    # absent (a stateless/eval turn, or an older parked payload) it falls back to the
-    # config default. It bounds *model round-trips*, so every tool call spends one.
+    # ``request_limit`` is the operator's runtime setting *when they set one*; None means
+    # nobody chose a number here (they never touched the control, or this is a stateless
+    # eval turn / an older parked payload). It bounds *model round-trips*, so every tool
+    # call spends one.
     #
-    # A mode may raise that floor but never lower it: the operator's number is set for the
-    # kind of turn they usually run, and a mode whose work genuinely cannot fit inside it
-    # would otherwise stop at a bound nobody chose for it. Lowering, by contrast, would be
-    # the mode overruling an explicit setting.
-    resolved_limit = settings.agent_request_limit if request_limit is None else request_limit
+    # The mode's floor applies to the number nobody chose, and only to that one. A mode
+    # whose work genuinely cannot fit inside the shipped default would otherwise stop at a
+    # bound nothing about this deployment picked; but an operator who deliberately lowered
+    # the ceiling to 10 must not find a research turn taking 60 round trips while the
+    # settings page still reads 10. Unset is a floor to raise; set is an answer to honour.
+    resolved_limit = (
+        max(settings.agent_request_limit, spec.request_limit or 0)
+        if request_limit is None
+        else request_limit
+    )
     limits = UsageLimits(
-        request_limit=max(resolved_limit, spec.request_limit or 0),
+        request_limit=resolved_limit,
         tool_calls_limit=settings.agent_tool_calls_limit,
     )
     deps = RunDeps(
@@ -1024,6 +1030,7 @@ def build_chat_orchestrator(
                     sessions=capabilities.get_optional(SandboxSessionManager),
                     projects=capabilities.get_optional(ProjectStore),
                     worktrees=capabilities.get_optional(WorktreeManager),
+                    holder=run,
                 ),
             )
             # Only build a multimodal prompt when something actually resolved — else leave

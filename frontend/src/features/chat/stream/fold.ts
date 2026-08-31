@@ -31,22 +31,28 @@ import type { SetStoreFunction } from "solid-js/store";
 import { produce } from "solid-js/store";
 import type { ContextWindow, PlanItem, RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
-import { HOST_COMMAND_TOOL } from "../data/constants";
 import {
   formatArgs,
-  hostPhaseFromResult,
-  parseHostResult,
   stringifyResult,
   toStats,
   toolImages,
+  toTerminalOutcome,
   toVersionChipBlock,
   toViewSnapshotRef,
 } from "../data/mappers";
 import { refreshSessions } from "../data/sessions";
 import { revealTitle } from "../data/titleReveals";
 import type { ChatMessage, ConversationStats, ViewSnapshotRef } from "../model";
+import { terminalResult } from "../toolPresentation";
 import { describeToolArgs, describeToolResult } from "../toolSummary";
-import { appendDelta, findReview, findTool, nextId, upsertHost } from "./patch";
+import {
+  appendDelta,
+  findReview,
+  findTool,
+  nextId,
+  upsertHost,
+  type PatchById,
+} from "./patch";
 
 /** The run-scoped bookkeeping the fold both reads and advances. Shared by reference
  *  with the controller, which resets it on a thread switch and reads `maxFoldedSeq`
@@ -72,7 +78,9 @@ export interface FoldState {
  *  either one knowing the other exists. */
 export interface FoldDeps {
   state: FoldState;
-  messages: ChatMessage[];
+  /** The controller's, not a second one: the index hint it keeps only pays off if
+   *  every delta goes through the same instance. */
+  patchById: PatchById;
   setMessages: SetStoreFunction<ChatMessage[]>;
   setSnapshots: (fn: (prev: ViewSnapshotRef[]) => ViewSnapshotRef[]) => void;
   setBrowserStream: (url: string | null) => void;
@@ -85,13 +93,7 @@ export interface FoldDeps {
 export function createFolder(
   deps: FoldDeps,
 ): (anchorId: string, ev: RunEvent) => void {
-  const { state, messages, setMessages } = deps;
-
-  function patchById(id: string, fn: (m: ChatMessage) => void): void {
-    const i = messages.findIndex((m) => m.id === id);
-    if (i < 0) return;
-    setMessages(produce((m) => fn(m[i])));
-  }
+  const { state, patchById, setMessages } = deps;
 
   return function foldEvent(anchorId: string, ev: RunEvent): void {
     // Idempotency: `seq` is monotonic per run, so an event at or below the high-
@@ -110,11 +112,13 @@ export function createFolder(
         patchById(assistantId, (m) => appendDelta(m, "text", ev.text));
         break;
       case "tool.started":
-        // Host commands are terminals, not generic tool cards. (tool.started
-        // fires before approval.required, so this seeds the pending terminal.)
-        if (ev.name === HOST_COMMAND_TOOL) {
+        // A command the operator watches run is a terminal, not a generic tool card.
+        // Which tools those are is the table's answer, not a name test here — see
+        // `ToolEntry.terminal`. (tool.started fires before approval.required, so this
+        // seeds the pending terminal.)
+        if (terminalResult(ev.name)) {
           patchById(assistantId, (m) =>
-            upsertHost(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, ev.name, {
               command:
                 typeof ev.args.command === "string" ? ev.args.command : "",
               explanation:
@@ -141,27 +145,24 @@ export function createFolder(
         break;
       case "tool.progress":
         // A running tool's status note (e.g. the sandbox spinning up). Folds onto
-        // the generic tool card; host commands have their own terminal lifecycle.
+        // the generic tool card; a terminal has its own lifecycle and no block for
+        // this to land on, so the lookup simply misses.
         patchById(assistantId, (m) => {
           const b = findTool(m, ev.tool_call_id);
           if (b) b.tool.progress = ev.partial ?? undefined;
         });
         break;
-      case "tool.completed":
-        if (ev.name === HOST_COMMAND_TOOL) {
-          const r = parseHostResult(ev.result);
-          if (r) {
+      case "tool.completed": {
+        const terminal = terminalResult(ev.name);
+        if (terminal) {
+          // The two terminal tools report differently — a record from the sandboxed
+          // one, a labelled string from the worktree shell — and `toTerminalOutcome`
+          // is where that difference is resolved.
+          const outcome = toTerminalOutcome(terminal, ev.result);
+          if (outcome)
             patchById(assistantId, (m) =>
-              upsertHost(m, ev.tool_call_id, {
-                phase: hostPhaseFromResult(r),
-                exitCode: r.exit_code,
-                stdout: r.stdout,
-                stderr: r.stderr,
-                timedOut: r.timed_out,
-                error: r.error,
-              }),
+              upsertHost(m, ev.tool_call_id, ev.name, outcome),
             );
-          }
           break;
         }
         patchById(assistantId, (m) => {
@@ -175,10 +176,11 @@ export function createFolder(
           }
         });
         break;
+      }
       case "tool.failed":
-        if (ev.name === HOST_COMMAND_TOOL) {
+        if (terminalResult(ev.name)) {
           patchById(assistantId, (m) =>
-            upsertHost(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, ev.name, {
               phase: "error",
               error: ev.error,
             }),
@@ -259,9 +261,9 @@ export function createFolder(
         // the wire — default it once here, in the mapper, so no consumer of the
         // stored block has to guard a `Object.keys(args)` or an `args.command`.
         const args: Record<string, unknown> = ev.args ?? {};
-        if (ev.name === HOST_COMMAND_TOOL) {
+        if (terminalResult(ev.name)) {
           patchById(assistantId, (m) =>
-            upsertHost(m, ev.tool_call_id, {
+            upsertHost(m, ev.tool_call_id, ev.name, {
               command: typeof args.command === "string" ? args.command : "",
               explanation: ev.explanation ?? undefined,
               phase: "pending",

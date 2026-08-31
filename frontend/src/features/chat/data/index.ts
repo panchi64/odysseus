@@ -9,7 +9,7 @@
  * the same names.
  */
 
-export { CONTINUE_PROMPT, HOST_COMMAND_TOOL } from "./constants";
+export { CONTINUE_PROMPT } from "./constants";
 
 export {
   entrySessionId,

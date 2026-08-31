@@ -125,8 +125,15 @@ export function Markdown(props: MarkdownProps): JSX.Element {
     "copyCode",
     "streamStable",
   ]);
-  const html = createMemo(
-    () => marked.parse(local.children ?? "", { async: false }) as string,
+  // Gated on the path that actually renders it. Solid memos are eager, so an
+  // ungated one re-parsed the *whole* answer on every delta while streaming — the
+  // one mode where the result is thrown away, since the block path below renders
+  // from `blockRaws()` instead. That is a full re-lex and re-render of everything
+  // received so far, per token, for nothing.
+  const html = createMemo(() =>
+    local.streamStable
+      ? ""
+      : (marked.parse(local.children ?? "", { async: false }) as string),
   );
   // Only computed/tracked in streamStable mode — the default path never lexes.
   const tokens = createMemo(() =>

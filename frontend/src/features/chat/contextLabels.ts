@@ -14,6 +14,7 @@
  *  nothing here has to be edited when a feature ships one — only the few slugs whose own
  *  words would actively mislead are named. */
 
+import { sentenceCase } from "~/lib/format";
 import type { IconName } from "~/ui";
 
 /** The few slugs whose de-slugged form would be wrong or unhelpful. */
@@ -29,12 +30,13 @@ const LABELS: Record<string, string> = {
 };
 
 /** A backend slug as a row label: an override if it has one, else its own words
- *  (`tool_results` → "Tool results"). */
+ *  (`tool_results` → "Tool results").
+ *
+ *  The de-slugging is `lib/format`'s, shared with the tool table's fallback — the two
+ *  are the same rule read at two ranges, and the copy that lived here rendered a slug of
+ *  nothing but underscores as a blank row. */
 export function segmentLabel(id: string): string {
-  const named = LABELS[id];
-  if (named) return named;
-  const words = id.replace(/_/g, " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
+  return LABELS[id] ?? sentenceCase(id);
 }
 
 /** The one glyph every injection row leads with.

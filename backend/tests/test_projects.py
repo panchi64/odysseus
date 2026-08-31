@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 
 from core.db import in_session, init_db, make_engine
 from core.exceptions import InvalidInputError, NotFoundError
-from core.vault import Vault
+from core.vault import Vault, VaultLocked
 from models.conversation import Conversation
 from models.corpus import CorpusSource
 from models.task import ScheduledTask
@@ -183,6 +183,87 @@ class TestEnsureForPath:
         # operator works in must not spell out where it lives.
         assert names == {view.id: "acme-api"}
         assert str(tmp_path) not in names[view.id]
+
+
+class TestWorkspaceRootsAreMemoised:
+    """The conversation rail re-reads this on every refresh — every couple of seconds
+    while anything is running — so it must not be a table scan plus an AEAD decrypt per
+    project each time, and it must still be *right* the moment a project is written."""
+
+    async def test_a_repeat_read_costs_no_query_and_no_decrypt(self, tmp_path):
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        await store.ensure_for_path("operator", str(tmp_path / "acme"))
+        first = await store.workspace_roots("operator")
+
+        def explode(*_args, **_kwargs):
+            raise AssertionError("workspace_roots re-read the catalog on a warm call")
+
+        store._vault.decrypt_str = explode  # type: ignore[method-assign]
+        assert await store.workspace_roots("operator") == first
+        assert await store.workspace_names("operator") == {
+            pid: "acme" for pid in first
+        }
+
+    async def test_a_caller_cannot_edit_the_memo_through_what_it_was_handed(self, tmp_path):
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        await store.ensure_for_path("operator", str(tmp_path / "acme"))
+
+        (await store.workspace_roots("operator")).clear()
+
+        assert await store.workspace_roots("operator") != {}
+
+    async def test_a_new_project_shows_up_without_waiting_for_anything(self, tmp_path):
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        (tmp_path / "beta").mkdir()
+        await store.ensure_for_path("operator", str(tmp_path / "acme"))
+        await store.workspace_roots("operator")  # warm the memo
+
+        beta = await store.ensure_for_path("operator", str(tmp_path / "beta"))
+
+        assert beta.id in await store.workspace_roots("operator")
+
+    async def test_a_rename_and_a_delete_are_both_visible_immediately(self, tmp_path):
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        acme = await store.ensure_for_path("operator", str(tmp_path / "acme"))
+        await store.workspace_roots("operator")
+
+        await store.update("operator", acme.id, archived=True)
+        assert acme.id in await store.workspace_roots("operator")  # archived ≠ gone
+
+        await store.delete("operator", acme.id)
+        assert await store.workspace_roots("operator") == {}
+
+    async def test_activating_a_project_reorders_the_memo_it_invalidates(self, tmp_path):
+        # Insertion order is the answer, not decoration: opening a path the model named
+        # searches these directories in order, and the one worked in most recently is the
+        # one meant. A memo that survived `activate` would search yesterday's project.
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        (tmp_path / "beta").mkdir()
+        acme = await store.ensure_for_path("operator", str(tmp_path / "acme"))
+        beta = await store.ensure_for_path("operator", str(tmp_path / "beta"))
+        assert list(await store.workspace_roots("operator")) == [beta.id, acme.id]
+
+        await store.activate("operator", acme.id)
+
+        assert list(await store.workspace_roots("operator")) == [acme.id, beta.id]
+
+    async def test_locking_the_vault_drops_the_decrypted_paths(self, tmp_path):
+        # The path names the operator's clients, which is why it is sealed at rest. A
+        # memo that outlived the key would keep answering with it.
+        store = await _store(tmp_path)
+        (tmp_path / "acme").mkdir()
+        await store.ensure_for_path("operator", str(tmp_path / "acme"))
+        await store.workspace_roots("operator")
+
+        store._vault.lock()
+
+        with pytest.raises(VaultLocked):
+            await store.workspace_roots("operator")
 
 
 class TestDeletingAProject:

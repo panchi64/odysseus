@@ -1,9 +1,9 @@
-import { Show, createEffect, createSignal, type JSX } from "solid-js";
+import { Show, type JSX } from "solid-js";
 import { Collapse, Text, copyToClipboard, Icon, REVEAL_BASE } from "~/ui";
 import { compactCount } from "~/lib/format";
 import { INJECTION_ICON, segmentLabel } from "../contextLabels";
 import type { ContextInjection } from "../model";
-import { ProcessRow, Sep } from "./ProcessRow";
+import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 
 /** Where in the request a block landed, in the operator's words.
  *
@@ -41,10 +41,7 @@ export function ContextInjectionCard(props: {
   injection: ContextInjection;
   open?: boolean;
 }): JSX.Element {
-  const [open, setOpen] = createSignal(false);
-  createEffect(() => {
-    if (props.open !== undefined) setOpen(props.open);
-  });
+  const { open, toggle } = createAdoptedOpen(props);
   const copyText = (e: MouseEvent): void => {
     e.stopPropagation();
     copyToClipboard(props.injection.text, "Injected context");
@@ -55,7 +52,7 @@ export function ContextInjectionCard(props: {
           one deliberately has none — the same posture the settled reasoning row takes. */}
       <ProcessRow
         open={open()}
-        onToggle={() => setOpen((v) => !v)}
+        onToggle={toggle}
         icon={INJECTION_ICON}
         iconClass="text-dim"
         label={segmentLabel(props.injection.contributor)}

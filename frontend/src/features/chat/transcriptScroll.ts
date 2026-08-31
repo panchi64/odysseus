@@ -18,13 +18,81 @@
  * the next arriving fragment catches up instead.
  */
 
-import { createEffect, createMemo, createSignal, untrack } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  untrack,
+} from "solid-js";
 import type { ChatMessage } from "./model";
 
 /** Within this many pixels of the bottom counts as still attached. */
 const ATTACHED_PX = 80;
 /** Past roughly one screenful the jump-to-latest control appears. */
 const JUMP_PX = 240;
+
+/**
+ * Everything in the in-flight turn that can grow, added up.
+ *
+ * Pure and exported so the one thing that can silently break — a block kind whose
+ * *mutations* aren't counted — is checkable without a DOM. The exact number is
+ * meaningless; only that it changes when the turn does.
+ *
+ * **A block kind whose fields are filled in later needs a case of its own.** The
+ * fallback arm adds a flat 1, which covers a block that arrives complete and never
+ * changes again, and covers nothing else: a `review.completed` filling in the verdict on
+ * a row `review.started` already pushed leaves the sum untouched, and the transcript sits
+ * still while the row it is pinned to the bottom of grows underneath the fold.
+ */
+export function streamTick(messages: ChatMessage[]): number {
+  const last = messages[messages.length - 1];
+  if (!last) return messages.length;
+  let n = messages.length + (last.content?.length ?? 0);
+  for (const b of last.blocks ?? []) {
+    switch (b.kind) {
+      case "thinking":
+      case "text":
+        n += b.text.length;
+        break;
+      case "tool":
+        n +=
+          b.tool.status.length +
+          b.tool.args.length +
+          (b.tool.result?.length ?? 0) +
+          (b.tool.error?.length ?? 0);
+        break;
+      case "host_command":
+        n +=
+          b.command.phase.length +
+          (b.command.stdout?.length ?? 0) +
+          (b.command.stderr?.length ?? 0);
+        break;
+      case "review":
+        // The row opens on `review.started` with only a summary and fills in on
+        // `review.completed` — a mutation, not a push — so every field the verdict
+        // arrives in has to be part of the sum or the expanded row never scrolls
+        // into view.
+        n +=
+          b.review.summary.length +
+          (b.review.decision?.length ?? 0) +
+          (b.review.stage?.length ?? 0) +
+          (b.review.reason?.length ?? 0) +
+          (b.review.risk?.length ?? 0) +
+          (b.review.authorization?.length ?? 0) +
+          (b.review.correctness?.length ?? 0);
+        break;
+      case "context":
+        // Pushed complete, but its text is what sets the row's height when the fold
+        // is open — counting it keeps a long injection from landing unnoticed.
+        n += b.injection.text.length;
+        break;
+      default:
+        n += 1; // approval / view chips: a new block is enough
+    }
+  }
+  return n;
+}
 
 export interface TranscriptFollow {
   /** `ref` for the scrolling transcript container. */
@@ -49,13 +117,29 @@ export function createTranscriptFollow(source: {
   const [pinned, setPinned] = createSignal(true);
   const [showJump, setShowJump] = createSignal(false);
 
-  const scrollToBottom = () => {
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+  // At most one scroll per frame.
+  //
+  // `scrollTop = scrollHeight` reads a value the browser can only answer by laying the
+  // whole transcript out, then writes back into that same layout — so scheduling one per
+  // *token* made every fragment of a long answer force a synchronous reflow of every
+  // turn above it. A frame is the finest granularity the operator can perceive anyway,
+  // and tokens arrive several to a frame, so coalescing here costs nothing visible and
+  // takes the flush off the delta path.
+  let frame: number | null = null;
+  const followBottom = () => {
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
   };
+  onCleanup(() => {
+    if (frame !== null) cancelAnimationFrame(frame);
+  });
   const jumpToLatest = () => {
     setPinned(true);
     setShowJump(false);
-    queueMicrotask(scrollToBottom);
+    followBottom();
   };
   const onScroll = () => {
     if (!scrollEl) return;
@@ -65,44 +149,15 @@ export function createTranscriptFollow(source: {
     setShowJump(distance > JUMP_PX);
   };
 
-  // Ticks on every fragment that grows the in-flight turn — answer + reasoning
-  // tokens, tool args/result/status, and host-command output — so the follow
-  // effect re-runs as content streams in, not only when a message is added.
-  const streamTick = createMemo(() => {
-    const last = source.messages[source.messages.length - 1];
-    if (!last) return source.messages.length;
-    let n = source.messages.length + (last.content?.length ?? 0);
-    for (const b of last.blocks ?? []) {
-      switch (b.kind) {
-        case "thinking":
-        case "text":
-          n += b.text.length;
-          break;
-        case "tool":
-          n +=
-            b.tool.status.length +
-            b.tool.args.length +
-            (b.tool.result?.length ?? 0) +
-            (b.tool.error?.length ?? 0);
-          break;
-        case "host_command":
-          n +=
-            b.command.phase.length +
-            (b.command.stdout?.length ?? 0) +
-            (b.command.stderr?.length ?? 0);
-          break;
-        default:
-          n += 1; // approval / view chips: a new block is enough
-      }
-    }
-    return n;
-  });
+  // Ticks on every fragment that grows the in-flight turn, so the follow effect
+  // re-runs as content streams in, not only when a message is added.
+  const tick = createMemo(() => streamTick(source.messages));
 
   createEffect(() => {
-    streamTick();
+    tick();
     // untrack(pinned): only new content drives a scroll, so re-attaching by
     // scrolling down doesn't itself snap — the next fragment catches up.
-    if (untrack(pinned)) queueMicrotask(scrollToBottom);
+    if (untrack(pinned)) followBottom();
   });
 
   // The operator initiating a turn (send / regenerate / edit) re-attaches the

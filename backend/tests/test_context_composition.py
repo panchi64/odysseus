@@ -100,7 +100,7 @@ async def test_the_overhead_is_measured_from_the_request_that_went_out():
 
     toolset: FunctionToolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def lookup(query: str, limit: int = 5) -> str:
         """Look something up in the corpus."""
         return "x"
@@ -176,7 +176,7 @@ async def test_a_live_turn_reports_a_split_that_sums_to_its_footprint():
 
     toolset: FunctionToolset = FunctionToolset()
 
-    @toolset.tool_plain
+    @toolset.tool_plain(metadata={"sensitivity": "read"})
     def ping() -> str:
         """Answer with pong."""
         return "pong"

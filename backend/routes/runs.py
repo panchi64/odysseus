@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import ToolApproved, ToolDenied
 
 from agent import ParkedTurn, build_resume_orchestrator
+from agent.gating import GrantApproved
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
 from services.approval_grants import covered_by_grant
@@ -202,18 +203,23 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     # Re-validate the grant-driven pre-approvals against the *current* grants: a grant
     # the operator revoked — or that lapsed by TTL — while the run was parked must not
     # still auto-run its call.
+    grant_approved = {
+        call_id for call_id, o in parked.settled.items() if isinstance(o, GrantApproved)
+    }
     active = (
         await grants.active(deps.OPERATOR_ID, parked.conversation_id)
-        if parked.settled and parked.conversation_id is not None
+        if grant_approved and parked.conversation_id is not None
         else set()
     )
     decisions: dict[str, ToolApproved | ToolDenied] = {}
     for call_id, outcome in parked.settled.items():
-        if isinstance(outcome, ToolDenied):
-            # A refusal the permission level made when the turn parked. It carries
-            # forward verbatim: the operator was never asked about this call, so there is
-            # no decision of theirs to re-validate, and a grant recorded since covers a
-            # tool the level does not permit at all.
+        if call_id not in grant_approved:
+            # Settled on grounds a grant has nothing to do with, and so nothing to
+            # re-validate against: a refusal the permission level made when the turn
+            # parked (the operator was never asked, and a grant recorded since covers a
+            # tool the level does not permit at all), or a call Auto's review cleared —
+            # which leaves no grant behind, and would be denied by a grant check that
+            # took its silence for a revocation.
             decisions[call_id] = outcome
         elif covered_by_grant(tool_by_id.get(call_id), active):
             decisions[call_id] = ToolApproved()

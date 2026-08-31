@@ -40,7 +40,7 @@ from typing import Literal, Protocol
 from services.modes import mode_spec
 from services.projects.store import ProjectStore
 from services.projects.worktree import WorktreeBusyError, WorktreeManager
-from services.sandbox import SandboxError, SandboxSessionManager
+from services.sandbox import LiveWork, SandboxError, SandboxSessionManager
 from services.sandbox.base import contained_path
 
 logger = logging.getLogger(__name__)
@@ -115,11 +115,16 @@ class RunWorkspace:
 
 
 async def sandbox_workspace(
-    sessions: SandboxSessionManager, sandbox_key: str
+    sessions: SandboxSessionManager, sandbox_key: str, *, holder: LiveWork | None = None
 ) -> RunWorkspace:
     """The conversation's container workspace. Raises `SandboxError` when it can't be
-    opened (no runtime, a locked vault, an unreadable seal) — the caller degrades."""
-    session = await sessions.acquire(sandbox_key)
+    opened (no runtime, a locked vault, an unreadable seal) — the caller degrades.
+
+    ``holder`` is the run this workspace is for, and passing it is what keeps the
+    live-session cap from displacing a container the run is still working in between two
+    of its tool calls — the seal drops `node_modules`, `.venv` and `.git`, so a shell that
+    just installed or cloned would find them gone on its next call."""
+    session = await sessions.acquire(sandbox_key, holder=holder)
     return RunWorkspace(root=session.ensure_workspace(), kind="sandbox", files=session)
 
 
@@ -187,6 +192,7 @@ async def resolve_workspace(
     sessions: SandboxSessionManager | None,
     projects: ProjectStore | None,
     worktrees: WorktreeManager | None,
+    holder: LiveWork | None = None,
 ) -> RunWorkspace | None:
     """This run's workspace, or None when there isn't one.
 
@@ -224,7 +230,7 @@ async def resolve_workspace(
     if sessions is None:
         return None
     try:
-        return await sandbox_workspace(sessions, sandbox_key)
+        return await sandbox_workspace(sessions, sandbox_key, holder=holder)
     except SandboxError:
         logger.debug("workspace: no sandbox workspace available", exc_info=True)
         return None

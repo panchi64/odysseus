@@ -1,13 +1,28 @@
-"""Run-wide query/URL dedupe — normalized-exact, scoped to one run."""
+"""Run-wide search/URL dedupe — normalized-exact, scoped to one run."""
 
 from __future__ import annotations
 
-from services.search import DedupeSets, canonicalize_url, normalize_query
+from services.search import DedupeSets, canonicalize_url, normalize_query, search_key
 
 
 def test_normalize_query_folds_case_and_whitespace():
     assert normalize_query("  Foo   Bar  ") == "foo bar"
     assert normalize_query("foo bar") == "foo bar"
+
+
+def test_search_key_separates_requests_that_return_different_results():
+    """The key is the whole request. Two calls that differ only in `time_range` or
+    `limit` read different slices of the web, and collapsing them would refuse the second
+    while telling the model its answer is already above."""
+    base = search_key("cpi release", limit=5, time_range=None)
+    assert base == search_key("  CPI   Release ", limit=5, time_range=None)
+    assert base != search_key("cpi release", limit=5, time_range="year")
+    assert search_key("cpi release", limit=5, time_range="year") != search_key(
+        "cpi release", limit=5, time_range="day"
+    )
+    assert base != search_key("cpi release", limit=20, time_range=None)
+    # A blank query has no key at all, so a caller can treat it like a repeat.
+    assert search_key("   ", limit=5, time_range=None) == ""
 
 
 def test_canonicalize_url_folds_scheme_trailing_slash_and_fragment():
@@ -22,34 +37,38 @@ def test_canonicalize_url_folds_scheme_trailing_slash_and_fragment():
     )
 
 
-def test_dedupe_sets_mark_seen_once():
+def test_a_key_is_claimed_once():
     dedupe = DedupeSets()
-    assert dedupe.try_query("Odysseus release date") is True
-    assert dedupe.try_query("  odysseus   release date ") is False  # same, folded
-    assert dedupe.try_query("odysseus pricing") is True
+    assert dedupe.claim_search("Odysseus release date", limit=5, time_range=None) is not None
+    # Same, folded — already claimed.
+    assert dedupe.claim_search("  odysseus   release date ", limit=5, time_range=None) is None
+    # Same words, different slice of the web — a read of its own.
+    assert dedupe.claim_search("odysseus release date", limit=5, time_range="day") is not None
+    assert dedupe.claim_search("odysseus pricing", limit=5, time_range=None) is not None
 
-    assert dedupe.try_url("https://example.com/page/") is True
-    assert dedupe.try_url("https://example.com/page") is False  # same, sans slash
-    assert dedupe.try_url("https://example.com/other") is True
+    assert dedupe.claim_url("https://example.com/page/") is not None
+    assert dedupe.claim_url("https://example.com/page") is None  # same, sans slash
+    assert dedupe.claim_url("https://example.com/other") is not None
 
 
-def test_dedupe_sets_drop_blank():
+def test_blank_input_is_never_claimable():
     dedupe = DedupeSets()
-    assert dedupe.try_query("   ") is False
-    assert dedupe.try_url("") is False
+    assert dedupe.claim_search("   ", limit=5, time_range=None) is None
+    assert dedupe.claim_url("") is None
 
 
-def test_peek_does_not_mark_seen():
-    """`peek_query`/`peek_url` let a caller check candidacy without committing —
-    the whole point being that an over-cap candidate the caller never acts on stays
-    eligible for a later `try_query`/`try_url`."""
+def test_a_released_key_is_claimable_again():
+    """The claim is taken *before* the network call, so the caller whose call then failed
+    has to hand it back — a search that errored was never read, and keeping its key would
+    tell the model it has evidence it does not have."""
     dedupe = DedupeSets()
-    assert dedupe.peek_query("odysseus pricing") is True
-    assert dedupe.peek_query("odysseus pricing") is True  # still not marked
-    assert dedupe.try_query("odysseus pricing") is True  # first real commit succeeds
-    assert dedupe.peek_query("odysseus pricing") is False  # now actually seen
+    claim = dedupe.claim_search("odysseus pricing", limit=5, time_range=None)
+    assert claim is not None
+    assert dedupe.claim_search("odysseus pricing", limit=5, time_range=None) is None
+    dedupe.release(claim)
+    assert dedupe.claim_search("odysseus pricing", limit=5, time_range=None) is not None
 
-    assert dedupe.peek_url("https://example.com/a") is True
-    assert dedupe.peek_url("https://example.com/a") is True
-    assert dedupe.try_url("https://example.com/a") is True
-    assert dedupe.peek_url("https://example.com/a") is False
+    url_claim = dedupe.claim_url("https://example.com/a")
+    assert url_claim is not None
+    dedupe.release(url_claim)
+    assert dedupe.claim_url("https://example.com/a") is not None

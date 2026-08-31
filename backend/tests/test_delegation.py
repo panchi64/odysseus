@@ -30,7 +30,7 @@ class _FakeSessions:
     def __init__(self, tmp_path):
         self._root = tmp_path
 
-    async def acquire(self, key: str):
+    async def acquire(self, key: str, *, holder: object = None):
         path = self._root / key
         path.mkdir(parents=True, exist_ok=True)
         return _FakeSession(path)

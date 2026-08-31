@@ -11,6 +11,7 @@
  * counter is the only way to be sure of that.
  */
 
+import { produce, type SetStoreFunction } from "solid-js/store";
 import type {
   ChatMessage,
   HostCommand,
@@ -20,6 +21,40 @@ import type {
 } from "../model";
 
 let counter = 0;
+
+/** Edit one message of a transcript in place, found by id. */
+export type PatchById = (id: string, fn: (m: ChatMessage) => void) => void;
+
+/**
+ * Bind a `patchById` to one transcript store.
+ *
+ * A factory rather than a plain function because of the hint it keeps. Every
+ * `answer.delta` and `thinking.delta` patches a message by id — once per *token* — and
+ * resolving that id with a `findIndex` walks the array through Solid's store proxy,
+ * materializing a wrapper per element on the way. The id is nearly always the bubble the
+ * run is folding into, and it is nearly always in the same place it was a token ago, so
+ * the last hit is remembered and checked first: the common case costs one comparison,
+ * and anything that moves the message (an injected boundary, a withdraw, a reseat, the
+ * server's ids being adopted) simply misses the hint and falls back to the scan.
+ *
+ * The fold and the controller both need this, over the same store — two copies of it
+ * were two places to remember the scan was the expensive part.
+ */
+export function createPatchById(
+  messages: ChatMessage[],
+  setMessages: SetStoreFunction<ChatMessage[]>,
+): PatchById {
+  let hint = -1;
+  return (id, fn) => {
+    const i =
+      hint >= 0 && hint < messages.length && messages[hint].id === id
+        ? hint
+        : messages.findIndex((m) => m.id === id);
+    if (i < 0) return;
+    hint = i;
+    setMessages(produce((m) => fn(m[i])));
+  };
+}
 
 /** A client-minted id for something the stream produced but the backend hasn't named
  *  yet — a live block, or an assistant bubble a `message.injected` boundary opened. */
@@ -62,23 +97,35 @@ export function findReview(
   );
 }
 
-/** Upsert a host-command *block*, keyed by tool_call_id. The host call's
+/** Upsert a terminal *block*, keyed by tool_call_id. A terminal call's
  *  `tool.started`, `approval.required`, and `tool.completed` events all land
- *  here, each filling in the part it carries onto the same terminal block. */
+ *  here, each filling in the part it carries onto the same block.
+ *
+ *  `name` rides along because more than one tool renders as a terminal and a
+ *  conversation grant is recorded against a tool name — the card cannot assume which
+ *  one it is holding. */
 export function upsertHost(
   m: ChatMessage,
   toolCallId: string,
+  name: string,
   patch: Partial<HostCommand>,
 ): void {
   const existing = m.blocks?.find(
     (b): b is HostCommandBlock =>
       b.kind === "host_command" && b.command.toolCallId === toolCallId,
   );
-  if (existing) Object.assign(existing.command, patch);
-  else
+  if (existing) {
+    // A denied terminal is settled by the operator's own decision, and nothing the
+    // tool reports afterwards may un-settle it. A denial still arrives as a
+    // `tool.completed` carrying the refusal the model was handed — which for a tool
+    // whose ordinary result is *also* a plain string would otherwise be read as
+    // output and repaint a command that never ran as a green OK.
+    if (existing.command.phase === "denied") return;
+    Object.assign(existing.command, patch);
+  } else
     (m.blocks ?? (m.blocks = [])).push({
       kind: "host_command",
       id: `host-${toolCallId}`,
-      command: { toolCallId, command: "", phase: "pending", ...patch },
+      command: { toolCallId, name, command: "", phase: "pending", ...patch },
     });
 }

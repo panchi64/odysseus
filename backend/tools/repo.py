@@ -9,9 +9,14 @@ model-facing text:
   the capability is constructed once at app assembly and the workspace is per-run; a
   provider re-resolves each turn and can therefore read the run's own worktree. The
   content is static per project, so it stays cache-stable at the prompt head even though
-  it is resolved dynamically. The loading itself is ours rather than the capability's
-  (`repo_instructions.py`) for one reason: it has to be *budgeted*, and the capability
-  reads whatever is on disk.
+  it is resolved dynamically — and it is **memoised for the run** rather than re-read,
+  because a provider resolves on every model request and a turn makes up to
+  `agent_request_limit` of them: the file walk, the SHA256 dedup and the budget's UTF-8
+  encodes would otherwise run twenty-five times over an unchanged worktree, and an agent
+  that edited the project's own `CLAUDE.md` mid-turn would rewrite the prompt head under
+  itself and invalidate the whole turn's prefix cache. The loading itself is ours rather
+  than the capability's (`repo_instructions.py`) for one reason: it has to be *budgeted*,
+  and the capability reads whatever is on disk.
 - **the inventory tool** — reports where the repo keeps its coding-assistant assets
   (`.claude/`, `.agents/`, `.codex/` and their `skills/`, `agents/`, `settings.json`). It
   locates them; reading them is the file tools' job. Rebound per run like every other
@@ -23,6 +28,7 @@ is no repository in it to have an opinion.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
 from pydantic_ai import AbstractToolset, RunContext
@@ -38,6 +44,14 @@ from .workspace import run_workspace
 
 #: The tool's own name inside the toolset; namespaced to `repo_inventory_agent_context`.
 INVENTORY_TOOL = "inventory_agent_context"
+
+#: How many runs' briefs are held at once, most-recently-used last. Sized for the runs
+#: executing *concurrently* rather than for history — the host ceiling is eight lanes'
+#: worth — with room to spare, since an entry costs at most the instruction budget and is
+#: evicted long before a long-lived process has accumulated one per thread ever opened.
+_MAX_BRIEFS = 32
+
+_briefs: OrderedDict[tuple[str, str], str] = OrderedDict()
 
 
 def _capability(root: Path) -> RepoContext[RunDeps]:
@@ -68,7 +82,23 @@ async def repo_instructions(ctx: RunContext[RunDeps]) -> str:
         return ""
     if workspace is None or workspace.kind != "worktree":
         return ""
-    return _brief(workspace.root)
+    return _run_brief(ctx.deps.run.id, workspace.root)
+
+
+def _run_brief(run_id: str, root: Path) -> str:
+    """This run's brief for this worktree, built once and reused for every later request
+    the run makes. Keyed by the run rather than by the root so a later turn — the one
+    place a project's instruction file may legitimately have changed since it was read —
+    still re-reads it, and so a resumed approval keeps the head its earlier requests were
+    cached against. An empty brief is a cached answer like any other."""
+    key = (run_id, str(root))
+    brief = _briefs.pop(key, None)
+    if brief is None:
+        brief = _brief(root)
+        if len(_briefs) >= _MAX_BRIEFS:
+            _briefs.popitem(last=False)
+    _briefs[key] = brief
+    return brief
 
 
 def _brief(root: Path) -> str:

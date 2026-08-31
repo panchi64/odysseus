@@ -61,7 +61,7 @@ class FakeManager:
         self.started: list[tuple] = []
         self.stopped: list[str] = []
 
-    async def acquire(self, key: str) -> FakeSession:
+    async def acquire(self, key: str, *, holder: object = None) -> FakeSession:
         return self._session
 
     async def start_preview(self, key: str, command: list[str], port: int) -> PreviewHandle:

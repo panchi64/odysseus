@@ -35,7 +35,7 @@ from .host import (
     shutdown_confinement,
 )
 from .preview import PreviewHandle
-from .session import SandboxSession, SandboxSessionManager
+from .session import LiveWork, SandboxSession, SandboxSessionManager
 from .staging import (
     STAGE_DIR,
     safe_name,
@@ -59,6 +59,7 @@ __all__ = [
     "published_host_port",
     "run_subprocess",
     "detect_sandbox",
+    "LiveWork",
     "PreviewHandle",
     "SandboxSession",
     "SandboxSessionManager",

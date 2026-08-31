@@ -1,8 +1,14 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
-import { SESSION_MODES } from "~/lib/modes";
+import { SESSION_MODES, sessionModeSpec } from "~/lib/modes";
 import { Button, Icon, Text, Tooltip, cx, toast } from "~/ui";
 import { usePathPicker } from "~/lib/hostPicker";
 import { ensureProjectForPath, useProjects } from "~/lib/stores/projects";
+import {
+  activeSessionMode,
+  codeProjectId,
+  setActiveSessionMode,
+  setCodeProjectId,
+} from "~/lib/stores/sessionMode";
 import { mainChat } from "../data";
 
 /**
@@ -21,7 +27,9 @@ import { mainChat } from "../data";
  * Opening one moves this switch to match it rather than the other way round.
  */
 export function SessionModeSwitch(): JSX.Element {
-  const { mode, setMode, currentId } = mainChat();
+  const mode = activeSessionMode;
+  const setMode = setActiveSessionMode;
+  const { currentId } = mainChat();
 
   return (
     <div class="flex flex-col gap-1 px-2 pb-1">
@@ -69,11 +77,16 @@ export function SessionModeSwitch(): JSX.Element {
         </For>
       </div>
 
-      {/* The workspace line belongs to Code alone, and only while a thread is
-          still being staged: an existing code thread shows its branch in the
-          status strip, and offering to re-point it here would be offering
-          something the backend refuses. */}
-      <Show when={mode() === "code" && currentId() === null}>
+      {/* The workspace line belongs to a mode rooted in a host directory, and only
+          while a thread is still being staged: an existing worktree thread shows its
+          branch in the status strip, and offering to re-point it here would be
+          offering something the backend refuses. */}
+      <Show
+        when={
+          sessionModeSpec(mode()).workspace === "worktree" &&
+          currentId() === null
+        }
+      >
         <CodeWorkspaceLine />
       </Show>
     </div>
@@ -88,7 +101,6 @@ export function SessionModeSwitch(): JSX.Element {
  *  A previously chosen directory stays staged, so the common case is not choosing
  *  anything at all. */
 function CodeWorkspaceLine(): JSX.Element {
-  const { codeProjectId, setCodeProjectId } = mainChat();
   const projects = useProjects();
   const picker = usePathPicker();
   const [choosing, setChoosing] = createSignal(false);

@@ -13,10 +13,15 @@
  * single main room is this long-lived singleton.
  *
  * **What this module owns that the stream does not:** the *binding* the operator is
- * currently pointed at. The mode comes from the app-wide mode store (the theme and the
- * shell read it too); the permission level lives here, because unlike the mode it is sent
- * on every turn and persisted per conversation, so it belongs to the thread on screen
+ * currently pointed at. Only the permission level, and only because unlike the mode it is
+ * sent on every turn and persisted per conversation, so it belongs to the thread on screen
  * rather than to the window.
+ *
+ * The mode is deliberately **not** re-exposed here. It is the app-wide store's
+ * (`lib/stores/sessionMode`) — the theme and the shell read it too — and aliasing it onto
+ * this handle meant a surface that only wanted to read a plain signal had to instantiate
+ * the whole never-disposed stream singleton, its SSE effects and its visibility listeners
+ * to get at it. The mode switch and the rail import the store directly.
  */
 
 import {
@@ -37,12 +42,11 @@ import {
   activeSessionMode,
   codeProjectId,
   setActiveSessionMode,
-  setCodeProjectId,
 } from "~/lib/stores/sessionMode";
-import type { SessionMode } from "~/lib/modes";
 import { useChatSession } from "./data/conversations";
 import { refreshSessions } from "./data/sessions";
 import { DEFAULT_PERMISSION_LEVEL, type PermissionLevel } from "./model";
+import { seatPermission } from "./permissionSeat";
 import { createChatStream } from "./stream/chatStream";
 
 export interface MainChat {
@@ -53,14 +57,6 @@ export interface MainChat {
    *  flag is part of the singleton so it survives navigation — see the screen. */
   warmResolved: Accessor<boolean>;
   markWarmResolved: () => void;
-  /** **The mode context** — which kind of work the operator is looking at. Re-exposed
-   *  from the app-wide store (`lib/stores/sessionMode`) so the chat surfaces reach it
-   *  through the same handle as everything else here; a saved thread's *stored* binding
-   *  stays the backend's, this is only what the client is currently pointed at. */
-  mode: Accessor<SessionMode>;
-  setMode: (mode: SessionMode) => void;
-  codeProjectId: Accessor<string | undefined>;
-  setCodeProjectId: (id: string | undefined) => void;
   /** How far the model may go in the open thread. Unlike the mode this is sent on
    *  every turn and persisted per conversation, so the composer's control moves it
    *  mid-thread; seeded from the loaded thread so a reload comes back where the
@@ -77,9 +73,17 @@ export function mainChat(): MainChat {
   if (_mainChat) return _mainChat;
   return (_mainChat = createRoot(() => {
     const [currentId, setCurrentId] = createSignal<string | null>(null);
-    const [permission, setPermission] = createSignal<PermissionLevel>(
+    const [permission, setLevel] = createSignal<PermissionLevel>(
       DEFAULT_PERMISSION_LEVEL,
     );
+    // The thread the level above was chosen for. Plain, not a signal: nothing renders
+    // it, and it exists only so `seatPermission` can tell "the operator's choice for
+    // the thread on screen" from "the last thread's level, still sitting there".
+    let permissionOwner: string | null = null;
+    const setPermission = (level: PermissionLevel): void => {
+      permissionOwner = currentId();
+      setLevel(level);
+    };
     const session = useChatSession(currentId);
     const stream = createChatStream(
       // Withhold the source while history loads — the resource still reports the
@@ -88,7 +92,15 @@ export function mainChat(): MainChat {
       () => (session.loading ? undefined : session()?.messages),
       currentId,
       {
-        onConversationStarted: (id) => setCurrentId(id),
+        onConversationStarted: (id) => {
+          // The staged thread has just been given its backend id. It is the same
+          // thread, so the level the operator picked for it moves across with it —
+          // otherwise the seating rule below would read the new id as a *different*
+          // thread whose level is unknown and drop the control to the default,
+          // mid-turn, on the very thread that was created with it.
+          permissionOwner = id;
+          setCurrentId(id);
+        },
         onTurnComplete: () => refreshSessions(),
         // Withheld in lockstep with the history above, so the meter seeds from the
         // loaded thread rather than the retained value of the one just left.
@@ -114,18 +126,27 @@ export function mainChat(): MainChat {
     // seeded from the load rather than left on the previous thread's values, which is
     // what stops the window from claiming to be in a code session while a normal one
     // is on screen. Staging a new thread (`currentId === null`) leaves the mode where
-    // the operator put it — that choice is the whole point of the switch — and returns
-    // the level to the default, since there is no thread yet to have a level.
+    // the operator put it — that choice is the whole point of the switch.
+    //
+    // The level is re-seated on *every* pass, not only once the load lands: the gap
+    // between the click and the fetch is exactly when a send would carry the previous
+    // thread's level onto this one. `seatPermission` owns that rule.
     createEffect(() => {
-      if (currentId() === null) {
-        setPermission(DEFAULT_PERMISSION_LEVEL);
-        return;
+      const id = currentId();
+      // Withheld across a source change in lockstep with everything else fed to the
+      // stream — the resource retains the thread just left, and its level is the one
+      // value here that would be written back to the wrong conversation.
+      const loaded = id === null || session.loading ? undefined : session();
+      const seat = seatPermission({
+        currentId: id,
+        owner: permissionOwner,
+        stored: loaded?.permission,
+      });
+      if (seat) {
+        permissionOwner = seat.owner;
+        setLevel(seat.level);
       }
-      if (session.loading) return;
-      const loaded = session();
-      if (!loaded) return;
-      setActiveSessionMode(loaded.mode);
-      setPermission(loaded.permission);
+      if (loaded) setActiveSessionMode(loaded.mode);
     });
     // Reattach when the tab returns to the foreground or the network comes back.
     // A backgrounded tab throttles the SSE reader until it stalls; on return we
@@ -186,10 +207,6 @@ export function mainChat(): MainChat {
       stream,
       warmResolved,
       markWarmResolved: () => setWarmResolved(true),
-      mode: activeSessionMode,
-      setMode: setActiveSessionMode,
-      codeProjectId,
-      setCodeProjectId,
       permission,
       setPermission,
     } satisfies MainChat;

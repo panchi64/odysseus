@@ -14,6 +14,8 @@ cannot quietly delete a protection nobody re-examined.
 
 from __future__ import annotations
 
+import asyncio
+
 from pydantic_ai import FunctionToolset, RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
@@ -25,6 +27,7 @@ from runs import Run, RunRegistry, RunStatus, RunStream
 from services.conversations import ConversationBinding, ConversationStore
 from services.modes import MODES
 from services.permissions import (
+    ACTING_PERMISSIONS,
     DEFAULT_PERMISSION,
     PERMISSION_LEVELS,
     PERMISSIONS,
@@ -32,16 +35,21 @@ from services.permissions import (
     STRICTEST_PERMISSION,
     ApprovalPolicy,
     Decision,
-    WriteScope,
     beyond_scope,
     blocked_message,
     decide,
     permission_level,
     permission_spec,
+    stricter_permission,
     tools_beyond_scope,
 )
 from services.tool_policy import permission_disabled_tools
-from services.tool_sensitivity import SENSITIVITY_CLASSES, Sensitivity
+from services.tool_sensitivity import (
+    SENSITIVITY_CLASSES,
+    Sensitivity,
+    declared_sensitivity,
+    sensitivity_of,
+)
 from tools import RunDeps, build_agent_toolsets
 
 from ._helpers import (
@@ -50,6 +58,7 @@ from ._helpers import (
     full_tool_categories,
     patch_model_resolution,
 )
+from .test_chat_concurrency_guards import _patch_hanging_model
 
 OWNER = "operator"
 
@@ -63,6 +72,16 @@ SECRET = "vault_get_entry"
 #: A name no literal can enumerate — an operator's own MCP tool. Classifies as an
 #: external effect, which is the fail-closed reading and the honest one.
 UNCLASSIFIED = "external_someserver_do_a_thing"
+#: A name from nowhere at all: no class, and not the operator's either. The shape a tool
+#: added to the catalog without a class takes, and the one nothing else answers for.
+UNKNOWN = "someones_brand_new_tool"
+#: A **read** that pauses its own calls — the global-recall gate. Within every level's
+#: scope, so a deferral of one is never the level's doing.
+SELF_GATED_READ = "corpus_retrieve"
+#: A **workspace write** that pauses its own calls: `skills_edit` carries
+#: `requires_approval=True`. Within Edit's and Auto's scope, so neither of those levels
+#: marks it and its own marking is the only thing standing.
+SELF_MARKED_WRITE = "skills_edit"
 
 
 def _classified_names() -> set[str]:
@@ -76,24 +95,20 @@ class TestTheKnobs:
         assert set(PERMISSIONS) == PERMISSION_LEVELS
         assert all(spec.level == level for level, spec in PERMISSIONS.items())
 
-    def test_the_write_scopes_are_what_the_two_read_only_levels_share(self):
-        # Plan and Manual differ in what happens past the scope, not in the scope — which
-        # is the point of storing the pair: the read-only-ness is one knob, and the two
-        # levels are two answers to the *other* one.
-        assert PERMISSIONS["plan"].write_scope is WriteScope.NONE
-        assert PERMISSIONS["manual"].write_scope is WriteScope.NONE
+    def test_the_ceiling_is_what_the_two_read_only_levels_share(self):
+        # Plan and Manual differ in what happens past the ceiling, not in the ceiling —
+        # which is the point of storing the pair: the read-only-ness is one knob, and the
+        # two levels are two answers to the *other* one.
+        assert PERMISSIONS["plan"].ceiling is Sensitivity.READ
+        assert PERMISSIONS["manual"].ceiling is Sensitivity.READ
         assert PERMISSIONS["plan"].approval_policy is ApprovalPolicy.WITHHOLD
         assert PERMISSIONS["manual"].approval_policy is ApprovalPolicy.ASK
 
     def test_edit_and_auto_reach_the_workspace_and_differ_in_who_answers(self):
-        assert PERMISSIONS["edit"].write_scope is WriteScope.WORKSPACE
-        assert PERMISSIONS["auto"].write_scope is WriteScope.WORKSPACE
+        assert PERMISSIONS["edit"].ceiling is Sensitivity.WORKSPACE_WRITE
+        assert PERMISSIONS["auto"].ceiling is Sensitivity.WORKSPACE_WRITE
         assert PERMISSIONS["edit"].approval_policy is ApprovalPolicy.ASK
         assert PERMISSIONS["auto"].approval_policy is ApprovalPolicy.REVIEW
-
-    def test_a_scope_resolves_to_a_ceiling_on_the_sensitivity_classes(self):
-        assert PERMISSIONS["plan"].ceiling is Sensitivity.READ
-        assert PERMISSIONS["edit"].ceiling is Sensitivity.WORKSPACE_WRITE
 
     def test_an_unreadable_level_lands_on_the_one_that_does_least(self):
         # Off a database row and out of a parked run's payload, both of which outlive a
@@ -132,6 +147,28 @@ class TestTheKnobs:
         # furthest, which is what makes Plan's refusal reach it.
         assert decide("plan", UNCLASSIFIED) is Decision.BLOCK
 
+    def test_a_name_from_nowhere_is_gated_at_every_level(self):
+        # The exemption above is for the operator's *own* external tools, which carry the
+        # prefix and have the trust list deciding them. A name that is neither classified
+        # nor theirs has nothing to defer to, so it reads as the class that reaches
+        # furthest and is elevated everywhere — including the two levels that let the
+        # model act, which is where a fail-open would have cost something.
+        assert sensitivity_of(UNKNOWN) is Sensitivity.EXTERNAL_EFFECT
+        for level in PERMISSION_LEVELS:
+            assert beyond_scope(level, UNKNOWN), level
+
+    def test_a_toolset_may_state_its_own_class_and_is_believed(self):
+        # The seam for tools this installation composes at run time rather than ships:
+        # a declaration outranks both the registry and the unknown-name fallback, so a
+        # composed read-only tool is not gated as though it sent mail.
+        assert not beyond_scope("edit", UNKNOWN, declared=Sensitivity.READ)
+        assert not beyond_scope("plan", UNKNOWN, declared=Sensitivity.READ)
+        # ...and it cannot be used to *lower* a gate below what the level permits.
+        assert beyond_scope("edit", UNKNOWN, declared=Sensitivity.HOST_EXEC)
+        # A malformed declaration is no declaration, so the fallback still answers.
+        assert declared_sensitivity({"sensitivity": "not-a-class"}) is None
+        assert beyond_scope("edit", UNKNOWN, declared=None)
+
     def test_the_plan_writes_are_permitted_at_every_level(self):
         # A read-only turn ends by writing down what it would do; a level that made it ask
         # first would leave it no way to finish at all.
@@ -141,6 +178,33 @@ class TestTheKnobs:
 
     def test_every_mode_starts_a_thread_at_a_level_that_exists(self):
         assert all(spec.default_permission in PERMISSION_LEVELS for spec in MODES.values())
+
+    def test_the_levels_that_can_act_are_the_ones_that_reach_past_reading(self):
+        # Derived from the ceiling rather than named, so a fifth preset is a row in the
+        # registry and every caller that means "the levels that can act" follows it.
+        assert ACTING_PERMISSIONS == {"edit", "auto"}
+        assert all(
+            (level in ACTING_PERMISSIONS) is (spec.ceiling is not Sensitivity.READ)
+            for level, spec in PERMISSIONS.items()
+        )
+
+    def test_the_stricter_of_two_levels_is_the_one_that_permits_less(self):
+        # The order comes off the pair — how far the ceiling reaches, then what happens at
+        # its edge — so the four sort themselves without a hand-written list.
+        assert stricter_permission("plan", "auto") == "plan"
+        assert stricter_permission("auto", "manual") == "manual"
+        assert stricter_permission("edit", "auto") == "edit"
+        assert stricter_permission("plan", "manual") == "plan"
+        # Symmetric, idempotent, and total over the vocabulary.
+        for a in PERMISSION_LEVELS:
+            for b in PERMISSION_LEVELS:
+                assert stricter_permission(a, b) == stricter_permission(b, a)
+                assert stricter_permission(a, a) == a
+
+    def test_an_unreadable_level_is_the_strictest_thing_to_take_the_stricter_of(self):
+        # Same degrade as everywhere else: a value off a row an older build wrote must not
+        # widen the thread it is compared against.
+        assert stricter_permission("root", "auto") == STRICTEST_PERMISSION
 
 
 class TestTheDecisionMatrix:
@@ -169,15 +233,18 @@ class TestTheDecisionMatrix:
             assert decide("auto", tool) is Decision.REVIEW
 
     def test_a_tools_own_gate_survives_every_level(self):
-        # The asymmetry the module exists to hold. A read that pauses its own calls (the
-        # global-recall gate) is within every level's scope, so no level *asked* for it to
-        # defer — and none of them may wave it through either.
+        # The asymmetry the module exists to hold, asked of a tool that really has a gate
+        # of its own: `corpus_retrieve` pauses a *global* recall from inside the call. It
+        # classifies as a read, so it is within every level's scope and no level asked for
+        # it to defer — and none of them may wave it through either.
+        for level in PERMISSION_LEVELS:
+            assert not beyond_scope(level, SELF_GATED_READ)
         for level in PERMISSION_LEVELS - {"auto"}:
-            assert decide(level, READ) is Decision.ASK
+            assert decide(level, SELF_GATED_READ) is Decision.ASK
         # Auto is the one level that answers it with something other than the operator,
         # and only because answering on their behalf is what choosing Auto means. It is
         # still answered, never skipped.
-        assert decide("auto", READ) is Decision.REVIEW
+        assert decide("auto", SELF_GATED_READ) is Decision.REVIEW
 
     def test_a_corrupt_level_decides_as_plan(self):
         assert decide("nonsense", HOST_EXEC) is Decision.BLOCK
@@ -240,10 +307,14 @@ class TestTheToolsetElevation:
         assert kinds[READ] == "function"
 
     async def test_a_tools_own_marking_is_never_taken_away(self):
-        # `mail_send` carries `requires_approval=True` of its own. Every level must still
-        # see it as needing approval, whatever its scope says.
-        for level in ("edit", "auto", "manual"):
-            assert (await _resolved_kinds(level))[EXTERNAL_EFFECT] == "unapproved"
+        # `skills_edit` classifies as a workspace write and carries `requires_approval=True`
+        # of its own. The witness has to be a tool the level would *not* have marked, or
+        # the gate could be deleted outright and the assertion would still pass on the
+        # level's own elevation.
+        assert not beyond_scope("edit", SELF_MARKED_WRITE)
+        assert not beyond_scope("auto", SELF_MARKED_WRITE)
+        for level in ("edit", "auto"):
+            assert (await _resolved_kinds(level))[SELF_MARKED_WRITE] == "unapproved"
 
 
 class TestTheThreadRemembers:
@@ -329,6 +400,68 @@ class TestTheLiveControl:
             detail = await client.get(f"/conversations/{conversation_id}")
             assert detail.json()["permission_level"] == "manual"
 
+    async def test_a_send_that_is_steered_into_a_live_run_leaves_the_level_alone(
+        self, monkeypatch
+    ):
+        """The stored level is what the *next* turn runs at, and it is what the composer
+        shows. A plain-text send onto a busy thread is queued into the run already going,
+        which keeps running at the level it started at — so moving the stored one would
+        leave the control reading a level nothing is running at."""
+        hang, started = asyncio.Event(), asyncio.Event()
+        _patch_hanging_model(monkeypatch, hang, started)
+        async with client_app() as (client, app):
+            first = await client.post(
+                "/chat", json={"prompt": "hi", "permission_level": "manual"}
+            )
+            conversation_id = first.json()["conversation_id"]
+            await started.wait()
+
+            steered = await client.post(
+                "/chat",
+                json={
+                    "prompt": "and this too",
+                    "conversation_id": conversation_id,
+                    "permission_level": "auto",
+                },
+            )
+            assert steered.status_code == 202
+            detail = await client.get(f"/conversations/{conversation_id}")
+            assert detail.json()["permission_level"] == "manual"
+
+            hang.set()
+            await app.state.runs.get(first.json()["run_id"]).wait()
+
+    async def test_a_rejected_send_leaves_the_level_alone(self, monkeypatch):
+        """The other way a send gets no turn of its own: a busy thread answers 409 to a
+        send carrying attachments, because steering is text-only."""
+        hang, started = asyncio.Event(), asyncio.Event()
+        _patch_hanging_model(monkeypatch, hang, started)
+        async with client_app() as (client, app):
+            upload = await client.post(
+                "/uploads", files={"file": ("note.txt", b"look at this", "text/plain")}
+            )
+            first = await client.post(
+                "/chat", json={"prompt": "hi", "permission_level": "manual"}
+            )
+            conversation_id = first.json()["conversation_id"]
+            await started.wait()
+
+            rejected = await client.post(
+                "/chat",
+                json={
+                    "prompt": "again",
+                    "conversation_id": conversation_id,
+                    "permission_level": "auto",
+                    "attachment_ids": [upload.json()["id"]],
+                },
+            )
+            assert rejected.status_code == 409
+            detail = await client.get(f"/conversations/{conversation_id}")
+            assert detail.json()["permission_level"] == "manual"
+
+            hang.set()
+            await app.state.runs.get(first.json()["run_id"]).wait()
+
     async def test_an_unknown_level_is_refused_at_the_edge(self, monkeypatch):
         patch_model_resolution(monkeypatch, output_text="ok")
         async with client_app() as (client, _app):
@@ -372,7 +505,10 @@ class TestTheLiveControl:
             )
             assert resp.json()["permission_level"] == "auto"
 
-    async def test_accepting_a_level_that_cannot_act_is_refused(self, monkeypatch):
+    async def test_accepting_offers_exactly_the_levels_that_can_act(self, monkeypatch):
+        """Which levels those are is the registry's answer, not a pair the route spells
+        out — so a fifth preset is a row in `services/permissions/levels.py` and this
+        surface follows it without being edited."""
         patch_model_resolution(monkeypatch, output_text="here is the plan")
         async with client_app() as (client, app):
             created = await client.post("/chat", json={"prompt": "plan it"})
@@ -380,10 +516,16 @@ class TestTheLiveControl:
             await collect_sse_events(client, created.json()["run_id"])
             await app.state.conversation_plans.replace("operator", conversation_id, _a_plan())
 
-            resp = await client.post(
-                f"/conversations/{conversation_id}/plan/accept", json={"level": "plan"}
-            )
-            assert resp.status_code == 422
+            for level in PERMISSION_LEVELS:
+                resp = await client.post(
+                    f"/conversations/{conversation_id}/plan/accept", json={"level": level}
+                )
+                if level in ACTING_PERMISSIONS:
+                    assert resp.status_code == 200, level
+                    assert resp.json()["permission_level"] == level
+                else:
+                    # Accepting a plan and staying read-only is a no-op with extra steps.
+                    assert resp.status_code == 422, level
 
     async def test_there_is_nothing_to_accept_without_a_plan(self, monkeypatch):
         patch_model_resolution(monkeypatch, output_text="no plan here")

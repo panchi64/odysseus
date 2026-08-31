@@ -75,11 +75,19 @@ def within_budget(files: list[ContextFile], budget: int) -> list[ContextFile]:
     Drops whole files from the *broad* end while the set overruns, which is the half of
     the rule that matters: dropping is lossless for what remains, truncating is not. The
     survivor is cut only if it is the last one standing and still too big.
+
+    Each file is measured once and the running total is adjusted as files leave, rather
+    than re-summed per iteration: the measurement is a full UTF-8 encode, and re-encoding
+    a monorepo's whole instruction set once per dropped file is quadratic work over
+    exactly the oversized input this function exists to handle.
     """
     kept = list(files)
-    while len(kept) > 1 and sum(_size(f) for f in kept) > budget:
+    sizes = [_size(f) for f in kept]
+    total = sum(sizes)
+    while len(kept) > 1 and total > budget:
+        total -= sizes.pop(0)
         kept.pop(0)
-    if kept and _size(kept[0]) > budget:
+    if kept and sizes[0] > budget:
         kept[0] = _truncate(kept[0], budget)
     return kept
 
