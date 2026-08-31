@@ -16,6 +16,12 @@
  * position source order would lose from — so the assertion can only pass on
  * specificity.
  *
+ * The second axis rests on the same kind of claim and gets the same treatment:
+ * `[data-theme=…][data-mode=…]` (0,2,0) has to beat `:root` for the shipped
+ * signatures, and the override sheet's `html[…][…]` (0,2,1) has to beat that in
+ * turn — which is what lets a session mode repaint the signature accent with no
+ * code running, and what lets an operator retune it per mode.
+ *
  * Also covers the requirement that made this feature worth having: that
  * `LedEdge`'s tones follow the operator's choice without `LedEdge` knowing the
  * feature exists.
@@ -24,7 +30,7 @@
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
-import { ACCENT_DEFAULTS } from "./accents";
+import { ACCENT_DEFAULTS, SESSION_ACCENT_DEFAULTS } from "./accents";
 
 const PORT = 39_882; // not 39_881 — boot.smoke.test.ts owns that one
 const ORIGIN = `http://localhost:${PORT}`;
@@ -34,6 +40,8 @@ const FRONTEND_ROOT = join(import.meta.dir, "..", "..", "..");
  *  be the default value coincidentally matching. */
 const INK_OVERRIDE = "#ff00ff";
 const PAPER_OVERRIDE = "#00ff00";
+/** Likewise for the session axis — nothing like any shipped signature. */
+const MODE_OVERRIDE = "#ffaa00";
 
 let dev: ReturnType<typeof Bun.spawn> | undefined;
 
@@ -135,12 +143,82 @@ test("an accent override beats the token definitions, and the LED follows", asyn
     );
     expect(led).toBe(INK_OVERRIDE);
 
-    // Flipping the mode must select the other rule on its own — this is what
+    // Flipping the theme must select the other rule on its own — this is what
     // buys `applyTheme` its ignorance of accents entirely.
     await wv.evaluate(
       "(function(){document.documentElement.dataset.theme='paper';return 'ok';})()",
     );
     expect(await readVar("--accent")).toBe(PAPER_OVERRIDE);
+  } finally {
+    wv.close();
+  }
+}, 120_000);
+
+test("the session mode selects the signature accent, and an override still wins", async () => {
+  const wv = new Bun.WebView({ headless: true });
+  try {
+    await wv.navigate(`${ORIGIN}/`);
+    await waitFor(
+      "#app to mount",
+      async () =>
+        Number(
+          await wv.evaluate(
+            "document.getElementById('app')?.childElementCount ?? 0",
+          ),
+        ) > 0,
+      30_000,
+    );
+
+    const readVar = async (name: string): Promise<string> =>
+      String(
+        await wv.evaluate(
+          `getComputedStyle(document.documentElement).getPropertyValue('${name}').trim()`,
+        ),
+      );
+    const setMode = async (value: string): Promise<void> => {
+      await wv.evaluate(
+        `(function(){document.documentElement.dataset.mode='${value}';return 'ok';})()`,
+      );
+    };
+
+    // The second axis is a claim about the cascade in the same way the first one
+    // is, and no unit test can check it: `[data-theme=…][data-mode=…]` is (0,2,0)
+    // and has to beat `:root` (0,1,0) for the shipped signatures, while the
+    // override sheet's `html[…][…]` (0,2,1) has to beat *that*. If any of it were
+    // false the feature would look correct until a build reordered a stylesheet.
+    await setMode("normal");
+    expect(await readVar("--accent")).toBe(ACCENT_DEFAULTS.phosphor.accent);
+
+    await setMode("code");
+    expect(await readVar("--accent")).toBe(
+      SESSION_ACCENT_DEFAULTS.phosphor.code,
+    );
+
+    await setMode("research");
+    expect(await readVar("--accent")).toBe(
+      SESSION_ACCENT_DEFAULTS.phosphor.research,
+    );
+
+    // First child of <head> again, so only specificity can carry it — and note
+    // the base-accent rule is present too: a mode signature has to outrank a
+    // hand-set base accent in the same theme, which is the (0,2,1) vs (0,1,1)
+    // claim `serializeOverrides` relies on.
+    await wv.evaluate(`(function(){
+      var s = document.createElement('style');
+      s.id = 'ody-accent-overrides';
+      s.textContent =
+        'html[data-theme="phosphor"]{--accent:${INK_OVERRIDE};}' +
+        'html[data-theme="phosphor"][data-mode="research"]{--accent:${MODE_OVERRIDE};}';
+      document.head.insertBefore(s, document.head.firstChild);
+      return 'ok';
+    })()`);
+
+    expect(await readVar("--accent")).toBe(MODE_OVERRIDE);
+
+    // And a mode with no rule of its own falls back to the base accent, override
+    // included — which is what makes Normal *be* the base rather than a copy.
+    await setMode("normal");
+    expect(await readVar("--accent")).toBe(INK_OVERRIDE);
   } finally {
     wv.close();
   }

@@ -57,6 +57,13 @@ class ProjectCreate(CamelModel):
     root_path: str
 
 
+class ProjectEnsure(CamelModel):
+    """A directory, with no name — the name is the directory's own. Naming a project is a
+    thing the operator may do later, not a form standing between them and starting work."""
+
+    root_path: str
+
+
 class ProjectUpdate(CamelModel):
     name: str | None = None
     base_ref: str | None = None
@@ -103,6 +110,24 @@ async def list_projects(request: Request, include_archived: bool = False) -> Pro
 async def create_project(request: Request, body: ProjectCreate) -> ProjectOut:
     try:
         return _out(await deps.projects(request).create(OPERATOR_ID, body.name, body.root_path))
+    except InvalidInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/ensure", response_model=ProjectOut)
+async def ensure_project(request: Request, body: ProjectEnsure) -> ProjectOut:
+    """The project for a directory, created on first use.
+
+    What lets a code session start from *any* directory instead of from a project the
+    operator had to file first. It is idempotent by the directory itself, so pointing at
+    the same folder twice returns the same project and the same worktree machinery rather
+    than a second row cutting a second branch from one repository.
+
+    Declared **before** ``/{project_id}``: FastAPI matches in declaration order, so the
+    dynamic route would otherwise swallow ``ensure`` as an id and answer 404.
+    """
+    try:
+        return _out(await deps.projects(request).ensure_for_path(OPERATOR_ID, body.root_path))
     except InvalidInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

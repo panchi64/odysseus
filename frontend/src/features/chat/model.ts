@@ -2,7 +2,14 @@
  *  types, `data.ts` maps backend responses/events to them — so screens don't
  *  change when the mapping behind them does. */
 
+import type { SessionMode } from "~/lib/modes";
 import type { ContextWindow } from "~/lib/stream";
+
+/** The mode vocabulary lives in `~/lib/modes` — the theme layer and the app shell
+ *  need it too, and a type owned by this feature and imported by the design system
+ *  would be a dependency pointing the wrong way. Re-exported here so chat code can
+ *  keep reading its seam types from one place. */
+export type { SessionMode };
 
 /** The context-window state, derived and emitted by the backend (live over the
  *  run stream, or reconstructed on conversation load). Purely a carrier — the
@@ -433,6 +440,12 @@ export interface ChatSession {
   /** Workspace snapshots captured across the thread (newest last), seeding the
    *  viewport's git-style history on load. */
   snapshots: ViewSnapshotRef[];
+  /** What kind of work this thread is, so opening it moves the rail and the
+   *  signature accent to match rather than leaving them on the last thread's. */
+  mode: SessionMode;
+  /** How far the model may go in it. Seeded on load so the composer's control comes
+   *  back where the operator left it instead of at the default. */
+  permission: PermissionLevel;
 }
 
 /** The backend's status for the run driving a thread, when one is live. The
@@ -452,13 +465,74 @@ export interface ChatSummary {
   model?: string;
   /** Set while a run drives this thread; absent when it's idle. */
   activity?: ChatActivity;
+  /** What kind of work this thread is. The rail shows one mode at a time, so a
+   *  summary that didn't carry it could not be filed anywhere. */
+  mode: SessionMode;
+  /** The **basename** of the directory a code thread works in — the heading the rail
+   *  groups it under. Absent for every other mode, and for a code thread whose
+   *  project has since been deleted. Never a path: the backend resolves it and the
+   *  full path stays there. */
+  workspace?: string;
 }
 
-/** What kind of work a thread is — the backend's `services/modes.py` vocabulary, sent
- *  verbatim on the send that creates the conversation and never translated on the way.
- *  `normal` and `research` work in the conversation's own sandbox container; `code`
- *  works in a git worktree of a project's repository on the operator's machine. */
-export type SessionMode = "normal" | "research" | "code";
+/** How far the model may go in a thread — the backend's `services/permissions`
+ *  vocabulary, and the second axis of a conversation. Unlike the mode it **moves**:
+ *  it is persisted on the thread and changed by sending at a different level, so a
+ *  reload comes back where the operator left it. */
+export type PermissionLevel = "plan" | "manual" | "edit" | "auto";
+
+export interface PermissionLevelSpec {
+  id: PermissionLevel;
+  /** Sentence case — the interface naming the thing to the operator. */
+  label: string;
+  /** What the model may do, said as the operator would say it. */
+  description: string;
+}
+
+/** The four, ordered by how much rope they give — the same order the plan's table
+ *  reads, so moving down the list is always moving towards *less*. */
+export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Read only. Ends in a plan for you to accept.",
+  },
+  {
+    id: "manual",
+    label: "Manual",
+    description: "Asks before anything that isn't reading.",
+  },
+  {
+    id: "edit",
+    label: "Edit",
+    description: "Works in its own workspace; asks to reach past it.",
+  },
+  {
+    id: "auto",
+    label: "Auto",
+    description: "Acts on its own, reviewed, and asks only on doubt.",
+  },
+];
+
+/** The level a thread runs at when nothing says otherwise — the backend's
+ *  `DEFAULT_PERMISSION`, which is also each mode's default today. */
+export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = "edit";
+
+/** Whatever the wire said, as a level this build has a rule for.
+ *
+ *  The two failure directions are different on purpose. **Nothing** means the thread
+ *  has no level yet — a fresh conversation, or a backend that predates the column —
+ *  and gets the default. A value that is **present and unreadable** is a thread
+ *  claiming something this build cannot honour, so it degrades to the level that does
+ *  the least, which is the direction the backend degrades in too. Treating the two
+ *  the same would either put every new thread in read-only or let an unknown string
+ *  widen what the model may do. */
+export function permissionLevel(value: string | undefined): PermissionLevel {
+  if (!value) return DEFAULT_PERMISSION_LEVEL;
+  return PERMISSION_LEVELS.some((spec) => spec.id === value)
+    ? (value as PermissionLevel)
+    : "plan";
+}
 
 /** One decision in an approval response (mirrors the backend's shape). */
 export interface ApprovalDecision {

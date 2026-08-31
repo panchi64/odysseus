@@ -184,15 +184,7 @@ class ProjectStore:
         return row
 
     async def create(self, owner_id: str, name: str, root_path: str) -> ProjectView:
-        root = Path(root_path).expanduser()
-        if not root.is_absolute():
-            # A browser cannot produce an absolute host path, so the operator either
-            # typed one or used the native picker. A relative path here would resolve
-            # against the *server's* cwd, which is never what they meant.
-            raise InvalidInputError("project path must be absolute")
-        if not root.is_dir():
-            raise InvalidInputError(f"no such directory: {root}")
-        resolved = root.resolve()
+        resolved = self._resolve_root(root_path)
         sealed = self._vault.encrypt_str(str(resolved))
 
         def work(session: Session) -> Project:
@@ -207,6 +199,85 @@ class ProjectStore:
             return row
 
         return await self._view(await in_session(self._db, work))
+
+    @staticmethod
+    def _resolve_root(root_path: str) -> Path:
+        """The absolute, symlink-resolved directory a caller named, or a refusal.
+
+        Split out of :meth:`create` because :meth:`ensure_for_path` has to compare against
+        the *same* normalisation the stored rows were written with — two spellings of one
+        directory (a symlink, a trailing slash, ``~``) would otherwise file as two
+        projects and cut two worktrees from the same repository.
+        """
+        root = Path(root_path).expanduser()
+        if not root.is_absolute():
+            # A browser cannot produce an absolute host path, so the operator either
+            # typed one or used the native picker. A relative path here would resolve
+            # against the *server's* cwd, which is never what they meant.
+            raise InvalidInputError("project path must be absolute")
+        if not root.is_dir():
+            raise InvalidInputError(f"no such directory: {root}")
+        return root.resolve()
+
+    async def ensure_for_path(self, owner_id: str, root_path: str) -> ProjectView:
+        """The project for this directory, creating one the first time it is used.
+
+        A project is the storage and the git machinery a code thread needs; it was never
+        meant to be a thing the operator files paperwork for before they can start
+        working. This is the difference: point at any directory and it *is* a project,
+        named after itself, with whatever git facts it already has.
+
+        Matching is on the **decrypted** path rather than on the ciphertext, which is not
+        an optimisation to skip: sealing is randomised, so the same directory encrypts to
+        a different string every time and a ciphertext comparison would create a second
+        row for a directory that already has one. The backup importer resolves the
+        ``root_path_enc`` natural key the same way, for the same reason.
+
+        Never revives an archived project silently — an archived row still matches, and
+        returning it archived would leave the operator with a session in a project their
+        listing does not show. It is unarchived, because pointing at the directory again
+        is exactly the act of saying they work here after all.
+
+        Creating a row is the *only* thing this does to the directory. Whether it is a
+        repository stays a fact we read (:func:`probe_repo`, on every view) and never one
+        we establish — ``git init`` remains the separate, explicitly confirmed act it has
+        always been, so the returned view is what tells the caller a repository is still
+        needed.
+        """
+        resolved = self._resolve_root(root_path)
+
+        def find(session: Session) -> Project | None:
+            rows = session.exec(select(Project).where(Project.owner_id == owner_id)).all()
+            target = str(resolved)
+            return next(
+                (r for r in rows if self._vault.decrypt_str(r.root_path_enc) == target), None
+            )
+
+        existing = await in_session(self._db, find)
+        if existing is not None:
+            if not existing.archived:
+                return await self._view(existing)
+            return await self.update(owner_id, existing.id, archived=False)
+
+        return await self.create(owner_id, resolved.name, str(resolved))
+
+    async def workspace_names(self, owner_id: str) -> dict[str, str]:
+        """Each project id mapped to the **basename** of its directory.
+
+        What the sidebar groups code threads under. Deliberately not the path: a
+        conversation listing is the one screen that is always on display, and the full
+        path names the operator's clients across the whole width of the rail. The
+        basename is the part that identifies the work.
+
+        Cheaper than :meth:`list` on purpose — no git probe, which shells out once per
+        project and would put N subprocesses behind every refresh of the thread list.
+        """
+
+        def work(session: Session) -> list[Project]:
+            return list(session.exec(select(Project).where(Project.owner_id == owner_id)).all())
+
+        rows = await in_session(self._db, work)
+        return {row.id: Path(self._vault.decrypt_str(row.root_path_enc)).name for row in rows}
 
     async def update(
         self,

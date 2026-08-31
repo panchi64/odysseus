@@ -92,6 +92,99 @@ class TestCatalog:
             await store.get("someone-else", view.id)
 
 
+class TestEnsureForPath:
+    """Pointing at a directory *is* filing it, and pointing twice files it once.
+
+    The idempotence is not tidiness: a second row for the same directory would cut a
+    second set of worktrees from one repository, and the operator would have two projects
+    that disagree about the same tree.
+    """
+
+    async def test_creates_a_project_named_after_the_directory(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "odysseus"
+        work.mkdir()
+
+        view = await store.ensure_for_path("operator", str(work))
+
+        assert view.name == "odysseus"
+        assert view.root_path == str(work.resolve())
+        # Never establishes a repository — that stays the separately confirmed act, and
+        # the view is what tells the caller one is still needed.
+        assert view.git_initialized is False
+        assert view.probe.is_git_repo is False
+
+    async def test_the_same_directory_returns_the_same_project(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+
+        first = await store.ensure_for_path("operator", str(work))
+        # A trailing slash is the same directory; the match is on the resolved path, so
+        # it must not produce a second row.
+        second = await store.ensure_for_path("operator", f"{work}/")
+
+        assert second.id == first.id
+        assert len(await store.list("operator")) == 1
+
+    async def test_it_matches_a_project_that_was_created_by_hand(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        named = await store.create("operator", "Client work", str(work))
+
+        found = await store.ensure_for_path("operator", str(work))
+
+        # The operator's own name survives — this adopts the existing project rather
+        # than renaming it to the directory.
+        assert found.id == named.id
+        assert found.name == "Client work"
+
+    async def test_an_archived_project_comes_back_unarchived(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        stale = await store.create("operator", "Work", str(work))
+        await store.update("operator", stale.id, archived=True)
+
+        revived = await store.ensure_for_path("operator", str(work))
+
+        # Returning it archived would leave a session in a project the listing hides.
+        assert revived.id == stale.id
+        assert revived.archived is False
+
+    async def test_another_owners_project_is_not_adopted(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir()
+        theirs = await store.create("someone-else", "Theirs", str(work))
+
+        mine = await store.ensure_for_path("operator", str(work))
+
+        assert mine.id != theirs.id
+
+    async def test_a_missing_directory_is_still_refused(self, tmp_path):
+        store = await _store(tmp_path)
+        # Removing the ceremony does not remove the check: a path that is not a
+        # directory cannot be worked in, and inventing a project for it would fail
+        # later, further from the operator's action.
+        with pytest.raises(InvalidInputError):
+            await store.ensure_for_path("operator", str(tmp_path / "nope"))
+
+    async def test_workspace_names_are_basenames_and_never_paths(self, tmp_path):
+        store = await _store(tmp_path)
+        work = tmp_path / "acme-api"
+        work.mkdir()
+        view = await store.ensure_for_path("operator", str(work))
+
+        names = await store.workspace_names("operator")
+
+        # The sidebar groups on this and is permanently on screen — the directory the
+        # operator works in must not spell out where it lives.
+        assert names == {view.id: "acme-api"}
+        assert str(tmp_path) not in names[view.id]
+
+
 class TestDeletingAProject:
     """Deleting a project deletes a **label**, not the work filed under it."""
 
@@ -244,6 +337,49 @@ class TestRoutes:
             assert activated["activeId"] == pid
 
             assert (await client.post("/projects/deactivate")).json()["activeId"] is None
+
+    async def test_ensure_files_a_directory_and_is_idempotent(self, tmp_path):
+        async with client_app() as (client, _app):
+            work = tmp_path / "acme-api"
+            work.mkdir()
+
+            first = await client.post("/projects/ensure", json={"rootPath": str(work)})
+            assert first.status_code == 200, first.text
+            assert first.json()["name"] == "acme-api"
+
+            second = await client.post("/projects/ensure", json={"rootPath": str(work)})
+            assert second.json()["id"] == first.json()["id"]
+            assert len((await client.get("/projects")).json()["projects"]) == 1
+
+    async def test_ensure_is_not_swallowed_by_the_id_route(self, tmp_path):
+        async with client_app() as (client, _app):
+            # `/projects/{project_id}` is a GET and `/projects/ensure` a POST, but the
+            # two share a path shape — declaration order is what keeps `ensure` from
+            # being read as an id, and this is what would catch a reorder.
+            resp = await client.post("/projects/ensure", json={"rootPath": str(tmp_path / "no")})
+            assert resp.status_code == 422, resp.text
+
+    async def test_a_code_thread_carries_its_workspace_into_the_listing(self, tmp_path):
+        async with client_app() as (client, app):
+            work = tmp_path / "acme-api"
+            work.mkdir()
+            ensured = await client.post("/projects/ensure", json={"rootPath": str(work)})
+            pid = ensured.json()["id"]
+
+            def seed(session: Session) -> None:
+                session.add(
+                    Conversation(id="c-code", owner_id="operator", project_id=pid, mode="code")
+                )
+                session.commit()
+
+            await in_session(app.state.db_engine, seed)
+
+            listing = await client.get("/conversations", headers={"X-Ody-Project": "all"})
+            row = next(c for c in listing.json() if c["id"] == "c-code")
+            # The rail groups on these two and nothing else — the mode picks the section,
+            # the workspace names it, and the path stays on the server.
+            assert row["mode"] == "code"
+            assert row["workspace"] == "acme-api"
 
     async def test_the_project_toolset_is_in_the_catalog(self):
         async with client_app() as (_client, app):

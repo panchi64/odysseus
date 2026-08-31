@@ -248,7 +248,11 @@ The base is pure neutral. Both modes are built on true black and true white — 
 
 > **The signature accent is mode-dependent and that is intentional.** Phosphor green is the product's lineage and it belongs on black; on white it turns acidic and illegible. Cerulean is the same idea executed for a light substrate — cool, precise, instrument-like. `accent-nominal` stays green in both modes because green *means* "OK" independently of the theme.
 
-> **These five hexes are defaults, not constants.** The operator can set any of them, per mode, from Settings → Appearance (`ui/theme/accent-store.ts`, which overrides the raw `--accent*` custom properties through one scoped stylesheet — so every utility, `shadow-accent`, and every `LedEdge` tone follows without knowing the feature exists).
+> **The signature accent also carries the session mode, and only the signature accent.** A thread is Normal, Research or Code, and the root carries that as `data-mode` beside `data-theme`. Normal is the base value above; Research is cyan (`#3DDBD9` / `#0E7490`) and Code violet (`#B98CFF` / `#6D28D9`), declared as `[data-theme=…][data-mode=…]` rules in tokens.css. The signature token *is* the primary-focus token — the live run, the composer edge, the blocking approval — so binding it to the mode makes the whole window say which kind of work is open without adding a badge to anything.
+>
+> The other four do **not** move, and must not. They are a closed set of meanings; re-pointing `accent-alert` per mode would make red mean one thing in a code thread and another in a research thread, which is precisely the failure the closed set exists to prevent. All six (theme, mode) signatures clear §12's floor, pinned by `ui/theme/contrast.test.ts`.
+
+> **These five hexes are defaults, not constants.** The operator can set any of them, per mode, from Settings → Appearance (`ui/theme/accent-overrides.ts`, which overrides the raw `--accent*` custom properties through one scoped stylesheet — so every utility, `shadow-accent`, and every `LedEdge` tone follows without knowing the feature exists). The signature row is edited once per session mode; the other four once per theme.
 >
 > **What that does and does not relax.** The *set* of accents is closed and the meaning of each is fixed — rules 1–5 below are untouched, because they govern the token, not the hue. An operator choosing a different red for `accent-alert` has restyled "error"; they have not made `accent-alert` available for decoration.
 >

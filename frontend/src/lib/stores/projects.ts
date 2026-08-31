@@ -149,6 +149,19 @@ export async function createProject(
   return created;
 }
 
+/** The project for a directory, filed on first use.
+ *
+ *  What lets a code session start from *any* folder instead of from a project the
+ *  operator had to create first. Idempotent by the directory itself — the backend
+ *  matches on the resolved path — so pointing at the same place twice returns the
+ *  same project and the same worktree machinery rather than a second row cutting a
+ *  second branch from one repository. */
+export async function ensureProjectForPath(rootPath: string): Promise<Project> {
+  const project = await api.post<Project>("/projects/ensure", { rootPath });
+  refreshProjects();
+  return project;
+}
+
 export async function updateProject(
   id: string,
   patch: { name?: string; baseRef?: string; archived?: boolean },

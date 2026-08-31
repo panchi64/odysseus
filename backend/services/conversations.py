@@ -472,6 +472,15 @@ class ConversationSummaryView:
     # The model the conversation last ran on (the most recent response's
     # model_name). None for a conversation with no answer yet.
     model: str | None = None
+    # What kind of work this thread is, normalised through the mode registry. On the
+    # *listing* projection and not only the detail, because the sidebar's shape depends
+    # on it: the rail shows one mode at a time and groups code threads by the directory
+    # they work in, neither of which it can do by opening every thread.
+    mode: str = DEFAULT_MODE
+    # The project a code thread works in, or None for an unfiled thread. The id, not the
+    # path — the route resolves it to a directory basename, which is the only part of a
+    # host path a listing should ever carry.
+    project_id: str | None = None
 
 
 def _model_of(message: ModelMessage) -> str | None:
@@ -1055,6 +1064,11 @@ class ConversationStore:
             message_count=count,
             preview=preview[:140] if preview else None,
             model=model,
+            # Normalised through the registry for the same reason `binding` does it: the
+            # column is a plain string, and a listing that grouped rows under a mode this
+            # build has no rule for would show the operator a section they cannot reach.
+            mode=mode_spec(conversation.mode).id,
+            project_id=conversation.project_id,
         )
 
     async def list_conversations(

@@ -35,21 +35,34 @@ export { ThemeProvider } from "./theme/ThemeProvider";
 export {
   ACCENT_TOKENS,
   ACCENT_DEFAULTS,
+  SESSION_ACCENT_DEFAULTS,
+  hasSessionSignature,
   type AccentToken,
   type AccentTokenSpec,
 } from "./theme/accents";
 export {
   accentOverrides,
-  accentValue,
   hasAccentOverrides,
-  isAccentOverridden,
-  resetAccent,
   resetAllAccents,
   restoreAccents,
-  setAccent,
+  serializeOverrides,
   ACCENT_STORAGE_KEY,
   type AccentOverrides,
+  type SessionAccentOverrides,
+} from "./theme/accent-overrides";
+export {
+  accentValue,
+  isAccentOverridden,
+  resetAccent,
+  setAccent,
 } from "./theme/accent-store";
+export {
+  isSessionAccentOverridden,
+  resetSessionAccent,
+  sessionAccentValue,
+  setSessionAccent,
+} from "./theme/session-accent-store";
+export { applySessionMode } from "./theme/session-mode";
 export {
   accentContrast,
   contrastRatio,

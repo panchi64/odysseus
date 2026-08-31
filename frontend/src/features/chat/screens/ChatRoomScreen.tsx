@@ -54,7 +54,7 @@ import { createComposerAttachments } from "~/features/uploads/data";
 import { BrowserPanel } from "../components/BrowserPanel";
 import { ViewportPanel } from "../components/ViewportPanel";
 import { BranchChip } from "../components/BranchChip";
-import { ModeControl } from "../components/ModeControl";
+import { PermissionControl } from "../components/PermissionControl";
 import { ContextRing } from "../components/ContextRing";
 import { ModelPicker } from "~/app/ModelPicker";
 import { claimAutoOpen, collectViewItems, type ViewItem } from "../viewport";
@@ -126,10 +126,20 @@ export function ChatRoomScreen(): JSX.Element {
     warmResolved,
     markWarmResolved,
     mode,
-    setMode,
     codeProjectId,
-    setCodeProjectId,
+    permission,
+    setPermission,
   } = mainChat();
+
+  /** Why SEND is unavailable, or null. The model/context gate, plus the one thing
+   *  only this screen can know: a code thread is cut from a directory's repository,
+   *  so a send that names no directory is a turn the backend will refuse with a 422.
+   *  Saying so before the message is committed is the same courtesy the context gate
+   *  already extends — the alternative is losing a typed message to an error. */
+  const sendBlocked = (): string | null =>
+    mode() === "code" && currentId() === null && !codeProjectId()
+      ? "Choose a directory for this code session"
+      : sendBlockedReason();
 
   // Follow the stream: keep the transcript pinned to the bottom while the answer
   // arrives, yield the moment the operator scrolls up to read back, and re-attach
@@ -962,23 +972,23 @@ export function ChatRoomScreen(): JSX.Element {
               onSend={(text, ids) => void stream.send(text, ids)}
               // The backend refuses a turn it can't keep inside a context window; this
               // is the same stop, arriving before the message is committed to it.
-              sendBlocked={sendBlockedReason()}
+              sendBlocked={sendBlocked()}
               attachments={attachments}
               storageKey={composerKey()}
               prefill={stream.undeliveredDraft()}
               onPrefillConsumed={stream.clearUndeliveredDraft}
               controls={
-                // Only while the thread is still unsaved: the binding is set once,
-                // at creation, and an existing code thread shows its branch in the
-                // status strip instead.
-                <Show when={currentId() === null}>
-                  <ModeControl
-                    mode={mode()}
-                    onModeChange={setMode}
-                    projectId={codeProjectId()}
-                    onProjectChange={setCodeProjectId}
-                  />
-                </Show>
+                // Ungated, unlike the mode picker that used to sit here. A mode is
+                // set once at creation — a code thread owns a branch, and
+                // re-pointing it would strand that branch — so that control was
+                // only shown while a thread was unsaved, and it now lives beside
+                // the thread list. A level is the opposite: it is the operator's
+                // live control over a thread already in flight, so it is offered at
+                // every moment of one, and it rides the next send.
+                <PermissionControl
+                  level={permission()}
+                  onLevelChange={setPermission}
+                />
               }
               trailing={
                 <>

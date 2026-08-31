@@ -27,7 +27,8 @@ import {
   type PlanItem,
   type RunEvent,
 } from "~/lib/stream";
-import { toast } from "~/ui";
+import { applySessionMode, toast } from "~/ui";
+import { DEFAULT_SESSION_MODE, sessionMode } from "~/lib/modes";
 import type {
   ActiveRun,
   ApprovalDecision,
@@ -53,6 +54,11 @@ import type {
   ToolInvocation,
   ViewSnapshotRef,
   ViewVersionBlock,
+} from "./model";
+import {
+  DEFAULT_PERMISSION_LEVEL,
+  permissionLevel,
+  type PermissionLevel,
 } from "./model";
 import { describeToolArgs, describeToolResult } from "./toolSummary";
 
@@ -204,6 +210,11 @@ interface ConversationSummaryDTO {
    *  `awaiting_input`), or null when idle. Registry-derived server-side — the
    *  thread list renders it without opening each conversation. */
   activity?: ChatActivity | null;
+  /** The thread's mode, and — for a code thread — the basename of the directory it
+   *  works in. Both on the *listing* because the rail's shape depends on them: it
+   *  shows one mode at a time and groups code threads by workspace. */
+  mode?: string | null;
+  workspace?: string | null;
 }
 
 /** One image on the wire. The REST detail and the SSE `tool.completed` event carry the
@@ -303,6 +314,10 @@ interface ConversationDetailDTO extends ConversationSummaryDTO {
   /** Workspace snapshots captured across the thread (newest last). Conversation-
    *  scoped — not folded onto a message — so the viewport seeds them separately. */
   snapshots?: ViewSnapshotDTO[];
+  /** How far the model may go in this thread. Always populated by the backend, which
+   *  resolves it through its own registry — so a thread that predates the column
+   *  arrives as the level it was effectively running at rather than as nothing. */
+  permission_level?: string | null;
 }
 
 function toActiveRun(dto: ActiveRunDTO | null | undefined): ActiveRun | null {
@@ -361,6 +376,8 @@ function toSummary(dto: ConversationSummaryDTO): ChatSummary {
     preview: dto.preview ?? undefined,
     model: dto.model ?? undefined,
     activity: dto.activity ?? undefined,
+    mode: sessionMode(dto.mode ?? undefined),
+    workspace: dto.workspace ?? undefined,
   };
 }
 
@@ -649,6 +666,8 @@ async function fetchSession(id: string): Promise<ChatSession> {
     stats: dto.stats ? toStats(dto.stats) : null,
     activeRun: toActiveRun(dto.active_run),
     snapshots: (dto.snapshots ?? []).map(toViewSnapshotRef),
+    mode: sessionMode(dto.mode ?? undefined),
+    permission: permissionLevel(dto.permission_level ?? undefined),
   };
 }
 
@@ -944,6 +963,11 @@ export interface ChatStreamOptions {
    *  and the backend owns it from then on. */
   mode?: () => SessionMode;
   projectId?: () => string | undefined;
+  /** How far the model may go this turn — and from this turn onwards. Unlike the
+   *  mode, sent on **every** send: the level is the operator's live control, so
+   *  switching it mid-thread is a plain message rather than a separate call, and the
+   *  backend persists whatever the last send named. */
+  permission?: () => PermissionLevel;
   /** The loaded conversation's context-window state, seeded alongside its history
    *  so an existing thread shows window fullness before its next turn runs. */
   initialContext?: () => ContextUsage | null | undefined;
@@ -2117,6 +2141,10 @@ export function createChatStream(
         // sending them again would be a second source for one fact.
         mode: wasNew ? options.mode?.() : undefined,
         project_id: wasNew ? options.projectId?.() : undefined,
+        // The level, on the other hand, is sent every time: it is the one binding
+        // fact that moves, and the composer's control moves it by being read here on
+        // the next send rather than by a write of its own.
+        permission_level: options.permission?.(),
         continues_message_id: continuesMessageId,
       });
     } catch (err) {
@@ -2680,14 +2708,28 @@ export interface MainChat {
    *  flag is part of the singleton so it survives navigation — see the screen. */
   warmResolved: Accessor<boolean>;
   markWarmResolved: () => void;
-  /** What the *next new* conversation will be. Lives on the singleton rather than
-   *  the screen because the send path reads it, and because a composer draft that
-   *  survives navigation should keep the mode it was written for. Read only when a
-   *  send creates the thread; the binding is the backend's from then on. */
+  /** **The mode context** — which kind of work the operator is looking at.
+   *
+   *  One signal doing three jobs, because they are one fact: it decides what the
+   *  *next new* conversation will be, which threads the rail lists, and which
+   *  signature accent the whole window paints. Opening an existing thread sets it
+   *  from that thread, so the three never disagree with what is on screen.
+   *
+   *  Lives on the singleton rather than the screen because the send path reads it,
+   *  the rail reads it, and a composer draft that survives navigation should keep
+   *  the mode it was written for. A saved thread's *stored* binding stays the
+   *  backend's — this is only what the client is currently pointed at. */
   mode: Accessor<SessionMode>;
   setMode: (mode: SessionMode) => void;
   codeProjectId: Accessor<string | undefined>;
   setCodeProjectId: (id: string | undefined) => void;
+  /** How far the model may go in the open thread. Unlike the mode this is sent on
+   *  every turn and persisted per conversation, so the composer's control moves it
+   *  mid-thread; seeded from the loaded thread so a reload comes back where the
+   *  operator left it, and reset to the mode's default when a new thread is
+   *  staged. */
+  permission: Accessor<PermissionLevel>;
+  setPermission: (level: PermissionLevel) => void;
 }
 
 let _mainChat: MainChat | undefined;
@@ -2697,9 +2739,12 @@ export function mainChat(): MainChat {
   if (_mainChat) return _mainChat;
   return (_mainChat = createRoot(() => {
     const [currentId, setCurrentId] = createSignal<string | null>(null);
-    const [mode, setMode] = createSignal<SessionMode>("normal");
+    const [mode, setMode] = createSignal<SessionMode>(DEFAULT_SESSION_MODE);
     const [codeProjectId, setCodeProjectId] = createSignal<string | undefined>(
       undefined,
+    );
+    const [permission, setPermission] = createSignal<PermissionLevel>(
+      DEFAULT_PERMISSION_LEVEL,
     );
     const session = useChatSession(currentId);
     const stream = createChatStream(
@@ -2726,8 +2771,33 @@ export function mainChat(): MainChat {
         // Read only when a send creates the conversation.
         mode,
         projectId: codeProjectId,
+        // Read on every send — the level is the one binding fact that moves.
+        permission,
       },
     );
+    // Opening a thread points the client at what that thread *is*: its mode moves the
+    // rail and the signature accent, its level seats the composer's control. Both are
+    // seeded from the load rather than left on the previous thread's values, which is
+    // what stops the window from claiming to be in a code session while a normal one
+    // is on screen. Staging a new thread (`currentId === null`) leaves the mode where
+    // the operator put it — that choice is the whole point of the switch — and returns
+    // the level to the default, since there is no thread yet to have a level.
+    createEffect(() => {
+      if (currentId() === null) {
+        setPermission(DEFAULT_PERMISSION_LEVEL);
+        return;
+      }
+      if (session.loading) return;
+      const loaded = session();
+      if (!loaded) return;
+      setMode(loaded.mode);
+      setPermission(loaded.permission);
+    });
+    // The mode context, stamped on the document root so the cascade paints the
+    // signature accent for it. A DOM write rather than a rendered attribute because
+    // the target is `<html>`, which no component owns — the same shape `applyTheme`
+    // has for the other axis.
+    createEffect(() => applySessionMode(mode()));
     // Reattach when the tab returns to the foreground or the network comes back.
     // A backgrounded tab throttles the SSE reader until it stalls; on return we
     // replay from the last folded seq — resuming a still-live run or folding the
@@ -2791,6 +2861,8 @@ export function mainChat(): MainChat {
       setMode,
       codeProjectId,
       setCodeProjectId,
+      permission,
+      setPermission,
     } satisfies MainChat;
   }));
 }

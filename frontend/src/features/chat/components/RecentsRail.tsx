@@ -21,7 +21,7 @@ const ACTIVITY_POLL_MS = 3000;
  *  first. */
 export function RecentsRail(): JSX.Element {
   const sessions = useChatSessions();
-  const { currentId, setCurrentId, stream } = mainChat();
+  const { currentId, setCurrentId, stream, mode, setMode } = mainChat();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -52,6 +52,12 @@ export function RecentsRail(): JSX.Element {
     );
   });
 
+  /** The rail shows one mode at a time. Filtering here rather than inside the list
+   *  keeps the list a layout: it arranges what it is handed and does not decide
+   *  what belongs in it. Held as `undefined` while the fetch is in flight, so the
+   *  list keeps rendering its loading state rather than an empty one. */
+  const inMode = createMemo(() => rows()?.filter((s) => s.mode === mode()));
+
   // Poll only while something is actually running — an idle rail makes no
   // requests, and the poll stops on its own once the last edge clears. Read off
   // `rows`, so the echo above opens the gate too: that is what lets the poll
@@ -67,6 +73,14 @@ export function RecentsRail(): JSX.Element {
     if (location.pathname !== "/chat") navigate("/chat");
   };
   const select = (id: string) => {
+    // Point the client at the thread's own mode before opening it. It is a no-op
+    // from the rail (which only lists the current mode), and it is not from a
+    // notification's deep link or a restored selection — where without it the
+    // window would keep the previous mode's accent while showing another mode's
+    // thread. The loaded thread reasserts this either way; doing it here means the
+    // rail does not flash the wrong section on the way.
+    const opened = rows()?.find((s) => s.id === id);
+    if (opened) setMode(opened.mode);
     setCurrentId(id);
     toChat();
   };
@@ -95,7 +109,8 @@ export function RecentsRail(): JSX.Element {
           a divider under the header. The header's own spacing separates them. */}
       <div class="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
         <SessionList
-          sessions={rows}
+          sessions={inMode}
+          mode={mode()}
           currentId={currentId()}
           onSelect={select}
         />

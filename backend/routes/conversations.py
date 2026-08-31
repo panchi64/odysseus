@@ -10,6 +10,7 @@ as a render-ready projection — the durable record stays full-fidelity
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -32,7 +33,7 @@ from services.conversations import (
     conversation_totals,
     last_request_usage,
 )
-from services.modes import mode_spec
+from services.modes import DEFAULT_MODE, mode_spec
 from services.permissions import DEFAULT_PERMISSION
 from services.plans import accepted_plan_prompt, plan_payload
 from services.settings_store import (
@@ -62,6 +63,16 @@ class ConversationSummary(BaseModel):
     # busy-vs-needs-you distinction the nav rail already draws (an `awaiting_input`
     # run is parked on the operator's approval decision, not merely streaming).
     activity: str | None = None
+    # What kind of work this thread is. The sidebar shows one mode at a time, so this is
+    # on the listing rather than only on the detail — a rail that had to open every
+    # thread to know which section it belongs in could not draw itself.
+    mode: str = DEFAULT_MODE
+    # The **basename** of the directory a code thread works in, and nothing else about
+    # it. Null for every other thread, and for a code thread whose project has since been
+    # deleted. Deliberately not the path and not the project id: the rail groups code
+    # threads under this, it is permanently on screen, and a full path across it would
+    # spell out the operator's clients to anyone standing behind them.
+    workspace: str | None = None
 
 
 class ToolCallImageOut(BaseModel):
@@ -214,7 +225,14 @@ def _activity(request: Request, conversation_id: str) -> str | None:
     return run.status.value if run is not None else None
 
 
-def _summary(view: ConversationSummaryView, activity: str | None = None) -> ConversationSummary:
+def _summary(
+    view: ConversationSummaryView,
+    activity: str | None = None,
+    workspaces: Mapping[str, str] | None = None,
+) -> ConversationSummary:
+    """One listing row. ``workspaces`` maps project id → directory basename; a caller
+    with nothing to look up (a single-thread read, where the group heading is not being
+    drawn) passes none and the row simply carries no workspace."""
     return ConversationSummary(
         id=view.id,
         title=view.title,
@@ -224,6 +242,8 @@ def _summary(view: ConversationSummaryView, activity: str | None = None) -> Conv
         preview=view.preview,
         model=view.model,
         activity=activity,
+        mode=view.mode,
+        workspace=(workspaces or {}).get(view.project_id or ""),
     )
 
 
@@ -349,7 +369,11 @@ async def _detail(
     snapshots = await deps.workspace_history(request).list(OPERATOR_ID, conversation_id)
     by_id = {s.id: s for s in snapshots}
     return ConversationDetail(
-        **_summary(summary, activity=active_run.status if active_run else None).model_dump(),
+        **_summary(
+            summary,
+            activity=active_run.status if active_run else None,
+            workspaces=await deps.projects(request).workspace_names(OPERATOR_ID),
+        ).model_dump(),
         messages=[_message(m, by_id) for m in messages],
         snapshots=[
             ViewSnapshotRefOut(
@@ -379,7 +403,11 @@ async def list_conversations(request: Request) -> list[ConversationSummary]:
     views = await deps.store(request).list_conversations(
         OPERATOR_ID, visible_projects=await deps.project_scope(request)
     )
-    return [_summary(v, activity=_activity(request, v.id)) for v in views]
+    # Resolved once for the whole listing rather than per row: the rail refreshes on a
+    # timer while anything is running, and a decrypt per thread would pay for the same
+    # handful of directories over and over.
+    workspaces = await deps.projects(request).workspace_names(OPERATOR_ID)
+    return [_summary(v, activity=_activity(request, v.id), workspaces=workspaces) for v in views]
 
 
 @router.get("/{conversation_id}", response_model=ConversationDetail)

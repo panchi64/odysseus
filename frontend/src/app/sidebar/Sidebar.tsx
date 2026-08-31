@@ -4,6 +4,7 @@ import { Button, Icon, ListRow, Text, Tooltip, cx } from "~/ui";
 import { useSession } from "~/lib/stores/session";
 import { useSettingsRoute } from "~/app/settings-dialog";
 import { RecentsRail } from "~/features/chat/components/RecentsRail";
+import { SessionModeSwitch } from "~/features/chat/components/SessionModeSwitch";
 import { AREAS, areaForPath, TOP_PINS, type NavItem } from "../nav";
 import { AreaSection } from "./AreaSection";
 import { NavPalette, openNavPalette } from "./NavPalette";
@@ -99,6 +100,14 @@ export function Sidebar(): JSX.Element {
       </div>
 
       <ProjectSwitcher />
+
+      {/* What kind of work you are looking at, above the threads it arranges.
+          It was a dropdown in the composer, offered only while a thread was
+          unsaved — which is where a property of the *message* would belong. The
+          mode is a property of the thread, so it belongs to the list of threads:
+          it files what the rail shows, decides what the next new thread is, and
+          repaints the signature accent, which are one fact at three ranges. */}
+      <SessionModeSwitch />
 
       {/* The threads. Mounted on every route, not only `/chat` — the rail used
           to host this through a route-matched slot, which made the conversation
