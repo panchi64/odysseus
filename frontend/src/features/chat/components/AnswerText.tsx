@@ -22,8 +22,14 @@ import {
  *  is the §2 test for the machine voice. And the eye reads a grid in two
  *  dimensions, so a reveal sweeping left-to-right through cells reads as
  *  flicker rather than as arrival — on top of the column widths still
- *  reflowing as rows stream in. */
-const MACHINE_VOICE = "code, pre, kbd, samp, table, .katex, .font-mono";
+ *  reflowing as rows stream in.
+ *
+ *  `.ody-open-path` is a file the answer pointed at (markdownLinks.ts). It is
+ *  mono by rule rather than by the `.font-mono` class, so nothing above catches
+ *  it, and it is machine voice by the same §2 test the table is: a path is a
+ *  literal string the machine will act on, not a phrase being spoken. */
+const MACHINE_VOICE =
+  "code, pre, kbd, samp, table, .katex, .font-mono, .ody-open-path";
 
 /** Every animatable text node under `root`, in document order, with the absolute
  *  character index each one starts at. Machine-voice subtrees are rejected

@@ -70,9 +70,11 @@ async def test_scopes_catalog_never_covers_credential_or_host_surfaces():
         for path in ("/tokens", "/tokens/abc", "/credentials", "/vault", "/backup"):
             assert table.scope_for_path(path) is None
         # Opening a native dialog on the operator's machine — and reading back whatever
-        # absolute path came out — is never reachable with a token.
+        # absolute path came out — is never reachable with a token. Neither is the other
+        # half of that surface: launching an application on a path a caller named.
         assert table.scope_for_path("/host/file-picker") is None
         assert table.scope_for_path("/host/file-picker", "POST") is None
+        assert table.scope_for_path("/host/open", "POST") is None
         assert table.scope_for_path("/models/roles") == "models"
         # The `models` scope is described to the operator as read-only, so it has to be
         # one: creating an endpoint and rebinding a role would let a token route every

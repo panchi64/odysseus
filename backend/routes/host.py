@@ -1,21 +1,29 @@
-"""Host surface — a native file/folder chooser on the operator's own machine.
+"""Host surface — the two things the operator's own machine does that a browser can't.
 
-Nothing here is model-specific: this is how **any** field that wants an absolute host
-path gets one. A browser cannot produce a real path — ``<input type="file">`` hands over
-bytes with no location — so the dialog is opened by the process running on the operator's
-machine and the chosen path comes back as data.
+Reading a path off the desktop, and acting on one. A browser can do neither: ``<input
+type="file">`` hands over bytes with no location, and ``file://`` navigation is blocked
+from a page. Both are done by the process running on the operator's machine, so the
+chooser's answer comes back as data and the opener's argument goes out as data.
 
-Progressive enhancement, never a requirement: ``GET`` reports whether this host can open
-a chooser at all, and every surface that offers a BROWSE control also takes a typed path.
-See ``services/host_picker`` for the platform helpers and the agent-unreachability rule.
+Progressive enhancement, never a requirement. ``GET /host/file-picker`` reports whether
+this host can open a chooser at all, and every surface that offers a BROWSE control also
+takes a typed path; a host with no opener answers ``POST /host/open`` with a sentence
+saying so, and the path is still there to read in the prose that named it.
+
+Both halves are **agent-unreachable by construction** — see ``services/host_picker`` and
+``services/host_open`` for the platform helpers and the rule.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from services import host_picker
+from routes import deps
+from routes.deps import OPERATOR_ID
+from services import host_open, host_picker
 from services.host_picker import PickerAvailability, PickMode
 
 router = APIRouter(prefix="/host", tags=["host"])
@@ -52,3 +60,58 @@ async def open_file_picker(body: PickRequest) -> PickResult:
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return PickResult(path=path)
+
+
+class OpenRequest(BaseModel):
+    #: Absolute, or relative to a workspace — the two ways the model spells a file.
+    path: str
+
+
+class OpenResult(BaseModel):
+    path: str  # the absolute path that was actually opened
+
+
+async def _searchable_roots(request: Request) -> list[Path]:
+    """Where a path in an answer is allowed to resolve, in the order it is looked for.
+
+    The whole permission model of this route, written as a list. A path arrives from a
+    click on model-written prose, so nothing outside these directories may be opened —
+    and which of them is tried first decides *which copy* of a file the operator gets:
+
+    * the active project before the rest, then most-recently-opened, because that is
+      the work they are in;
+    * each project's **worktree** before their own checkout, because a code thread's
+      files live in the worktree and a file the agent just created exists nowhere else.
+
+    Both come from the cheap lookups (no git probe): a click must not cost N subprocesses.
+    """
+    projects = deps.projects(request)
+    worktrees = deps.worktrees(request)
+    roots = await projects.workspace_roots(OPERATOR_ID)
+    active = await projects.active_id(OPERATOR_ID)
+    # Stable, so the store's most-recently-opened order survives the active-first sort.
+    ordered = sorted(roots, key=lambda project_id: project_id != active)
+    out: list[Path] = []
+    for project_id in ordered:
+        worktree = worktrees.path_for(project_id)
+        if worktree.is_dir():
+            out.append(worktree)
+        out.append(roots[project_id])
+    return out
+
+
+@router.post("/open", response_model=OpenResult)
+async def open_in_editor(request: Request, body: OpenRequest) -> OpenResult:
+    """Open a file from the operator's projects in whatever their machine opens it with.
+
+    Operator-initiated, so it is a plain REST action rather than an approval-gated tool:
+    the agent has no path to it, and the only thing it can influence is the *text* of a
+    path it wrote — which is exactly why containment against the operator's own project
+    roots is not optional. ``services/host_open`` refuses anything outside them.
+    """
+    target = host_open.resolve_within(await _searchable_roots(request), body.path)
+    try:
+        await host_open.open_path(target)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return OpenResult(path=str(target))

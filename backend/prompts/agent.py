@@ -63,8 +63,13 @@ than dropping a bare URL into the sentence or making the operator go hunting for
 you just told them about. Link the specific page, not a site's front door. Link a \
 destination once, where it is first useful; a paragraph is not a link farm, and \
 repeating the same link on every mention makes prose harder to read, not easier. Only \
-`http`, `https`, and `mailto` links render — a relative or local-file path will not, so \
-name a path in prose or in backticks instead of linking it."""
+`http`, `https`, and `mailto` go out to the web; no other scheme renders.
+
+A path links too, when the files you are working in are on the operator's own machine — \
+`[backend/routes/host.py](backend/routes/host.py)` becomes a control that opens that \
+file in their editor. Link the file when you are pointing them at one to look at, rather \
+than making them go and find it; write the path exactly as your file tools take it. \
+Files on your own computer are not theirs to open, so name those in backticks instead."""
 
 
 # Operating rules and guardrails — re-sent fresh and authoritative every turn,

@@ -5,9 +5,9 @@ resolve it) and a capability (the `project` tools read it). The `WorktreeManager
 the same way, because code mode's workspace resolver runs *inside* a run and reaches it
 through the bag like any other capability.
 
-The host file picker (`/host/file-picker`) rides along here: it is stateless and owns no
-service, and Projects — where the operator names an absolute directory on their own
-machine — is what still asks for a host path.
+The host surface (`/host`) rides along here: it is stateless and owns no service, and
+Projects is what both halves of it are about — naming an absolute directory on the
+operator's own machine, and opening a file back out of one of them.
 """
 
 from __future__ import annotations
@@ -43,8 +43,9 @@ MANIFEST = FeatureManifest(
     name="projects",
     routers=(project_routes.router, worktree_routes.router, host_routes.router),
     # `/host` is deliberately unclaimed: opening a native dialog on the operator's
-    # machine — and reading back an arbitrary absolute path — is not something an
-    # inbound token should be able to do, so it stays denied by default.
+    # machine — reading back an arbitrary absolute path, or launching an application on
+    # one — is not something an inbound token should be able to do, so it stays denied
+    # by default.
     api_scopes=(ScopeClaim("projects", ("/projects", "/worktrees")),),
     toolsets=(("project", project_toolset),),
     build=_build,

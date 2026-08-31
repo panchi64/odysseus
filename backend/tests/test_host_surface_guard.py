@@ -1,8 +1,12 @@
-"""Regression guard for the host file chooser: it is **agent-unreachable by
-construction**, the same invariant the Operator Shell carries. Nothing under `tools/` or
-`agent/` may reference `services/host_picker.py` — a model that could open dialogs on the
-operator's desktop (and read back whatever path came out) would be acting on the host
-outside every sensitive-action approval gate.
+"""Regression guard for the host surface: it is **agent-unreachable by construction**,
+the same invariant the Operator Shell carries. Nothing under `tools/` or `agent/` may
+reference `services/host_picker.py` or `services/host_open.py` — a model that could open
+dialogs on the operator's desktop (and read back whatever path came out), or launch an
+application on a path it chose, would be acting on the host outside every
+sensitive-action approval gate.
+
+Both halves are guarded together because they are one posture, and because the second is
+the easier mistake to make: opening a file *looks* like a helpful thing to hand a model.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-_FORBIDDEN = ("host_picker", "PickerAvailability")
+_FORBIDDEN = ("host_picker", "PickerAvailability", "host_open")
 _SCAN_DIRS = ("tools", "agent")
 
 
@@ -25,7 +29,7 @@ def test_scan_dirs_contain_source_files() -> None:
     # reports the parametrized test below as SKIPPED, not FAILED — so a renamed/missing
     # scan dir would silently drop the guard instead of failing loudly.
     assert _source_files(), (
-        f"expected source files under {_SCAN_DIRS} to scan — the host-picker guard "
+        f"expected source files under {_SCAN_DIRS} to scan — the host-surface guard "
         "would otherwise pass vacuously"
     )
 
@@ -35,6 +39,6 @@ def test_agent_reachable_code_never_references_the_picker(path: Path) -> None:
     text = path.read_text()
     for needle in _FORBIDDEN:
         assert needle not in text, (
-            f"{path} references {needle!r} — the host file chooser must stay "
+            f"{path} references {needle!r} — the host surface must stay "
             "agent-unreachable by construction"
         )

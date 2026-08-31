@@ -11,6 +11,7 @@ import { marked, type Token } from "marked";
 import "katex/dist/katex.min.css";
 import { cx } from "../cx";
 import { copyToClipboard } from "../clipboard";
+import { openHostPath } from "~/lib/hostOpen";
 import { markedLinks } from "./markdownLinks";
 import { markedMath } from "./markdownMath";
 import { hydrateRemoteImages } from "./remoteImages";
@@ -111,6 +112,11 @@ function makeCopyButton(): HTMLButtonElement {
  * fetching, and raw HTML is escaped to visible text rather than injected.
  * Everything else `marked` emits is markup it wrote itself from Markdown tokens,
  * so there is nothing left for a sanitizer pass to take out.
+ *
+ * The one control in here that acts on the *host* — a path the answer pointed
+ * at, opened in the operator's editor — carries no authority from this side. It
+ * arrives as a `data-open-path` string and the backend decides whether it names
+ * a file the operator's projects contain; the click below only relays it.
  */
 export function Markdown(props: MarkdownProps): JSX.Element {
   const [local] = splitProps(props, [
@@ -186,10 +192,19 @@ export function Markdown(props: MarkdownProps): JSX.Element {
     queueMicrotask(enhance);
   });
 
-  // One delegated click handler copies the sibling <code>'s text (already clean).
-  // Shared by both paths — attached once to the outer container.
+  // One delegated click handler for both affordances rendered into this prose —
+  // the copy button on a code block, and a path the answer pointed at. Attached
+  // once to the outer container, so it covers blocks that arrive mid-stream and
+  // costs one listener rather than one per rendered control.
   const onClick = (e: MouseEvent): void => {
     const target = e.target as HTMLElement;
+    const opener = target.closest<HTMLElement>("[data-open-path]");
+    if (opener) {
+      // Fire-and-forget: `openHostPath` reports its own failures, and awaiting
+      // an editor launch would hold the handler open for nothing.
+      void openHostPath(opener.dataset.openPath ?? "");
+      return;
+    }
     const btn = target.closest<HTMLButtonElement>("[data-code-copy]");
     if (!btn) return;
     const code = btn.parentElement?.querySelector("pre code, pre");

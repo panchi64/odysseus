@@ -1228,6 +1228,45 @@ body {
   font-size: 0.85em;
   color: var(--text-dim);
 }
+/* A file the answer pointed at, which opens on the operator's own machine. It is
+   a `<button>` and not an anchor (markdownLinks.ts says why), so it inherits none
+   of the link rules above and states its own.
+
+   Mono, because it is a path: the machine voice is how this interface says "this
+   is a literal string the machine will act on" (§2), and it is what separates a
+   file from the prose around it without spending a second accent. The dotted
+   underline is the pair to the outbound `↗` — both mark *what kind* of departure
+   a click is, one leaving for the web, one leaving the browser entirely — and it
+   reads as an affordance without imitating a link it isn't.
+
+   The mono size and leading are the *inline code* tokens, not a third pair: a
+   path set beside `a path in backticks` has to read as the same kind of thing,
+   because it is. What it does not take is the code span's box — the frame and
+   raised fill are what say "a fragment quoted verbatim", and this is a control.
+
+   A button is an inline-block whose contents cannot break across lines, so a long
+   absolute path is held to the column width and wraps *inside* the control rather
+   than pushing the answer sideways. */
+.ody-prose .ody-open-path {
+  font-family: var(--font-mono);
+  font-size: var(--prose-code-size);
+  line-height: var(--prose-code-lh);
+  color: var(--accent-info);
+  background: none;
+  border: 0;
+  padding: 0;
+  max-width: 100%;
+  text-align: left;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.ody-prose .ody-open-path:hover {
+  text-decoration-style: solid;
+}
 /* An image the answer embedded. It arrives with no `src` (markdownLinks parks the
    address; remoteImages.ts resolves it through the backend proxy), so the resting
    state here is an element with nothing in it — `min-height` reserves a little of

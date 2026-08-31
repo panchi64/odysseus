@@ -14,6 +14,14 @@ import { hostLabel } from "~/lib/format";
  *   • `link` — scheme-allowlisted (`http`/`https`/`mailto`), attribute-escaped,
  *     and opened in a new tab with the opener severed. A rejected href degrades
  *     to the link's own text rather than to a dead or dangerous anchor.
+ *   • `link`, second form — a **path** rather than a URL, which the model is
+ *     told to write when it is pointing the operator at a file of theirs. It is
+ *     not a destination and never becomes an `href`: it is parked in
+ *     `data-open-path` for Markdown.tsx's delegated handler to POST to
+ *     `/host/open`, which refuses anything outside the operator's own project
+ *     roots. Given a path is model-authored text, the check here is only that it
+ *     is a path *shape* at all — the fence is the backend's, deliberately, since
+ *     a rule about which files may be opened cannot live in the browser.
  *   • `image` — emitted with its address parked in `data-remote-src` and no `src`
  *     at all, for Markdown.tsx to resolve through the backend proxy. An `<img>`
  *     is the one construct that *fetches the instant it has a src*, with no click
@@ -29,10 +37,11 @@ import { hostLabel } from "~/lib/format";
  */
 
 /** Schemes an anchor may carry. Everything else — `javascript:`, `data:`,
- *  `vbscript:`, `file:`, protocol-relative `//host`, and relative paths — is
- *  rejected: prose links are outbound, and a relative href in an answer is a
- *  model mistake (a workspace path it can't actually link to) that would
- *  otherwise navigate the app off its own route. */
+ *  `vbscript:`, `file:`, protocol-relative `//host` — is rejected: an anchor in
+ *  prose is outbound, and a href that resolves *relative to the app* would
+ *  navigate it off its own route on a click. A path is not an exception to that;
+ *  it is the other form entirely (see `workspacePath`), and it never becomes an
+ *  href at all. */
 const ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 /** Named entities that decode to characters a scheme can hide behind. The
@@ -88,9 +97,12 @@ function decodedHref(href: string): string {
   return stripIgnored(out);
 }
 
+/** A URL scheme at the head of a value — any of them, not just an allowed one. */
+const SCHEME_HEAD = /^([a-z][a-z0-9+.-]*):/i;
+
 /** The allowlisted scheme at the head of `value`, or `null`. */
 function allowedScheme(value: string): string | null {
-  const m = /^([a-z][a-z0-9+.-]*):/i.exec(value);
+  const m = SCHEME_HEAD.exec(value);
   if (!m) return null;
   const scheme = `${m[1].toLowerCase()}:`;
   return ALLOWED_SCHEMES.has(scheme) ? scheme : null;
@@ -116,6 +128,61 @@ export function safeHref(href: string | null | undefined): string | null {
   if (!href) return null;
   const raw = allowedScheme(stripIgnored(href));
   return raw !== null && raw === allowedScheme(decodedHref(href)) ? href : null;
+}
+
+/** Whether a value carries a C0/DEL control. A path may hold a space — a folder
+ *  called `My Notes` is not a mistake — but never one of these: they are what the
+ *  browser drops rather than shows, so the string on screen would not be the
+ *  string acted on. Written as a scan rather than a regex literal, which would
+ *  need a control-character escape and the lint suppression that comes with it. */
+function hasControls(value: string): boolean {
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** A Windows drive prefix (`C:/…`, `C:\…`), which reads as a one-letter scheme
+ *  to the check above and is a perfectly ordinary absolute path on that host. */
+const DRIVE_PREFIX = /^[a-z]:[\\/]/i;
+
+/** Path shape: something with a separator in it, or a bare filename carrying an
+ *  extension. Without this, `[click](here)` would mint a control that can only
+ *  ever fail — a word is not a file. */
+const PATH_SHAPE = /[\\/]/;
+const FILENAME_SHAPE = /^[^\s/\\]+\.[a-z0-9]{1,10}$/i;
+
+/**
+ * The workspace path an href names, or `null` if this one is not one.
+ *
+ * The complement of {@link safeHref}: that function's job is to reject anything
+ * without an outbound scheme, and this one picks up exactly what it dropped —
+ * because a path in an answer is no longer a model mistake. It is how the model
+ * points at a file, and clicking it opens that file on the operator's machine.
+ *
+ * What is rejected here is *URL grammar wearing a path's clothes*, not unsafe
+ * files — a leading `//` (or `\\`) names a host rather than a path, a scheme
+ * means it was a URL the allowlist already refused, and `?`/`#` are a query and
+ * a fragment. Control characters go for the same reason they do above: what the
+ * browser ignores when parsing is not what the eye read.
+ *
+ * Which files may actually be opened is decided by the backend against the
+ * operator's project roots, and it has to be: the browser cannot know what is
+ * inside one, and a fence drawn in a renderer is not a fence.
+ */
+export function workspacePath(href: string | null | undefined): string | null {
+  const raw = (href ?? "").trim();
+  if (!raw || hasControls(raw)) return null;
+  if (/^[/\\]{2}/.test(raw)) return null;
+  if (/[?#]/.test(raw)) return null;
+  if (!DRIVE_PREFIX.test(raw)) {
+    // Both forms, for the reason `safeHref` checks both: a scheme that only
+    // appears once entities are decoded is still a scheme.
+    if (SCHEME_HEAD.test(raw) || SCHEME_HEAD.test(decodedHref(raw)))
+      return null;
+  }
+  return PATH_SHAPE.test(raw) || FILENAME_SHAPE.test(raw) ? raw : null;
 }
 
 /** Whether an accepted href leaves the app — everything but `mailto:`, which
@@ -182,15 +249,44 @@ function anchorHtml(
   ].join("");
 }
 
+/**
+ * The control for a path the answer pointed at.
+ *
+ * A `<button>`, not an anchor, and the distinction is the point: this navigates
+ * nowhere, it asks the machine the browser is running on to open a file. It gets
+ * keyboard focus and Enter/Space for free by being the element it actually is,
+ * which an `<a>` with no `href` would have had to fake with `tabindex`, `role`
+ * and a keydown handler of its own — three chances to get accessibility wrong in
+ * exchange for a tag name.
+ *
+ * The `title` says what the click does, since — unlike a web link, whose host
+ * answers "where does this go?" — the destination here *is* the visible text.
+ */
+function openPathHtml(
+  path: string,
+  inner: string,
+  markdownTitle?: string | null,
+): string {
+  const title = markdownTitle?.trim() || `Open ${path}`;
+  return [
+    `<button type="button" class="ody-open-path"`,
+    ` data-open-path="${escapeAttr(path)}"`,
+    ` title="${escapeAttr(title)}"`,
+    `>${inner}</button>`,
+  ].join("");
+}
+
 /** Pass to `marked.use(...)` to mint safe anchors and neutralise raw HTML. */
 export const markedLinks: MarkedExtension = {
   renderer: {
     link(token) {
       const inner = this.parser.parseInline(token.tokens);
       const href = safeHref(token.href);
+      if (href !== null) return anchorHtml(href, inner, token.title);
+      const path = workspacePath(token.href);
       // A rejected href leaves the sentence intact and drops the anchor: the
       // words the model wrote still read, they just don't go anywhere.
-      return href === null ? inner : anchorHtml(href, inner, token.title);
+      return path === null ? inner : openPathHtml(path, inner, token.title);
     },
     image(token) {
       const href = safeHref(token.href);

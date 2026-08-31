@@ -261,6 +261,25 @@ class ProjectStore:
 
         return await self.create(owner_id, resolved.name, str(resolved))
 
+    async def workspace_roots(self, owner_id: str) -> dict[str, Path]:
+        """Each project id mapped to its directory, most recently opened first.
+
+        Cheaper than :meth:`list` on purpose — no git probe, which shells out once per
+        project and would put N subprocesses behind every refresh of the thread list and
+        behind every click on a file path in an answer.
+
+        Insertion order is load-bearing for the second of those: opening a path the model
+        named means searching the operator's directories for it, and the one they worked
+        in most recently is the one they meant.
+        """
+
+        def work(session: Session) -> list[Project]:
+            query = select(Project).where(Project.owner_id == owner_id)
+            return list(session.exec(query.order_by(Project.last_opened_at.desc())).all())
+
+        rows = await in_session(self._db, work)
+        return {row.id: Path(self._vault.decrypt_str(row.root_path_enc)) for row in rows}
+
     async def workspace_names(self, owner_id: str) -> dict[str, str]:
         """Each project id mapped to the **basename** of its directory.
 
@@ -268,16 +287,8 @@ class ProjectStore:
         conversation listing is the one screen that is always on display, and the full
         path names the operator's clients across the whole width of the rail. The
         basename is the part that identifies the work.
-
-        Cheaper than :meth:`list` on purpose — no git probe, which shells out once per
-        project and would put N subprocesses behind every refresh of the thread list.
         """
-
-        def work(session: Session) -> list[Project]:
-            return list(session.exec(select(Project).where(Project.owner_id == owner_id)).all())
-
-        rows = await in_session(self._db, work)
-        return {row.id: Path(self._vault.decrypt_str(row.root_path_enc)).name for row in rows}
+        return {pid: root.name for pid, root in (await self.workspace_roots(owner_id)).items()}
 
     async def update(
         self,

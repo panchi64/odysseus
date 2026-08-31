@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Marked } from "marked";
-import { isExternalHref, markedLinks, safeHref } from "./markdownLinks";
+import {
+  isExternalHref,
+  markedLinks,
+  safeHref,
+  workspacePath,
+} from "./markdownLinks";
 
 /** A private `marked` instance configured the way Markdown.tsx configures the
  *  shared one, so these assert what actually reaches `innerHTML`. */
@@ -62,6 +67,56 @@ describe("safeHref", () => {
     // decodes it — accepting this would put a *relative* URL in the DOM.
     expect(safeHref("&#104;ttps://evil.test")).toBeNull();
     expect(safeHref("&#109;ailto:a@b.test")).toBeNull();
+  });
+});
+
+describe("workspacePath", () => {
+  test("accepts the shapes a file is actually named by", () => {
+    expect(workspacePath("src/app.py")).toBe("src/app.py");
+    expect(workspacePath("./docs/report.md")).toBe("./docs/report.md");
+    expect(workspacePath("/Users/me/proj/main.ts")).toBe(
+      "/Users/me/proj/main.ts",
+    );
+    // A bare filename only counts with an extension — see the word case below.
+    expect(workspacePath("README.md")).toBe("README.md");
+    // A folder with a space in its name is not a mistake.
+    expect(workspacePath("My Notes/todo.md")).toBe("My Notes/todo.md");
+    // A Windows drive reads as a one-letter scheme and is a path anyway.
+    expect(workspacePath("C:/proj/main.ts")).toBe("C:/proj/main.ts");
+  });
+
+  test("rejects a URL wearing a path's clothes", () => {
+    expect(workspacePath("https://a.test/x.png")).toBeNull();
+    expect(workspacePath("mailto:a@b.test")).toBeNull();
+    // Protocol-relative: `//host` names a host, not a path.
+    expect(workspacePath("//evil.example/x.js")).toBeNull();
+    expect(workspacePath("\\\\evil.example\\x.js")).toBeNull();
+    // A query and a fragment are URL grammar; a path has neither.
+    expect(workspacePath("/settings/models?q=1")).toBeNull();
+    expect(workspacePath("#section")).toBeNull();
+  });
+
+  test("rejects a scheme, including one that only exists once decoded", () => {
+    // Nothing `safeHref` turned away may come back in through this door.
+    expect(workspacePath("javascript:alert(1)")).toBeNull();
+    expect(workspacePath("&#106;avascript:alert(1)")).toBeNull();
+    expect(workspacePath("java&colon;script:alert(1)")).toBeNull();
+    expect(workspacePath("file:///etc/passwd")).toBeNull();
+    expect(
+      workspacePath("data:text/html,<script>alert(1)</script>"),
+    ).toBeNull();
+  });
+
+  test("rejects characters the browser would drop rather than show", () => {
+    expect(workspacePath("java\tscript:alert(1)")).toBeNull();
+    expect(workspacePath("src/\nrm -rf.ts")).toBeNull();
+  });
+
+  test("rejects a word that is not a path at all", () => {
+    // `[click](here)` must not mint a control that can only ever fail.
+    expect(workspacePath("here")).toBeNull();
+    expect(workspacePath("")).toBeNull();
+    expect(workspacePath(undefined)).toBeNull();
   });
 });
 
@@ -133,6 +188,58 @@ describe("rendered anchors", () => {
     const html = render('[x](https://a.test/" onmouseover="alert(1))');
     expect(html).not.toContain('onmouseover="alert(1)"');
     expect(html).toContain("&quot;");
+  });
+});
+
+describe("rendered path controls", () => {
+  test("a path becomes a button carrying the path, never an href", () => {
+    // The click opens a file on the operator's machine; it navigates nowhere,
+    // and an `href` would be a destination the browser could try to follow.
+    const html = render("See [the host route](backend/routes/host.py).");
+    expect(html).toContain('data-open-path="backend/routes/host.py"');
+    expect(html).toContain("<button");
+    expect(html).not.toContain("<a ");
+    expect(html).not.toMatch(/\shref=/);
+  });
+
+  test("the control says what the click does", () => {
+    expect(render("[main](src/main.ts)")).toContain('title="Open src/main.ts"');
+  });
+
+  test("an author-written markdown title wins", () => {
+    expect(render('[main](src/main.ts "the entry point")')).toContain(
+      'title="the entry point"',
+    );
+  });
+
+  test("a quote in the path cannot break out of the attribute", () => {
+    // The `<…>` form, which is how a path carrying spaces and quotes survives
+    // `marked` intact and actually reaches the renderer.
+    const html = render('[x](<src/" onmouseover="alert(1).ts>)');
+    expect(html).toContain("<button");
+    expect(html).not.toContain('onmouseover="alert(1)"');
+    expect(html).toContain("&quot;");
+  });
+
+  test("a traversing path is left for the backend to refuse", () => {
+    // Deliberate: the renderer knows nothing about the operator's directories, so
+    // it mints the control and `/host/open` decides. A fence drawn here would be
+    // a second, weaker copy of the one that counts.
+    expect(render("[x](../../../etc/passwd)")).toContain(
+      'data-open-path="../../../etc/passwd"',
+    );
+  });
+
+  test("a href that is neither a URL nor a path still degrades to its text", () => {
+    const html = render("Click [here](here) now.");
+    expect(html).toContain("here");
+    expect(html).not.toContain("<button");
+  });
+
+  test("inline formatting inside the label survives", () => {
+    expect(render("[**main**](src/main.ts)")).toContain(
+      "<strong>main</strong>",
+    );
   });
 });
 

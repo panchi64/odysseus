@@ -14,8 +14,9 @@ a convenience layer that degrades to typing.
 
 **Agent-unreachable by construction**: imported only by its route and the app wiring,
 never by ``tools/`` or ``agent/`` (enforced by
-``tests/test_host_picker_guard.py``). A model that could open host dialogs — or read back
-arbitrary paths — would be reaching outside every approval gate.
+``tests/test_host_surface_guard.py``, which guards ``services/host_open`` the same way).
+A model that could open host dialogs — or read back arbitrary paths — would be reaching
+outside every approval gate.
 
 Each helper is spawned with a **fixed argv and no shell**, and the path it prints is
 treated as data: it is returned to the caller and never interpolated into a command.
