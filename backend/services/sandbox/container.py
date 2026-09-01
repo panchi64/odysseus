@@ -313,7 +313,11 @@ async def run_subprocess(
     """Run a runtime command with a hard wall-clock timeout; kill on overrun.
 
     Returns ``(timed_out, exit_code, stdout, stderr)``. A timeout kills the local
-    client and reports exit 124 (the conventional timeout code)."""
+    client and reports exit 124 (the conventional timeout code). Cancellation kills it
+    too: the runtime client is a child process and does not go away because the task
+    awaiting it did, so a bring-up cancelled mid-pull (app shutdown, a test tearing its
+    app down) would otherwise leave `docker pull` running until its own five-minute
+    budget expired — one per cancelled bring-up, each holding the network open."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -328,10 +332,23 @@ async def run_subprocess(
     try:
         out, err = await asyncio.wait_for(proc.communicate(data), timeout=timeout_s)
     except TimeoutError:
-        proc.kill()
+        _kill(proc)
         await proc.wait()
         return True, 124, b"", b"sandbox execution timed out"
+    except asyncio.CancelledError:
+        # Kill without awaiting the reap: this task is already cancelled, so a further
+        # await is not guaranteed to resume. The event loop's child watcher reaps it.
+        _kill(proc)
+        raise
     return False, proc.returncode or 0, out, err
+
+
+def _kill(proc: asyncio.subprocess.Process) -> None:
+    """Signal the child, tolerating one that has already exited."""
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
 
 
 async def ensure_image(runtime: str, image: str) -> bool:

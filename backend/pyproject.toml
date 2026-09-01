@@ -85,6 +85,7 @@ dev = [
     "fpdf2>=2.8.7",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.6",
     "ruff>=0.8",
 ]
 
@@ -104,3 +105,14 @@ select = ["E", "F", "I", "UP", "B"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+# `-n auto` fans the suite across every core: it is ~2200 mostly-independent tests, each
+# on its own throwaway database and temp directory, so there is nothing to serialize on.
+# `-n0` puts it back in one process when a run needs `--pdb` or live output.
+# `not container` holds back the tests that pull and boot a real container image. They
+# reach the network on every run (`ensure_image` re-pulls `:latest`), which costs a
+# minute or more and makes the suite's duration depend on registry reachability, so they
+# are opt-in — `-m container` runs exactly those, and CI should run both selections.
+addopts = "-n auto -m 'not container'"
+markers = [
+    "container: needs a container runtime and pulls an image; excluded from the default run",
+]

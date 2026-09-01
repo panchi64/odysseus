@@ -233,6 +233,43 @@ def test_input_path_cannot_escape_the_box(tmp_path):
         ContainerSandbox._write_inputs(tmp_path, spec)
 
 
+# --- a cancelled runtime command takes its child with it ---------------------
+async def test_cancelling_a_runtime_command_kills_the_child(monkeypatch):
+    # The runtime client is a child process: it does not exit because the task awaiting
+    # it was cancelled. Without the kill, a bring-up cancelled mid-pull (app shutdown, a
+    # test tearing its app down) leaves `docker pull` running for its full five-minute
+    # budget — and they accumulate, one per cancellation, all holding the network open.
+    spawned: list[asyncio.subprocess.Process] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def capturing_exec(*argv, **kwargs):
+        proc = await real_exec(*argv, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing_exec)
+
+    task = asyncio.create_task(container_mod.run_subprocess(["sleep", "30"], timeout_s=30))
+    # Bounded, and watching the task as well: a spawn that fails outright (`run_subprocess`
+    # raises `SandboxError` when the exec does) never appends, and waiting on `spawned`
+    # alone would hang the suite forever instead of reporting that failure.
+    async with asyncio.timeout(10):
+        while not spawned:
+            if task.done():
+                await task  # re-raises whatever run_subprocess failed with
+                pytest.fail("run_subprocess returned without spawning a child")
+            await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [child] = spawned
+    # Reaped promptly rather than outliving the run — `wait` would hang out to the
+    # sleep's full 30s if the child had merely been abandoned.
+    await asyncio.wait_for(child.wait(), timeout=5)
+    assert child.returncode is not None
+
+
 # --- the deliberate host escape hatch ----------------------------------------
 async def test_run_on_host_executes_and_reports_exit():
     ok = await run_on_host("echo hostran")

@@ -112,7 +112,9 @@ The central abstraction is a **Run**: one server-side, background-executing unit
 cd backend
 uv sync                                       # creates .venv (Python 3.14), installs deps
 uv run python dev.py                          # http://localhost:8000  (/health to check)
-uv run pytest                                 # the test suite
+uv run pytest                                 # the test suite (fans out across cores)
+uv run pytest -m container                    # the container-backed tests, held back from
+                                              #   the default run: they pull real images
 uv run ruff check .                           # lint
 ```
 `dev.py` is `uvicorn app:app` with auto-reload, minus the directories that hold runtime state rather than source. To run without reload (production), use `uv run uvicorn app:app` directly.
