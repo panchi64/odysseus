@@ -10,16 +10,19 @@ context-overflow stop is what catches a pathological turn.
 
 Three properties make this safe to run automatically:
 
-- **It fires between turns, never inside one.** The trigger sits in the orchestrator
-  prelude, before the agent runs, so it can't pull an output out from under reasoning that
-  is already in flight.
+- **It never fires underneath reasoning in flight.** The trigger sits in the orchestrator
+  prelude, before the agent runs, and measures what the turn *about to run* will cost. The
+  one exception is the recovery: when a provider refuses a request as over-long, the turn
+  folds once and re-sends that same request — between two requests, with nothing in
+  flight, which is the only mid-turn moment at which folding is safe.
 - **Nothing is destroyed.** The summary is appended as a new checkpoint node; the turns it
   covers stay in the tree, in the operator's transcript, and in cross-chat search. Only
   what is *re-sent to the model* narrows (``ConversationStore.model_history``). A rewind
   above the checkpoint restores the full replay for free.
-- **It is not a safety net.** A prompt that overruns the window anyway still stops the run
-  with a context notice. Compaction lowers the pressure; it never absorbs an overflow, and
-  it never silently drops content to force a fit.
+- **It is still not a safety net.** A fold gets *one* attempt at an overflow. A request
+  that is too big after it is too big for a reason folding cannot reach, and the run stops
+  with a context notice rather than re-folding a thread down to nothing. Compaction lowers
+  the pressure; it never silently drops content to force a fit.
 
 ``auto_compact_keep_turns`` is **0** by default: the summary *is* what the model replays,
 and a retained tail would restate verbatim what the summary already covers, at the exact

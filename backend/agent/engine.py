@@ -200,8 +200,10 @@ def _build_agent(
         # ReinjectSystemPrompt keeps our system prompt authoritative — it transforms only
         # what the model sees, never what we persist. Nothing else rewrites the history on
         # its way to the model: a tool result rides into context whole, and the one
-        # reduction that exists (conversation compaction) fires between turns, in the
-        # orchestrator prelude, against measured context pressure.
+        # reduction that exists (conversation compaction) fires in the orchestrator
+        # prelude against projected context pressure — or, when a provider refuses an
+        # over-long request anyway, once between that request and its retry. Never
+        # underneath reasoning already in flight.
         # `MeasureOverhead` and `AnnounceInjections` are listed *after*
         # `ReinjectSystemPrompt` so they read the request as it actually ships rather than
         # before the system prompt is reasserted. Both observe and return the request
