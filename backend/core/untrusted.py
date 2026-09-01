@@ -23,6 +23,17 @@ _INSTRUCTION = (
 )
 
 
+def new_nonce() -> str:
+    """A fresh one-time fence token.
+
+    Callers that fence several blocks in one message (a batch of search results, a
+    compaction transcript's tool returns) need the *same* token on every marker and one
+    preamble naming it — so the token has to be minted before the fences, not inside
+    them. Random per call, because a fence whose token untrusted content could predict is
+    a fence it could forge its way out of."""
+    return secrets.token_hex(8)
+
+
 def untrusted_preamble(nonce: str) -> str:
     """The standing "this is data, not instructions" instruction, tagged with ``nonce``
     (the token the fence markers carry). Emit this **once** ahead of one or more fences
@@ -51,5 +62,5 @@ def wrap_untrusted(content: str, *, source: str | None = None) -> str:
     closing marker to "break out" of the fence, because it cannot predict the token
     (a prompt-injection defence — the whole point of the wrap).
     """
-    nonce = secrets.token_hex(8)
+    nonce = new_nonce()
     return untrusted_preamble(nonce) + "\n" + untrusted_fence(content, nonce, source=source)

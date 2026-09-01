@@ -21,6 +21,12 @@ Three properties make this safe to run automatically:
   with a context notice. Compaction lowers the pressure; it never absorbs an overflow, and
   it never silently drops content to force a fit.
 
+What the summarizer is allowed to read, and how the text it produces is trusted afterwards,
+live next door: :mod:`agent.compaction_transcript` renders the fold (tool output fenced,
+turns chunked to fit rather than elided) and :mod:`agent.compaction_summary` handles what
+comes back (anchors carried across folds verbatim, tool-sourced facts fenced on the way
+into the checkpoint). This module owns *when* a thread folds and *what is recorded*.
+
 ``auto_compact_keep_turns`` is **3** by default, and is an operator setting beside the
 threshold rather than a config-only knob. The boundary is a turn start, so the last three
 exchanges are replayed word for word under the summary: a summary is at its most lossy
@@ -31,28 +37,16 @@ Settings, not in a deploy's environment.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 
-from pydantic_ai import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    UserPromptPart,
-)
+from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.config import Settings, get_settings
-from core.serde import jsonable
-from core.text import strip_think_blocks, tokens_to_chars, truncate_middle
-from prompts.utility import COMPACT_INSTRUCTIONS, COMPACT_PREAMBLE
-from services.conversation_view import estimate_tokens, flatten_content
+from prompts.utility import COMPACT_PREAMBLE
+from services.conversation_view import estimate_tokens
 from services.conversations import ConversationStore, context_footprint
 from services.settings_store import (
     SettingsStore,
@@ -60,7 +54,13 @@ from services.settings_store import (
     resolve_compaction_enabled,
 )
 
-from .meta import make_utility_agent
+from .compaction_summary import (
+    carried_anchors,
+    fence_tool_facts,
+    merge_anchors,
+    summarize_chunks,
+)
+from .compaction_transcript import transcript_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,6 @@ logger = logging.getLogger(__name__)
 # runtime that ignores the reasoning-off lever emits its `<think>` block as response
 # tokens, so the budget has to cover the thinking *and* the summary.
 _BASE_SETTINGS: ModelSettings = {"max_tokens": 2048, "temperature": 0.2}
-
-# Per-entry cap on a rendered tool result. The whole transcript is capped again below, but
-# without this one enormous tool output could consume the entire budget and push every
-# actual exchange out of the summarizer's view.
-_TOOL_RESULT_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -234,91 +229,36 @@ async def summarize_history(
     ``None`` on any failure.
 
     The history is rendered to a **plain-text transcript** rather than replayed as
-    ``message_history``. Replaying a main-model transcript into a different model means
-    handing it that model's tool calls, thinking parts and provider-specific shapes — a
-    reliable source of 400s — and the summarizer needs to *read* the exchange, not continue
-    it. Best-effort and isolated, like titling: a model error or timeout leaves the thread
+    ``message_history`` (:mod:`agent.compaction_transcript`). Replaying a main-model
+    transcript into a different model means handing it that model's tool calls, thinking
+    parts and provider-specific shapes — a reliable source of 400s — and the summarizer
+    needs to *read* the exchange, not continue it.
+
+    **A transcript larger than the summarizer's window is chunked, not cut.** It splits at
+    turn boundaries into pieces that fit ``max_input_tokens``, each is summarized (map) and
+    the partial summaries are merged into one (reduce). The alternative — eliding the
+    middle — throws away whatever happened in the middle of the thread, which is usually
+    where the work was. All of it runs under **one** ``timeout_s`` deadline, so a chunked
+    fold can't outlast the single-call budget the run allowed for it.
+
+    Best-effort and isolated, like titling: a model error or timeout leaves the thread
     uncompacted rather than failing the turn it was about to make room for, and any
-    ``<think>`` block a runtime leaked into the output is stripped before it can become the
-    thread's standing memory."""
-    transcript = render_transcript(messages, max_input_tokens=max_input_tokens)
-    if not transcript.strip():
+    ``<think>`` block a runtime leaked into the output is stripped from **every** call
+    before it can become the thread's standing memory."""
+    chunks = transcript_chunks(messages, max_input_tokens=max_input_tokens)
+    if not chunks:
         return None
     settings: ModelSettings = {**_BASE_SETTINGS, **(reasoning_off or {})}
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
-    agent = make_utility_agent(model, output_type=str, instructions=COMPACT_INSTRUCTIONS)
-    try:
-        run = agent.run(transcript, model_settings=settings)
-        # asyncio.TimeoutError is an Exception subclass (caught below); CancelledError is
-        # not, so a cancelled run still propagates rather than degrading to "no summary".
-        result = await (asyncio.wait_for(run, timeout_s) if timeout_s else run)
-    except Exception as exc:  # noqa: BLE001 — compaction is best-effort, never fails a turn
-        logger.warning("conversation compaction summary failed: %s", exc)
+    summary = await summarize_chunks(model, chunks, settings=settings, timeout_s=timeout_s)
+    if not summary:
         return None
-    # Reasoning was requested off, but the lever is best-effort: a runtime that ignores it
-    # inlines the chain-of-thought as a `<think>…</think>` block in the content. Left in,
-    # that block *becomes* the thread's memory — the model would replay the summarizer's
-    # scratch reasoning as established fact for the rest of the conversation. Same call the
-    # namer makes, and it handles the unclosed block a truncated think emits.
-    return strip_think_blocks(result.output).strip() or None
-
-
-def render_transcript(messages: list[ModelMessage], *, max_input_tokens: int | None = None) -> str:
-    """Render a message list as a labelled plain-text transcript for the summarizer.
-
-    Thinking parts are deliberately dropped: a model's scratch reasoning is the least
-    durable thing in the history and the most expensive per token, and none of it is a fact
-    the continuing thread needs. Tool calls and their results are kept — what the agent
-    looked up, and what came back, is exactly the sort of detail that must survive.
-
-    The result is capped **head-and-tail** (:func:`core.text.truncate_middle`): what is
-    being folded is by definition most of the *main* model's window, and the utility model
-    may be smaller. Keeping both ends holds on to how the thread started and where it
-    currently stands, and elides the middle it can no longer afford."""
-    lines = [line for line in (_render(message) for message in messages) if line]
-    transcript = "\n\n".join(lines)
-    if max_input_tokens is None:
-        return transcript
-    head, tail, elided = truncate_middle(transcript, tokens_to_chars(max_input_tokens))
-    if not elided:
-        return head
-    return f"{head}\n\n[… {elided} characters of the middle omitted …]\n\n{tail}"
-
-
-def _render(message: ModelMessage) -> str:
-    """One message as labelled transcript lines, or "" when it carries nothing useful."""
-    lines: list[str] = []
-    if isinstance(message, ModelRequest):
-        for part in message.parts:
-            if isinstance(part, UserPromptPart):
-                text = flatten_content(part.content).strip()
-                if text:
-                    lines.append(f"OPERATOR: {text}")
-            elif isinstance(part, ToolReturnPart):
-                lines.append(f"TOOL {part.tool_name} returned: {_result_text(part.content)}")
-            elif isinstance(part, RetryPromptPart):
-                lines.append(f"TOOL {part.tool_name} failed: {part.model_response()}")
-    elif isinstance(message, ModelResponse):
-        for part in message.parts:
-            if isinstance(part, TextPart):
-                text = part.content.strip()
-                if text:
-                    lines.append(f"ASSISTANT: {text}")
-            elif isinstance(part, ToolCallPart):
-                lines.append(f"ASSISTANT called {part.tool_name}({part.args_as_json_str()})")
-    return "\n".join(lines)
-
-
-def _result_text(content: object) -> str:
-    """A tool result as a bounded one-line string — JSON-shaped results serialized, then
-    capped so no single output can crowd the whole transcript out of the budget."""
-    if isinstance(content, str):
-        text = content
-    else:
-        try:
-            text = str(jsonable(content))
-        except Exception:  # noqa: BLE001 — an unserializable result is still worth naming
-            text = f"<{type(content).__name__}>"
-    head, tail, elided = truncate_middle(text.strip(), _TOOL_RESULT_CHARS)
-    return head if not elided else f"{head} […{elided} chars…] {tail}"
+    # Anchors are what a re-summarized summary loses first, so a second fold carries the
+    # previous checkpoint's exact paths, ids and numbers across verbatim rather than asking
+    # a model to restate them one more time.
+    summary = merge_anchors(summary, carried_anchors(messages))
+    # Fenced on the way out, because this text is stored as a user-shaped checkpoint the
+    # main model replays as its own memory: the one section that repeats what a page or a
+    # document said must stay marked as data.
+    return fence_tool_facts(summary)
