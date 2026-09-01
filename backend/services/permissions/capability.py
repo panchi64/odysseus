@@ -18,6 +18,13 @@ MCP call is a server, a tool name and a set of argument *keys*, because its effe
 defined on the far side of an API this process cannot see. That last case is not a gap to
 be filled in later — it is the honest description, and it is why
 :attr:`Capability.unbounded` exists rather than an optimistic empty set.
+
+**One family is the exception to the opening sentence, and deliberately so.** For a tool
+the shipped catalog classifies as a *read*, "what this call would do" and "what this tool
+can do" are the same fact: it returns something and leaves nothing different behind,
+whatever its arguments say. Those calls are described from the class alone
+(:attr:`ActionKind.READ`) — not because reading arguments would be hard, but because
+there is nothing in them left to find.
 """
 
 from __future__ import annotations
@@ -28,15 +35,19 @@ from pathlib import Path
 from typing import Any
 
 from services.permissions.shell_ast import ShellCommand, escapes_workspace, shell_reach
-from services.tool_sensitivity import EXTERNAL_PREFIX
+from services.tool_sensitivity import EXTERNAL_PREFIX, Sensitivity, classified, sensitivity_of
 
 
 class ActionKind(StrEnum):
     """What sort of act this is, which decides what can be said about it at all."""
 
-    #: A command handed to a shell. The only kind the deterministic judge can clear,
-    #: because it is the only one whose worst case is readable from a grammar.
+    #: A command handed to a shell — the kind whose worst case is readable from a
+    #: grammar, and the only one whose *arguments* are what has to be ruled on.
     SHELL = "shell"
+    #: A tool this installation ships and classifies as observing: it returns something
+    #: and leaves nothing different behind. The one kind whose worst case is settled by
+    #: the tool alone, so its arguments never need reading (see :func:`capability_of`).
+    READ = "read"
     #: A named file or directory this installation would change.
     FILE = "file"
     #: A call to something outside — an operator's MCP server, a connector, a mail or
@@ -154,6 +165,22 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
             summary=(f"Calls {remote or source} on the {source} connector with {_arg_shape(args)}"),
             network=True,
             unbounded=("an external tool's effect is defined on the far side",),
+        )
+
+    if classified(tool) and sensitivity_of(tool) is Sensitivity.READ:
+        # A tool the shipped catalog classifies as observing. Its arguments say *what*
+        # it looks at, and nothing at all about what it changes — because the answer to
+        # that is "nothing", and it is the same answer for every argument set. So this is
+        # the one description that is complete without reading them, and `unbounded` is
+        # correctly empty: there is no construct here that went uninterpreted.
+        #
+        # Only a *classified* name qualifies. An unknown one resolves to the class that
+        # reaches furthest (`tool_sensitivity`), so nothing an operator's own MCP server
+        # names can arrive here wearing a read's clothes.
+        return Capability(
+            tool=tool,
+            kind=ActionKind.READ,
+            summary=f"Reads with {tool}, using {_arg_shape(args)}",
         )
 
     return Capability(

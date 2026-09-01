@@ -32,6 +32,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
+from services import reasoning
 
 ROLES = frozenset({"main", "utility", "embedding"})
 # Roles that drive the agent loop must support native tool-calling (AE-8.1).
@@ -67,6 +68,19 @@ class EndpointSpec:
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
+
+
+def descriptor_of(spec: EndpointSpec) -> reasoning.ModelDescriptor:
+    """The facts a provider matches a model *family* on, read off a resolved spec.
+
+    One home for the projection so the registry's reasoning-off lookup and an adapter's
+    own settings hook are demonstrably asking about the same model: two hand-built
+    descriptors would be two places for a field to be forgotten, and the symptom would be
+    a lever silently not pulled rather than an error.
+    """
+    return reasoning.ModelDescriptor(
+        model_id=spec.model, base_url=spec.base_url, thinking=spec.thinking
+    )
 
 
 def build_model(spec: EndpointSpec) -> Model:

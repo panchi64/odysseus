@@ -30,7 +30,7 @@ from core.db import get_owned, in_session
 from core.exceptions import DegradedCapabilityError, NotFoundError
 from core.vault import Vault
 from models.registry import ModelEndpoint, ModelRole
-from services import embeddings, llm, reasoning
+from services import embeddings, llm
 from services.providers import DEFAULT_PROVIDER_ID, get_provider
 
 
@@ -524,13 +524,7 @@ class ModelRegistry:
         # The provider adapter owns the "turn thinking off" shape for its own models;
         # the openai-compatible/local adapters fall back to the model-name heuristics
         # in `services/reasoning` because a generic gateway can front any family.
-        reasoning_off = get_provider(primary.provider).reasoning_off(
-            reasoning.ModelDescriptor(
-                model_id=primary.model,
-                base_url=primary.base_url,
-                thinking=primary.thinking,
-            )
-        )
+        reasoning_off = get_provider(primary.provider).reasoning_off(llm.descriptor_of(primary))
         return ResolvedModel(
             model=llm.build_chain(specs),
             reasoning_off=reasoning_off,

@@ -96,6 +96,34 @@ class TestTheDeterministicStageComesFirst:
         assert declined in (await review(RISKY, reviewer=None)).reason
         assert declined in (await review(RISKY, reviewer=reviewer_of(None))).reason
 
+    async def test_a_self_gated_recall_is_settled_without_a_model(self):
+        """A recall is a read: it returns something and leaves nothing different behind,
+        for any query. Sending it to the reviewer bought nothing and cost a round-trip —
+        and on an installation with no utility model bound it *parked the run*, which is
+        the one outcome Auto exists to avoid for an act that changes nothing."""
+        seen: list[ReviewRequest] = []
+
+        async def reviewer(request: ReviewRequest) -> ReviewVerdict | None:
+            seen.append(request)
+            return verdict("high")
+
+        recall = capability_of("memory_recall", {"query": "billing"})
+        outcome = await review(recall, reviewer=reviewer)
+        assert outcome.decision is Decision.ALLOW
+        assert outcome.stage == "judge"
+        assert seen == []
+
+    async def test_a_recall_clears_with_no_reviewer_bound_at_all(self):
+        recall = capability_of("corpus_retrieve", {"query": "invoice"})
+        assert (await review(recall, reviewer=None)).decision is Decision.ALLOW
+
+    async def test_the_widening_reaches_reads_and_nothing_else(self):
+        """The read branch is the only thing that changed: a command still goes to the
+        model, and a tool that acts still parks when there is nobody to ask."""
+        assert (await review(RISKY, reviewer=None)).decision is Decision.ASK
+        sends = capability_of("mail_send", {"to": "a@b.c"})
+        assert (await review(sends, reviewer=None)).decision is Decision.ASK
+
 
 class TestTheArithmetic:
     """The combination, which is written down here and nowhere the reviewer can read."""
