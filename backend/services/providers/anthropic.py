@@ -23,11 +23,6 @@ _DEFAULT_BASE_URL = "https://api.anthropic.com"
 # The Messages API demands a pinned version header on every request.
 _API_VERSION = "2023-06-01"
 _TIMEOUT = httpx.Timeout(8.0, connect=3.0)
-# What a cached prefix is worth keeping for when the operator has said nothing. The
-# config key is the operator's lever; this is the value the Messages API itself defaults
-# to, so an installation that predates the key behaves exactly as it did.
-_DEFAULT_CACHE_TTL = "5m"
-
 
 def _headers(api_key: str | None) -> dict[str, str]:
     headers = {"anthropic-version": _API_VERSION}
@@ -136,7 +131,7 @@ class AnthropicNativeProvider:
         Nothing here depends on ``descriptor``: caching is a property of the Messages
         API, not of one Claude model, so every model this adapter builds gets it.
         """
-        ttl = getattr(get_settings(), "anthropic_cache_ttl", _DEFAULT_CACHE_TTL)
+        ttl = get_settings().anthropic_cache_ttl
         return {
             "anthropic_cache": ttl,
             "anthropic_cache_instructions": ttl,

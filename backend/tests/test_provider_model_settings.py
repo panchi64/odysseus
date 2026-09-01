@@ -112,11 +112,9 @@ class TestTheAnthropicCacheBreakpoints:
         settings = llm.build_model(spec()).settings or {}
         assert all(settings.get(key) == "1h" for key in CACHE_KEYS)
 
-    def test_an_installation_without_the_key_still_caches(self, monkeypatch):
-        """The key is an operator lever added beside the compaction settings; a config
-        object that predates it must not turn caching off, only leave it at the Messages
-        API's own default."""
-        monkeypatch.setattr(anthropic_provider, "get_settings", SimpleNamespace)
+    def test_the_default_ttl_is_the_messages_apis_own(self):
+        """The operator's lever defaults to the tier the Messages API itself uses, so an
+        installation that never touches it caches exactly as Anthropic intends."""
         assert all(llm.build_model(spec()).settings.get(key) == "5m" for key in CACHE_KEYS)
 
 

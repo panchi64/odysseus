@@ -48,7 +48,7 @@ class CompactionContext:
     max_input_tokens: int | None = None
 
 
-def resolve_max_input_tokens(settings: Settings, utility_window: int | None) -> int | None:
+def resolve_max_input_tokens(settings: Settings, utility_window: int | None) -> int:
     """The summarizer's input budget: the configured cap, or half the utility model's
     window when that is smaller.
 
@@ -56,8 +56,7 @@ def resolve_max_input_tokens(settings: Settings, utility_window: int | None) -> 
     the transcript, and a budget that filled it would make the fold fail exactly when the
     thread most needs it. Unknown window ⇒ the configured cap alone, since guessing a
     ceiling for an endpoint that declares none is how a fold silently stops happening."""
-    cap = getattr(settings, "auto_compact_input_max_tokens", None)
+    cap = settings.auto_compact_input_max_tokens
     if utility_window is None or utility_window <= 0:
         return cap
-    half = utility_window // 2
-    return half if cap is None else min(cap, half)
+    return min(cap, utility_window // 2)
