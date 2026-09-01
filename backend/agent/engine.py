@@ -50,6 +50,7 @@ from pydantic_ai import (
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     RunContext,
     RunUsage,
     UsageLimitExceeded,
@@ -284,11 +285,13 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
     cache did, are facts about a request, not about the current replay."""
     counts = conversation_totals(messages)
     timings = run.prior_timings + total_timings(run.timer.responses)
-    replay = messages[min(run.fold_boundary, len(messages)) :]
-    footprint = context_footprint(replay)
-    if footprint is None and replay:
+    # The boundary decides which *reported* figures may still be believed, not what the
+    # estimate covers: the estimate is always over the whole replay, because the whole
+    # replay is what the next request carries.
+    footprint = context_footprint(messages[min(run.fold_boundary, len(messages)) :])
+    if footprint is None and messages:
         footprint = estimate_footprint(
-            replay,
+            messages,
             run.context_overhead,
             fallback_overhead_tokens=overhead_fallback_tokens(get_settings()),
         )
@@ -309,9 +312,8 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
         context_used=footprint,
         context_thresholds=run.context_thresholds,
         # The split of that footprint. Scaled to the provider's own total, so the parts
-        # always add up to the figure beside them even though each is an estimate — which
-        # is why it is composed over the same slice the footprint was read from.
-        context_parts=compose(footprint, run.context_overhead, replay),
+        # always add up to the figure beside them even though each is an estimate.
+        context_parts=compose(footprint, run.context_overhead, messages),
         # The last request on its own — read off the same path as everything else, so a
         # reload reports the route and the cache figures the live turn did.
         last_request=last_request_usage(messages),
@@ -426,6 +428,19 @@ async def _maybe_compact(
     return (history, False) if folded is None else (folded, True)
 
 
+def _without_empty_tail(messages: list[ModelMessage]) -> list[ModelMessage]:
+    """Drop the empty response the streaming path leaves behind when a request fails.
+
+    Pydantic AI appends a placeholder ``ModelResponse`` to the history before it starts
+    streaming into it, so a request the provider refuses outright leaves a partless
+    response as the tail. It is not a message — nothing was generated — and leaving it
+    there would end the rebuilt history on a response, which is not a shape a turn can be
+    resumed from."""
+    while messages and isinstance(messages[-1], ModelResponse) and not messages[-1].parts:
+        messages = messages[:-1]
+    return messages
+
+
 async def _compact_and_retry(
     run: Run,
     ctx: CompactionContext,
@@ -457,7 +472,7 @@ async def _compact_and_retry(
     folded = await _fold(run, ctx, reason="overflow")
     if folded is None:
         return None
-    turn_slice = partial_history[start_ref[0] :]
+    turn_slice = _without_empty_tail(partial_history[start_ref[0] :])
     rebuilt = merge_consecutive_requests([*drop_dangling_tool_calls(folded), *turn_slice])
     start_ref[0] = len(rebuilt) - len(turn_slice)
     # Every response still in front of the turn is pre-fold, so the gauge must not read a
@@ -1172,6 +1187,12 @@ def build_chat_orchestrator(
         # stateless turn has no thread to have spent anything, and keeps the zero default.
         if store is not None and conversation_id is not None:
             run.prior_timings = await store.timings(conversation_id)
+            # What this thread's requests weighed besides the conversation, last time one
+            # was assembled. Seeded onto the run so the trigger below and every frame
+            # emitted before this turn's own measurement lands read the same overhead —
+            # a gauge and a fold that disagreed about it would disagree about fullness.
+            # `MeasureOverhead` replaces it with the live figure on the first request.
+            run.context_overhead = await store.get_overhead(conversation_id)
         # What this turn may fold with. None ⇒ it cannot fold: a stateless run, or no
         # utility model to summarize with. The policy is resolved either way, because the
         # verifier's size guard measures against the same threshold on every turn.
@@ -1289,11 +1310,7 @@ def build_chat_orchestrator(
                 run,
                 compaction,
                 history,
-                overhead=(
-                    await store.get_overhead(conversation_id)
-                    if store is not None and conversation_id is not None
-                    else None
-                ),
+                overhead=run.context_overhead,
                 incoming_tokens=estimate_tokens([incoming]) if incoming is not None else 0,
                 context_window=context_window,
             )
