@@ -129,7 +129,7 @@ describe("the transcript's side of the seam", () => {
 });
 
 describe("folding question.asked", () => {
-  function fold(event: Record<string, unknown>) {
+  function fold(...events: Record<string, unknown>[]) {
     const message = ask({ streaming: true });
     const foldEvent = createFolder({
       state: {
@@ -147,7 +147,9 @@ describe("folding question.asked", () => {
       setStats: () => {},
       setErrored: () => {},
     });
-    foldEvent("a1", { seq: 1, ...event } as never);
+    events.forEach((event, i) =>
+      foldEvent("a1", { seq: i + 1, ...event } as never),
+    );
     return message;
   }
 
@@ -169,6 +171,61 @@ describe("folding question.asked", () => {
     expect(block.question.toolCallId).toBe("t9");
     expect(block.question.questions[0].multiSelect).toBe(true);
     expect(block.question.questions[0].options[0].description).toBe("Sign-in");
+  });
+
+  test("an answered question stops being a park when its result replays", () => {
+    // Re-entering the room replays from seq 0, where the result is the only thing that
+    // knows the question was answered — otherwise the dock reopens over a live run.
+    const folded = fold(
+      { type: "question.asked", tool_call_id: "t9", questions: [] },
+      {
+        type: "tool.completed",
+        tool_call_id: "t9",
+        name: "builtin_ask_user",
+        result: "Q: Which database?\nA: Postgres",
+      },
+    );
+    expect(folded.blocks?.some((b) => b.kind === "question")).toBe(false);
+  });
+
+  test("a decided approval stops being a park too, whether it ran or was denied", () => {
+    // A denial comes back as the call's result, not as a failure — both paths retire it.
+    const settled = (result: Record<string, unknown>) =>
+      fold(
+        {
+          type: "approval.required",
+          tool_call_id: "t2",
+          name: "mail_send_email",
+          summary: "Sends mail",
+          args: {},
+        },
+        { tool_call_id: "t2", name: "mail_send_email", ...result },
+      );
+    for (const outcome of [
+      { type: "tool.completed", result: "sent" },
+      { type: "tool.completed", result: "The operator denied this." },
+      { type: "tool.failed", error: "boom" },
+    ])
+      expect(settled(outcome).blocks?.some((b) => b.kind === "approval")).toBe(
+        false,
+      );
+  });
+
+  test("one settled call does not retire the park beside it", () => {
+    // An approval can grant and run while the question beside it is still waiting.
+    const folded = fold(
+      { type: "question.asked", tool_call_id: "t9", questions: [] },
+      {
+        type: "approval.required",
+        tool_call_id: "t2",
+        name: "mail_send_email",
+        summary: "Sends mail",
+        args: {},
+      },
+      { type: "tool.completed", tool_call_id: "t2", name: "mail_send_email" },
+    );
+    expect(folded.blocks?.some((b) => b.kind === "approval")).toBe(false);
+    expect(folded.blocks?.some((b) => b.kind === "question")).toBe(true);
   });
 
   test("a call that arrives with nothing in it still folds", () => {

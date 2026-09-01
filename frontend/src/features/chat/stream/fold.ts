@@ -47,6 +47,7 @@ import { terminalResult } from "../toolPresentation";
 import { describeToolArgs, describeToolResult } from "../toolSummary";
 import {
   appendDelta,
+  clearPark,
   findReview,
   findTool,
   nextId,
@@ -153,6 +154,9 @@ export function createFolder(
         });
         break;
       case "tool.completed": {
+        // A call with a result is waiting on nobody — retire the prompt it parked on,
+        // so a replay doesn't re-ask what was already answered.
+        patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
         const terminal = terminalResult(ev.name);
         if (terminal) {
           // The two terminal tools report differently — a record from the sandboxed
@@ -178,6 +182,8 @@ export function createFolder(
         break;
       }
       case "tool.failed":
+        // A failure settles the call too — same retirement as the completed case.
+        patchById(assistantId, (m) => clearPark(m, ev.tool_call_id));
         if (terminalResult(ev.name)) {
           patchById(assistantId, (m) =>
             upsertHost(m, ev.tool_call_id, ev.name, {

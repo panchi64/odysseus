@@ -97,6 +97,21 @@ export function findReview(
   );
 }
 
+/** Drop the prompt one call parked on — `approval.required` / `question.asked` open it,
+ *  the call's own result retires it. A park block is a prompt, not a record (the tool
+ *  block is the record), and a replay carries the result but not the click that answered
+ *  it. Keyed per call: a turn can park on two and settle them separately. */
+export function clearPark(m: ChatMessage, toolCallId: string): void {
+  if (!m.blocks) return;
+  m.blocks = m.blocks.filter(
+    (b) =>
+      !(
+        (b.kind === "approval" && b.approval.toolCallId === toolCallId) ||
+        (b.kind === "question" && b.question.toolCallId === toolCallId)
+      ),
+  );
+}
+
 /** Upsert a terminal *block*, keyed by tool_call_id. A terminal call's
  *  `tool.started`, `approval.required`, and `tool.completed` events all land
  *  here, each filling in the part it carries onto the same block.
