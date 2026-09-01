@@ -53,6 +53,8 @@ async def test_falls_back_to_lm_studios_own_listing():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "qwen"}]})
+        if request.url.path.endswith("/props"):
+            return httpx.Response(404)  # not llama.cpp
         assert request.url.path == "/api/v0/models"
         return httpx.Response(200, json={"data": [{"id": "qwen", "max_context_length": 262144}]})
 
@@ -84,6 +86,90 @@ async def test_prefers_the_length_actually_loaded():
             await llm.discover_openai_context_window("http://server/v1", "qwen", client=client)
             == 32768
         )
+
+
+async def test_llama_cpp_answers_on_its_own_status_route():
+    # The other half of the local story. llama.cpp's /v1/models row is keyed by a file
+    # path or an alias that rarely equals the model name the operator bound, and carries
+    # no context field anyway — so the listing probes come back empty on the server whose
+    # window is least likely to be the model's default. Its own /props reports the
+    # context the process was actually started with.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(
+                200,
+                json={
+                    "default_generation_settings": {"n_ctx": 16384, "n_predict": -1},
+                    "total_slots": 1,
+                },
+            )
+        return httpx.Response(200, json={"data": [{"id": "/models/qwen.gguf"}]})
+
+    async with _client(handler) as client:
+        assert (
+            await llm.discover_openai_context_window("http://server/v1", "qwen", client=client)
+            == 16384
+        )
+
+
+async def test_props_is_tried_under_the_base_url_when_there_is_no_version_segment():
+    # An operator can configure the server root rather than /v1 (llama.cpp serves the
+    # chat route at both). The probe has to follow the base it was given, or the most
+    # forgiving configuration would be the one that fails.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/props":
+            return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 8192}})
+        return httpx.Response(200, json={"data": []})
+
+    async with _client(handler) as client:
+        assert await llm.discover_openai_context_window("http://s", "m", client=client) == 8192
+    assert seen.count("/props") == 1  # not probed twice for one candidate URL
+
+
+async def test_a_loaded_window_beats_a_maximum_found_by_an_earlier_probe():
+    # The preference rule, across probes rather than within one row. A server that
+    # advertises what it *could* run (256k) while running 16k would otherwise leave every
+    # guard measuring against a window no request will ever be allowed to reach.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 16384}})
+        return httpx.Response(200, json={"data": [{"id": "qwen", "context_length": 262144}]})
+
+    async with _client(handler) as client:
+        assert (
+            await llm.discover_openai_context_window("http://server/v1", "qwen", client=client)
+            == 16384
+        )
+
+
+async def test_a_maximum_still_stands_when_nothing_reports_a_loaded_window():
+    # And the fallback: a hosted gateway states a maximum and has no /props at all. The
+    # extra probe must cost the answer nothing.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/props"):
+            return httpx.Response(404)
+        return httpx.Response(200, json={"data": [{"id": "gpt-x", "context_length": 128000}]})
+
+    async with _client(handler) as client:
+        assert (
+            await llm.discover_openai_context_window("http://gw/v1", "gpt-x", client=client)
+            == 128000
+        )
+
+
+async def test_a_props_body_that_says_nothing_useful_is_ignored():
+    # Never-raise, including on a route that answered 200 with something else entirely —
+    # /props is a common enough path that another server could own it.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/props"):
+            return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 0}})
+        return httpx.Response(200, json={"data": [{"id": "m"}]})
+
+    async with _client(handler) as client:
+        assert await llm.discover_openai_context_window("http://s/v1", "m", client=client) is None
 
 
 async def test_only_the_asked_for_model_answers():
