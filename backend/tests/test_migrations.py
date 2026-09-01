@@ -8,8 +8,12 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlmodel import Session
 
-from core.db import _ALEMBIC_INI, init_db, make_engine
+from core.db import _ALEMBIC_INI, make_engine
 from core.exceptions import SchemaMigrationError
+
+# The rest of the suite gets a cached copy of the schema instead of replaying the chain
+# (see `_schema`). These tests are *about* the chain, so they take the real one.
+from ._schema import real_init_db as init_db
 
 
 def _head_revision() -> str:

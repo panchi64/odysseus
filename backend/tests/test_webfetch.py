@@ -19,6 +19,7 @@ import pytest
 
 from core.exceptions import SSRFError, WebFetchError
 from core.text import tokens_to_chars, truncate_on_boundary
+from services.sandbox.container import IMAGE_PULL_TIMEOUT_S
 from services.webfetch import BrowserFetcher, FetchedPage, ManagedBrowser, proxy_script
 from services.webfetch.cookies import DomainCookieJar
 from services.webfetch.extract import extract
@@ -753,10 +754,27 @@ async def _browser_or_skip() -> ManagedBrowser:
         timezone_id="America/New_York",
     )
     await browser.start()
-    for _ in range(240):  # bring-up runs in the background; wait up to ~60s for the container
-        if browser.available:
-            break
-        await asyncio.sleep(0.25)
+    # Bring-up runs as a background task, and `available` is settled the moment it
+    # returns: every failure path inside it (no runtime, no image, a proxy that never
+    # listened) returns early, and success flips the flag as its last act. So wait on
+    # the task rather than polling a fixed budget. The old fixed poll capped the wait
+    # below what bring-up actually costs — `ensure_image` re-pulls both `:latest` images
+    # on every call — so a container that was merely still starting was reported as
+    # unavailable, and the test went green as a skip without ever exercising anything.
+    #
+    # The bound is a backstop, not the budget: it is set above everything bring-up can
+    # legitimately spend (a pull each for the browser and proxy images, then the startup
+    # wait) so it cannot reintroduce that false skip. Overrunning it means bring-up is
+    # wedged rather than slow, which is a failure — skipping there would once again be a
+    # green result that tested nothing.
+    assert browser._task is not None  # enabled=True, so start() created it
+    budget = 2 * IMAGE_PULL_TIMEOUT_S + browser._startup_timeout_s + 60
+    try:
+        async with asyncio.timeout(budget):
+            await browser._task
+    except TimeoutError:
+        await browser.stop()
+        pytest.fail(f"browser bring-up did not settle within {budget:.0f}s")
     if not browser.available:
         await browser.stop()
         pytest.skip("web fetch container unavailable (no container runtime or image)")
@@ -767,6 +785,7 @@ async def _allow_all(url: str) -> None:
     return None
 
 
+@pytest.mark.container
 async def test_containerized_browser_renders_js_extracts_and_is_stealthed(monkeypatch):
     browser = await _browser_or_skip()
     try:
