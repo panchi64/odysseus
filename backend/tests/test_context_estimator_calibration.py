@@ -26,13 +26,10 @@ from pydantic_ai import ModelRequest, ModelResponse
 from pydantic_ai.messages import TextPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.usage import RequestUsage
 
+from core.text import CHARS_PER_TOKEN_JSON, CHARS_PER_TOKEN_PROSE
 from runs import TurnOverhead
-from services.context_budget import (
-    CHARS_PER_TOKEN_JSON,
-    CHARS_PER_TOKEN_PROSE,
-    compose,
-)
-from services.conversation_view import message_chars
+from services.context_budget import compose
+from services.conversation_view import estimate_footprint, estimate_tokens, message_chars
 
 tiktoken = pytest.importorskip("tiktoken", reason="calibration needs a real tokenizer")
 
@@ -238,3 +235,40 @@ def test_structured_results_are_credited_to_messages_not_to_tools(encoder):
     split = compose(30_000, TurnOverhead(system=500, tools=2_000), heavy)
     assert split is not None
     assert split.messages > split.tools
+
+
+# ── The footprint the trigger measures ───────────────────────────────────────────
+
+
+def test_the_message_estimate_lands_close_to_what_a_tokenizer_says(encoder):
+    """`estimate_tokens` is not only an input to the split — it is the number the
+    compaction trigger projects against the window, so its *absolute* accuracy matters in
+    a way the split's does not (nothing scales it to a provider's total afterwards). An
+    estimate running a quarter light would let a thread cross the threshold unfolded and
+    overflow on the turn after."""
+    result = _tool_result()
+    messages = [
+        ModelRequest(parts=[UserPromptPart(content=_PROSE)]),
+        ModelRequest(parts=[ToolReturnPart(tool_name="search", content=result, tool_call_id="1")]),
+        ModelResponse(parts=[TextPart(content=_PROSE)], usage=RequestUsage()),
+    ]
+    truth = _tokens(encoder, _PROSE) * 2 + _tokens(encoder, json.dumps(result))
+    estimated = estimate_tokens(messages)
+    assert abs(estimated - truth) / truth < 0.15, f"estimated {estimated}, truth {truth}"
+
+
+def test_a_footprint_counts_the_brief_and_the_schemas_too(encoder):
+    """The whole request, not just the conversation. A full tool catalog is a five-figure
+    number on its own, so a threshold checked against the messages alone is checked
+    against roughly half of what will actually be sent."""
+    schemas = "".join(_tool_schema(f"tool_{i}") for i in range(12))
+    brief = _PROSE[:1500]
+    messages = [ModelRequest(parts=[UserPromptPart(content=_PROSE)])]
+    truth = _tokens(encoder, _PROSE) + _tokens(encoder, brief) + _tokens(encoder, schemas)
+
+    estimated = estimate_footprint(
+        messages,
+        TurnOverhead(system=len(brief), tools=len(schemas)),
+        fallback_overhead_tokens=12_000,
+    )
+    assert abs(estimated - truth) / truth < 0.15, f"estimated {estimated}, truth {truth}"

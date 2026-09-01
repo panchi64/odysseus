@@ -1,9 +1,11 @@
 """Tiny text/token utilities shared across layers.
 
 There is no exact tokenizer at the points these are used (conversation compaction's
-footprint estimate, the summarizer's input budget), and the budgets they serve are *soft*,
-so a coarse characters-per-token proxy is good enough to bound sizes deterministically.
-Kept here, in the foundation layer, so every caller shares one estimate, not several.
+footprint estimate, the context readout's split, the summarizer's input budget), and the
+budgets they serve are *soft*, so a coarse characters-per-token proxy is good enough to
+bound sizes deterministically. Kept here, in the foundation layer, so every caller shares
+one estimate, not several — the gauge and the trigger have to agree about how full a
+thread is, and they only do if they divide by the same numbers.
 
 :func:`replace_unique` is here for the same reason: surgical editing is the shape of both
 ``DOC-2`` and ``SKILL-3``, and one implementation of "replace exactly one span or refuse"
@@ -17,8 +19,41 @@ import re
 
 from .exceptions import SpanEditError
 
-# A coarse characters≈tokens proxy. Good enough for soft budgets; not a real tokenizer.
+# A coarse characters≈tokens proxy, for turning a *token* budget back into a character
+# one (`tokens_to_chars`). Deliberately the pessimistic member of the pair below: a
+# budget converted at 4 asks for fewer characters than the content will actually fit, and
+# a soft budget that under-fills is a budget nothing overflows.
 CHARS_PER_TOKEN = 4
+
+#: Characters per token, by content kind — measured against cl100k on representative
+#: samples and pinned by `tests/test_context_estimator_calibration.py`.
+#:
+#: Two rates rather than one because the difference between them is load-bearing wherever
+#: prose and serialized structure are *compared*: JSON spends about a third of its
+#: characters on punctuation and short repeated keys, so it tokenizes denser than prose,
+#: and a shared divisor leaves the prose parts inflated by roughly a fifth against the
+#: JSON ones. On a tool-heavy thread that is the difference between "your tools are the
+#: problem" and "your conversation is" — and, since the same numbers drive the compaction
+#: trigger, between folding a thread and letting it overflow.
+#:
+#: They live here, beside `CHARS_PER_TOKEN`, because every measurement in the codebase
+#: has to answer with the same number: the context readout's split, the footprint the
+#: compaction trigger projects, and the gauge the operator reads are one estimate seen
+#: three ways, and three private copies of these constants would eventually disagree.
+#:
+#: Code sits between the two (~4.3) and is counted as prose, since it arrives as a string.
+#: That over-credits a thread of pasted source by around a tenth, which is inside the
+#: tolerance a `~` readout claims and well short of the error a shared divisor produces.
+CHARS_PER_TOKEN_PROSE = 4.8
+CHARS_PER_TOKEN_JSON = 4.1
+
+
+def chars_to_tokens(prose: int, structured: int = 0) -> float:
+    """Characters as tokens, each kind converted at its own rate.
+
+    Unrounded on purpose: callers sum many of these before they round once, and rounding
+    each contribution would accumulate a bias in whichever direction the parts lean."""
+    return prose / CHARS_PER_TOKEN_PROSE + structured / CHARS_PER_TOKEN_JSON
 
 # A reasoning model that the runtime didn't keep off inlines its chain-of-thought as a
 # ``<think>…</think>`` block in the *content* (rather than a separate reasoning channel

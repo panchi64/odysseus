@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import (
     BinaryContent,
@@ -31,7 +31,10 @@ from pydantic_ai import (
 )
 
 from core.serde import jsonable
-from core.text import CHARS_PER_TOKEN
+from core.text import chars_to_tokens
+
+if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
+    from runs import TurnOverhead
 
 
 @dataclass
@@ -106,19 +109,36 @@ class MessageView:
     tokens_after: int = 0
 
 
+#: The one class of message content that is measured for the readout but **not** sent
+#: back. Reasoning is a model's own scratch work: OpenAI-compatible endpoints don't accept
+#: a `ThinkingPart` on the way in, so the library drops it when it serializes history, and
+#: an estimate that counted it would inflate a thinking model's footprint by everything it
+#: has ever thought — the threads most likely to be folded far too early. It stays in
+#: :func:`message_class_chars` because the breakdown answers a different question ("what
+#: is this thread spending on reasoning?", which has its own lever) from the footprint.
+_UNSENT_CLASSES = frozenset({"reasoning"})
+
+
 def estimate_tokens(messages: list[Any]) -> int:
-    """A coarse token estimate for a list of messages, from its **text only**.
+    """A coarse token estimate for what ``messages`` cost **on the wire**.
 
     The fallback for endpoints that report no usage — local servers commonly return
     ``input_tokens=0``, which ``services.conversations.context_footprint`` (rightly) treats
     as unmeasured rather than as a real zero. Without an estimate, conversation compaction
     would be dead on exactly the self-hosted endpoints this workspace is built for.
 
-    Deliberately blind to binary parts. A retained inline image is base64 in the blob, and
-    measuring it by character length would read a single screenshot as hundreds of
-    thousands of phantom tokens and compact a thread that is nowhere near full. Ignoring
-    image tokens under-counts instead — the safe direction, since the run's own
-    context-overflow stop is still there behind this.
+    Three things it deliberately does not count. **Reasoning**, per
+    :data:`_UNSENT_CLASSES` — it is never re-sent. **The standing brief**, because a
+    ``SystemPromptPart`` at the head of the history is already measured by
+    ``agent/overhead.py`` and :func:`estimate_footprint` adds it back once, not twice.
+    And **binary parts**: a retained inline image is base64 in the blob, and measuring it
+    by character length would read a single screenshot as hundreds of thousands of phantom
+    tokens. Ignoring image tokens under-counts instead — the safe direction, since the
+    run's own context-overflow stop is still there behind this.
+
+    Prose and serialized structure convert at their own rates (``core.text``) rather than
+    one shared divisor, so this figure and the context readout's split are the same
+    measurement rather than two that drift apart.
 
     It lives here rather than beside the compaction code that first needed it because the
     projection needs the same number: a compaction divider reports what it folded, and a
@@ -126,8 +146,40 @@ def estimate_tokens(messages: list[Any]) -> int:
 
     ``messages`` is a list of ``ModelMessage``; typed loosely so this module keeps the
     same duck-typed part handling as the projection below."""
-    chunks = (_message_text(message) for message in messages)
-    return sum(len(text) for text in chunks if text) // CHARS_PER_TOKEN
+    return int(
+        sum(
+            chars_to_tokens(chars.prose, chars.structured)
+            for name, chars in message_class_chars(messages).items()
+            if name not in _UNSENT_CLASSES
+        )
+    )
+
+
+def estimate_footprint(
+    messages: list[Any],
+    overhead: TurnOverhead | None,
+    *,
+    fallback_overhead_tokens: int,
+) -> int:
+    """What a request carrying ``messages`` would weigh, brief and tool schemas included.
+
+    :func:`estimate_tokens` measures the conversation; a request is the conversation
+    *plus* the standing brief and every tool schema, which on a full catalog is a five-
+    figure number all by itself. Measuring only the messages is what let a thread sit
+    comfortably under the compaction threshold and still overflow on the next turn.
+
+    ``overhead`` is the thread's last recorded ``TurnOverhead`` (characters, split system
+    vs. tools) — converted at the prose and JSON rates respectively, since a brief is
+    prose and a schema is JSON. When the thread has none — every turn it ever ran predates
+    the per-thread record, or it has not run one yet — ``fallback_overhead_tokens`` stands
+    in. **A guess, not a zero**: assuming no overhead is assuming the request is smaller
+    than it can possibly be, which is the one error a limit guard must not make."""
+    overhead_tokens = (
+        fallback_overhead_tokens
+        if overhead is None
+        else int(chars_to_tokens(overhead.system, overhead.tools))
+    )
+    return estimate_tokens(messages) + overhead_tokens
 
 
 @dataclass(frozen=True)
@@ -135,13 +187,12 @@ class ContentChars:
     """Message characters, split by how they tokenize.
 
     Prose and JSON do not tokenize at the same rate — measured against cl100k, prose runs
-    about 4.7 characters per token and serialized JSON about 4.0, because JSON spends a
-    third of its characters on punctuation and short repeated keys. A single
-    characters-per-token proxy is fine for a *soft budget* (which is all
-    :func:`estimate_tokens` serves) but not for a **split**, where a shared divisor
-    silently inflates whichever part is prose by about a fifth relative to whichever part
-    is JSON. Keeping the two apart is what lets ``services.context_budget`` apply the
-    right rate to each."""
+    about 4.8 characters per token and serialized JSON about 4.1, because JSON spends a
+    third of its characters on punctuation and short repeated keys. Keeping the two apart
+    is what lets every measurement built on this — the context readout's split, the
+    footprint the compaction trigger projects — apply the right rate to each rather than
+    inflating whichever part is prose by about a fifth. The rates themselves live in
+    ``core.text``, so there is one pair of them for the whole codebase."""
 
     prose: int
     structured: int
@@ -243,12 +294,6 @@ def message_chars(messages: list[Any]) -> ContentChars:
         prose=sum(part.prose for part in by_class),
         structured=sum(part.structured for part in by_class),
     )
-
-
-def _message_text(message: Any) -> str:
-    """Every text-bearing part of a message, joined — the input to
-    :func:`estimate_tokens`. Binary content contributes nothing on purpose (see there)."""
-    return " ".join(_content_text(getattr(part, "content", None)) for part in message.parts)
 
 
 def _content_text(content: Any) -> str:

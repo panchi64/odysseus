@@ -22,8 +22,9 @@ costing the window. A readout of the things that are actually there is scanned; 
 with a row for everything that could be there is read.
 
 **It is an estimate anchored to a fact.** Every piece is sized with the coarse
-``CHARS_PER_TOKEN`` proxy the rest of the codebase already uses for soft budgets, and
-then scaled so they sum to exactly the token count the provider reported. The total is
+characters-per-token proxies the rest of the codebase already uses for soft budgets
+(``core.text``, one rate for prose and a denser one for serialized structure), and then
+scaled so they sum to exactly the token count the provider reported. The total is
 therefore always right and the split is approximately right — which is the honest shape
 of the thing, and why every figure the UI renders from this carries a `~`. Scaling also
 absorbs what the proxy can't see (per-message framing, special tokens, a tokenizer that
@@ -36,28 +37,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core.text import chars_to_tokens
 from runs import ContextComposition, ContextSegment, TurnOverhead
 
 from .conversation_view import message_class_chars
-
-#: Characters per token, by content kind — measured against cl100k on representative
-#: samples and pinned by a calibration test.
-#:
-#: There are two of these rather than the one `core.text.CHARS_PER_TOKEN` because this is
-#: a **split**, and a split is only as good as the *relative* accuracy of its parts. JSON
-#: spends about a third of its characters on punctuation and short repeated keys, so it
-#: tokenizes denser than prose; dividing both by the same 4 leaves the prose parts — the
-#: standing brief, the conversation text — inflated by roughly a fifth against the JSON
-#: ones, which on a tool-heavy thread is the difference between "your tools are the
-#: problem" and "your conversation is". Absolute accuracy matters much less: the parts are
-#: scaled to the provider's own total afterwards, so a bias shared by all three cancels
-#: and only the difference between them survives.
-#:
-#: Code sits between the two (~4.3) and is counted as prose, since it arrives as a string.
-#: That over-credits a thread of pasted source by around a tenth, which is inside the
-#: tolerance a `~` readout claims and well short of the error a shared divisor produces.
-CHARS_PER_TOKEN_PROSE = 4.8
-CHARS_PER_TOKEN_JSON = 4.1
 
 _Group = Literal["brief", "tools", "messages"]
 
@@ -74,8 +57,10 @@ class _Piece:
 
     @property
     def estimate(self) -> float:
-        """Characters as tokens, each kind at its own rate."""
-        return self.prose / CHARS_PER_TOKEN_PROSE + self.structured / CHARS_PER_TOKEN_JSON
+        """Characters as tokens, each kind at its own rate (``core.text``) — the same
+        conversion the compaction trigger's footprint uses, so the gauge's bar and the
+        threshold that folds the thread can never disagree about what it weighs."""
+        return chars_to_tokens(self.prose, self.structured)
 
 
 def compose(

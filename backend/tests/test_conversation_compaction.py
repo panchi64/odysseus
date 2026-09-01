@@ -382,7 +382,8 @@ def test_should_compact_declines_without_a_declared_window():
 def test_should_compact_falls_back_to_an_estimate_when_usage_is_unreported():
     """Local servers commonly report `input_tokens=0`, which `context_footprint` treats as
     unmeasured. Without the estimate the feature would be dead on exactly that setup."""
-    big = ModelRequest(parts=[UserPromptPart(content="x" * 40_000)])
+    # Comfortably over the threshold at the prose rate `estimate_tokens` converts at.
+    big = ModelRequest(parts=[UserPromptPart(content="x" * 60_000)])
     assert should_compact([big, ModelResponse(parts=[TextPart(content="y")])], 10_000, 0.95)
 
 
