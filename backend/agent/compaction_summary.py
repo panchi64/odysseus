@@ -46,6 +46,7 @@ from prompts.utility import (
     COMPACT_INSTRUCTIONS,
     COMPACT_MARKER,
     COMPACT_REDUCE_INSTRUCTIONS,
+    COMPACT_SECTIONS,
     COMPACT_TOOLS_SECTION,
 )
 from services.conversation_view import flatten_content
@@ -120,6 +121,7 @@ async def _run(
     # namer makes, and it handles the unclosed block a truncated think emits.
     return strip_think_blocks(result.output).strip() or None
 
+
 # Sections are asked for as `## Name` lines; anything else in the text is body. A model
 # that reaches for bold instead of hashes, or repeats the heading's gloss after the name,
 # is still writing the section we asked for — so the pattern accepts both and the name is
@@ -128,6 +130,21 @@ async def _run(
 _HEADING = re.compile(
     r"^[ \t]*(?:#{1,3}|\*\*)[ \t]*(?P<name>[^\n#*]+?)[ \t]*\**[ \t]*:?[ \t]*$", re.MULTILINE
 )
+
+# …but only a heading naming one of *our* sections ends a section. The summarizer is asked
+# to quote its sources verbatim, so a fetched page's own `## Notes for the assistant` (or a
+# bolded tool name opening a list) arrives inside the summary looking exactly like a
+# heading. Treating it as one would close the untrusted fence early and leave whatever
+# followed it stored as the workspace's own voice — the injection this fence exists to
+# stop. Anything not on the roster is body text, wherever it appears.
+_SECTION_KEYS = tuple(re.sub(r"[^a-z0-9]+", " ", name.lower()).strip() for name in COMPACT_SECTIONS)
+
+# A fence marker, either end. Used to strip a previous checkpoint's quoted tool content
+# before its Anchors section is read: the summary that carried it may have omitted its own
+# Anchors heading (the prompt allows omission), and then the first `## Anchors` in the text
+# is one the fenced page wrote — lifting *those* lines forward would launder an injection
+# into every later checkpoint, verbatim, forever.
+_FENCE_MARKER = re.compile(r"\[(?:BEGIN|END) UNTRUSTED CONTENT\b[^\]]*\]")
 
 
 def fence_tool_facts(summary: str) -> str:
@@ -192,9 +209,13 @@ def replace_section(text: str, name: str, body: str) -> str:
 
 def _span(text: str, name: str) -> tuple[int, int] | None:
     """Where the named section's body starts and ends, matching the heading loosely (case,
-    punctuation and any restated gloss are the model's choice, the section is ours)."""
+    punctuation and any restated gloss are the model's choice, the section is ours).
+
+    The section runs to the next heading **we asked for**, or to the end of the text — see
+    ``_SECTION_KEYS``: a heading-shaped line the summarizer copied out of a tool result is
+    part of that result, not the start of a new section."""
     wanted = _key(name)
-    matches = list(_HEADING.finditer(text))
+    matches = [m for m in _HEADING.finditer(text) if _known_key(m.group("name")) is not None]
     for index, match in enumerate(matches):
         if not _key(match.group("name")).startswith(wanted):
             continue
@@ -202,6 +223,12 @@ def _span(text: str, name: str) -> tuple[int, int] | None:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         return start, end
     return None
+
+
+def _known_key(name: str) -> str | None:
+    """The section this heading names, or ``None`` when it names none of ours."""
+    key = _key(name)
+    return next((section for section in _SECTION_KEYS if key.startswith(section)), None)
 
 
 def _key(name: str) -> str:
@@ -229,7 +256,9 @@ def _dedupe(lines: list[str]) -> list[str]:
 
 
 def _checkpoint_texts(messages: list[ModelMessage]) -> list[str]:
-    """The stored checkpoint texts among a fold's messages, newest last."""
+    """The stored checkpoint texts among a fold's messages, newest last — **with every
+    fenced region removed**, so what is carried forward is only what the summarizer wrote
+    in its own voice."""
     texts: list[str] = []
     for message in messages:
         if not isinstance(message, ModelRequest):
@@ -238,5 +267,26 @@ def _checkpoint_texts(messages: list[ModelMessage]) -> list[str]:
             if isinstance(part, UserPromptPart):
                 text = flatten_content(part.content).strip()
                 if text.startswith(COMPACT_MARKER):
-                    texts.append(text)
+                    texts.append(_without_fenced(text))
     return texts
+
+
+def _without_fenced(text: str) -> str:
+    """``text`` with everything between (and including) the untrusted-content markers
+    dropped, an unclosed fence taking the rest of the text with it.
+
+    A checkpoint is replayed as a user-shaped message — the most authoritative voice in the
+    history — and its fenced section is the one part that repeats what a web page said. The
+    carry-forward copies lines **verbatim** into the next checkpoint, outside any fence, so
+    it must never be able to read a line out of one. Erring long is deliberate: dropping a
+    genuine anchor costs a paraphrase, promoting a fetched instruction costs the fence."""
+    out: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        marker = _FENCE_MARKER.search(line)
+        if marker is not None:
+            fenced = marker.group().startswith("[BEGIN")
+            continue
+        if not fenced:
+            out.append(line)
+    return "\n".join(out)
