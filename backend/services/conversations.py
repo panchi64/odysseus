@@ -251,7 +251,7 @@ class _Tree:
             self.active_leaf_id = added[-1].id
         return added
 
-    def version_parent(self, node_id: str) -> str | None:
+    def _version_parent(self, node_id: str) -> str | None:
         """The node whose children hold ``node_id``'s version set — its parent, walked
         up through any compaction checkpoints.
 
@@ -272,7 +272,7 @@ class _Tree:
 
     def siblings(self, node_id: str) -> list[str]:
         """The version set ``node_id`` belongs to, in version (seq) order, including
-        ``node_id`` itself — its :meth:`version_parent`'s children with every checkpoint
+        ``node_id`` itself — its :meth:`_version_parent`'s children with every checkpoint
         replaced by the real nodes beneath it.
 
         A checkpoint has no version set of its own: it is one thread's bookkeeping, not
@@ -280,7 +280,7 @@ class _Tree:
         node = self.nodes.get(node_id)
         if node is None or node.compacted:
             return []
-        return self._version_nodes(self.children.get(self.version_parent(node_id), []))
+        return self._version_nodes(self.children.get(self._version_parent(node_id), []))
 
     def _version_nodes(self, ids: list[str]) -> list[str]:
         """``ids`` with each compaction checkpoint replaced by its own children (applied
@@ -1079,8 +1079,6 @@ class ConversationStore:
         boundary = starts[-keep_turns] if keep_turns > 0 else len(path)
         if tree.children.get(leaf):
             boundary = min(boundary, len(path) - 1)
-        if boundary <= 0:
-            return None
         folded = _replay_nodes(path, stop=boundary)
         if not folded:
             return None
