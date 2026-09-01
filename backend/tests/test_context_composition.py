@@ -553,6 +553,54 @@ async def test_a_reopened_thread_reports_the_breakdown_without_another_turn(monk
         assert external and external[0]["count"] == 68
 
 
+async def test_a_reopened_thread_whose_endpoint_reported_no_usage_still_reads(monkeypatch):
+    """A local server that answers ``input_tokens=0`` is the case the estimate exists for.
+
+    The live turn falls back to it and the gauge fills; a cold read of that same thread has
+    to reach the same figure, or reopening the conversation blanks a ring the operator was
+    watching a moment earlier and takes the breakdown with it."""
+    from pydantic_ai.usage import RequestUsage
+
+    from core.config import get_settings
+    from runs import TurnOverhead as Overhead
+    from services.conversation_view import estimate_footprint
+    from services.registry import ModelRegistry
+
+    from ._helpers import client_app
+
+    async def main_context_window(self, owner_id):
+        return 200_000
+
+    monkeypatch.setattr(ModelRegistry, "main_context_window", main_context_window)
+
+    async with client_app() as (client, app):
+        store = app.state.conversations
+        conversation_id = await store.create_conversation("operator")
+        overhead = Overhead(system=4_000, tools=60_000)
+        store.record(
+            conversation_id,
+            [
+                ModelRequest(parts=[UserPromptPart(content="x" * 2_000)]),
+                ModelResponse(
+                    parts=[TextPart(content="an answer nobody costed")],
+                    usage=RequestUsage(input_tokens=0, output_tokens=0),
+                ),
+            ],
+        )
+        await store.set_overhead(conversation_id, overhead)
+
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        expected = estimate_footprint(
+            await store.history(conversation_id),
+            overhead,
+            fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
+        )
+        assert detail["context"] is not None
+        assert detail["context"]["used"] == expected
+        # And the readout beside the ring agrees with it, rather than reporting null.
+        assert detail["stats"]["context_used"] == expected
+
+
 # ── What counts as message weight ────────────────────────────────────────────────
 
 

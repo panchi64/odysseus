@@ -12,7 +12,7 @@ reference, so mutating one in place would corrupt the durable history of every l
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from pydantic_ai import (
     ModelMessage,
@@ -102,6 +102,41 @@ def merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessag
             continue
         out.append(message)
     return out
+
+
+@dataclass
+class TurnStart:
+    """Where *this turn's own* content begins in the replayed history.
+
+    An index alone is not enough. A history rebuilt mid-turn — an overflow fold hoisting a
+    checkpoint in front of a turn that opens on the operator's prompt — has two consecutive
+    requests at the boundary, and both the library and :func:`merge_consecutive_requests`
+    collapse those into **one** message that belongs half to the history and half to the
+    turn. Slicing at a message index there either re-persists the checkpoint (and, once the
+    library writes its history-processor output back, the whole reinjected brief) as new
+    operator messages, or drops the operator's own prompt from the turn it records.
+
+    So the boundary is a message index *and* how many of that message's parts are the
+    turn's own. It is counted from the **end**, because the front of a shared message is
+    not stable: the library prepends the run's system prompt to the first request it sends
+    and hoists tool results ahead of user-facing parts when it merges. The turn's own
+    prompt is what the merge appended, so it stays at the tail — and the tail is what can
+    be counted. ``parts`` is zero for every turn that never folded (nearly all of them) and
+    :meth:`slice` is then exactly the plain list slice it always was. Mutable, because an
+    in-turn fold moves it and every reader holds this one object.
+    """
+
+    index: int = 0
+    parts: int = 0
+
+    def slice(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """``messages`` from this boundary on — the turn's own messages, with anything in
+        the boundary message that belongs to the history in front of the turn removed."""
+        turn = messages[self.index :]
+        if not self.parts or not turn or not isinstance(turn[0], ModelRequest):
+            return turn
+        kept = turn[0].parts[-self.parts :]
+        return [replace(turn[0], parts=kept), *turn[1:]]
 
 
 def split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:

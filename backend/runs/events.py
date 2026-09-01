@@ -784,6 +784,11 @@ class LimitNotice(_Body):
     # value a client already handles is a narrowing, which this protocol does not do.)
     limit: str
     message: str
+    # The stop marker this notice announces, when the bound also blocked the turn — the
+    # same string the turn persists as its `blocked_reason`. It is here so the toast and
+    # the marker on the stopped turn can offer the *same* remedy: two context stops share
+    # one `limit` value but not one answer, and prose is not something a client can key on.
+    detail: str | None = None
 
 
 EventBody = Annotated[

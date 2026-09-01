@@ -29,8 +29,8 @@ from services.context_budget import compose
 from services.conversation_view import MessageView
 from services.conversations import (
     ConversationSummaryView,
-    context_footprint,
     conversation_totals,
+    footprint_or_estimate,
     last_request_usage,
 )
 from services.modes import DEFAULT_MODE, mode_spec
@@ -310,12 +310,19 @@ async def _detail(
     switch, rewind)."""
     store = deps.store(request)
     messages = await store.messages_view(conversation_id)
-    # Seed the context meter from the last turn's footprint; only pay to resolve the
-    # window when there's a footprint to measure against it. The window is the
-    # default ``main`` model's (no per-conversation endpoint is persisted, so that's
-    # what the next turn would run on).
+    # Seed the context meter from the last turn's footprint — or, where the endpoint
+    # reported no usage (the common local case), from the same estimate the live gauge
+    # falls back to, so reopening a thread doesn't blank a ring that was filling a moment
+    # ago. Only pay to resolve the window when there is something to measure against it.
+    # The window is the default ``main`` model's (no per-conversation endpoint is
+    # persisted, so that's what the next turn would run on).
     history = await store.history(conversation_id)
-    used = context_footprint(history)
+    overhead = await store.get_overhead(conversation_id)
+    used = footprint_or_estimate(
+        history,
+        overhead,
+        fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
+    )
     window: int | None = None
     context: ContextWindow | None = None
     if used is not None:
@@ -332,7 +339,7 @@ async def _detail(
             # turn recorded. Same turn as `used` above, so both halves of the readout
             # describe the same request. Absent for a thread that hasn't run one since
             # this was recorded, which shows as no breakdown rather than a guessed one.
-            compose(used, await store.get_overhead(conversation_id), history),
+            compose(used, overhead, history),
         )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the

@@ -90,8 +90,8 @@ from services.conversation_view import estimate_footprint, estimate_tokens
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
-    context_footprint,
     conversation_totals,
+    footprint_or_estimate,
     last_request_usage,
 )
 from services.llm import TOOL_CALL_SETTINGS
@@ -114,6 +114,7 @@ from .compaction_context import CompactionContext, resolve_max_input_tokens
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
 from .gating import settle_deferred
 from .history import (
+    TurnStart,
     drop_dangling_tool_calls,
     merge_consecutive_requests,
     split_injected_requests,
@@ -122,6 +123,7 @@ from .history import (
 from .injections import AnnounceInjections, announce_injection, contributor_id
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
 from .model_errors import (
+    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
     CONTEXT_OVERFLOW_DETAIL,
     context_limit_message,
     is_context_overflow,
@@ -288,14 +290,14 @@ def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
     timings = run.prior_timings + total_timings(run.timer.responses)
     # The boundary decides which *reported* figures may still be believed, not what the
     # estimate covers: the estimate is always over the whole replay, because the whole
-    # replay is what the next request carries.
-    footprint = context_footprint(messages[min(run.fold_boundary, len(messages)) :])
-    if footprint is None and messages:
-        footprint = estimate_footprint(
-            messages,
-            run.context_overhead,
-            fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
-        )
+    # replay is what the next request carries. Same helper the cold read calls, so a
+    # thread reopened after a run reports the figure the live frames did.
+    footprint = footprint_or_estimate(
+        messages,
+        run.context_overhead,
+        fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
+        reported_from=messages[min(run.fold_boundary, len(messages)) :],
+    )
     return RunMetrics(
         steps=counts.steps,
         tool_calls=counts.tool_calls,
@@ -447,7 +449,7 @@ async def _compact_and_retry(
     ctx: CompactionContext,
     *,
     partial_history: list[ModelMessage],
-    start_ref: list[int],
+    turn_start: TurnStart,
 ) -> list[ModelMessage] | None:
     """Fold the thread mid-turn and rebuild the history the failed request will be re-sent
     against, or ``None`` when nothing folded.
@@ -467,8 +469,11 @@ async def _compact_and_retry(
       requests when it cleans a history it is resuming, and a checkpoint hoisted in front
       of a turn that opens on a user prompt is exactly that shape. Pre-merging is what
       keeps ``all_messages()`` the length we measured our index against;
-    - the index is then re-derived from the tail rather than from the fold, so it is right
-      whether or not the merge collapsed the boundary.
+    - the boundary is then read off the two sides' *shapes*, because that merge can leave
+      the turn beginning inside a message the folded history also owns. Half a message is
+      still a boundary: without recording how much of it is the turn's own, the persist
+      re-records the checkpoint summary — and whatever else the replay put in front of the
+      prompt, the reinjected brief included — as new operator messages.
 
     An operator who switched compaction off for this thread is not overruled by an
     overflow: they get the stop, and the **Compact and retry** it offers, which is the
@@ -479,12 +484,32 @@ async def _compact_and_retry(
     folded = await _fold(run, ctx, reason="overflow")
     if folded is None:
         return None
-    turn_slice = _without_empty_tail(partial_history[start_ref[0] :])
-    rebuilt = merge_consecutive_requests([*drop_dangling_tool_calls(folded), *turn_slice])
-    start_ref[0] = len(rebuilt) - len(turn_slice)
-    # Every response still in front of the turn is pre-fold, so the gauge must not read a
-    # footprint off one until this turn answers.
-    run.fold_boundary = start_ref[0]
+    # Merged per side first, so the only merge the concatenation can still perform is the
+    # one at the boundary — which is the one the index has to know about. Reading it off
+    # the two shapes is exact; reading it off the lengths would mistake a merge *inside*
+    # either side for a collapsed boundary.
+    head = merge_consecutive_requests(drop_dangling_tool_calls(folded))
+    turn_slice = merge_consecutive_requests(
+        _without_empty_tail(partial_history[turn_start.index :])
+    )
+    collapsed = (
+        bool(head)
+        and bool(turn_slice)
+        and isinstance(head[-1], ModelRequest)
+        and isinstance(turn_slice[0], ModelRequest)
+    )
+    rebuilt = merge_consecutive_requests([*head, *turn_slice])
+    turn_start.index = len(head) - 1 if collapsed else len(head)
+    turn_start.parts = len(turn_slice[0].parts) if collapsed else 0
+    # Nothing in the rebuilt replay was measured against the thread as it now stands — this
+    # turn's own responses included, since they reported their prompt size before the fold.
+    # So the boundary is the whole replay: the frame below reads the estimate, and the first
+    # believable reported figure is the one the retry itself comes back with.
+    run.fold_boundary = len(rebuilt)
+    # And it goes out *now*, not when the retry answers. A fold that frees half the thread
+    # and then overruns again would otherwise leave the gauge pinned at its pre-fold figure
+    # for good — the operator watching a compaction that visibly changed nothing.
+    run.emit(_turn_metrics(run, rebuilt))
     return rebuilt
 
 
@@ -505,16 +530,16 @@ async def _drive_turn(
     store: ConversationStore | None = None,
     request_limit: int | None = None,
     compaction: CompactionContext | None = None,
-    start_ref: list[int] | None = None,
+    turn_start: TurnStart | None = None,
     correcting: bool = False,
 ) -> _TurnResult:
     """Drive one turn to its end: an answer, a park, or a stop at a bound.
 
-    ``start_ref`` is the caller's persistence index — the position in the replayed history
-    at which *this turn's* own messages begin — held in a one-element list because an
-    in-turn fold moves it. Every reader of that index (the completed persist, the flush
-    hooks, a park) reads it through this list, so a fold cannot leave one of them slicing
-    against the pre-fold history.
+    ``turn_start`` is the caller's persistence boundary — where in the replayed history
+    *this turn's* own messages begin — held as one shared mutable object because an in-turn
+    fold moves it. Every reader of that boundary (the completed persist, the flush hooks, a
+    park) reads it through this object, so a fold cannot leave one of them slicing against
+    the pre-fold history.
 
     ``compaction`` is what this turn may fold with, or ``None`` for a turn that cannot fold
     (a stateless run, or compaction switched off). ``correcting`` marks a verifier's
@@ -681,9 +706,9 @@ async def _drive_turn(
             if is_context_overflow(exc):
                 rebuilt = (
                     None
-                    if compacted or correcting or compaction is None or start_ref is None
+                    if compacted or correcting or compaction is None or turn_start is None
                     else await _compact_and_retry(
-                        run, compaction, partial_history=_partial_history(), start_ref=start_ref
+                        run, compaction, partial_history=_partial_history(), turn_start=turn_start
                     )
                 )
                 if rebuilt is not None:
@@ -695,16 +720,25 @@ async def _drive_turn(
                     message_history = rebuilt
                     deferred_results = None
                     continue
+                # Which of the two overflow stops this is travels as the *detail*, not
+                # only as prose in the notice: the client offers "Compact and retry" on
+                # this marker, and a turn that already folded and still overran is the one
+                # case where that button would send the operator round the same loop.
+                detail = (
+                    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL if compacted else CONTEXT_OVERFLOW_DETAIL
+                )
                 run.emit(
                     LimitNotice(
-                        limit="context", message=context_limit_message(run, compacted=compacted)
+                        limit="context",
+                        message=context_limit_message(run, compacted=compacted),
+                        detail=detail,
                     )
                 )
-                run.block(CONTEXT_OVERFLOW_DETAIL)
+                run.block(detail)
                 return _TurnResult(
                     answer=None,
                     messages=_partial_history(),
-                    blocked_reason=CONTEXT_OVERFLOW_DETAIL,
+                    blocked_reason=detail,
                 )
             # Rewrite a model-couldn't-load error into something the operator can act
             # on; let every other HTTP error propagate with its own detail.
@@ -928,7 +962,8 @@ def _finalize(
         # Parked: hand the resume the context to persist the parked turn too.
         if conversation_id is not None and isinstance(run.parked_payload, ParkedTurn):
             run.parked_payload.conversation_id = conversation_id
-            run.parked_payload.persist_from = context.start
+            run.parked_payload.persist_from = context.start.index
+            run.parked_payload.persist_from_parts = context.start.parts
             if context.clean_drop is not None:  # re-park: carry the drop range forward
                 run.parked_payload.clean_drop = context.clean_drop
             run.parked_payload.attachment_ids = list(context.attachment_ids)
@@ -949,7 +984,7 @@ def _finalize(
         # empty slice, e.g. a bound hit before any new message accumulated).
         store.record(
             conversation_id,
-            split_injected_requests(messages[context.start :]),
+            split_injected_requests(context.start.slice(messages)),
             attachment_ids=list(context.attachment_ids),
             persisted=context.persisted,
             blocked_reason=turn.blocked_reason,
@@ -995,16 +1030,20 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
     _flush_recorder(run, store)(parked.message_history, CANCELLED_DETAIL, _parked_context(parked))
 
 
-def _parked_context(parked: ParkedTurn, start_ref: list[int] | None = None) -> PersistContext:
+def _parked_context(parked: ParkedTurn, turn_start: TurnStart | None = None) -> PersistContext:
     """Where a parked turn goes — fixed at the moment it parked, so every path that
     persists it later (a resume's flush hooks, a cancel while still parked) agrees.
 
-    ``start_ref`` is the live index a *running* resume holds: a fold during that resume
+    ``turn_start`` is the live boundary a *running* resume holds: a fold during that resume
     rebuilds the history in front of the turn and moves it. A cancel of a still-parked run
-    passes nothing, because nothing has folded — the payload's own index is the answer."""
+    passes nothing, because nothing has folded — the payload's own boundary is the answer."""
     return PersistContext(
         conversation_id=parked.conversation_id,
-        start=parked.persist_from if start_ref is None else start_ref[0],
+        start=(
+            TurnStart(parked.persist_from, parked.persist_from_parts)
+            if turn_start is None
+            else turn_start
+        ),
         clean_drop=parked.clean_drop,
         attachment_ids=parked.attachment_ids,
         persisted=parked.persisted,
@@ -1114,10 +1153,10 @@ def build_chat_orchestrator(
         # The state they read is declared here and filled in below; a hook that fires
         # early simply sees the empty values, which is the correct record for a turn that
         # stopped before it began.
-        # Where this turn's own messages begin in the replayed history. A one-element list
-        # because an in-turn fold moves it: `_drive_turn` rewrites it in place, and every
-        # reader below reads through it rather than closing over a stale integer.
-        start_ref = [0]
+        # Where this turn's own messages begin in the replayed history. One shared mutable
+        # object because an in-turn fold moves it: `_drive_turn` rewrites it in place, and
+        # every reader below reads through it rather than closing over a stale integer.
+        turn_start = TurnStart()
         persisted: list | None = None
         stamp_ids: list[str] = []
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
@@ -1136,7 +1175,7 @@ def build_chat_orchestrator(
             # attachments ride on `persisted`/`stamp_ids` and per-turn context is
             # re-resolved fresh each turn and never persisted.
             if partial_history_ref:
-                turn = partial_history_ref[0]()[start_ref[0] :]
+                turn = turn_start.slice(partial_history_ref[0]())
                 if turn:
                     return turn
             if isinstance(prompt, str) and prompt:
@@ -1144,13 +1183,13 @@ def build_chat_orchestrator(
             return []
 
         def _flush_context() -> PersistContext:
-            # Read at flush time, not at arm time: `start_ref`, `stamp_ids` and `persisted`
-            # are only known once the turn is under way, and the hooks are armed before
-            # that (see above). `start=0` because `_turn_messages_or_prompt` hands over an
-            # already-sliced list.
+            # Read at flush time, not at arm time: `turn_start`, `stamp_ids` and
+            # `persisted` are only known once the turn is under way, and the hooks are armed
+            # before that (see above). A default boundary, because `_turn_messages_or_prompt`
+            # hands over an already-sliced list.
             return PersistContext(
                 conversation_id=conversation_id,
-                start=0,
+                start=TurnStart(),
                 clean_drop=_flush_clean_drop(),
                 attachment_ids=stamp_ids,
                 persisted=persisted,
@@ -1166,7 +1205,7 @@ def build_chat_orchestrator(
             if not drop_ref:
                 return None
             reject_idx, nudge_idx = drop_ref[0]
-            start = start_ref[0]
+            start = turn_start.index
             if reject_idx < start:
                 return None
             return reject_idx - start, nudge_idx - start
@@ -1307,7 +1346,7 @@ def build_chat_orchestrator(
         # had to fit in whatever the last one happened to leave spare.
         #
         # And *before* anything downstream measures the list: the rebuild has to land ahead
-        # of both the dangling-call strip and `start_ref`, because that index is where
+        # of both the dangling-call strip and `turn_start`, because that index is where
         # `_finalize` slices the turn out of `result.all_messages()` — it must count the
         # list actually handed to the model, not the one this started from.
         incoming = _incoming_request(user_prompt, context_texts if prompt is None else [])
@@ -1326,11 +1365,11 @@ def build_chat_orchestrator(
         # operator's view, but replaying a dangling tool call to the model is a provider error
         # (an assistant tool_call with no following tool result → HTTP 400), so strip it from
         # the *model's* input here. The persisted transcript is untouched; only this turn's
-        # model history is sanitized, and `start_ref` tracks the trimmed length.
+        # model history is sanitized, and `turn_start` tracks the trimmed length.
         if history:
             history = drop_dangling_tool_calls(history)
             history = merge_consecutive_requests(history)
-        start_ref[0] = len(history) if history else 0
+        turn_start.index = len(history) if history else 0
         if folded:
             # Every response left in the replay reported its prompt size against the
             # history that was just folded away, so none of them describes the thread as it
@@ -1338,7 +1377,7 @@ def build_chat_orchestrator(
             # estimate instead — which is the point of emitting one at all: the operator
             # asked for a fold and must see the gauge fall, not sit at its old figure until
             # the answer lands.
-            run.fold_boundary = start_ref[0]
+            run.fold_boundary = turn_start.index
             run.emit(_turn_metrics(run, history or []))
         # What the model replays — `history` plus, on a regenerate, the per-turn prompt
         # context. `history` itself stays the persistence baseline.
@@ -1347,7 +1386,7 @@ def build_chat_orchestrator(
             # A regenerate has no fresh prompt — the context rides on the trailing
             # user request in the *model's* view only (`history` itself stays
             # pristine for the verifier's `last_user_text`, and everything before
-            # `start_ref` is never re-persisted).
+            # `turn_start` is never re-persisted).
             model_history = with_tail_context(history, context_texts)
 
         try:
@@ -1366,7 +1405,7 @@ def build_chat_orchestrator(
                 store=store,
                 request_limit=request_limit,
                 compaction=compaction,
-                start_ref=start_ref,
+                turn_start=turn_start,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -1413,13 +1452,13 @@ def build_chat_orchestrator(
                 run,
                 turn,
                 store=store,
-                # The completed path measures against the real `start_ref` — which an
+                # The completed path measures against the real `turn_start` — which an
                 # in-turn fold may have moved — and carries the verifier's own drop range,
                 # where a flush hands over an already-sliced list; hence its own context
                 # rather than `_flush_context()`.
                 context=PersistContext(
                     conversation_id=conversation_id,
-                    start=start_ref[0],
+                    start=turn_start,
                     clean_drop=turn.clean_drop,
                     attachment_ids=stamp_ids,
                     persisted=persisted,
@@ -1552,11 +1591,11 @@ def build_resume_orchestrator(
         # the `ParkedTurn` — so only the messages move, and the one index that can still
         # move with them is the persistence start: an overflow recovery folds the thread
         # underneath this turn and rebuilds the history in front of it.
-        start_ref = [parked.persist_from]
+        turn_start = TurnStart(parked.persist_from, parked.persist_from_parts)
         flush = TurnFlush(
             run,
             messages=lambda: partial_history_ref[0]() if partial_history_ref else [],
-            context=lambda: _parked_context(parked, start_ref),
+            context=lambda: _parked_context(parked, turn_start),
             record=_flush_recorder(run, store),
         )
         flush.arm()
@@ -1588,10 +1627,10 @@ def build_resume_orchestrator(
                 # history, so it is barred from folding for the same reason the correction
                 # itself was.
                 compaction=parked.compaction,
-                start_ref=start_ref,
+                turn_start=turn_start,
                 correcting=parked.clean_drop is not None,
             )
-            _finalize(run, turn, store=store, context=_parked_context(parked, start_ref))
+            _finalize(run, turn, store=store, context=_parked_context(parked, turn_start))
             # Disarm the flush hooks now the turn is recorded — a bound or cancel
             # landing during the title window below must not re-finalize (see the
             # chat orchestrator).

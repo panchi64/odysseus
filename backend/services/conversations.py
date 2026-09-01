@@ -69,7 +69,7 @@ from models.conversation import Conversation, Message
 from runs.events import LastRequestUsage
 from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
-from services.conversation_view import MessageView, project_tree
+from services.conversation_view import MessageView, estimate_footprint, project_tree
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import DEFAULT_PERMISSION, PermissionLevel, permission_level
@@ -598,6 +598,35 @@ def context_footprint(messages: list[ModelMessage]) -> int | None:
             usage = message.usage
             return usage.input_tokens + (usage.output_tokens or 0) if usage.input_tokens else None
     return None
+
+
+def footprint_or_estimate(
+    messages: list[ModelMessage],
+    overhead: TurnOverhead | None,
+    *,
+    fallback_overhead_tokens: int,
+    reported_from: list[ModelMessage] | None = None,
+) -> int | None:
+    """The thread's footprint: what the provider reported if it reported anything, and the
+    estimate otherwise. ``None`` only for a thread with no messages at all.
+
+    The one place that choice is made, because it is a choice the *live* gauge and a *cold*
+    reload have to make identically. An endpoint that reports no usage — the common local
+    case, ``input_tokens=0`` — is exactly when the estimate matters, and it used to be the
+    case where the live stream showed a figure and reopening the same thread showed a blank
+    ring and no breakdown.
+
+    ``reported_from`` narrows which messages a *reported* figure may be read off (the
+    replay since this run's last fold — every response before it sized a history that no
+    longer exists) while the estimate still covers everything the next request carries."""
+    if not messages:
+        return None
+    footprint = context_footprint(messages if reported_from is None else reported_from)
+    if footprint is not None:
+        return footprint
+    return estimate_footprint(
+        messages, overhead, fallback_overhead_tokens=fallback_overhead_tokens
+    )
 
 
 def last_request_usage(messages: list[ModelMessage]) -> LastRequestUsage | None:

@@ -36,7 +36,11 @@ from agent import build_chat_orchestrator
 from agent.compaction_context import CompactionContext
 from agent.engine import _TurnResult, _verify_and_correct
 from agent.meta import Verdict
-from agent.model_errors import CONTEXT_OVERFLOW_DETAIL, context_limit_message
+from agent.model_errors import (
+    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
+    CONTEXT_OVERFLOW_DETAIL,
+    context_limit_message,
+)
 from agent.parking import park_for_input
 from agent.summarize import AutoCompactPolicy, should_compact
 from core.config import get_settings
@@ -125,6 +129,7 @@ async def _seed(store, *, tail_tokens: int, turns: int = 4) -> str:
 
 
 def _run_chat(app, cid: str | None, *, model, prompt="next question", **kwargs):
+    kwargs.setdefault("auto_compact", _POLICY)
     orch = build_chat_orchestrator(
         prompt,
         model=model,
@@ -133,7 +138,6 @@ def _run_chat(app, cid: str | None, *, model, prompt="next question", **kwargs):
         store=app.state.conversations if cid else None,
         conversation_id=cid,
         context_window=10_000,
-        auto_compact=_POLICY,
         **kwargs,
     )
     return app.state.runs.submit(kind="chat", owner_id=OPERATOR_ID, orchestrator=orch)
@@ -201,14 +205,99 @@ async def test_a_second_overflow_blocks_with_the_detail_the_client_keys_on():
         await run.wait()
 
         assert run.status is RunStatus.blocked
-        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        # A *different* marker from the recoverable stop: the client keys "Compact and
+        # retry" on that one, and folding again is exactly what just failed.
+        assert run.detail == CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL
         assert model.requests == 2  # tried once more, and only once
         assert len(_bodies(run, "compaction.started")) == 1
         notice = _bodies(run, "limit.notice")[-1]
         assert notice.limit == "context"
+        # The notice carries the same marker, so the toast can withhold the offer the
+        # blocked turn withholds — the two must never disagree about the remedy.
+        assert notice.detail == CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL
         # Having already folded, the message must not send them round the same loop.
         assert "Compact now" not in notice.message
         assert "folded into a summary" in notice.message
+
+
+async def test_a_collapsed_fold_boundary_does_not_re_record_the_history():
+    """The boundary between the folded history and the turn can be *one* message.
+
+    A previous turn that stopped before it answered leaves history ending on a user
+    request; the fold hoists a checkpoint in front of it, and the turn's own prompt is
+    another user request right behind — three requests in a row, which both the library and
+    our own normalization collapse into one. Slicing the turn out at a message index there
+    hands the persist a message that is half checkpoint, half prompt, and the summary (with
+    everything else the replay put in front of the prompt) is re-recorded as words the
+    operator typed."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+        store.record(
+            cid,
+            [ModelRequest(parts=[UserPromptPart(content="dangling question")])],
+            blocked_reason=CONTEXT_OVERFLOW_DETAIL,
+        )
+        before = len(await store.history(cid))
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        await store._worker.join()
+        store._cache.clear()
+        after = _texts(await store.history(cid))
+        # The checkpoint, the prompt, the answer — and nothing said twice.
+        assert len(after) == before + 3
+        assert after[-2:] == ["next question", "the answer"]
+        assert sum("FOLDED AWAY" in text for text in after) == 1
+        assert after.count("dangling question") == 1
+
+
+async def test_a_fold_that_keeps_no_turns_records_the_checkpoint_once():
+    """The same collapse, reached the other way: with ``keep_turns=0`` the folded replay
+    *is* the checkpoint, so its last message is always a request and the boundary always
+    collapses — a thread on the shipped-legal minimum would double every summary."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+        before = len(await store.history(cid))
+
+        run = _run_chat(
+            app,
+            cid,
+            model=_OverflowsThenAnswers(),
+            auto_compact=AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=0),
+        )
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        await store._worker.join()
+        store._cache.clear()
+        after = _texts(await store.history(cid))
+        assert sum("FOLDED AWAY" in text for text in after) == 1
+        assert len(after) == before + 3
+        assert after[-2:] == ["next question", "the answer"]
+
+
+async def test_the_gauge_moves_when_the_overflow_fold_lands_not_when_it_answers():
+    """The prelude fold emits a fresh frame the moment it lands; the in-turn fold must too.
+    A thread that folds and then overruns anyway would otherwise leave the operator looking
+    at the pre-fold figure for good — a compaction that visibly did nothing."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=7_000)
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers(failures=2))
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        events = run.stream.replay()
+        fold = next(i for i, e in enumerate(events) if e.body.type == "conversation.compacted")
+        after = [e.body for e in events[fold:] if e.body.type == "run.metrics"]
+        assert after, "an in-turn fold must be followed by a fresh metrics frame"
+        assert after[0].context_used is not None
+        assert after[0].context_used < 7_000
 
 
 async def test_a_stateless_turn_still_blocks_with_the_same_detail():
@@ -222,6 +311,7 @@ async def test_a_stateless_turn_still_blocks_with_the_same_detail():
         assert run.detail == CONTEXT_OVERFLOW_DETAIL
         assert not _bodies(run, "compaction.started")
         notice = _bodies(run, "limit.notice")[-1]
+        assert notice.detail == CONTEXT_OVERFLOW_DETAIL
         assert "Compact now" in notice.message  # a fold is still the cheapest thing to try
 
 

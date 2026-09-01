@@ -79,6 +79,10 @@ class ParkedTurn:
     # the parked turn's messages too, once it finally completes).
     conversation_id: str | None = None
     persist_from: int = 0
+    # And how many leading parts of the message *at* that index belong to the history in
+    # front of the turn rather than to the turn — non-zero only when an overflow fold
+    # rebuilt the replay underneath this turn and the boundary collapsed into one message.
+    persist_from_parts: int = 0
     # When a *verifier* correction is what parked, the [start, end] message range
     # to drop on the eventual persist (the rejected answer + the synthetic nudge),
     # so the resume records a clean history too.

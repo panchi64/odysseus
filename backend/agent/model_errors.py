@@ -95,6 +95,12 @@ def is_context_overflow(exc: ModelHTTPError) -> bool:
 #: ``blocked_reason``) — so the two spellings can never drift apart.
 CONTEXT_OVERFLOW_DETAIL = "context window exceeded"
 
+#: The same ceiling, reached *after* this turn already folded the thread and retried. A
+#: separate marker rather than a flag on the first, because it is the client's cue to
+#: withhold the **Compact and retry** offer: compacting again is precisely what just
+#: failed, and a button that re-sends the same oversized request is a button that lies.
+CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL = "context window exceeded after compaction"
+
 
 def context_limit_message(run: Run, *, compacted: bool = False) -> str:
     """The operator-facing stop message — names the model's context window (the number the
