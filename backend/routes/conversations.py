@@ -948,11 +948,17 @@ async def compact_conversation_now(
             raise HTTPException(status_code=404, detail="model endpoint not found") from None
         except DegradedCapabilityError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The threshold and the on/off switch are deliberately ignored here, but the
+        # retained tail is not: it is how much of the work in flight survives the fold, and
+        # the operator's answer to that is the same whether the fold was asked for or fired
+        # on its own.
+        auto = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
         outcome = await compact_conversation(
             store,
             conversation_id,
             model=utility.model,
             reasoning_off=utility.reasoning_off,
+            keep_turns=auto.keep_turns,
         )
         if outcome is None:
             raise HTTPException(
