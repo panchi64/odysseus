@@ -468,7 +468,13 @@ async def _compact_and_retry(
       keeps ``all_messages()`` the length we measured our index against;
     - the index is then re-derived from the tail rather than from the fold, so it is right
       whether or not the merge collapsed the boundary.
+
+    An operator who switched compaction off for this thread is not overruled by an
+    overflow: they get the stop, and the **Compact and retry** it offers, which is the
+    same fold under their own hand.
     """
+    if not ctx.policy.enabled:
+        return None
     folded = await _fold(run, ctx, reason="overflow")
     if folded is None:
         return None

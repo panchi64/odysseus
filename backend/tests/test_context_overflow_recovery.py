@@ -21,10 +21,11 @@ from folding at all.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
-from pydantic_ai import ModelRequest, ModelResponse
+from pydantic_ai import DeferredToolRequests, ModelRequest, ModelResponse
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import TextPart, UserPromptPart
 from pydantic_ai.models.test import TestModel
@@ -32,10 +33,13 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
+from agent.compaction_context import CompactionContext
 from agent.engine import _TurnResult, _verify_and_correct
 from agent.meta import Verdict
 from agent.model_errors import CONTEXT_OVERFLOW_DETAIL, context_limit_message
-from agent.summarize import AutoCompactPolicy
+from agent.parking import park_for_input
+from agent.summarize import AutoCompactPolicy, should_compact
+from core.config import get_settings
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus, RunStream, TurnOverhead
 
@@ -221,6 +225,31 @@ async def test_a_stateless_turn_still_blocks_with_the_same_detail():
         assert "Compact now" in notice.message  # a fold is still the cheapest thing to try
 
 
+async def test_compaction_switched_off_is_not_overruled_by_an_overflow():
+    """Switching compaction off is an instruction, not a preference to be second-guessed:
+    the thread stops and offers the fold, rather than performing it uninvited."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        orch = build_chat_orchestrator(
+            "next question",
+            model=_OverflowsThenAnswers(),
+            categories={},
+            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
+            store=store,
+            conversation_id=cid,
+            context_window=10_000,
+            auto_compact=AutoCompactPolicy(enabled=False, threshold=0.80, keep_turns=1),
+        )
+        run = app.state.runs.submit(kind="chat", owner_id=OPERATOR_ID, orchestrator=orch)
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        assert not _bodies(run, "compaction.started")
+
+
 async def test_a_thread_with_nothing_left_to_fold_blocks_rather_than_looping():
     async with client_app() as (_client, app):
         store = app.state.conversations
@@ -283,6 +312,40 @@ async def test_the_gauge_moves_the_moment_the_fold_lands():
         assert after, "a fold must be followed by a fresh metrics frame"
         assert after[0].context_used is not None
         assert after[0].context_used < 7_000
+
+
+async def test_a_thread_that_never_measured_its_overhead_does_not_assume_zero():
+    """The brief and the tool schemas never reach the message history, so a thread whose
+    turns predate the per-thread measurement has nothing to read them off. Zero is the one
+    answer that is certainly wrong — the assembled catalog is worth thousands of tokens on
+    every request, and assuming it away is how a fold arrives too late to help."""
+    # A two-message thread that reports no usage at all: text-only it is worth nothing,
+    # and the only thing that can push it over a 14k window is the assumed catalog.
+    history = [*_turn("q", "a", 0)]
+    assert should_compact(history, 14_000, 0.80, overhead=None)
+    assert not should_compact(history, 14_000, 0.80, overhead=_NO_OVERHEAD)
+
+
+def test_a_parked_turn_carries_what_it_would_fold_with():
+    """An approval can sit for hours. The thread it resumes into is the one that was
+    already near its ceiling, and nothing in the resume orchestrator could re-derive the
+    policy, the store and the summarizer model it would need."""
+    run = Run(id="p", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    ctx = CompactionContext(
+        store=object(),  # type: ignore[arg-type]
+        conversation_id="c1",
+        policy=_POLICY,
+        model=TestModel(),
+        reasoning_off=None,
+        settings=get_settings(),
+    )
+
+    asyncio.run(
+        park_for_input(run, None, [], DeferredToolRequests(), set(), compaction=ctx)  # type: ignore[arg-type]
+    )
+
+    assert run.status is RunStatus.awaiting_input
+    assert run.parked_payload.compaction is ctx
 
 
 # --- the verifier's size guard -----------------------------------------------
