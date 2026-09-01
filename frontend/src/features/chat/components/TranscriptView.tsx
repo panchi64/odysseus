@@ -94,6 +94,9 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
                     onContinue={() =>
                       void props.stream.continueTurn(message.id)
                     }
+                    onCompactAndRetry={() =>
+                      void props.stream.compactAndContinue(message.id)
+                    }
                     onEditMessage={(id, text) =>
                       void props.stream.edit(id, text)
                     }

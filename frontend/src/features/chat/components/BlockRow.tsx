@@ -3,6 +3,7 @@ import { LedEdge, cx } from "~/ui";
 import type {
   ApprovalDecision,
   BlockKind,
+  CompactionProgressBlock,
   ContextBlock,
   HostCommandBlock,
   ReviewBlock,
@@ -15,6 +16,7 @@ import type {
 import type { BlockGroup, LayoutItem } from "../blocks";
 import { LIVE_KEY, snapshotKey, versionIcon, type ViewItem } from "../viewport";
 import { AnswerText } from "./AnswerText";
+import { CompactionProgressCard } from "./CompactionProgressCard";
 import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -63,6 +65,7 @@ const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
   "thinking",
   "tool",
   "context",
+  "compaction_progress",
   "review",
   "host_command",
 ]);
@@ -218,6 +221,21 @@ export function BlockRow(
             open={props.forceOpen}
           />
         </Rail>
+      </Match>
+      <Match when={g().kind === "compaction_progress"}>
+        {/* On the rail, because the turn genuinely stopped here — and `active` while the
+            summarizer runs, unlike the injection above: this row is the one chassis
+            event that has duration, which is the whole reason it is on screen. The card
+            carries the same state as a throbber, so the rail's light and the glyph say
+            it from two distances. */}
+        {(() => {
+          const c = () => (g().blocks[0] as CompactionProgressBlock).compaction;
+          return (
+            <Rail active={!c().done} top={props.top}>
+              <CompactionProgressCard compaction={c()} />
+            </Rail>
+          );
+        })()}
       </Match>
       <Match when={g().kind === "review"}>
         {/* On the rail, because it happened in the turn's sequence, and never `active`:
