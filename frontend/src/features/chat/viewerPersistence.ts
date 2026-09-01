@@ -269,26 +269,10 @@ export function rememberScroll(el: HTMLElement, key: () => string): void {
 // Single panel instance exists app-wide, so module-level signals are the correct
 // scope (mirrors `claimAutoOpen` in `viewport.ts`).
 
-/** How long a "you came for this" highlight lingers before it hard-cuts off (no
- *  fade — design §8). Used by the approval deep-link focus. */
-export const HIGHLIGHT_MS = 2000;
-
-/** A pending "focus the approval card" intent, set when an `approval_needed`
- *  notification is opened and consumed exactly once by the pending (non-stale)
- *  `ApprovalCard` that mounts for that conversation. A plain module-level flag —
- *  non-reactive intent, not render state — like `pendingAnchors` above. */
-let approvalFocusPending = false;
-
-export function requestApprovalFocus(): void {
-  approvalFocusPending = true;
-}
-
-/** True exactly once per `requestApprovalFocus` call. */
-export function consumeApprovalFocus(): boolean {
-  if (!approvalFocusPending) return false;
-  approvalFocusPending = false;
-  return true;
-}
+// The approval deep-link's "scroll the card into view and flash it" intent lived here.
+// It has no work left to do: a park now takes over the composer's slot, so it is on
+// screen the moment the thread opens — there is nothing to scroll to, and the panel's
+// own arrival is the emphasis the flash used to supply.
 
 export interface ActiveDownload {
   name: string;

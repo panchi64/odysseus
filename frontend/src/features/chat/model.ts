@@ -128,6 +128,32 @@ export interface Approval {
   stale?: boolean;
 }
 
+/** One answer the agent offered for a question. */
+export interface QuestionOption {
+  label: string;
+  /** One short line on what choosing this would mean, when the agent supplied one. */
+  description?: string;
+}
+
+/** One question inside a parked `ask_user` call. */
+export interface QuestionSpec {
+  question: string;
+  options: QuestionOption[];
+  /** Whether several options may be chosen together. Writing an answer instead is
+   *  always allowed, so it is not a mode and not a flag. */
+  multiSelect: boolean;
+}
+
+/** A parked `ask_user` call: everything the agent asked, in one place, answered in one
+ *  submit. The call is the unit because the run resumes on the call, not on a question. */
+export interface Question {
+  toolCallId: string;
+  questions: QuestionSpec[];
+  /** True once a submitted answer 409'd — the run had already resumed elsewhere.
+   *  Same meaning, and the same reconciliation, as `Approval.stale`. */
+  stale?: boolean;
+}
+
 /** Lifecycle of a host-machine command (`run_host_command`) — the one
  *  approval-gated tool that runs on the real host instead of the sandbox. */
 export type HostCommandPhase =
@@ -223,6 +249,7 @@ export type AssistantBlock =
   | ReviewBlock
   | HostCommandBlock
   | ApprovalBlock
+  | QuestionBlock
   | ViewVersionBlock
   | ViewLiveBlock;
 
@@ -310,11 +337,24 @@ export interface HostCommandBlock {
   id: string;
   command: HostCommand;
 }
-/** A sensitive action paused for the operator's decision. */
+/** A sensitive action paused for the operator's decision.
+ *
+ *  Folded into the turn like any other block, but **not rendered on the rail**: a parked
+ *  run is answered in the dock that takes over the composer (`ParkDock`), where it cannot
+ *  scroll out of reach and cannot sit next to an input that would do nothing. The block
+ *  is where the dock reads its pending set from, and is filtered out of the transcript's
+ *  own grouping (`blocks.ts`). What stays behind afterwards is the tool call itself. */
 export interface ApprovalBlock {
   kind: "approval";
   id: string;
   approval: Approval;
+}
+/** A question paused for the operator's answer. Rendered in the dock, exactly like
+ *  `ApprovalBlock` and for the same reasons. */
+export interface QuestionBlock {
+  kind: "question";
+  id: string;
+  question: Question;
 }
 /** An inline chip marking a version the agent `show`ed during the turn — rendered in
  *  the transcript as a compact chip that opens that version in the viewport. The
@@ -539,6 +579,22 @@ export function permissionLevel(value: string | undefined): PermissionLevel {
 }
 
 /** One decision in an approval response (mirrors the backend's shape). */
+/** What the operator said to one question. `selections` carries the labels they chose,
+ *  exactly as offered; `text` is what they wrote instead of — or as well as — choosing.
+ *  The server checks both against the parked call and renders the prose itself, so this
+ *  never carries the question's own words back. */
+export interface QuestionReply {
+  selections: string[];
+  text?: string;
+}
+
+/** One parked `ask_user` call, answered. `replies` is positional: one per question in
+ *  the call, in the order they were asked. */
+export interface QuestionAnswer {
+  tool_call_id: string;
+  replies: QuestionReply[];
+}
+
 export interface ApprovalDecision {
   tool_call_id: string;
   approved: boolean;

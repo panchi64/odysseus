@@ -1,6 +1,6 @@
 import { Show, type JSX } from "solid-js";
 import { StatusDot, Text, type Status } from "~/ui";
-import { awaitingApproval, chatBusy } from "~/lib/stores/chatActivity";
+import { awaitingInput, chatBusy } from "~/lib/stores/chatActivity";
 import type { NavArea, NavItem } from "../nav";
 
 /** The item's indicator, with live chat state overlaid on the Chat row. A run
@@ -8,7 +8,7 @@ import type { NavArea, NavItem } from "../nav";
  *  it wins with its own warn tone rather than folding into the busy dot. */
 export function itemIndicator(item: NavItem): Status | undefined {
   if (item.href === "/chat") {
-    if (awaitingApproval()) return "warn";
+    if (awaitingInput()) return "warn";
     if (chatBusy()) return "info";
   }
   return item.indicator;

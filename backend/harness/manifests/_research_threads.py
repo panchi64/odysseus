@@ -130,6 +130,10 @@ class ConversationResearchThreads(ResearchThreads):
             mode=binding.mode,
             permission=binding.permission,
             vision=models[4],
+            # A thread the agent opened for itself: foreground for the model, background
+            # for the operator. Nothing says they are looking at it, so it is not offered
+            # the tools that would stop and wait for them.
+            kind="linked",
         )
         # Refuse rather than degrade. A thread with no way to reach the web still answers —
         # from the model's own memory — and lands in the operator's session list looking

@@ -93,6 +93,10 @@ EXTERNAL_PREFIX = "external_"
 SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
     Sensitivity.READ: frozenset(
         {
+            # Asking the operator a question changes nothing anywhere — it suspends the
+            # turn and waits. Read, therefore, at every level: a thread that may only
+            # look is exactly the one that should still be able to ask.
+            "builtin_ask_user",
             "builtin_now",
             # Browsing that only observes. Every one of these returns what the page
             # already shows — moving through history and scrolling included, which change

@@ -621,6 +621,38 @@ class ApprovalRequired(_Body):
     explanation: str | None = None
 
 
+class QuestionOption(_Body):
+    """One answer offered for a question."""
+
+    label: str
+    description: str | None = None
+
+
+class QuestionSpec(_Body):
+    """One question the operator is being asked."""
+
+    question: str
+    options: list[QuestionOption] = Field(default_factory=list)
+    multi_select: bool = False
+
+
+class QuestionAsked(_Body):
+    """The turn is parked on the operator answering, not on them permitting.
+
+    Its own event rather than an `approval.required` with a different shape, because the
+    two ask for different things and are answered with different things. An approval is a
+    yes or a no about an action already decided on; a question has no default, no safe
+    side, and comes back carrying a *value* that becomes the tool's result. Folding one
+    into the other would have made `approved` meaningless for half its uses.
+
+    One event per call, carrying every question in it: the model asks for what it needs in
+    one go, and the operator answers it in one go. Additive to v1; no bump."""
+
+    type: Literal["question.asked"] = "question.asked"
+    tool_call_id: str
+    questions: list[QuestionSpec] = Field(default_factory=list)
+
+
 class ReviewStarted(_Body):
     """An action at the Auto level is being ruled on in the operator's place.
 
@@ -747,6 +779,7 @@ EventBody = Annotated[
     | ConversationLinked
     | ContextInjected
     | ApprovalRequired
+    | QuestionAsked
     | ReviewStarted
     | ReviewCompleted
     | MessageQueued

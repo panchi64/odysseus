@@ -1,6 +1,6 @@
 import { createEffect } from "solid-js";
 import { useTheme } from "~/ui";
-import { awaitingApproval } from "~/lib/stores/chatActivity";
+import { awaitingInput } from "~/lib/stores/chatActivity";
 import { useNotifications } from "~/lib/stores/notifications";
 import {
   platformStatus,
@@ -75,8 +75,7 @@ export function useFavicon(): void {
   createEffect(() => {
     const status = platformStatus();
     const attention =
-      status !== "error" &&
-      (awaitingApproval() || notifications.unreadCount > 0);
+      status !== "error" && (awaitingInput() || notifications.unreadCount > 0);
     const accentVar = attention ? ATTENTION_ACCENT_VAR : ACCENT_VAR[status];
     // Track the active palette so the effect re-runs on a theme toggle / OS change.
     void theme.resolved;

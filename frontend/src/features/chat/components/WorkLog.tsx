@@ -56,7 +56,6 @@ export function WorkLog(
                 group={group}
                 top={i() === 0 ? "none" : "connect"}
                 forceOpen={props.forceOpen}
-                onResolveApproval={props.onResolveApproval}
                 onResolveHostCommands={props.onResolveHostCommands}
                 chipLookup={props.chipLookup}
                 seenIndex={props.seenIndex}

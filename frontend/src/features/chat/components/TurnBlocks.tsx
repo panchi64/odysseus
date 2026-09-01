@@ -157,7 +157,6 @@ export function TurnBlocks(
                       streaming={props.streaming}
                       top={top()}
                       forceOpen={props.forceOpen}
-                      onResolveApproval={props.onResolveApproval}
                       onResolveHostCommands={props.onResolveHostCommands}
                       onOpenInView={props.onOpenInView}
                       chipLookup={chipLookup()}
@@ -174,7 +173,6 @@ export function TurnBlocks(
                   onToggle={() => toggleLog(l().groups[0].id)}
                   top={top()}
                   forceOpen={props.forceOpen}
-                  onResolveApproval={props.onResolveApproval}
                   onResolveHostCommands={props.onResolveHostCommands}
                   chipLookup={chipLookup()}
                   seenIndex={seenIndex()}

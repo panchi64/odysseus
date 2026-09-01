@@ -1,8 +1,16 @@
 """Suspending a turn on the operator — the payload and the park itself.
 
 A turn that reaches a call nobody has authorised does not fail and does not guess: it
-*stops*, with everything needed to carry on later held on the run. That continuation is
-:class:`ParkedTurn`, and :func:`park_for_approval` is the one place it is built.
+*stops*, with everything needed to carry on later held on the run. The same is true of a
+turn that reaches a question only the operator can answer. That continuation is
+:class:`ParkedTurn`, and :func:`park_for_input` is the one place it is built.
+
+**Two reasons to stop, one park.** Pydantic AI hands back both piles on a single
+``DeferredToolRequests`` — ``approvals`` for the calls awaiting permission, ``calls`` for
+the ones awaiting a value (``tools/builtin.py``'s ``ask_user``) — and a turn can arrive
+here holding both. Parking once for the pair is not a convenience: each park is one
+resume, and a turn that parked twice would resume twice, running the approved call against
+a history the second resume had already moved past.
 
 **Why a payload rather than a re-run.** Pydantic AI ends the turn with
 ``DeferredToolRequests`` *without executing* the sensitive call, so the agent, the message
@@ -17,8 +25,9 @@ source for a fact the parked turn already settled.
 that assumption. Anything that awaits *after* ``run.park(...)`` would break it, so the one
 await this module does before parking is deliberately ordered ahead of it.
 
-The rules deciding which calls get here at all are ``gating.py``'s; this module only knows
-what to do once a call needs the operator.
+The rules deciding which *approvals* get here at all are ``gating.py``'s; this module only
+knows what to do once a call needs the operator. Questions have no such rules — nothing can
+answer one in the operator's place — so every deferred call reaches them.
 """
 
 from __future__ import annotations
@@ -35,10 +44,11 @@ from pydantic_ai import (
     ToolDenied,
 )
 
-from runs import ApprovalRequired, Run
+from runs import ApprovalRequired, QuestionAsked, Run
 from services.conversations import ConversationBinding, ConversationStore
 from services.notifications import NotificationService
 
+from .answers import questions_of
 from .naming import TitleContext, approval_conversation_title
 
 logger = logging.getLogger(__name__)
@@ -105,7 +115,7 @@ def summarize_call(name: str, args: dict[str, Any]) -> str:
     return f"{name}({rendered})"
 
 
-async def park_for_approval(
+async def park_for_input(
     run: Run,
     agent: Agent,
     messages: list[ModelMessage],
@@ -143,6 +153,18 @@ async def park_for_approval(
                 explanation=explanation if isinstance(explanation, str) else None,
             )
         )
+    # The other pile: calls deferred for a *value* rather than a permission. Nothing
+    # settles these ahead of the operator — there is no grant, no level and no reviewer
+    # that can answer a question in their place — so every one of them is announced.
+    asked = False
+    for call in requests.calls:
+        asked = True
+        run.emit(
+            QuestionAsked(
+                tool_call_id=call.tool_call_id,
+                questions=questions_of(call.args_as_dict()),
+            )
+        )
     # Fire the ALWAYS-notify policy *before* `run.park(...)` makes the parked status
     # externally visible — not after. This is the one await this function does before
     # parking, and it must land first: `RunRegistry.cancel`'s parked branch assumes
@@ -151,13 +173,25 @@ async def park_for_approval(
     # need) instead ran *after* parking, a concurrent cancel/approve landing in that
     # window would see the parked status while this coroutine is still suspended on a
     # real await — violating that assumption and racing the run's own finalize.
-    if notifications is not None and pending_names:
+    if notifications is not None and (pending_names or asked):
         title = await approval_conversation_title(store, run.owner_id, conversation_id)
+        # One kind for both reasons. `approval_needed` is the routing key for "a parked
+        # run is waiting on you", which is exactly as true of a question as of an
+        # approval — and it is the key five separate client behaviours already hang off
+        # (the bell's accent, the deep link, and the age-filter exemption that keeps a
+        # pending park from quietly expiring). A second kind would have to restate every
+        # one of them, and the pair would drift. What differs is the sentence, so that is
+        # what differs.
+        wants: list[str] = []
+        if pending_names:
+            wants.append(f"approval for {', '.join(sorted(pending_names))}")
+        if asked:
+            wants.append("an answer from you")
         try:
             await notifications.notify(
                 run.owner_id,
                 "approval_needed",
-                f'"{title}" needs approval for {", ".join(sorted(pending_names))}',
+                f'"{title}" needs {" and ".join(wants)}',
                 conversation_id=conversation_id,
                 run_id=run.id,
             )

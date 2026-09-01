@@ -87,7 +87,6 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
                   <MessageItem
                     message={message}
                     dimmed={index() < foldedThrough()}
-                    onResolveApproval={props.stream.resolveApproval}
                     onResolveHostCommands={props.stream.resolveHostCommands}
                     onRegenerate={() =>
                       void props.stream.regenerate(message.id)

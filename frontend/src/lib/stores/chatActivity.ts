@@ -8,12 +8,16 @@
  *  `runErrored` — true when the room's last run ended in `run.error`; cleared when the
  *  next run starts. Feeds the platform-status derivation that tints the favicon red.
  *
- *  `awaitingApproval` — true while the room has a live, undecided approval (a sensitive
- *  tool call parked the run awaiting the operator's decision); cleared the moment it's
- *  resolved (approved/denied/decided elsewhere) or the run stops being in flight (e.g. a
- *  cancel). Distinct from `chatBusy`: this is a stronger "needs YOU, specifically" signal,
- *  not just ambient activity — the nav rail and favicon both give it its own (warn) tone
- *  rather than folding it into the plain busy indicator.
+ *  `awaitingInput` — true while the room has a live, unanswered park: a sensitive tool
+ *  call awaiting the operator's decision, or a question awaiting their answer. Cleared the
+ *  moment it's settled (approved/denied/answered/decided elsewhere) or the run stops being
+ *  in flight (e.g. a cancel). Distinct from `chatBusy`: this is a stronger "needs YOU,
+ *  specifically" signal, not just ambient activity — the nav rail and favicon both give it
+ *  its own (warn) tone rather than folding it into the plain busy indicator.
+ *
+ *  One signal for both reasons, because what it drives — an attention tint elsewhere in
+ *  the app — is the same in both cases: the run has stopped and will not go on until the
+ *  operator comes back to it.
  *
  *  All three are presentation echoes only: the backend owns the run; the chat seam
  *  mirrors its state here and the consumers just render. Driven solely by the main
@@ -23,13 +27,13 @@ import { createSignal } from "solid-js";
 
 const [chatBusy, setChatBusy] = createSignal(false);
 const [runErrored, setRunErrored] = createSignal(false);
-const [awaitingApproval, setAwaitingApproval] = createSignal(false);
+const [awaitingInput, setAwaitingInput] = createSignal(false);
 
 export {
   chatBusy,
   setChatBusy,
   runErrored,
   setRunErrored,
-  awaitingApproval,
-  setAwaitingApproval,
+  awaitingInput,
+  setAwaitingInput,
 };

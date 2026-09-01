@@ -5,7 +5,7 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Five independent sources feed one set:
+Six independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
@@ -17,7 +17,9 @@ Five independent sources feed one set:
 - **the run's permission level** — under Plan, every tool that would change something is
   withheld outright, classified by ``services/tool_sensitivity.py``;
 - **the model's own reach** — a tool that answers with an image is withheld from a model
-  that cannot see one.
+  that cannot see one;
+- **whether anyone is watching** — a tool that suspends the turn on the operator is
+  withheld from a run that has no operator in front of it (``runs/lanes.py``).
 
 They **union**: :func:`effective_disabled_tools` is the one place that rule lives, so no
 run path can apply one source and silently drop the others. Every site that fills
@@ -41,6 +43,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from runs.lanes import lane_for
 from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
 from services.permissions import (
     DEFAULT_PERMISSION,
@@ -120,6 +123,31 @@ def vision_disabled_tools(vision: bool) -> frozenset[str]:
     return frozenset() if vision else VISION_ONLY_TOOLS
 
 
+# Tools that need a person sitting in front of the run to work at all — they suspend the
+# turn on the operator and have no answer without one. Written out for the same reason
+# `VISION_ONLY_TOOLS` is, and pinned against the real catalog by `tests/test_tool_policy.py`.
+ATTENDED_ONLY_TOOLS = frozenset({"builtin_ask_user"})
+
+
+def lane_disabled_tools(kind: str) -> frozenset[str]:
+    """The tools a run nobody is watching should not be offered.
+
+    A scheduled task's whole point is that it runs while the operator is elsewhere
+    (``runs/lanes.py``), so a question asked from one has no one to answer it: the turn
+    parks, and — since a parked turn lives in the process, not the database — it waits
+    there until the operator happens to look or the process restarts. Withholding is the
+    honest form of that fact. The model is told the capability does not exist rather than
+    being offered one that silently strands the run, and it does what it would have done
+    anyway: decide, and say what it assumed.
+
+    ``linked`` is treated as unattended too. Those threads are the agent's own, opened
+    from inside another conversation; they are visible, and the operator *could* answer
+    one, but nothing says they are looking — and the cost of guessing wrong here is a run
+    that hangs rather than one that proceeds.
+    """
+    return frozenset() if lane_for(kind) == "interactive" else ATTENDED_ONLY_TOOLS
+
+
 def mode_disabled_tools(mode: str) -> frozenset[str]:
     """The tools that do not belong in ``mode`` — every mode-scoped category the mode's
     spec does not admit, flattened to namespaced names.
@@ -175,22 +203,25 @@ async def effective_disabled_tools(
     mode: str = DEFAULT_MODE,
     permission: str = DEFAULT_PERMISSION,
     vision: bool = True,
+    kind: str = "chat",
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with
     offline mode's automatic web suspension, the tools that don't belong in ``mode``, the
-    ones this run's ``permission`` level does not let it act with, and the ones whose
-    results this run's model cannot read.
+    ones this run's ``permission`` level does not let it act with, the ones whose results
+    this run's model cannot read, and the ones that need an operator this run doesn't have.
 
-    A union, never a replacement — the five answer different questions ("the operator does
+    A union, never a replacement — the six answer different questions ("the operator does
     not want this tool", "this tool cannot work right now", "this tool is not part of this
     kind of thread", "this thread may not act at all", "this model cannot read what this
-    tool returns"), and any one of them alone is enough to withhold a tool.
+    tool returns", "nobody is sitting in front of this run"), and any one of them alone is
+    enough to withhold a tool.
 
     ``permission`` defaults to the level that withholds nothing, so a caller with no level
     to pass is unaffected; ``vision`` defaults to True — permissive — because the callers
     that cannot know (a background agent that resolves its own model) should not have tools
     taken away by an assumption; the interactive paths, which do know, pass the resolved
-    answer.
+    answer. ``kind`` defaults to the operator's own turn for the same reason, and the two
+    unattended composers (the scheduler, the research threads) name themselves.
     """
     return (
         await get_disabled_tools(settings, owner_id)
@@ -198,4 +229,5 @@ async def effective_disabled_tools(
         | mode_disabled_tools(mode)
         | permission_disabled_tools(permission)
         | vision_disabled_tools(vision)
+        | lane_disabled_tools(kind)
     )

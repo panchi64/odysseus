@@ -21,11 +21,6 @@ import { TurnProgressRail } from "./TurnProgressRail";
 
 export interface MessageItemProps {
   message: ChatMessage;
-  /** Decide a turn's pending approvals (wired from the stream controller). */
-  onResolveApproval?: (
-    messageId: string,
-    decisions: ApprovalDecision[],
-  ) => void | Promise<void>;
   /** Decide a turn's pending host-command approvals (terminal blocks). */
   onResolveHostCommands?: (
     messageId: string,
@@ -94,7 +89,6 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
           fallback={
             <AssistantTurn
               message={props.message}
-              onResolveApproval={props.onResolveApproval}
               onResolveHostCommands={props.onResolveHostCommands}
               onRegenerate={props.onRegenerate}
               onDelete={props.onDelete}
@@ -490,7 +484,6 @@ function SourcesRow(props: { citations: Citation[] }): JSX.Element {
 
 function AssistantTurn(props: {
   message: ChatMessage;
-  onResolveApproval?: MessageItemProps["onResolveApproval"];
   onResolveHostCommands?: MessageItemProps["onResolveHostCommands"];
   onRegenerate?: MessageItemProps["onRegenerate"];
   onDelete?: MessageItemProps["onDelete"];
@@ -594,9 +587,6 @@ function AssistantTurn(props: {
           blocks={m().blocks}
           streaming={m().streaming}
           forceOpen={forceOpen()}
-          onResolveApproval={(decisions) =>
-            props.onResolveApproval?.(m().id, decisions)
-          }
           onResolveHostCommands={(decisions) =>
             props.onResolveHostCommands?.(m().id, decisions)
           }

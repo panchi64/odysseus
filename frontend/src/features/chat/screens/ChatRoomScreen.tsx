@@ -6,7 +6,7 @@ import {
   untrack,
   type JSX,
 } from "solid-js";
-import { Composer, toast } from "~/ui";
+import { Composer, cx, toast } from "~/ui";
 import {
   conversationGrantsRevision,
   consumePendingDraft,
@@ -25,6 +25,7 @@ import { ChatRoomHeader } from "../components/ChatRoomHeader";
 import { ChatViewportMounts } from "../components/ChatViewportMounts";
 import { ContextRing } from "../components/ContextRing";
 import { ConversationStatusStrip } from "../components/ConversationStatusStrip";
+import { ParkDock } from "../components/ParkDock";
 import { PermissionControl } from "../components/PermissionControl";
 import { TranscriptView } from "../components/TranscriptView";
 import { ModelPicker } from "~/app/ModelPicker";
@@ -237,40 +238,60 @@ export function ChatRoomScreen(): JSX.Element {
         {/* The dock's own background spans the full width — it is what the
             transcript scrolls out of sight behind — while its contents take the
             same measure as the transcript above. */}
-        <div class="sticky bottom-0 bg-bg px-4 pb-1">
+        {/* The background is dropped while a run is parked, and only then. The park
+            panel is *glass*: an opaque fill behind it leaves it nothing to frost, and
+            it would read as a flat tinted card rather than as the transcript seen
+            through it (see `ParkDock`). It stays full-width for the composer, which
+            needs the transcript to disappear behind it rather than beside it. */}
+        <div class={cx("sticky bottom-0 px-4 pb-1", !stream.park() && "bg-bg")}>
           <div class={MEASURE}>
-            <Composer
-              edge="led"
-              autofocus
-              streaming={stream.sending()}
-              onStop={() => void stopRun()}
-              onSend={(text, ids) => void stream.send(text, ids)}
-              // The backend refuses a turn it can't keep inside a context window; this
-              // is the same stop, arriving before the message is committed to it.
-              sendBlocked={sendBlocked()}
-              attachments={attachments}
-              storageKey={composerKey()}
-              prefill={stream.undeliveredDraft()}
-              onPrefillConsumed={stream.clearUndeliveredDraft}
-              controls={
-                // Ungated, unlike the mode picker that used to sit here. A mode is
-                // set once at creation — a code thread owns a branch, and
-                // re-pointing it would strand that branch — so that control was
-                // only shown while a thread was unsaved, and it now lives beside
-                // the thread list. A level is the opposite: it is the operator's
-                // live control over a thread already in flight, so it is offered at
-                // every moment of one, and it rides the next send.
-                <PermissionControl
-                  level={permission()}
-                  onLevelChange={setPermission}
+            {/* A parked run takes the composer's place. It is the same slot, so
+                nothing below the transcript moves — but the only thing offered is
+                the thing the run is waiting for. */}
+            <Show when={stream.park()}>
+              {(park) => (
+                <ParkDock
+                  park={park()}
+                  onStop={() => void stopRun()}
+                  onSubmit={(settlement) =>
+                    stream.resolvePark(park().messageId, settlement)
+                  }
                 />
-              }
-              trailing={
-                <>
-                  {/* Where the message is going, then how full the thread it's
+              )}
+            </Show>
+            <Show when={!stream.park()}>
+              <Composer
+                edge="led"
+                autofocus
+                streaming={stream.sending()}
+                onStop={() => void stopRun()}
+                onSend={(text, ids) => void stream.send(text, ids)}
+                // The backend refuses a turn it can't keep inside a context window; this
+                // is the same stop, arriving before the message is committed to it.
+                sendBlocked={sendBlocked()}
+                attachments={attachments}
+                storageKey={composerKey()}
+                prefill={stream.undeliveredDraft()}
+                onPrefillConsumed={stream.clearUndeliveredDraft}
+                controls={
+                  // Ungated, unlike the mode picker that used to sit here. A mode is
+                  // set once at creation — a code thread owns a branch, and
+                  // re-pointing it would strand that branch — so that control was
+                  // only shown while a thread was unsaved, and it now lives beside
+                  // the thread list. A level is the opposite: it is the operator's
+                  // live control over a thread already in flight, so it is offered at
+                  // every moment of one, and it rides the next send.
+                  <PermissionControl
+                    level={permission()}
+                    onLevelChange={setPermission}
+                  />
+                }
+                trailing={
+                  <>
+                    {/* Where the message is going, then how full the thread it's
                       going into is — both read on the way to SEND. */}
-                  <ModelPicker />
-                  {/* Only once a run has reported. The ring used to be
+                    <ModelPicker />
+                    {/* Only once a run has reported. The ring used to be
                       unconditional and paint an alert-toned "context window
                       unknown" whenever it had nothing — which on a brand-new
                       thread is simply *before the first turn*, so a fresh chat
@@ -278,31 +299,37 @@ export function ChatRoomScreen(): JSX.Element {
                       established. A gauge with nothing to measure has nothing to
                       say. The genuinely-unknown case is not lost: it is the send
                       gate's, which blocks SEND and explains why. */}
-                  <Show when={stream.usage()}>
-                    {(usage) => (
-                      <ContextRing
-                        usage={usage()}
-                        lastRequest={stream.stats()?.lastRequest}
-                      />
-                    )}
-                  </Show>
-                </>
-              }
-            />
+                    <Show when={stream.usage()}>
+                      {(usage) => (
+                        <ContextRing
+                          usage={usage()}
+                          lastRequest={stream.stats()?.lastRequest}
+                        />
+                      )}
+                    </Show>
+                  </>
+                }
+              />
+            </Show>
             {/* The conversation's readouts sit UNDER the input, not above the
               transcript where they used to. Two reasons, and the second is the
               one that matters: after typing, this is where the operator's eye
               already is — and docked here the line stays put while the
               conversation scrolls behind it, so nothing it says ever belongs to
               the turn that happens to be passing behind it. */}
-            <ConversationStatusStrip
-              conversationId={currentId}
-              streaming={stream.sending}
-              detached={stream.detached}
-              stats={stream.stats}
-              plan={stream.plan}
-              grantsRevalidate={conversationGrantsRevision}
-            />
+            {/* Its own fill, because the wrapper's is gone while a park is up and
+                the strip is not part of the glass — without this it would sit on the
+                transcript scrolling behind it. */}
+            <div class="bg-bg">
+              <ConversationStatusStrip
+                conversationId={currentId}
+                streaming={stream.sending}
+                detached={stream.detached}
+                stats={stream.stats}
+                plan={stream.plan}
+                grantsRevalidate={conversationGrantsRevision}
+              />
+            </div>
           </div>
         </div>
       </section>

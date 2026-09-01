@@ -33,7 +33,7 @@ import {
   type Accessor,
 } from "solid-js";
 import {
-  setAwaitingApproval,
+  setAwaitingInput,
   setChatBusy,
   setRunErrored,
 } from "~/lib/stores/chatActivity";
@@ -191,7 +191,7 @@ export function mainChat(): MainChat {
     createEffect(() => setRunErrored(stream.errored()));
     // Same mirror for the awaiting-approval echo, so the nav rail and favicon can flag
     // a parked run needing a decision from any screen, not just while on /chat.
-    createEffect(() => setAwaitingApproval(stream.awaitingApproval()));
+    createEffect(() => setAwaitingInput(stream.awaitingInput()));
     // Read-on-view: the one place a thread selection lands, regardless of whether it
     // came from the RECENTS rail, the chat screen's warm-resume, or a notification's
     // deep-link — so opening a conversation always clears its unread notifications

@@ -484,10 +484,12 @@ export function createChatStream(
      *  exhausted) — the run may still be alive server-side, awaiting a
      *  manual/automatic re-attach rather than being over. */
     detached: drive.detached,
-    /** True while a sensitive tool call has parked this run awaiting the
-     *  operator's decision — the main room mirrors it to the global
-     *  `awaitingApproval` echo (nav rail warn tone, favicon attention tint). */
-    awaitingApproval: approvals.awaitingApproval,
+    /** True while this run is parked on the operator — a sensitive tool call awaiting
+     *  their decision, or a question awaiting their answer. The main room mirrors it to
+     *  the global `awaitingInput` echo (nav rail warn tone, favicon attention tint). */
+    awaitingInput: approvals.awaitingInput,
+    /** What the live turn is parked on, or null. The dock over the composer renders it. */
+    park: approvals.park,
     titlePending,
     reattaching: drive.reattaching,
     usage,
@@ -510,7 +512,7 @@ export function createChatStream(
     undeliveredDraft: steering.undeliveredDraft,
     clearUndeliveredDraft: steering.clearUndeliveredDraft,
     reattachRun: drive.reattachRun,
-    resolveApproval: approvals.resolveApproval,
+    resolvePark: approvals.resolvePark,
     resolveHostCommands: approvals.resolveHostCommands,
     regenerate: branching.regenerate,
     edit: branching.edit,

@@ -55,7 +55,7 @@ function waiting(messages: ChatMessage[], sending = true): boolean {
       sending: live,
       reconcileStaleDecision: async () => {},
     });
-    const answer = ops.awaitingApproval();
+    const answer = ops.awaitingInput();
     dispose();
     return answer;
   });

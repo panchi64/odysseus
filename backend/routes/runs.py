@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import ToolApproved, ToolDenied
 
 from agent import ParkedTurn, build_resume_orchestrator
+from agent.answers import AnswerError, questions_of, render_answer
 from agent.gating import GrantApproved
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
@@ -172,13 +173,40 @@ class ApprovalDecision(BaseModel):
     scope: Literal["once", "conversation"] = "once"
 
 
+class QuestionReply(BaseModel):
+    """What the operator said to one question."""
+
+    # The labels they chose, exactly as offered. Labels rather than indices so a reply
+    # cannot silently land on the wrong option if the two sides ever disagree about
+    # order — and the server checks them against the parked call either way.
+    selections: list[str] = Field(default_factory=list)
+    # What they wrote instead of, or in addition to, choosing. Always available: the
+    # options are the model's guesses at the answer, not the range of possible answers.
+    text: str | None = None
+
+
+class QuestionAnswer(BaseModel):
+    """One parked ``ask_user`` call, answered. ``replies`` is positional — one per
+    question in the call, in the order they were asked."""
+
+    tool_call_id: str
+    replies: list[QuestionReply]
+
+
 class ApprovalDecisions(BaseModel):
-    decisions: list[ApprovalDecision]
+    decisions: list[ApprovalDecision] = Field(default_factory=list)
+    answers: list[QuestionAnswer] = Field(default_factory=list)
 
 
 @router.post("/{run_id}/approve", status_code=202)
 async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) -> dict[str, str]:
-    """Decide the sensitive actions a parked run is awaiting, then resume it."""
+    """Settle everything a parked run is awaiting — permissions and answers — then
+    resume it.
+
+    One endpoint for both because a run parks once and resumes once: a turn that stopped
+    on an approval *and* a question is waiting on a single set, and a client that could
+    send half of it would leave the other half with no way to arrive.
+    """
     registry = deps.registry(request)
     run = registry.get(run_id)
     if run is None:
@@ -192,12 +220,41 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     # Those ride on the parked payload and merge back below.
     tool_by_id = {call.tool_call_id: call.tool_name for call in parked.requests.approvals}
     pending = set(tool_by_id) - set(parked.settled)
-    provided = {d.tool_call_id for d in body.decisions}
-    if provided != pending:
+    # The questions are pending too, and unconditionally: nothing settles one ahead of
+    # the operator. Both piles are checked against one set because the run resumes once —
+    # a body covering only the approvals would resume a turn whose question still has no
+    # answer, and Pydantic AI would have nothing to hand that call.
+    asked = {call.tool_call_id: call.args_as_dict() for call in parked.requests.calls}
+    # Each pile is checked against *its own* ids, not just against the union. A body
+    # that answered an approval — or decided a question — would satisfy a union check
+    # while leaving the call it named with the wrong kind of result: the two piles are
+    # settled by different code below, and each would then index the map the id is not
+    # in. Checked separately, a swapped id is a 400 rather than a 500.
+    decided = {d.tool_call_id for d in body.decisions}
+    answered = {a.tool_call_id for a in body.answers}
+    if decided != pending or answered != set(asked):
         raise HTTPException(
             status_code=400,
-            detail=f"decisions must cover exactly the pending calls: {sorted(pending)}",
+            detail=(
+                "decisions must cover exactly the pending approvals "
+                f"({sorted(pending)}) and answers exactly the pending questions "
+                f"({sorted(asked)})"
+            ),
         )
+
+    # The answers, rendered from the *parked arguments* rather than from anything the
+    # client sent as prose. The client says which options it chose; what those options
+    # said is read back off the call the model actually made, so the transcript and the
+    # model cannot be shown two different questions.
+    answers: dict[str, str] = {}
+    for answer in body.answers:
+        try:
+            answers[answer.tool_call_id] = render_answer(
+                questions_of(asked[answer.tool_call_id]),
+                [(r.selections, r.text) for r in answer.replies],
+            )
+        except AnswerError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     grants = deps.approval_grants(request)
     # Re-validate the grant-driven pre-approvals against the *current* grants: a grant
@@ -254,6 +311,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     orchestrator = build_resume_orchestrator(
         parked,
         decisions,
+        answers=answers,
         # The same app-wide agent-facing bag the original turn ran with — a resumed
         # turn re-runs the approved tool call, and mail-send/vault-read/external are
         # the approval-gated ones, so this resume path is the *only* way they ever run.
@@ -268,7 +326,13 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         # payload rather than the conversation, so the resumed turn is offered the same
         # tools it parked with.
         disabled_tools=await deps.disabled_tools(
-            request, parked.binding.mode, permission=parked.binding.permission
+            request,
+            parked.binding.mode,
+            permission=parked.binding.permission,
+            # ...and the run's own kind, so a resumed unattended turn is offered the same
+            # stack it parked with rather than gaining the attended-only tools back on
+            # the one path that continues it.
+            kind=run.kind,
         ),
     )
     # Record grants *before* resuming: resume only schedules the turn (it doesn't await

@@ -1,7 +1,6 @@
 import { Match, Switch, type JSX } from "solid-js";
 import { LedEdge, cx } from "~/ui";
 import type {
-  ApprovalBlock,
   ApprovalDecision,
   BlockKind,
   ContextBlock,
@@ -16,7 +15,6 @@ import type {
 import type { BlockGroup, LayoutItem } from "../blocks";
 import { LIVE_KEY, snapshotKey, versionIcon, type ViewItem } from "../viewport";
 import { AnswerText } from "./AnswerText";
-import { ApprovalCard } from "./ApprovalCard";
 import { ContextInjectionCard } from "./ContextInjectionCard";
 import { HostCommandCard } from "./HostCommandCard";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -42,7 +40,6 @@ export interface ChipLookupEntry {
 }
 
 export interface RowHandlers {
-  onResolveApproval?: Resolve;
   onResolveHostCommands?: Resolve;
   /** Open a View item (a version or the live head) in the side viewport, by key. */
   onOpenInView?: (key: string) => void;
@@ -68,7 +65,6 @@ const RAIL_KINDS: ReadonlySet<BlockKind> = new Set([
   "context",
   "review",
   "host_command",
-  "approval",
 ]);
 
 /** The left rail that turns a stack of process blocks into a legible, ordered
@@ -127,8 +123,11 @@ function chipMeta(
   };
 }
 
-/** Render one block group by kind. Approvals and host commands arrive as a
- *  group (consecutive blocks batched) so their cards keep one shared decision. */
+/** Render one block group by kind. Host commands arrive as a group (consecutive blocks
+ *  batched) so their cards keep one shared decision.
+ *
+ *  Approvals and questions have no case here: a parked run is answered in the dock that
+ *  takes over the composer, not on the rail (`ParkDock`, and `groupBlocks`'s `DOCKED`). */
 export function BlockRow(
   props: {
     group: BlockGroup;
@@ -237,14 +236,6 @@ export function BlockRow(
             commands={(g().blocks as HostCommandBlock[]).map((b) => b.command)}
             open={props.forceOpen}
             onSubmit={props.onResolveHostCommands ?? noop}
-          />
-        </Rail>
-      </Match>
-      <Match when={g().kind === "approval"}>
-        <Rail active={props.active} top={props.top}>
-          <ApprovalCard
-            approvals={(g().blocks as ApprovalBlock[]).map((b) => b.approval)}
-            onSubmit={props.onResolveApproval ?? noop}
           />
         </Rail>
       </Match>

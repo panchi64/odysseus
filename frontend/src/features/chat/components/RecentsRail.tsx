@@ -50,7 +50,7 @@ export function RecentsRail(): JSX.Element {
     const list = sessions();
     const id = currentId();
     if (!list || !id || !stream.sending()) return list;
-    const echo: ChatActivity = stream.awaitingApproval()
+    const echo: ChatActivity = stream.awaitingInput()
       ? "awaiting_input"
       : "running";
     return list.map((s) =>

@@ -334,6 +334,30 @@ export interface ApprovalRequired extends Base {
   summary: string;
   explanation: string | null;
 }
+/** One answer offered for a question. */
+export interface QuestionOption {
+  label: string;
+  description: string | null;
+}
+/** One question the operator is being asked. `multi_select` says whether several of
+ *  `options` may be chosen together; writing an answer instead is always allowed and so
+ *  is never a flag. */
+export interface QuestionSpec {
+  question: string;
+  options: QuestionOption[];
+  multi_select: boolean;
+}
+/** The turn is parked on the operator answering, not on them permitting.
+ *
+ *  Its own event rather than an `approval.required` with a different shape: an approval
+ *  is a yes or a no about an action already decided on, and a question comes back
+ *  carrying a *value* that becomes the tool's result. One event per call, holding every
+ *  question in it — the model asks in one go and is answered in one go. */
+export interface QuestionAsked extends Base {
+  type: "question.asked";
+  tool_call_id: string;
+  questions: QuestionSpec[];
+}
 /** An action at the Auto permission level is being ruled on in the operator's place.
  *
  *  Announced *before* it is ruled on, so a review that takes a model call reads as work
@@ -452,6 +476,7 @@ export type RunEvent =
   | ContextInjected
   | CitationAdded
   | ApprovalRequired
+  | QuestionAsked
   | ReviewStarted
   | ReviewCompleted
   | MessageQueued

@@ -7,10 +7,13 @@ we own the run lifecycle, the event stream, bounds, and the approval pause/resum
 for sensitive actions. The meta-loop (verifier/loop-break) lands here next.
 
 A turn is driven by :func:`_drive_turn`, shared by the initial run and every
-approval resume. When the model requests a sensitive (approval-required) tool,
-Pydantic AI ends the turn with ``DeferredToolRequests`` *without executing it*;
-we surface ``approval.required``, park the Run (``awaiting_input``), and stash a
+resume. When the model requests a sensitive (approval-required) tool, Pydantic AI
+ends the turn with ``DeferredToolRequests`` *without executing it*; we surface
+``approval.required``, park the Run (``awaiting_input``), and stash a
 :class:`ParkedTurn` so an approve decision can resume exactly where it left off.
+``ask_user`` takes the same road for the other reason a turn stops on the operator:
+the call defers for an *answer* rather than a permission, and the answer they give
+comes back as the call's own result.
 
 What lives *here* is the turn's control flow and the two orchestrators that wrap it.
 Five neighbours carry the concerns that aren't that, each with its own reason to change:
@@ -28,7 +31,7 @@ Five neighbours carry the concerns that aren't that, each with its own reason to
   and the Auto level's review (announced on the stream). The rules it applies are
   ``services/permissions``'.
 - ``parking.py`` — the continuation payload a parked turn resumes from, and the park
-  itself (the approval events and the notify that must land before it).
+  itself (the approval and question events, and the notify that must land before it).
 """
 
 from __future__ import annotations
@@ -127,7 +130,7 @@ from .naming import (
     start_title,
 )
 from .overhead import MeasureOverhead
-from .parking import DEFAULT_BINDING, ParkedTurn, park_for_approval
+from .parking import DEFAULT_BINDING, ParkedTurn, park_for_input
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
@@ -533,7 +536,13 @@ async def _drive_turn(
         # Counted off the full replayed history, so hops and segments need no
         # accumulator — see `_turn_metrics`.
         run.set_metrics(_turn_metrics(run, messages))
-        if not (isinstance(output, DeferredToolRequests) and output.approvals):
+        # Two ways a turn can end without being finished: a call awaiting permission, and
+        # a call awaiting an answer (`ask_user`). Both arrive on the same object, and
+        # either one alone means there is more of this turn to run.
+        deferred = isinstance(output, DeferredToolRequests) and (
+            output.approvals or output.calls
+        )
+        if not deferred:
             # The model finished, but the operator queued more while it was working:
             # instead of ending the run, continue it with the queued text as the next
             # user request(s) — same run id, same stream, same usage/loop budget (so
@@ -551,9 +560,11 @@ async def _drive_turn(
             answer = output if isinstance(output, str) else None
             return _TurnResult(answer=answer, messages=messages)
 
-        # Rule on each deferred call — grants, then the level, then Auto's review. The
-        # rules and their announcement live in `gating.py`; what is left here is what the
-        # turn does with the two piles it hands back.
+        # Rule on each deferred *approval* — grants, then the level, then Auto's review.
+        # The rules and their announcement live in `gating.py`; what is left here is what
+        # the turn does with the two piles it hands back. Questions (`output.calls`) are
+        # not put through any of it: a grant, a level and a reviewer all answer "may this
+        # run", and a question is not asking that.
         settled, manual = await settle_deferred(
             run,
             output.approvals,
@@ -563,8 +574,8 @@ async def _drive_turn(
             messages=messages,
             permission=binding.permission,
         )
-        if manual:
-            await park_for_approval(
+        if manual or output.calls:
+            await park_for_input(
                 run,
                 agent,
                 messages,
@@ -579,7 +590,8 @@ async def _drive_turn(
                 vision=vision,
             )
             return _TurnResult(answer=None, messages=messages)
-        # Every deferred call settled without the operator — continue the SAME turn inline
+        # Every deferred call settled without the operator — no question was asked, and
+        # every approval was ruled on. Continue the SAME turn inline
         # (no round-trip), reusing the shared budget/guard/usage above. An auto-run tool
         # still streams its tool.started/completed, so it stays visible, and a call the
         # level refused comes back to the model as a denial it can plan around. Defensively
@@ -758,7 +770,7 @@ def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None
     parked counterpart of ``_on_cancel``'s flush for a still-running turn. Wired as
     ``run.on_park_cancel`` right after the parking ``_finalize`` call populates
     ``ParkedTurn``'s persistence context, so it's armed before any further ``await``
-    a concurrent cancel could otherwise slip through (see ``park_for_approval``'s
+    a concurrent cancel could otherwise slip through (see ``park_for_input``'s
     identical notify-before-park ordering concern). Called by
     ``RunRegistry.cancel``'s parked branch *after* it has already set the terminal
     ``cancelled`` status, so ``_finalize`` takes its normal persist branch rather
@@ -1241,14 +1253,23 @@ def build_resume_orchestrator(
     parked: ParkedTurn,
     decisions: dict[str, Any],
     *,
+    answers: dict[str, str] | None = None,
     capabilities: ServiceContainer = _NO_CAPS,
     store: ConversationStore | None = None,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:
-    """Resume a parked turn with the operator's approve/deny decisions."""
+    """Resume a parked turn with the operator's approve/deny decisions and answers.
+
+    Both piles in one resume, because the park was one park: a turn that stopped on an
+    approval *and* a question has a single continuation, and starting it twice would run
+    the second against a history the first had already moved past.
+    """
 
     async def orchestrate(run: Run) -> None:
-        results = DeferredToolResults(approvals=decisions)
+        # `calls` carries values rather than verdicts — Pydantic AI wraps each one in a
+        # `ToolReturn`, so the operator's answer lands in history as that call's own
+        # result and the model reads it exactly as it would any other tool's.
+        results = DeferredToolResults(approvals=decisions, calls=answers or {})
 
         # Same reasoning as the chat orchestrator's `_on_timeout`: a resumed turn is
         # bound by fresh wall-clock/inactivity timeouts too (see `RunRegistry.resume`),

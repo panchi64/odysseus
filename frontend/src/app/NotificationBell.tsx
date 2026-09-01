@@ -21,7 +21,6 @@ import type {
   NotificationKind,
 } from "~/lib/stream/notificationEvents";
 import { openConversation } from "~/features/chat/data";
-import { requestApprovalFocus } from "~/features/chat/viewerPersistence";
 
 /** Icon + accent per kind (design: approval_needed = warn, run_failed = danger,
  *  run_completed/task_outcome = neutral, reminder = info accent). */
@@ -106,9 +105,8 @@ export function NotificationBell(): JSX.Element {
   };
 
   const openNotification = (n: Notification) => {
-    // An approval deep-link asks the pending card to focus itself on arrival —
-    // consumed once by the non-stale ApprovalCard that mounts for this thread.
-    if (n.kind === "approval_needed") requestApprovalFocus();
+    // A park needs no deep-link focus intent: opening the thread is enough, because
+    // the dock holds the composer's slot and is on screen already.
     void notifications.markRead([n.id]);
     if (n.conversationId) {
       openConversation(n.conversationId);

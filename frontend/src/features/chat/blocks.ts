@@ -93,6 +93,13 @@ export function assembleTranscript(
           `APPROVAL REQUIRED: ${b.approval.name} — ${b.approval.summary}`,
         );
         break;
+      case "question":
+        // Only what was *asked*. What was answered rides back as the call's own
+        // result, so it is already in this transcript as the tool call above.
+        parts.push(
+          b.question.questions.map((q) => `ASKED: ${q.question}`).join("\n"),
+        );
+        break;
       case "view_version":
         parts.push(`[view version: ${b.title ?? "version"}]`);
         break;
@@ -105,14 +112,14 @@ export function assembleTranscript(
 }
 
 /* ── Grouping ─────────────────────────────────────────────────────────────────
-   Approvals and host commands batch into one card (the parked run resumes only
-   on a decision covering every pending call), so consecutive blocks of those
-   kinds merge into a single group. Every other block stands alone.
+   Host commands batch into one card (the parked run resumes only on a decision
+   covering every pending call), so consecutive blocks of that kind merge into a
+   single group. Every other block stands alone.
 
    This assumes a park's pending calls arrive contiguously in the stream (true
    for a single park — the events for one step's gated calls are emitted back to
    back). If a future backend ever interleaves a non-gated block *between* two
-   simultaneously-pending approvals, they'd split across cards and each would
+   simultaneously-pending commands, they'd split across cards and each would
    submit a partial decision — unify the cards then. */
 
 export interface BlockGroup {
@@ -121,16 +128,27 @@ export interface BlockGroup {
   blocks: AssistantBlock[];
 }
 
-const AGGREGATED: ReadonlySet<BlockKind> = new Set([
-  "approval",
-  "host_command",
-]);
+const AGGREGATED: ReadonlySet<BlockKind> = new Set(["host_command"]);
+
+/** Blocks the transcript does not render: the two the operator answers in the dock
+ *  that takes over the composer (`ParkDock`).
+ *
+ *  Dropped here rather than never folded, because the block is still how the dock
+ *  learns what is pending — and how it learns again after a reconnect replays the
+ *  stream. Rendering them in both places would put the same decision on screen twice,
+ *  with two submit buttons for one run that resumes once.
+ *
+ *  Nothing is lost from the record by the omission: a deferred call emits `tool.started`
+ *  when it parks and `tool.completed` when it resumes, so what the operator was asked and
+ *  what they said is already in the transcript as the tool call itself. */
+const DOCKED: ReadonlySet<BlockKind> = new Set(["approval", "question"]);
 
 export function groupBlocks(
   blocks: AssistantBlock[] | undefined,
 ): BlockGroup[] {
   const groups: BlockGroup[] = [];
   for (const b of blocks ?? []) {
+    if (DOCKED.has(b.kind)) continue;
     const last = groups[groups.length - 1];
     if (last && last.kind === b.kind && AGGREGATED.has(b.kind)) {
       last.blocks.push(b);
@@ -178,7 +196,7 @@ function hasImages(group: BlockGroup): boolean {
 }
 
 /** A review that refused the call it judged. Distinct from a review that *parked* one:
- *  a park is followed by an approval card, which pins itself and carries the question;
+ *  a park raises the dock, which takes over the composer and carries the question;
  *  a refusal is followed by nothing at all, so this row is the only account of it. */
 function hasRefusal(group: BlockGroup): boolean {
   return group.blocks.some(
@@ -219,12 +237,15 @@ function pinsRunInline(group: BlockGroup): boolean {
  *  and not failed, and the View chips (a version / the live head — the viewport
  *  surfaces those anyway).
  *
- *  Three things break a work log run: answer `text` (the model writing *to the
- *  operator* — the one thing that should segment the log), approvals, and
- *  anything `pinsRunInline` claims — a call in flight, a host command awaiting a
- *  decision, or a failure. The operator has to act before the run goes on, is
- *  watching it happen, or needs to know it went wrong. Everything else folds into
- *  one continuously growing log. */
+ *  Two things break a work log run: answer `text` (the model writing *to the
+ *  operator* — the one thing that should segment the log) and anything
+ *  `pinsRunInline` claims — a call in flight, a host command awaiting a
+ *  decision, or a failure. The operator is watching it happen, or needs to know it
+ *  went wrong. Everything else folds into one continuously growing log.
+ *
+ *  Parks are absent from this reckoning because they are absent from the transcript:
+ *  an approval or a question is answered in the dock, and `groupBlocks` never emits
+ *  a group for either. */
 function isCollapsible(group: BlockGroup): boolean {
   if (group.kind === "thinking") return true;
   if (group.kind === "view_version" || group.kind === "view_live") return true;

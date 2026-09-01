@@ -195,11 +195,13 @@ async def disabled_tools(
     *,
     permission: str = DEFAULT_PERMISSION,
     vision: bool = True,
+    kind: str = "chat",
 ) -> frozenset[str]:
     """Everything withheld from the agent on this run — the operator's own disabled set
     (`AE-3.3`) unioned with offline mode's automatic web suspension, the tools that don't
     belong in ``mode``, the ones this run's ``permission`` level may not act with at all,
-    and the ones this run's model can't read the results of. Every route that fills
+    the ones this run's model can't read the results of, and the ones that need an
+    operator a run of this ``kind`` doesn't have. Every route that fills
     ``RunDeps.disabled_tools`` resolves it here, so a run path can't apply one source and
     drop the others; ``app.py``'s task executor calls the service directly (it has no
     ``Request``)."""
@@ -210,6 +212,7 @@ async def disabled_tools(
         mode=mode,
         permission=permission,
         vision=vision,
+        kind=kind,
     )
 
 

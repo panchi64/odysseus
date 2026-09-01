@@ -130,6 +130,10 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
                 # answers with an image is withheld from a model that cannot read one,
                 # whether or not anyone is watching the turn.
                 vision=models[4],
+                # And the reason the operator is not asked anything: this is the lane
+                # whose whole premise is that nobody is watching, so a tool that would
+                # suspend the turn on them is withheld rather than left to hang.
+                kind="task",
             ),
             # Same reasoning for the per-turn model-request ceiling: an unattended task
             # runs under the operator's own setting when they set one, and otherwise

@@ -52,6 +52,11 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
           : "Working";
     case "approval":
       return "Awaiting approval";
+    // Both parks say what they are waiting for rather than sharing a word: "awaiting
+    // approval" on a turn that asked which database to use would send the operator
+    // looking for a decision the dock is not offering them.
+    case "question":
+      return "Awaiting your answer";
     case "view_version":
       return "Updating view";
     case "view_live":

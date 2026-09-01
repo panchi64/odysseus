@@ -14,3 +14,8 @@ export type { ChatMessage } from "./model";
 // it wherever its layout allows.
 export { ViewportPanel } from "./components/ViewportPanel";
 export { collectViewItems, type ViewItem } from "./viewport";
+// The park surface, for the same reason: a compare pane runs real turns against real
+// tools, so one can stop on an approval or a question exactly as the main room's can.
+// Approvals no longer render on the transcript rail, so a pane without this would show
+// a parked run nothing at all — and it would wait forever.
+export { ParkDock } from "./components/ParkDock";

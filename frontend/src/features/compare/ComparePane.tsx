@@ -15,7 +15,12 @@ import {
   confirm,
   toast,
 } from "~/ui";
-import { MessageItem, ViewportPanel, collectViewItems } from "~/features/chat";
+import {
+  MessageItem,
+  ParkDock,
+  ViewportPanel,
+  collectViewItems,
+} from "~/features/chat";
 import {
   decodeModelValue,
   encodeModelValue,
@@ -143,7 +148,6 @@ export function ComparePaneView(props: {
             {(message) => (
               <MessageItem
                 message={message}
-                onResolveApproval={stream().resolveApproval}
                 onResolveHostCommands={stream().resolveHostCommands}
                 onOpenInView={setOpenKey}
                 viewItems={viewItems}
@@ -176,6 +180,25 @@ export function ComparePaneView(props: {
           </For>
         </Show>
       </div>
+
+      {/* A pane runs real turns against real tools, so it can park on an approval or a
+          question like any other run — and parks are answered in the dock, never on the
+          transcript rail. Without this the pane would render nothing at all for one and
+          wait forever. Per pane, not per screen: the two panes park independently, and
+          each resumes its own run. */}
+      <Show when={stream().park()}>
+        {(park) => (
+          <div class="shrink-0 px-2 pb-2">
+            <ParkDock
+              park={park()}
+              onStop={() => void stream().cancel()}
+              onSubmit={(settlement) =>
+                stream().resolvePark(park().messageId, settlement)
+              }
+            />
+          </div>
+        )}
+      </Show>
 
       <Modal
         open={openKey() !== null}

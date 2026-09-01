@@ -286,6 +286,29 @@ export function createFolder(
         });
         break;
       }
+      case "question.asked": {
+        // Same defaulting discipline as `approval.required` above: `questions` is typed
+        // as always-present but arrives as untrusted JSON, so it is defaulted once here
+        // rather than guarded at every consumer of the stored block.
+        patchById(assistantId, (m) => {
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "question",
+            id: `question-${ev.tool_call_id}`,
+            question: {
+              toolCallId: ev.tool_call_id,
+              questions: (ev.questions ?? []).map((q) => ({
+                question: q.question,
+                multiSelect: q.multi_select ?? false,
+                options: (q.options ?? []).map((o) => ({
+                  label: o.label,
+                  description: o.description ?? undefined,
+                })),
+              })),
+            },
+          });
+        });
+        break;
+      }
       case "view.live": {
         // One live head per *conversation*, not per turn: clear any prior live
         // block (it may sit on an earlier turn) before marking this turn's, so a

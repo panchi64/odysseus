@@ -24,9 +24,11 @@ from runs import Run, RunStream
 from services.registry import ModelRegistry
 from services.settings_store import DISABLED_TOOLS_KEY, SettingsStore
 from services.tool_policy import (
+    ATTENDED_ONLY_TOOLS,
     VISION_ONLY_TOOLS,
     effective_disabled_tools,
     get_disabled_tools,
+    lane_disabled_tools,
     mode_disabled_tools,
     set_tool_enabled,
     vision_disabled_tools,
@@ -101,6 +103,7 @@ _PINNED_CATALOG = {
     "browse_tabs",
     "browse_type_text",
     "browse_wait_for",
+    "builtin_ask_user",
     "builtin_now",
     "calendar_agenda",
     "calendar_create_event",
@@ -267,6 +270,14 @@ def test_the_vision_gate_names_tools_that_actually_exist():
     # The set is written out in `services/` (which sits below `tools/`), so a harness
     # rename would otherwise leave it silently covering nothing.
     assert VISION_ONLY_TOOLS <= _PINNED_CATALOG
+
+
+def test_the_lane_gate_names_tools_that_actually_exist():
+    # Same reason, and it bites harder here: a name that stopped matching would offer a
+    # scheduled task a tool that suspends the turn on an operator who is not there — and
+    # a parked turn lives in the process, so the run waits until it restarts.
+    assert ATTENDED_ONLY_TOOLS <= _PINNED_CATALOG
+    assert lane_disabled_tools("task") <= _PINNED_CATALOG
 
 
 def _force_offline(monkeypatch, app, *names: str) -> None:

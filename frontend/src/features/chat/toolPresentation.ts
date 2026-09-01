@@ -93,6 +93,9 @@ const TOOLS: Record<string, ToolEntry> = {
     label: "Attach",
     keys: ["attachment_id"],
   },
+  // The transcript's record of a question: the call is what remains once the dock has
+  // been answered and dismissed, carrying both what was asked and what was said.
+  builtin_ask_user: { icon: "chat", label: "Asked you" },
   builtin_now: { icon: "clock", label: "Clock" },
 
   calendar_agenda: {
