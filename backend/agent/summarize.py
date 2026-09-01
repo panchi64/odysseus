@@ -21,11 +21,12 @@ Three properties make this safe to run automatically:
   with a context notice. Compaction lowers the pressure; it never absorbs an overflow, and
   it never silently drops content to force a fit.
 
-``auto_compact_keep_turns`` is **0** by default: the summary *is* what the model replays,
-and a retained tail would restate verbatim what the summary already covers, at the exact
-moment the thread has no room for it. The setting survives because the boundary is a turn
-start, so a non-zero value replays the last few exchanges word for word — but nothing after
-the boundary is kept unless the operator asks for it.
+``auto_compact_keep_turns`` is **3** by default, and is an operator setting beside the
+threshold rather than a config-only knob. The boundary is a turn start, so the last three
+exchanges are replayed word for word under the summary: a summary is at its most lossy
+about the work in flight, which is exactly the work the next turn continues. 0 is still a
+legal choice — the summary then *is* the whole replay — and the operator makes it in
+Settings, not in a deploy's environment.
 """
 
 from __future__ import annotations
@@ -105,14 +106,22 @@ class CompactionOutcome:
 
 
 def build_auto_compact_policy(
-    settings: Settings, *, enabled: bool | None = None, threshold: float | None = None
+    settings: Settings,
+    *,
+    enabled: bool | None = None,
+    threshold: float | None = None,
+    keep_turns: int | None = None,
 ) -> AutoCompactPolicy:
     """Resolve the effective policy from the config defaults, with optional operator
-    overrides."""
+    overrides.
+
+    ``keep_turns`` takes ``None`` for "not overridden" rather than treating 0 as unset: 0 is
+    a choice the operator can make (the summary becomes the whole replay), so it has to be
+    distinguishable from an absent preference."""
     return AutoCompactPolicy(
         enabled=settings.auto_compact_enabled if enabled is None else enabled,
         threshold=settings.auto_compact_threshold if threshold is None else threshold,
-        keep_turns=settings.auto_compact_keep_turns,
+        keep_turns=settings.auto_compact_keep_turns if keep_turns is None else keep_turns,
     )
 
 
@@ -129,6 +138,7 @@ async def resolve_auto_compact_policy(
         get_settings(),
         enabled=resolve_compaction_enabled(override, stored.enabled),
         threshold=stored.threshold,
+        keep_turns=stored.keep_turns,
     )
 
 

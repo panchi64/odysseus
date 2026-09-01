@@ -871,10 +871,11 @@ async def test_a_steered_turn_replays_without_losing_the_next_turns_prompt():
 def test_the_policy_resolves_from_config_defaults():
     policy = build_auto_compact_policy(get_settings())
     assert policy.enabled is True
-    assert policy.threshold == pytest.approx(0.95)
-    # Nothing is retained after the boundary by default: the summary *is* the replay, and
-    # a retained tail would restate what it already covers at the moment there is no room.
-    assert policy.keep_turns == 0
+    # 80%, not 95%: a fold at 95% leaves no room for the turn that triggered it.
+    assert policy.threshold == pytest.approx(0.80)
+    # The last few exchanges survive verbatim — a summary is at its most lossy about the
+    # work in flight, which is exactly the work the next turn continues.
+    assert policy.keep_turns == 3
 
 
 def test_the_policy_takes_operator_overrides():

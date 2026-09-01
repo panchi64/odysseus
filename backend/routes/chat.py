@@ -47,6 +47,7 @@ from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import PermissionLevel
 from services.registry import ModelRegistry
 from services.settings_store import (
+    AUTO_COMPACT_KEEP_TURNS_MAX,
     AutoCompactSettings,
     get_agent_request_limit,
     get_agent_request_limit_override,
@@ -165,6 +166,13 @@ class ChatSettings(BaseModel):
     # fire on an empty thread) and at 1 (above it, compaction could never fire at all).
     auto_compact_enabled: bool | None = None
     auto_compact_threshold: float | None = Field(default=None, gt=0, le=1)
+    # How many of the most recent exchanges the fold replays verbatim under the summary.
+    # ``ge=0`` (unlike the threshold's ``gt=0``): 0 means "the summary is the whole replay",
+    # which is a choice, not a nonsensical value. The ceiling exists because retaining the
+    # whole thread would make the fold a no-op at the moment the thread is out of room.
+    auto_compact_keep_turns: int | None = Field(
+        default=None, ge=0, le=AUTO_COMPACT_KEEP_TURNS_MAX
+    )
     # The context gauge's severity boundaries — the fullness at which the ring under the
     # composer turns amber, then red. Fractions, like the compaction threshold above and
     # for the same reason. The per-field bounds here only reject a value that is
@@ -678,6 +686,7 @@ def _settings_response(
     return ChatSettings(
         auto_compact_enabled=auto.enabled,
         auto_compact_threshold=auto.threshold,
+        auto_compact_keep_turns=auto.keep_turns,
         context_warn_threshold=context.warn,
         context_alert_threshold=context.alert,
         agent_request_limit=steps,
@@ -721,7 +730,11 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
         wall_clock = await get_wall_clock_timeout(store, OPERATOR_ID)
 
     auto = await get_auto_compact(store, OPERATOR_ID)
-    if body.auto_compact_enabled is not None or body.auto_compact_threshold is not None:
+    if (
+        body.auto_compact_enabled is not None
+        or body.auto_compact_threshold is not None
+        or body.auto_compact_keep_turns is not None
+    ):
         auto = await set_auto_compact(
             store,
             OPERATOR_ID,
@@ -732,6 +745,9 @@ async def update_chat_settings(body: ChatSettings, request: Request) -> ChatSett
                 threshold=auto.threshold
                 if body.auto_compact_threshold is None
                 else body.auto_compact_threshold,
+                keep_turns=auto.keep_turns
+                if body.auto_compact_keep_turns is None
+                else body.auto_compact_keep_turns,
             ),
         )
 
