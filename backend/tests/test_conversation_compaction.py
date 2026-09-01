@@ -308,10 +308,12 @@ async def test_mid_run_steering_messages_do_not_count_as_turns():
         assert _texts(await store.model_history(cid))[:2] == ["SUMMARY", "q1"]
 
 
-async def test_no_compaction_while_the_leaf_is_a_branch_point():
-    """A regenerate has reseated the leaf and its run hasn't recorded yet. Appending a
-    checkpoint there would make the new answer a child of the checkpoint instead of a
-    sibling of the old one, quietly breaking version switching."""
+async def test_compaction_folds_while_the_leaf_is_a_branch_point():
+    """A regenerate has reseated the leaf and its run hasn't recorded yet — the one moment
+    compaction is *most* needed, since the turn about to re-run is the one that overflowed.
+    It folds: the checkpoint lands under the reseated leaf, the new answer hangs off the
+    checkpoint, and the version set reads through it (see
+    `tests/test_compaction_branch_points.py` for the full branch behaviour)."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
@@ -321,11 +323,14 @@ async def test_no_compaction_while_the_leaf_is_a_branch_point():
 
         answer = [m for m in await store.messages_view(cid) if m.role == "assistant"][-1]
         assert await store.regenerate_point(cid, answer.id)
-        assert await store.compaction_plan(cid, keep_turns=2) is None
+        assert await _compact(store, cid, keep_turns=2) is not None
 
-        # Once the regenerated answer lands, the leaf is childless again and it resumes.
+        # The reseated request is still the tail of the replay, so the regenerate that
+        # follows re-answers the operator rather than the summary.
+        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q2", "a2", "q3"]
+
         store.record(cid, [ModelResponse(parts=[TextPart(content="a3-again")])])
-        assert await store.compaction_plan(cid, keep_turns=2) is not None
+        assert _texts(await store.model_history(cid))[-1] == "a3-again"
 
 
 async def test_record_compaction_refuses_a_stale_plan():
