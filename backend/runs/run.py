@@ -117,6 +117,13 @@ class Run:
     # request, and on any turn whose measurement failed; the composition readout is absent
     # rather than guessed in that case.
     context_overhead: TurnOverhead | None = None
+    # How many messages at the head of the current replay predate this run's most recent
+    # compaction — 0 when nothing has folded. A response *before* the boundary reported its
+    # prompt size against a history that no longer exists, so reading the footprint off it
+    # would pin the gauge at the pre-fold figure for the rest of the turn. Set by the
+    # orchestrator on both folds (the prelude's, and the in-turn overflow recovery's), read
+    # only by the metrics builder.
+    fold_boundary: int = 0
     # Set once the first answer token has streamed. The AE-5.3 rule — never
     # switch endpoints after answer text has begun — is enforced against this:
     # the orchestrator refuses to re-drive a turn onto another endpoint once it
