@@ -132,6 +132,20 @@ export function useSettingsIndex(): Accessor<SettingEntry[]> {
       write: (next) => saveChat({ autoCompactThreshold: next / 100 }),
     },
     {
+      id: "chat.auto-compact-keep-turns",
+      label: "Auto-compact keeps last",
+      keywords: ["compaction", "verbatim", "exchanges", "turns", "summary"],
+      group: CHAT,
+      kind: "number",
+      unit: " exchanges",
+      // 0 is a real setting — fold everything, keep nothing verbatim — so the floor
+      // here is 0 and not the 1 every other number row in this group takes.
+      min: 0,
+      max: 20,
+      read: () => chat()?.autoCompactKeepTurns,
+      write: (next) => saveChat({ autoCompactKeepTurns: next }),
+    },
+    {
       id: "chat.context-warn",
       label: "Context gauge warning",
       keywords: ["context", "ring", "gauge", "amber", "threshold", "percent"],

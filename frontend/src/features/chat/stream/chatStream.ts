@@ -393,6 +393,27 @@ export function createChatStream(
     await send(CONTINUE_PROMPT, [], messageId);
   }
 
+  /** Fold this thread's earlier turns, then resume the turn the model's context window
+   *  stopped — the two ops the operator would otherwise run by hand, in the order that
+   *  makes the second one able to succeed.
+   *
+   *  Offered only on a turn blocked with the context-overflow detail, because that is
+   *  the one stop where a plain Continue is guaranteed to fail: the request that was
+   *  too large is the request that would be sent again. The chassis attempts this pair
+   *  itself inside the turn; this is the hand-operated version for when it could not —
+   *  compaction switched off for the thread, no background model bound, or a fold that
+   *  freed too little.
+   *
+   *  Sequential and unconditional on purpose: `compactNow` reports its own failure and
+   *  the send below re-blocks on the same bound if nothing was freed, so the operator
+   *  ends up where they started rather than somewhere new. Nothing here decides whether
+   *  the fold was enough — that judgement is the backend's, on the next request. */
+  async function compactAndContinue(messageId?: string): Promise<void> {
+    if (activeConversationId === null) return;
+    await branching.compactNow();
+    await continueTurn(messageId);
+  }
+
   /** Cancel the in-flight run for real: tell the backend to stop it (it keeps
    *  running even when the SSE is dropped), then abort the local stream and clear
    *  the streaming state. Safe to call with no active run. */
@@ -502,6 +523,8 @@ export function createChatStream(
     send,
     /** Resume a turn a bound stopped by sending a fresh "Continue." turn. */
     continueTurn,
+    /** Fold the thread, then resume the turn the context window stopped. */
+    compactAndContinue,
     cancel,
     /** Withdraw a queued (not-yet-injected) steering message from the live run. */
     withdrawQueued: (id: string) => steering.withdrawQueued(id),

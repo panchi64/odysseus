@@ -9,6 +9,7 @@ import {
 } from "solid-js";
 import { Button, Chip, Icon, Stack, Text, Textarea, cx } from "~/ui";
 import { hostLabel, relativeTime } from "~/lib/format";
+import { CONTEXT_OVERFLOW_DETAIL } from "~/lib/stream";
 import { selectedModelLabel } from "~/lib/stores/models";
 import type { ApprovalDecision, ChatMessage, Citation } from "../model";
 import { hasLayers as turnHasLayers } from "../blocks";
@@ -53,6 +54,9 @@ export interface MessageItemProps {
   /** Resume a turn a bound stopped by sending a fresh "Continue." turn on the
    *  same conversation. Shown next to the persistent "Stopped:" marker. */
   onContinue?: () => void;
+  /** Fold the thread and then resume it — offered beside Continue on the one stop
+   *  Continue cannot clear, a request the provider refused as too large. */
+  onCompactAndRetry?: () => void;
   /** The conversation's consolidated View list — read-only here, so inline
    *  transcript chips (`TurnBlocks`) can show the same version/time/NEW
    *  metadata `ViewTimelineRail` shows for the same item. */
@@ -99,6 +103,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
               onOpenInView={props.onOpenInView}
               onReattach={props.onReattach}
               onContinue={props.onContinue}
+              onCompactAndRetry={props.onCompactAndRetry}
               viewItems={props.viewItems}
               seenKey={props.seenKey}
             />
@@ -118,6 +123,7 @@ export function MessageItem(props: MessageItemProps): JSX.Element {
               onWithdraw={props.onWithdraw}
               onEditQueued={props.onEditQueued}
               onContinue={props.onContinue}
+              onCompactAndRetry={props.onCompactAndRetry}
             />
           </Match>
         </Switch>
@@ -185,17 +191,42 @@ function PinMarker(props: { message: ChatMessage }): JSX.Element {
  *  bound, a usage/context/loop limit), with a "Continue." button that resumes it by
  *  sending a fresh "Continue." turn. Shown on whichever message carries the turn's
  *  `blocked_reason` — the assistant's answer when one was produced, or the operator's
- *  own message when the bound tripped before any response landed. */
+ *  own message when the bound tripped before any response landed.
+ *
+ *  **One stop has a remedy of its own, and it is the one Continue cannot fix.** A turn
+ *  the provider refused as too large will be refused again the moment it is resumed, so
+ *  Continue alone would offer the operator a button that reliably does nothing. Compact
+ *  and retry folds the thread first and then continues — the same pair the chassis
+ *  attempts by itself, offered by hand for the case where it could not (compaction off
+ *  for the thread, no background model, a fold that freed nothing).
+ *
+ *  Keyed on the exact detail string the backend exports, which is why the constant is
+ *  mirrored rather than matched loosely: the same string arrives live on `run.ended` and
+ *  is read back from `blocked_reason` on a cold load, so the control is in the same
+ *  place before and after a reload. Anything else keys nothing and reads as a plain
+ *  bound. */
 function BlockedFooter(props: {
   detail: string | undefined;
   onContinue?: () => void;
+  onCompactAndRetry?: () => void;
 }): JSX.Element {
+  const overflowed = () => props.detail === CONTEXT_OVERFLOW_DETAIL;
   return (
-    <div class="flex items-center gap-1.5 text-warn">
+    <div class="flex flex-wrap items-center gap-1.5 text-warn">
       <Icon name="warning" size={12} />
       <Text variant="micro" tone="warn">
         Stopped: {props.detail ?? "a run limit was reached"}
       </Text>
+      <Show when={overflowed() && props.onCompactAndRetry}>
+        <Button
+          variant="ghost"
+          size="sm"
+          leading="layers"
+          onClick={() => props.onCompactAndRetry?.()}
+        >
+          Compact and retry
+        </Button>
+      </Show>
       <Show when={props.onContinue}>
         <Button
           variant="ghost"
@@ -291,6 +322,7 @@ function UserTurn(props: {
   onWithdraw?: () => void;
   onEditQueued?: (text: string) => void;
   onContinue?: () => void;
+  onCompactAndRetry?: () => void;
 }): JSX.Element {
   const m = () => props.message;
   const [editing, setEditing] = createSignal(false);
@@ -407,6 +439,7 @@ function UserTurn(props: {
               <BlockedFooter
                 detail={m().blockedDetail}
                 onContinue={props.onContinue}
+                onCompactAndRetry={props.onCompactAndRetry}
               />
             </Show>
           </>
@@ -494,6 +527,7 @@ function AssistantTurn(props: {
   onOpenInView?: MessageItemProps["onOpenInView"];
   onReattach?: MessageItemProps["onReattach"];
   onContinue?: MessageItemProps["onContinue"];
+  onCompactAndRetry?: MessageItemProps["onCompactAndRetry"];
   viewItems?: MessageItemProps["viewItems"];
   seenKey?: MessageItemProps["seenKey"];
 }): JSX.Element {
@@ -601,6 +635,7 @@ function AssistantTurn(props: {
           <BlockedFooter
             detail={m().blockedDetail}
             onContinue={props.onContinue}
+            onCompactAndRetry={props.onCompactAndRetry}
           />
         </Show>
         <Show when={m().detached}>

@@ -83,6 +83,10 @@ export function ChatSection(): JSX.Element {
   // number the operator actually thinks in.
   const [autoCompactEnabled, setAutoCompactEnabled] = createSignal(true);
   const [autoCompactPct, setAutoCompactPct] = createSignal("");
+  // How many of the most recent exchanges survive a fold word for word. Saved with the
+  // threshold because the two are one decision — when to fold, and how much of the
+  // recent thread the fold is allowed to take.
+  const [keepTurns, setKeepTurns] = createSignal("");
   const [savingAutoCompact, setSavingAutoCompact] = createSignal(false);
   // Where the composer's context ring stops being grey. Two fractions, edited as
   // percentages and saved together, because the pair is only valid in order.
@@ -98,6 +102,7 @@ export function ChatSection(): JSX.Element {
     setWallClockMin(String(minutesOr(s.wallClockTimeoutS)));
     setAutoCompactEnabled(s.autoCompactEnabled);
     setAutoCompactPct(String(Math.round(s.autoCompactThreshold * 100)));
+    setKeepTurns(String(s.autoCompactKeepTurns));
     setWarnPct(String(Math.round(s.contextWarnThreshold * 100)));
     setAlertPct(String(Math.round(s.contextAlertThreshold * 100)));
   });
@@ -170,14 +175,23 @@ export function ChatSection(): JSX.Element {
       toast.error("Enter a whole percentage between 1 and 100.");
       return;
     }
+    // 0 is legal and means something: fold everything, keeping no exchange verbatim.
+    // The ceiling is the backend's — repeated here only for immediate feedback.
+    const keep = wholeNumber(keepTurns(), { min: 0, max: 20 });
+    if (keep === null) {
+      toast.error("Enter a whole number of exchanges between 0 and 20.");
+      return;
+    }
     setSavingAutoCompact(true);
     try {
       const saved = await saveChatSettings({
         autoCompactEnabled: autoCompactEnabled(),
         autoCompactThreshold: pct / 100,
+        autoCompactKeepTurns: keep,
       });
       setAutoCompactEnabled(saved.autoCompactEnabled);
       setAutoCompactPct(String(Math.round(saved.autoCompactThreshold * 100)));
+      setKeepTurns(String(saved.autoCompactKeepTurns));
       toast.success("Auto-compaction updated");
     } catch {
       toast.error("Unable to update auto-compaction settings.");
@@ -376,10 +390,12 @@ export function ChatSection(): JSX.Element {
           <SettingHeader title="Auto-compact conversations">
             When a conversation nears the model's context limit, its earlier
             turns are folded into a summary and the chat carries on instead of
-            stopping. The most recent exchanges are kept word for word, and your
-            transcript keeps everything — only what the model re-reads is
-            condensed. Off, a full conversation stops at the limit and you start
-            a new one or rewind.
+            stopping. Your transcript keeps everything — only what the model
+            re-reads is condensed. The last few exchanges are handed back word
+            for word rather than summarized, so the thread you are in the middle
+            of survives the fold; keep more of them if your work depends on
+            exact wording, none at all to free the most room. Off, a full
+            conversation stops at the limit and you start a new one or rewind.
           </SettingHeader>
           <Toggle
             checked={autoCompactEnabled()}
@@ -399,7 +415,27 @@ export function ChatSection(): JSX.Element {
                   max="100"
                   value={autoCompactPct()}
                   onInput={(e) => setAutoCompactPct(e.currentTarget.value)}
-                  placeholder="95"
+                  placeholder="80"
+                  disabled={!autoCompactEnabled()}
+                />
+              </div>
+            </Stack>
+            <Stack gap={1}>
+              {/* Exchanges, not messages: this is the unit the operator thinks in and
+                  the unit the backend counts here — unlike the divider's own figure,
+                  which reports the raw messages a fold replaced. */}
+              <Text variant="micro" tone="dim">
+                KEEP LAST (exchanges)
+              </Text>
+              <div class="w-32">
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  max="20"
+                  value={keepTurns()}
+                  onInput={(e) => setKeepTurns(e.currentTarget.value)}
+                  placeholder="3"
                   disabled={!autoCompactEnabled()}
                 />
               </div>

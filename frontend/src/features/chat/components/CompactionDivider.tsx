@@ -1,5 +1,6 @@
 import { type JSX } from "solid-js";
 import { Disclosure, Divider, Stack, Text } from "~/ui";
+import { compactionReasonSegment } from "../compactionReason";
 import type { ChatMessage } from "../model";
 
 /** A token count at the magnitude a reader actually compares — the divider's job is
@@ -27,6 +28,15 @@ function approxTokens(n: number): string {
  *  are coarse char-based estimates, hence `~`. The backend always sends all three, so
  *  each segment is guarded on `> 0` rather than on presence.
  *
+ *  The reason segment is the exception to that discipline and guarded on *presence*,
+ *  because it genuinely can be absent: it rides the run's stream and is not stored on
+ *  the checkpoint message, so a divider the operator watched appear names what caused
+ *  the fold and the same divider after a reload does not. That is why it is a fourth
+ *  segment rather than part of the label — the sentence has to read correctly without
+ *  it. Worth carrying even so: a fold the operator asked for, one that fired at their
+ *  threshold, and one the provider forced by refusing an oversized request are three
+ *  different stories, and only the last means the turn nearly died.
+ *
  *  Pairs with the dim pass the transcript applies above this point
  *  (`MessageItem`'s `dimmed`) — this says in words what that says at a glance. */
 export function CompactionDivider(props: {
@@ -38,6 +48,10 @@ export function CompactionDivider(props: {
     return n > 0
       ? `${n} ${n === 1 ? "Message" : "Messages"} FOLDED`
       : undefined;
+  };
+  const reason = () => {
+    const r = m().compactionReason;
+    return r ? compactionReasonSegment(r) : undefined;
   };
   const delta = () => {
     const before = m().tokensBefore ?? 0;
@@ -53,7 +67,9 @@ export function CompactionDivider(props: {
       <div class="flex items-center gap-3">
         <Divider class="flex-1" />
         <Text variant="label" tone="dim" class="text-center">
-          {["Context compacted", folded(), delta()].filter(Boolean).join(" · ")}
+          {["Context compacted", reason(), folded(), delta()]
+            .filter(Boolean)
+            .join(" · ")}
         </Text>
         <Divider class="flex-1" />
       </div>

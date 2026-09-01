@@ -3,7 +3,11 @@
  *  don't change when the mapping behind them does. */
 
 import type { SessionMode } from "~/lib/modes";
-import type { ContextWindow } from "~/lib/stream";
+import type { CompactionReason, ContextWindow } from "~/lib/stream";
+
+/** Why a fold happened, as the wire spells it. Re-exported for the same reason
+ *  `SessionMode` is: chat code reads its seam types from one place. */
+export type { CompactionReason };
 
 /** The mode vocabulary lives in `~/lib/modes` — the theme layer and the app shell
  *  need it too, and a type owned by this feature and imported by the design system
@@ -246,6 +250,7 @@ export type AssistantBlock =
   | TextBlock
   | ToolBlock
   | ContextBlock
+  | CompactionProgressBlock
   | ReviewBlock
   | HostCommandBlock
   | ApprovalBlock
@@ -295,6 +300,33 @@ export interface ContextInjection {
   tokens: number;
   text: string;
   truncated: boolean;
+}
+
+/** The pause where the chassis folded this thread's earlier turns into a summary
+ *  (`compaction.started`, settled by `conversation.compacted`).
+ *
+ *  Same rail, same reason as an injection: the model did not do this, we did it to the
+ *  model — and a summarizer call on a long thread is tens of seconds of a turn that
+ *  would otherwise sit blank. The divider above records what the fold *cost*; this
+ *  records that the turn stopped to do it, in the place in the sequence where it
+ *  happened. */
+export interface CompactionProgressBlock {
+  kind: "compaction_progress";
+  id: string;
+  compaction: CompactionProgress;
+}
+
+/** One fold in flight: what triggered it, roughly what is going into it, and whether
+ *  it has landed. `done` flips when `conversation.compacted` arrives — the settled
+ *  figures are the divider's to state, so this keeps the pre-fold estimates it opened
+ *  with rather than restating them. */
+export interface CompactionProgress {
+  reason: CompactionReason;
+  /** Messages about to be folded. */
+  messages: number;
+  /** Coarse char-based estimate of what they cost, in the same proxy the gauge uses. */
+  tokensEstimate: number;
+  done?: boolean;
 }
 
 /** An action the chassis ruled on in the operator's place, at the Auto permission level
@@ -457,6 +489,13 @@ export interface ChatMessage {
   foldedMessages?: number;
   tokensBefore?: number;
   tokensAfter?: number;
+  /** Compaction dividers only: what triggered the fold, when the client watched it
+   *  happen. A fold the operator asked for and a fold the provider forced are the
+   *  same divider otherwise, and they are not the same event to have lived through.
+   *  Absent on a cold read — the reason rides the stream, not the stored message —
+   *  which is why the divider states it as an extra segment rather than building its
+   *  label around it. */
+  compactionReason?: CompactionReason;
 }
 
 /** The in-flight run driving a conversation, when one exists. Present on a cold

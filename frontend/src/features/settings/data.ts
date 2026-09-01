@@ -264,6 +264,7 @@ export async function deleteSearchProvider(id: string): Promise<void> {
 interface ChatSettingsDTO {
   auto_compact_enabled: boolean;
   auto_compact_threshold: number;
+  auto_compact_keep_turns: number;
   context_warn_threshold: number;
   context_alert_threshold: number;
   agent_request_limit: number;
@@ -276,6 +277,7 @@ function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
   return {
     autoCompactEnabled: dto.auto_compact_enabled,
     autoCompactThreshold: dto.auto_compact_threshold,
+    autoCompactKeepTurns: dto.auto_compact_keep_turns,
     contextWarnThreshold: dto.context_warn_threshold,
     contextAlertThreshold: dto.context_alert_threshold,
     agentRequestLimit: dto.agent_request_limit,
@@ -294,6 +296,10 @@ function toChatSettingsBody(
     body.auto_compact_enabled = patch.autoCompactEnabled;
   if (patch.autoCompactThreshold !== undefined)
     body.auto_compact_threshold = patch.autoCompactThreshold;
+  // 0 is a meaningful value here (keep nothing verbatim), so presence is what says the
+  // caller touched it — a falsy test would silently drop exactly that setting.
+  if (patch.autoCompactKeepTurns !== undefined)
+    body.auto_compact_keep_turns = patch.autoCompactKeepTurns;
   if (patch.contextWarnThreshold !== undefined)
     body.context_warn_threshold = patch.contextWarnThreshold;
   if (patch.contextAlertThreshold !== undefined)

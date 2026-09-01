@@ -224,6 +224,26 @@ export function createFolder(
           });
         });
         break;
+      case "compaction.started":
+        // The turn has stopped to fold its own history. It lands on the rail like an
+        // injection and for the same reason — the model did not do this, the chassis
+        // did — but unlike an injection it has *duration*: a summarizer call on a long
+        // thread runs for tens of seconds, and without a row the turn reads as a stall.
+        // Keyed by `seq`, the only per-event identifier stable across a replay; one turn
+        // can legitimately fold twice (the threshold before it ran, then an overflow
+        // retry inside it), and those are two pauses, not one repeated.
+        patchById(assistantId, (m) => {
+          (m.blocks ?? (m.blocks = [])).push({
+            kind: "compaction_progress",
+            id: `compaction-${ev.seq}`,
+            compaction: {
+              reason: ev.reason,
+              messages: ev.messages,
+              tokensEstimate: ev.tokens_estimate,
+            },
+          });
+        });
+        break;
       case "review.started":
         // The chassis is about to answer for the operator. The row opens now rather than
         // on the verdict, so a review that costs a model call reads as work in flight —
@@ -484,7 +504,19 @@ export function createFolder(
           foldedMessages: ev.messages_compacted,
           tokensBefore: ev.tokens_before ?? undefined,
           tokensAfter: ev.tokens_after ?? undefined,
+          // Defaulted rather than left absent: an older backend that sends no reason
+          // can only have meant the ordinary one, and a divider is worse for having a
+          // segment that appears and disappears with the backend version.
+          compactionReason: ev.reason ?? "threshold",
         };
+        // Settle the rail row the `compaction.started` opened, if this run opened one
+        // (a fold from COMPACT NOW between turns has no run and no row). The settled
+        // figures belong to the divider, so the row only stops saying "in progress" —
+        // restating them a second time in the same turn would be noise.
+        patchById(assistantId, (m) => {
+          for (const b of m.blocks ?? [])
+            if (b.kind === "compaction_progress") b.compaction.done = true;
+        });
         // Idempotent on `message_id`: a reattach replays the run's whole buffer
         // (`fromSeq: 0`) over a transcript that was cold-loaded *with* this divider
         // already in it, so an unguarded splice would seat a second identical rule —
@@ -554,10 +586,20 @@ export function createFolder(
         break;
       case "limit.notice":
         // A bound on the turn. "verify" is a transient "re-attempting…" progress note,
-        // not a stop — leave it silent. The rest stopped the run, so surface why: the
-        // "context" message carries the model's window size, so the operator knows the
-        // conversation hit the ceiling and can start a new chat rather than wonder.
-        if (ev.limit !== "verify") toast.error(ev.message);
+        // not a stop — leave it silent. The rest stopped the run, so surface why.
+        //
+        // "context" gets a sentence of our own on the end, and it is the only limit
+        // that does: the backend's message says what the model refused and what the
+        // chassis already tried, but the remedy the operator has *here* is a control on
+        // the stopped turn, and only the frontend knows what that control is called.
+        // Naming it in the toast is what connects the thing that just happened to the
+        // button that answers it — the toast is transient, the marker is not.
+        if (ev.limit !== "verify")
+          toast.error(
+            ev.limit === "context"
+              ? `${ev.message} Compact and retry on the stopped turn to fold this thread and carry on.`
+              : ev.message,
+          );
         break;
       case "run.ended":
         // A blocked outcome is a real stopping point, not a normal finish —
