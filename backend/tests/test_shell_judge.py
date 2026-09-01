@@ -302,10 +302,53 @@ class TestContainment:
         assert cleared("cat notes.md", root=None)
 
 
-class TestTheOtherKindsOfAction:
-    """Everything that is not a shell command, and why none of it clears."""
+class TestAClassifiedReadClears:
+    """The second thing this stage can approve: a tool the catalog classifies as a read.
 
-    def test_only_a_shell_command_can_be_cleared_at_all(self):
+    A read is settled by the *tool*, not by its arguments — it returns something and
+    leaves nothing different behind whatever it is asked for — so there is no reviewer
+    question left. What has to hold is that nothing else can wear the same clothes.
+    """
+
+    def test_a_self_gated_recall_never_reaches_a_model(self):
+        # The two tools that gate their own calls and are pure observation. Before this,
+        # every recall at Auto cost a reviewer round-trip — and parked the run outright
+        # when no utility model was bound.
+        for tool, args in (
+            ("memory_recall", {"query": "what did we decide about billing"}),
+            ("corpus_retrieve", {"query": "invoice", "collection": "docs"}),
+        ):
+            capability = capability_of(tool, args, root=ROOT)
+            assert capability.kind is ActionKind.READ
+            assert judge(capability).approved, tool
+
+    def test_a_read_is_named_by_its_keys_and_never_its_values(self):
+        # The summary rides onto the work log and into the reviewer's prompt, and a recall
+        # query is the operator's own words.
+        capability = capability_of("memory_recall", {"query": "my passport number"}, root=ROOT)
+        assert "passport" not in capability.summary
+        assert "query" in capability.summary
+
+    def test_a_tool_this_installation_does_not_ship_is_not_a_read(self):
+        # The class registry is a closed literal; an unknown name resolves to the class
+        # that reaches furthest, so an operator's own MCP server cannot name its way in.
+        for tool in ("external_notion_search", "some_future_tool"):
+            assert capability_of(tool, {"query": "x"}, root=ROOT).kind is not ActionKind.READ
+
+    def test_the_read_kind_tracks_the_sensitivity_registry(self):
+        # The kind is not a second list to keep in step with `tool_sensitivity` — it *is*
+        # that list, read at call time. A tool reclassified there changes here.
+        from services.tool_sensitivity import SENSITIVITY_CLASSES, Sensitivity
+
+        for tool in SENSITIVITY_CLASSES[Sensitivity.WORKSPACE_WRITE]:
+            assert capability_of(tool, {}, root=ROOT).kind is not ActionKind.READ, tool
+        assert capability_of("web_search", {"query": "x"}, root=ROOT).kind is ActionKind.READ
+
+
+class TestTheOtherKindsOfAction:
+    """Everything that is neither a shell command nor a read, and why none of it clears."""
+
+    def test_an_act_that_changes_something_is_never_cleared_here(self):
         for tool, args in (
             ("mail_send", {"to": "a@b.c", "subject": "hi"}),
             ("vault_get_entry", {"name": "bank"}),
