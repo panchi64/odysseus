@@ -333,6 +333,18 @@ class TestWhatComesBack:
         assert "- backend/agent/summarize.py" in summary
         assert "- run 9" in summary
 
+    def test_headings_are_recognised_as_the_model_writes_them(self):
+        """The instructions gloss each heading ("## Anchors — one line each for..."), and a
+        model that restates the gloss, or reaches for bold instead of hashes, is still
+        writing the section that was asked for. Parsing that only accepted one spelling
+        would silently drop the carry-forward."""
+        summary = (
+            f"**{COMPACT_ANCHORS_SECTION}: the exact values**\n- run 7\n\n"
+            f"## {COMPACT_TOOLS_SECTION} — what came back\n- the page said X\n"
+        )
+        assert "- run 7" in merge_anchors(summary, ["- run 9"])
+        assert "[BEGIN UNTRUSTED CONTENT" in fence_tool_facts(summary)
+
     def test_a_summary_with_no_anchors_section_gains_one(self):
         merged = merge_anchors("## Goal\nship it", ["- run 7"])
         assert f"## {COMPACT_ANCHORS_SECTION}" in merged

@@ -120,8 +120,14 @@ async def _run(
     # namer makes, and it handles the unclosed block a truncated think emits.
     return strip_think_blocks(result.output).strip() or None
 
-# Sections are asked for as `## Name` lines; anything else in the text is body.
-_HEADING = re.compile(r"^[ \t]*#{1,3}[ \t]*(?P<name>[^\n#]+?)[ \t]*:?[ \t]*$", re.MULTILINE)
+# Sections are asked for as `## Name` lines; anything else in the text is body. A model
+# that reaches for bold instead of hashes, or repeats the heading's gloss after the name,
+# is still writing the section we asked for — so the pattern accepts both and the name is
+# matched by prefix. Nothing here fails loudly: a summary whose headings don't parse simply
+# gets no carry-forward and no fence, which is what the previous format got.
+_HEADING = re.compile(
+    r"^[ \t]*(?:#{1,3}|\*\*)[ \t]*(?P<name>[^\n#*]+?)[ \t]*\**[ \t]*:?[ \t]*$", re.MULTILINE
+)
 
 
 def fence_tool_facts(summary: str) -> str:
@@ -185,12 +191,12 @@ def replace_section(text: str, name: str, body: str) -> str:
 
 
 def _span(text: str, name: str) -> tuple[int, int] | None:
-    """Where the named section's body starts and ends, matching the heading loosely (case
-    and trailing punctuation are the model's choice, the section is ours)."""
+    """Where the named section's body starts and ends, matching the heading loosely (case,
+    punctuation and any restated gloss are the model's choice, the section is ours)."""
     wanted = _key(name)
     matches = list(_HEADING.finditer(text))
     for index, match in enumerate(matches):
-        if _key(match.group("name")) != wanted:
+        if not _key(match.group("name")).startswith(wanted):
             continue
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
