@@ -10,16 +10,19 @@ context-overflow stop is what catches a pathological turn.
 
 Three properties make this safe to run automatically:
 
-- **It fires between turns, never inside one.** The trigger sits in the orchestrator
-  prelude, before the agent runs, so it can't pull an output out from under reasoning that
-  is already in flight.
+- **It never fires underneath reasoning in flight.** The trigger sits in the orchestrator
+  prelude, before the agent runs, and measures what the turn *about to run* will cost. The
+  one exception is the recovery: when a provider refuses a request as over-long, the turn
+  folds once and re-sends that same request — between two requests, with nothing in
+  flight, which is the only mid-turn moment at which folding is safe.
 - **Nothing is destroyed.** The summary is appended as a new checkpoint node; the turns it
   covers stay in the tree, in the operator's transcript, and in cross-chat search. Only
   what is *re-sent to the model* narrows (``ConversationStore.model_history``). A rewind
   above the checkpoint restores the full replay for free.
-- **It is not a safety net.** A prompt that overruns the window anyway still stops the run
-  with a context notice. Compaction lowers the pressure; it never absorbs an overflow, and
-  it never silently drops content to force a fit.
+- **It is still not a safety net.** A fold gets *one* attempt at an overflow. A request
+  that is too big after it is too big for a reason folding cannot reach, and the run stops
+  with a context notice rather than re-folding a thread down to nothing. Compaction lowers
+  the pressure; it never silently drops content to force a fit.
 
 What the summarizer is allowed to read, and how the text it produces is trusted afterwards,
 live next door: :mod:`agent.compaction_transcript` renders the fold (tool output fenced,
@@ -38,6 +41,7 @@ Settings, not in a deploy's environment.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
@@ -46,8 +50,9 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
-from services.conversation_view import estimate_tokens
-from services.conversations import ConversationStore, context_footprint
+from runs.overhead import TurnOverhead
+from services.conversation_view import estimate_footprint, estimate_tokens
+from services.conversations import CompactionPlan, ConversationStore, context_footprint
 from services.settings_store import (
     SettingsStore,
     get_auto_compact,
@@ -137,17 +142,41 @@ async def resolve_auto_compact_policy(
     )
 
 
-def should_compact(messages: list[ModelMessage], window: int | None, threshold: float) -> bool:
-    """Whether this history has reached the operator's share of the model's window.
+def should_compact(
+    messages: list[ModelMessage],
+    window: int | None,
+    threshold: float,
+    *,
+    overhead: TurnOverhead | None = None,
+    incoming_tokens: int = 0,
+    settings: Settings | None = None,
+) -> bool:
+    """Whether the turn *about to run* would reach the operator's share of the window.
 
-    ``False`` when the endpoint declares no window — there is nothing to measure against,
+    **Projected, not retrospective.** The history's own footprint is what the last turn
+    cost; the number that matters is what this turn will cost, which is that plus the
+    operator's new prompt, its attachments and the per-turn context appended to it
+    (``incoming_tokens``). Measuring only the history is why a threshold had to sit at 95%
+    to be safe — it left the incoming turn to fit in whatever the previous one happened not
+    to use.
+
+    The two sources of the current size are taken at their **maximum**: the provider's own
+    reported prompt size (exact, but absent on the local servers this workspace mostly
+    talks to, and stale the moment anything is added), and the estimate over the messages
+    plus this thread's measured brief + tool schemas. Whichever reads larger is the one
+    that decides — under-reading here is what lets a thread walk into the overflow the fold
+    exists to prevent.
+
+    ``False`` when the endpoint declares no window: there is nothing to measure against,
     and compacting on a guess would fold a thread that was never under pressure."""
     if not window or threshold <= 0:
         return False
-    used = context_footprint(messages)
-    if used is None:
-        used = estimate_tokens(messages)
-    return used >= window * threshold
+    cfg = settings or get_settings()
+    reported = context_footprint(messages) or 0
+    estimated = estimate_footprint(
+        messages, overhead, fallback_overhead_tokens=cfg.context_overhead_fallback_tokens
+    )
+    return max(reported, estimated) + max(0, incoming_tokens) >= window * threshold
 
 
 async def compact_conversation(
@@ -158,6 +187,8 @@ async def compact_conversation(
     reasoning_off: ModelSettings | None = None,
     keep_turns: int | None = None,
     settings: Settings | None = None,
+    max_input_tokens: int | None = None,
+    on_plan: Callable[[CompactionPlan], None] | None = None,
 ) -> CompactionOutcome | None:
     """Fold this conversation's older turns into a summary checkpoint, or ``None`` when
     there was nothing to fold, the summarizer failed, or the plan went stale.
@@ -168,7 +199,15 @@ async def compact_conversation(
     A **summarizer** failure is swallowed here (it degrades to "no compaction"), but a store
     failure is not: the operator pressing "compact now" should be told the write failed, not
     that there was nothing to fold. The automatic caller wraps this so a turn never dies for
-    a compaction it only wanted as an optimization."""
+    a compaction it only wanted as an optimization.
+
+    ``on_plan`` is called once the fold is known and *before* the summarizer runs — the one
+    moment at which what is about to be folded can be announced, since the summarizer call
+    is the seconds-long part. The engine emits ``compaction.started`` from it; a caller with
+    nothing to announce passes nothing.
+
+    ``max_input_tokens`` overrides the configured transcript budget, so a turn that has
+    resolved the summarizer's own context window can hold the input inside it."""
     cfg = settings or get_settings()
     plan = await store.compaction_plan(
         conversation_id,
@@ -176,13 +215,17 @@ async def compact_conversation(
     )
     if plan is None:
         return None
+    if on_plan is not None:
+        on_plan(plan)
     summary = await summarize_history(
         model,
         plan.messages,
         reasoning_off=reasoning_off,
         timeout_s=cfg.auto_compact_timeout_s,
         max_tokens=cfg.auto_compact_max_tokens,
-        max_input_tokens=cfg.auto_compact_input_max_tokens,
+        max_input_tokens=(
+            cfg.auto_compact_input_max_tokens if max_input_tokens is None else max_input_tokens
+        ),
     )
     if not summary:
         return None

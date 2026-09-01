@@ -43,7 +43,7 @@ from agent.summarize import (
 from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
 from routes.deps import OPERATOR_ID
-from runs import RunStatus
+from runs import RunStatus, TurnOverhead
 from services.conversation_view import estimate_tokens
 
 from ._helpers import client_app, patch_model_resolution
@@ -357,6 +357,12 @@ async def test_record_compaction_refuses_a_stale_plan():
 # --- the threshold -----------------------------------------------------------
 
 
+#: A thread whose brief and tool schemas *were* measured and came to nothing. Distinct
+#: from `None`, which means "never measured" and makes the trigger assume the shipped
+#: catalog's several thousand tokens rather than zero.
+_NO_OVERHEAD = TurnOverhead(system=0, tools=0)
+
+
 def _response(input_tokens: int, output_tokens: int = 0) -> ModelResponse:
     return ModelResponse(
         parts=[TextPart(content="x")],
@@ -369,7 +375,9 @@ def _response(input_tokens: int, output_tokens: int = 0) -> ModelResponse:
     [(9_000, False), (9_500, True), (9_900, True)],
 )
 def test_should_compact_measures_against_the_window(used: int, expected: bool):
-    assert should_compact([_response(used)], 10_000, 0.95) is expected
+    # A measured (and here, empty) overhead, so this reads the reported footprint against
+    # the threshold and nothing else — the unmeasured-overhead fallback has its own tests.
+    assert should_compact([_response(used)], 10_000, 0.95, overhead=_NO_OVERHEAD) is expected
 
 
 def test_should_compact_declines_without_a_declared_window():
@@ -383,7 +391,9 @@ def test_should_compact_falls_back_to_an_estimate_when_usage_is_unreported():
     unmeasured. Without the estimate the feature would be dead on exactly that setup."""
     # Comfortably over the threshold at the prose rate `estimate_tokens` converts at.
     big = ModelRequest(parts=[UserPromptPart(content="x" * 60_000)])
-    assert should_compact([big, ModelResponse(parts=[TextPart(content="y")])], 10_000, 0.95)
+    assert should_compact(
+        [big, ModelResponse(parts=[TextPart(content="y")])], 10_000, 0.95, overhead=_NO_OVERHEAD
+    )
 
 
 def test_the_estimate_ignores_binary_content():
@@ -675,6 +685,10 @@ async def test_a_thread_below_the_threshold_is_left_alone():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _loaded_turn(f"q{i}", f"a{i}", 100))  # 1% of the window
+        # This thread's brief and schemas are measured and empty, so the trigger reads the
+        # 1% and nothing else. Left unmeasured it would assume the shipped catalog, which
+        # alone overruns the deliberately tiny window these fixtures use.
+        await store.set_overhead(cid, TurnOverhead(system=0, tools=0))
 
         run = await _run_turn(app, cid, policy=build_auto_compact_policy(Settings()))
         assert run.status is RunStatus.done

@@ -203,9 +203,15 @@ async def resolve_turn_models(
     model: str | None,
     *,
     owner_id: str = OPERATOR_ID,
-) -> tuple[Model, Model, ModelSettings | None, int | None, bool]:
+) -> tuple[Model, Model, ModelSettings | None, int | None, bool, int | None]:
     """Resolve the `main` model plus the background (utility/title) pair, raising a
     clear 4xx/503 on misconfiguration.
+
+    Six values: the main model, the background model, its reasoning-off settings, the main
+    model's context window, whether the main model reads images, and the background model's
+    own context window. The last is here rather than resolved later because it is a
+    property of a resolution only this function performs — and the summarizer, which is
+    that background model, must be handed a transcript that fits inside it.
 
     Kept separate from the submit step so it runs **before** any conversation
     mutation: a regenerate/edit must not reposition (and persist) the active leaf
@@ -254,6 +260,10 @@ async def resolve_turn_models(
     settings = get_settings()
     utility_model = resolved
     title_settings: ModelSettings | None = None
+    # The background model's own window, defaulting to the main model's while the two are
+    # the same model — an honest default rather than "unknown", since that is exactly what
+    # it is when no `utility` endpoint is bound.
+    utility_window = main.context_window
     if settings.verify_enabled or settings.title_enabled:
         background = await model_registry.resolve_background(
             owner_id=owner_id,
@@ -262,12 +272,20 @@ async def resolve_turn_models(
         )
         utility_model = background.model
         title_settings = background.reasoning_off
-    return resolved, utility_model, title_settings, main.context_window, main.vision
+        utility_window = background.context_window
+    return (
+        resolved,
+        utility_model,
+        title_settings,
+        main.context_window,
+        main.vision,
+        utility_window,
+    )
 
 
 async def _resolve_models(
     request: Request, endpoint_id: str | None, model: str | None
-) -> tuple[Model, Model, ModelSettings | None, int | None, bool]:
+) -> tuple[Model, Model, ModelSettings | None, int | None, bool, int | None]:
     return await resolve_turn_models(deps.models(request), endpoint_id, model)
 
 
@@ -275,7 +293,7 @@ def compose_turn(
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None, int | None, bool],
+    models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
     capabilities: ServiceContainer,
     registry: RunRegistry,
     store: ConversationStore,
@@ -313,7 +331,7 @@ def compose_turn(
     identical orchestrator; the kind decides only which concurrency lane the run waits in
     (``runs/lanes.py``), so unattended work can never hold up the turn someone is sitting
     in front of."""
-    resolved, utility_model, background_settings, context_window, vision = models
+    resolved, utility_model, background_settings, context_window, vision, utility_window = models
     orchestrator = build_chat_orchestrator(
         prompt,
         model=resolved,
@@ -336,6 +354,9 @@ def compose_turn(
         vision=vision,
         # The operator's conversation-compaction policy; absent ⇒ the config defaults.
         auto_compact=auto_compact,
+        # The summarizer runs on the background model, so its window is what bounds the
+        # transcript a fold hands over.
+        utility_context_window=utility_window,
         # The operator's per-turn model-request ceiling; absent ⇒ the config default.
         request_limit=request_limit,
         # While offline mode is active the web containers are down, so hide the web
@@ -372,7 +393,7 @@ async def _submit_turn(
     *,
     prompt: str | None,
     conversation_id: str,
-    models: tuple[Model, Model, ModelSettings | None, int | None, bool],
+    models: tuple[Model, Model, ModelSettings | None, int | None, bool, int | None],
     attachment_ids: list[str] | None = None,
     ephemeral: bool = False,
 ) -> ChatCreated:

@@ -89,14 +89,35 @@ def is_context_overflow(exc: ModelHTTPError) -> bool:
     return any(marker in str(exc).lower() for marker in _CONTEXT_OVERFLOW_MARKERS)
 
 
-def context_limit_message(run: Run) -> str:
+#: The persisted stop marker for a turn that could not be brought inside the window. Exact
+#: text, exported rather than repeated: the client keys its **Compact and retry** offer on
+#: this string — both live (off the ``limit.notice``) and on reload (off the turn's stored
+#: ``blocked_reason``) — so the two spellings can never drift apart.
+CONTEXT_OVERFLOW_DETAIL = "context window exceeded"
+
+
+def context_limit_message(run: Run, *, compacted: bool = False) -> str:
     """The operator-facing stop message — names the model's context window (the number the
-    operator needs) when known, and what to do next."""
+    operator needs) when known, says what the run already tried, and what is left to try.
+
+    ``compacted`` is whether this turn *did* fold the thread and still overran. The two
+    cases need different sentences: after a fold, compacting again is not the answer and
+    offering it would send the operator round the same loop; before one, it is the cheapest
+    thing they can do and it is one menu item away. "Start a new chat" is deliberately not
+    the lead in either case — it is the one option that abandons the thread, and it was
+    reading as the recommendation."""
     window = run.context_window
     ceiling = f" of {window:,} tokens" if window else ""
+    if compacted:
+        return (
+            f"This turn still exceeded the model's context window{ceiling} after its earlier "
+            "messages were folded into a summary. Edit or rewind to remove content — or "
+            "start a new chat — to keep going."
+        )
     return (
         f"This conversation reached the model's context window{ceiling} and can't continue. "
-        "Start a new chat, or edit/rewind to remove earlier messages, to keep going."
+        "Compact now (in the conversation menu) folds the earlier turns into a summary; "
+        "editing or rewinding removes them outright."
     )
 
 
