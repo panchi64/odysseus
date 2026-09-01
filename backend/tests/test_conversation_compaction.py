@@ -37,7 +37,6 @@ from agent.history import merge_consecutive_requests
 from agent.summarize import (
     build_auto_compact_policy,
     compact_conversation,
-    render_transcript,
     should_compact,
     summarize_history,
 )
@@ -395,35 +394,9 @@ def test_the_estimate_ignores_binary_content():
 
 
 # --- the summarizer ----------------------------------------------------------
-
-
-def test_render_transcript_labels_turns_and_keeps_tool_traffic():
-    rendered = render_transcript(
-        [
-            ModelRequest(parts=[UserPromptPart(content="find it")]),
-            ModelResponse(parts=[ToolCallPart(tool_name="web", args={"q": "x"}, tool_call_id="1")]),
-            ModelRequest(
-                parts=[ToolReturnPart(tool_name="web", content="found", tool_call_id="1")]
-            ),
-            ModelResponse(parts=[TextPart(content="here you go")]),
-        ]
-    )
-    assert "OPERATOR: find it" in rendered
-    assert "ASSISTANT called web" in rendered
-    assert "TOOL web returned: found" in rendered
-    assert "ASSISTANT: here you go" in rendered
-
-
-def test_render_transcript_elides_the_middle_when_over_budget():
-    """What is being folded is most of the *main* model's window; the utility model may be
-    smaller. Both ends are kept — how the thread opened and where it currently stands — and
-    the middle goes, rather than the head-only cut a plain truncation would make."""
-    messages = [ModelRequest(parts=[UserPromptPart(content=f"message-{i:02d}")]) for i in range(60)]
-    rendered = render_transcript(messages, max_input_tokens=50)  # 200 chars
-    assert "characters of the middle omitted" in rendered
-    assert "message-00" in rendered  # the opening survives
-    assert "message-59" in rendered  # so does the current state
-    assert "message-30" not in rendered  # the middle is what pays
+#
+# How the transcript is rendered, fenced and chunked lives in `test_compaction_summarizer`;
+# what stays here is the fold's contract with the store and the run.
 
 
 async def test_summarize_history_degrades_to_none_on_failure():

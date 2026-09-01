@@ -62,7 +62,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.untrusted import wrap_untrusted
-from prompts.utility import COMPACT_PREAMBLE, REVIEW_INSTRUCTIONS
+from prompts.utility import COMPACT_MARKER, REVIEW_INSTRUCTIONS
 from services.permissions.capability import Capability
 
 logger = logging.getLogger(__name__)
@@ -148,12 +148,14 @@ def review_transcript(
 def _is_compaction_summary(part: UserPromptPart) -> bool:
     """Whether this user-shaped message is a compaction checkpoint rather than a request.
 
-    Recognised by the label the compaction writes in front of it, which is the same string
-    the operator's transcript and the run's own event use — a marker, not a heuristic. An
+    Recognised by the **first line** of the label the compaction writes in front of it,
+    which is the same string the operator's transcript and the run's own event use — a
+    marker, not a heuristic. Matching the marker rather than the whole preamble is what
+    keeps a checkpoint stored before the preamble grew its second line recognisable. An
     operator who types that line themselves loses their message from the reviewer's view,
     which costs them a park and nothing else.
     """
-    return _prompt_text(part).lstrip().startswith(COMPACT_PREAMBLE)
+    return _prompt_text(part).lstrip().startswith(COMPACT_MARKER)
 
 
 def _prompt_text(part: UserPromptPart) -> str:
