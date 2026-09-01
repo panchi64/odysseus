@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createStore } from "solid-js/store";
-import { CONTEXT_OVERFLOW_DETAIL, type RunEvent } from "~/lib/stream";
+import {
+  CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
+  CONTEXT_OVERFLOW_DETAIL,
+  type RunEvent,
+} from "~/lib/stream";
+import { toast } from "~/ui";
 import type { ChatMessage, CompactionProgressBlock } from "../model";
 import { createFolder, type FoldState } from "./fold";
 import { createPatchById } from "./patch";
@@ -164,4 +169,43 @@ test("the blocked detail the retry control keys on is the backend's exact string
   // by one character and the control silently stops appearing — with no error, because
   // every other stop legitimately fails the same test.
   expect(CONTEXT_OVERFLOW_DETAIL).toBe("context window exceeded");
+});
+
+describe("the context stop's toast", () => {
+  // The toast is the only place the frontend names its own remedy, and there are two
+  // context stops: one the "Compact and retry" control can answer, and one it cannot,
+  // because the fold it would perform is the one that just failed. The notice carries
+  // the same marker the blocked turn does, so the toast and the button agree.
+  const notice = (detail: string): RunEvent => ({
+    type: "limit.notice",
+    seq: ++seq,
+    ts: "",
+    limit: "context",
+    message: "This conversation reached the model's context window.",
+    detail,
+  });
+
+  test("names the control on a turn that has not folded yet", () => {
+    const spy = spyOn(toast, "error");
+    harness(turn()).fold(notice(CONTEXT_OVERFLOW_DETAIL));
+    expect(spy.mock.calls.at(-1)?.[0]).toContain("Compact and retry");
+    spy.mockRestore();
+  });
+
+  test("withholds it once the turn has already folded and overran anyway", () => {
+    const spy = spyOn(toast, "error");
+    harness(turn()).fold(notice(CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL));
+    expect(spy.mock.calls.at(-1)?.[0]).not.toContain("Compact and retry");
+    spy.mockRestore();
+  });
+});
+
+test("the after-fold blocked detail is the backend's exact string", () => {
+  // `BlockedFooter` offers its control on an equality test against the *other* constant,
+  // so this one must stay distinct from it — one character of drift in either direction
+  // and a turn that already folded starts offering to fold again.
+  expect(CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL).toBe(
+    "context window exceeded after compaction",
+  );
+  expect(CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL).not.toBe(CONTEXT_OVERFLOW_DETAIL);
 });

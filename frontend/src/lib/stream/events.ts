@@ -476,6 +476,11 @@ export interface LimitNotice extends Base {
     | "context"
     | "search";
   message: string;
+  /** The stop marker this notice announces, when the bound also blocked the turn — the
+   *  same string the turn persists as its `blocked_reason`. Two context stops share one
+   *  `limit` value and do not share one remedy, so the toast reads the remedy off this
+   *  rather than off prose. Optional on the wire: an older backend sends none. */
+  detail?: string | null;
 }
 
 /** The exact `run.ended` detail (and persisted `blocked_reason`) a turn carries when the
@@ -485,6 +490,14 @@ export interface LimitNotice extends Base {
  *  turn's marker keys its "Compact and retry" control on this string, live and on
  *  reload. Any other stop reads as a plain bound and offers Continue alone. */
 export const CONTEXT_OVERFLOW_DETAIL = "context window exceeded";
+
+/** The same ceiling reached *after* the turn folded the thread and retried. Mirrored from
+ *  `agent/model_errors.py` for the opposite reason to the constant above: it is the case
+ *  where "Compact and retry" must **not** be offered — the fold already happened, and a
+ *  button that re-sends the same oversized request is a button that lies. A turn carrying
+ *  this reads as a plain stop, and the context toast drops its remedy sentence. */
+export const CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL =
+  "context window exceeded after compaction";
 
 export type RunEvent =
   | RunStarted

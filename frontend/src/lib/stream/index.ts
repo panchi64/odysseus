@@ -1,5 +1,6 @@
 export {
   isTerminal,
+  CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
   CONTEXT_OVERFLOW_DETAIL,
   PROTOCOL_VERSION,
   type CompactionReason,

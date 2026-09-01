@@ -29,6 +29,7 @@
 
 import type { SetStoreFunction } from "solid-js/store";
 import { produce } from "solid-js/store";
+import { CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL } from "~/lib/stream";
 import type { ContextWindow, PlanItem, RunEvent } from "~/lib/stream";
 import { toast } from "~/ui";
 import {
@@ -594,9 +595,14 @@ export function createFolder(
         // the stopped turn, and only the frontend knows what that control is called.
         // Naming it in the toast is what connects the thing that just happened to the
         // button that answers it — the toast is transient, the marker is not.
+        //
+        // Only where the control is actually offered, though. A turn that already folded
+        // and still overran carries the after-fold marker, `BlockedFooter` withholds the
+        // button, and a toast naming it would contradict the sentence it is appended to.
         if (ev.limit !== "verify")
           toast.error(
-            ev.limit === "context"
+            ev.limit === "context" &&
+              ev.detail !== CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL
               ? `${ev.message} Compact and retry on the stopped turn to fold this thread and carry on.`
               : ev.message,
           );
