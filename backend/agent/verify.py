@@ -2,7 +2,7 @@
 
 A turn that produced an answer is not necessarily a turn that produced a *good* one, and
 the model that wrote it is the last thing that should be asked. So a completed turn goes
-to a judge — the operator's own, or a utility model standing in — and a failed verdict
+to a judge — an injected one, or the utility model standing in — and a failed verdict
 buys exactly one more pass: a synthetic nudge carrying the reason, re-driven through
 :func:`~agent.turn.drive_turn`, with the rejected answer and the nudge marked for removal
 so the persisted thread reads original request → corrected answer.

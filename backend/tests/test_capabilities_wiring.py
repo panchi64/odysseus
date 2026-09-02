@@ -9,7 +9,7 @@ passes every unit test; the tool just goes silently unavailable at runtime. The 
 hand-enumerated ``Capabilities`` dataclass had exactly this failure mode at every
 construction site — the approval-resume path once shipped without the handles for the
 very tools only it can execute. The bag has one assembly point, so one test can now
-guard all of it: collect every type the tool/engine layer looks up, boot the real app,
+guard all of it: collect every type the tool and agent layers look up, boot the real app,
 and demand each one is present.
 """
 
