@@ -88,10 +88,12 @@ class TestResolvingAStoredValue:
 
 
 class TestWhatEachModeCarries:
-    def test_research_is_the_only_mode_with_prose_of_its_own(self):
-        # The base prompt was written for Normal, and Code's difference announces itself
-        # through its worktree and its tools — see `prompts/modes.py`.
-        assert {name for name, s in MODES.items() if s.instructions} == {"research"}
+    def test_only_the_modes_that_contradict_the_base_prompt_carry_prose(self):
+        # The base prompt was written for Normal, so Normal adds nothing. Research
+        # contradicts its act-rather-than-propose posture; Code is the only mode whose
+        # files are the operator's own, which is what makes a path in an answer clickable
+        # — see `prompts/modes.py`.
+        assert {name for name, s in MODES.items() if s.instructions} == {"research", "code"}
 
     def test_research_raises_the_round_trip_floor(self):
         assert MODES["research"].request_limit is not None

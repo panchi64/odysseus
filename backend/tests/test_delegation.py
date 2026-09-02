@@ -9,10 +9,19 @@ rooted at the same directory, which is precisely the bug.
 
 from __future__ import annotations
 
+from pydantic_ai import RunContext, RunUsage
+from pydantic_ai.models.test import TestModel
+
 from core.container import ServiceContainer
 from runs import Run, RunStream
 from tests._helpers import client_app
-from tools.agents import EXPLORER, agents_toolset, delegate_instructions
+from tools.agents import (
+    AGENT_NAME_ARG,
+    AGENT_NAME_DESCRIPTION,
+    DELEGATE_TOOL,
+    EXPLORER,
+    agents_toolset,
+)
 from tools.deps import RunDeps
 
 
@@ -144,9 +153,46 @@ class TestCatalogAndPrompt:
             names = set(app.state.tool_categories["agents"].tools)
             assert "delegate_task" in names
 
-    def test_the_delegate_listing_names_the_explorer(self):
-        text = delegate_instructions(None)  # type: ignore[arg-type]
+    def test_the_delegate_listing_rides_on_the_tools_own_description(self):
+        """It used to be a second standing instruction at the prompt head saying what the
+        description already implies. One home, read where the model is deciding."""
+        text = agents_toolset().tools[DELEGATE_TOOL].description or ""
         assert EXPLORER in text
         # It must also say when *not* to delegate, or the model reaches for it on
         # one-tool-call questions and pays a round trip for nothing.
         assert "not delegate" in text.lower()
+
+    async def test_the_operator_is_shown_what_the_model_is_told(self):
+        """The description is read from two places — `get_tools` for the model, `.tools`
+        for the catalog — and an override applied to one of them is a settings screen
+        describing a tool that no longer works that way."""
+        toolset = agents_toolset()
+        deps = RunDeps(
+            run=Run(id="run-1", kind="chat", owner_id="operator", stream=RunStream()),
+            owner_id="operator",
+            caps=ServiceContainer(),
+            conversation_id="conv-a",
+        )
+        ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+        offered = await toolset.get_tools(ctx)
+        assert offered[DELEGATE_TOOL].tool_def.description == (
+            toolset.tools[DELEGATE_TOOL].description
+        )
+
+    async def test_the_agent_name_parameter_points_at_the_roster_that_exists(self):
+        """The harness writes `agent_name` against the standing listing its capability
+        form registers. We register the toolset and put the roster in the description, so
+        the library's text sends the model looking for a listing nothing writes — it then
+        guesses a name and spends a retry on `Unknown sub-agent`."""
+        toolset = agents_toolset()
+        deps = RunDeps(
+            run=Run(id="run-1", kind="chat", owner_id="operator", stream=RunStream()),
+            owner_id="operator",
+            caps=ServiceContainer(),
+            conversation_id="conv-a",
+        )
+        ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+        offered = await toolset.get_tools(ctx)
+        schema = offered[DELEGATE_TOOL].tool_def.parameters_json_schema
+        assert "instructions" not in schema["properties"][AGENT_NAME_ARG]["description"]
+        assert schema["properties"][AGENT_NAME_ARG]["description"] == AGENT_NAME_DESCRIPTION

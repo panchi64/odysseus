@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from pydantic_ai import Agent, DeferredToolRequests, FunctionToolset
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -17,6 +18,7 @@ from core.db import init_db, make_engine
 from models.approval_grant import ApprovalGrant
 from runs import Run, RunRegistry, RunStatus, RunStream
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
+from services.permissions import DEFAULT_PERMISSION, PERMISSION_LEVELS
 from tools import RunDeps, build_agent_toolsets
 from tools.conversations import conversations_toolset
 from tools.corpus import corpus_toolset
@@ -176,7 +178,7 @@ def _call_once(tool_name: str, args: dict):
     return stream_fn
 
 
-def _recall_agent(categories: dict, tool_name: str, args: dict):
+def _recall_agent(categories: dict, tool_name: str, args: dict, level: str = DEFAULT_PERMISSION):
     """An agent that calls one recall tool once. The backing capability is left unset on
     the deps, so a gated tool defers *before* touching it and an ungated one degrades to
     an "unavailable" string — either way the gate behaviour is what's under test."""
@@ -187,7 +189,7 @@ def _recall_agent(categories: dict, tool_name: str, args: dict):
         output_type=[str, DeferredToolRequests],
     )
     run = Run(id="r1", kind="chat", owner_id=OWNER, stream=RunStream())
-    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV)
+    deps = RunDeps(run=run, owner_id=OWNER, conversation_id=CONV, permission=level)
     return agent, run, deps
 
 
@@ -226,13 +228,17 @@ async def test_explicit_source_read_is_not_gated():
     assert "tool.completed" in _types(run)
 
 
-async def test_memory_recall_defers_for_approval():
-    # memory.recall reaches the same long-term-memory content the corpus gate protects, so
-    # it must be gated too — otherwise it's an ungated path around AE-3.8.
-    agent, run, deps = _recall_agent({"memory": memory_toolset()}, "memory_recall", {"query": "x"})
+@pytest.mark.parametrize("level", sorted(PERMISSION_LEVELS))
+async def test_memory_recall_never_defers(level):
+    # Long-term memory holds the operator's own notes, not content someone else wrote, so
+    # the recall gate does not cover it — at any level. It is the lookup the agent needs
+    # most often, and a park on it buys nothing to keep out of context.
+    agent, run, deps = _recall_agent(
+        {"memory": memory_toolset()}, "memory_recall", {"query": "x"}, level=level
+    )
     out = await _drive(agent, run, deps, "recall")
-    assert isinstance(out, DeferredToolRequests)
-    assert any(c.tool_name == "memory_recall" for c in out.approvals)
+    assert not isinstance(out, DeferredToolRequests)
+    assert "tool.completed" in _types(run)
 
 
 async def test_conversations_search_defers_but_read_does_not():
@@ -254,7 +260,7 @@ async def test_conversations_search_defers_but_read_does_not():
 
 def test_covered_by_grant_is_the_single_rule():
     assert covered_by_grant("corpus_retrieve", {"corpus_retrieve"}) is True
-    assert covered_by_grant("memory_recall", {"corpus_retrieve"}) is False
+    assert covered_by_grant("conversations_search", {"corpus_retrieve"}) is False
     assert covered_by_grant(None, {"corpus_retrieve"}) is False
 
 

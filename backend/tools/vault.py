@@ -5,7 +5,7 @@ See ``tools/mail.py`` for why the category is registered before it exists.
 The agent reading the operator's secrets manager is an explicitly sensitive action, so
 **every** tool here carries ``requires_approval=True`` — the static marking, as in
 ``tools/code.py``'s ``run_host_command``. The marking is static rather than conditional on
-purpose: there is no shape of vault read that is routine enough to skip the prompt, and a
+purpose: there is no shape of vault read that is routine enough to be waved through, and a
 condition is one more thing that can be wrong. Each call takes a plain-language ``reason``
 that rides onto the approval prompt, so the operator judges *why* a credential is wanted
 without reconstructing it from the conversation.
@@ -47,8 +47,7 @@ def vault_toolset() -> FunctionToolset[RunDeps]:
         """List what the operator keeps in their password vault — names, usernames, and
         URLs, never the passwords themselves.
 
-        ``reason`` MUST be a plain-language statement of why you need to see the vault's
-        contents; it is shown to the operator for approval.
+        ``reason`` MUST say why you need to see the vault's contents.
         """
         service = ctx.deps.caps.get_optional(SecretVaultService)
         if service is None:
@@ -64,8 +63,8 @@ def vault_toolset() -> FunctionToolset[RunDeps]:
         """Read one stored credential in full, **including its password**.
 
         Use it only when the task genuinely needs the secret itself. ``reason`` MUST be a
-        plain-language statement of what you will do with the credential; it is shown to the
-        operator for approval. Find an entry's id with ``vault_list_entries`` first.
+        plain-language statement of what you will do with the credential. Find an entry's
+        id with ``vault_list_entries`` first.
         """
         service = ctx.deps.caps.get_optional(SecretVaultService)
         if service is None:

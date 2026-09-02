@@ -118,7 +118,12 @@ async def test_one_shared_category_keeps_conversations_apart(plans):
         deps = RunDeps(run=run, owner_id=OWNER, caps=caps, conversation_id=conversation_id)
         ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
         tools = await toolset.get_tools(ctx)
-        await toolset.call_tool("plan_add_task", {"content": task}, ctx, tools["plan_add_task"])
+        await toolset.call_tool(
+            "plan_write_plan",
+            {"items": [PlanItem(content=task)]},
+            ctx,
+            tools["plan_write_plan"],
+        )
 
     await write("conv-a", "alpha task")
     await write("conv-b", "beta task")
@@ -146,7 +151,12 @@ async def test_a_run_without_a_conversation_keeps_one_plan():
     ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
     tools = await toolset.get_tools(ctx)
 
-    await toolset.call_tool("plan_add_task", {"content": "only task"}, ctx, tools["plan_add_task"])
+    await toolset.call_tool(
+        "plan_write_plan",
+        {"items": [PlanItem(content="only task")]},
+        ctx,
+        tools["plan_write_plan"],
+    )
     read = await toolset.call_tool("plan_read_plan", {}, ctx, tools["plan_read_plan"])
     assert "only task" in str(read)
 
@@ -186,3 +196,39 @@ async def test_a_locked_vault_degrades_to_no_plan(plans):
     # carries on without one rather than failing.
     assert await store.get_items() == []
     await store.set_items(_items("dropped"))
+
+
+async def test_the_offered_surface_is_three_tools_in_our_own_words():
+    """The harness registers six; a plan the model can replace wholesale needs three, and
+    every one it does not need costs a name, a description and a schema on every request.
+    Pinned here because the narrowing is an allowlist the harness validates by name — a
+    rename upstream must fail loudly rather than quietly widening the surface again."""
+    from pydantic_ai import RunContext
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai.usage import RunUsage
+
+    from core.container import ServiceContainer
+    from tools import RunDeps, build_agent_toolsets
+    from tools.plan import plan_toolset
+
+    toolset = build_agent_toolsets({"plan": plan_toolset()})[0]
+    run = Run(id="r-surface", kind="chat", owner_id=OWNER, stream=RunStream())
+    deps = RunDeps(run=run, owner_id=OWNER, caps=ServiceContainer(), conversation_id=None)
+    ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+
+    tools = await toolset.get_tools(ctx)
+    assert set(tools) == {"plan_write_plan", "plan_update_task_statuses", "plan_read_plan"}
+    # Ours, not the harness's: its wording is written for the surface we just dropped and
+    # cross-references tools this catalog never offers.
+    descriptions = {name: tool.tool_def.description or "" for name, tool in tools.items()}
+    assert "add_task" not in " ".join(descriptions.values())
+    assert descriptions["plan_read_plan"].startswith("The current list")
+
+
+def test_the_allowlist_and_the_wording_name_the_same_three_tools():
+    """A description keyed to a tool we no longer offer would be silently ignored, and a
+    tool offered without one would fall back to the harness's wording — so the two sets
+    are asserted equal rather than each being checked alone."""
+    from tools.plan import _DESCRIPTIONS, _TOOLS
+
+    assert set(_DESCRIPTIONS) == set(_TOOLS)

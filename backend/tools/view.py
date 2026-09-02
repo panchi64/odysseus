@@ -170,20 +170,18 @@ def view_toolset() -> FunctionToolset[RunDeps]:
         port: int | None = None,
         path: str | None = None,
     ) -> str:
-        """Show the operator what you built, in this conversation's View — a single
-        canvas beside the chat with a version history to compare against.
+        """Show the operator what you built, in this conversation's View — one canvas
+        beside the chat with a version history to compare against.
 
-        Pick exactly one of:
-        - ``file``: a file you created — an HTML page, an image or chart, a code
-          snippet. Captured as a new comparable version of the View.
-        - ``serve`` + ``port``: the argv of a live server (e.g. ``["python", "-m",
-          "http.server", "8000"]`` or ``["npm", "run", "dev"]``) and the port it
-          listens on. Becomes the live, interactive head, replacing any already
-          running here. The server must bind ``0.0.0.0`` (not ``127.0.0.1``) and
-          serve assets with relative URLs. If the server's root would show a
-          directory listing (``python -m http.server`` with no ``index.html``),
-          pass ``path`` for the entry file (e.g. ``"index.html"``) — or serve an
-          ``index.html``. Returns once the server is up.
+        Pass exactly one of:
+        - ``file``: a file you made — an HTML page, an image or chart, a code snippet.
+          Becomes a new comparable version.
+        - ``serve`` + ``port``: the argv of a live server (``["npm", "run", "dev"]``)
+          and the port it listens on. Becomes the interactive head, replacing any
+          already running here, and returns once it is up. The server must bind
+          ``0.0.0.0``, not ``127.0.0.1``, and serve assets with relative URLs; if its
+          root would show a directory listing, pass ``path`` for the entry file
+          (``"index.html"``).
 
         ``title`` labels the View. Use this to *show* a result, not to store data."""
         if (file is None) == (serve is None):

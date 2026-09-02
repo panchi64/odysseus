@@ -310,10 +310,10 @@ class TestAClassifiedReadClears:
     question left. What has to hold is that nothing else can wear the same clothes.
     """
 
-    def test_a_self_gated_recall_never_reaches_a_model(self):
-        # The two tools that gate their own calls and are pure observation. Before this,
-        # every recall at Auto cost a reviewer round-trip — and parked the run outright
-        # when no utility model was bound.
+    def test_a_recall_never_reaches_a_model(self):
+        # The two relevance-ranked recalls, both pure observation. Before this, every
+        # recall at Auto cost a reviewer round-trip — and parked the run outright when no
+        # utility model was bound.
         for tool, args in (
             ("memory_recall", {"query": "what did we decide about billing"}),
             ("corpus_retrieve", {"query": "invoice", "collection": "docs"}),

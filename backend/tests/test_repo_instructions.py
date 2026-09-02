@@ -110,3 +110,25 @@ def test_the_memo_does_not_grow_with_every_run_the_process_ever_serves(tmp_path)
     for n in range(_MAX_BRIEFS * 3):
         _run_brief(f"run-{n}", tmp_path)
     assert len(_briefs) <= _MAX_BRIEFS
+
+
+# --- what the brief costs, and what it points at --------------------------------------
+
+
+def test_the_budget_is_sized_against_a_small_window_not_a_large_one():
+    """The brief is re-sent on every model request of every turn, so what it costs is
+    measured against the smallest window the app runs against, not the largest. 16KB is
+    roughly 4k tokens — an eighth of a 32k window spent before the first message."""
+    assert INSTRUCTIONS_BYTE_BUDGET == 16 * 1024
+
+
+def test_the_brief_names_the_inventory_tool_the_way_it_is_offered(tmp_path):
+    """The harness writes its own un-namespaced function name into the hint; the catalog
+    offers the tool namespaced. A brief that points at `inventory_agent_context` sends the
+    model to call a tool that is not there."""
+    (tmp_path / "CLAUDE.md").write_text("Run the tests with `uv run pytest`.\n")
+
+    brief = _run_brief("run-inventory", tmp_path)
+
+    assert "repo_inventory_agent_context" in brief
+    assert "`inventory_agent_context`" not in brief

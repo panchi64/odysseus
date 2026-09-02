@@ -9,9 +9,17 @@ Three things here are ours rather than the library's, each for a reason:
 **Registered as a toolset, not a capability.** The capability form contributes its own
 instructions and would put the tool outside the namespaced, operator-toggleable catalog
 whose whole promise is that the settings list and the agent's real stack cannot diverge.
-The delegate listing the capability form injects is re-delivered through the
-`InstructionProvider` seam instead — it is small and static, so the prompt head is the
-right home for it.
+What that listing said — which sub-agents exist, and when a delegation is worth its round
+trip — is folded into the tool's **own description** instead. It lived for a while as a
+standing instruction beside the tool, which meant the prompt head and the tool schema each
+carried a paragraph making the same point, both in the cached prefix, and a model reading
+one of them right there in the catalog entry it is deciding about needs no second copy at
+the head. Overriding the description is a two-line job done twice, because the name is read
+from two places (`get_tools` for the model, `.tools` for the operator's catalog) and they
+must not disagree. The `agent_name` **parameter** goes with it: the harness writes it
+against the listing the capability form would have registered, so left alone it sends the
+model hunting through instructions this app never writes for a roster that is sitting in
+the description it just read.
 
 **Rebound per conversation.** `SubAgentToolset` defines no `for_run`, so the default
 returns the same instance to every run — and the instance is where the sub-agents' roots
@@ -30,8 +38,10 @@ frozen event protocol is untouched.
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections import OrderedDict
+from dataclasses import replace
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
@@ -53,27 +63,36 @@ _MAX_CACHED = 32
 
 EXPLORER = "explorer"
 
+#: The tool's own name inside the toolset; namespaced to `agents_delegate_task`.
+DELEGATE_TOOL = "delegate_task"
+
+#: The parameter naming which sub-agent runs, and what it is told to look at. The roster
+#: is in :data:`DELEGATE_DESCRIPTION` directly above it in the offered schema; the
+#: library's own text points at a standing listing this app does not register, and a
+#: model that goes looking for one guesses a name and spends a retry on `Unknown
+#: sub-agent`.
+AGENT_NAME_ARG = "agent_name"
+AGENT_NAME_DESCRIPTION = "One of the sub-agents named above."
+
+#: What the model is told about delegating, in the one place it is deciding whether to.
+#: Replaces the library's docstring-derived description, which describes the mechanism and
+#: cannot know which sub-agents this installation registered.
+DELEGATE_DESCRIPTION = (
+    "Delegate a self-contained piece of work to a sub-agent and return what it reports. "
+    f"Available: `{EXPLORER}` — searches and reads the workspace and reports back with "
+    "concrete paths and quoted evidence, changing nothing.\n\n"
+    "Delegate when a question needs a lot of reading to answer and the reading itself is "
+    "not what the operator wants to see. The sub-agent runs with its own history and never "
+    "sees this conversation, so `task` has to stand alone — say what to find, where to "
+    "start, and what a useful answer looks like. Do not delegate work you can do in one or "
+    "two tool calls: the round trip costs more than it saves."
+)
+
 _EXPLORER_INSTRUCTIONS = (
     "Explore the workspace and answer the question you are given with concrete file "
     "paths and quoted evidence. Do not modify anything — you have read-only access. "
     "Be thorough but report only what you actually found."
 )
-
-
-def delegate_instructions(_ctx: RunContext[RunDeps]) -> str:
-    """The static listing the capability form would have injected. Registered through
-    the manifest's `instructions` seam so it lands in the cached prompt prefix rather
-    than churning per turn."""
-    return (
-        "You can delegate a self-contained piece of work to a sub-agent with "
-        f"`agents_delegate_task`. Available: `{EXPLORER}` — searches and reads the "
-        "workspace and reports back with concrete paths and evidence, without changing "
-        "anything.\n"
-        "Delegate when a question needs a lot of reading to answer and the reading "
-        "itself is not what the operator wants to see; the sub-agent runs with its own "
-        "history, so the task you give it must stand alone. Do not delegate work you "
-        "can do in one or two tool calls — the round trip costs more than it saves."
-    )
 
 
 class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
@@ -82,7 +101,8 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
     The template exists only so `get_tools` can answer without a binding — the tool's
     name, description and schema do not depend on which workspace the explorer reads or
     which model it runs on, which is what keeps the operator's catalog identical to the
-    agent's real stack.
+    agent's real stack. Both readings of it pass through :data:`DELEGATE_DESCRIPTION`, so
+    what the model is offered and what the operator is shown say the same thing.
     """
 
     def __init__(self, template: AbstractToolset[RunDeps]) -> None:
@@ -100,10 +120,13 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
         """The static registry `tools/catalog.py` enumerates for the settings surface.
         Without it this category contributes no rows and the operator cannot switch
         delegation off — the catalog reads this, not `get_tools`."""
-        return self._template.tools
+        return {
+            name: _redescribed_tool(name, tool) for name, tool in self._template.tools.items()
+        }
 
     async def get_tools(self, ctx: RunContext[RunDeps]) -> dict[str, ToolsetTool[RunDeps]]:
-        return await self._template.get_tools(ctx)
+        tools = await self._template.get_tools(ctx)
+        return {name: _redescribed_def(name, tool) for name, tool in tools.items()}
 
     async def call_tool(
         self,
@@ -195,6 +218,41 @@ class _ConversationAgentsToolset(AbstractToolset[RunDeps]):
         while len(self._bound) > _MAX_CACHED:
             self._bound.popitem(last=False)
         return bound
+
+
+def _redescribed_tool(name: str, tool: Any) -> Any:
+    """The catalog's `Tool`, carrying our description. Copied and mutated rather than
+    `replace`d because `Tool` declares `init=False` with a hand-written constructor whose
+    parameters are not its fields — feeding the fields back through it is a rewrite waiting
+    to break on a library upgrade."""
+    if name != DELEGATE_TOOL:
+        return tool
+    clone = copy.copy(tool)
+    clone.description = DELEGATE_DESCRIPTION
+    return clone
+
+
+def _redescribed_def(name: str, tool: ToolsetTool[RunDeps]) -> ToolsetTool[RunDeps]:
+    """The model's `ToolDefinition`, carrying our description and our parameter prose.
+
+    Both halves are ordinary dataclasses here, so this one is a `replace`; the schema is
+    copied rather than edited, since the toolset hands out the same object every call and
+    the describing pass downstream reads it independently.
+    """
+    if name != DELEGATE_TOOL:
+        return tool
+    schema = copy.deepcopy(dict(tool.tool_def.parameters_json_schema))
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and isinstance(properties.get(AGENT_NAME_ARG), dict):
+        properties[AGENT_NAME_ARG]["description"] = AGENT_NAME_DESCRIPTION
+    return replace(
+        tool,
+        tool_def=replace(
+            tool.tool_def,
+            description=DELEGATE_DESCRIPTION,
+            parameters_json_schema=schema,
+        ),
+    )
 
 
 def _describe(event: Any) -> str:

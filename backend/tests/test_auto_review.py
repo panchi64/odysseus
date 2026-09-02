@@ -96,7 +96,7 @@ class TestTheDeterministicStageComesFirst:
         assert declined in (await review(RISKY, reviewer=None)).reason
         assert declined in (await review(RISKY, reviewer=reviewer_of(None))).reason
 
-    async def test_a_self_gated_recall_is_settled_without_a_model(self):
+    async def test_a_recall_is_settled_without_a_model(self):
         """A recall is a read: it returns something and leaves nothing different behind,
         for any query. Sending it to the reviewer bought nothing and cost a round-trip —
         and on an installation with no utility model bound it *parked the run*, which is

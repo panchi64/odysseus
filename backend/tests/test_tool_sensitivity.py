@@ -155,10 +155,13 @@ class TestPlanNarrowsTheCatalog:
         assert "plan_read_plan" not in withheld
 
     def test_the_exemption_is_not_a_no_op(self):
-        # Every exempted tool is a write, so each one is a tool the rank rule would
-        # otherwise have taken away.
+        # The set names the whole task list, and its writes are what the rank rule would
+        # otherwise have taken away — the read in it is exempt anyway and is listed so the
+        # exemption reads as one surface rather than half of one.
         assert PLANNING_TOOLS <= _catalog_names()
-        for name in PLANNING_TOOLS:
+        writes = {n for n in PLANNING_TOOLS if sensitivity_of(n) is not Sensitivity.READ}
+        assert writes
+        for name in writes:
             assert sensitivity_of(name) is Sensitivity.WORKSPACE_WRITE
 
     def test_plan_withholds_every_other_effect(self):

@@ -33,7 +33,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from prompts.modes import RESEARCH_MODE
+from prompts.modes import CODE_MODE, RESEARCH_MODE
 from services.permissions import DEFAULT_PERMISSION, PermissionLevel
 
 #: The stored vocabulary. ``normal`` and ``code`` were once ``chat`` and ``coding``; the
@@ -124,6 +124,7 @@ MODES: Mapping[ModeId, ModeSpec] = {
         id="code",
         workspace="worktree",
         categories=frozenset({"shell", "repo"}),
+        instructions=CODE_MODE,
     ),
 }
 

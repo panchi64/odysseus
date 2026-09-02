@@ -95,13 +95,13 @@ def web_toolset() -> FunctionToolset[RunDeps]:
     ) -> FetchedPage | str:
         """Fetch a single web page and return its main content as Markdown.
 
-        Use after `search` to read a result in full. State the information you are looking
-        for in `goal` — on large pages the result is then distilled to what's relevant to
-        it; omit `goal` (or pass `offset`) to read the raw text. Fetching returns up to a
-        fixed token budget of the page; when the result ends with a truncation notice, call
-        `fetch` again with the same `url` and the `offset` the notice gives to continue
-        reading (dynamic pages may shift slightly between calls). If a URL can't be
-        fetched you will be told why — pick a different source."""
+        Use after `web_search` to read a result in full. State the information you are
+        looking for in `goal` — on large pages the result is then distilled to what's
+        relevant to it; omit `goal` (or pass `offset`) to read the raw text. Fetching
+        returns up to a fixed token budget of the page; when the result ends with a
+        truncation notice, call `web_fetch` again with the same `url` and the `offset` the
+        notice gives to continue reading (dynamic pages may shift slightly between calls).
+        If a URL can't be fetched you will be told why — pick a different source."""
         svc = ctx.deps.caps.get_optional(BrowserFetcher)
         if svc is None:
             return "Web fetch is unavailable."

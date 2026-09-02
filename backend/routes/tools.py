@@ -5,9 +5,10 @@ not be offered to or invoked by the agent. The enforcement half already exists (
 enabled gate in ``tools/toolsets.py``); this is the half that lets the operator *use* it.
 
 - ``GET /tools`` — every registered tool, namespaced as the agent sees it, with its
-  category, its description, and whether it is currently enabled. The catalog comes from
-  the live toolset registry (``tools/catalog.py``), so it can never drift from what the
-  agent actually runs against.
+  category, its description, whether it is currently enabled, and whether its category
+  starts dormant (registered and allowed, but loaded only once the agent asks for the
+  group). The catalog comes from the live toolset registry (``tools/catalog.py``), so it
+  can never drift from what the agent actually runs against.
 - ``PUT /tools/{name}`` — flip one tool. An unknown name is a 404 rather than a stored
   setting that disables nothing.
 - ``GET /tools/approval-scopes`` — the subset that can *pause* a run for approval, which
@@ -33,6 +34,12 @@ from tools.catalog import ToolInfo, approval_scopes, tool_catalog
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
+def _catalog(request: Request) -> list[ToolInfo]:
+    """The assembled catalog, dormancy included — one derivation for the listing and the
+    toggle, so a row cannot describe a tool the other half does not recognise."""
+    return tool_catalog(deps.tool_categories(request), deps.dormant_category_names(request))
+
+
 class ToolOut(BaseModel):
     """One row of the catalog."""
 
@@ -40,6 +47,11 @@ class ToolOut(BaseModel):
     category: str
     description: str
     enabled: bool
+    # Its category starts each conversation dormant — the tool is registered and allowed,
+    # but the agent has to load the group before it can call it. Reported beside
+    # `enabled` rather than folded into it: this is not the operator's switch, and a tool
+    # that is merely out of reach until asked for is not a tool that was turned off.
+    dormant: bool = False
 
 
 class ToolUpdate(BaseModel):
@@ -52,13 +64,14 @@ def _out(info: ToolInfo, disabled: frozenset[str]) -> ToolOut:
         category=info.category,
         description=info.description,
         enabled=info.name not in disabled,
+        dormant=info.dormant,
     )
 
 
 @router.get("", response_model=list[ToolOut])
 async def list_tools(request: Request) -> list[ToolOut]:
     disabled = await get_disabled_tools(deps.settings_store(request), deps.OPERATOR_ID)
-    return [_out(info, disabled) for info in tool_catalog(deps.tool_categories(request))]
+    return [_out(info, disabled) for info in _catalog(request)]
 
 
 class ApprovalScopeOut(BaseModel):
@@ -87,7 +100,7 @@ async def list_approval_scopes(request: Request) -> list[ApprovalScopeOut]:
 
 @router.put("/{name}", response_model=ToolOut)
 async def update_tool(name: str, body: ToolUpdate, request: Request) -> ToolOut:
-    catalog = tool_catalog(deps.tool_categories(request))
+    catalog = _catalog(request)
     info = next((t for t in catalog if t.name == name), None)
     if info is None:
         raise HTTPException(status_code=404, detail=f"tool {name!r} not found")

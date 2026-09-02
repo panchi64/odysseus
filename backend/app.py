@@ -26,7 +26,7 @@ from core.http_errors import install_error_handlers
 from core.vault import Vault
 from harness import LifecycleRegistry
 from harness.discovery import discover_manifests
-from harness.manifest import HarnessContext, ServiceContainer
+from harness.manifest import DormantCategory, HarnessContext, ServiceContainer
 from harness.run_terminal import RunTerminalDispatcher
 from models.artifact import Artifact
 from models.conversation import Conversation
@@ -54,13 +54,14 @@ from services.registry import ModelRegistry
 from services.sandbox import SandboxSessionManager, detect_sandbox, shutdown_confinement
 from services.sealing import seal_legacy_column
 from services.settings_store import SettingsStore
+from services.tool_policy import AvailabilityCheck, CategoryAvailability
 from tools import (
     CORE_GATED_TOOLS,
     InstructionProvider,
     PromptContextProvider,
     core_categories,
 )
-from tools.agents import delegate_instructions
+from tools.describe import category_names
 from tools.plan import plan_context
 from tools.repo import repo_instructions
 
@@ -321,6 +322,8 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
         instruction_providers=app.state.instruction_providers,
         prompt_context_providers=app.state.prompt_context_providers,
         network_tools=app.state.network_tools,
+        dormant_categories=app.state.dormant_categories,
+        category_availability=app.state.category_availability,
     )
     for manifest in app.state.feature_manifests:
         if manifest.enabled is not None and not manifest.enabled(settings):
@@ -394,16 +397,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # mode enforces the union. The feature that suspends them is not the feature that
     # ships them, so the declaration travels rather than being restated at the gate.
     network_tools: set[str] = set()
-    # The delegate listing is core, not a manifest's, for the same reason the plan
-    # reminder below is: the `agents` category ships with the harness core categories.
-    # It is small and static, so the prompt *head* is the right home — it stays in the
-    # cached prefix rather than churning per turn.
-    # `repo_instructions` joins it for the same reason and returns "" outside a worktree
-    # mode, so a sandbox thread pays nothing for it.
-    instruction_providers: list[InstructionProvider] = [
-        delegate_instructions,
-        repo_instructions,
-    ]
+    # The categories that start each conversation dormant — offered with their schemas
+    # withheld until the model asks for the group by name. Collected beside the gated
+    # names because they answer the same shape of question about a category the feature
+    # ships, and because the engine needs both to compose a turn.
+    dormant_categories: list[DormantCategory] = []
+    # Which categories have a backing service the operator may simply not have set up.
+    # Collected as (category, check) pairs and resolved to tool names once every
+    # manifest's toolsets are in hand — a feature answers for every category it
+    # registers, because availability is a fact about the service rather than about one
+    # group of verbs over it.
+    availability_claims: list[tuple[str, AvailabilityCheck]] = []
+    # `repo_instructions` is core, not a manifest's, for the same reason the plan reminder
+    # below is: the categories it belongs to ship with the harness core ones. It returns ""
+    # outside a worktree mode, so a sandbox thread pays nothing for it.
+    instruction_providers: list[InstructionProvider] = [repo_instructions]
     # The plan reminder is core, not a manifest's: the `plan` category ships with the
     # harness core categories, so its tail context has to be seeded here alongside them.
     prompt_context_providers: list[PromptContextProvider] = [plan_context]
@@ -415,12 +423,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"(second claim by manifest {manifest.name!r})"
                 )
             tool_categories[category] = factory()
+            if manifest.available is not None:
+                availability_claims.append((category, manifest.available))
         gated_tools |= manifest.gated_tools
         network_tools |= manifest.network_tools
+        dormant_categories.extend(manifest.dormant)
         instruction_providers.extend(manifest.instructions)
         prompt_context_providers.extend(manifest.prompt_context)
+    # A dormant declaration naming a category nothing registered would hide a group that
+    # does not exist and advertise it in the agent's index — fail the boot instead, the
+    # same way a duplicate category name does.
+    for entry in dormant_categories:
+        if entry.category not in tool_categories:
+            raise RuntimeError(
+                f"dormant category {entry.category!r} is not a registered tool category"
+            )
+    # An `available` check declared by a manifest that registers no toolset is a promise
+    # nothing can keep — the same failure as a dormant name with no category behind it,
+    # so it fails the boot the same way rather than reading as "always available".
+    for manifest in enabled_manifests:
+        if manifest.available is not None and not manifest.toolsets:
+            raise RuntimeError(
+                f"manifest {manifest.name!r} declares an availability check "
+                "but registers no tool category"
+            )
+    # Resolved to the namespaced names the disabled set speaks, so the run-time check
+    # only has to answer yes or no (`services/tool_policy.py`).
+    bare_names = category_names(tool_categories)
+    category_availability = tuple(
+        CategoryAvailability(
+            category=category,
+            tools=frozenset(f"{category}_{name}" for name in bare_names[category]),
+            check=check,
+        )
+        for category, check in availability_claims
+    )
     app.state.tool_categories = tool_categories
     app.state.gated_tools = frozenset(gated_tools)
+    app.state.category_availability = category_availability
+    app.state.dormant_categories = tuple(dormant_categories)
+    # The composed shape, derived once here rather than by each composer that bridges
+    # assembly's list and the turn's mapping — `routes/` cannot reach `harness/` to spell
+    # it, and a hand-spelled comprehension is how the two halves of the seam drift.
+    app.state.dormant_summaries = DormantCategory.summaries(dormant_categories)
     app.state.network_tools = frozenset(network_tools)
     app.state.instruction_providers = tuple(instruction_providers)
     app.state.prompt_context_providers = tuple(prompt_context_providers)

@@ -161,4 +161,11 @@ export interface AgentTool {
   category: string;
   description: string;
   enabled: boolean;
+  /** The backend holds this tool's group back from the opening tool list and hands the
+   *  agent a one-line index instead, so the group costs nothing on a turn that never
+   *  needs it. **Orthogonal to `enabled`** — a dormant tool is on, and the operator has
+   *  no switch for this: which groups start dormant is the backend's assembly decision,
+   *  and this flag is here so a row that is quietly absent from a turn doesn't read as
+   *  a row that was switched off. */
+  dormant: boolean;
 }

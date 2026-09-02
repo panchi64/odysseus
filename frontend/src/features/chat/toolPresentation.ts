@@ -114,11 +114,6 @@ const TOOLS: Record<string, ToolEntry> = {
     label: "Delete event",
     keys: ["event_id"],
   },
-  calendar_draft_event_from_text: {
-    icon: "calendar",
-    label: "Draft event",
-    keys: ["phrase"],
-  },
   calendar_list_calendars: {
     icon: "calendar",
     label: "Calendars",
@@ -208,14 +203,7 @@ const TOOLS: Record<string, ToolEntry> = {
   },
   memory_remember: { icon: "database", label: "Remember", keys: ["content"] },
 
-  plan_add_task: { icon: "note", label: "Add task" },
   plan_read_plan: { icon: "note", label: "Read plan", noun: ["task", "tasks"] },
-  plan_remove_task: { icon: "note", label: "Drop task" },
-  plan_update_task_status: {
-    icon: "note",
-    label: "Task status",
-    keys: ["status"],
-  },
   plan_update_task_statuses: { icon: "note", label: "Task statuses" },
   plan_write_plan: { icon: "note", label: "Write plan" },
 
@@ -233,6 +221,18 @@ const TOOLS: Record<string, ToolEntry> = {
     keys: ["conversation_id"],
   },
   research_start: { icon: "research", label: "Research", keys: ["question"] },
+
+  // The one row here the agent does not own: the harness offers this so a model
+  // that has been handed only an index of the tool groups it is *not* carrying can
+  // ask for one. It declares no category — `search` is not a namespace — so it gets
+  // a glyph no family uses, which is also what it is: a row about the tool list
+  // rather than about the work.
+  search_tools: {
+    icon: "grid",
+    label: "Loading tools",
+    keys: ["queries"],
+    noun: ["tool", "tools"],
+  },
 
   shell_check_command: { icon: "terminal", label: "Check process" },
   shell_run_command: {

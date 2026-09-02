@@ -4,13 +4,12 @@ Thin pass-throughs to :class:`~services.calendar.CalendarService` reached via ``
 every rule about zones, recurrence expansion, and validation lives in the service, which is
 the same one the REST routes call.
 
-**No approval gate.** Creating, editing, and deleting the operator's own calendar entries
-on their behalf is ordinary assistant work — it is not in the `AE-3.1` sensitive set (shell,
-code execution, filesystem writes, sending mail, config, the vault), all of which reach
-outside the operator's own data or are hard to undo. A calendar entry is neither:
-it is visible on the surface the operator is looking at and one call to remove. Gating it
-would train the operator to click through approvals, which is what makes a gate stop working
-where it matters.
+**Not in the sensitive set.** Creating, editing, and deleting the operator's own calendar
+entries on their behalf is ordinary assistant work — unlike the `AE-3.1` set (shell, code
+execution, filesystem writes, sending mail, config, the vault), which reaches outside the
+operator's own data or is hard to undo. A calendar entry is neither: it is visible on the
+surface the operator is looking at and one call to remove. Marking it sensitive would train
+them to click through approvals, which is what makes a gate stop working where it matters.
 
 If the calendar isn't wired into the run, each tool says so rather than failing — the model
 adapts (graceful degradation), the same posture the memory tools take.
@@ -22,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
-from core.exceptions import DegradedCapabilityError, NotFoundError
+from core.exceptions import NotFoundError
 from models.calendar import DEFAULT_TIMEZONE
 from services.calendar import CalendarService, EventView, OccurrenceView
 
@@ -63,7 +62,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
 
     @toolset.tool
     async def list_calendars(ctx: RunContext[RunDeps]) -> list[dict]:
-        """List the operator's calendars — needed to know where to put a new event."""
+        """List the operator's calendars — `calendar_create_event` needs one to write to."""
         service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return [{"error": _UNAVAILABLE}]
@@ -91,7 +90,7 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         belongs to (e.g. `Europe/Madrid`) — pass it for a timed event so a repeating one
         keeps its local time across daylight-saving changes. `rrule` is a bare RFC 5545
         rule such as `FREQ=WEEKLY;BYDAY=MO`. Omitting `calendar_id` uses the operator's
-        first writable calendar.
+        first writable calendar; `calendar_list_calendars` names the rest.
         """
         service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
@@ -130,8 +129,9 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         description: str | None = None,
         rrule: str | None = None,
     ) -> dict:
-        """Change an existing event. Only the fields you pass are altered; for a recurring
-        event this changes the whole series."""
+        """Change an existing event, by an `event_id` from `calendar_agenda`. Only the
+        fields you pass are altered; for a recurring event this changes the whole
+        series."""
         service = ctx.deps.caps.get_optional(CalendarService)
         if service is None:
             return {"error": _UNAVAILABLE}
@@ -175,33 +175,6 @@ def calendar_toolset() -> FunctionToolset[RunDeps]:
         except ValueError as exc:
             raise ModelRetry(f"That deletion couldn't be applied: {exc}") from exc
         return "Deleted."
-
-    @toolset.tool
-    async def draft_event_from_text(
-        ctx: RunContext[RunDeps], phrase: str, timezone: str = DEFAULT_TIMEZONE
-    ) -> dict:
-        """Turn a phrase like "lunch with Ana Friday 1pm" into a structured event draft
-        (`CAL-3`). This only drafts — pass the result to `create_event` to store it."""
-        service = ctx.deps.caps.get_optional(CalendarService)
-        parser = service.nl if service is not None else None
-        if parser is None:
-            return {"error": "Natural-language event entry is unavailable."}
-        try:
-            draft = await parser.parse(phrase, timezone=timezone)
-        except DegradedCapabilityError as exc:
-            return {"error": str(exc)}
-        except ValueError as exc:
-            raise ModelRetry(str(exc)) from exc
-        return {
-            "title": draft.title,
-            "start": draft.starts_at.isoformat(),
-            "end": draft.ends_at.isoformat(),
-            "timezone": draft.timezone,
-            "all_day": draft.all_day,
-            "location": draft.location,
-            "description": draft.description,
-            "rrule": draft.rrule,
-        }
 
     return toolset
 

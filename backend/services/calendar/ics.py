@@ -30,7 +30,7 @@ from icalendar import Event as IEvent
 from icalendar.prop import vRecur
 
 from core.serde import as_utc
-from models.calendar import DEFAULT_TIMEZONE
+from models.calendar import DEFAULT_TIMEZONE, UTC_TIMEZONE
 from services.calendar.recurrence import parse_zone
 from services.calendar.service import CalendarService, EventView
 
@@ -263,7 +263,7 @@ def _zone_name(start_prop, raw_start: date | datetime, all_day: bool) -> str:
     ``tzinfo`` — it is the name the file's author *wrote*, and it is the thing a recurrence
     has to be expanded in. All-day events are date-based and are always stored in UTC."""
     if all_day:
-        return DEFAULT_TIMEZONE
+        return UTC_TIMEZONE
     tzid = start_prop.params.get("TZID")
     if tzid:
         try:
@@ -272,11 +272,11 @@ def _zone_name(start_prop, raw_start: date | datetime, all_day: bool) -> str:
             # An unknown/proprietary TZID (some exporters emit their own names) is not
             # worth losing the event over — keep the instant, fall back to UTC.
             logger.warning("calendar: unknown TZID %r on import; falling back to UTC", tzid)
-            return DEFAULT_TIMEZONE
+            return UTC_TIMEZONE
         return str(tzid)
     tzinfo = getattr(raw_start, "tzinfo", None)
     key = getattr(tzinfo, "key", None)
-    return str(key) if key else DEFAULT_TIMEZONE
+    return str(key) if key else UTC_TIMEZONE
 
 
 def _instant(value: date | datetime, all_day: bool) -> datetime:

@@ -312,6 +312,20 @@ async def test_execute_description_states_the_live_config_caps(monkeypatch):
     assert "come back whole" in description
 
 
+async def test_execute_points_at_the_file_tools_without_reciting_them():
+    """The catalog already hands the model every `files_*` tool with its own description;
+    naming all six again here bought a second copy of that text on every turn. What the
+    model cannot get elsewhere — that those tools reach *this* directory — is one
+    sentence."""
+    description = code_module.code_toolset().tools["execute"].description
+
+    assert "files_*" in description
+    for recited in ("files_read_file", "files_edit_file", "files_list_directory"):
+        assert recited not in description
+    # The machine itself is still described only here.
+    assert "/work" in description and "pip" in description
+
+
 # --- output is returned whole ------------------------------------------------
 
 

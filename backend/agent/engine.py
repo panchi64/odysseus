@@ -38,10 +38,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 from pydantic_ai import (
@@ -65,6 +66,7 @@ from pydantic_ai.settings import ModelSettings
 from core.config import get_settings
 from core.container import ServiceContainer
 from core.exceptions import ModelLoadError
+from core.timezone import local_zone_key
 from prompts.agent import (
     CURRENT_DATE,
     INSTRUCTIONS,
@@ -97,6 +99,7 @@ from services.conversations import (
 from services.llm import TOOL_CALL_SETTINGS
 from services.modes import mode_spec
 from services.notifications import NotificationService
+from services.permissions import permission_spec
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
@@ -107,7 +110,10 @@ from tools import (
     PromptContextProvider,
     RunDeps,
     build_agent_toolsets,
+    dormant_index_instructions,
+    tool_search_capability,
 )
+from tools.describe import category_names
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
@@ -155,6 +161,11 @@ logger = logging.getLogger(__name__)
 # degrades uniformly. Never mutated (only construction sites add), so safe to share.
 _NO_CAPS = ServiceContainer()
 
+# The default for a turn composed without the app's dormant declarations — a stateless
+# eval or a test that passes no catalog either. Read-only, so a shared default cannot
+# become one turn's leftovers on the next.
+_NO_DORMANT: Mapping[str, str] = MappingProxyType({})
+
 
 @dataclass
 class _TurnResult:
@@ -176,6 +187,7 @@ def _build_agent(
     *,
     categories: Any = None,
     instruction_providers: Sequence[InstructionProvider] = (),
+    dormant: Mapping[str, str] = _NO_DORMANT,
 ) -> Agent:
     # Two prompt seams by durability: SYSTEM_PROMPT (identity/voice) is anchored in
     # history; INSTRUCTIONS (autonomy, tool posture, the treat-external-content-as-
@@ -185,12 +197,21 @@ def _build_agent(
     # stripping any spoofed system part and reasserting ours on every request.
     # output_type accepts DeferredToolRequests so approval-required tools can defer
     # instead of executing; normal turns still return text.
+    #
+    # ``dormant`` is category → one-line summary for the groups this installation withholds
+    # until the model asks for them (`tools/tool_search.py`). The names are what the toolset
+    # stack defers; the summaries are what the index below advertises. Both halves are read
+    # from the one mapping, so a group can never be held back without being announced.
+    # The membership map they resolve against is the assembled catalog's own; a turn that
+    # passes no catalog passes no dormant declarations either, so an empty map is exact
+    # rather than a guess.
+    names_by_category = category_names(categories) if categories is not None else {}
     agent = Agent(
         model,
         deps_type=RunDeps,
         system_prompt=SYSTEM_PROMPT,
         instructions=INSTRUCTIONS,
-        toolsets=build_agent_toolsets(categories),
+        toolsets=build_agent_toolsets(categories, dormant=tuple(dormant)),
         # Parallel tool calling (see `services.llm.TOOL_CALL_SETTINGS`). Declared at
         # construction, not per-run on `agent.iter(...)`: a park stashes this agent on
         # the ParkedTurn, so every resume inherits it with nothing threaded through the
@@ -211,10 +232,17 @@ def _build_agent(
         # context untouched, and they are two capabilities rather than one pass over the
         # same parts because they answer different questions and change for different
         # reasons: one sizes the brief for the gauge, the other reports what it said.
+        # `tool_search_capability` is ours rather than the library's auto-injected
+        # `ToolSearch`: the stock strategy ranks *tools* by word overlap, where a turn that
+        # decides it needs the browser needs the whole browser, and its ten-result cap would
+        # hand back half a group. Passing one at all is what replaces the default — the
+        # library orders it outermost wherever it sits in this list, so the two observers
+        # above still read the request as it ships, with the deferred schemas already gone.
         capabilities=[
             ReinjectSystemPrompt(replace_existing=True),
             MeasureOverhead(),
             AnnounceInjections(),
+            tool_search_capability(names_by_category, dormant),
         ],
     )
 
@@ -234,6 +262,16 @@ def _build_agent(
     for provider in instruction_providers:
         agent.instructions(name=contributor_id(provider))(provider)
 
+    # The standing index of the withheld groups — a name and a line each, no schemas.
+    # Registered here rather than arriving with the providers above because it is not a
+    # feature's contribution: what is dormant is decided by assembly, and the same mapping
+    # that decided it is what this reads. Deferral is invisible by construction, so without
+    # the index a model would answer that it cannot open a page while the browser sits one
+    # `search_tools` call away. Resolves to "" when nothing is dormant (or when the
+    # operator has switched a group off entirely), which is why it is unconditional.
+    dormant_index = dormant_index_instructions(dormant, names_by_category)
+    agent.instructions(name=contributor_id(dormant_index))(dormant_index)
+
     @agent.instructions(name="mode")
     def _mode_posture(ctx: RunContext[RunDeps]) -> str:
         """The thread's mode, where it has something of its own to say — read off the
@@ -242,16 +280,30 @@ def _build_agent(
         `prompts/modes.py`), which is why this is unconditional."""
         return mode_spec(ctx.deps.mode).instructions
 
+    @agent.instructions(name="level")
+    def _level_posture(ctx: RunContext[RunDeps]) -> str:
+        """What the thread's permission level means for how the model works — read off the
+        registry beside the mode, for the same reason. The level is *enforced* whether or
+        not the model is told (Plan by withholding the tools, the rest by parking), so this
+        is not a control; it is the explanation for what the model is about to run into.
+        Two of the four levels have nothing to add and resolve to "" (see
+        `prompts/levels.py`), which is why this is unconditional."""
+        return permission_spec(ctx.deps.permission).instructions
+
     @agent.instructions(name="date")
     def _current_date() -> str:
         """Give the agent today's date as a dynamic instruction — re-resolved fresh each
-        turn (always current, no stale pinned copy) and kept out of history. Uses the
-        host's local timezone, the operator's own clock on their own hardware."""
+        turn (always current, no stale pinned copy) and kept out of history.
+
+        The zone travels with it. Everything downstream already runs on the operator's own
+        clock — `builtin_now`, a calendar tool's default timezone — and the model was the
+        one participant never told which clock that is, so "tomorrow at nine" was being
+        resolved against an assumption rather than a fact."""
         now = datetime.now().astimezone()
         # Avoid strftime "%-d"/"%#d" platform splits — build the day number directly so
         # this stays portable across POSIX hosts.
         stamp = f"{now:%A, %B} {now.day}, {now.year}"
-        return CURRENT_DATE.format(date=stamp)
+        return CURRENT_DATE.format(date=stamp, zone=local_zone_key())
 
     return agent
 
@@ -1056,6 +1108,7 @@ def build_chat_orchestrator(
     *,
     model: Model,
     categories: Any = None,
+    dormant: Mapping[str, str] = _NO_DORMANT,
     instruction_providers: Sequence[InstructionProvider] = (),
     prompt_context_providers: Sequence[PromptContextProvider] = (),
     judge: Judge | None = None,
@@ -1094,7 +1147,9 @@ def build_chat_orchestrator(
 
     ``model`` is the resolved ``main`` model (the route resolves it from the
     registry, with any per-conversation override). ``categories`` overrides the
-    tool catalog. The verifier's judge is ``judge`` if injected, else one built
+    tool catalog, and ``dormant`` — category → one-line summary — names the groups within
+    it whose schemas the model loads for itself, so this turn pays for them only if it
+    asks. The verifier's judge is ``judge`` if injected, else one built
     from ``utility_model`` when given; with neither, verification is skipped (a
     graceful degradation when no utility model is configured). ``utility_settings``
     carries that model's reasoning-off settings so the judge, like the namer, requests
@@ -1139,7 +1194,10 @@ def build_chat_orchestrator(
         run.context_window = context_window
         run.context_thresholds = context_thresholds
         agent = _build_agent(
-            model, categories=categories, instruction_providers=instruction_providers
+            model,
+            categories=categories,
+            instruction_providers=instruction_providers,
+            dormant=dormant,
         )
         announced: set[str] = set()
 

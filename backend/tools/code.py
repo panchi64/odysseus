@@ -1,10 +1,14 @@
 """Code & shell tools — the agent's two execution paths, cleanly split.
 
-``code_execute`` is the default: it runs in the host-isolated sandbox, so it is
-**not** approval-gated — being contained, it carries no host-level risk and the
-agent computes freely. ``code_run_host_command`` is the deliberate exception: it runs
-on the real host, so it is an approval-gated tool whose request must carry a
-plain-language ``explanation`` the operator can judge without reading the command.
+``code_execute`` is the default: it runs in the host-isolated sandbox, so being
+contained it carries no host-level risk and the agent computes freely.
+``code_run_host_command`` is the deliberate exception: it runs on the real host, so
+its request must carry a plain-language ``explanation`` the operator can judge
+without reading the command.
+
+``code_execute``'s description is the **only** place the model is told what machine
+a run happens on — said where it is deciding whether to call, and nowhere else, so
+a thread with no sandbox is never handed a description of one.
 
 Both stay thin — the execution mechanics live in ``services/sandbox`` (the
 sandboxed path and the host escape hatch). When no sandbox runtime is available
@@ -190,15 +194,8 @@ def _execute_description(settings: Settings) -> str:
         "`/tmp` is small and temporary — keep anything that matters in your working "
         "directory. After a long stretch of inactivity the machine is reclaimed: your "
         "files are kept and restored, but installed packages may need reinstalling.\n\n"
-        "**Use this tool to *run* things, not to manage files.** The `files_*` tools "
-        "act on this same working directory and are the better way to work with it: "
-        "`files_read_file` to read (a slice at a time, with line numbers), "
-        "`files_write_file` to create, `files_edit_file` to change an exact span, "
-        "`files_search_files` to grep, `files_find_files` to glob, and "
-        "`files_list_directory` to see what is there. Reach for those instead of "
-        "`cat`, `ls`, `grep`, `sed`, or a heredoc — they are direct, they do not "
-        "spend a container start, and they will not mangle your quoting. Come back "
-        "here to execute the result.\n\n"
+        "The `files_*` tools act on this same working directory: use them to read, "
+        "write, edit, search and list it, and use this tool to run things.\n\n"
         "There is no internet unless you set the `network=True` argument on the "
         "tool call — do so to fetch packages or data. `network` is an argument of "
         "this tool, not a shell flag: writing it inside the command string does "
@@ -294,12 +291,11 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         """Run a command directly on the operator's host machine — their real
         computer, not your own.
 
-        Only for when the host itself must change. ``explanation`` MUST be a
-        plain-language description of what the command does and its effect on the
-        host — it is shown to the operator for approval. Prefer ``code_execute``
-        for anything that does not need the real host.
+        Only for when the host itself must change; prefer ``code_execute`` for
+        anything that does not need the real host. ``explanation`` MUST say what the
+        command does and its effect on the host.
 
-        Even once approved, the command is normally confined: it cannot read the
+        The command is normally confined: it cannot read the
         operator's credentials or this application's own data directory, and it has
         no network unless a domain was allowlisted. The result says whether the fence
         was actually applied (``confined``), so a permission error on one of those

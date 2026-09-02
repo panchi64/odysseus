@@ -24,7 +24,7 @@ from pathlib import Path
 
 from agent.summarize import resolve_auto_compact_policy
 from core.exceptions import NotFoundError
-from harness.manifest import HarnessContext
+from harness.manifest import DormantCategory, HarnessContext
 from routes.chat import compose_turn, resolve_turn_models
 from runs import RunRegistry, RunStatus
 from services.conversations import ConversationBinding, ConversationStore
@@ -134,6 +134,11 @@ class ConversationResearchThreads(ResearchThreads):
             # for the operator. Nothing says they are looking at it, so it is not offered
             # the tools that would stop and wait for them.
             kind="linked",
+            # A research thread reaches the same catalog an interactive one does, so it
+            # is withheld the same categories: a feature the operator never set up is as
+            # absent here as anywhere else.
+            availability=self._ctx.category_availability,
+            caps=self._ctx.capabilities,
         )
         # Refuse rather than degrade. A thread with no way to reach the web still answers —
         # from the model's own memory — and lands in the operator's session list looking
@@ -165,6 +170,7 @@ class ConversationResearchThreads(ResearchThreads):
             # lesser one than the same thread opened from the composer.
             capabilities=self._ctx.capabilities,
             categories=self._ctx.tool_categories,
+            dormant=DormantCategory.summaries(self._ctx.dormant_categories),
             instruction_providers=self._ctx.instruction_providers,
             prompt_context_providers=self._ctx.prompt_context_providers,
             registry=self._runs,

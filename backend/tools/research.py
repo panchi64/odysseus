@@ -8,12 +8,12 @@ watching a progress bar, and a disconnect would strand it. So `start` returns th
 the run is submitted, and the tool result says so in words — otherwise the model sits
 and polls, which is the same waste one level up.
 
-**`start` is approval-gated.** It spends real model budget and reaches the open web
+**`start` is marked sensitive.** It spends real model budget and reaches the open web
 unattended, which is exactly the shape of thing the operator should see before it
 happens. The question rides on the approval prompt, so what is being researched is what
-they are approving; a conversation-scoped grant stops them being asked every time.
+they are ruling on; a conversation-scoped grant stops them being asked every time.
 
-**`read` is not gated.** It reads back a conversation the operator can already open.
+**`read` is not.** It reads back a conversation the operator can already open.
 
 What changed underneath, and why the signatures did not: research used to be a pipeline
 with its own store and its own report, and is now a linked **conversation in research

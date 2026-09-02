@@ -12,7 +12,7 @@ central list.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -28,14 +28,52 @@ if TYPE_CHECKING:
     from core.vault import Vault
     from harness.lifecycle import LifecycleRegistry
     from harness.run_terminal import RunTerminalHook, SyncRunTerminalHook
+    from services.tool_policy import AvailabilityCheck, CategoryAvailability
     from tools import InstructionProvider, PromptContextProvider, RunDeps
 
 __all__ = [
+    "DormantCategory",
     "FeatureManifest",
     "FeatureRuntime",
     "HarnessContext",
     "ServiceContainer",
 ]
+
+
+@dataclass(frozen=True)
+class DormantCategory:
+    """A tool category whose schemas the model loads only once it wants them.
+
+    A big category the average turn never touches is paid for on every request anyway —
+    its definitions ride in the prompt whether or not they are used, and the browser
+    alone costs more than the standing brief. Declaring the category dormant hides its
+    tools behind Pydantic AI's deferred loading: they cost nothing until the model asks
+    for them by name through ``search_tools``, and once it has, they stay for the rest
+    of the conversation.
+
+    **The model reveals it, not the operator** — there is no switch to flip and no
+    heuristic guessing at relevance. What the chassis owes it is knowing the group is
+    *there*, which is the one line ``summary`` supplies to the standing index.
+    """
+
+    # The category the manifest registers its toolset under — the same string its
+    # ``toolsets`` entry uses, since that is what the tool names are prefixed with.
+    category: str
+    # One line, in the index the model reads: what this group of tools is for, concrete
+    # enough that a turn needing it recognises it without loading anything.
+    summary: str
+
+    @staticmethod
+    def summaries(entries: Iterable[DormantCategory]) -> dict[str, str]:
+        """The declarations as the shape a turn is composed from: category → summary.
+
+        The engine wants one mapping for both halves of the seam — the index the model
+        reads and the corpus its ``search_tools`` reveals from — while assembly wants a
+        list it can extend as each manifest lands. Every composer that bridges the two
+        would otherwise spell the same comprehension, and a fourth would spell it
+        slightly differently.
+        """
+        return {entry.category: entry.summary for entry in entries}
 
 
 @dataclass(frozen=True)
@@ -60,6 +98,14 @@ class HarnessContext:
     # Every enabled manifest's ``network_tools``, unioned — for the feature that enforces
     # the offline gate, which is not the same feature as the ones declaring the tools.
     network_tools: frozenset[str] = frozenset()
+    # Every enabled manifest's ``dormant`` declarations, in assembly order — the index
+    # the agent is shown and the corpus its ``search_tools`` calls reveal from.
+    dormant_categories: tuple[DormantCategory, ...] = ()
+    # Every enabled manifest's ``available`` check, resolved against the categories it
+    # registers — what a feature composing its own unattended turn passes to
+    # ``services/tool_policy.effective_disabled_tools`` so an unconfigured category is
+    # withheld from it exactly as it is from an interactive one.
+    category_availability: tuple[CategoryAvailability, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +161,22 @@ class FeatureManifest:
     # builds nothing. Assembled with the core categories at app startup; a duplicate
     # category name fails the boot loudly.
     toolsets: tuple[tuple[str, Callable[[], AbstractToolset[RunDeps]]], ...] = ()
+    # Categories from ``toolsets`` above that start each conversation dormant: registered
+    # and listed like every other, but with their schemas withheld from the model until it
+    # asks for the group by name. Declared beside the toolset rather than in a list
+    # somewhere central for the same reason ``network_tools`` is — the feature that ships
+    # an expensive, rarely-wanted category is the one that knows it is both.
+    dormant: tuple[DormantCategory, ...] = ()
+    # Whether the operator has actually set this feature up — asked of the live service
+    # on every turn, and answered for **every** category the manifest registers, because
+    # availability is a fact about the backing service rather than about one group of
+    # verbs over it. A feature with no such state (there is no way to *not* have a
+    # filesystem) declares nothing and is always offered. A False answer withholds the
+    # category the way the operator's own switch does, so the model is never handed a
+    # `mail_search` with no mailbox behind it — and, since the whole category goes, a
+    # dormant group drops out of the agent's index instead of advertising a reveal that
+    # can only come back empty (`tools/tool_search.py`).
+    available: AvailabilityCheck | None = None
     # Namespaced tool names whose approval gate is runtime-conditional (they raise
     # ``ApprovalRequired`` from inside the call, so inspection can't find them) —
     # this feature's contribution to the approval-scope vocabulary.

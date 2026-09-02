@@ -38,6 +38,7 @@ from pydantic_ai import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.messages import ToolSearchReturnPart
 
 from core.serde import jsonable
 from core.text import tokens_to_chars, truncate_middle
@@ -217,6 +218,16 @@ def _render_message(message: ModelMessage) -> list[_Line]:
                     # workspace's own briefing to them.
                     label = "EARLIER SUMMARY" if text.startswith(COMPACT_MARKER) else "OPERATOR"
                     lines.append(_Line(f"{label}: {text}"))
+            elif isinstance(part, ToolSearchReturnPart):
+                # A tool search returns the chassis' own tool names, not something a page
+                # or a mailbox said, so it is the one return that is neither fenced nor
+                # dumped as JSON: fencing would label the workspace's own words as data,
+                # and the dump spends a page of the summarizer's budget on a list of names
+                # that reads in a line. What matters to the continuing thread is which
+                # groups the agent had loaded, and that is what this says.
+                revealed = ", ".join(match["name"] for match in part.discovered_tools)
+                if revealed:
+                    lines.append(_Line(f"TOOL {part.tool_name} loaded: {revealed}"))
             elif isinstance(part, ToolReturnPart):
                 lines.append(
                     _Line(

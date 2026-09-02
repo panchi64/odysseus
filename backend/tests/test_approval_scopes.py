@@ -47,7 +47,6 @@ async def test_conditionally_gated_tools_are_scopes():
     names = _names(body)
     assert {
         "corpus_retrieve",
-        "memory_recall",
         "conversations_search",
     } <= names
     assert names <= catalog | {n for n in names if n.startswith("external_")}
@@ -63,6 +62,9 @@ async def test_ungated_tools_are_not_scopes():
         "builtin_now",
         "mail_read",
         "mail_list_messages",
+        # Long-term memory is the operator's own notes — the recall gate covers content
+        # someone else wrote, which this never is.
+        "memory_recall",
         # A skill the agent writes is a draft the operator must publish before it can
         # ever reach the model — their review already stands where the prompt would.
         "skills_create",

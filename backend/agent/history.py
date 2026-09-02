@@ -1,10 +1,12 @@
-"""Reshaping a message list before it is handed to a model, or to the store.
+"""Reshaping a message list before it is handed to a model, or reading a fact back out of
+one, before either reaches the store.
 
-Four surgeries the chat engine performs on ``list[ModelMessage]``, none of which needs a
-Run, a store, or anything else the orchestrators carry. They are here rather than inline
-because each encodes a fact about how the library or a provider behaves — a dangling tool
-call is a provider error, adjacent requests get merged at wire-prep — and those facts are
-worth finding in one place when one of them changes.
+Surgeries the chat engine performs on ``list[ModelMessage]``, none of which needs a Run, a
+store, or anything else the orchestrators carry. They are here rather than inline because
+each encodes a fact about how the library or a provider behaves — a dangling tool call is
+a provider error, adjacent requests get merged at wire-prep, a revealed tool is remembered
+only by the history that reveals it — and those facts are worth finding in one place when
+one of them changes.
 
 Every one returns new objects. The store's in-memory tree hands out its messages by
 reference, so mutating one in place would corrupt the durable history of every later read.
@@ -12,6 +14,7 @@ reference, so mutating one in place would corrupt the durable history of every l
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from pydantic_ai import (
@@ -22,6 +25,11 @@ from pydantic_ai import (
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
+)
+from pydantic_ai.messages import (
+    NativeToolSearchReturnPart,
+    ToolAvailabilityDeltaPart,
+    ToolSearchReturnPart,
 )
 
 
@@ -163,3 +171,35 @@ def split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
         out.append(replace(message, parts=rest))
         out.extend(ModelRequest(parts=[part]) for part in user_parts)
     return out
+
+
+def revealed_tools(messages: Sequence[ModelMessage]) -> tuple[str, ...]:
+    """Every tool the model was *shown* across ``messages``, in first-appearance order.
+
+    A dormant group is not a setting the chassis remembers; it is a fact the history
+    carries. Pydantic AI re-derives the revealed set from the outgoing messages on every
+    single request, so a tool the model loaded stays loaded exactly as long as the messages
+    that loaded it are still being replayed — and vanishes the moment they aren't. That is
+    what makes this a *reader* rather than a piece of state: the only honest answer to "what
+    is revealed" is the one read off the same messages the library will read.
+
+    Three shapes say it, because the library records the reveal wherever the provider put
+    it — a local ``search_tools`` return, a native server-side search return, or a bare
+    availability delta (which is also the shape we carry a reveal across a compaction fold
+    in, since the fold takes the exchange that revealed it away). Order is
+    first-appearance rather than a set: a reveal replayed in a stable order keeps the
+    provider's tool array byte-stable, and a shuffled one would cost the cache it exists to
+    protect.
+
+    Deliberately name-only and unvalidated against any catalog. A name the current
+    installation has no definition for cannot be revealed, and the library drops it for
+    exactly that reason on the way out — re-checking here would need a catalog this layer
+    has no business holding."""
+    names: dict[str, None] = {}
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, ToolAvailabilityDeltaPart):
+                names.update(dict.fromkeys(part.tools_added))
+            elif isinstance(part, ToolSearchReturnPart | NativeToolSearchReturnPart):
+                names.update(dict.fromkeys(match["name"] for match in part.discovered_tools))
+    return tuple(names)

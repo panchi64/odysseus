@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter, OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
@@ -53,6 +54,7 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ToolAvailabilityDeltaPart,
     ToolCallPart,
     UserPromptPart,
 )
@@ -1132,9 +1134,19 @@ class ConversationStore:
         through_id: str,
         expected_leaf_id: str,
         reason: CompactionReason,
+        revealed_tools: Sequence[str] = (),
     ) -> str | None:
         """Append a compaction checkpoint at the tip and queue its durable write, returning
         the new node's id — or ``None`` when the plan went stale.
+
+        ``revealed_tools`` are the tools the folded stretch had shown the model — the
+        dormant groups it loaded for itself. The exchange that revealed them is exactly
+        what the fold takes away, and the library re-derives the revealed set from the
+        replayed messages on every request, so without this a compaction would silently
+        take the browser back off a thread mid-task. They ride the checkpoint as a
+        ``ToolAvailabilityDeltaPart`` — the library's own shape for "the tools changed
+        here", carrying no content and reaching the model as nothing but the reveal — and
+        so persist with the summary rather than living only in the turn that folded.
 
         ``reason`` is stored on the checkpoint's own ``ModelRequest.metadata``, which is
         the one place a fact about the message can ride without a schema column: the
@@ -1155,10 +1167,14 @@ class ConversationStore:
         tree = self._cache.get(conversation_id)
         if tree is None or tree.active_leaf_id != expected_leaf_id:
             return None
-        message = ModelRequest(
-            parts=[UserPromptPart(content=summary)],
-            metadata={COMPACTION_REASON_KEY: reason},
-        )
+        # The delta leads, so the summary stays the message's *last* part: a checkpoint
+        # hoisted in front of a turn is merged into it, and the boundary the engine records
+        # there counts the turn's own parts from the end.
+        parts: list[Any] = []
+        if revealed_tools:
+            parts.append(ToolAvailabilityDeltaPart(tools_added=list(revealed_tools)))
+        parts.append(UserPromptPart(content=summary))
+        message = ModelRequest(parts=parts, metadata={COMPACTION_REASON_KEY: reason})
         node = tree.append_chain([message])[0]
         node.compacted = True
         node.compacted_through = through_id

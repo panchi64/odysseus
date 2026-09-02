@@ -12,7 +12,7 @@ sandbox directly — a code thread stages into its worktree, where its file and 
 tools can actually reach the file.
 
 It **provisions**, never reads: the file's bytes go into the workspace, not through the
-model. It complements ``corpus.retrieve`` (semantic text search over a document) with a
+model. It complements ``corpus_retrieve`` (semantic text search over a document) with a
 "give me the actual file to compute on" path.
 
 Thin like every tool: the upload store decrypts the bytes, ``services.sandbox.staging``
@@ -41,22 +41,14 @@ def attachments_toolset() -> FunctionToolset[RunDeps]:
 
     @toolset.tool
     async def provision(ctx: RunContext[RunDeps], attachment_id: str) -> dict:
-        """(Re-)copy a file the operator attached to this conversation into your
-        computer's working directory (``/work``). Attachments are staged there
-        automatically when they are attached, so use this when the path named in an
-        attachment note is **no longer there** (your computer is recycled between
-        sessions, so an older turn's path can go stale), or to bring back a file from an
-        earlier turn you now want to compute on. Pass the file's upload id (shown in the
-        attachment note / chip). It returns the ``path`` where the file was written;
-        read it from there in your next ``code_execute`` call — always use this returned
-        path verbatim, not one you construct from the filename: when another attachment
-        in this conversation already staged a file under the same name, this one is
-        staged under a disambiguated name instead (the result says so). For just
-        searching a document's text, prefer ``corpus.retrieve`` with the id instead.
+        """Re-stage a file the operator attached to this conversation, by the upload id
+        in its attachment note. Use it when the path that note gave is gone, or to bring
+        back an earlier turn's file.
 
-        The result has ``ok`` and, on success, ``path``/``filename``/``mime``/
-        ``size_bytes`` (plus ``renamed``/``note`` when the name was disambiguated); on
-        failure an ``error`` you can act on (e.g. a bad id)."""
+        Returns the ``path`` it was written to — read it there with the ``files_*``
+        tools, using that path verbatim, since a name already taken stages this file
+        under a different one. To search a document's text instead, call
+        ``corpus_retrieve`` with the same id."""
         uploads = ctx.deps.caps.get_optional(UploadStore)
         if uploads is None:
             return {"ok": False, "error": "Attachments are unavailable right now."}

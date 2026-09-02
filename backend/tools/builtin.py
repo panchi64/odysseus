@@ -12,13 +12,13 @@ the answer arrives as this tool's return value on the resume.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from pydantic import BaseModel, Field
 from pydantic_ai import FunctionToolset, RunContext
 from pydantic_ai.exceptions import CallDeferred
 
-from runs.events import now_utc
 from runs.lanes import lane_for
 
 from .deps import RunDeps
@@ -59,8 +59,9 @@ def builtin_toolset() -> FunctionToolset[RunDeps]:
 
     @toolset.tool_plain
     def now() -> str:
-        """Return the current date and time in UTC (ISO 8601)."""
-        return now_utc().isoformat()
+        """Return the current date and time on the operator's own clock, ISO 8601 with its
+        offset from UTC (e.g. 2026-03-14T09:41:07+01:00)."""
+        return datetime.now().astimezone().isoformat()
 
     @toolset.tool
     def ask_user(

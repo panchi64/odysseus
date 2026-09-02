@@ -299,6 +299,7 @@ def compose_turn(
     store: ConversationStore,
     uploads: UploadStore,
     categories: Mapping[str, Any] | None = None,
+    dormant: Mapping[str, str] | None = None,
     instruction_providers: Sequence[InstructionProvider] = (),
     prompt_context_providers: Sequence[PromptContextProvider] = (),
     disabled_tools: frozenset[str] = frozenset(),
@@ -336,6 +337,10 @@ def compose_turn(
         prompt,
         model=resolved,
         categories=categories,
+        # Which of those categories start withheld, with the line each is advertised by.
+        # Threaded from the same assembled state the catalog is, so an unattended turn's
+        # agent defers exactly what an interactive one's does.
+        dormant=dormant or {},
         instruction_providers=instruction_providers,
         prompt_context_providers=prompt_context_providers,
         utility_model=utility_model,
@@ -418,6 +423,7 @@ async def _submit_turn(
         # The assembled tool catalog + the manifests' dynamic instructions — read per
         # request so the turn always runs against what the app assembled.
         categories=deps.tool_categories(request),
+        dormant=deps.dormant_summaries(request),
         instruction_providers=deps.instruction_providers(request),
         prompt_context_providers=deps.prompt_context_providers(request),
         # `models[4]` is the resolved main model's vision fact — the same one

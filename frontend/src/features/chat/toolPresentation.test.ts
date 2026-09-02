@@ -55,6 +55,20 @@ describe("a tool reads as a glyph and a short label", () => {
     });
   });
 
+  // The harness's own tool, offered so a model carrying only an index of the tool
+  // groups it doesn't hold can ask for one. `search` is not a namespace, so the row
+  // has to be listed explicitly or it inherits nothing and reads as bookkeeping in
+  // the middle of the work.
+  test("loading a dormant group reads as work in progress, in no family", () => {
+    expect(toolPresentation("search_tools")).toEqual({
+      icon: "grid",
+      label: "Loading tools",
+    });
+    expect(
+      toolRowLabel(tool({ name: "search_tools", detail: "browse, mail" })),
+    ).toBe("Loading tools · browse, mail");
+  });
+
   // A name with no underscore declares no namespace. Reading one out of it
   // anyway would give `views` the `view` category's glyph and strip its own
   // label away to nothing.

@@ -3,10 +3,14 @@
 Which tools a run sees is composition, not bespoke machinery (the most leveraged
 mapping in the design). Each category toolset is namespaced for stable
 ``category_tool`` names, combined, then passed through the **enabled gate** so an
-operator-disabled tool is never offered. There is deliberately **no relevance
-pre-filter** — a capable native-tool-calling model on one host discerns its own
-tools; and with a single operator (no privilege tiers) there is no privilege
-gate either.
+operator-disabled tool is never offered. With a single operator (no privilege tiers)
+there is no privilege gate.
+
+Nor is there a **relevance pre-filter**: nothing here guesses at what this turn will
+want. What some categories do carry is **deferral** — a category a manifest declares
+dormant is offered with its schemas withheld until the model asks for the group by
+name (``tool_search.py``), which is the same posture stated the other way round. The
+chassis withholds and says so; the model, not a heuristic, decides what to load.
 
 The category registry is not a central list: this module owns only the **core**
 categories (the builtin starter tools and the sandbox code runner, both wired by
@@ -20,11 +24,17 @@ approval at execution time, handled by the engine, not dropped from the catalog.
 reaches past its write scope as needing approval, so the model's request for one comes
 back to the engine undone instead of running. A tool's own marking is left alone — the
 gate only ever adds (``services/permissions``).
+
+Last comes the **describing stage** (``describe.py``), which owns no policy at all: it
+rewrites each definition's model-facing text into the namespaced names this stack has
+just produced, and drops the library scaffolding and unreachable schema a
+harness-supplied tool arrives with. It runs after the gates so a description can never
+decide whether a tool is offered.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import replace
 
 from pydantic_ai import AbstractToolset, CombinedToolset, RunContext, ToolDefinition
@@ -36,6 +46,7 @@ from .agents import agents_toolset
 from .builtin import builtin_toolset
 from .code import code_toolset
 from .deps import RunDeps
+from .describe import category_names, describe
 from .files import files_toolset
 from .plan import plan_toolset
 from .repo import repo_toolset
@@ -110,17 +121,41 @@ def core_categories() -> dict[str, AbstractToolset[RunDeps]]:
 
 def build_agent_toolsets(
     categories: Mapping[str, AbstractToolset[RunDeps]] | None = None,
+    dormant: Collection[str] = (),
 ) -> list[AbstractToolset[RunDeps]]:
     """Compose the gated, namespaced toolset stack handed to the Agent.
 
     ``categories`` is the assembled mapping (core + every manifest's export);
     ``None`` — a stateless/test turn that passed nothing — composes the core
-    categories only.
+    categories only. ``dormant`` names the categories whose schemas are withheld until
+    the model reveals them (``tool_search.py``); an unknown name is ignored rather than
+    fatal, since a category can be absent for reasons this layer cannot see.
+
+    **Deferral is marked innermost, before every gate**, and the order is the whole
+    point. The enabled filter runs outside it, so a tool the operator switched off never
+    enters the search corpus and cannot be revealed by naming its group; the approval
+    gate and the describing pass run outside it too, so a tool that arrives on reveal
+    carries the same ``unapproved`` kind and the same rewritten description it would
+    have carried had it never been dormant.
     """
     cats = dict(categories) if categories is not None else core_categories()
-    prefixed = [toolset.prefixed(name) for name, toolset in cats.items()]
+    deferred = frozenset(dormant)
+    prefixed = [
+        toolset.prefixed(name).defer_loading() if name in deferred else toolset.prefixed(name)
+        for name, toolset in cats.items()
+    ]
     combined = CombinedToolset(prefixed)
-    # Namespaced, then filtered, then gated — in that order because each step needs the
-    # one before it: the gate classifies by the `category_tool` name the prefixing
-    # produces, and there is no point gating a tool the filter already took away.
-    return [combined.filtered(_enabled_gate).prepared(_approval_gate)]
+    names = category_names(cats)
+
+    def _describe(
+        ctx: RunContext[RunDeps], tool_defs: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        """Restate each tool in the names and vocabulary this catalog actually offers."""
+        return [describe(tool_def, names) for tool_def in tool_defs]
+
+    # Namespaced, then filtered, then gated, then described — in that order because each
+    # step needs the one before it: the gate classifies by the `category_tool` name the
+    # prefixing produces, there is no point gating a tool the filter already took away,
+    # and the rewrite resolves a description's cross-references against those same
+    # namespaced names (`describe.py`).
+    return [combined.filtered(_enabled_gate).prepared(_approval_gate).prepared(_describe)]

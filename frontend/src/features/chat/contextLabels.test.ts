@@ -17,6 +17,16 @@ describe("a slug becomes a label without a registry to maintain", () => {
     expect(segmentLabel("repo")).toBe("Project instructions");
   });
 
+  test("the thread's two axes read as a pair, and an adjective becomes a thing", () => {
+    // "Mode" and "Level" side by side in the breakdown name a posture and a bare
+    // scale; the second one has to say what it is a level of.
+    expect(segmentLabel("mode")).toBe("Mode posture");
+    expect(segmentLabel("level")).toBe("Permission posture");
+    // The block is an index of tool groups, not a state — "Dormant" alone labels a
+    // row with an adjective and leaves the operator to supply the noun.
+    expect(segmentLabel("dormant")).toBe("Dormant tools");
+  });
+
   test("a slug with no words left in it still says something", () => {
     // The label and the tool table's fallback are one rule now (`sentenceCase`), and
     // this is the case that proved they weren't: the copy here upper-cased position 0

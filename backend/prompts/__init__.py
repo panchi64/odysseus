@@ -7,9 +7,15 @@ inline string literals across the modules that happen to call a model.
 
 Two domains:
 
-- :mod:`prompts.agent` — the **main agent**: its ``SYSTEM_PROMPT`` (identity and
-  voice, anchored in history) and ``INSTRUCTIONS`` (autonomy, tool posture, and
-  safety guardrails, re-asserted fresh every turn), plus the verifier's nudge.
+- the **main agent** — :mod:`prompts.agent` (its ``SYSTEM_PROMPT``, identity and
+  voice anchored in history; its ``INSTRUCTIONS``, autonomy, tool posture and
+  safety guardrails re-asserted fresh every turn; the date line; the verifier's
+  nudge), plus the two files holding what is true of *this thread* rather than of
+  every thread: :mod:`prompts.modes` (what kind of work it is) and
+  :mod:`prompts.levels` (how far the model may go before it asks). Those two are
+  reached through the registries that own the rows — ``services.modes`` and
+  ``services.permissions`` — so a mode's or a level's prose sits beside the rest
+  of its declaration instead of in a branch at the engine.
 - :mod:`prompts.utility` — the cheap background calls (the thread **namer**, the
   deliverable **judge**) that run on the utility model.
 

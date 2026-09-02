@@ -172,7 +172,7 @@ async def test_a_document_becomes_a_marker_not_its_text():
     assert "dossier" in body and uid in body and "text/plain" in body
     assert "/work/attachments/dossier" in body
     # The path can go stale (sessions are recyclable) — the marker has to say so.
-    assert "attachments_provision" in body and "corpus.retrieve" in body
+    assert "attachments_provision" in body and "corpus_retrieve" in body
 
 
 async def test_vision_model_gets_pixels_and_the_image_is_staged_too():
@@ -691,3 +691,17 @@ async def test_patch_upload_toggles_kb_excluded(monkeypatch):
 
         back = await client.patch(f"/uploads/{uid}", json={"kbExcluded": False})
         assert back.json()["kbExcluded"] is False
+
+
+def test_provision_says_only_what_the_model_cannot_read_elsewhere():
+    """The description used to carry the sandbox's working directory, a pointer at
+    `code_execute` and the whole result shape — all of it said better on the tools that
+    own it, and re-charged on every turn the attachments category is offered. What is
+    left is the recovery it exists for, the path rule, and the other way to read a
+    document."""
+    description = attachments_toolset().tools["provision"].description or ""
+
+    assert "corpus_retrieve" in description and "files_*" in description
+    assert "/work" not in description and "code_execute" not in description
+    assert "verbatim" in description  # the rule a name clash makes load-bearing
+    assert len(description) < 500

@@ -170,6 +170,20 @@ class MailService:
     async def list_accounts(self, owner_id: str) -> list[AccountView]:
         return [self._to_view(row) for row in await self._rows(owner_id)]
 
+    async def has_accounts(self, owner_id: str) -> bool:
+        """Whether a mailbox has been added at all — one id, and nothing opened.
+
+        Asked on every turn to decide whether the mail tools are worth offering, which is
+        a yes/no about existence and must be answerable while the vault is locked. Every
+        other read here builds an ``AccountView``, and a view decrypts the address.
+        """
+
+        def work(session: Session) -> bool:
+            query = select(MailAccount.id).where(MailAccount.owner_id == owner_id).limit(1)
+            return session.exec(query).first() is not None
+
+        return await in_session(self._engine, work)
+
     async def get_account(self, owner_id: str, account_id: str) -> AccountView:
         return self._to_view(await self._row(owner_id, account_id))
 

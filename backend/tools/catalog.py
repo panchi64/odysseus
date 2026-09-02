@@ -29,6 +29,7 @@ from pydantic_ai import AbstractToolset
 from services.external_tools import ExternalTools
 
 from .deps import RunDeps
+from .describe import category_names, describe_text
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,13 @@ class ToolInfo:
     # The tool's own description (its docstring) — what the model is told it does, which
     # is also the most honest thing to show the operator deciding whether to allow it.
     description: str
+    # Whether its category starts each conversation dormant — registered and allowed, but
+    # with its schemas withheld until the model asks for the group by name. Reported
+    # rather than folded into `enabled` for the reason the offline suspension is kept out
+    # of that flag too: this is not the operator's choice and there is nothing here for
+    # them to act on, but a tool the agent has to reach for before it can use is a
+    # different row from one that is simply there.
+    dormant: bool = False
 
 
 def _flatten(text: str) -> str:
@@ -54,17 +62,31 @@ def _flatten(text: str) -> str:
 
 def tool_catalog(
     categories: Mapping[str, AbstractToolset[RunDeps]],
+    dormant_categories: frozenset[str] = frozenset(),
 ) -> list[ToolInfo]:
     """Every registered tool, category-then-name ordered for a stable listing.
 
     ``categories`` is the assembled mapping the agent itself runs against (the routes
     read it off ``app.state``), so the listing and the agent's stack cannot diverge.
+    ``dormant_categories`` is the assembled dormant set, passed in the same way
+    ``gated_tools`` is — the declaration lives on the manifests, and this module keeps
+    no registry of its own.
+
+    Descriptions go through the same rewrite the agent's own stack applies
+    (``describe.py``) — the operator deciding whether to allow a tool should be reading
+    the text the model was handed, not the raw docstring with its library scaffolding
+    and its references to names nothing is registered under. The rewrite is a pure
+    function over the description string; the toolsets' own tool objects are untouched.
     """
+    names = category_names(categories)
     catalog = [
         ToolInfo(
             name=f"{category}_{tool_name}",
             category=category,
-            description=_flatten(tool.description or ""),
+            description=_flatten(
+                describe_text(f"{category}_{tool_name}", tool.description, names) or ""
+            ),
+            dormant=category in dormant_categories,
         )
         # A non-function toolset exposes no static tool registry; it contributes nothing
         # rather than breaking the listing (see the module docstring).

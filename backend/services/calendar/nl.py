@@ -30,7 +30,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
-from models.calendar import DEFAULT_TIMEZONE
+from models.calendar import DEFAULT_TIMEZONE, UTC_TIMEZONE
 from prompts.calendar import CALENDAR_NL_INSTRUCTIONS
 from services.calendar.recurrence import canonical_rrule, expand, parse_zone
 
@@ -161,7 +161,7 @@ def _to_draft(draft: _Draft, *, timezone: str, zone_hint: ZoneInfo) -> EventDraf
         title=draft.title.strip() or "(untitled)",
         starts_at=start,
         ends_at=end,
-        timezone=DEFAULT_TIMEZONE if all_day else timezone,
+        timezone=UTC_TIMEZONE if all_day else timezone,
         all_day=all_day,
         location=(draft.location or "").strip() or None,
         description=(draft.description or "").strip() or None,

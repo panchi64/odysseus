@@ -16,7 +16,7 @@ installation classifies as a *read* (``ActionKind.READ``) is approved outright: 
 is a claim about the tool itself — it returns something and leaves nothing different
 behind — so there is no argument set that makes it into another kind of act, and no
 reviewer question left to ask. This is what keeps a self-gated recall
-(``memory_recall``, ``corpus_retrieve``) from costing a model call every time, and what
+(``corpus_retrieve``, ``conversations_search``) from costing a model call every time, and what
 stops it from parking a run outright on an installation with no utility model bound. The
 class registry is a closed literal pinned against the live catalog by a test, and a name
 it has never heard of resolves to the class that reaches *furthest* — so nothing an

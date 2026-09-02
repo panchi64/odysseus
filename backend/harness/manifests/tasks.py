@@ -13,7 +13,12 @@ import asyncio
 
 from agent.summarize import resolve_auto_compact_policy
 from core.api_scopes import ScopeClaim
-from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
+from harness.manifest import (
+    DormantCategory,
+    FeatureManifest,
+    FeatureRuntime,
+    HarnessContext,
+)
 from models.task import TaskOutcome, TaskOutput
 from routes import tasks as tasks_routes
 from routes.chat import compose_turn, resolve_turn_models
@@ -112,6 +117,7 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             # set of each, so the two can never diverge.
             capabilities=ctx.capabilities,
             categories=ctx.tool_categories,
+            dormant=DormantCategory.summaries(ctx.dormant_categories),
             instruction_providers=ctx.instruction_providers,
             prompt_context_providers=ctx.prompt_context_providers,
             registry=runs,
@@ -134,6 +140,11 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
                 # whose whole premise is that nobody is watching, so a tool that would
                 # suspend the turn on them is withheld rather than left to hang.
                 kind="task",
+                # And the same for a feature the operator never set up: nobody is here
+                # to connect a mailbox mid-run, so offering `mail_*` to a task that will
+                # only be told there is no account is worse here than anywhere.
+                availability=ctx.category_availability,
+                caps=ctx.capabilities,
             ),
             # Same reasoning for the per-turn model-request ceiling: an unattended task
             # runs under the operator's own setting when they set one, and otherwise

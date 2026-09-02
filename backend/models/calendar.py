@@ -32,16 +32,49 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import JSON, Column, ForeignKey, String
 from sqlmodel import Field, SQLModel
 
+from core.timezone import local_zone_key
 from models._fields import new_id, utcnow
 
-# The default IANA zone for an event whose creator named none. UTC — never the host's
-# local zone, which would make the same payload mean different things on two machines
-# (the platform-agnostic posture, `XC-PORT-1`).
-DEFAULT_TIMEZONE = "UTC"
+
+def _default_timezone() -> str:
+    """The zone an event whose creator named none is written in — the operator's own,
+    where the host will say what that is.
+
+    This used to be UTC unconditionally, on the reasoning that a host-derived default makes
+    the same payload mean different things on two machines. That is the right rule for a
+    multi-tenant service and the wrong one here: there is one operator, on one machine,
+    and the events they create are for their own calendar. UTC meant "3pm" from an agent
+    that had just been told the local time landed in the afternoon somewhere else.
+
+    Portability is kept where it actually lives — the key is read from the host in a
+    POSIX-portable way (:mod:`core.timezone`) and *validated* against the tz database here,
+    so a `TZ` holding a POSIX rule string, a container with no zoneinfo link, or a bare
+    offset falls back to UTC rather than reaching a caller that will try to construct a
+    `ZoneInfo` from it. Resolved once at import: the host's zone does not change under a
+    running process, and this is a column default.
+    """
+    key = local_zone_key()
+    try:
+        ZoneInfo(key)
+    except (KeyError, ValueError, OSError):
+        return "UTC"
+    return key
+
+
+#: The default IANA zone for an event whose creator named none.
+DEFAULT_TIMEZONE = _default_timezone()
+
+#: The zone for a timestamp that genuinely *is* UTC — an all-day date (RFC 5545 dates are
+#: days, not instants, so localizing one would put the same event on two different days for
+#: two readers) and an imported event whose file named no zone we could read. Deliberately
+#: **not** :data:`DEFAULT_TIMEZONE`: the two were the same string while the default was UTC,
+#: and following it now would silently relabel data whose zone was never in question.
+UTC_TIMEZONE = "UTC"
 
 
 def new_uid() -> str:

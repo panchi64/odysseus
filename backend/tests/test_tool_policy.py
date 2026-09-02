@@ -31,6 +31,7 @@ from services.tool_policy import (
     lane_disabled_tools,
     mode_disabled_tools,
     set_tool_enabled,
+    unavailable_tools,
     vision_disabled_tools,
 )
 from tools import RunDeps, build_agent_toolsets
@@ -57,9 +58,14 @@ def _store() -> SettingsStore:
 
 
 async def _agent_visible(disabled: frozenset[str]) -> set[str]:
-    """The tool names a real run would actually be offered, resolved through the same
-    composed toolset stack the engine hands the Agent — not a re-derivation of the naming
-    rule, so this is the ground truth the catalog is measured against."""
+    """Every tool name the composed stack the engine hands the Agent can resolve — not a
+    re-derivation of the naming rule, so this is the ground truth the catalog is measured
+    against.
+
+    The *corpus*, deferral included: a dormant category's tools are in here, since they
+    are offered to the run and merely withheld from a request until the model asks for
+    them. Which of them a given request actually carries, and the library-owned
+    ``search_tools`` that reveals the rest, are ``test_tool_search.py``'s subject."""
     run = Run(id="t", kind="chat", owner_id=OWNER, stream=RunStream())
     deps = RunDeps(run=run, owner_id=OWNER, disabled_tools=disabled)
     ctx = RunContext(deps=deps, model=TestModel(), usage=RunUsage())
@@ -108,7 +114,6 @@ _PINNED_CATALOG = {
     "calendar_agenda",
     "calendar_create_event",
     "calendar_delete_event",
-    "calendar_draft_event_from_text",
     "calendar_list_calendars",
     "calendar_update_event",
     "code_execute",
@@ -133,10 +138,7 @@ _PINNED_CATALOG = {
     "mail_send",
     "memory_recall",
     "memory_remember",
-    "plan_add_task",
     "plan_read_plan",
-    "plan_remove_task",
-    "plan_update_task_status",
     "plan_update_task_statuses",
     "plan_write_plan",
     "project_active",
@@ -175,7 +177,6 @@ async def test_booted_app_assembles_the_same_catalog():
         # granted for the conversation, so the operator is asked again on every call.
         assert app.state.gated_tools == {
             "corpus_retrieve",
-            "memory_recall",
             "conversations_search",
             "shell_run_command",
             "shell_start_command",
@@ -188,7 +189,9 @@ async def test_booted_app_assembles_the_same_catalog():
 async def test_catalog_carries_category_and_description():
     now = next(t for t in tool_catalog(full_tool_categories()) if t.name == "builtin_now")
     assert now.category == "builtin"
-    assert "UTC" in now.description
+    # The clock is the operator's own, stamped with its offset — not a UTC reading the
+    # model would have to shift by an amount nobody told it.
+    assert "offset from UTC" in now.description
 
 
 # --- the operator's set actually hides the tool --------------------------------------
@@ -272,12 +275,31 @@ def test_the_vision_gate_names_tools_that_actually_exist():
     assert VISION_ONLY_TOOLS <= _PINNED_CATALOG
 
 
+async def test_the_dormant_groups_name_categories_the_catalog_really_has():
+    # Same reason as the two gates above, one level up: a dormant declaration names a
+    # *category*, so a rename leaves the boot check satisfied by a group that no longer
+    # holds the tools the index is advertising.
+    async with client_app() as (_, app):
+        for entry in app.state.dormant_categories:
+            assert any(name.startswith(f"{entry.category}_") for name in _PINNED_CATALOG)
+
+
 def test_the_lane_gate_names_tools_that_actually_exist():
     # Same reason, and it bites harder here: a name that stopped matching would offer a
     # scheduled task a tool that suspends the turn on an operator who is not there — and
     # a parked turn lives in the process, so the run waits until it restarts.
     assert ATTENDED_ONLY_TOOLS <= _PINNED_CATALOG
     assert lane_disabled_tools("task") <= _PINNED_CATALOG
+
+
+async def _unconfigured(app) -> frozenset[str]:
+    """What a fresh test app withholds because nothing is set up behind it — no mailbox,
+    no calendar, no secrets vault. The availability axis withholds those categories exactly
+    as the operator's own switch does, so a test about two named tools subtracts them the
+    way it subtracts the mode and vision sets rather than restating fourteen names."""
+    return await unavailable_tools(
+        app.state.category_availability, app.state.capabilities, OWNER
+    )
 
 
 def _force_offline(monkeypatch, app, *names: str) -> None:
@@ -326,11 +348,12 @@ async def test_chat_turn_composes_with_the_operator_set(monkeypatch):
         monkeypatch.setattr(chat_routes, "compose_turn", spy)
         patch_model_resolution(monkeypatch)
         await client.post("/chat", json={"prompt": "hi"})
+        unconfigured = await _unconfigured(app)
 
     # The stub model the test app resolves declares no vision, so the image-returning
     # tools are withheld too; subtract the automatic sources to leave the two this test
     # is actually about (one the operator turned off, one offline mode suspended).
-    automatic = mode_disabled_tools("normal") | vision_disabled_tools(False)
+    automatic = mode_disabled_tools("normal") | vision_disabled_tools(False) | unconfigured
     assert captured["disabled"] - automatic == {
         "builtin_now",
         "web_search",
@@ -431,8 +454,9 @@ async def test_resume_applies_the_operator_set_and_the_offline_set(monkeypatch):
             json={"decisions": [{"tool_call_id": call_id, "approved": True}]},
         )
         assert resp.status_code == 202
+        unconfigured = await _unconfigured(app)
 
-    assert captured["disabled"] - mode_disabled_tools("normal") == {
+    assert captured["disabled"] - mode_disabled_tools("normal") - unconfigured == {
         "danger_safe_thing",
         "web_search",
     }

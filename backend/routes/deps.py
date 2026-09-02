@@ -50,7 +50,7 @@ from services.searxng import ManagedSearxng
 from services.secret_vault import SecretVaultService
 from services.settings_store import SettingsStore
 from services.skills import SkillStore
-from services.tool_policy import effective_disabled_tools
+from services.tool_policy import CategoryAvailability, effective_disabled_tools
 from services.uploads import UploadStore
 from services.webfetch import BrowserFetcher, ManagedBrowser
 from services.workspace_history import WorkspaceHistoryStore
@@ -82,6 +82,36 @@ def gated_tools(request: Request) -> frozenset[str]:
     """The union of the manifests' conditionally-gated tool names — the call-time
     `ApprovalRequired` raisers the approval-scope vocabulary must carry."""
     return request.app.state.gated_tools
+
+
+def category_availability(request: Request) -> tuple[CategoryAvailability, ...]:
+    """The manifests' availability checks, resolved against the categories they register
+    — the seventh axis of the disabled set, asked of the live services on every turn."""
+    return request.app.state.category_availability
+
+
+def dormant_categories(request: Request):
+    """The manifests' dormant-category declarations (category + one-line summary) — the
+    groups whose schemas the agent loads for itself, and the index it is shown."""
+    return request.app.state.dormant_categories
+
+
+def dormant_category_names(request: Request) -> frozenset[str]:
+    """Just the category names, for the catalog surface that only asks which rows are
+    dormant."""
+    return frozenset(entry.category for entry in dormant_categories(request))
+
+
+def dormant_summaries(request: Request) -> dict[str, str]:
+    """The same declarations as category → summary, which is the shape a turn is composed
+    from: the engine reads the names to defer and the lines to advertise off one mapping,
+    so a group cannot be withheld without being announced.
+
+    Derived at assembly (`DormantCategory.summaries`) rather than spelled again here —
+    `routes/` sits above `harness/` and cannot reach the helper, and the comprehension is
+    exactly the one every composer of this seam would otherwise write slightly differently.
+    """
+    return request.app.state.dormant_summaries
 
 
 def instruction_providers(request: Request):
@@ -200,11 +230,11 @@ async def disabled_tools(
     """Everything withheld from the agent on this run — the operator's own disabled set
     (`AE-3.3`) unioned with offline mode's automatic web suspension, the tools that don't
     belong in ``mode``, the ones this run's ``permission`` level may not act with at all,
-    the ones this run's model can't read the results of, and the ones that need an
-    operator a run of this ``kind`` doesn't have. Every route that fills
-    ``RunDeps.disabled_tools`` resolves it here, so a run path can't apply one source and
-    drop the others; ``app.py``'s task executor calls the service directly (it has no
-    ``Request``)."""
+    the ones this run's model can't read the results of, the ones that need an operator a
+    run of this ``kind`` doesn't have, and the ones whose feature the operator has never
+    set up. Every route that fills ``RunDeps.disabled_tools`` resolves it here, so a run
+    path can't apply one source and drop the others; ``app.py``'s task executor calls the
+    service directly (it has no ``Request``)."""
     return await effective_disabled_tools(
         settings_store(request),
         offline(request),
@@ -213,6 +243,8 @@ async def disabled_tools(
         permission=permission,
         vision=vision,
         kind=kind,
+        availability=category_availability(request),
+        caps=capabilities(request),
     )
 
 

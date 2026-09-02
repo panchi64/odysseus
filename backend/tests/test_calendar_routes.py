@@ -440,7 +440,6 @@ async def test_the_calendar_tools_are_not_approval_gated():
         "create_event",
         "update_event",
         "delete_event",
-        "draft_event_from_text",
     }
     assert not any(tool.requires_approval for tool in tools.values())
 

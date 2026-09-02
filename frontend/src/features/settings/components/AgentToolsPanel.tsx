@@ -38,6 +38,13 @@ export function AgentToolsPanel(): JSX.Element {
     () => (tools.latest ?? []).filter((t) => !t.enabled).length,
   );
 
+  /* The hint below is worth its line only where a badge actually appears, and which
+     groups start dormant is the backend's call — so ask the catalog rather than
+     naming the groups here. */
+  const hasDormant = createMemo(() =>
+    (tools.latest ?? []).some((t) => t.dormant),
+  );
+
   const toggle = async (tool: AgentTool) => {
     try {
       await setAgentToolEnabled(tool.name, !tool.enabled);
@@ -69,6 +76,13 @@ export function AgentToolsPanel(): JSX.Element {
               scheduled task, and on the resume of a run waiting for your
               approval alike.
             </Text>
+            <Show when={hasDormant()}>
+              <Text variant="micro" tone="dim">
+                A tool marked DORMANT is on and available — it simply sits
+                outside the agent's opening tool list, and the agent loads its
+                group when a task calls for it.
+              </Text>
+            </Show>
             <For each={grouped()}>
               {([category, entries]) => (
                 <Stack gap={3} class="pt-3">
@@ -79,9 +93,16 @@ export function AgentToolsPanel(): JSX.Element {
                     {(tool) => (
                       <Row align="center" justify="between" gap={4}>
                         <Stack gap={1}>
-                          <Text variant="label" tone="default">
-                            {tool.name}
-                          </Text>
+                          <Row align="center" gap={2}>
+                            <Text variant="label" tone="default">
+                              {tool.name}
+                            </Text>
+                            {/* Idle rather than warn: deferred loading is the normal
+                                resting state of these groups, not a fault to flag. */}
+                            <Show when={tool.dormant}>
+                              <StatusFlag>DORMANT</StatusFlag>
+                            </Show>
+                          </Row>
                           <Text variant="micro" tone="dim">
                             {tool.description}
                           </Text>

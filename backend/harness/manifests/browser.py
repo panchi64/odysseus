@@ -11,7 +11,12 @@ attached to a browser that has already gone.
 from __future__ import annotations
 
 from core.api_scopes import ScopeClaim
-from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
+from harness.manifest import (
+    DormantCategory,
+    FeatureManifest,
+    FeatureRuntime,
+    HarnessContext,
+)
 from routes import browser as browser_routes
 from services.browser import BrowserSessionManager
 from services.webfetch import ManagedBrowser
@@ -55,6 +60,16 @@ MANIFEST = FeatureManifest(
     # divergence the namespacing exists to prevent. With no browser to attach to, the
     # tools assemble and degrade, like every other capability here.
     toolsets=(("browse", browse_toolset),),
+    # By far the most expensive category in the catalog, and the one the average turn
+    # never opens — eighteen tools whose schemas would otherwise ride in every request
+    # of every conversation, whether or not a page is ever loaded.
+    dormant=(
+        DormantCategory(
+            "browse",
+            "drive a real browser — navigate, click, type, read pages behind logins, "
+            "inspect network and console",
+        ),
+    ),
     network_tools=NETWORK_TOOLS,
     build=_build,
 )

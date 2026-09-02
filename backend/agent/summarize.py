@@ -67,6 +67,7 @@ from .compaction_summary import (
     summarize_chunks,
 )
 from .compaction_transcript import transcript_chunks
+from .history import revealed_tools
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,14 @@ async def compact_conversation(
         through_id=plan.through_id,
         expected_leaf_id=plan.expected_leaf_id,
         reason=reason,
+        # A fold must not quietly un-reveal a dormant group. The messages it replaces are
+        # the only record that the model ever loaded the browser (or the mailbox), and the
+        # library reads that record fresh on every request — so what the folded stretch
+        # revealed is carried onto the checkpoint, and the thread keeps the tools it was
+        # working with. Read off `plan.messages` rather than the whole thread: the retained
+        # tail still carries its own reveals, and a *previous* checkpoint's carried delta is
+        # inside this fold, so a second fold inherits the first's without special-casing.
+        revealed_tools=revealed_tools(plan.messages),
     )
     if message_id is None:
         # The active leaf moved while the summary was being written (a version switch or a

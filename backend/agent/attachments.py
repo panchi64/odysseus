@@ -26,7 +26,7 @@ be worse than a big prompt, so when staging fails the file's extracted text is h
 **Staleness is announced, not hidden.** Sandbox sessions are per-conversation and
 recyclable: a thread replayed days later may find nothing at the staged path. The marker
 tells the model so, and names ``attachments_provision`` (re-stage by id, same path) and
-``corpus.retrieve`` (semantic search over the text) as the two ways back.
+``corpus_retrieve`` (semantic search over the text) as the two ways back.
 """
 
 from __future__ import annotations
@@ -205,11 +205,11 @@ def _marker(staged: list[_Staged], workspace: RunWorkspace | None) -> str:
         else "These paths live on your computer, which is recycled between sessions."
     )
     guidance = (
-        "Read a file from its path with your files/code tools — page through a large one "
+        "Read a file from its path with the files_* tools — page through a large one "
         f"rather than reading it whole. {where} If a read fails because the file is not "
-        "there, re-stage it with the attachments_provision tool using the id above (it "
-        "comes back at the same path). To search a document's text semantically instead "
-        "of reading it, use corpus.retrieve with its id."
+        "there, re-stage it with attachments_provision using the id above (it comes back "
+        "at the same path). To search a document's text semantically instead of reading "
+        "it, use corpus_retrieve with its id."
     )
     return f"[Attached file(s):\n{body}\n\n{guidance}]"
 

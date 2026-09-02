@@ -39,11 +39,13 @@ from pydantic_ai_harness.repo_context._loader import (
 #: default, restated because the budget is applied over the same discovery.
 INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md")
 
-#: How many bytes of instruction files may reach the brief. 64KB is generous for the
-#: thing it describes (how to work in this repository) and small against any window we
-#: run against, which is the shape a budget should have: invisible to every reasonable
-#: file, decisive against the one that has stopped being reasonable.
-INSTRUCTIONS_BYTE_BUDGET = 64 * 1024
+#: How many bytes of instruction files may reach the brief. 16KB is roughly 4k tokens —
+#: an eighth of a 32k window spent before the first message, and generous for the thing it
+#: describes (how to work in this repository), which is the shape a budget should have:
+#: invisible to every reasonable file, decisive against the one that has stopped being
+#: reasonable. It is charged on *every* request of every turn, so a budget that merely
+#: looks small against a large window is still the wrong size.
+INSTRUCTIONS_BYTE_BUDGET = 16 * 1024
 
 #: What replaces the cut tail. Addressed to the model, because the model is who has to
 #: understand that the file continues and it has not been told the rest.

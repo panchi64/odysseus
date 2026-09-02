@@ -51,6 +51,17 @@ describe("what the call was about", () => {
     ).toBe("a@example.com, b@example.com");
   });
 
+  // Which groups the model asked for is the only thing that distinguishes one of
+  // these calls from the next, and the argument carrying them is a list.
+  test("loading tools says which groups were asked for", () => {
+    expect(describeToolArgs("search_tools", { queries: ["browse"] })).toBe(
+      "browse",
+    );
+    expect(
+      describeToolArgs("search_tools", { queries: ["mail", "calendar"] }),
+    ).toBe("mail, calendar");
+  });
+
   test("a long value is clamped rather than allowed to run", () => {
     const detail = describeToolArgs("web_search", { query: "x".repeat(400) });
     expect(detail).toHaveLength(120);
@@ -65,6 +76,11 @@ describe("what came back", () => {
     );
     expect(describeToolResult("memory_recall", [{}])).toBe("1 memory");
     expect(describeToolResult("files_find_files", [{}, {}])).toBe("2 matches");
+  });
+
+  test("a revealed group is counted in tools, not in bare results", () => {
+    expect(describeToolResult("search_tools", [{}, {}, {}])).toBe("3 tools");
+    expect(describeToolResult("search_tools", [{}])).toBe("1 tool");
   });
 
   test("a tool with no noun of its own counts results", () => {

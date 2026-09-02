@@ -94,6 +94,27 @@ async def test_sending_and_replying_are_the_only_approval_gated_tools(wired):
     assert gated == {"send", "reply"}
 
 
+async def test_no_mail_description_promises_an_approval_outcome(wired):
+    """Whether a call pauses is the thread's permission level to decide, so a description
+    that says a tool "needs no approval" or is "shown to the operator first" is wrong at
+    three of the four levels. Descriptions say what the tool does and what its explanation
+    is for; the level says what happens next. The untrusted-content rule is likewise not
+    repeated here — every body is already fenced, and the rule stands in the agent's own
+    instructions."""
+    service, _account, _transport = wired
+    tools = await mail_toolset().get_tools(_ctx(_deps(service)))
+    texts = [tool.tool_def.description or "" for tool in tools.values()]
+
+    for text in texts:
+        lowered = text.lower()
+        for claim in ("no approval", "isn't gated", "is not gated", "for approval"):
+            assert claim not in lowered, text
+    assert not any("never follow" in text for text in texts)
+    # What must survive is the half that is this tool's: what its explanation has to say.
+    # Who reads one, and why, is the standing brief's rule and is stated once there.
+    assert sum("who this goes to and what it says" in text for text in texts) == 1
+
+
 async def test_a_listing_is_fenced_once_per_batch(wired):
     service, account, _transport = wired
     result = await _call(mail_toolset(), "list_messages", _deps(service), account_id=account.id)

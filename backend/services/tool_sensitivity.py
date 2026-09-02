@@ -115,9 +115,6 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "browse_wait_for",
             "calendar_agenda",
             "calendar_list_calendars",
-            # Drafting is pure computation: it turns a phrase into a structured event and
-            # returns it. Nothing is stored until `calendar_create_event` is called.
-            "calendar_draft_event_from_text",
             "conversations_read",
             "conversations_search",
             "corpus_retrieve",
@@ -156,9 +153,6 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             # it over `mail_reply`.
             "mail_draft_reply",
             "memory_remember",
-            "plan_add_task",
-            "plan_remove_task",
-            "plan_update_task_status",
             "plan_update_task_statuses",
             "plan_write_plan",
             "skills_create",

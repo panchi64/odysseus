@@ -30,7 +30,12 @@ to carry is gone rather than generalised.
 from __future__ import annotations
 
 from core.api_scopes import ScopeClaim
-from harness.manifest import FeatureManifest, FeatureRuntime, HarnessContext
+from harness.manifest import (
+    DormantCategory,
+    FeatureManifest,
+    FeatureRuntime,
+    HarnessContext,
+)
 from harness.manifests._research_threads import ConversationResearchThreads
 from services.research_carryover import seed_carried_research
 from services.research_threads import ResearchThreads
@@ -80,5 +85,12 @@ MANIFEST = FeatureManifest(
     # fails validation. A name kept costs nothing; a name withdrawn breaks a live token.
     api_scopes=(ScopeClaim("research", ()),),
     toolsets=(("research", research_toolset),),
+    dormant=(
+        DormantCategory(
+            "research",
+            "hand a question to a separate thread that investigates it on its own, and "
+            "read back what it found",
+        ),
+    ),
     build=_build,
 )

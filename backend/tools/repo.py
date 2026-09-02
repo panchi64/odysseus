@@ -104,8 +104,17 @@ def _run_brief(run_id: str, root: Path) -> str:
 def _brief(root: Path) -> str:
     """The budgeted instruction files, then the capability's own inventory hint — the
     same order and the same joiner its `get_instructions` uses, so moving the loading out
-    from under it changed what is *bounded*, not what the model reads."""
-    parts = (repo_instruction_text(root), _capability(root).get_instructions() or "")
+    from under it changed what is *bounded*, not what the model reads.
+
+    The hint names the tool by the harness's own un-namespaced function name, and this
+    catalog offers it as `repo_inventory_agent_context`; a brief pointing at a tool that
+    is not on offer is worse than one pointing at nothing. `describe.py` fixes the same
+    mismatch inside tool *descriptions* — instructions are the other seam, and they do not
+    pass through it."""
+    hint = (_capability(root).get_instructions() or "").replace(
+        INVENTORY_TOOL, f"repo_{INVENTORY_TOOL}"
+    )
+    parts = (repo_instruction_text(root), hint)
     return "\n\n".join(part for part in parts if part)
 
 

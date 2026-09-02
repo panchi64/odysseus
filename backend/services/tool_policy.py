@@ -5,7 +5,7 @@ disabled tool from the catalog the model is offered, so the agent can neither se
 invoke it. This module is the **operator's half** — which tools they turned off, made
 durable, and composed with the suspensions the system decides on its own.
 
-Six independent sources feed one set:
+Seven independent sources feed one set:
 
 - **the operator's explicit choices**, persisted through ``settings_store`` under
   ``tools.disabled`` as a plain JSON list of namespaced tool names. Policy, not content,
@@ -19,7 +19,10 @@ Six independent sources feed one set:
 - **the model's own reach** — a tool that answers with an image is withheld from a model
   that cannot see one;
 - **whether anyone is watching** — a tool that suspends the turn on the operator is
-  withheld from a run that has no operator in front of it (``runs/lanes.py``).
+  withheld from a run that has no operator in front of it (``runs/lanes.py``);
+- **whether the capability exists at all** — a category whose backing service the
+  operator has never set up (no mailbox connected, no calendar, no secrets vault) is
+  withheld rather than offered so that every call can fail.
 
 They **union**: :func:`effective_disabled_tools` is the one place that rule lives, so no
 run path can apply one source and silently drop the others. Every site that fills
@@ -38,11 +41,14 @@ this module only knows how to turn an axis into a withheld set.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from core.container import ServiceContainer
 from runs.lanes import lane_for
 from services.modes import DEFAULT_MODE, MODE_SCOPED_TOOLS, mode_spec
 from services.permissions import (
@@ -195,6 +201,80 @@ def permission_disabled_tools(level: str) -> frozenset[str]:
     return tools_beyond_scope(level)
 
 
+#: Asking one feature whether the operator has actually set it up. Takes the run's
+#: capability bag rather than a concrete service, so a check is declarable on a manifest
+#: (``harness/manifest.py``) without this layer importing anything above it.
+type AvailabilityCheck = Callable[[ServiceContainer, str], Awaitable[bool]]
+
+
+@dataclass(frozen=True)
+class CategoryAvailability:
+    """A tool category, the tools inside it, and how to ask whether its service exists.
+
+    Assembled once at startup (``app.py``) from the manifests that declare a check: the
+    tool names are only knowable where the catalog is built, and whether a mailbox is
+    connected is only answerable by the feature that ships the mailbox.
+    """
+
+    category: str
+    # Namespaced (`category_tool`) names — the vocabulary a disabled set speaks.
+    tools: frozenset[str]
+    check: AvailabilityCheck
+
+
+async def unavailable_tools(
+    availability: Sequence[CategoryAvailability],
+    caps: ServiceContainer | None,
+    owner_id: str,
+) -> frozenset[str]:
+    """Every tool belonging to a category whose backing service the operator has not
+    configured — no mailbox connected, no calendar added, no secrets vault created.
+
+    The other axes all answer from data this process already holds; this one has to ask
+    a live service, so the checks run **concurrently** and each one is a cheap read the
+    feature already exposes to its own routes.
+
+    **A check that raises withholds its category**, and that direction is deliberate.
+    Unconfigured is the ordinary state of these features, not an exception — the operator
+    who never connected a mailbox is the common case, so a failing check is far more
+    likely to mean "there is nothing there" than "this would have worked". Offering a
+    category on the strength of a check that just failed spends the model a call and
+    hands back an error it can do nothing with. The warning is the loud half: a wiring
+    bug is a line in the log, not a broken tool in the catalog.
+
+    A caller with nothing to ask with (``caps`` unset) is treated the same way for the
+    same reason — but only when something *did* declare a check. A caller that passes no
+    ``availability`` at all is saying nothing about availability and loses nothing.
+    """
+    if not availability:
+        return frozenset()
+    if caps is None:
+        logger.warning(
+            "tool policy: no capability bag to check availability with; "
+            "withholding %d categor%s",
+            len(availability),
+            "y" if len(availability) == 1 else "ies",
+        )
+        return frozenset(name for entry in availability for name in entry.tools)
+
+    results = await asyncio.gather(
+        *(entry.check(caps, owner_id) for entry in availability),
+        return_exceptions=True,
+    )
+    withheld: set[str] = set()
+    for entry, result in zip(availability, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "tool policy: availability check for %r failed; withholding the category",
+                entry.category,
+                exc_info=result,
+            )
+        elif result:
+            continue
+        withheld |= entry.tools
+    return frozenset(withheld)
+
+
 async def effective_disabled_tools(
     settings: SettingsStore,
     offline: OfflineModeService,
@@ -204,17 +284,20 @@ async def effective_disabled_tools(
     permission: str = DEFAULT_PERMISSION,
     vision: bool = True,
     kind: str = "chat",
+    availability: Sequence[CategoryAvailability] = (),
+    caps: ServiceContainer | None = None,
 ) -> frozenset[str]:
     """Everything hidden from the agent this run: the operator's set **unioned** with
     offline mode's automatic web suspension, the tools that don't belong in ``mode``, the
     ones this run's ``permission`` level does not let it act with, the ones whose results
-    this run's model cannot read, and the ones that need an operator this run doesn't have.
+    this run's model cannot read, the ones that need an operator this run doesn't have,
+    and the ones whose feature the operator has never set up.
 
-    A union, never a replacement — the six answer different questions ("the operator does
-    not want this tool", "this tool cannot work right now", "this tool is not part of this
-    kind of thread", "this thread may not act at all", "this model cannot read what this
-    tool returns", "nobody is sitting in front of this run"), and any one of them alone is
-    enough to withhold a tool.
+    A union, never a replacement — the seven answer different questions ("the operator
+    does not want this tool", "this tool cannot work right now", "this tool is not part of
+    this kind of thread", "this thread may not act at all", "this model cannot read what
+    this tool returns", "nobody is sitting in front of this run", "there is no mailbox for
+    this tool to read"), and any one of them alone is enough to withhold a tool.
 
     ``permission`` defaults to the level that withholds nothing, so a caller with no level
     to pass is unaffected; ``vision`` defaults to True — permissive — because the callers
@@ -222,6 +305,7 @@ async def effective_disabled_tools(
     taken away by an assumption; the interactive paths, which do know, pass the resolved
     answer. ``kind`` defaults to the operator's own turn for the same reason, and the two
     unattended composers (the scheduler, the research threads) name themselves.
+    ``availability`` and ``caps`` travel together and default to asking nothing.
     """
     return (
         await get_disabled_tools(settings, owner_id)
@@ -230,4 +314,5 @@ async def effective_disabled_tools(
         | permission_disabled_tools(permission)
         | vision_disabled_tools(vision)
         | lane_disabled_tools(kind)
+        | await unavailable_tools(availability, caps, owner_id)
     )

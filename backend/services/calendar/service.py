@@ -36,7 +36,7 @@ from core.db import in_session
 from core.exceptions import NotFoundError
 from core.serde import as_utc
 from core.vault import Vault
-from models.calendar import DEFAULT_TIMEZONE, Calendar, CalendarEvent, new_uid
+from models.calendar import DEFAULT_TIMEZONE, UTC_TIMEZONE, Calendar, CalendarEvent, new_uid
 from services.calendar.recurrence import (
     canonical_rrule,
     expand,
@@ -174,6 +174,20 @@ class CalendarService:
                 .order_by(Calendar.created_at)  # type: ignore[arg-type]
             ).all()
             return [self._calendar_view(row) for row in rows]
+
+        return await in_session(self._engine, work)
+
+    async def has_calendars(self, owner_id: str) -> bool:
+        """Whether a calendar has been added at all — one id, and nothing opened.
+
+        Asked on every turn to decide whether the calendar tools are worth offering,
+        which is a yes/no about existence and must be answerable while the vault is
+        locked. ``list_calendars`` builds views, and a view decrypts the name.
+        """
+
+        def work(session: Session) -> bool:
+            query = select(Calendar.id).where(Calendar.owner_id == owner_id).limit(1)
+            return session.exec(query).first() is not None
 
         return await in_session(self._engine, work)
 
@@ -612,7 +626,7 @@ def _normalize_span(
     its zone validated. A missing or inverted end becomes a one-hour (or one-day) span
     rather than an error — the operator meant an event, not a paradox.
     """
-    zone_name = DEFAULT_TIMEZONE if all_day else (timezone or DEFAULT_TIMEZONE)
+    zone_name = UTC_TIMEZONE if all_day else (timezone or DEFAULT_TIMEZONE)
     parse_zone(zone_name)  # validate — raises ValueError on an unknown IANA name
     start = as_utc(starts_at)
     end = as_utc(ends_at) if ends_at is not None else None

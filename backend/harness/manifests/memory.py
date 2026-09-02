@@ -24,8 +24,5 @@ MANIFEST = FeatureManifest(
     routers=(memory_routes.router,),
     api_scopes=(ScopeClaim("memory", ("/memory",)),),
     toolsets=(("memory", memory_toolset),),
-    # Global relevance-ranked recall is approval-gated at call time (the recall gate),
-    # so the scope vocabulary must carry the name explicitly.
-    gated_tools=frozenset({"memory_recall"}),
     build=_build,
 )

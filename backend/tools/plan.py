@@ -5,12 +5,20 @@ the storage (``services/plans`` — sealed, per-conversation) and the surface.
 
 **Registered as a toolset, not as a capability, on purpose.** The capability form also
 injects the plan as a tail reminder through its own model-request hook. Taking it whole
-would have put six tools outside the one thing every other tool passes through: the
+would have put the tools outside the one thing every other tool passes through: the
 namespaced, operator-toggleable catalog (``tools/catalog.py``) whose promise is that the
 settings list and the agent's actual stack cannot diverge. So the toolset comes from the
 capability and the reminder is re-delivered through the seam this codebase already has for
 exactly this — a ``PromptContextProvider``, which lands at the *tail* of the turn's prompt
 for the same prompt-cache reason the harness places it there.
+
+**Three tools, not six.** ``write_plan`` already replaces the whole list, so
+``add_task``/``remove_task`` are the same edit spelled longer, and
+``update_task_statuses`` covers ``update_task_status`` with a list of one. Each dropped
+tool cost a name, a description and a JSON schema on every request to buy the model a
+second way to do something it could already do — and a second way is a decision it has to
+make. The wording is ours for the same reason: the harness writes for its full surface,
+and the three that survive should read as if they were the surface.
 """
 
 from __future__ import annotations
@@ -39,10 +47,35 @@ _PREAMBLE = (
 )
 
 
-# One bound toolset per conversation, kept because building one registers six tools and
+# One bound toolset per conversation, kept because building one registers the tools and
 # generates their schemas. Bounded so a long-lived process doesn't retain an entry for
 # every thread ever opened.
 _MAX_BOUND = 64
+
+#: The surface we offer, in the order the model most often needs it. The harness validates
+#: both this allowlist and the description keys against the tools it registers, so a
+#: rename upstream fails loudly here instead of silently offering more than we intended.
+_TOOLS = ("write_plan", "update_task_statuses", "read_plan")
+
+_DESCRIPTIONS = {
+    "write_plan": (
+        "Create or replace the whole task list. Pass every step each time, including the "
+        "unchanged and the finished, and keep exactly one in_progress. Call it first for "
+        "multi-step work."
+    ),
+    "update_task_statuses": (
+        "Change one or more steps' status by id. Entries apply in order, so complete a "
+        "prerequisite before starting its dependent."
+    ),
+    "read_plan": "The current list — every step's id, content and status, and a progress line.",
+}
+
+
+def _planning(store: PlanStore) -> Planning[RunDeps]:
+    """A ``Planning`` over ``store``, narrowed to the three tools we offer."""
+    return Planning[RunDeps](
+        store_resolver=lambda _ctx: store, tools=_TOOLS, descriptions=_DESCRIPTIONS
+    )
 
 
 def _store_for(ctx: RunContext[RunDeps]) -> PlanStore:
@@ -119,8 +152,7 @@ class _ConversationPlanToolset(AbstractToolset[RunDeps]):
         entry = self._bound.pop(key, None)
         if entry is None:
             store = _store_for(ctx)
-            capability = Planning[RunDeps](store_resolver=lambda _ctx: store)
-            entry = (capability.get_toolset(), store)
+            entry = (_planning(store).get_toolset(), store)
             if len(self._bound) >= _MAX_BOUND:
                 self._bound.popitem(last=False)
         self._bound[key] = entry
@@ -131,9 +163,7 @@ def plan_toolset() -> AbstractToolset[RunDeps]:
     """The ``plan`` category — the model's read/write access to its own task list."""
     # The template's store is never read or written: only `call_tool` acts, and it always
     # rebinds first. It exists to carry the tool definitions.
-    return _ConversationPlanToolset(
-        Planning[RunDeps](store_resolver=lambda _ctx: InMemoryPlanStore()).get_toolset()
-    )
+    return _ConversationPlanToolset(_planning(InMemoryPlanStore()).get_toolset())
 
 
 async def plan_context(

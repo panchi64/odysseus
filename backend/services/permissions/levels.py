@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
+from prompts.levels import MANUAL_LEVEL, PLAN_LEVEL
 from services.tool_sensitivity import (
     EXTERNAL_PREFIX,
     Sensitivity,
@@ -93,6 +94,12 @@ class PermissionSpec:
     ceiling: Sensitivity
     #: What happens when a tool reaches further.
     approval_policy: ApprovalPolicy
+    #: The prompt fragment this level adds, or "" when it adds nothing — mirroring
+    #: ``ModeSpec.instructions``, and for the same reason: a level's prose belongs with the
+    #: rest of that level's declaration rather than in a branch at the engine. Two of the
+    #: four say nothing (:mod:`prompts.levels` explains which and why), so the registration
+    #: is unconditional and most threads pay no tokens for it.
+    instructions: str = ""
 
 
 PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
@@ -101,12 +108,18 @@ PERMISSIONS: Mapping[PermissionLevel, PermissionSpec] = {
     # and accepts. Asking instead would make the read-only promise depend on the model
     # agreeing to it, which is the one moment it stops holding.
     "plan": PermissionSpec(
-        level="plan", ceiling=Sensitivity.READ, approval_policy=ApprovalPolicy.WITHHOLD
+        level="plan",
+        ceiling=Sensitivity.READ,
+        approval_policy=ApprovalPolicy.WITHHOLD,
+        instructions=PLAN_LEVEL,
     ),
     # Read-only until told otherwise, one act at a time. The tools stay in the catalog —
     # the model must be able to propose the thing it needs permission for.
     "manual": PermissionSpec(
-        level="manual", ceiling=Sensitivity.READ, approval_policy=ApprovalPolicy.ASK
+        level="manual",
+        ceiling=Sensitivity.READ,
+        approval_policy=ApprovalPolicy.ASK,
+        instructions=MANUAL_LEVEL,
     ),
     # The working default: change the workspace freely, stop at its edge. Running a
     # program, reaching a mail or calendar server, driving the operator's own browser
@@ -184,19 +197,18 @@ def stricter_permission(a: str, b: str) -> PermissionLevel:
     )
 
 
-# The Planning toolset's writes — permitted at every level, whatever its ceiling
-# says. A read-only turn exists to end in a plan, so a level that made the model ask
-# before recording what it had decided would leave it no way to finish; and a level that
-# asks before *acting* has no business interrupting the model's own scratchpad. The names
-# are literals for the reason every other tool-name set in `services/` is (`tools/` sits
-# above it in the dependency order), and `tests/test_tool_sensitivity.py` pins them
-# against the live catalog. Reading the plan is already permitted — it classifies as
-# `read` — so only the writes are listed.
+# The Planning toolset — permitted at every level, whatever its ceiling says. A read-only
+# turn exists to end in a plan, so a level that made the model ask before recording what it
+# had decided would leave it no way to finish; and a level that asks before *acting* has no
+# business interrupting the model's own scratchpad. The whole surviving surface is listed
+# rather than the writes alone, so the exemption reads as "the task list" and a reader does
+# not have to work out which half of it needed naming. The names are literals for the
+# reason every other tool-name set in `services/` is (`tools/` sits above it in the
+# dependency order), and `tests/test_tool_sensitivity.py` pins them against the live
+# catalog.
 PLANNING_TOOLS = frozenset(
     {
-        "plan_add_task",
-        "plan_remove_task",
-        "plan_update_task_status",
+        "plan_read_plan",
         "plan_update_task_statuses",
         "plan_write_plan",
     }

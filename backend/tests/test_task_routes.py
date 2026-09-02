@@ -134,10 +134,10 @@ async def test_create_and_patch_reject_unknown_pre_authorized_scope():
         assert bad_patch.status_code == 422
 
         good_patch = await client.patch(
-            f"/tasks/{created['id']}", json={"preAuthorized": ["memory_recall"]}
+            f"/tasks/{created['id']}", json={"preAuthorized": ["conversations_search"]}
         )
         assert good_patch.status_code == 200
-        assert good_patch.json()["preAuthorized"] == ["memory_recall"]
+        assert good_patch.json()["preAuthorized"] == ["conversations_search"]
 
 
 async def test_interval_and_cron_schedules_compute_a_next_run_at():
@@ -176,7 +176,9 @@ async def test_webhook_schedule_has_no_next_run_and_gets_a_url():
 async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
     patch_model_resolution(monkeypatch, output_text="All set, nothing else to do.")
     async with client_app() as (client, app):
-        created = await _create_task(client, pre_authorized=["memory_recall", "corpus_retrieve"])
+        created = await _create_task(
+            client, pre_authorized=["conversations_search", "corpus_retrieve"]
+        )
         task_id = created["id"]
 
         run_now = await client.post(f"/tasks/{task_id}/run_now")
@@ -190,7 +192,7 @@ async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
         assert "All set" in row["summary"]
 
         granted = await app.state.approval_grants.active("operator", row["conversationId"])
-        assert granted == {"memory_recall", "corpus_retrieve"}
+        assert granted == {"conversations_search", "corpus_retrieve"}
 
         # The task's own bookkeeping reflects the fire too.
         refreshed = (await client.get("/tasks")).json()["items"][0]

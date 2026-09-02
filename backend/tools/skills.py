@@ -18,9 +18,9 @@ levels two and three of it:
 ``create`` and ``edit`` let the agent write skills down as it learns them. ``create``
 always writes a **draft**: publishing is the operator's act, and it is what makes a skill
 visible to the model at all. That split is also the seam `SKILL-4` (auto-publishing
-high-confidence recoveries) will plug into — and it is why ``create`` needs no approval
-while ``edit``, which rewrites something already published and therefore already being
-followed, is approval-gated (`AE-3`).
+high-confidence recoveries) will plug into — and it is why ``create`` is not marked
+sensitive while ``edit``, which rewrites something already published and therefore
+already being followed, is (`AE-3`).
 
 Thin like every tool here: the format rules, sealing, and validation live in
 ``services/skills``; a missing capability degrades to a message the model can act on.
@@ -91,20 +91,17 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
     async def open(ctx: RunContext[RunDeps], name: str) -> dict:
         """Open one of the skills listed in your instructions and follow it.
 
-        Call this **before** starting a task a skill covers — the listing only tells you a
-        skill exists; this returns the actual procedure. Pass the skill's ``name`` exactly as
-        listed.
+        The listing only says a skill exists; this returns the procedure, so call it
+        before starting a task a skill covers. ``name`` must match the listing exactly.
 
-        The result has ``instructions`` (the skill's full text — treat it as guidance for
-        this task) and ``files``: the skill's bundled files, copied into your working
-        directory under ``skills/{name}/``. Read a reference file or run a bundled script
-        from there with your code/shell tools — invoke scripts explicitly (``python
-        …/scripts/y.py`` or ``bash …``), since staged files are not marked executable.
-        **Use the returned paths verbatim** rather than building your own: where they
-        live depends on the kind of conversation this is.
+        Returns ``instructions`` (the skill's full text, guidance for this task) and
+        ``files`` — its bundled files, staged under ``skills/{name}/``. **Use the returned
+        paths verbatim**; where they live depends on the kind of conversation. Invoke a
+        bundled script explicitly (``python …/scripts/y.py``), since staged files are not
+        marked executable.
 
-        ``allowed_tools``, when present, is the skill author's advisory note about which
-        tools it expects to use — it does not restrict you, and it grants you nothing."""
+        ``allowed_tools``, when present, is the author's advisory note about which tools
+        the skill expects to use: it neither restricts you nor grants you anything."""
         store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return {"ok": False, "error": _UNAVAILABLE}
@@ -158,21 +155,20 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
     # same question twice.
     @toolset.tool
     async def create(ctx: RunContext[RunDeps], name: str, description: str, body: str) -> dict:
-        """Write down a reusable procedure you worked out, so it's available in future
+        """Write down a reusable procedure you worked out, so it is available in future
         conversations.
 
-        Use this when you solved something non-obvious that will recur — a multi-step
-        recovery, a fiddly setup, a checklist that worked. Write it the way a skill should
-        read: **when** to use it, **how** to do it, the **pitfalls**, and **how to verify**
-        it worked.
+        Use it for something non-obvious that will recur — a multi-step recovery, a fiddly
+        setup, a checklist that worked — written the way a skill reads: **when** to use it,
+        **how**, the **pitfalls**, and **how to verify** it worked.
 
-        ``name`` must be lowercase letters, numbers, and hyphens (it is the skill's id).
-        ``description`` is the one line that will decide whether a future turn opens it, so
-        say what it does *and* when it applies.
+        ``name`` is the skill's id: lowercase letters, numbers and hyphens.
+        ``description`` is the one line that decides whether a future turn opens it, so say
+        what it does *and* when it applies.
 
-        The skill is saved as a **draft**: the operator reviews and publishes it, and only
-        published skills are surfaced. Say that you saved it, rather than implying it is
-        already in use."""
+        It saves as a **draft** the operator reviews and publishes, and only published
+        skills are surfaced — say you saved it rather than implying it is already in
+        use."""
         store = ctx.deps.caps.get_optional(SkillStore)
         if store is None:
             return {"ok": False, "error": _UNAVAILABLE}
@@ -215,9 +211,8 @@ def skills_toolset() -> FunctionToolset[RunDeps]:
         """Make a small, targeted change to a skill's instructions — refine a step, fix a
         detail, add a pitfall you just hit — without rewriting the whole thing.
 
-        A published skill is followed in *future* conversations too, so rewriting one is
-        shown to the operator for approval first. ``explanation`` MUST be a plain-language
-        note of what you are changing and why — it is what they judge the request on.
+        A published skill is followed in *future* conversations too, well beyond this
+        one. ``explanation`` MUST say what you are changing and why.
 
         ``old_text`` must appear **exactly once** in the skill's text; include enough
         surrounding context to make it unique. To append rather than replace, use the last

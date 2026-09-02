@@ -428,6 +428,18 @@ def _compaction_reason(message: Any) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+def _summary_part(message: Any) -> Any | None:
+    """A checkpoint's summary part — the one the divider renders.
+
+    Found by type rather than by position: a fold carries the dormant groups the folded
+    stretch had revealed forward on the checkpoint, as a leading
+    ``ToolAvailabilityDeltaPart``, so the summary is no longer reliably ``parts[0]``. That
+    part is bookkeeping the model reads as a change in what it may call and the operator
+    reads as nothing at all, which is why the divider looks past it rather than rendering
+    it."""
+    return next((part for part in message.parts if isinstance(part, UserPromptPart)), None)
+
+
 def project_tree(
     nodes: list[tuple[str, Any]], *, compacted_ids: frozenset[str] = frozenset()
 ) -> list[MessageView]:
@@ -477,13 +489,12 @@ def project_tree(
             # A conversation-compaction checkpoint: its own turn, not the operator's.
             # It closes any open assistant turn, exactly as a user turn would.
             assistant = None
+            summary_part = _summary_part(message)
             views.append(
                 MessageView(
                     role="compaction",
-                    content=flatten_content(message.parts[0].content) if message.parts else "",
-                    timestamp=getattr(message.parts[0], "timestamp", None)
-                    if message.parts
-                    else None,
+                    content=flatten_content(summary_part.content) if summary_part else "",
+                    timestamp=getattr(summary_part, "timestamp", None),
                     id=node_id,
                     messages_compacted=len(since_checkpoint),
                     tokens_before=estimate_tokens(since_checkpoint),
