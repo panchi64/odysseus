@@ -4,9 +4,9 @@ Wraps Pydantic AI's ``Agent`` and drives it via ``agent.iter()`` so the chassis
 can observe every step and stream it (translation lives in ``translate.py``).
 The library owns the within-turn loop, tool selection, validation, and fallback;
 we own the run lifecycle, the event stream, bounds, and the approval pause/resume
-for sensitive actions. The meta-loop (verifier/loop-break) lands here next.
+for sensitive actions.
 
-A turn is driven by :func:`drive_turn`, shared by the initial run and every
+A turn is driven by :func:`agent.turn.drive_turn`, shared by the initial run and every
 resume. When the model requests a sensitive (approval-required) tool, Pydantic AI
 ends the turn with ``DeferredToolRequests`` *without executing it*; we surface
 ``approval.required``, park the Run (``awaiting_input``), and stash a
@@ -15,16 +15,37 @@ ends the turn with ``DeferredToolRequests`` *without executing it*; we surface
 the call defers for an *answer* rather than a permission, and the answer they give
 comes back as the call's own result.
 
-What lives *here* is the turn's control flow and the two orchestrators that wrap it.
-Five neighbours carry the concerns that aren't that, each with its own reason to change:
+What lives *here* is the sequencing of one run and nothing else: arm the stop-flush
+hooks, prepare the turn, drive it, verify it, record it, name the thread, write the
+overhead — plus the error and ``finally`` paths that hold when any of that is cut short.
+It is also the one module in the package that reads ``get_settings()``; everything it
+calls is handed the object it resolved, so a turn measures itself against one set of
+values. Its neighbours carry the concerns that aren't the sequence, each with its own
+reason to change:
 
+- ``factory.py`` — building the turn's ``Agent``: the catalog it is given, the standing
+  instructions, and the three parts that are the thread's own (its mode, its permission
+  level, today's date).
+- ``prelude.py`` — everything settled before the model is called: the history read, the
+  namer's start, attachment staging, the per-turn context, the threshold fold, and the
+  persistence boundary that lands after all of them.
+- ``turn.py`` — one turn to its end: the ``agent.iter`` loop, the steering inbox, the
+  bounds, and the three ways it can stop (answer, park, bound).
+- ``verify.py`` — the meta-loop's opt-in half: whether a finished turn is worth judging,
+  and the single bounded correction a failed judgement buys.
+- ``folding.py`` — when a *turn* folds the thread, how the fold is announced, and what it
+  does to the turn's persistence boundary. (``summarize.py`` is the fold itself.)
+- ``metrics.py`` — the context gauge and the room check: the footprint arithmetic the
+  turn, the folds and the verifier all read.
+- ``finalize.py`` — where a finished turn goes, and what a park hands its eventual resume
+  instead.
+- ``flush.py`` — persisting a turn that was stopped from outside, shared by both
+  orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
 - ``history.py`` — the surgeries on a message list before it reaches a model or the
   store. Pure functions; each encodes one fact about how the library or a provider
   behaves.
 - ``naming.py`` — when and how a fresh thread gets named, either concurrently with the
   answer or after a resume. (``title.py`` remains the model call itself.)
-- ``flush.py`` — persisting a turn that was stopped from outside, shared by both
-  orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
 - ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
   operator is told.
 - ``gating.py`` — ruling on the calls a turn deferred: grants, the level's own answer,
@@ -58,49 +79,31 @@ from runs import (
     Run,
     RunStatus,
 )
-from services.conversation_view import estimate_tokens
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
 )
-from services.projects import ProjectStore, WorktreeManager
-from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
 from services.uploads import UploadStore
-from services.workspace import resolve_workspace
 from tools import (
     InstructionProvider,
     PromptContextProvider,
 )
 
-from .attachments import resolve_attachments
-from .compaction_context import CompactionContext, resolve_max_input_tokens
 from .factory import NO_DORMANT, build_agent
 from .finalize import finalize, flush_recorder, parked_context, persist_parked_cancel
 from .flush import PersistContext, TurnFlush
-from .folding import incoming_request, maybe_compact
-from .history import (
-    TurnStart,
-    drop_dangling_tool_calls,
-    merge_consecutive_requests,
-    with_tail_context,
-)
-from .injections import announce_injection, contributor_id
+from .history import TurnStart
 from .meta import Judge, make_utility_judge
-from .metrics import turn_metrics
 from .naming import (
-    TitleContext,
     discard_title,
     maybe_title,
     reap_title,
     settle_title,
-    start_title,
 )
 from .parking import DEFAULT_BINDING, ParkedTurn
-from .summarize import (
-    AutoCompactPolicy,
-    build_auto_compact_policy,
-)
+from .prelude import TurnSetup, prepare_turn
+from .summarize import AutoCompactPolicy
 from .title import last_user_text
 from .turn import NO_CAPS, drive_turn
 from .verify import should_verify, verify_and_correct
@@ -207,22 +210,20 @@ def build_chat_orchestrator(
         announced: set[str] = set()
 
         # --- the stop-flush hooks, armed before anything that can suspend -------------
-        # Everything below this block awaits: the history read, auto-compaction (a whole
-        # utility-model summarization, bounded by its own timeout), attachment resolution,
-        # the per-turn context providers. None of it emits, so the inactivity watchdog is
-        # ticking against a run that looks idle — and the compaction bound and the
-        # inactivity bound share a default, so a compaction that runs to its own limit
+        # Everything in the prelude below awaits: the history read, auto-compaction (a
+        # whole utility-model summarization, bounded by its own timeout), attachment
+        # resolution, the per-turn context providers. None of it emits, so the inactivity
+        # watchdog is ticking against a run that looks idle — and the compaction bound and
+        # the inactivity bound share a default, so a compaction that runs to its own limit
         # trips the watchdog. Armed after that window, the hooks would be `None` exactly
         # when they are needed and the operator's typed message would vanish on reload.
-        # The state they read is declared here and filled in below; a hook that fires
-        # early simply sees the empty values, which is the correct record for a turn that
-        # stopped before it began.
-        # Where this turn's own messages begin in the replayed history. One shared mutable
-        # object because an in-turn fold moves it: `drive_turn` rewrites it in place, and
-        # every reader below reads through it rather than closing over a stale integer.
-        turn_start = TurnStart()
-        persisted: list | None = None
-        stamp_ids: list[str] = []
+        # The state they read is `setup`, filled in place by `prepare_turn`; a hook that
+        # fires early simply sees its defaults, which is the correct record for a turn
+        # that stopped before it began. `setup.turn_start` — where this turn's own
+        # messages begin in the replayed history — is one shared mutable object because an
+        # in-turn fold moves it: `drive_turn` rewrites it in place, and every reader below
+        # reads through it rather than closing over a stale integer.
+        setup = TurnSetup()
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
         # otherwise interrupt us before we reach `finalize` below and silently drop
@@ -239,7 +240,7 @@ def build_chat_orchestrator(
             # attachments ride on `persisted`/`stamp_ids` and per-turn context is
             # re-resolved fresh each turn and never persisted.
             if partial_history_ref:
-                turn = turn_start.slice(partial_history_ref[0]())
+                turn = setup.turn_start.slice(partial_history_ref[0]())
                 if turn:
                     return turn
             if isinstance(prompt, str) and prompt:
@@ -255,8 +256,8 @@ def build_chat_orchestrator(
                 conversation_id=conversation_id,
                 start=TurnStart(),
                 clean_drop=_flush_clean_drop(),
-                attachment_ids=stamp_ids,
-                persisted=persisted,
+                attachment_ids=setup.stamp_ids,
+                persisted=setup.persisted,
             )
 
         def _flush_clean_drop() -> tuple[int, int] | None:
@@ -269,7 +270,7 @@ def build_chat_orchestrator(
             if not drop_ref:
                 return None
             reject_idx, nudge_idx = drop_ref[0]
-            start = turn_start.index
+            start = setup.turn_start.index
             if reject_idx < start:
                 return None
             return reject_idx - start, nudge_idx - start
@@ -286,180 +287,38 @@ def build_chat_orchestrator(
         flush.arm()
         # -----------------------------------------------------------------------------
 
-        history = (
-            await store.model_history(conversation_id)
-            if store is not None and conversation_id is not None
-            else None
-        )
-        # What the thread's earlier turns cost in wall-clock. Read once, here, because it
-        # is the one part of the readout that isn't recoverable from the replayed history
-        # — every count and token beside it is derived from the messages themselves. A
-        # stateless turn has no thread to have spent anything, and keeps the zero default.
-        if store is not None and conversation_id is not None:
-            run.prior_timings = await store.timings(conversation_id)
-            # What this thread's requests weighed besides the conversation, last time one
-            # was assembled. Seeded onto the run so the trigger below and every frame
-            # emitted before this turn's own measurement lands read the same overhead —
-            # a gauge and a fold that disagreed about it would disagree about fullness.
-            # `MeasureOverhead` replaces it with the live figure on the first request.
-            run.context_overhead = await store.get_overhead(conversation_id)
-        # What this turn may fold with. None ⇒ it cannot fold: a stateless run, or no
-        # utility model to summarize with. The policy is resolved either way, because the
-        # verifier's size guard measures against the same threshold on every turn.
-        policy = auto_compact or build_auto_compact_policy(settings)
-        compaction = (
-            CompactionContext(
-                store=store,
-                conversation_id=conversation_id,
-                policy=policy,
-                model=utility_model,
-                reasoning_off=utility_settings,
-                settings=settings,
-                max_input_tokens=resolve_max_input_tokens(settings, utility_context_window),
-            )
-            if store is not None and conversation_id is not None and utility_model is not None
-            else None
-        )
-        # A fresh thread is the one that gets named, and that is settled by whether it had
-        # any history at all — read before a fold could shorten it.
-        is_first_turn = not history
-
-        # Auto-title context for this run — None disables it (feature off, or no
-        # utility model). Built up-front so the title can be generated *concurrently*
-        # with the answer (it needs only the operator's opening message), leaving no
-        # post-answer "writing" tail. Only a fresh thread's first turn is named.
-        title_ctx = (
-            TitleContext(title_model, title_settings or {})
-            if title_model is not None and settings.title_enabled
-            else None
-        )
-        title_namer = start_title(
-            title_ctx if is_first_turn else None,
-            prompt,
-            run=run,
+        # Everything the turn needs before the model is called, filled onto `setup` in
+        # place. Outside the `try` below, exactly where the code it replaced ran: an
+        # exception here takes the armed hooks' path, not `flush.flush_error()`.
+        await prepare_turn(
+            setup,
+            run,
+            prompt=prompt,
             store=store,
             conversation_id=conversation_id,
+            settings=settings,
+            caps=capabilities,
+            uploads=uploads,
+            attachment_ids=attachment_ids,
+            vision=vision,
+            binding=binding,
+            prompt_context_providers=prompt_context_providers,
+            auto_compact=auto_compact,
+            utility_model=utility_model,
+            utility_settings=utility_settings,
+            utility_context_window=utility_context_window,
+            context_window=context_window,
+            title_model=title_model,
+            title_settings=title_settings,
         )
-
-        # Stage any attached files into this conversation's sandbox and append their
-        # marker (name, id, mime, size, path) after the operator's prompt — the model
-        # reads what it needs from the path rather than receiving the file's text. A
-        # vision model additionally gets an image's pixels, the one kind that stays
-        # inline in both the live and the persisted shape. Only on a fresh turn: a
-        # regenerate (prompt is None) re-runs history, which already carries the markers.
-        user_prompt: str | list[Any] | None = prompt
-        if attachment_ids and prompt is not None and uploads is not None:
-            resolved = await resolve_attachments(
-                uploads,
-                run.owner_id,
-                attachment_ids,
-                vision=vision,
-                # Resolved the one way the file tools resolve it, so an attachment
-                # lands in the very workspace the agent is about to work in — the
-                # conversation's sandbox, or its project worktree in code mode.
-                workspace=await resolve_workspace(
-                    mode=binding.mode,
-                    project_id=binding.project_id,
-                    conversation_id=conversation_id,
-                    sandbox_key=conversation_id or run.id,
-                    owner_id=run.owner_id,
-                    sessions=capabilities.get_optional(SandboxSessionManager),
-                    projects=capabilities.get_optional(ProjectStore),
-                    worktrees=capabilities.get_optional(WorktreeManager),
-                    holder=run,
-                ),
-            )
-            # Only build a multimodal prompt when something actually resolved — else leave
-            # the plain string, so an all-deleted-ids turn doesn't persist as a bare list
-            # (which the projection would read as empty text). Stamp only resolved ids as
-            # chips; foreign/deleted ids are dropped.
-            if resolved.content:
-                user_prompt = [prompt, *resolved.content]
-            persisted = resolved.persisted or None
-            stamp_ids = resolved.ids
-
-        # Per-turn prompt context (each manifest's `prompt_context` export — the
-        # document state): appended at the *tail* of the current turn's user prompt,
-        # never persisted, so it's re-resolved fresh each turn with exactly one copy
-        # in context — and, unlike an instruction, its churn never touches the head
-        # of the request, keeping the whole history a byte-stable cacheable prefix.
-        #
-        # Announced here rather than from the capability the head's blocks are read
-        # from: these resolve before the agent starts, so there is no request to read
-        # them back off. One event type either way — the operator's question is what
-        # they were not shown, not which seam delivered it.
-        context_texts: list[str] = []
-        for provider in prompt_context_providers:
-            text = await provider(capabilities, run.owner_id, conversation_id)
-            if not text:
-                continue
-            context_texts.append(text)
-            announce_injection(run, contributor_id(provider), text, "prompt")
-        if context_texts:
-            if prompt is not None:
-                base = user_prompt if isinstance(user_prompt, list) else [user_prompt]
-                user_prompt = [*base, *context_texts]
-                # An empty (non-None) persisted set still strips the live payload back
-                # to the typed prompt on record — the tail context must not persist.
-                persisted = persisted if persisted is not None else []
-
-        # Fold the older turns away — *after* the attachments and the per-turn context are
-        # resolved, because they are part of what this turn will cost and the trigger is
-        # projected: previous footprint + everything about to be added. Measuring the
-        # history alone is what forced the old threshold up to 95%, since the incoming turn
-        # had to fit in whatever the last one happened to leave spare.
-        #
-        # And *before* anything downstream measures the list: the rebuild has to land ahead
-        # of both the dangling-call strip and `turn_start`, because that index is where
-        # `finalize` slices the turn out of `result.all_messages()` — it must count the
-        # list actually handed to the model, not the one this started from.
-        incoming = incoming_request(user_prompt, context_texts if prompt is None else [])
-        folded = False
-        if history:
-            history, folded = await maybe_compact(
-                run,
-                compaction,
-                history,
-                overhead=run.context_overhead,
-                incoming_tokens=estimate_tokens([incoming]) if incoming is not None else 0,
-                context_window=context_window,
-            )
-        # A prior turn stopped at a bound persists its transcript verbatim — which can end on
-        # an assistant tool call that never got its result. That full record is right for the
-        # operator's view, but replaying a dangling tool call to the model is a provider error
-        # (an assistant tool_call with no following tool result → HTTP 400), so strip it from
-        # the *model's* input here. The persisted transcript is untouched; only this turn's
-        # model history is sanitized, and `turn_start` tracks the trimmed length.
-        if history:
-            history = drop_dangling_tool_calls(history)
-            history = merge_consecutive_requests(history)
-        turn_start.index = len(history) if history else 0
-        if folded:
-            # Every response left in the replay reported its prompt size against the
-            # history that was just folded away, so none of them describes the thread as it
-            # now stands. Marking the whole replay pre-fold makes the frame below read the
-            # estimate instead — which is the point of emitting one at all: the operator
-            # asked for a fold and must see the gauge fall, not sit at its old figure until
-            # the answer lands.
-            run.fold_boundary = turn_start.index
-            run.emit(turn_metrics(run, history or [], settings=settings))
-        # What the model replays — `history` plus, on a regenerate, the per-turn prompt
-        # context. `history` itself stays the persistence baseline.
-        model_history = history
-        if context_texts and prompt is None and history:
-            # A regenerate has no fresh prompt — the context rides on the trailing
-            # user request in the *model's* view only (`history` itself stays
-            # pristine for the verifier's `last_user_text`, and everything before
-            # `turn_start` is never re-persisted).
-            model_history = with_tail_context(history, context_texts)
 
         try:
             turn = await drive_turn(
                 run,
                 agent,
                 settings=settings,
-                prompt=user_prompt,
-                message_history=model_history,
+                prompt=setup.user_prompt,
+                message_history=setup.model_history,
                 announced=announced,
                 caps=capabilities,
                 conversation_id=conversation_id,
@@ -469,8 +328,8 @@ def build_chat_orchestrator(
                 partial_history_ref=partial_history_ref,
                 store=store,
                 request_limit=request_limit,
-                compaction=compaction,
-                turn_start=turn_start,
+                compaction=setup.compaction,
+                turn_start=setup.turn_start,
             )
 
             # Verify only a completed turn (not one parked for approval or stopped at
@@ -489,7 +348,9 @@ def build_chat_orchestrator(
                 if judging is not None:  # no judge and no utility model → skip (degraded)
                     # On a regenerate (prompt is None) the request to judge against is
                     # the last user turn already in history.
-                    verify_prompt = prompt if prompt is not None else last_user_text(history or [])
+                    verify_prompt = (
+                        prompt if prompt is not None else last_user_text(setup.history or [])
+                    )
                     turn = await verify_and_correct(
                         run,
                         agent,
@@ -511,7 +372,7 @@ def build_chat_orchestrator(
                         # window has no room left for it. Measured against the same share
                         # of the window a fold would have fired at, whether or not this
                         # turn is one that *could* fold.
-                        context_threshold=policy.threshold,
+                        context_threshold=setup.policy.threshold,
                     )
 
             finalize(
@@ -524,10 +385,10 @@ def build_chat_orchestrator(
                 # rather than `_flush_context()`.
                 context=PersistContext(
                     conversation_id=conversation_id,
-                    start=turn_start,
+                    start=setup.turn_start,
                     clean_drop=turn.clean_drop,
-                    attachment_ids=stamp_ids,
-                    persisted=persisted,
+                    attachment_ids=setup.stamp_ids,
+                    persisted=setup.persisted,
                 ),
             )
             # Disarm the flush hooks now the turn is recorded: a wall-clock/inactivity bound
@@ -552,15 +413,15 @@ def build_chat_orchestrator(
                 # its name rather than sitting "Untitled" for however long the operator
                 # takes to decide — and the resume's `set_title_if_absent` then finds the
                 # name in place, returns False, and emits nothing a second time.
-                await discard_title(title_namer)
+                await discard_title(setup.title_namer)
                 if isinstance(run.parked_payload, ParkedTurn):
-                    run.parked_payload.title = title_ctx
+                    run.parked_payload.title = setup.title_ctx
             else:
                 # The namer started up-front announces itself the moment the name lands
                 # (typically well before the answer does); this only waits for a still-
                 # running one so the event is emitted before the orchestrator returns
                 # (run.ended) and the open stream carries it.
-                await settle_title(title_namer)
+                await settle_title(setup.title_namer)
 
             # What this turn's requests weighed besides the conversation, written onto
             # the thread for its own next cold load — neither the brief nor the schemas
@@ -602,7 +463,7 @@ def build_chat_orchestrator(
             flush.disarm()
             raise
         finally:
-            await reap_title(title_namer)
+            await reap_title(setup.title_namer)
 
     return orchestrate
 
