@@ -75,7 +75,6 @@ class TurnSetup:
     user_prompt: str | list[Any] | None = None
     history: list[ModelMessage] | None = None  # persistence baseline
     model_history: list[ModelMessage] | None = None  # what the model replays
-    context_texts: list[str] = field(default_factory=list)
     compaction: CompactionContext | None = None
     policy: AutoCompactPolicy | None = None
     # the namer, started by prepare_turn; None until then, so the orchestrator's
@@ -226,7 +225,6 @@ async def prepare_turn(
             continue
         context_texts.append(text)
         announce_injection(run, contributor_id(provider), text, "prompt")
-    setup.context_texts = context_texts
     if context_texts:
         if prompt is not None:
             base = user_prompt if isinstance(user_prompt, list) else [user_prompt]

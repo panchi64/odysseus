@@ -18,41 +18,29 @@ comes back as the call's own result.
 What lives *here* is the sequencing of one run and nothing else: arm the stop-flush
 hooks, prepare the turn, drive it, verify it, record it, name the thread, write the
 overhead — plus the error and ``finally`` paths that hold when any of that is cut short.
-It is also the only one of the modules carved out of it that reads ``get_settings()``;
-everything it calls along the sequence is handed the object it resolved, so a turn
-measures itself against one set of values. Its neighbours carry the concerns that aren't
-the sequence, each with its own reason to change:
+A turn's settings are resolved **once**, here, and handed to everything the sequence
+calls — ``prelude``, ``turn``, ``verify``, ``folding``, ``metrics``, ``finalize``, none of
+which reads them for itself — so a turn's fold threshold, its bounds and every gauge frame
+measure against one set of values rather than each re-reading the cached singleton.
+(``naming.py`` and ``gating.py``, carved out of this file long before those were, still
+read their own.) The neighbours below carry the concerns that aren't the sequence, each
+with its own reason to change and its own module docstring saying what it owns:
 
-- ``factory.py`` — building the turn's ``Agent``: the catalog it is given, the standing
-  instructions, and the three parts that are the thread's own (its mode, its permission
-  level, today's date).
-- ``prelude.py`` — everything settled before the model is called: the history read, the
-  namer's start, attachment staging, the per-turn context, the threshold fold, and the
-  persistence boundary that lands after all of them.
-- ``turn.py`` — one turn to its end: the ``agent.iter`` loop, the steering inbox, the
-  bounds, and the three ways it can stop (answer, park, bound).
-- ``verify.py`` — the meta-loop's opt-in half: whether a finished turn is worth judging,
-  and the single bounded correction a failed judgement buys.
-- ``folding.py`` — when a *turn* folds the thread, how the fold is announced, and what it
-  does to the turn's persistence boundary. (``summarize.py`` is the fold itself.)
-- ``metrics.py`` — the context gauge and the room check: the footprint arithmetic the
-  turn, the folds and the verifier all read.
-- ``finalize.py`` — where a finished turn goes, and what a park hands its eventual resume
-  instead.
+- ``factory.py`` — building the turn's ``Agent``: what it is told, what it is offered.
+- ``prelude.py`` — everything settled before the model is called, in a load-bearing order.
+- ``turn.py`` — one turn to its end: the ``agent.iter`` loop and the three ways it stops.
+- ``verify.py`` — whether a finished turn is worth judging, and its one bounded correction.
+- ``folding.py`` — when a *turn* folds the thread, and what that does to its persistence
+  boundary. (``summarize.py`` is the fold itself.)
+- ``metrics.py`` — the context gauge and the room check.
+- ``finalize.py`` — where a finished turn goes, and what a park hands its eventual resume.
 - ``flush.py`` — persisting a turn that was stopped from outside, shared by both
   orchestrators so a bound, a cancel and an unhandled exception cannot drift apart.
-- ``history.py`` — the surgeries on a message list before it reaches a model or the
-  store. Pure functions; each encodes one fact about how the library or a provider
-  behaves.
-- ``naming.py`` — when and how a fresh thread gets named, either concurrently with the
-  answer or after a resume. (``title.py`` remains the model call itself.)
-- ``model_errors.py`` — reading a provider's failure: which stop it is, and what the
-  operator is told.
-- ``gating.py`` — ruling on the calls a turn deferred: grants, the level's own answer,
-  and the Auto level's review (announced on the stream). The rules it applies are
-  ``services/permissions``'.
-- ``parking.py`` — the continuation payload a parked turn resumes from, and the park
-  itself (the approval and question events, and the notify that must land before it).
+- ``history.py`` — the surgeries on a message list before it reaches a model or the store.
+- ``naming.py`` — when and how a fresh thread gets named. (``title.py`` is the model call.)
+- ``model_errors.py`` — reading a provider's failure, and what the operator is told.
+- ``gating.py`` — ruling on the calls a turn deferred. The rules are ``services/permissions``'.
+- ``parking.py`` — the park itself, and the continuation payload a resume works from.
 """
 
 from __future__ import annotations
@@ -210,19 +198,18 @@ def build_chat_orchestrator(
         announced: set[str] = set()
 
         # --- the stop-flush hooks, armed before anything that can suspend -------------
-        # Everything in the prelude below awaits: the history read, auto-compaction (a
-        # whole utility-model summarization, bounded by its own timeout), attachment
-        # resolution, the per-turn context providers. None of it emits, so the inactivity
-        # watchdog is ticking against a run that looks idle — and the compaction bound and
-        # the inactivity bound share a default, so a compaction that runs to its own limit
-        # trips the watchdog. Armed after that window, the hooks would be `None` exactly
-        # when they are needed and the operator's typed message would vanish on reload.
-        # The state they read is `setup`, filled in place by `prepare_turn`; a hook that
-        # fires early simply sees its defaults, which is the correct record for a turn
-        # that stopped before it began. `setup.turn_start` — where this turn's own
-        # messages begin in the replayed history — is one shared mutable object because an
-        # in-turn fold moves it: `drive_turn` rewrites it in place, and every reader below
-        # reads through it rather than closing over a stale integer.
+        # Everything in the prelude below awaits (a history read, a whole utility-model
+        # fold under its own timeout, attachment staging, the context providers) and none
+        # of it emits, so the inactivity watchdog is ticking against a run that looks idle
+        # — and the compaction bound and the inactivity bound share a default, so a fold
+        # running to its own limit trips it. Armed after that window, the hooks would be
+        # `None` exactly when they are needed and the operator's typed message would vanish
+        # on reload. What they read is `setup`, filled in place by `prepare_turn` (see
+        # `prelude.py`); a hook firing early sees its defaults, which is the correct record
+        # for a turn that stopped before it began. `setup.turn_start` — where this turn's
+        # own messages begin in the replayed history — is one shared mutable object because
+        # an in-turn fold moves it: `drive_turn` rewrites it in place, and every reader
+        # below reads through it rather than closing over a stale integer.
         setup = TurnSetup()
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
