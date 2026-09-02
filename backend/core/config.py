@@ -423,7 +423,10 @@ class Settings(BaseSettings):
     # the two prefix segments that are byte-identical across every turn of a thread. "5m"
     # is Anthropic's standard tier and covers back-to-back turns; "1h" costs more to write
     # and pays off only when the operator returns to a thread after a long pause.
-    anthropic_cache_ttl: Literal["5m", "1h"] = "5m"
+    # "off" sends no breakpoints at all — the escape hatch for an Anthropic-compatible
+    # proxy that rejects `cache_control` outright, where the choice is between paying full
+    # price for every prefix and not reaching the endpoint at all.
+    anthropic_cache_ttl: Literal["5m", "1h", "off"] = "5m"
 
 
 @lru_cache

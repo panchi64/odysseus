@@ -112,6 +112,20 @@ class TestTheAnthropicCacheBreakpoints:
         settings = llm.build_model(spec()).settings or {}
         assert all(settings.get(key) == "1h" for key in CACHE_KEYS)
 
+    def test_off_sends_no_breakpoints_at_all(self, monkeypatch):
+        """The escape hatch for an Anthropic-compatible proxy that rejects
+        ``cache_control``: the whole trio has to be *absent*, not set to a disabled-looking
+        value, since anything the adapter still declares is something the proxy still
+        refuses."""
+        monkeypatch.setattr(
+            anthropic_provider, "get_settings", lambda: SimpleNamespace(anthropic_cache_ttl="off")
+        )
+        model = llm.build_model(spec())
+        assert not model.settings
+        # …and the library agrees there is no cache request to honor, read through its own
+        # resolution rather than our dict.
+        assert model.resolve_prompt_cache_retention(None) is None
+
     def test_the_default_ttl_is_the_messages_apis_own(self):
         """The operator's lever defaults to the tier the Messages API itself uses, so an
         installation that never touches it caches exactly as Anthropic intends."""

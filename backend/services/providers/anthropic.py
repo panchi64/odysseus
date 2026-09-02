@@ -130,8 +130,16 @@ class AnthropicNativeProvider:
 
         Nothing here depends on ``descriptor``: caching is a property of the Messages
         API, not of one Claude model, so every model this adapter builds gets it.
+
+        ``anthropic_cache_ttl = "off"`` returns **no settings at all** rather than a
+        disabled-looking trio. ``base_url`` is honored here, so this adapter also fronts
+        Anthropic-compatible proxies, and one that rejects ``cache_control`` fails the
+        request outright — an operator behind such a proxy needs a way to stop sending the
+        breakpoints, not a cheaper tier of them.
         """
         ttl = get_settings().anthropic_cache_ttl
+        if ttl == "off":
+            return {}
         return {
             "anthropic_cache": ttl,
             "anthropic_cache_instructions": ttl,
