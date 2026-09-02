@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from pydantic_ai import ModelRequest
 from pydantic_ai.models.test import TestModel
 
-from agent.engine import _build_agent
+from agent.factory import build_agent
 from core.container import ServiceContainer
 from core.timezone import local_zone_key
 from prompts.agent import SYSTEM_PROMPT
@@ -42,7 +42,7 @@ async def _brief(*, mode: str = "normal", permission: str = "edit") -> str:
         mode=mode,  # type: ignore[arg-type]
         permission=permission,  # type: ignore[arg-type]
     )
-    agent = _build_agent(TestModel(), categories={})
+    agent = build_agent(TestModel(), categories={})
     result = await agent.run("hello", deps=deps)
     requests = [m for m in result.all_messages() if isinstance(m, ModelRequest)]
     return "\n".join(m.instructions or "" for m in requests)

@@ -17,7 +17,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from agent.engine import _build_agent
+from agent.factory import build_agent
 from runs import Run, RunStream
 from tools import RunDeps, build_agent_toolsets
 from tools.catalog import tool_catalog
@@ -252,7 +252,7 @@ async def test_the_engine_defers_and_reveals_exactly_as_this_stack_does():
     capability would leave the model looking at a hole where the browser used to be."""
     categories = full_tool_categories()
     steps: list[set[str]] = []
-    await _build_agent(_reveal_browse(steps), categories=categories, dormant=DORMANT).run(
+    await build_agent(_reveal_browse(steps), categories=categories, dormant=DORMANT).run(
         "hi", deps=_deps()
     )
     assert not [name for name in steps[0] if name.startswith("browse_")]
@@ -303,7 +303,7 @@ async def test_the_search_tools_description_does_not_restate_the_index():
 
 async def test_the_engine_puts_the_index_in_the_standing_brief():
     steps: list[set[str]] = []
-    result = await _build_agent(
+    result = await build_agent(
         _text_model(steps), categories=full_tool_categories(), dormant=DORMANT
     ).run("hi", deps=_deps())
     brief = _brief(result)
@@ -318,7 +318,7 @@ async def test_the_index_is_still_true_once_a_group_has_been_loaded():
     loaded, shipped alongside every browser tool, gets acted on: the model searches for
     what it already holds, or tells the operator it cannot open a page."""
     steps: list[set[str]] = []
-    result = await _build_agent(
+    result = await build_agent(
         _reveal_browse(steps), categories=full_tool_categories(), dormant=DORMANT
     ).run("hi", deps=_deps())
     assert [name for name in steps[1] if name.startswith("browse_")]
@@ -332,7 +332,7 @@ async def test_an_installation_with_nothing_dormant_pays_for_none_of_it():
     """No deferral, no index, and no `search_tools` on the wire — the seam costs a turn
     that has nothing to hide exactly nothing."""
     steps: list[set[str]] = []
-    result = await _build_agent(
+    result = await build_agent(
         _text_model(steps), categories=full_tool_categories(), dormant={}
     ).run("hi", deps=_deps())
     assert "browse_click" in steps[0]
