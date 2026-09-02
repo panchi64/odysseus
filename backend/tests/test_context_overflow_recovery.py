@@ -458,7 +458,7 @@ async def test_the_verifier_skips_a_correction_that_cannot_fit():
     )
 
     result = await _verify_and_correct(
-        run, None, "prompt", turn, set(), _reject, context_threshold=0.80
+        run, None, "prompt", turn, set(), _reject, settings=get_settings(), context_threshold=0.80
     )
 
     assert result is turn  # the answer survives
@@ -477,7 +477,14 @@ async def test_the_verifier_still_corrects_when_there_is_room():
         # No agent to re-drive with — reaching that failure is the assertion: the guard
         # let the correction through rather than skipping it.
         await _verify_and_correct(
-            run, None, "prompt", turn, set(), _reject, context_threshold=0.80
+            run,
+            None,
+            "prompt",
+            turn,
+            set(),
+            _reject,
+            settings=get_settings(),
+            context_threshold=0.80,
         )
     messages = [e.body.message for e in run.stream.replay() if e.body.type == "limit.notice"]
     assert messages == ["re-attempting: incomplete"]

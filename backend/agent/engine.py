@@ -59,7 +59,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from core.config import get_settings
+from core.config import Settings, get_settings
 from core.container import ServiceContainer
 from core.exceptions import ModelLoadError
 from prompts.agent import VERIFIER_NUDGE
@@ -72,19 +72,13 @@ from runs import (
     LimitNotice,
     Orchestrator,
     Run,
-    RunMetrics,
     RunStatus,
     TurnOverhead,
-    total_timings,
 )
-from services.context_budget import compose
-from services.conversation_view import estimate_footprint, estimate_tokens
+from services.conversation_view import estimate_tokens
 from services.conversations import (
     ConversationBinding,
     ConversationStore,
-    conversation_totals,
-    footprint_or_estimate,
-    last_request_usage,
 )
 from services.modes import mode_spec
 from services.notifications import NotificationService
@@ -113,6 +107,7 @@ from .history import (
 )
 from .injections import announce_injection, contributor_id
 from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .metrics import no_room_for, turn_metrics
 from .model_errors import (
     CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
     CONTEXT_OVERFLOW_DETAIL,
@@ -159,73 +154,6 @@ class _TurnResult:
     # human-readable reason, carried through to `_finalize` so it can persist a
     # marker on the turn's branch node (see `ConversationStore.record`).
     blocked_reason: str | None = None
-
-
-def _turn_metrics(run: Run, messages: list[ModelMessage]) -> RunMetrics:
-    """The thread's cumulative readout, counted off ``messages`` — the full replayed
-    history, not just this run's own additions.
-
-    **Derived, not accumulated.** ``messages`` is everything on the active path, and
-    each stored response carries the usage the provider reported for it, so every count
-    and token here is a fresh sum over the path. That is what makes the figures survive
-    a reload, a rewind and a version switch without a counter to keep in step: the same
-    ``conversation_totals`` runs on a cold load and produces the same answer. It is also
-    why this no longer takes a ``base``/``usage`` pair — the run's own ``RunUsage``
-    covers only the current run, and adding it to a path-derived total would count this
-    turn twice.
-
-    Time is the exception, and the only thing still carried on the Run: it isn't in the
-    message blobs. ``run.prior_timings`` holds the persisted total for the turns before
-    this one, and ``run.timer`` holds this run's own, so the two add.
-
-    ``context_used`` is the *footprint* — the last response's prompt+generation, not the
-    path's summed tokens — so a long thread doesn't overstate fullness. Built in one
-    place so the live per-step frames (the context gauge) and the stashed terminal
-    metrics never diverge.
-
-    **Fold-aware.** A response that landed *before* this run's most recent compaction
-    reported its prompt size against a history that no longer exists, so the footprint is
-    read only from ``run.fold_boundary`` onward. Until the first post-fold response lands
-    there is nothing measured to read, and the estimate stands in — which is the whole
-    point: without it the gauge would sit pinned at the pre-fold figure through the very
-    turn the fold made room for, and the operator would watch a compaction change nothing.
-    ``last_request_usage`` still reads the whole path: which model spoke last, and what its
-    cache did, are facts about a request, not about the current replay."""
-    counts = conversation_totals(messages)
-    timings = run.prior_timings + total_timings(run.timer.responses)
-    # The boundary decides which *reported* figures may still be believed, not what the
-    # estimate covers: the estimate is always over the whole replay, because the whole
-    # replay is what the next request carries. Same helper the cold read calls, so a
-    # thread reopened after a run reports the figure the live frames did.
-    footprint = footprint_or_estimate(
-        messages,
-        run.context_overhead,
-        fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
-        reported_from=messages[min(run.fold_boundary, len(messages)) :],
-    )
-    return RunMetrics(
-        steps=counts.steps,
-        tool_calls=counts.tool_calls,
-        turns=counts.turns,
-        input_tokens=counts.input_tokens,
-        output_tokens=counts.output_tokens,
-        cache_read_tokens=counts.cache_read_tokens,
-        # A thread whose responses all predate the stopwatch reports no time rather
-        # than none-elapsed — the same absent-not-zero rule the token counts follow.
-        llm_ms=timings.llm_ms or None,
-        tool_ms=timings.tool_ms or None,
-        ttft_ms_total=timings.ttft_ms_total or None,
-        ttft_samples=timings.ttft_samples,
-        context_window=run.context_window,
-        context_used=footprint,
-        context_thresholds=run.context_thresholds,
-        # The split of that footprint. Scaled to the provider's own total, so the parts
-        # always add up to the figure beside them even though each is an estimate.
-        context_parts=compose(footprint, run.context_overhead, messages),
-        # The last request on its own — read off the same path as everything else, so a
-        # reload reports the route and the cache figures the live turn did.
-        last_request=last_request_usage(messages),
-    )
 
 
 def _incoming_request(
@@ -415,7 +343,7 @@ async def _compact_and_retry(
     # And it goes out *now*, not when the retry answers. A fold that frees half the thread
     # and then overruns again would otherwise leave the gauge pinned at its pre-fold figure
     # for good — the operator watching a compaction that visibly changed nothing.
-    run.emit(_turn_metrics(run, rebuilt))
+    run.emit(turn_metrics(run, rebuilt, settings=ctx.settings))
     return rebuilt
 
 
@@ -423,6 +351,7 @@ async def _drive_turn(
     run: Run,
     agent: Agent,
     *,
+    settings: Settings,
     prompt: str | list[Any] | None = None,
     message_history: list[ModelMessage] | None = None,
     deferred_results: DeferredToolResults | None = None,
@@ -452,7 +381,6 @@ async def _drive_turn(
     corrective re-attempt, where a fold is refused: the correction's drop range is a pair
     of absolute indices into the pre-fold history, and folding underneath it would leave
     the persist dropping two messages that are no longer the ones it meant."""
-    settings = get_settings()
     spec = mode_spec(binding.mode)
     # ``request_limit`` is the operator's runtime setting *when they set one*; None means
     # nobody chose a number here (they never touched the control, or this is a stateless
@@ -509,7 +437,7 @@ async def _drive_turn(
         # requested cancel can never be silently absorbed.
         if run.cancel_requested:
             raise asyncio.CancelledError()
-        run.emit(_turn_metrics(run, history))
+        run.emit(turn_metrics(run, history, settings=settings))
 
     # Rebound each loop iteration by `agent.iter()`'s `as agent_run`; stays None only
     # if a bound trips before the context manager assigns it (its `__aenter__` does
@@ -656,8 +584,8 @@ async def _drive_turn(
         output = result.output
         messages = result.all_messages()
         # Counted off the full replayed history, so hops and segments need no
-        # accumulator — see `_turn_metrics`.
-        run.set_metrics(_turn_metrics(run, messages))
+        # accumulator — see `turn_metrics`.
+        run.set_metrics(turn_metrics(run, messages, settings=settings))
         # Two ways a turn can end without being finished: a call awaiting permission, and
         # a call awaiting an answer (`ask_user`). Both arrive on the same object, and
         # either one alone means there is more of this turn to run.
@@ -733,23 +661,6 @@ async def _drive_turn(
         deferred_results = DeferredToolResults(approvals=settled)
 
 
-def _no_room_for(
-    run: Run, messages: list[ModelMessage], nudge: str, *, threshold: float | None
-) -> bool:
-    """Whether replaying ``messages`` plus ``nudge`` would already be over the operator's
-    share of the window. ``False`` whenever there is no window or no threshold to measure
-    against — the same rule the compaction trigger follows, for the same reason."""
-    if not run.context_window or not threshold or threshold <= 0:
-        return False
-    settings = get_settings()
-    projected = estimate_footprint(
-        messages,
-        run.context_overhead,
-        fallback_overhead_tokens=settings.context_overhead_fallback_tokens,
-    ) + estimate_tokens([ModelRequest(parts=[UserPromptPart(content=nudge)])])
-    return projected >= run.context_window * threshold
-
-
 def _should_verify(settings: Any, run: Run) -> bool:
     """The verifier's heuristic trigger: judge only turns that produced a
     checkable artifact (made a tool call). Off ⇒ judge every answer."""
@@ -765,6 +676,8 @@ async def _verify_and_correct(
     turn: _TurnResult,
     announced: set[str],
     judge: Judge,
+    *,
+    settings: Settings,
     caps: ServiceContainer = _NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
@@ -796,7 +709,7 @@ async def _verify_and_correct(
     # range is a pair of absolute indices into this history. Attempting it against a
     # window that has no room left buys a context stop in place of an answer that, however
     # the judge scored it, is a real answer. Keep the answer and say what was skipped.
-    if _no_room_for(run, turn.messages, nudge, threshold=context_threshold):
+    if no_room_for(run, turn.messages, nudge, threshold=context_threshold, settings=settings):
         run.emit(LimitNotice(limit="verify", message="skipped: no room for a re-attempt"))
         return turn
     run.emit(LimitNotice(limit="verify", message=f"re-attempting: {verdict.reason}"))
@@ -814,6 +727,7 @@ async def _verify_and_correct(
     corrected = await _drive_turn(
         run,
         agent,
+        settings=settings,
         prompt=nudge,
         message_history=turn.messages,
         announced=announced,
@@ -1290,7 +1204,7 @@ def build_chat_orchestrator(
             # asked for a fold and must see the gauge fall, not sit at its old figure until
             # the answer lands.
             run.fold_boundary = turn_start.index
-            run.emit(_turn_metrics(run, history or []))
+            run.emit(turn_metrics(run, history or [], settings=settings))
         # What the model replays — `history` plus, on a regenerate, the per-turn prompt
         # context. `history` itself stays the persistence baseline.
         model_history = history
@@ -1305,6 +1219,7 @@ def build_chat_orchestrator(
             turn = await _drive_turn(
                 run,
                 agent,
+                settings=settings,
                 prompt=user_prompt,
                 message_history=model_history,
                 announced=announced,
@@ -1344,6 +1259,7 @@ def build_chat_orchestrator(
                         turn,
                         announced,
                         judging,
+                        settings=settings,
                         caps=capabilities,
                         conversation_id=conversation_id,
                         disabled_tools=disabled_tools,
@@ -1490,6 +1406,7 @@ def build_resume_orchestrator(
     """
 
     async def orchestrate(run: Run) -> None:
+        settings = get_settings()
         # `calls` carries values rather than verdicts — Pydantic AI wraps each one in a
         # `ToolReturn`, so the operator's answer lands in history as that call's own
         # result and the model reads it exactly as it would any other tool's.
@@ -1515,6 +1432,7 @@ def build_resume_orchestrator(
             turn = await _drive_turn(
                 run,
                 parked.agent,
+                settings=settings,
                 message_history=parked.message_history,
                 deferred_results=results,
                 announced=parked.announced,
