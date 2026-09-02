@@ -501,6 +501,33 @@ class ConversationTitled(_Body):
     title: str
 
 
+#: Why a fold happened. ``threshold`` is the prelude's projected-pressure trigger,
+#: ``overflow`` the in-turn recovery after a provider refused an over-long request, and
+#: ``manual`` the operator pressing "compact now". One vocabulary for both compaction
+#: events, so a client that learns the word on one frame reads it on the other.
+CompactionReason = Literal["threshold", "overflow", "manual"]
+
+
+class CompactionStarted(_Body):
+    """A fold is about to be summarized — emitted *before* the summarizer call, which is
+    the one part of compaction that takes real time (a whole utility-model pass).
+
+    Without it the operator watches a thread sit silent for up to the compaction timeout
+    with nothing said, and the only frame that ever mentioned compaction was the one that
+    announced it as already done. It also refreshes the inactivity watchdog (every
+    ``Run.emit`` touches the activity clock), so a summarizer running to its own bound
+    can't be read as a stalled run. Additive to v1; no bump."""
+
+    type: Literal["compaction.started"] = "compaction.started"
+    conversation_id: str
+    reason: CompactionReason
+    # What the fold is about to cover: how many messages, and their coarse
+    # `estimate_tokens` size — the same proxy `conversation.compacted` reports against, so
+    # the "before" figure the progress block shows is the one the divider settles on.
+    messages: int
+    tokens_estimate: int
+
+
 class ConversationCompacted(_Body):
     """The thread's earlier turns were folded into a summary before this turn ran,
     because its context footprint had reached the operator's threshold. Nothing was
@@ -512,6 +539,9 @@ class ConversationCompacted(_Body):
 
     type: Literal["conversation.compacted"] = "conversation.compacted"
     conversation_id: str
+    # Why the fold happened, in the same words `compaction.started` used. Defaulted so a
+    # replayed frame from before this field existed still parses as what it was.
+    reason: CompactionReason = "threshold"
     # The checkpoint message the summary is stored on — the node the client renders
     # the divider against, and the same id a cold read returns.
     message_id: str
@@ -754,6 +784,11 @@ class LimitNotice(_Body):
     # value a client already handles is a narrowing, which this protocol does not do.)
     limit: str
     message: str
+    # The stop marker this notice announces, when the bound also blocked the turn — the
+    # same string the turn persists as its `blocked_reason`. It is here so the toast and
+    # the marker on the stopped turn can offer the *same* remedy: two context stops share
+    # one `limit` value but not one answer, and prose is not something a client can key on.
+    detail: str | None = None
 
 
 EventBody = Annotated[
@@ -775,6 +810,7 @@ EventBody = Annotated[
     | ViewSnapshot
     | BrowserLive
     | ConversationTitled
+    | CompactionStarted
     | ConversationCompacted
     | ConversationLinked
     | ContextInjected

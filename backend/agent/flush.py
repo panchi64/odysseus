@@ -30,6 +30,8 @@ from pydantic_ai import ModelMessage
 
 from runs import Run
 
+from .history import TurnStart
+
 # Persistent stop markers for the cancel/unhandled-error flush paths (mirrors the
 # bound-hit details the registry builds — a plain sentence, not internal jargon — stamped
 # via `blocked_reason` so a reload shows the same explanation the live stream did, without
@@ -42,10 +44,14 @@ ERRORED_DETAIL = "an unexpected error stopped this turn"
 class PersistContext:
     """Everything ``_finalize`` needs about *where* a turn goes, as opposed to what it
     contains. Rebuilt per flush by the chat orchestrator (whose ``start`` and attachment
-    stamps are only known once the turn is under way) and constant for a resume."""
+    stamps are only known once the turn is under way) and constant for a resume.
+
+    ``start`` is a :class:`~agent.history.TurnStart` rather than a bare index because a
+    mid-turn fold can leave the turn beginning *inside* a message whose first parts belong
+    to the history in front of it."""
 
     conversation_id: str | None
-    start: int
+    start: TurnStart
     clean_drop: tuple[int, int] | None = None
     attachment_ids: list[str] = field(default_factory=list)
     persisted: list[Any] | None = None

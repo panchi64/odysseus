@@ -91,3 +91,21 @@ class Provider(Protocol):
         """The settings that stop this provider's model from spending tokens on
         thinking for background work — ``{}`` when there is nothing to turn off."""
         ...
+
+    def model_settings(self, descriptor: ModelDescriptor) -> ModelSettings:
+        """Standing settings every request to this provider's models carries.
+
+        Distinct from :meth:`reasoning_off`, which one *caller* asks for when it wants a
+        cheap background pass. These are the model's own defaults — a lab-wide request
+        shape that is true whoever is calling — so the adapter hands them to the model
+        **at construction** (``Model(settings=…)``) rather than to any one call site.
+        That placement is the whole point: a setting applied there survives a fallback
+        chain, a parked turn resumed hours later, and every path that builds its own
+        per-request settings, none of which have to know the lab exists. Pydantic AI
+        merges a request's settings *over* the model's, so a caller can still override
+        one deliberately.
+
+        Defaulted rather than required: most families need nothing here, and an adapter
+        that says nothing means ``{}``.
+        """
+        return {}

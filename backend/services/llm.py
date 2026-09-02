@@ -32,6 +32,7 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.settings import ModelSettings
 
 from core.exceptions import DegradedCapabilityError
+from services import reasoning
 
 ROLES = frozenset({"main", "utility", "embedding"})
 # Roles that drive the agent loop must support native tool-calling (AE-8.1).
@@ -67,6 +68,19 @@ class EndpointSpec:
     native_tools: bool = True
     vision: bool = False
     thinking: bool = False
+
+
+def descriptor_of(spec: EndpointSpec) -> reasoning.ModelDescriptor:
+    """The facts a provider matches a model *family* on, read off a resolved spec.
+
+    One home for the projection so the registry's reasoning-off lookup and an adapter's
+    own settings hook are demonstrably asking about the same model: two hand-built
+    descriptors would be two places for a field to be forgotten, and the symptom would be
+    a lever silently not pulled rather than an error.
+    """
+    return reasoning.ModelDescriptor(
+        model_id=spec.model, base_url=spec.base_url, thinking=spec.thinking
+    )
 
 
 def build_model(spec: EndpointSpec) -> Model:
@@ -162,38 +176,55 @@ async def probe_openai_endpoint(
             await http.aclose()
 
 
-# The keys OpenAI-wire servers use for a model's context window, in the order we
-# trust them. There is no standard — the OpenAI `/v1/models` schema has no such field
+# The keys OpenAI-wire servers use for a model's *maximum* context window, in the order
+# we trust them. There is no standard — the OpenAI `/v1/models` schema has no such field
 # at all — so each server that bothers to report one invented its own name. vLLM says
 # `max_model_len`, LM Studio `max_context_length`, llama.cpp-derived servers `n_ctx`,
 # and several gateways `context_length`. Reading all of them is what makes discovery
 # work across "OpenAI-compatible" servers that agree on nothing but the chat route.
-_CONTEXT_KEYS = (
+_MAX_CONTEXT_KEYS = (
     "context_length",
     "max_context_length",
     "max_model_len",
     "context_window",
     "n_ctx",
 )
+# The keys that report the window a model is *currently loaded with*, which is a
+# different fact and the one that matters: a model loaded at 32k on a server that could
+# do 256k has a real ceiling of 32k, and every guard built on the window has to measure
+# the limit the next turn will hit rather than the one the hardware would allow.
+_LOADED_CONTEXT_KEYS = ("loaded_context_length",)
 # LM Studio reports nothing useful on the OpenAI route but exposes its own richer
 # listing alongside it. Checked only after the standard route comes back silent.
 _LMSTUDIO_NATIVE = "/api/v0/models"
+# llama.cpp's own status route. It is not a model listing at all — the server runs one
+# model and reports its live generation settings — which is why the listing probes above
+# cannot reach it: llama.cpp's `/v1/models` row is keyed by a file path or alias that
+# rarely equals the model name the operator bound, and carries no context field anyway.
+_LLAMA_CPP_PROPS = "/props"
 
 
-def _context_from_row(row: object) -> int | None:
-    """A positive context length from a model listing entry, whichever key it used.
+def _positive_int(value: object) -> int | None:
+    """``value`` if it is a usable token count, else None.
 
-    LM Studio's `loaded_context_length` is preferred over its `max_context_length`
-    when present: a model loaded at 32k in a server that *could* do 256k has a real
-    ceiling of 32k, and the gauge has to measure the one the next turn will hit."""
+    Guards `bool` explicitly: it is an `int` subclass, and a server answering
+    `"context_length": true` would otherwise yield a one-token window — a gauge pinned
+    at 100% forever and a thread that can never send."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _context_from_row(row: object, keys: Sequence[str]) -> int | None:
+    """A positive context length from a model listing entry, whichever of ``keys`` it
+    used. Split by *kind* of key rather than read in one pass, because a loaded window
+    found on the second probe still has to beat a maximum found on the first."""
     if not isinstance(row, dict):
         return None
-    for key in ("loaded_context_length", *_CONTEXT_KEYS):
-        value = row.get(key)
-        # Guard `bool` explicitly: it is an `int` subclass, and a server answering
-        # `"context_length": true` would otherwise yield a one-token window.
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
+    for key in keys:
+        window = _positive_int(row.get(key))
+        if window is not None:
+            return window
     return None
 
 
@@ -231,19 +262,68 @@ async def discover_openai_context_window(
     whatever the operator configured). Collapsing the failure here keeps that decision
     in one place instead of at each call site.
 
-    Tries the standard listing first, then LM Studio's native listing, which reports a
-    window where the OpenAI route reports none. That second request is the reason this
-    is worth doing at all for local servers: the OpenAI `/v1/models` schema has no
-    context field, so the most common local setup can never answer on that route.
+    Three probes, because "OpenAI-compatible" servers agree on the chat route and nothing
+    else. The standard listing first; then LM Studio's native listing, which reports a
+    window where the OpenAI route reports none; then llama.cpp's `/props`. The last two
+    are the reason this is worth doing at all for local servers: the OpenAI `/v1/models`
+    schema has no context field, so the most common local setups can never answer on that
+    route.
+
+    **A loaded window beats a maximum**, whichever probe found it. The two are different
+    facts — what this server *could* run and what it *is* running — and only the second
+    is the ceiling the next turn hits. That is why a maximum found early doesn't return
+    immediately: it is held as the fallback while the remaining probes are given their
+    chance to report the real one.
     """
+    maximum: int | None = None
     for url in (base_url.rstrip("/") + "/models", _native_listing_url(base_url)):
         if url is None:
             continue
         row = _find_model_row(await _get_json(url, api_key, client=client), model)
-        window = _context_from_row(row)
+        loaded = _context_from_row(row, _LOADED_CONTEXT_KEYS)
+        if loaded is not None:
+            return loaded
+        if maximum is None:
+            maximum = _context_from_row(row, _MAX_CONTEXT_KEYS)
+    loaded = await _llama_cpp_context_window(base_url, api_key, client=client)
+    return loaded if loaded is not None else maximum
+
+
+async def _llama_cpp_context_window(
+    base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
+) -> int | None:
+    """The context llama.cpp's server was started with, from its own `/props`.
+
+    `default_generation_settings.n_ctx` is the per-slot window a request actually gets
+    (llama.cpp divides the total context between its parallel slots), so it is a *loaded*
+    figure in the strong sense — the number the very next completion will be measured
+    against.
+
+    Tried at the root as well as under the base URL: llama.cpp registers `/props` at the
+    top level while the endpoint an operator configures ends in `/v1`, so the obvious URL
+    is the wrong one on the most common setup. Both are cheap best-effort GETs that
+    answer None on anything unexpected."""
+    for url in _props_urls(base_url):
+        payload = await _get_json(url, api_key, client=client)
+        if not isinstance(payload, dict):
+            continue
+        settings = payload.get("default_generation_settings")
+        if not isinstance(settings, dict):
+            continue
+        window = _positive_int(settings.get("n_ctx"))
         if window is not None:
             return window
     return None
+
+
+def _props_urls(base_url: str) -> tuple[str, ...]:
+    """Where `/props` might live for this base URL, most likely first — de-duplicated,
+    so a base that carries no version segment costs one request rather than two."""
+    trimmed = base_url.rstrip("/")
+    urls = [trimmed + _LLAMA_CPP_PROPS]
+    if trimmed.endswith("/v1"):
+        urls.insert(0, trimmed[: -len("/v1")] + _LLAMA_CPP_PROPS)
+    return tuple(dict.fromkeys(urls))
 
 
 def _native_listing_url(base_url: str) -> str | None:

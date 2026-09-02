@@ -19,12 +19,21 @@ from models._fields import utcnow
 from models.app_setting import AppSetting
 from runs import DEFAULT_CONTEXT_THRESHOLDS, ContextThresholds
 
-# Conversation auto-compaction (agent/summarize.py) — the product's one context reduction:
-# whether to fold a thread's older turns into a utility-model summary once its footprint
-# reaches `threshold` of the model's context window, expressed as a fraction (0.95 = 95%).
-# The retained-turn count is config-only; these two are what the operator actually tunes.
+# Conversation auto-compaction (agent/summarize.py) — the product's one pressure-driven
+# context reduction: whether to fold a thread's older turns into a utility-model summary
+# once its footprint reaches `threshold` of the model's context window, expressed as a
+# fraction (0.80 = 80%), and how many of the most recent exchanges survive the fold
+# verbatim. Keep-turns is an operator setting rather than config-only because it is the
+# dial that decides how much of the work in flight a fold is allowed to blur.
 AUTO_COMPACT_ENABLED_KEY = "chat.auto_compact_enabled"
 AUTO_COMPACT_THRESHOLD_KEY = "chat.auto_compact_threshold"
+AUTO_COMPACT_KEEP_TURNS_KEY = "chat.auto_compact_keep_turns"
+
+# The ceiling on retained exchanges. Not a safety bound on the store but a sanity one: a
+# keep-turns high enough to retain the whole thread would make the fold a no-op at exactly
+# the moment the thread is out of room. Shared with the route so the wire's bound and the
+# store's fallback rule can't drift.
+AUTO_COMPACT_KEEP_TURNS_MAX = 20
 
 # The context gauge's severity boundaries (runs/events.py `ContextThresholds`): the two
 # fullness fractions at which the ring under the composer turns amber and then red.
@@ -233,14 +242,25 @@ def _positive_int_or(raw: str | None, default: int) -> int:
     return value if value >= 1 else default
 
 
+def _bounded_int_or(raw: str | None, default: int, *, maximum: int) -> int:
+    """:func:`_int_or` for a setting that is capped as well as floored at 0 — a stored value
+    above ``maximum`` is corruption or a client that skipped the route's bound, and falls
+    back rather than being silently clamped to a number the operator never chose."""
+    value = _int_or(raw, default)
+    return value if value <= maximum else default
+
+
 @dataclass(frozen=True)
 class AutoCompactSettings:
     """The operator's effective conversation auto-compaction preferences. ``threshold`` is
     a fraction of the model's context window, not a percentage — the UI presents it as one,
-    but the wire and the store carry the same 0–1 quantity the context meter already uses."""
+    but the wire and the store carry the same 0–1 quantity the context meter already uses.
+    ``keep_turns`` is how many of the most recent exchanges the fold replays verbatim; 0 is
+    a legitimate choice (the summary is the whole replay), not a missing value."""
 
     enabled: bool
     threshold: float
+    keep_turns: int
 
 
 def _float_or(raw: str | None, default: float) -> float:
@@ -291,14 +311,20 @@ def resolve_compaction_enabled(override: bool | None, global_enabled: bool) -> b
 
 async def get_auto_compact(store: SettingsStore, owner_id: str) -> AutoCompactSettings:
     """The operator's effective conversation auto-compaction settings — runtime overrides
-    where set (and valid), else the config defaults. One batched read for the pair."""
+    where set (and valid), else the config defaults. One batched read for the group."""
     cfg = get_settings()
     values = await store.get_many(
-        owner_id, (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY)
+        owner_id,
+        (AUTO_COMPACT_ENABLED_KEY, AUTO_COMPACT_THRESHOLD_KEY, AUTO_COMPACT_KEEP_TURNS_KEY),
     )
     return AutoCompactSettings(
         enabled=_bool_or(values.get(AUTO_COMPACT_ENABLED_KEY), cfg.auto_compact_enabled),
         threshold=_float_or(values.get(AUTO_COMPACT_THRESHOLD_KEY), cfg.auto_compact_threshold),
+        keep_turns=_bounded_int_or(
+            values.get(AUTO_COMPACT_KEEP_TURNS_KEY),
+            cfg.auto_compact_keep_turns,
+            maximum=AUTO_COMPACT_KEEP_TURNS_MAX,
+        ),
     )
 
 
@@ -310,6 +336,7 @@ async def set_auto_compact(
         owner_id, AUTO_COMPACT_ENABLED_KEY, "true" if settings.enabled else "false"
     )
     await store.set(owner_id, AUTO_COMPACT_THRESHOLD_KEY, str(settings.threshold))
+    await store.set(owner_id, AUTO_COMPACT_KEEP_TURNS_KEY, str(settings.keep_turns))
     return settings
 
 

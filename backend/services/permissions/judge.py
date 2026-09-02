@@ -11,7 +11,18 @@ not refused — it is *escalated*, which is a different thing and the reason the
 can afford to be as narrow as it is. Narrowing it costs model calls; widening it costs the
 operator's trust, and only one of those is recoverable.
 
-**Three rules, and none of them has an exception.**
+**Two kinds of act clear here, and the shorter one first.** A call to a tool this
+installation classifies as a *read* (``ActionKind.READ``) is approved outright: the class
+is a claim about the tool itself — it returns something and leaves nothing different
+behind — so there is no argument set that makes it into another kind of act, and no
+reviewer question left to ask. This is what keeps a self-gated recall
+(``memory_recall``, ``corpus_retrieve``) from costing a model call every time, and what
+stops it from parking a run outright on an installation with no utility model bound. The
+class registry is a closed literal pinned against the live catalog by a test, and a name
+it has never heard of resolves to the class that reaches *furthest* — so nothing an
+operator's own MCP server names can reach this branch.
+
+**Everything else is a shell command, and three rules govern it. None has an exception.**
 
 - An AST shape we do not recognise never passes. It arrives as
   :attr:`Capability.unbounded`, which means the extraction is describing *part* of the
@@ -64,17 +75,23 @@ class Judgement:
 
 
 def judge(capability: Capability) -> Judgement:
-    """Whether ``capability`` is provably a read of the workspace and nothing else.
+    """Whether ``capability`` is provably an observation and nothing else.
 
     Pure and total. Never raises, never calls out, and never returns ``approved`` for
     anything it did not fully understand — the three rules in the module docstring are
     checked before the allowlist is consulted at all, so a command cannot pass on the
     strength of the part of it that parsed.
+
+    ``unbounded`` is tested ahead of every kind check, including the read one, so a
+    partially-read action is refused *as* a partially-read action: that is the more
+    specific reason, and the reason is what the operator sees on the review row.
     """
-    if capability.kind is not ActionKind.SHELL:
-        return Judgement(False, "only shell commands can be cleared without a review")
     if capability.unbounded:
         return Judgement(False, capability.unbounded[0])
+    if capability.kind is ActionKind.READ:
+        return Judgement(True, "observes and returns, changing nothing")
+    if capability.kind is not ActionKind.SHELL:
+        return Judgement(False, "only reads and shell commands can be cleared without a review")
     if capability.env_writes:
         names = ", ".join(capability.env_writes)
         return Judgement(False, f"sets {names} for the command it runs")

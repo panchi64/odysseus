@@ -8,7 +8,9 @@ the fast one. A cold conversation rehydrates from the DB once, then runs at memo
 speed.
 
 The tree is what makes regenerate / edit / rewind work. Every node points at its
-predecessor (``parent_id``); **siblings sharing a parent are versions.** The
+predecessor (``parent_id``); **siblings sharing a parent are versions** — with
+compaction checkpoints **transparent**, so a version set reads through one rather
+than stopping at it (``_Tree.siblings``). The
 conversation's *active leaf* is the tip of the path the operator is viewing —
 walking it to the root yields the active history (the flat list the agent runs
 against). Navigation never invents history: regenerate/edit/rewind all just move
@@ -64,10 +66,15 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
-from runs.events import LastRequestUsage
+from runs.events import CompactionReason, LastRequestUsage
 from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
-from services.conversation_view import MessageView, project_tree
+from services.conversation_view import (
+    COMPACTION_REASON_KEY,
+    MessageView,
+    estimate_footprint,
+    project_tree,
+)
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import DEFAULT_PERMISSION, PermissionLevel, permission_level
@@ -249,17 +256,85 @@ class _Tree:
             self.active_leaf_id = added[-1].id
         return added
 
-    def siblings(self, node_id: str) -> list[str]:
-        """The version set ``node_id`` belongs to — its parent's children, in
-        version (seq) order. Includes ``node_id`` itself."""
+    def _version_parent(self, node_id: str) -> str | None:
+        """The node whose children hold ``node_id``'s version set — its parent, walked
+        up through any compaction checkpoints.
+
+        A checkpoint is **transparent** in version sets. Folding while a regenerate has
+        the leaf reseated appends the checkpoint under that leaf and hangs the incoming
+        answer off the checkpoint, so the raw parent of the new answer is bookkeeping,
+        not the turn it is a version of."""
         node = self.nodes.get(node_id)
-        if node is None:
+        parent = node.parent_id if node is not None else None
+        seen: set[str] = set()
+        while parent is not None and parent not in seen:
+            candidate = self.nodes.get(parent)
+            if candidate is None or not candidate.compacted:
+                break
+            seen.add(parent)
+            parent = candidate.parent_id
+        return parent
+
+    def siblings(self, node_id: str) -> list[str]:
+        """The version set ``node_id`` belongs to, in version (seq) order, including
+        ``node_id`` itself — its :meth:`_version_parent`'s children with every checkpoint
+        replaced by the real nodes beneath it.
+
+        A checkpoint has no version set of its own: it is one thread's bookkeeping, not
+        an alternative the operator can cycle to."""
+        node = self.nodes.get(node_id)
+        if node is None or node.compacted:
             return []
-        return self.children.get(node.parent_id, [])
+        return self._version_nodes(self.children.get(self._version_parent(node_id), []))
+
+    def _version_nodes(self, ids: list[str]) -> list[str]:
+        """``ids`` with each compaction checkpoint replaced by its own children (applied
+        recursively), sorted into seq order — the order versions render in."""
+        out: list[str] = []
+        stack = list(reversed(ids))
+        seen: set[str] = set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            node = self.nodes.get(cur)
+            if node is None:
+                continue
+            if node.compacted:
+                stack.extend(reversed(self.children.get(cur, [])))
+            else:
+                out.append(cur)
+        out.sort(key=lambda i: self.nodes[i].seq)
+        return out
+
+    def stranded_checkpoints(self, start_id: str | None, doomed: set[str]) -> list[str]:
+        """The checkpoints above ``start_id`` that ``doomed`` would leave carrying nothing.
+
+        A checkpoint whose last real descendant is being deleted is bookkeeping for a
+        branch that no longer exists — nothing replays through it any more, and leaving it
+        behind would strand the active leaf on a divider whose turn is gone."""
+        out: list[str] = []
+        cur = start_id
+        seen: set[str] = set()
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            node = self.nodes.get(cur)
+            if node is None or not node.compacted:
+                break
+            survivors = set(self.children.get(cur, [])) - doomed - set(out)
+            if survivors:
+                break
+            out.append(cur)
+            cur = node.parent_id
+        return out
 
     def descend_to_leaf(self, node_id: str) -> str:
         """Follow the most recent child at each step down to a leaf — the tip a
-        branch resumes at when its version is selected."""
+        branch resumes at when its version is selected. Descending *through* a
+        checkpoint is what makes a folded branch selectable: the version set names the
+        answer under the checkpoint, and resuming it must land below the fold, not
+        above it."""
         cur = node_id
         seen: set[str] = set()
         while cur not in seen:
@@ -318,18 +393,35 @@ def _is_user_prompt(message: ModelMessage) -> bool:
     )
 
 
+def _opens_turn(node: _Node) -> bool:
+    """Whether this node *could* open an operator turn: it carries a user prompt and is
+    not a compaction checkpoint. A checkpoint is a ``ModelRequest`` with a user part —
+    that is how the model reads a summary — so every walk that counts turns or extends
+    one to its tail has to tell the two apart by the flag, never by the shape."""
+    return _is_user_prompt(node.message) and not node.compacted
+
+
 def _is_turn_start(path: list[_Node], index: int) -> bool:
     """Whether ``path[index]`` opens a fresh operator turn — a user-prompt request that is
-    either the conversation's root or directly follows an assistant response.
+    the conversation's root, directly follows an assistant response, or directly follows a
+    compaction checkpoint.
 
     Not every user-prompt request opens a turn. A message the operator sends *while a run
     is executing* is persisted as its own request sitting directly behind the tool-return
     request it was injected into (the engine's injected-request split), so counting bare
     user prompts would read a mid-run aside as a whole exchange — and a compaction that
-    keeps "the last two turns" would keep two asides and fold a real one."""
-    if not _is_user_prompt(path[index].message):
+    keeps "the last two turns" would keep two asides and fold a real one.
+
+    A checkpoint counts as a predecessor because the first turn after a fold is a real
+    turn: reading only "follows a response" would drop it from the count and let
+    ``compaction_plan`` decide there was nothing to fold with a whole exchange more than
+    ``keep_turns`` standing after the checkpoint."""
+    if not _opens_turn(path[index]):
         return False
-    return index == 0 or isinstance(path[index - 1].message, ModelResponse)
+    if index == 0:
+        return True
+    previous = path[index - 1]
+    return isinstance(previous.message, ModelResponse) or previous.compacted
 
 
 def _checkpoint_split(path: list[_Node]) -> tuple[int, int]:
@@ -511,6 +603,35 @@ def context_footprint(messages: list[ModelMessage]) -> int | None:
             usage = message.usage
             return usage.input_tokens + (usage.output_tokens or 0) if usage.input_tokens else None
     return None
+
+
+def footprint_or_estimate(
+    messages: list[ModelMessage],
+    overhead: TurnOverhead | None,
+    *,
+    fallback_overhead_tokens: int,
+    reported_from: list[ModelMessage] | None = None,
+) -> int | None:
+    """The thread's footprint: what the provider reported if it reported anything, and the
+    estimate otherwise. ``None`` only for a thread with no messages at all.
+
+    The one place that choice is made, because it is a choice the *live* gauge and a *cold*
+    reload have to make identically. An endpoint that reports no usage — the common local
+    case, ``input_tokens=0`` — is exactly when the estimate matters, and it used to be the
+    case where the live stream showed a figure and reopening the same thread showed a blank
+    ring and no breakdown.
+
+    ``reported_from`` narrows which messages a *reported* figure may be read off (the
+    replay since this run's last fold — every response before it sized a history that no
+    longer exists) while the estimate still covers everything the next request carries."""
+    if not messages:
+        return None
+    footprint = context_footprint(messages if reported_from is None else reported_from)
+    if footprint is not None:
+        return footprint
+    return estimate_footprint(
+        messages, overhead, fallback_overhead_tokens=fallback_overhead_tokens
+    )
 
 
 def last_request_usage(messages: list[ModelMessage]) -> LastRequestUsage | None:
@@ -968,13 +1089,21 @@ class ConversationStore:
         keeps the retained tail replayable: a turn always opens with an operator prompt, so
         the split can't strand an assistant tool call from its result.
 
-        ``None`` when the active leaf already has children — a regenerate or edit has
-        reseated the leaf and its run hasn't recorded yet, and grafting a checkpoint there
-        would re-parent the incoming answer out of the version set it belongs to. After any
-        completed turn the leaf is childless again, so this only sits out the turn itself."""
+        A leaf that already has children is a **branch point** — a regenerate or edit has
+        reseated the leaf and its run hasn't recorded yet — and it folds like any other.
+        The checkpoint lands under the reseated leaf and the incoming answer hangs off the
+        checkpoint, which is exactly where a version set that looks *through* checkpoints
+        expects it (:meth:`_Tree.siblings`). Refusing here instead is what used to make
+        the one moment compaction is most needed — a regenerate against a nearly full
+        window — the one moment it could not happen.
+
+        At a branch point the boundary is held one node short of the leaf, so the request
+        about to be re-answered is never itself folded away: with ``keep_turns=0`` the cut
+        is otherwise ``len(path)``, and a regenerate replaying only the summary would be
+        answering the fold instead of the operator."""
         tree = await self._tree(conversation_id)
         leaf = tree.active_leaf_id
-        if leaf is None or tree.children.get(leaf):
+        if leaf is None:
             return None
         path = tree.active_path()
         checkpoint, _ = _checkpoint_split(path)
@@ -982,6 +1111,8 @@ class ConversationStore:
         if len(starts) <= keep_turns:
             return None
         boundary = starts[-keep_turns] if keep_turns > 0 else len(path)
+        if tree.children.get(leaf):
+            boundary = min(boundary, len(path) - 1)
         folded = _replay_nodes(path, stop=boundary)
         if not folded:
             return None
@@ -994,22 +1125,40 @@ class ConversationStore:
         )
 
     def record_compaction(
-        self, conversation_id: str, *, summary: str, through_id: str, expected_leaf_id: str
+        self,
+        conversation_id: str,
+        *,
+        summary: str,
+        through_id: str,
+        expected_leaf_id: str,
+        reason: CompactionReason,
     ) -> str | None:
         """Append a compaction checkpoint at the tip and queue its durable write, returning
         the new node's id — or ``None`` when the plan went stale.
+
+        ``reason`` is stored on the checkpoint's own ``ModelRequest.metadata``, which is
+        the one place a fact about the message can ride without a schema column: the
+        library carries the field through serialization and never sends it to a provider,
+        so it lands inside the sealed blob every read already opens. Without it the reason
+        would live only on the run's ``conversation.compacted`` event, and a divider the
+        operator watched appear would lose what caused it the moment they reloaded.
 
         Synchronous on purpose, exactly like :meth:`record`: the staleness re-check and the
         append happen with no ``await`` between them, so under single-threaded asyncio no
         other coroutine can move the leaf in the window. It has to be re-checked at all
         because generating the summary takes seconds, and the route's conversation claim
-        blocks *runs* — not a version switch or a rewind."""
+        blocks *runs* — not a version switch or a rewind.
+
+        The leaf having children is **not** staleness: that is the regenerate/edit branch
+        point :meth:`compaction_plan` now plans for, and the checkpoint is appended there
+        as a further child. Only the leaf having *moved* invalidates the summary."""
         tree = self._cache.get(conversation_id)
         if tree is None or tree.active_leaf_id != expected_leaf_id:
             return None
-        if tree.children.get(expected_leaf_id):
-            return None
-        message = ModelRequest(parts=[UserPromptPart(content=summary)])
+        message = ModelRequest(
+            parts=[UserPromptPart(content=summary)],
+            metadata={COMPACTION_REASON_KEY: reason},
+        )
         node = tree.append_chain([message])[0]
         node.compacted = True
         node.compacted_through = through_id
@@ -1490,7 +1639,13 @@ class ConversationStore:
         """Move the active leaf to ``message_id``'s parent, so the next turn branches
         in as a sibling of ``message_id``. ``require_parent`` rejects a root node
         (regenerate needs a preceding request; edit allows branching from the root).
-        Returns False if the node is unknown (or rootless when required)."""
+        Returns False if the node is unknown (or rootless when required).
+
+        A parent that is a **compaction checkpoint** is kept, not walked past. Branching
+        under the checkpoint is what carries the fold into the new version — reseating
+        above it would replay the whole unfolded thread, and after a compaction that is
+        the one history certain not to fit. The version set is unaffected either way,
+        because :meth:`_Tree.siblings` looks through checkpoints."""
         tree = await self._tree(conversation_id)
         node = tree.nodes.get(message_id)
         if node is None or (require_parent and node.parent_id is None):
@@ -1517,7 +1672,11 @@ class ConversationStore:
     ) -> bool:
         """Cycle the turn at ``message_id`` to version ``target_index`` among its
         siblings, descending that branch to its leaf. Returns False on a bad id or
-        out-of-range index."""
+        out-of-range index — a compaction checkpoint has no version set of its own, so
+        naming one is a bad id. Versions can sit on either side of a fold (one answer
+        written before a compaction, its rewrite below the checkpoint); the set is
+        enumerated through checkpoints and each branch replays whatever fold its own
+        path carries."""
         tree = await self._tree(conversation_id)
         if message_id not in tree.nodes:
             return False
@@ -1634,8 +1793,13 @@ class ConversationStore:
         # plus interleaved tool-return requests up to the next user prompt. A user
         # turn is just its own request (its answer is the next turn), so don't
         # advance past it — the thread then ends at the user message as documented.
-        if not _is_user_prompt(path[idx].message):
-            while idx + 1 < len(path) and not _is_user_prompt(path[idx + 1].message):
+        # A compaction checkpoint sitting at the tail is part of that tail, not the
+        # start of a new turn: stopping in front of it would drop the newest fold off
+        # the path and silently restore the full replay a rewind to the *last* turn
+        # never asked for.
+        target = path[idx]
+        if not target.compacted and not _is_user_prompt(target.message):
+            while idx + 1 < len(path) and not _opens_turn(path[idx + 1]):
                 idx += 1
         tree.active_leaf_id = path[idx].id
         self._move_leaf(conversation_id, tree.active_leaf_id)
@@ -1700,15 +1864,25 @@ class ConversationStore:
     async def delete_message(self, conversation_id: str, message_id: str) -> bool:
         """Delete the turn whose branch node is ``message_id`` and everything after
         it on every branch (its subtree), reseating the active leaf on the parent if
-        it fell inside. Returns False if the node is unknown."""
+        it fell inside. Returns False if the node is unknown.
+
+        A compaction checkpoint the delete empties out goes with it, and the reseat then
+        skips past it: a checkpoint whose only branch has been deleted covers nothing any
+        more, and leaving the leaf parked on it would end the thread on a divider for a
+        turn that is gone."""
         tree = await self._tree(conversation_id)
         node = tree.nodes.get(message_id)
         if node is None:
             return False
-        doomed = tree.subtree_ids(message_id)  # highest seq first
+        subtree = tree.subtree_ids(message_id)  # highest seq first
+        stranded = tree.stranded_checkpoints(node.parent_id, set(subtree))
+        doomed = sorted(subtree + stranded, key=lambda i: tree.nodes[i].seq, reverse=True)
+        gone = set(doomed)
         new_leaf = tree.active_leaf_id
-        if new_leaf is None or new_leaf in set(doomed):
+        if new_leaf is None or new_leaf in gone:
             new_leaf = node.parent_id
+            while new_leaf is not None and new_leaf in gone:
+                new_leaf = tree.nodes[new_leaf].parent_id
         tree.remove(doomed)
         keep = new_leaf is None or new_leaf in tree.nodes
         tree.active_leaf_id = new_leaf if keep else tree.fallback_leaf()

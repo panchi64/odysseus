@@ -553,6 +553,54 @@ async def test_a_reopened_thread_reports_the_breakdown_without_another_turn(monk
         assert external and external[0]["count"] == 68
 
 
+async def test_a_reopened_thread_whose_endpoint_reported_no_usage_still_reads(monkeypatch):
+    """A local server that answers ``input_tokens=0`` is the case the estimate exists for.
+
+    The live turn falls back to it and the gauge fills; a cold read of that same thread has
+    to reach the same figure, or reopening the conversation blanks a ring the operator was
+    watching a moment earlier and takes the breakdown with it."""
+    from pydantic_ai.usage import RequestUsage
+
+    from core.config import get_settings
+    from runs import TurnOverhead as Overhead
+    from services.conversation_view import estimate_footprint
+    from services.registry import ModelRegistry
+
+    from ._helpers import client_app
+
+    async def main_context_window(self, owner_id):
+        return 200_000
+
+    monkeypatch.setattr(ModelRegistry, "main_context_window", main_context_window)
+
+    async with client_app() as (client, app):
+        store = app.state.conversations
+        conversation_id = await store.create_conversation("operator")
+        overhead = Overhead(system=4_000, tools=60_000)
+        store.record(
+            conversation_id,
+            [
+                ModelRequest(parts=[UserPromptPart(content="x" * 2_000)]),
+                ModelResponse(
+                    parts=[TextPart(content="an answer nobody costed")],
+                    usage=RequestUsage(input_tokens=0, output_tokens=0),
+                ),
+            ],
+        )
+        await store.set_overhead(conversation_id, overhead)
+
+        detail = (await client.get(f"/conversations/{conversation_id}")).json()
+        expected = estimate_footprint(
+            await store.history(conversation_id),
+            overhead,
+            fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
+        )
+        assert detail["context"] is not None
+        assert detail["context"]["used"] == expected
+        # And the readout beside the ring agrees with it, rather than reporting null.
+        assert detail["stats"]["context_used"] == expected
+
+
 # ── What counts as message weight ────────────────────────────────────────────────
 
 
@@ -603,6 +651,93 @@ def test_dict_keys_count_too():
         ModelRequest(parts=[ToolReturnPart(tool_name="t", content=wide, tool_call_id="1")])
     ]
     assert estimate_tokens(messages) > 40
+
+
+def test_a_tool_calls_arguments_count_as_weight():
+    """A call's arguments are JSON on the wire like any result. They used to score zero —
+    the estimate read `content`, and a `ToolCallPart` carries `args` — which on a thread
+    of many small calls is a real slice of the window credited to nothing at all."""
+    from pydantic_ai.messages import ToolCallPart
+
+    from services.conversation_view import estimate_tokens
+
+    calls = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="fs_write",
+                    args={"path": f"/projects/app/src/module_{i}.py", "content": "x" * 400},
+                    tool_call_id=str(i),
+                )
+            ],
+            usage=RequestUsage(),
+        )
+        for i in range(10)
+    ]
+    assert estimate_tokens(calls) > 900
+
+
+def test_reasoning_weighs_nothing_in_the_footprint():
+    """The class the readout measures and the wire does not carry. An OpenAI-compatible
+    endpoint won't take a thinking part back, so the library drops it when it serializes
+    history — counting it would inflate a thinking model's footprint by everything it has
+    ever thought, and fold the threads that reason hardest far too early. It stays in the
+    *breakdown*, which answers a different question and has its own lever (the thinking
+    budget)."""
+    from pydantic_ai.messages import ThinkingPart
+
+    from services.conversation_view import estimate_tokens, message_class_chars
+
+    thinking = [
+        ModelResponse(
+            parts=[ThinkingPart(content="t" * 40_000), TextPart(content="ok")],
+            usage=RequestUsage(),
+        )
+    ]
+    assert estimate_tokens(thinking) == estimate_tokens(_messages("")[1:])
+    assert message_class_chars(thinking)["reasoning"].prose == 40_000
+
+
+def test_the_standing_brief_is_counted_once_not_twice():
+    """A `SystemPromptPart` sits at the head of the history *and* is measured by the
+    turn's overhead record. Counting both would charge a thread twice for the one thing
+    it can least reduce."""
+    from pydantic_ai.messages import SystemPromptPart
+
+    from services.conversation_view import estimate_tokens
+
+    plain = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+    with_brief = [
+        ModelRequest(parts=[SystemPromptPart(content="b" * 4_000), UserPromptPart(content="hi")])
+    ]
+    assert estimate_tokens(with_brief) == estimate_tokens(plain)
+
+
+# ── The footprint: what the next request would actually weigh ────────────────────
+
+
+def test_a_footprint_adds_the_measured_overhead_to_the_messages():
+    """The trigger's number. `estimate_tokens` measures the conversation; a request is the
+    conversation plus the brief plus every tool schema, and a threshold checked against
+    the first alone is checked against a fraction of what gets sent."""
+    from services.conversation_view import estimate_footprint, estimate_tokens
+
+    messages = _messages("x" * 4_800)
+    overhead = TurnOverhead(system=4_800, tools=4_100)  # ~1000 + ~1000 tokens
+    footprint = estimate_footprint(messages, overhead, fallback_overhead_tokens=12_000)
+    assert footprint == estimate_tokens(messages) + 2_000
+
+
+def test_a_thread_with_no_overhead_record_assumes_a_catalog_rather_than_nothing():
+    """The fallback, and the direction it leans. A thread whose turns all predate the
+    per-thread overhead record has no measurement to read — and assuming zero would claim
+    the request is smaller than it can possibly be, which is the one error a limit guard
+    must not make. The configured guess stands in instead."""
+    from services.conversation_view import estimate_footprint, estimate_tokens
+
+    messages = _messages("hello")
+    footprint = estimate_footprint(messages, None, fallback_overhead_tokens=12_000)
+    assert footprint == estimate_tokens(messages) + 12_000
 
 
 async def test_a_turn_that_parks_for_approval_records_its_overhead_before_resuming(tmp_path):

@@ -11,6 +11,11 @@ import {
   useProviders,
   useRoles,
 } from "~/lib/stores/models";
+import {
+  toChatSettings,
+  toChatSettingsBody,
+  type ChatSettingsDTO,
+} from "./chatSettingsDto";
 import type {
   AgentTool,
   ChatSettings,
@@ -259,55 +264,10 @@ export async function deleteSearchProvider(id: string): Promise<void> {
   setProvidersTick((n) => n + 1);
 }
 
-/* ── Chat settings (turn budgets + conversation compaction) ────────────────── */
-
-interface ChatSettingsDTO {
-  auto_compact_enabled: boolean;
-  auto_compact_threshold: number;
-  context_warn_threshold: number;
-  context_alert_threshold: number;
-  agent_request_limit: number;
-  inactivity_timeout_s: number;
-  wall_clock_timeout_s: number | null;
-}
-
-/** The single snake_case→camel mapper for the stored chat preferences. */
-function toChatSettings(dto: ChatSettingsDTO): ChatSettings {
-  return {
-    autoCompactEnabled: dto.auto_compact_enabled,
-    autoCompactThreshold: dto.auto_compact_threshold,
-    contextWarnThreshold: dto.context_warn_threshold,
-    contextAlertThreshold: dto.context_alert_threshold,
-    agentRequestLimit: dto.agent_request_limit,
-    inactivityTimeoutS: dto.inactivity_timeout_s,
-    wallClockTimeoutS: dto.wall_clock_timeout_s,
-  };
-}
-
-/** Map a camelCase patch to the backend's snake_case body (an omitted field is left
- *  unchanged on the backend, so only present keys are written). */
-function toChatSettingsBody(
-  patch: Partial<ChatSettings>,
-): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  if (patch.autoCompactEnabled !== undefined)
-    body.auto_compact_enabled = patch.autoCompactEnabled;
-  if (patch.autoCompactThreshold !== undefined)
-    body.auto_compact_threshold = patch.autoCompactThreshold;
-  if (patch.contextWarnThreshold !== undefined)
-    body.context_warn_threshold = patch.contextWarnThreshold;
-  if (patch.contextAlertThreshold !== undefined)
-    body.context_alert_threshold = patch.contextAlertThreshold;
-  if (patch.agentRequestLimit !== undefined)
-    body.agent_request_limit = patch.agentRequestLimit;
-  if (patch.inactivityTimeoutS !== undefined)
-    body.inactivity_timeout_s = patch.inactivityTimeoutS;
-  // `null` is a value here (remove the bound), not an absence, so the `undefined` test
-  // is what says the caller touched it — the backend reads presence the same way.
-  if (patch.wallClockTimeoutS !== undefined)
-    body.wall_clock_timeout_s = patch.wallClockTimeoutS;
-  return body;
-}
+/* ── Chat settings (turn budgets + conversation compaction) ──────────────────
+   The two wire mappings live in `chatSettingsDto.ts`, not here: they are pure and
+   worth pinning by a test, and this module reaches the network and the models store
+   at import. */
 
 export function useChatSettings(): Resource<ChatSettings> {
   const [data] = createResource(async () =>

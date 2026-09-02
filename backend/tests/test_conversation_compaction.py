@@ -37,15 +37,14 @@ from agent.history import merge_consecutive_requests
 from agent.summarize import (
     build_auto_compact_policy,
     compact_conversation,
-    render_transcript,
     should_compact,
     summarize_history,
 )
 from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
 from routes.deps import OPERATOR_ID
-from runs import RunStatus
-from services.conversation_view import estimate_tokens
+from runs import RunStatus, TurnOverhead
+from services.conversation_view import estimate_tokens, project_tree
 
 from ._helpers import client_app, patch_model_resolution
 
@@ -78,6 +77,7 @@ async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMM
         summary=summary,
         through_id=plan.through_id,
         expected_leaf_id=plan.expected_leaf_id,
+        reason="threshold",
     )
 
 
@@ -309,10 +309,12 @@ async def test_mid_run_steering_messages_do_not_count_as_turns():
         assert _texts(await store.model_history(cid))[:2] == ["SUMMARY", "q1"]
 
 
-async def test_no_compaction_while_the_leaf_is_a_branch_point():
-    """A regenerate has reseated the leaf and its run hasn't recorded yet. Appending a
-    checkpoint there would make the new answer a child of the checkpoint instead of a
-    sibling of the old one, quietly breaking version switching."""
+async def test_compaction_folds_while_the_leaf_is_a_branch_point():
+    """A regenerate has reseated the leaf and its run hasn't recorded yet — the one moment
+    compaction is *most* needed, since the turn about to re-run is the one that overflowed.
+    It folds: the checkpoint lands under the reseated leaf, the new answer hangs off the
+    checkpoint, and the version set reads through it (see
+    `tests/test_compaction_branch_points.py` for the full branch behaviour)."""
     async with client_app() as (_client, app):
         store = app.state.conversations
         cid = await store.create_conversation(OPERATOR_ID)
@@ -322,11 +324,14 @@ async def test_no_compaction_while_the_leaf_is_a_branch_point():
 
         answer = [m for m in await store.messages_view(cid) if m.role == "assistant"][-1]
         assert await store.regenerate_point(cid, answer.id)
-        assert await store.compaction_plan(cid, keep_turns=2) is None
+        assert await _compact(store, cid, keep_turns=2) is not None
 
-        # Once the regenerated answer lands, the leaf is childless again and it resumes.
+        # The reseated request is still the tail of the replay, so the regenerate that
+        # follows re-answers the operator rather than the summary.
+        assert _texts(await store.model_history(cid)) == ["SUMMARY", "q2", "a2", "q3"]
+
         store.record(cid, [ModelResponse(parts=[TextPart(content="a3-again")])])
-        assert await store.compaction_plan(cid, keep_turns=2) is not None
+        assert _texts(await store.model_history(cid))[-1] == "a3-again"
 
 
 async def test_record_compaction_refuses_a_stale_plan():
@@ -350,12 +355,19 @@ async def test_record_compaction_refuses_a_stale_plan():
                 summary="SUMMARY",
                 through_id=plan.through_id,
                 expected_leaf_id=plan.expected_leaf_id,
+                reason="threshold",
             )
             is None
         )
 
 
 # --- the threshold -----------------------------------------------------------
+
+
+#: A thread whose brief and tool schemas *were* measured and came to nothing. Distinct
+#: from `None`, which means "never measured" and makes the trigger assume the shipped
+#: catalog's several thousand tokens rather than zero.
+_NO_OVERHEAD = TurnOverhead(system=0, tools=0)
 
 
 def _response(input_tokens: int, output_tokens: int = 0) -> ModelResponse:
@@ -370,7 +382,9 @@ def _response(input_tokens: int, output_tokens: int = 0) -> ModelResponse:
     [(9_000, False), (9_500, True), (9_900, True)],
 )
 def test_should_compact_measures_against_the_window(used: int, expected: bool):
-    assert should_compact([_response(used)], 10_000, 0.95) is expected
+    # A measured (and here, empty) overhead, so this reads the reported footprint against
+    # the threshold and nothing else — the unmeasured-overhead fallback has its own tests.
+    assert should_compact([_response(used)], 10_000, 0.95, overhead=_NO_OVERHEAD) is expected
 
 
 def test_should_compact_declines_without_a_declared_window():
@@ -382,8 +396,11 @@ def test_should_compact_declines_without_a_declared_window():
 def test_should_compact_falls_back_to_an_estimate_when_usage_is_unreported():
     """Local servers commonly report `input_tokens=0`, which `context_footprint` treats as
     unmeasured. Without the estimate the feature would be dead on exactly that setup."""
-    big = ModelRequest(parts=[UserPromptPart(content="x" * 40_000)])
-    assert should_compact([big, ModelResponse(parts=[TextPart(content="y")])], 10_000, 0.95)
+    # Comfortably over the threshold at the prose rate `estimate_tokens` converts at.
+    big = ModelRequest(parts=[UserPromptPart(content="x" * 60_000)])
+    assert should_compact(
+        [big, ModelResponse(parts=[TextPart(content="y")])], 10_000, 0.95, overhead=_NO_OVERHEAD
+    )
 
 
 def test_the_estimate_ignores_binary_content():
@@ -395,35 +412,9 @@ def test_the_estimate_ignores_binary_content():
 
 
 # --- the summarizer ----------------------------------------------------------
-
-
-def test_render_transcript_labels_turns_and_keeps_tool_traffic():
-    rendered = render_transcript(
-        [
-            ModelRequest(parts=[UserPromptPart(content="find it")]),
-            ModelResponse(parts=[ToolCallPart(tool_name="web", args={"q": "x"}, tool_call_id="1")]),
-            ModelRequest(
-                parts=[ToolReturnPart(tool_name="web", content="found", tool_call_id="1")]
-            ),
-            ModelResponse(parts=[TextPart(content="here you go")]),
-        ]
-    )
-    assert "OPERATOR: find it" in rendered
-    assert "ASSISTANT called web" in rendered
-    assert "TOOL web returned: found" in rendered
-    assert "ASSISTANT: here you go" in rendered
-
-
-def test_render_transcript_elides_the_middle_when_over_budget():
-    """What is being folded is most of the *main* model's window; the utility model may be
-    smaller. Both ends are kept — how the thread opened and where it currently stands — and
-    the middle goes, rather than the head-only cut a plain truncation would make."""
-    messages = [ModelRequest(parts=[UserPromptPart(content=f"message-{i:02d}")]) for i in range(60)]
-    rendered = render_transcript(messages, max_input_tokens=50)  # 200 chars
-    assert "characters of the middle omitted" in rendered
-    assert "message-00" in rendered  # the opening survives
-    assert "message-59" in rendered  # so does the current state
-    assert "message-30" not in rendered  # the middle is what pays
+#
+# How the transcript is rendered, fenced and chunked lives in `test_compaction_summarizer`;
+# what stays here is the fold's contract with the store and the run.
 
 
 async def test_summarize_history_degrades_to_none_on_failure():
@@ -478,7 +469,11 @@ async def test_compact_conversation_end_to_end():
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="the story so far"), keep_turns=2
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="the story so far"),
+            keep_turns=2,
         )
         assert outcome is not None
         # The stored summary is labelled, so the model can't read it as the operator's own
@@ -499,7 +494,11 @@ async def test_the_outcome_reports_what_the_fold_cost():
             store.record(cid, _turn(f"q{i} {'padding ' * 200}", f"a{i} {'padding ' * 200}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="short"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
         )
         assert outcome is not None
         assert outcome.messages_compacted == 8
@@ -521,7 +520,11 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
             store.record(cid, _turn(f"q{i} {'padding ' * 200}", f"a{i} {'padding ' * 200}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="short"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
         )
         assert outcome is not None
 
@@ -535,6 +538,55 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
         assert (user.messages_compacted, user.tokens_before, user.tokens_after) == (0, 0, 0)
 
 
+async def test_the_fold_reason_survives_a_cold_read():
+    """The one fact on the divider that cannot be re-derived from the messages: *why* the
+    chassis folded. It is written onto the checkpoint's own metadata rather than a column,
+    so the assertion that matters is that it comes back after the in-memory tree is gone —
+    a reload must name the same cause the operator watched arrive."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        for i in range(4):
+            store.record(cid, _turn(f"q{i}", f"a{i}"))
+
+        outcome = await compact_conversation(
+            store,
+            cid,
+            reason="overflow",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
+        )
+        assert outcome is not None
+        assert outcome.reason == "overflow"
+
+        warm = next(v for v in await store.messages_view(cid) if v.role == "compaction")
+        assert warm.compaction_reason == "overflow"
+
+        # …and again off the sealed blob, with nothing left in memory to read it from.
+        await store._worker.join()
+        store._cache.clear()
+        cold = next(v for v in await store.messages_view(cid) if v.role == "compaction")
+        assert cold.compaction_reason == "overflow"
+        # An ordinary turn has no reason to report, on either path.
+        assert all(
+            v.compaction_reason is None
+            for v in await store.messages_view(cid)
+            if v.role != "compaction"
+        )
+
+
+async def test_a_checkpoint_written_before_reasons_reads_as_none():
+    """Every fold already in an operator's database predates the metadata, and there is no
+    migration to backfill something nobody recorded. The projection has to answer "unknown"
+    rather than guess the most common trigger — the divider drops the segment, where a
+    wrong one would tell them the provider forced a fold they asked for."""
+    legacy = ModelRequest(parts=[UserPromptPart(content="SUMMARY")])
+    assert legacy.metadata is None
+    views = project_tree([("chk", legacy)], compacted_ids=frozenset({"chk"}))
+    assert [v.role for v in views] == ["compaction"]
+    assert views[0].compaction_reason is None
+
+
 async def test_a_second_folds_stats_cover_only_what_it_folded():
     """A second compaction stands in for the first summary plus what followed it — not the
     original turns all over again. Its divider must say so, on both paths."""
@@ -544,12 +596,20 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
         for i in range(2):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
         first = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="first"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="first"),
+            keep_turns=0,
         )
         for i in range(2, 5):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
         second = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="second"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="second"),
+            keep_turns=0,
         )
         assert first is not None and second is not None
         assert first.messages_compacted == 4  # q0/a0/q1/a1
@@ -701,6 +761,10 @@ async def test_a_thread_below_the_threshold_is_left_alone():
         cid = await store.create_conversation(OPERATOR_ID)
         for i in range(4):
             store.record(cid, _loaded_turn(f"q{i}", f"a{i}", 100))  # 1% of the window
+        # This thread's brief and schemas are measured and empty, so the trigger reads the
+        # 1% and nothing else. Left unmeasured it would assume the shipped catalog, which
+        # alone overruns the deliberately tiny window these fixtures use.
+        await store.set_overhead(cid, TurnOverhead(system=0, tools=0))
 
         run = await _run_turn(app, cid, policy=build_auto_compact_policy(Settings()))
         assert run.status is RunStatus.done
@@ -870,10 +934,11 @@ async def test_a_steered_turn_replays_without_losing_the_next_turns_prompt():
 def test_the_policy_resolves_from_config_defaults():
     policy = build_auto_compact_policy(get_settings())
     assert policy.enabled is True
-    assert policy.threshold == pytest.approx(0.95)
-    # Nothing is retained after the boundary by default: the summary *is* the replay, and
-    # a retained tail would restate what it already covers at the moment there is no room.
-    assert policy.keep_turns == 0
+    # 80%, not 95%: a fold at 95% leaves no room for the turn that triggered it.
+    assert policy.threshold == pytest.approx(0.80)
+    # The last few exchanges survive verbatim — a summary is at its most lossy about the
+    # work in flight, which is exactly the work the next turn continues.
+    assert policy.keep_turns == 3
 
 
 def test_the_policy_takes_operator_overrides():
@@ -946,8 +1011,10 @@ async def test_manual_compact_folds_and_returns_the_refreshed_detail(monkeypatch
 
         resp = await client.post(f"/conversations/{cid}/compact")
         assert resp.status_code == 200
-        roles = [m["role"] for m in resp.json()["messages"]]
-        assert "compaction" in roles
+        divider = next(m for m in resp.json()["messages"] if m["role"] == "compaction")
+        # The operator pressed the button, so that is what the divider says — not the
+        # threshold, which this path ignores entirely.
+        assert divider["compaction_reason"] == "manual"
 
 
 async def test_manual_compact_409s_when_there_is_nothing_to_fold(monkeypatch):

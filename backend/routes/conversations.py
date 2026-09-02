@@ -29,8 +29,8 @@ from services.context_budget import compose
 from services.conversation_view import MessageView
 from services.conversations import (
     ConversationSummaryView,
-    context_footprint,
     conversation_totals,
+    footprint_or_estimate,
     last_request_usage,
 )
 from services.modes import DEFAULT_MODE, mode_spec
@@ -149,6 +149,12 @@ class MessageOut(BaseModel):
     messages_compacted: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
+    # `role == "compaction"` only — what triggered the fold (`threshold`/`overflow`/
+    # `manual`), matching the live `conversation.compacted` event's `reason`, so a divider
+    # says the same thing after a reload as it did when the operator watched it appear.
+    # `None` on every other role, and on a checkpoint folded before the reason was
+    # recorded — the divider states it as an extra segment and reads correctly without it.
+    compaction_reason: str | None = None
 
 
 class ActiveRun(BaseModel):
@@ -298,6 +304,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         messages_compacted=view.messages_compacted,
         tokens_before=view.tokens_before,
         tokens_after=view.tokens_after,
+        compaction_reason=view.compaction_reason,
     )
 
 
@@ -310,12 +317,19 @@ async def _detail(
     switch, rewind)."""
     store = deps.store(request)
     messages = await store.messages_view(conversation_id)
-    # Seed the context meter from the last turn's footprint; only pay to resolve the
-    # window when there's a footprint to measure against it. The window is the
-    # default ``main`` model's (no per-conversation endpoint is persisted, so that's
-    # what the next turn would run on).
+    # Seed the context meter from the last turn's footprint — or, where the endpoint
+    # reported no usage (the common local case), from the same estimate the live gauge
+    # falls back to, so reopening a thread doesn't blank a ring that was filling a moment
+    # ago. Only pay to resolve the window when there is something to measure against it.
+    # The window is the default ``main`` model's (no per-conversation endpoint is
+    # persisted, so that's what the next turn would run on).
     history = await store.history(conversation_id)
-    used = context_footprint(history)
+    overhead = await store.get_overhead(conversation_id)
+    used = footprint_or_estimate(
+        history,
+        overhead,
+        fallback_overhead_tokens=get_settings().context_overhead_fallback_tokens,
+    )
     window: int | None = None
     context: ContextWindow | None = None
     if used is not None:
@@ -332,7 +346,7 @@ async def _detail(
             # turn recorded. Same turn as `used` above, so both halves of the readout
             # describe the same request. Absent for a thread that hasn't run one since
             # this was recorded, which shows as no breakdown rather than a guessed one.
-            compose(used, await store.get_overhead(conversation_id), history),
+            compose(used, overhead, history),
         )
     # The same figures the live stream reports, rebuilt from the same messages by the
     # same function — the counts and tokens off the active path, the wall-clock off the
@@ -948,11 +962,18 @@ async def compact_conversation_now(
             raise HTTPException(status_code=404, detail="model endpoint not found") from None
         except DegradedCapabilityError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # The threshold and the on/off switch are deliberately ignored here, but the
+        # retained tail is not: it is how much of the work in flight survives the fold, and
+        # the operator's answer to that is the same whether the fold was asked for or fired
+        # on its own.
+        auto = await get_auto_compact(deps.settings_store(request), OPERATOR_ID)
         outcome = await compact_conversation(
             store,
             conversation_id,
             model=utility.model,
+            reason="manual",
             reasoning_off=utility.reasoning_off,
+            keep_turns=auto.keep_turns,
         )
         if outcome is None:
             raise HTTPException(

@@ -27,8 +27,8 @@ from pydantic_ai.usage import RunUsage
 
 from agent.overhead import measure_overhead
 from core.db import init_db, make_engine
+from core.text import CHARS_PER_TOKEN_JSON
 from runs import Run, RunStream
-from services.context_budget import CHARS_PER_TOKEN_JSON
 from services.modes import MODES
 from services.permissions import PERMISSION_LEVELS
 from services.settings_store import SettingsStore

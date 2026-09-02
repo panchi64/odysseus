@@ -12,6 +12,7 @@
  * placement belong to whoever is folding — these only translate.
  */
 
+import { asCompactionReason } from "../compactionReason";
 import { describeToolArgs, describeToolResult } from "../toolSummary";
 import { sessionMode } from "~/lib/modes";
 import type {
@@ -373,6 +374,7 @@ export function toMessage(dto: MessageDTO): ChatMessage {
     foldedMessages: dto.messages_compacted ?? undefined,
     tokensBefore: dto.tokens_before ?? undefined,
     tokensAfter: dto.tokens_after ?? undefined,
+    compactionReason: asCompactionReason(dto.compaction_reason),
   };
   if (dto.role !== "assistant") return base;
   // Cold history is still flat (no recorded emission order), so reconstruct the

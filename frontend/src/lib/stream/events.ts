@@ -254,6 +254,27 @@ export interface ConversationTitled extends Base {
   title: string;
 }
 
+/** Why a fold happened. `threshold` is the ordinary one — the projected footprint
+ *  reached the operator's percentage before the turn ran. `overflow` is the recovery
+ *  path: the provider refused the request as too large, so the chassis folded and
+ *  retried inside the same turn. `manual` is COMPACT NOW. The operator reads a very
+ *  different story into each, so the wire carries which rather than leaving the UI to
+ *  infer it from timing. Mirrors backend/runs/events.py. */
+export type CompactionReason = "threshold" | "overflow" | "manual";
+
+/** A fold is starting. Emitted *before* the summarizer call, which can take tens of
+ *  seconds on a long thread — without it the turn simply stalls with nothing on
+ *  screen, and the only account of the pause arrives after it is over. `messages` and
+ *  `tokens_estimate` are what is about to be folded, so the row can say what the wait
+ *  is for; the settled figures ride on `conversation.compacted`. */
+export interface CompactionStarted extends Base {
+  type: "compaction.started";
+  conversation_id: string;
+  reason: CompactionReason;
+  messages: number;
+  tokens_estimate: number;
+}
+
 /** The thread's earlier turns were folded into a summary before this turn ran,
  *  because its context footprint reached the operator's threshold. Nothing was
  *  deleted — the transcript keeps every turn; this marks where the *model's*
@@ -282,6 +303,10 @@ export interface ConversationCompacted extends Base {
    *  a tree node is not a rendered message, so the client would otherwise have to
    *  guess and could land somewhere a reload disagrees with. Null ⇒ append. */
   after_message_id: string | null;
+  /** What triggered the fold, paired with the `compaction.started` that opened it.
+   *  Optional only so an older backend still renders the divider — it defaults to the
+   *  ordinary case there, which is what such a backend could only have meant. */
+  reason?: CompactionReason;
 }
 /** This turn opened another conversation — today only a research thread, started
  *  by `research_start`. The new thread appears in the session list a moment
@@ -451,7 +476,28 @@ export interface LimitNotice extends Base {
     | "context"
     | "search";
   message: string;
+  /** The stop marker this notice announces, when the bound also blocked the turn — the
+   *  same string the turn persists as its `blocked_reason`. Two context stops share one
+   *  `limit` value and do not share one remedy, so the toast reads the remedy off this
+   *  rather than off prose. Optional on the wire: an older backend sends none. */
+  detail?: string | null;
 }
+
+/** The exact `run.ended` detail (and persisted `blocked_reason`) a turn carries when the
+ *  provider refused the request as too large and the chassis could not fold its way out.
+ *  Exported from `agent/model_errors.py` on the backend and mirrored verbatim here,
+ *  because it is the one stop the operator has a *specific* remedy for — the blocked
+ *  turn's marker keys its "Compact and retry" control on this string, live and on
+ *  reload. Any other stop reads as a plain bound and offers Continue alone. */
+export const CONTEXT_OVERFLOW_DETAIL = "context window exceeded";
+
+/** The same ceiling reached *after* the turn folded the thread and retried. Mirrored from
+ *  `agent/model_errors.py` for the opposite reason to the constant above: it is the case
+ *  where "Compact and retry" must **not** be offered — the fold already happened, and a
+ *  button that re-sends the same oversized request is a button that lies. A turn carrying
+ *  this reads as a plain stop, and the context toast drops its remedy sentence. */
+export const CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL =
+  "context window exceeded after compaction";
 
 export type RunEvent =
   | RunStarted
@@ -471,6 +517,7 @@ export type RunEvent =
   | ViewSnapshot
   | BrowserLive
   | ConversationTitled
+  | CompactionStarted
   | ConversationCompacted
   | ConversationLinked
   | ContextInjected

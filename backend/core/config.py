@@ -377,30 +377,56 @@ class Settings(BaseSettings):
     upload_extractor: Literal["auto", "mineru", "basic"] = "auto"
     upload_mineru_timeout_s: float = 300.0
 
-    # Conversation auto-compaction — the **only** context reduction in the product, and
-    # the only one that fires on measured pressure rather than unconditionally. Once a
-    # thread's measured footprint reaches `auto_compact_threshold` of the model's context
-    # window, everything older than the last `auto_compact_keep_turns` exchanges is
-    # summarized by the utility model into one checkpoint, and the thread carries on from
-    # that summary plus the retained turns. `auto_compact_keep_turns` is 0 by default:
-    # the summary is the whole of what the model replays, so nothing sits after the
-    # boundary duplicating what the summary already says.
+    # Conversation auto-compaction — the **only** context reduction that fires on measured
+    # pressure rather than unconditionally. Once a thread's *projected* footprint (what is
+    # already in the replay plus the prompt and context about to be added) reaches
+    # `auto_compact_threshold` of the model's context window, everything older than the last
+    # `auto_compact_keep_turns` exchanges is summarized by the utility model into one
+    # checkpoint, and the thread carries on from that summary plus the retained turns.
+    # The threshold is 0.80, not the old 0.95: at 95% the fold leaves no room for the turn
+    # that triggered it, so the very next request overflows anyway. `auto_compact_keep_turns`
+    # is 3, not 0 — a summary is lossy about the exchange in flight, and the last few turns
+    # verbatim are what keeps a fold from derailing the work the operator is mid-way through.
     # Nothing is deleted: the operator's transcript keeps every turn, and only what is
     # re-sent to the model shrinks. It fires **between** turns, in the orchestrator prelude,
-    # so it can never disturb reasoning already in flight. It is also not a safety net — a
-    # prompt that overruns the window anyway still stops the run with a context notice.
+    # so it can never disturb reasoning already in flight — with one exception: a provider
+    # context-overflow inside a turn folds once and retries the failed request.
     # `auto_compact_input_max_tokens` bounds the transcript handed to the summarizer, which
     # by definition is folding most of the *main* model's window into a utility model that
-    # may be smaller; `auto_compact_max_tokens` is the summary's own output budget, sized
-    # (like the titler's) to leave room for a `<think>` block on a runtime that ignores the
-    # reasoning-off lever. Enabled/threshold are the *defaults* — the operator overrides
-    # them at runtime via `PUT /chat/settings`, and per thread via `/conversations/{id}`.
+    # may be smaller; a transcript over the bound is summarized in chunks rather than
+    # elided, so the ceiling buys throughput rather than fidelity. `auto_compact_max_tokens`
+    # is the summary's own output budget, sized (like the titler's) to leave room for a
+    # `<think>` block on a runtime that ignores the reasoning-off lever.
+    # `auto_compact_timeout_s` sits *below* `run_inactivity_timeout_s` (120s) on purpose:
+    # a summarizer allowed to run as long as the watchdog would let the watchdog kill the
+    # run it was trying to save. Enabled/threshold/keep-turns are the *defaults* — the
+    # operator overrides them at runtime via `PUT /chat/settings`, and enablement per thread
+    # via `/conversations/{id}`.
     auto_compact_enabled: bool = True
-    auto_compact_threshold: float = 0.95
-    auto_compact_keep_turns: int = 0
-    auto_compact_input_max_tokens: int = 24000
+    auto_compact_threshold: float = 0.80
+    auto_compact_keep_turns: int = 3
+    auto_compact_input_max_tokens: int = 32000
     auto_compact_max_tokens: int = 4096
-    auto_compact_timeout_s: float = 120.0
+    auto_compact_timeout_s: float = 100.0
+
+    # What the footprint estimator assumes the per-turn overhead costs — instructions,
+    # system prompt and tool schemas — when a thread carries no measured `TurnOverhead`
+    # record (every turn taken before the record existed, and the first turn of a fresh
+    # thread). The assembled catalog measures at ~14k tokens, so the alternative default,
+    # zero, would tell the compaction trigger a nearly-full thread had room to spare.
+    # Deliberately under the measured figure: the estimate is a fallback, and it should
+    # nudge the trigger early without folding a thread that was never under pressure.
+    context_overhead_fallback_tokens: int = 12000
+
+    # Anthropic prompt caching (services/providers/anthropic.py): the TTL requested on the
+    # cache breakpoints the adapter sets over the instructions and the tool definitions —
+    # the two prefix segments that are byte-identical across every turn of a thread. "5m"
+    # is Anthropic's standard tier and covers back-to-back turns; "1h" costs more to write
+    # and pays off only when the operator returns to a thread after a long pause.
+    # "off" sends no breakpoints at all — the escape hatch for an Anthropic-compatible
+    # proxy that rejects `cache_control` outright, where the choice is between paying full
+    # price for every prefix and not reaching the endpoint at all.
+    anthropic_cache_ttl: Literal["5m", "1h", "off"] = "5m"
 
 
 @lru_cache

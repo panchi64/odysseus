@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic_ai import ModelRequest, UserPromptPart
 
 from agent.flush import CANCELLED_DETAIL, ERRORED_DETAIL, PersistContext, TurnFlush
+from agent.history import TurnStart
 from runs import Run, RunStatus, RunStream
 
 
@@ -38,7 +39,7 @@ def test_the_context_is_read_when_it_flushes_not_when_it_is_armed():
     # arm time would record every such flush against an empty turn.
     run = _run()
     recorded: list = []
-    live = {"start": 0, "ids": []}
+    live: dict = {"start": TurnStart(), "ids": []}
     flush = _flush(
         run,
         lambda: [_message("the question")],
@@ -49,19 +50,21 @@ def test_the_context_is_read_when_it_flushes_not_when_it_is_armed():
     )
     flush.arm()
 
-    live["start"] = 7  # the turn got under way after arming
+    live["start"] = TurnStart(7)  # the turn got under way after arming
     live["ids"] = ["upload-1"]
     run.on_cancel()
 
     (_messages, _detail, ctx) = recorded[0]
-    assert ctx.start == 7
+    assert ctx.start == TurnStart(7)
     assert ctx.attachment_ids == ["upload-1"]
 
 
 def test_a_stop_before_anything_exists_records_nothing():
     run = _run()
     recorded: list = []
-    flush = _flush(run, list, lambda: PersistContext(conversation_id="c", start=0), recorded)
+    flush = _flush(
+        run, list, lambda: PersistContext(conversation_id="c", start=TurnStart()), recorded
+    )
     flush.arm()
 
     run.on_timeout("ran out of time")
@@ -75,7 +78,10 @@ def test_a_recorded_turn_is_not_recorded_again_by_the_error_path():
     run = _run()
     recorded: list = []
     flush = _flush(
-        run, lambda: [_message("q")], lambda: PersistContext(conversation_id="c", start=0), recorded
+        run,
+        lambda: [_message("q")],
+        lambda: PersistContext(conversation_id="c", start=TurnStart()),
+        recorded,
     )
     flush.arm()
 
@@ -93,7 +99,10 @@ def test_disarming_stops_a_late_bound_from_re_recording_a_finished_turn():
     run = _run()
     recorded: list = []
     flush = _flush(
-        run, lambda: [_message("q")], lambda: PersistContext(conversation_id="c", start=0), recorded
+        run,
+        lambda: [_message("q")],
+        lambda: PersistContext(conversation_id="c", start=TurnStart()),
+        recorded,
     )
     flush.arm()
     flush.disarm()
@@ -110,7 +119,7 @@ def test_a_bound_blocks_the_run_but_a_cancel_does_not():
     _flush(
         blocked,
         lambda: [_message("q")],
-        lambda: PersistContext(conversation_id="c", start=0),
+        lambda: PersistContext(conversation_id="c", start=TurnStart()),
         recorded,
     ).arm()
     blocked.on_timeout("ran out of time")
@@ -122,7 +131,7 @@ def test_a_bound_blocks_the_run_but_a_cancel_does_not():
     _flush(
         cancelled,
         lambda: [_message("q")],
-        lambda: PersistContext(conversation_id="c", start=0),
+        lambda: PersistContext(conversation_id="c", start=TurnStart()),
         recorded2,
     ).arm()
     cancelled.on_cancel()
@@ -134,7 +143,10 @@ def test_the_error_path_marks_the_turn_with_its_own_sentence():
     run = _run()
     recorded: list = []
     flush = _flush(
-        run, lambda: [_message("q")], lambda: PersistContext(conversation_id="c", start=0), recorded
+        run,
+        lambda: [_message("q")],
+        lambda: PersistContext(conversation_id="c", start=TurnStart()),
+        recorded,
     )
 
     flush.flush_error()

@@ -45,9 +45,8 @@ from pydantic_ai import InstructionPart, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models import ModelRequestContext
 
-from core.text import truncate_on_boundary
+from core.text import CHARS_PER_TOKEN_PROSE, truncate_on_boundary
 from runs import INJECTED_TEXT_LIMIT, ContextInjected, Run
-from services.context_budget import CHARS_PER_TOKEN_PROSE
 from tools.deps import RunDeps
 
 
@@ -76,10 +75,10 @@ def contributor_id(provider: Callable[..., Any]) -> str:
 def injected_tokens(text: str) -> int:
     """A contribution's size, on the prose rate the composition readout already uses.
 
-    Not ``conversation_view.estimate_tokens``' flat four-characters-a-token: these blocks
-    are prose and land in the standing brief, so counting them at the brief's own rate is
-    what keeps an injection row and the gauge segment it belongs to from disagreeing about
-    the same text. Coarse either way — every surface renders it with a `~`."""
+    Prose rather than the JSON rate: these blocks land in the standing brief as English,
+    so counting them at the brief's own rate is what keeps an injection row and the gauge
+    segment it belongs to from disagreeing about the same text. Coarse either way — every
+    surface renders it with a `~`."""
     return round(len(text) / CHARS_PER_TOKEN_PROSE)
 
 

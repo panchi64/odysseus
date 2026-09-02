@@ -44,6 +44,12 @@ function activeLabel(blocks: AssistantBlock[] | undefined): string {
     // for is happening — the chassis is deciding whether to let it.
     case "review":
       return "Checking permission";
+    // A fold at the tail is one still running — the summarizer is a model call of its
+    // own, and it is the longest pause in a turn that produces nothing. "Working" would
+    // describe it as the agent's work, which it is not: the chassis is buying the turn
+    // the room to carry on.
+    case "compaction_progress":
+      return last.compaction.done ? "Working" : "Compacting context";
     case "host_command":
       return last.command.phase === "pending"
         ? "Awaiting approval"

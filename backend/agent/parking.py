@@ -49,6 +49,7 @@ from services.conversations import ConversationBinding, ConversationStore
 from services.notifications import NotificationService
 
 from .answers import questions_of
+from .compaction_context import CompactionContext
 from .naming import TitleContext, approval_conversation_title
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,10 @@ class ParkedTurn:
     # the parked turn's messages too, once it finally completes).
     conversation_id: str | None = None
     persist_from: int = 0
+    # And how many leading parts of the message *at* that index belong to the history in
+    # front of the turn rather than to the turn — non-zero only when an overflow fold
+    # rebuilt the replay underneath this turn and the boundary collapsed into one message.
+    persist_from_parts: int = 0
     # When a *verifier* correction is what parked, the [start, end] message range
     # to drop on the eventual persist (the rejected answer + the synthetic nudge),
     # so the resume records a clean history too.
@@ -107,6 +112,11 @@ class ParkedTurn:
     # it would resolve whatever is bound *now*, which need not be the model the parked
     # agent still holds — so a re-read would be a second, disagreeing source for one fact.
     vision: bool = True
+    # What this turn may fold with, carried for the same reason `binding` is: a resume
+    # continues a turn that was already near the model's ceiling, and the recovery it needs
+    # when a request overruns cannot be re-derived here — the resume orchestrator has no
+    # settings store, no policy and no utility model. None ⇒ this turn cannot fold.
+    compaction: CompactionContext | None = None
 
 
 def summarize_call(name: str, args: dict[str, Any]) -> str:
@@ -129,6 +139,7 @@ async def park_for_input(
     request_limit: int | None = None,
     binding: ConversationBinding = DEFAULT_BINDING,
     vision: bool = True,
+    compaction: CompactionContext | None = None,
 ) -> None:
     # Only the calls still awaiting the operator are announced; the ones a grant or the
     # thread's level already settled ride silently on the parked payload and merge into
@@ -207,5 +218,6 @@ async def park_for_input(
             request_limit=request_limit,
             binding=binding,
             vision=vision,
+            compaction=compaction,
         )
     )

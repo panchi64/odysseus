@@ -13,8 +13,9 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider as _SdkProvider
 from pydantic_ai.settings import ModelSettings
 
+from core.config import get_settings
 from core.exceptions import DegradedCapabilityError
-from services.llm import EndpointSpec
+from services.llm import EndpointSpec, descriptor_of
 from services.providers.base import ProviderPreset
 from services.reasoning import ModelDescriptor
 
@@ -22,7 +23,6 @@ _DEFAULT_BASE_URL = "https://api.anthropic.com"
 # The Messages API demands a pinned version header on every request.
 _API_VERSION = "2023-06-01"
 _TIMEOUT = httpx.Timeout(8.0, connect=3.0)
-
 
 def _headers(api_key: str | None) -> dict[str, str]:
     headers = {"anthropic-version": _API_VERSION}
@@ -52,7 +52,9 @@ class AnthropicNativeProvider:
 
     def build_model(self, spec: EndpointSpec) -> Model:
         provider = _SdkProvider(api_key=spec.api_key, base_url=spec.base_url)
-        return AnthropicModel(spec.model, provider=provider)
+        return AnthropicModel(
+            spec.model, provider=provider, settings=self.model_settings(descriptor_of(spec))
+        )
 
     async def discover(
         self, base_url: str, api_key: str | None, *, client: httpx.AsyncClient | None = None
@@ -109,6 +111,40 @@ class AnthropicNativeProvider:
         # Claude's extended thinking is opt-in per request — a background call that
         # asks for nothing gets nothing, so there is no lever to pull here.
         return {}
+
+    def model_settings(self, descriptor: ModelDescriptor) -> ModelSettings:
+        """Prompt-cache breakpoints on the three prefixes a chat turn repeats verbatim.
+
+        A conversation re-sends its whole history on every turn, and in front of that
+        history sit two blocks that barely change at all: the standing instructions and
+        the tool catalog — about fourteen thousand tokens of schema before the first word
+        of the thread. Without a breakpoint every turn pays full price to re-read them.
+
+        The three settings are the three prefixes, and they compose: ``anthropic_cache``
+        is the automatic breakpoint that walks forward as the conversation grows,
+        ``anthropic_cache_instructions`` pins the system block and
+        ``anthropic_cache_tool_definitions`` pins the tool array. Only
+        ``anthropic_cache_messages`` conflicts with the automatic one, and it is
+        deliberately absent — it is the fallback for gateways that reject the top-level
+        parameter, not a fourth breakpoint.
+
+        Nothing here depends on ``descriptor``: caching is a property of the Messages
+        API, not of one Claude model, so every model this adapter builds gets it.
+
+        ``anthropic_cache_ttl = "off"`` returns **no settings at all** rather than a
+        disabled-looking trio. ``base_url`` is honored here, so this adapter also fronts
+        Anthropic-compatible proxies, and one that rejects ``cache_control`` fails the
+        request outright — an operator behind such a proxy needs a way to stop sending the
+        breakpoints, not a cheaper tier of them.
+        """
+        ttl = get_settings().anthropic_cache_ttl
+        if ttl == "off":
+            return {}
+        return {
+            "anthropic_cache": ttl,
+            "anthropic_cache_instructions": ttl,
+            "anthropic_cache_tool_definitions": ttl,
+        }
 
 
 PROVIDER = AnthropicNativeProvider()

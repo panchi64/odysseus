@@ -1,0 +1,499 @@
+"""Surviving the context ceiling — the projected trigger, and the in-turn recovery.
+
+Two related behaviours, one subject: a turn that would not fit.
+
+The **trigger** now measures what this turn is about to cost, not what the last one did.
+A thread at 70% with a 15% prompt in hand is a thread that must fold *now*; measuring the
+history alone could only ever notice after the fact, which is why the threshold had to sit
+at 95% to be safe.
+
+The **recovery** is what happens when the provider refuses anyway — because the estimate
+was low, because the operator pasted something enormous, because a tool returned far more
+than anyone expected. The old behaviour stopped the turn *and left the oversized request in
+history*, so it replayed on every later turn and the thread was finished. Now the turn
+folds once and re-sends the very request that overran, against the summary.
+
+The engine's own invariants are what these tests are really about: the persistence index
+moves with the fold (or the turn re-records history it never wrote), the retry happens
+once, and a correction — whose drop range is indexed into the pre-fold history — is barred
+from folding at all.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+
+import pytest
+from pydantic_ai import DeferredToolRequests, ModelRequest, ModelResponse
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import TextPart, UserPromptPart
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.models.wrapper import WrapperModel
+from pydantic_ai.usage import RequestUsage
+
+from agent import build_chat_orchestrator
+from agent.compaction_context import CompactionContext
+from agent.engine import _TurnResult, _verify_and_correct
+from agent.meta import Verdict
+from agent.model_errors import (
+    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
+    CONTEXT_OVERFLOW_DETAIL,
+    context_limit_message,
+)
+from agent.parking import park_for_input
+from agent.summarize import AutoCompactPolicy, should_compact
+from core.config import get_settings
+from routes.deps import OPERATOR_ID
+from runs import Run, RunStatus, RunStream, TurnOverhead
+
+from ._helpers import client_app
+
+#: Measured, and empty. These fixtures run against a deliberately tiny window, and an
+#: *unmeasured* overhead makes the trigger assume the shipped catalog — several thousand
+#: tokens, which alone would overrun it and fold every thread on sight.
+_NO_OVERHEAD = TurnOverhead(system=0, tools=0)
+
+#: Keep one exchange verbatim, so a fold leaves the replay ending on a response the way a
+#: real thread's does.
+_POLICY = AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=1)
+
+
+def _ctx_error() -> ModelHTTPError:
+    """A provider refusing an over-long prompt, in the shape that answers on its own code
+    rather than on a prose scan."""
+    return ModelHTTPError(
+        status_code=400,
+        model_name="m",
+        body={"error": {"code": "context_length_exceeded", "message": "too long"}},
+    )
+
+
+class _OverflowsThenAnswers(WrapperModel):
+    """A model that refuses its first ``failures`` requests as over-long, then answers.
+
+    The point of wrapping rather than faking: the retry has to survive the real library
+    path — history cleaning, the resume-without-prompt shape, the streaming node — and a
+    stub that answered without going through it would prove nothing about any of that."""
+
+    def __init__(self, *, failures: int = 1, answer: str = "the answer") -> None:
+        super().__init__(TestModel(custom_output_text=answer))
+        self.failures = failures
+        self.requests = 0
+
+    def _check(self) -> None:
+        self.requests += 1
+        if self.requests <= self.failures:
+            raise _ctx_error()
+
+    async def request(self, *args, **kwargs):  # type: ignore[override]
+        self._check()
+        return await super().request(*args, **kwargs)
+
+    @asynccontextmanager
+    async def request_stream(self, *args, **kwargs):  # type: ignore[override]
+        self._check()
+        async with super().request_stream(*args, **kwargs) as stream:
+            yield stream
+
+
+def _turn(prompt: str, answer: str, input_tokens: int) -> list:
+    """One recorded exchange whose answer reports a real prompt size, so the footprint is
+    readable off it."""
+    return [
+        ModelRequest(parts=[UserPromptPart(content=prompt)]),
+        ModelResponse(
+            parts=[TextPart(content=answer)],
+            usage=RequestUsage(input_tokens=input_tokens, output_tokens=10),
+        ),
+    ]
+
+
+def _texts(messages: list) -> list[str]:
+    out = []
+    for message in messages:
+        for part in message.parts:
+            content = getattr(part, "content", None)
+            if isinstance(content, str):
+                out.append(content)
+    return out
+
+
+async def _seed(store, *, tail_tokens: int, turns: int = 4) -> str:
+    cid = await store.create_conversation(OPERATOR_ID)
+    for i in range(turns - 1):
+        store.record(cid, _turn(f"q{i}", f"a{i}", 100))
+    store.record(cid, _turn(f"q{turns - 1}", f"a{turns - 1}", tail_tokens))
+    await store.set_overhead(cid, _NO_OVERHEAD)
+    return cid
+
+
+def _run_chat(app, cid: str | None, *, model, prompt="next question", **kwargs):
+    kwargs.setdefault("auto_compact", _POLICY)
+    orch = build_chat_orchestrator(
+        prompt,
+        model=model,
+        categories={},
+        utility_model=TestModel(custom_output_text="FOLDED AWAY"),
+        store=app.state.conversations if cid else None,
+        conversation_id=cid,
+        context_window=10_000,
+        **kwargs,
+    )
+    return app.state.runs.submit(kind="chat", owner_id=OPERATOR_ID, orchestrator=orch)
+
+
+def _bodies(run, type_: str) -> list:
+    return [e.body for e in run.stream.replay() if e.body.type == type_]
+
+
+# --- the in-turn recovery ----------------------------------------------------
+
+
+async def test_an_overflow_folds_the_thread_and_the_retried_request_answers():
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)  # nowhere near the threshold
+        before = len(await store.history(cid))
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        started = _bodies(run, "compaction.started")
+        assert [s.reason for s in started] == ["overflow"]
+        assert started[0].messages > 0
+        compacted = _bodies(run, "conversation.compacted")
+        assert [c.reason for c in compacted] == ["overflow"]
+        assert compacted[0].summary.endswith("FOLDED AWAY")
+
+        # The persistence index moved with the fold: the tree gains the checkpoint and
+        # exactly this turn's two messages — nothing re-recorded, nothing dropped.
+        await store._worker.join()
+        store._cache.clear()
+        after = _texts(await store.history(cid))
+        assert len(after) == before + 3
+        assert after[-2:] == ["next question", "the answer"]
+
+
+async def test_the_retry_replays_the_folded_history_not_the_original():
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        replayed = _texts(await store.model_history(cid))
+        # The summary now opens the model's view, and the turn that recovered sits on top.
+        assert replayed[0].endswith("FOLDED AWAY")
+        assert replayed[-2:] == ["next question", "the answer"]
+        # And the folded turns are still in the transcript — nothing was destroyed.
+        assert "q0" in _texts(await store.history(cid))
+
+
+async def test_a_second_overflow_blocks_with_the_detail_the_client_keys_on():
+    """One recovery per turn. A request that is still too big *after* a fold is too big
+    for a reason folding can't reach, and re-folding would strip the thread for nothing."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        model = _OverflowsThenAnswers(failures=2)
+        run = _run_chat(app, cid, model=model)
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        # A *different* marker from the recoverable stop: the client keys "Compact and
+        # retry" on that one, and folding again is exactly what just failed.
+        assert run.detail == CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL
+        assert model.requests == 2  # tried once more, and only once
+        assert len(_bodies(run, "compaction.started")) == 1
+        notice = _bodies(run, "limit.notice")[-1]
+        assert notice.limit == "context"
+        # The notice carries the same marker, so the toast can withhold the offer the
+        # blocked turn withholds — the two must never disagree about the remedy.
+        assert notice.detail == CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL
+        # Having already folded, the message must not send them round the same loop.
+        assert "Compact now" not in notice.message
+        assert "folded into a summary" in notice.message
+
+
+async def test_a_collapsed_fold_boundary_does_not_re_record_the_history():
+    """The boundary between the folded history and the turn can be *one* message.
+
+    A previous turn that stopped before it answered leaves history ending on a user
+    request; the fold hoists a checkpoint in front of it, and the turn's own prompt is
+    another user request right behind — three requests in a row, which both the library and
+    our own normalization collapse into one. Slicing the turn out at a message index there
+    hands the persist a message that is half checkpoint, half prompt, and the summary (with
+    everything else the replay put in front of the prompt) is re-recorded as words the
+    operator typed."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+        store.record(
+            cid,
+            [ModelRequest(parts=[UserPromptPart(content="dangling question")])],
+            blocked_reason=CONTEXT_OVERFLOW_DETAIL,
+        )
+        before = len(await store.history(cid))
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        await store._worker.join()
+        store._cache.clear()
+        after = _texts(await store.history(cid))
+        # The checkpoint, the prompt, the answer — and nothing said twice.
+        assert len(after) == before + 3
+        assert after[-2:] == ["next question", "the answer"]
+        assert sum("FOLDED AWAY" in text for text in after) == 1
+        assert after.count("dangling question") == 1
+
+
+async def test_a_fold_that_keeps_no_turns_records_the_checkpoint_once():
+    """The same collapse, reached the other way: with ``keep_turns=0`` the folded replay
+    *is* the checkpoint, so its last message is always a request and the boundary always
+    collapses — a thread on the shipped-legal minimum would double every summary."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+        before = len(await store.history(cid))
+
+        run = _run_chat(
+            app,
+            cid,
+            model=_OverflowsThenAnswers(),
+            auto_compact=AutoCompactPolicy(enabled=True, threshold=0.80, keep_turns=0),
+        )
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        await store._worker.join()
+        store._cache.clear()
+        after = _texts(await store.history(cid))
+        assert sum("FOLDED AWAY" in text for text in after) == 1
+        assert len(after) == before + 3
+        assert after[-2:] == ["next question", "the answer"]
+
+
+async def test_the_gauge_moves_when_the_overflow_fold_lands_not_when_it_answers():
+    """The prelude fold emits a fresh frame the moment it lands; the in-turn fold must too.
+    A thread that folds and then overruns anyway would otherwise leave the operator looking
+    at the pre-fold figure for good — a compaction that visibly did nothing."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=7_000)
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers(failures=2))
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        events = run.stream.replay()
+        fold = next(i for i, e in enumerate(events) if e.body.type == "conversation.compacted")
+        after = [e.body for e in events[fold:] if e.body.type == "run.metrics"]
+        assert after, "an in-turn fold must be followed by a fresh metrics frame"
+        assert after[0].context_used is not None
+        assert after[0].context_used < 7_000
+
+
+async def test_a_stateless_turn_still_blocks_with_the_same_detail():
+    """No store, no thread, nothing to fold — the honest outcome is the stop, and it must
+    carry the same marker the client keys its offer on."""
+    async with client_app() as (_client, app):
+        run = _run_chat(app, None, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        assert not _bodies(run, "compaction.started")
+        notice = _bodies(run, "limit.notice")[-1]
+        assert notice.detail == CONTEXT_OVERFLOW_DETAIL
+        assert "Compact now" in notice.message  # a fold is still the cheapest thing to try
+
+
+async def test_compaction_switched_off_is_not_overruled_by_an_overflow():
+    """Switching compaction off is an instruction, not a preference to be second-guessed:
+    the thread stops and offers the fold, rather than performing it uninvited."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=100)
+
+        orch = build_chat_orchestrator(
+            "next question",
+            model=_OverflowsThenAnswers(),
+            categories={},
+            utility_model=TestModel(custom_output_text="FOLDED AWAY"),
+            store=store,
+            conversation_id=cid,
+            context_window=10_000,
+            auto_compact=AutoCompactPolicy(enabled=False, threshold=0.80, keep_turns=1),
+        )
+        run = app.state.runs.submit(kind="chat", owner_id=OPERATOR_ID, orchestrator=orch)
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        assert not _bodies(run, "compaction.started")
+
+
+async def test_a_thread_with_nothing_left_to_fold_blocks_rather_than_looping():
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)  # no turns at all
+        await store.set_overhead(cid, _NO_OVERHEAD)
+
+        run = _run_chat(app, cid, model=_OverflowsThenAnswers())
+        await run.wait()
+
+        assert run.status is RunStatus.blocked
+        assert run.detail == CONTEXT_OVERFLOW_DETAIL
+        assert not _bodies(run, "conversation.compacted")
+
+
+# --- the projected trigger ---------------------------------------------------
+
+
+async def test_the_incoming_turn_counts_toward_the_threshold():
+    """70% on the thread, ~15% arriving with the prompt: over the 80% share, though the
+    history alone is well under it. Measuring only the history is what forced the old
+    threshold up to 95% — the incoming turn had to fit in whatever was left over."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=7_000)
+
+        run = _run_chat(app, cid, model=TestModel(custom_output_text="ok"), prompt="x" * 6_000)
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        assert [c.reason for c in _bodies(run, "conversation.compacted")] == ["threshold"]
+
+
+async def test_the_same_thread_without_the_prompt_is_left_alone():
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=7_000)
+
+        run = _run_chat(app, cid, model=TestModel(custom_output_text="ok"), prompt="hi")
+        await run.wait()
+
+        assert run.status is RunStatus.done
+        assert not _bodies(run, "conversation.compacted")
+
+
+async def test_the_gauge_moves_the_moment_the_fold_lands():
+    """S2: every response left in the replay reported its size against the history that
+    was just folded away. A frame emitted before the answer, reading the estimate rather
+    than that stale figure, is what stops the gauge sitting at 70% through the very turn
+    the fold made room for."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await _seed(store, tail_tokens=7_000)
+
+        run = _run_chat(app, cid, model=TestModel(custom_output_text="ok"), prompt="x" * 6_000)
+        await run.wait()
+
+        events = run.stream.replay()
+        fold = next(i for i, e in enumerate(events) if e.body.type == "conversation.compacted")
+        after = [e.body for e in events[fold:] if e.body.type == "run.metrics"]
+        assert after, "a fold must be followed by a fresh metrics frame"
+        assert after[0].context_used is not None
+        assert after[0].context_used < 7_000
+
+
+async def test_a_thread_that_never_measured_its_overhead_does_not_assume_zero():
+    """The brief and the tool schemas never reach the message history, so a thread whose
+    turns predate the per-thread measurement has nothing to read them off. Zero is the one
+    answer that is certainly wrong — the assembled catalog is worth thousands of tokens on
+    every request, and assuming it away is how a fold arrives too late to help."""
+    # A two-message thread that reports no usage at all: text-only it is worth nothing,
+    # and the only thing that can push it over a 14k window is the assumed catalog.
+    history = [*_turn("q", "a", 0)]
+    assert should_compact(history, 14_000, 0.80, overhead=None)
+    assert not should_compact(history, 14_000, 0.80, overhead=_NO_OVERHEAD)
+
+
+def test_a_parked_turn_carries_what_it_would_fold_with():
+    """An approval can sit for hours. The thread it resumes into is the one that was
+    already near its ceiling, and nothing in the resume orchestrator could re-derive the
+    policy, the store and the summarizer model it would need."""
+    run = Run(id="p", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    ctx = CompactionContext(
+        store=object(),  # type: ignore[arg-type]
+        conversation_id="c1",
+        policy=_POLICY,
+        model=TestModel(),
+        reasoning_off=None,
+        settings=get_settings(),
+    )
+
+    asyncio.run(
+        park_for_input(run, None, [], DeferredToolRequests(), set(), compaction=ctx)  # type: ignore[arg-type]
+    )
+
+    assert run.status is RunStatus.awaiting_input
+    assert run.parked_payload.compaction is ctx
+
+
+# --- the verifier's size guard -----------------------------------------------
+
+
+async def _reject(_prompt: str, _answer: str) -> Verdict:
+    return Verdict(ok=False, reason="incomplete")
+
+
+async def test_the_verifier_skips_a_correction_that_cannot_fit():
+    """A correction is a second full pass over a history that has just finished its first,
+    and it cannot fold (its drop range indexes the pre-fold history). Run against a window
+    with no room left, it buys a context stop in place of a real answer."""
+    run = Run(id="r", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    run.context_window = 10_000
+    run.context_overhead = _NO_OVERHEAD
+    turn = _TurnResult(
+        answer="an answer",
+        messages=[ModelRequest(parts=[UserPromptPart(content="x" * 40_000)])],
+    )
+
+    result = await _verify_and_correct(
+        run, None, "prompt", turn, set(), _reject, context_threshold=0.80
+    )
+
+    assert result is turn  # the answer survives
+    notice = [e.body for e in run.stream.replay() if e.body.type == "limit.notice"][-1]
+    assert notice.limit == "verify"
+    assert notice.message == "skipped: no room for a re-attempt"
+
+
+async def test_the_verifier_still_corrects_when_there_is_room():
+    run = Run(id="r", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    run.context_window = 10_000
+    run.context_overhead = _NO_OVERHEAD
+    turn = _TurnResult(answer="an answer", messages=[])
+
+    with pytest.raises(AttributeError):
+        # No agent to re-drive with — reaching that failure is the assertion: the guard
+        # let the correction through rather than skipping it.
+        await _verify_and_correct(
+            run, None, "prompt", turn, set(), _reject, context_threshold=0.80
+        )
+    messages = [e.body.message for e in run.stream.replay() if e.body.type == "limit.notice"]
+    assert messages == ["re-attempting: incomplete"]
+
+
+# --- the operator-facing sentence --------------------------------------------
+
+
+def test_the_stop_message_names_the_window_and_leads_with_what_to_do():
+    run = Run(id="t", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
+    run.context_window = 128_000
+    fresh = context_limit_message(run)
+    assert "128,000" in fresh
+    assert "Compact now" in fresh
+    # "Start a new chat" is the one option that abandons the thread; it must not lead.
+    assert not fresh.startswith("Start a new chat")
+    after_fold = context_limit_message(run, compacted=True)
+    assert "Compact now" not in after_fold
+    assert "128,000" in after_fold
