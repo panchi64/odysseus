@@ -3,7 +3,7 @@
 Compaction can now fire from three places inside one turn — the prelude's projected
 trigger, the in-turn recovery after a provider refuses an over-long request, and the same
 recovery on a resumed (previously parked) turn. Each needs the identical seven facts, and
-none of them is derivable where the second and third fire: ``_drive_turn`` has no settings
+none of them is derivable where the second and third fire: ``drive_turn`` has no settings
 store, no policy and no utility model, and a parked turn resumes minutes later in a
 different orchestrator entirely.
 

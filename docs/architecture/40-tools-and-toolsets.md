@@ -53,7 +53,7 @@ class RunDeps:
     sandbox: Sandbox | None = None                 # None ⇒ code-exec disabled, never host fallback
 ```
 
-The deps object is assembled once per run by the orchestrator (`agent/engine.py`) and is the *only* thing the gating stack and the tools are keyed on. New capabilities land as new fields here, never as imports inside a tool.
+The deps object is assembled once per turn by the turn loop (`agent/turn.py`) and is the *only* thing the gating stack and the tools are keyed on. New capabilities land as new fields here, never as imports inside a tool.
 
 ---
 
@@ -145,7 +145,7 @@ model requests a sensitive tool
         ToolApproved may carry override_args; ToolDenied.message is shown to the model so it adapts
 ```
 
-As built (`agent/engine.py`): the `Agent`'s `output_type` is `[str, DeferredToolRequests]`, so a turn either finishes with text or returns pending approvals. `agent/gating.py`'s `settle_deferred()` rules on each deferred call (grant, then the thread's permission level, then Auto's review), and whatever is left for the operator goes to `agent/parking.py`'s `park_for_approval()`, which stashes a `ParkedTurn` (the agent, the message history, the requests, any pending correction-drop range) on `run.parked_payload`; `build_resume_orchestrator()` consumes it and feeds the operator's decisions back in. **Pydantic AI decides *what* needs approval and *exactly what it would do*; we own *parking, notifying, waiting, resuming*.** Because the parked state is just serialized history + pending requests, it survives disconnect for free and can outlive the connection entirely for unattended runs.
+As built: the `Agent` is constructed in `agent/factory.py` with `output_type` `[str, DeferredToolRequests]`, so a turn either finishes with text or returns pending approvals. Inside `agent/turn.py`'s loop, `agent/gating.py`'s `settle_deferred()` rules on each deferred call (grant, then the thread's permission level, then Auto's review), and whatever is left for the operator goes to `agent/parking.py`'s `park_for_input()`, which stashes a `ParkedTurn` (the agent, the message history, the requests, any pending correction-drop range) on `run.parked_payload`; `build_resume_orchestrator()` consumes it and feeds the operator's decisions back in. **Pydantic AI decides *what* needs approval and *exactly what it would do*; we own *parking, notifying, waiting, resuming*.** Because the parked state is just serialized history + pending requests, it survives disconnect for free and can outlive the connection entirely for unattended runs.
 
 > The frozen v1 event protocol (D15) carries `approval.required`. D23 added an **optional `explanation`** field to it for the host-exec case — additive, no version bump.
 
@@ -221,7 +221,7 @@ Four properties are load-bearing and each is there for a reason that is easy to 
 
 ## 5. How it all composes (one run)
 
-1. The orchestrator assembles `RunDeps` (run, owner, disabled-tool set, capability handles) — `agent/engine.py:run_chat_turn`.
+1. The turn loop assembles `RunDeps` (run, owner, disabled-tool set, capability handles) — `agent/turn.py:drive_turn`.
 2. `build_agent_toolsets()` produces the gated, namespaced stack; the `Agent` is built with it (`deps_type=RunDeps`, `output_type=[str, DeferredToolRequests]`).
 3. The model runs its multi-step loop; for each call, the `_enabled_gate` and tool args are evaluated against `ctx.deps`. A non-sensitive tool executes and may emit `tool.progress`.
 4. A **sensitive** tool does *not* execute — the turn ends with `DeferredToolRequests`. The engine rules on each deferred call: a standing conversation grant runs it, the thread's permission level refuses or parks it, and at the Auto level the review settles it (§4.5). What is still unanswered parks (§4.1) and waits for `POST …/approve`.

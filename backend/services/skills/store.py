@@ -1,7 +1,7 @@
 """``SkillStore`` — persistence for Agent Skills bundles (`SKILL-1`…`SKILL-3`).
 
 The one implementation of every skill operation. The REST surface (`routes/skills.py`), the
-agent's toolset (`tools/skills.py`), and the per-turn catalog injection (`agent/engine.py`)
+agent's toolset (`tools/skills.py`), and the per-turn catalog injection (`agent/factory.py`)
 are all callers; none of them re-implements a rule from here, and none of them can bypass the
 format validators in :mod:`services.skills.bundle` — ``create`` and ``update`` re-run them, so
 a skill written through the API is exactly as standard-compliant as one imported from a zip.

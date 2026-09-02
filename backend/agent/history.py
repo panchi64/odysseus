@@ -151,7 +151,7 @@ def split_injected_requests(messages: list[ModelMessage]) -> list[ModelMessage]:
     """Give each mid-run injected operator message its own persisted request.
 
     Mid-run steering appends ``UserPromptPart``s onto the tool-return request the
-    model was about to receive (`_drive_turn`'s ``_inject_queued``). Persisting that
+    model was about to receive (`drive_turn`'s ``_inject_queued``). Persisting that
     merged request as-is would bury the operator's message inside a tool exchange —
     no tree node of its own, so no user bubble, no edit/regenerate anchor. Split it:
     the tool returns keep their request, and each injected part becomes its own

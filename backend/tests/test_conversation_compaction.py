@@ -5,8 +5,9 @@ the pressure-blind reductions (tool-result digesting, the attachment inline cap,
 output trim) are gone. What these guard, in order of how much damage getting them wrong
 would do:
 
-- **The persistence index.** ``agent/engine.py`` records a turn as
-  ``result.all_messages()[start:]`` with ``start = len(model_history)``. The replay view
+- **The persistence index.** ``agent/finalize.py`` records a turn as
+  ``result.all_messages()[start:]``, with ``start = len(model_history)`` measured in
+  ``agent/prelude.py`` after every history rewrite. The replay view
   reorders the tree, so if its length ever stopped matching what it represents, every turn
   after a compaction would persist the wrong slice.
 - **Branch safety.** A checkpoint grafted onto a reseated leaf would re-parent the incoming

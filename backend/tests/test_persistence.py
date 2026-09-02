@@ -519,7 +519,7 @@ async def test_cancel_parked_run_persists_the_parked_turn(tmp_path):
 
 
 async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path):
-    # Anything that escapes `_drive_turn` besides its specific bound catches (here: a
+    # Anything that escapes `drive_turn` besides its specific bound catches (here: a
     # tool raising a plain exception) must not silently drop the operator's own prompt
     # (and whatever the turn had already produced) from persistence — the orchestrator's
     # broad `except Exception` flushes it, carrying a legible marker, before the
@@ -565,7 +565,7 @@ async def test_unhandled_exception_persists_the_partial_turn_and_errors(tmp_path
 async def test_cooperative_cancel_flag_stops_the_turn(tmp_path):
     # `cancel_requested`, flipped directly here with no `RunRegistry.cancel()` and no
     # `task.cancel()` anywhere in the picture, must still stop a running turn at its
-    # next step boundary (`_drive_turn`'s `report_progress`) — proving the flag is now a
+    # next step boundary (`agent/turn.py`'s `report_progress`) — proving the flag is now a
     # real, independently-effective cooperative-cancel signal rather than dead state.
     toolset = FunctionToolset()
     run_ref: list = [None]

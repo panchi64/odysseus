@@ -94,7 +94,7 @@ def _brief_blocks(
     split a readout by. What *is* worth splitting by is which feature put text there,
     because that is the thing the operator can switch off.
 
-    Each provider is registered with a ``name`` (``agent/engine.py``), so the library
+    Each provider is registered with a ``name`` (``agent/factory.py``), so the library
     stamps its resolved part with ``InstructionId(AgentInstructionSource(), name=…)`` and
     the row is read straight off the part. A part with no name — our own literal
     instructions — falls into ``base``, as do the separators ``join`` puts between parts,

@@ -4,7 +4,7 @@ A model turn that wants a sensitive tool ends with the call *unexecuted* and the
 open: does this run, does it get refused, or does it go to the operator? Answering it is
 this module's whole job. :func:`settle_deferred` walks the batch and returns the two piles
 the turn continues on — the calls settled without a human, and the ones that need one —
-so ``engine.py`` is left with control flow rather than policy.
+so ``turn.py`` is left with control flow rather than policy.
 
 ``services/permissions`` owns the rules: what an action reaches, whether a deterministic
 allowlist clears it, and what a model's three scores add up to. None of that knows about

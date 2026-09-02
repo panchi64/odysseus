@@ -193,7 +193,7 @@ async def drive_turn(
         # is yielded before it streams (its request isn't in history yet), so this
         # never touches an in-flight model stream; a request mixing tool returns
         # with these user parts is split back into separate messages on persist
-        # (`_split_injected_requests`), which replays wire-identically because the
+        # (`split_injected_requests`), which replays wire-identically because the
         # library re-merges consecutive requests at wire-prep.
         #
         # Rebinds `parts` to a NEW list rather than appending in place. On a regenerate
@@ -201,7 +201,7 @@ async def drive_turn(
         # as the last history message — which the store handed out by reference from its
         # in-memory tree. Appending would therefore graft the steering text into the
         # operator's original user bubble for every later replay. Same invariant
-        # `_with_tail_context` documents: never mutate what the store shares.
+        # `with_tail_context` documents: never mutate what the store shares.
         queued = run.drain_messages()
         if queued:
             node.request.parts = [

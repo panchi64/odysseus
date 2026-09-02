@@ -4,7 +4,8 @@ Skills follow the **Agent Skills** standard's progressive disclosure, and these 
 levels two and three of it:
 
 1. Every *published* skill's name and description is already in the turn's instructions
-   (``agent/engine.py`` injects the catalog), so the model knows what exists without a call.
+   (``agent/factory.py`` registers the catalog's instruction provider), so the model knows
+   what exists without a call.
 2. ``open`` returns the skill's full ``SKILL.md`` instructions — the level the model pays for
    only when a skill is actually relevant.
 3. ``open`` **also stages the bundle into the run's workspace** under ``skills/{name}/``,

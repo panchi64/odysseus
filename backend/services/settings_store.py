@@ -42,7 +42,7 @@ AUTO_COMPACT_KEEP_TURNS_MAX = 20
 CONTEXT_WARN_THRESHOLD_KEY = "chat.context_warn_threshold"
 CONTEXT_ALERT_THRESHOLD_KEY = "chat.context_alert_threshold"
 
-# The agent's per-turn model-request ceiling (agent/engine.py's `UsageLimits`): the
+# The agent's per-turn model-request ceiling (agent/turn.py's `UsageLimits`): the
 # operator's runtime override of `agent_request_limit`. Every model round-trip spends
 # one, so this is what a tool-heavy turn actually runs out of.
 AGENT_REQUEST_LIMIT_KEY = "chat.agent_request_limit"

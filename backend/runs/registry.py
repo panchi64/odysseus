@@ -227,7 +227,7 @@ class RunRegistry:
 
         Two mechanisms exist, both armed here: ``run.cancel_requested`` is a
         cooperative flag the orchestrator's own loop checks at its next step
-        boundary (see ``agent/engine.py``'s ``chat-05`` wiring); ``task.cancel()``
+        boundary (see ``agent/turn.py``'s ``chat-05`` wiring); ``task.cancel()``
         below is the immediate hard backstop that fires regardless.
 
         Idempotent against a repeated cancel on the same run before the first

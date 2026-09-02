@@ -18,10 +18,10 @@ comes back as the call's own result.
 What lives *here* is the sequencing of one run and nothing else: arm the stop-flush
 hooks, prepare the turn, drive it, verify it, record it, name the thread, write the
 overhead — plus the error and ``finally`` paths that hold when any of that is cut short.
-It is also the one module in the package that reads ``get_settings()``; everything it
-calls is handed the object it resolved, so a turn measures itself against one set of
-values. Its neighbours carry the concerns that aren't the sequence, each with its own
-reason to change:
+It is also the only one of the modules carved out of it that reads ``get_settings()``;
+everything it calls along the sequence is handed the object it resolved, so a turn
+measures itself against one set of values. Its neighbours carry the concerns that aren't
+the sequence, each with its own reason to change:
 
 - ``factory.py`` — building the turn's ``Agent``: the catalog it is given, the standing
   instructions, and the three parts that are the thread's own (its mode, its permission

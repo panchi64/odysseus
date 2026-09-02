@@ -262,7 +262,7 @@ def _echo_user_texts():
 
 
 async def test_steering_on_a_regenerate_never_mutates_the_stored_user_message(tmp_path):
-    # Guards the invariant `_inject_queued` and `_with_tail_context` both document:
+    # Guards the invariant `_inject_queued` and `with_tail_context` both document:
     # never mutate what the store shares. On the regenerate path (`prompt is None`)
     # the library may build the first request by reusing the last history message's
     # own parts list — which the store hands out by reference from its in-memory tree

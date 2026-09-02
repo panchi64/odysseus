@@ -102,7 +102,7 @@ class Run:
     # against, and boundaries with no ceiling to apply them to, are equally inert.
     context_thresholds: ContextThresholds = DEFAULT_CONTEXT_THRESHOLDS
     # This run's wall-clock stopwatch, collecting a timing per model response as the
-    # translator walks the graph. Lives on the Run rather than in `_drive_turn` so it
+    # translator walks the graph. Lives on the Run rather than in `drive_turn` so it
     # survives a park/resume: an approval splits a turn into several segments, and a
     # timer scoped to one of them would report only the last.
     timer: TurnTimer = field(default_factory=TurnTimer)
