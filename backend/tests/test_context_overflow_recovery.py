@@ -34,7 +34,6 @@ from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
 from agent.compaction_context import CompactionContext
-from agent.engine import _verify_and_correct
 from agent.meta import Verdict
 from agent.model_errors import (
     CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
@@ -44,6 +43,7 @@ from agent.model_errors import (
 from agent.parking import park_for_input
 from agent.summarize import AutoCompactPolicy, should_compact
 from agent.turn import TurnResult
+from agent.verify import verify_and_correct
 from core.config import get_settings
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus, RunStream, TurnOverhead
@@ -458,7 +458,7 @@ async def test_the_verifier_skips_a_correction_that_cannot_fit():
         messages=[ModelRequest(parts=[UserPromptPart(content="x" * 40_000)])],
     )
 
-    result = await _verify_and_correct(
+    result = await verify_and_correct(
         run, None, "prompt", turn, set(), _reject, settings=get_settings(), context_threshold=0.80
     )
 
@@ -477,7 +477,7 @@ async def test_the_verifier_still_corrects_when_there_is_room():
     with pytest.raises(AttributeError):
         # No agent to re-drive with — reaching that failure is the assertion: the guard
         # let the correction through rather than skipping it.
-        await _verify_and_correct(
+        await verify_and_correct(
             run,
             None,
             "prompt",

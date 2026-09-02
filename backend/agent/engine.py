@@ -43,7 +43,6 @@ from contextlib import suppress
 from typing import Any
 
 from pydantic_ai import (
-    Agent,
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
@@ -52,13 +51,11 @@ from pydantic_ai import (
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from core.config import Settings, get_settings
+from core.config import get_settings
 from core.container import ServiceContainer
-from prompts.agent import VERIFIER_NUDGE
 from runs import (
     DEFAULT_CONTEXT_THRESHOLDS,
     ContextThresholds,
-    LimitNotice,
     Orchestrator,
     Run,
     RunStatus,
@@ -92,7 +89,7 @@ from .history import (
 )
 from .injections import announce_injection, contributor_id
 from .meta import Judge, make_utility_judge
-from .metrics import no_room_for, turn_metrics
+from .metrics import turn_metrics
 from .naming import (
     TitleContext,
     discard_title,
@@ -107,107 +104,9 @@ from .summarize import (
 )
 from .title import last_user_text
 from .turn import NO_CAPS, TurnResult, drive_turn
+from .verify import should_verify, verify_and_correct
 
 logger = logging.getLogger(__name__)
-
-
-def _should_verify(settings: Any, run: Run) -> bool:
-    """The verifier's heuristic trigger: judge only turns that produced a
-    checkable artifact (made a tool call). Off ⇒ judge every answer."""
-    if not settings.verify_heuristic:
-        return True
-    return bool(run.metrics and run.metrics.tool_calls)
-
-
-async def _verify_and_correct(
-    run: Run,
-    agent: Agent,
-    prompt: str,
-    turn: TurnResult,
-    announced: set[str],
-    judge: Judge,
-    *,
-    settings: Settings,
-    caps: ServiceContainer = NO_CAPS,
-    conversation_id: str | None = None,
-    disabled_tools: frozenset[str] = frozenset(),
-    partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
-    store: ConversationStore | None = None,
-    request_limit: int | None = None,
-    binding: ConversationBinding = DEFAULT_BINDING,
-    vision: bool = True,
-    drop_ref: list[tuple[int, int]] | None = None,
-    context_threshold: float | None = None,
-) -> TurnResult:
-    """Judge the answer; on failure make a single bounded corrective re-attempt.
-
-    A passing answer returns unchanged. Otherwise the correction's full history
-    is returned with a ``clean_drop`` range that ``_finalize`` removes on persist
-    (the rejected answer + the synthetic nudge), so the recorded history reads
-    original request → corrected answer. If the correction itself parks for
-    approval, the drop range rides on the parked payload so the resume cleans too;
-    if it hits a bound, it is returned as-is (no premature persist, no lost answer).
-    """
-    if not turn.answer or not turn.answer.strip():
-        return turn  # nothing checkable to verify
-    verdict = await judge(prompt, turn.answer)
-    if verdict.ok:
-        return turn
-    nudge = VERIFIER_NUDGE.format(reason=verdict.reason)
-    # The correction is a *second* full pass over a history that has just finished its
-    # first, so it runs at the turn's peak pressure — and it cannot fold, because its drop
-    # range is a pair of absolute indices into this history. Attempting it against a
-    # window that has no room left buys a context stop in place of an answer that, however
-    # the judge scored it, is a real answer. Keep the answer and say what was skipped.
-    if no_room_for(run, turn.messages, nudge, threshold=context_threshold, settings=settings):
-        run.emit(LimitNotice(limit="verify", message="skipped: no room for a re-attempt"))
-        return turn
-    run.emit(LimitNotice(limit="verify", message=f"re-attempting: {verdict.reason}"))
-    # The range to drop on persist: the rejected ModelResponse (last message of
-    # the original attempt) through the injected nudge ModelRequest (the first
-    # new message of the correction) — two adjacent messages.
-    clean_drop = (len(turn.messages) - 1, len(turn.messages))
-    # Publish the range before re-driving, so a stop *during* the correction (an
-    # inactivity bound, the operator's Stop) drops the same two messages the completed
-    # path does. Without it, a stop here persists the rejected answer and a user message
-    # nobody typed, and both replay to the model on every later turn.
-    if drop_ref is not None:
-        drop_ref[:] = [clean_drop]
-    # One attempt only — no re-verify, so it cannot retry endlessly.
-    corrected = await drive_turn(
-        run,
-        agent,
-        settings=settings,
-        prompt=nudge,
-        message_history=turn.messages,
-        announced=announced,
-        caps=caps,
-        conversation_id=conversation_id,
-        disabled_tools=disabled_tools,
-        binding=binding,
-        vision=vision,
-        partial_history_ref=partial_history_ref,
-        store=store,
-        request_limit=request_limit,
-        # No fold under a correction: `clean_drop` indexes the pre-fold history.
-        correcting=True,
-    )
-    if run.status is RunStatus.awaiting_input:
-        # The correction needs approval: carry the drop range on the parked turn
-        # so the resume's persist drops the rejected answer + nudge as well.
-        if isinstance(run.parked_payload, ParkedTurn):
-            run.parked_payload.clean_drop = clean_drop
-        return corrected
-    if corrected.answer is None:
-        # Hit a bound — the caller finalizes it, but the drop range has to ride along or
-        # the rejected answer and the synthetic nudge persist as real transcript.
-        return TurnResult(
-            answer=None,
-            messages=corrected.messages,
-            clean_drop=clean_drop,
-            blocked_reason=corrected.blocked_reason,
-        )
-    return TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
 def _finalize(
@@ -486,7 +385,7 @@ def build_chat_orchestrator(
                 return None
             return reject_idx - start, nudge_idx - start
 
-        # Set by `_verify_and_correct` the moment it commits to a correction, so a stop
+        # Set by `verify_and_correct` the moment it commits to a correction, so a stop
         # mid-correction can drop the same range the completed path does.
         drop_ref: list[tuple[int, int]] = []
         flush = TurnFlush(
@@ -691,7 +590,7 @@ def build_chat_orchestrator(
                 run.status is not RunStatus.awaiting_input
                 and turn.answer is not None
                 and settings.verify_enabled
-                and _should_verify(settings, run)
+                and should_verify(settings, run)
             ):
                 judging = judge or (
                     make_utility_judge(utility_model, model_settings=utility_settings)
@@ -702,7 +601,7 @@ def build_chat_orchestrator(
                     # On a regenerate (prompt is None) the request to judge against is
                     # the last user turn already in history.
                     verify_prompt = prompt if prompt is not None else last_user_text(history or [])
-                    turn = await _verify_and_correct(
+                    turn = await verify_and_correct(
                         run,
                         agent,
                         verify_prompt,
