@@ -217,3 +217,27 @@ async def discard_title(namer: Namer | None) -> None:
     namer.task.cancel()
     with suppress(asyncio.CancelledError):
         await namer.task
+
+
+async def reap_title(namer: Namer | None) -> None:
+    """Safety net: if the turn raised or was cancelled before the title was
+    consumed above, don't let the detached title-model call outlive the run."""
+    if namer is not None and not namer.task.done():
+        if not namer.announcing.is_set():
+            # Still waiting on the title model — nothing committed yet, so a
+            # bare cancel is safe and this path is unwinding anyway.
+            namer.task.cancel()
+        else:
+            # Past `announcing` there is no model call left to abandon, only the
+            # write and the emit, which must not be split. Left detached, it
+            # would race the stream close in `RunRegistry._run`'s finally and
+            # lose `conversation.titled` — the name reaching the database but
+            # never the client. Shielded so an unwinding *cancellation* still
+            # leaves the task alive to finish its write; on that path the await
+            # itself aborts and the event is genuinely lost, which is the
+            # accepted cost of a Stop landing in this exact window (the title is
+            # in the database and appears on reload). On the error path — not
+            # cancelled — the await completes and the frame rides the open
+            # stream as it should.
+            with suppress(Exception, asyncio.CancelledError):
+                await asyncio.shield(namer.task)

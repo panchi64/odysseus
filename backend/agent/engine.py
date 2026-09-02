@@ -36,10 +36,8 @@ Five neighbours carry the concerns that aren't that, each with its own reason to
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
 from typing import Any
 
 from pydantic_ai import (
@@ -94,6 +92,7 @@ from .naming import (
     TitleContext,
     discard_title,
     maybe_title,
+    reap_title,
     settle_title,
     start_title,
 )
@@ -603,27 +602,7 @@ def build_chat_orchestrator(
             flush.disarm()
             raise
         finally:
-            # Safety net: if the turn raised or was cancelled before the title was
-            # consumed above, don't let the detached title-model call outlive the run.
-            if title_namer is not None and not title_namer.task.done():
-                if not title_namer.announcing.is_set():
-                    # Still waiting on the title model — nothing committed yet, so a
-                    # bare cancel is safe and this path is unwinding anyway.
-                    title_namer.task.cancel()
-                else:
-                    # Past `announcing` there is no model call left to abandon, only the
-                    # write and the emit, which must not be split. Left detached, it
-                    # would race the stream close in `RunRegistry._run`'s finally and
-                    # lose `conversation.titled` — the name reaching the database but
-                    # never the client. Shielded so an unwinding *cancellation* still
-                    # leaves the task alive to finish its write; on that path the await
-                    # itself aborts and the event is genuinely lost, which is the
-                    # accepted cost of a Stop landing in this exact window (the title is
-                    # in the database and appears on reload). On the error path — not
-                    # cancelled — the await completes and the frame rides the open
-                    # stream as it should.
-                    with suppress(Exception, asyncio.CancelledError):
-                        await asyncio.shield(title_namer.task)
+            await reap_title(title_namer)
 
     return orchestrate
 
