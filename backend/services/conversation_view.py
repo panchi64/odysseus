@@ -36,6 +36,15 @@ from core.text import chars_to_tokens
 if TYPE_CHECKING:  # a type, not a dependency — nothing here calls into the run substrate
     from runs import TurnOverhead
 
+#: Where a compaction checkpoint records **why** it folded, on its own
+#: ``ModelRequest.metadata``. Written by ``ConversationStore.record_compaction`` and read
+#: back here, so a cold read reports the same cause the live ``conversation.compacted``
+#: event did. It rides the sealed message blob rather than a column: the reason is a fact
+#: about one message, and a schema migration for a three-value string the projection is
+#: the only reader of would buy nothing. A checkpoint written before this existed simply
+#: has no such key, which the projection reports as "unknown" rather than guessing.
+COMPACTION_REASON_KEY = "compaction_reason"
+
 
 @dataclass
 class ToolImageView:
@@ -107,6 +116,11 @@ class MessageView:
     messages_compacted: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
+    # `role="compaction"` only — what triggered the fold (`threshold`/`overflow`/`manual`),
+    # read off the checkpoint's own metadata. `None` on every other role, and on a
+    # checkpoint recorded before the reason was stored: a fold whose cause was never
+    # written down has to read as absent, not as the most common one.
+    compaction_reason: str | None = None
 
 
 #: The one class of message content that is measured for the readout but **not** sent
@@ -400,6 +414,20 @@ def _attach_tool_images(
             tool.images.extend(images)
 
 
+def _compaction_reason(message: Any) -> str | None:
+    """Why this checkpoint folded, off its own ``ModelRequest.metadata`` — or ``None``.
+
+    ``None`` covers both a checkpoint recorded before the reason was stored and any
+    metadata shape this doesn't recognise. The divider is written to read correctly
+    without the segment, so an absent reason costs nothing; a *wrong* one would tell the
+    operator the provider forced a fold they asked for themselves."""
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    reason = metadata.get(COMPACTION_REASON_KEY)
+    return reason if isinstance(reason, str) and reason else None
+
+
 def project_tree(
     nodes: list[tuple[str, Any]], *, compacted_ids: frozenset[str] = frozenset()
 ) -> list[MessageView]:
@@ -416,7 +444,9 @@ def project_tree(
     persisted. The caller hands the nodes in operator order, where a checkpoint sits
     immediately after the last node it covers, so the messages since the *previous*
     checkpoint (that checkpoint included) are exactly the set the fold replaced — the same
-    set the live ``conversation.compacted`` event counted, so the two agree.
+    set the live ``conversation.compacted`` event counted, so the two agree. Its **reason**
+    is the one part not re-derived: it is a fact about why the chassis acted, not about the
+    messages, so it is read back off the checkpoint's metadata where the fold wrote it.
 
     One turn = one view. A user turn is a request carrying a ``UserPromptPart``.
     An assistant turn is the run of everything after it until the next user turn —
@@ -458,6 +488,7 @@ def project_tree(
                     messages_compacted=len(since_checkpoint),
                     tokens_before=estimate_tokens(since_checkpoint),
                     tokens_after=estimate_tokens([message]),
+                    compaction_reason=_compaction_reason(message),
                 )
             )
             since_checkpoint = [message]

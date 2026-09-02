@@ -489,12 +489,13 @@ export interface ChatMessage {
   foldedMessages?: number;
   tokensBefore?: number;
   tokensAfter?: number;
-  /** Compaction dividers only: what triggered the fold, when the client watched it
-   *  happen. A fold the operator asked for and a fold the provider forced are the
-   *  same divider otherwise, and they are not the same event to have lived through.
-   *  Absent on a cold read — the reason rides the stream, not the stored message —
-   *  which is why the divider states it as an extra segment rather than building its
-   *  label around it. */
+  /** Compaction dividers only: what triggered the fold. A fold the operator asked for
+   *  and a fold the provider forced are the same divider otherwise, and they are not
+   *  the same event to have lived through. Carried both live (on the run's
+   *  `conversation.compacted`) and cold (the backend stores it on the checkpoint), so a
+   *  reload says what the operator watched happen. Still optional: a checkpoint folded
+   *  before the backend recorded reasons has none, which is why the divider states it
+   *  as an extra segment rather than building its label around it. */
   compactionReason?: CompactionReason;
 }
 

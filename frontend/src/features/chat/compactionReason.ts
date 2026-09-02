@@ -31,6 +31,25 @@ const CAUSE: Record<CompactionReason, string> = {
   manual: "you asked for it",
 };
 
+/** Narrow a wire string to a reason this file can actually word, or `undefined`.
+ *
+ *  The cold read carries the reason as a plain string (it is read back off a stored
+ *  message, so a checkpoint folded before the backend recorded one has none, and a
+ *  future backend could name a trigger this build has never heard of). Both cases have
+ *  the same right answer: drop the segment. The divider is written to read correctly
+ *  without it, which is exactly what makes discarding an unknown value safe — the
+ *  alternative, trusting the string through, would print a raw enum id at the operator.
+ *
+ *  `Object.hasOwn`, not `in`: the value is a wire string, and `in` would accept
+ *  `"toString"` and hand back a `SEGMENT` lookup that is a function. */
+export function asCompactionReason(
+  value: string | null | undefined,
+): CompactionReason | undefined {
+  return value && Object.hasOwn(SEGMENT, value)
+    ? (value as CompactionReason)
+    : undefined;
+}
+
 export function compactionReasonSegment(reason: CompactionReason): string {
   return SEGMENT[reason];
 }

@@ -50,6 +50,7 @@ from pydantic_ai.settings import ModelSettings
 
 from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
+from runs.events import CompactionReason
 from runs.overhead import TurnOverhead
 from services.conversation_view import estimate_footprint, estimate_tokens
 from services.conversations import CompactionPlan, ConversationStore, context_footprint
@@ -103,6 +104,11 @@ class CompactionOutcome:
     tokens_after: int
     # The rendered turn the divider follows, so a live client places it where a reload will.
     after_message_id: str | None
+    # What triggered this fold, echoed back from the caller. Carried on the outcome rather
+    # than only on the caller's own event because it is also what was written onto the
+    # checkpoint — one value, so the divider a reload draws names the same cause the live
+    # one did.
+    reason: CompactionReason = "threshold"
 
 
 def build_auto_compact_policy(
@@ -184,6 +190,7 @@ async def compact_conversation(
     conversation_id: str,
     *,
     model: Model,
+    reason: CompactionReason,
     reasoning_off: ModelSettings | None = None,
     keep_turns: int | None = None,
     settings: Settings | None = None,
@@ -207,7 +214,12 @@ async def compact_conversation(
     nothing to announce passes nothing.
 
     ``max_input_tokens`` overrides the configured transcript budget, so a turn that has
-    resolved the summarizer's own context window can hold the input inside it."""
+    resolved the summarizer's own context window can hold the input inside it.
+
+    ``reason`` is required rather than defaulted, and travels all the way onto the stored
+    checkpoint. Each of the three callers knows which trigger it is — the threshold, the
+    mid-turn overflow recovery, the operator's own button — and a default here would let a
+    new one silently record the most common answer instead of its own."""
     cfg = settings or get_settings()
     plan = await store.compaction_plan(
         conversation_id,
@@ -239,6 +251,7 @@ async def compact_conversation(
         summary=labelled,
         through_id=plan.through_id,
         expected_leaf_id=plan.expected_leaf_id,
+        reason=reason,
     )
     if message_id is None:
         # The active leaf moved while the summary was being written (a version switch or a
@@ -256,6 +269,7 @@ async def compact_conversation(
         tokens_before=estimate_tokens(plan.messages),
         tokens_after=estimate_tokens([ModelRequest(parts=[UserPromptPart(labelled)])]),
         after_message_id=plan.anchor_id,
+        reason=reason,
     )
 
 

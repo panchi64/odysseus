@@ -66,10 +66,15 @@ from core.vault import Vault
 from core.worker import WriteBehindWorker
 from models._fields import new_id
 from models.conversation import Conversation, Message
-from runs.events import LastRequestUsage
+from runs.events import CompactionReason, LastRequestUsage
 from runs.overhead import TurnOverhead
 from runs.timings import ResponseTiming, TimingTotals
-from services.conversation_view import MessageView, estimate_footprint, project_tree
+from services.conversation_view import (
+    COMPACTION_REASON_KEY,
+    MessageView,
+    estimate_footprint,
+    project_tree,
+)
 from services.embeddings import Embedder, embed_and_seal_rows, encode_vector
 from services.modes import DEFAULT_MODE, ModeId, mode_spec
 from services.permissions import DEFAULT_PERMISSION, PermissionLevel, permission_level
@@ -1120,10 +1125,23 @@ class ConversationStore:
         )
 
     def record_compaction(
-        self, conversation_id: str, *, summary: str, through_id: str, expected_leaf_id: str
+        self,
+        conversation_id: str,
+        *,
+        summary: str,
+        through_id: str,
+        expected_leaf_id: str,
+        reason: CompactionReason,
     ) -> str | None:
         """Append a compaction checkpoint at the tip and queue its durable write, returning
         the new node's id — or ``None`` when the plan went stale.
+
+        ``reason`` is stored on the checkpoint's own ``ModelRequest.metadata``, which is
+        the one place a fact about the message can ride without a schema column: the
+        library carries the field through serialization and never sends it to a provider,
+        so it lands inside the sealed blob every read already opens. Without it the reason
+        would live only on the run's ``conversation.compacted`` event, and a divider the
+        operator watched appear would lose what caused it the moment they reloaded.
 
         Synchronous on purpose, exactly like :meth:`record`: the staleness re-check and the
         append happen with no ``await`` between them, so under single-threaded asyncio no
@@ -1137,7 +1155,10 @@ class ConversationStore:
         tree = self._cache.get(conversation_id)
         if tree is None or tree.active_leaf_id != expected_leaf_id:
             return None
-        message = ModelRequest(parts=[UserPromptPart(content=summary)])
+        message = ModelRequest(
+            parts=[UserPromptPart(content=summary)],
+            metadata={COMPACTION_REASON_KEY: reason},
+        )
         node = tree.append_chain([message])[0]
         node.compacted = True
         node.compacted_through = through_id

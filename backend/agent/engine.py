@@ -362,6 +362,7 @@ async def _fold(
             ctx.store,
             ctx.conversation_id,
             model=ctx.model,
+            reason=reason,
             reasoning_off=ctx.reasoning_off,
             keep_turns=ctx.policy.keep_turns,
             settings=ctx.settings,

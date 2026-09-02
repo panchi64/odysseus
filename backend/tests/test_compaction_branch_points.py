@@ -62,6 +62,7 @@ async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMM
         summary=summary,
         through_id=plan.through_id,
         expected_leaf_id=plan.expected_leaf_id,
+        reason="threshold",
     )
 
 

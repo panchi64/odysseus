@@ -110,6 +110,10 @@ export interface MessageDTO {
   messages_compacted?: number | null;
   tokens_before?: number | null;
   tokens_after?: number | null;
+  /** Compaction rows: what triggered the fold, matching the live
+   *  `conversation.compacted` event's `reason`. Null on every other row, and on a
+   *  checkpoint folded before the backend recorded the reason. */
+  compaction_reason?: string | null;
 }
 
 export interface ActiveRunDTO {

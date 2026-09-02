@@ -149,6 +149,12 @@ class MessageOut(BaseModel):
     messages_compacted: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
+    # `role == "compaction"` only — what triggered the fold (`threshold`/`overflow`/
+    # `manual`), matching the live `conversation.compacted` event's `reason`, so a divider
+    # says the same thing after a reload as it did when the operator watched it appear.
+    # `None` on every other role, and on a checkpoint folded before the reason was
+    # recorded — the divider states it as an extra segment and reads correctly without it.
+    compaction_reason: str | None = None
 
 
 class ActiveRun(BaseModel):
@@ -298,6 +304,7 @@ def _message(view: MessageView, by_id: dict[str, SnapshotView]) -> MessageOut:
         messages_compacted=view.messages_compacted,
         tokens_before=view.tokens_before,
         tokens_after=view.tokens_after,
+        compaction_reason=view.compaction_reason,
     )
 
 
@@ -964,6 +971,7 @@ async def compact_conversation_now(
             store,
             conversation_id,
             model=utility.model,
+            reason="manual",
             reasoning_off=utility.reasoning_off,
             keep_turns=auto.keep_turns,
         )

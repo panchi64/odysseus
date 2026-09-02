@@ -44,7 +44,7 @@ from core.config import Settings, get_settings
 from prompts.utility import COMPACT_PREAMBLE
 from routes.deps import OPERATOR_ID
 from runs import RunStatus, TurnOverhead
-from services.conversation_view import estimate_tokens
+from services.conversation_view import estimate_tokens, project_tree
 
 from ._helpers import client_app, patch_model_resolution
 
@@ -77,6 +77,7 @@ async def _compact(store, cid: str, *, keep_turns: int = 2, summary: str = "SUMM
         summary=summary,
         through_id=plan.through_id,
         expected_leaf_id=plan.expected_leaf_id,
+        reason="threshold",
     )
 
 
@@ -354,6 +355,7 @@ async def test_record_compaction_refuses_a_stale_plan():
                 summary="SUMMARY",
                 through_id=plan.through_id,
                 expected_leaf_id=plan.expected_leaf_id,
+                reason="threshold",
             )
             is None
         )
@@ -467,7 +469,11 @@ async def test_compact_conversation_end_to_end():
             store.record(cid, _turn(f"q{i}", f"a{i}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="the story so far"), keep_turns=2
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="the story so far"),
+            keep_turns=2,
         )
         assert outcome is not None
         # The stored summary is labelled, so the model can't read it as the operator's own
@@ -488,7 +494,11 @@ async def test_the_outcome_reports_what_the_fold_cost():
             store.record(cid, _turn(f"q{i} {'padding ' * 200}", f"a{i} {'padding ' * 200}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="short"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
         )
         assert outcome is not None
         assert outcome.messages_compacted == 8
@@ -510,7 +520,11 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
             store.record(cid, _turn(f"q{i} {'padding ' * 200}", f"a{i} {'padding ' * 200}"))
 
         outcome = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="short"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
         )
         assert outcome is not None
 
@@ -524,6 +538,55 @@ async def test_the_cold_read_divider_reports_the_same_figures_as_the_event():
         assert (user.messages_compacted, user.tokens_before, user.tokens_after) == (0, 0, 0)
 
 
+async def test_the_fold_reason_survives_a_cold_read():
+    """The one fact on the divider that cannot be re-derived from the messages: *why* the
+    chassis folded. It is written onto the checkpoint's own metadata rather than a column,
+    so the assertion that matters is that it comes back after the in-memory tree is gone —
+    a reload must name the same cause the operator watched arrive."""
+    async with client_app() as (_client, app):
+        store = app.state.conversations
+        cid = await store.create_conversation(OPERATOR_ID)
+        for i in range(4):
+            store.record(cid, _turn(f"q{i}", f"a{i}"))
+
+        outcome = await compact_conversation(
+            store,
+            cid,
+            reason="overflow",
+            model=TestModel(custom_output_text="short"),
+            keep_turns=0,
+        )
+        assert outcome is not None
+        assert outcome.reason == "overflow"
+
+        warm = next(v for v in await store.messages_view(cid) if v.role == "compaction")
+        assert warm.compaction_reason == "overflow"
+
+        # …and again off the sealed blob, with nothing left in memory to read it from.
+        await store._worker.join()
+        store._cache.clear()
+        cold = next(v for v in await store.messages_view(cid) if v.role == "compaction")
+        assert cold.compaction_reason == "overflow"
+        # An ordinary turn has no reason to report, on either path.
+        assert all(
+            v.compaction_reason is None
+            for v in await store.messages_view(cid)
+            if v.role != "compaction"
+        )
+
+
+async def test_a_checkpoint_written_before_reasons_reads_as_none():
+    """Every fold already in an operator's database predates the metadata, and there is no
+    migration to backfill something nobody recorded. The projection has to answer "unknown"
+    rather than guess the most common trigger — the divider drops the segment, where a
+    wrong one would tell them the provider forced a fold they asked for."""
+    legacy = ModelRequest(parts=[UserPromptPart(content="SUMMARY")])
+    assert legacy.metadata is None
+    views = project_tree([("chk", legacy)], compacted_ids=frozenset({"chk"}))
+    assert [v.role for v in views] == ["compaction"]
+    assert views[0].compaction_reason is None
+
+
 async def test_a_second_folds_stats_cover_only_what_it_folded():
     """A second compaction stands in for the first summary plus what followed it — not the
     original turns all over again. Its divider must say so, on both paths."""
@@ -533,12 +596,20 @@ async def test_a_second_folds_stats_cover_only_what_it_folded():
         for i in range(2):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
         first = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="first"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="first"),
+            keep_turns=0,
         )
         for i in range(2, 5):
             store.record(cid, _turn(f"q{i}", f"a{i}"))
         second = await compact_conversation(
-            store, cid, model=TestModel(custom_output_text="second"), keep_turns=0
+            store,
+            cid,
+            reason="threshold",
+            model=TestModel(custom_output_text="second"),
+            keep_turns=0,
         )
         assert first is not None and second is not None
         assert first.messages_compacted == 4  # q0/a0/q1/a1
@@ -940,8 +1011,10 @@ async def test_manual_compact_folds_and_returns_the_refreshed_detail(monkeypatch
 
         resp = await client.post(f"/conversations/{cid}/compact")
         assert resp.status_code == 200
-        roles = [m["role"] for m in resp.json()["messages"]]
-        assert "compaction" in roles
+        divider = next(m for m in resp.json()["messages"] if m["role"] == "compaction")
+        # The operator pressed the button, so that is what the divider says — not the
+        # threshold, which this path ignores entirely.
+        assert divider["compaction_reason"] == "manual"
 
 
 async def test_manual_compact_409s_when_there_is_nothing_to_fold(monkeypatch):
