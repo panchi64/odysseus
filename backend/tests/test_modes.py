@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pydantic_ai.models.test import TestModel
 
-from agent import build_chat_orchestrator, engine
+from agent import build_chat_orchestrator, turn
 from core.config import get_settings
 from runs import RunRegistry
 from services.conversations import ConversationBinding
@@ -113,13 +113,13 @@ class TestTheRoundTripCeiling:
 
     async def _ceiling(self, monkeypatch, *, mode: str, request_limit: int | None) -> int:
         seen: list[int] = []
-        real = engine.UsageLimits
+        real = turn.UsageLimits
 
         def record(**kwargs):
             seen.append(kwargs["request_limit"])
             return real(**kwargs)
 
-        monkeypatch.setattr(engine, "UsageLimits", record)
+        monkeypatch.setattr(turn, "UsageLimits", record)
         registry = RunRegistry()
         run = registry.submit(
             kind="chat",

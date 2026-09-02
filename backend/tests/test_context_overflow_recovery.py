@@ -34,7 +34,7 @@ from pydantic_ai.usage import RequestUsage
 
 from agent import build_chat_orchestrator
 from agent.compaction_context import CompactionContext
-from agent.engine import _TurnResult, _verify_and_correct
+from agent.engine import _verify_and_correct
 from agent.meta import Verdict
 from agent.model_errors import (
     CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
@@ -43,6 +43,7 @@ from agent.model_errors import (
 )
 from agent.parking import park_for_input
 from agent.summarize import AutoCompactPolicy, should_compact
+from agent.turn import TurnResult
 from core.config import get_settings
 from routes.deps import OPERATOR_ID
 from runs import Run, RunStatus, RunStream, TurnOverhead
@@ -452,7 +453,7 @@ async def test_the_verifier_skips_a_correction_that_cannot_fit():
     run = Run(id="r", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
     run.context_window = 10_000
     run.context_overhead = _NO_OVERHEAD
-    turn = _TurnResult(
+    turn = TurnResult(
         answer="an answer",
         messages=[ModelRequest(parts=[UserPromptPart(content="x" * 40_000)])],
     )
@@ -471,7 +472,7 @@ async def test_the_verifier_still_corrects_when_there_is_room():
     run = Run(id="r", kind="chat", owner_id=OPERATOR_ID, stream=RunStream())
     run.context_window = 10_000
     run.context_overhead = _NO_OVERHEAD
-    turn = _TurnResult(answer="an answer", messages=[])
+    turn = TurnResult(answer="an answer", messages=[])
 
     with pytest.raises(AttributeError):
         # No agent to re-drive with — reaching that failure is the assertion: the guard

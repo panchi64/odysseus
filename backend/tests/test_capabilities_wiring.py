@@ -55,13 +55,18 @@ def _bag_lookups(path: Path) -> set[str]:
 
 
 def _resolved_lookup_types() -> dict[type, str]:
-    """Every concrete type the tool layer + engine resolve from the bag, mapped to the
-    module that looks it up — resolved through each module's own imports, so a renamed
-    or moved class can't desynchronize the guard."""
+    """Every concrete type the tool layer + the agent layer resolve from the bag, mapped
+    to the module that looks it up — resolved through each module's own imports, so a
+    renamed or moved class can't desynchronize the guard.
+
+    Both packages are walked whole rather than named module by module: the engine's
+    lookups have moved between its neighbours more than once, and a list of module names
+    would drop a lookup out of the guard the moment one of them moved again."""
+    import agent
     import tools
 
     modules = [f"tools.{m.name}" for m in pkgutil.iter_modules(tools.__path__)]
-    modules.append("agent.engine")
+    modules += [f"agent.{m.name}" for m in pkgutil.iter_modules(agent.__path__)]
     lookups: dict[type, str] = {}
     for module_name in modules:
         module = importlib.import_module(module_name)

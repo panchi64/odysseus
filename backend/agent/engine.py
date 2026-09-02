@@ -6,7 +6,7 @@ The library owns the within-turn loop, tool selection, validation, and fallback;
 we own the run lifecycle, the event stream, bounds, and the approval pause/resume
 for sensitive actions. The meta-loop (verifier/loop-break) lands here next.
 
-A turn is driven by :func:`_drive_turn`, shared by the initial run and every
+A turn is driven by :func:`drive_turn`, shared by the initial run and every
 resume. When the model requests a sensitive (approval-required) tool, Pydantic AI
 ends the turn with ``DeferredToolRequests`` *without executing it*; we surface
 ``approval.required``, park the Run (``awaiting_input``), and stash a
@@ -40,27 +40,20 @@ import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import (
     Agent,
-    DeferredToolRequests,
     DeferredToolResults,
     ModelMessage,
     ModelRequest,
-    RunUsage,
-    UsageLimitExceeded,
-    UsageLimits,
     UserPromptPart,
 )
-from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from core.config import Settings, get_settings
 from core.container import ServiceContainer
-from core.exceptions import ModelLoadError
 from prompts.agent import VERIFIER_NUDGE
 from runs import (
     DEFAULT_CONTEXT_THRESHOLDS,
@@ -75,8 +68,6 @@ from services.conversations import (
     ConversationBinding,
     ConversationStore,
 )
-from services.modes import mode_spec
-from services.notifications import NotificationService
 from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.tool_policy import vision_disabled_tools
@@ -85,15 +76,13 @@ from services.workspace import resolve_workspace
 from tools import (
     InstructionProvider,
     PromptContextProvider,
-    RunDeps,
 )
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
 from .factory import NO_DORMANT, build_agent
 from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
-from .folding import compact_and_retry, incoming_request, maybe_compact
-from .gating import settle_deferred
+from .folding import incoming_request, maybe_compact
 from .history import (
     TurnStart,
     drop_dangling_tool_calls,
@@ -102,17 +91,8 @@ from .history import (
     with_tail_context,
 )
 from .injections import announce_injection, contributor_id
-from .meta import Judge, LoopBreaker, LoopDetected, make_utility_judge
+from .meta import Judge, make_utility_judge
 from .metrics import no_room_for, turn_metrics
-from .model_errors import (
-    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL,
-    CONTEXT_OVERFLOW_DETAIL,
-    context_limit_message,
-    is_context_overflow,
-    model_load_hint,
-    usage_limit_kind,
-    usage_limit_message,
-)
 from .naming import (
     TitleContext,
     discard_title,
@@ -120,348 +100,15 @@ from .naming import (
     settle_title,
     start_title,
 )
-from .parking import DEFAULT_BINDING, ParkedTurn, park_for_input
+from .parking import DEFAULT_BINDING, ParkedTurn
 from .summarize import (
     AutoCompactPolicy,
     build_auto_compact_policy,
 )
 from .title import last_user_text
-from .translate import stream_agent_run
+from .turn import NO_CAPS, TurnResult, drive_turn
 
 logger = logging.getLogger(__name__)
-
-# A shared empty bag for the no-capabilities default — every capability-backed tool
-# degrades uniformly. Never mutated (only construction sites add), so safe to share.
-_NO_CAPS = ServiceContainer()
-
-
-@dataclass
-class _TurnResult:
-    """What one turn produced: a final answer (or None if it parked/blocked/hit
-    a bound) and the message history needed to continue the conversation."""
-
-    answer: str | None
-    messages: list[ModelMessage] = field(default_factory=list)
-    # A verifier correction's [reject_idx, nudge_idx] range to drop on persist.
-    clean_drop: tuple[int, int] | None = None
-    # Set when the turn stopped at a bound (`run.status is blocked`) — the
-    # human-readable reason, carried through to `_finalize` so it can persist a
-    # marker on the turn's branch node (see `ConversationStore.record`).
-    blocked_reason: str | None = None
-
-
-async def _drive_turn(
-    run: Run,
-    agent: Agent,
-    *,
-    settings: Settings,
-    prompt: str | list[Any] | None = None,
-    message_history: list[ModelMessage] | None = None,
-    deferred_results: DeferredToolResults | None = None,
-    announced: set[str],
-    caps: ServiceContainer = _NO_CAPS,
-    conversation_id: str | None = None,
-    disabled_tools: frozenset[str] = frozenset(),
-    binding: ConversationBinding = DEFAULT_BINDING,
-    vision: bool = True,
-    partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
-    store: ConversationStore | None = None,
-    request_limit: int | None = None,
-    compaction: CompactionContext | None = None,
-    turn_start: TurnStart | None = None,
-    correcting: bool = False,
-) -> _TurnResult:
-    """Drive one turn to its end: an answer, a park, or a stop at a bound.
-
-    ``turn_start`` is the caller's persistence boundary — where in the replayed history
-    *this turn's* own messages begin — held as one shared mutable object because an in-turn
-    fold moves it. Every reader of that boundary (the completed persist, the flush hooks, a
-    park) reads it through this object, so a fold cannot leave one of them slicing against
-    the pre-fold history.
-
-    ``compaction`` is what this turn may fold with, or ``None`` for a turn that cannot fold
-    (a stateless run, or compaction switched off). ``correcting`` marks a verifier's
-    corrective re-attempt, where a fold is refused: the correction's drop range is a pair
-    of absolute indices into the pre-fold history, and folding underneath it would leave
-    the persist dropping two messages that are no longer the ones it meant."""
-    spec = mode_spec(binding.mode)
-    # ``request_limit`` is the operator's runtime setting *when they set one*; None means
-    # nobody chose a number here (they never touched the control, or this is a stateless
-    # eval turn / an older parked payload). It bounds *model round-trips*, so every tool
-    # call spends one.
-    #
-    # The mode's floor applies to the number nobody chose, and only to that one. A mode
-    # whose work genuinely cannot fit inside the shipped default would otherwise stop at a
-    # bound nothing about this deployment picked; but an operator who deliberately lowered
-    # the ceiling to 10 must not find a research turn taking 60 round trips while the
-    # settings page still reads 10. Unset is a floor to raise; set is an answer to honour.
-    resolved_limit = (
-        max(settings.agent_request_limit, spec.request_limit or 0)
-        if request_limit is None
-        else request_limit
-    )
-    limits = UsageLimits(
-        request_limit=resolved_limit,
-        tool_calls_limit=settings.agent_tool_calls_limit,
-    )
-    deps = RunDeps(
-        run=run,
-        owner_id=run.owner_id,
-        # The whole agent-facing capability bag rides in as one handle — a tool
-        # resolves what it needs by type and degrades when it's absent.
-        caps=caps,
-        disabled_tools=disabled_tools,
-        conversation_id=conversation_id,
-        # Where this run's file work happens. Resolved from the *conversation's* stored
-        # binding by the caller, never from a live request — switching the active project
-        # must not change what an already-running thread is doing.
-        project_id=binding.project_id,
-        mode=binding.mode,
-        # And how far it may go on its own. The toolset stack reads this to mark the tools
-        # that reach past it, so the level is enforced before a call runs rather than
-        # apologised for afterwards.
-        permission=binding.permission,
-    )
-    # A turn may run as several segments: the initial model pass, then a continuation
-    # for each batch of deferred calls a conversation grant auto-approves. They share
-    # ONE usage budget, ONE no-progress guard, and ONE usage accumulator, so the *whole*
-    # turn is bounded — a granted tool the model keeps re-calling can't reset the guards
-    # (or grow the call stack) by deferring on each hop; it trips the loop/usage stop.
-    loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
-    usage = RunUsage()
-
-    def report_progress(history: list[ModelMessage]) -> None:
-        # A live context/usage frame as each model response lands, so the operator's context
-        # gauge fills in real time during a live turn. Also the loop's cooperative-cancel
-        # check: `RunRegistry.cancel()` sets `cancel_requested` and then hard-cancels the
-        # task immediately, so in practice the native cancellation almost always lands first —
-        # this is a redundant, independent stop path for the rare case something upstream
-        # swallows that CancelledError (e.g. a tool/dependency catching too broadly), so a
-        # requested cancel can never be silently absorbed.
-        if run.cancel_requested:
-            raise asyncio.CancelledError()
-        run.emit(turn_metrics(run, history, settings=settings))
-
-    # Rebound each loop iteration by `agent.iter()`'s `as agent_run`; stays None only
-    # if a bound trips before the context manager assigns it (its `__aenter__` does
-    # no request, so this hasn't been observed, but the except blocks below guard
-    # it anyway rather than risk an unbound-variable crash on a stop path).
-    agent_run: Any = None
-
-    def _partial_history() -> list[ModelMessage]:
-        return list(agent_run.ctx.state.message_history) if agent_run is not None else []
-
-    def _inject_queued(node: Any) -> None:
-        # Mid-run steering: hand any operator messages queued since the last model
-        # request to the model *now*, by amending the not-yet-sent request. The node
-        # is yielded before it streams (its request isn't in history yet), so this
-        # never touches an in-flight model stream; a request mixing tool returns
-        # with these user parts is split back into separate messages on persist
-        # (`_split_injected_requests`), which replays wire-identically because the
-        # library re-merges consecutive requests at wire-prep.
-        #
-        # Rebinds `parts` to a NEW list rather than appending in place. On a regenerate
-        # the node's request is built by the library reusing the *same* parts list object
-        # as the last history message — which the store handed out by reference from its
-        # in-memory tree. Appending would therefore graft the steering text into the
-        # operator's original user bubble for every later replay. Same invariant
-        # `_with_tail_context` documents: never mutate what the store shares.
-        queued = run.drain_messages()
-        if queued:
-            node.request.parts = [
-                *node.request.parts,
-                *(UserPromptPart(message.text) for message in queued),
-            ]
-
-    if partial_history_ref is not None:
-        # Let the caller reach this turn's current partial state at any point — even
-        # before the first step lands — so an external timeout mid-turn can still flush
-        # whatever's there (see `build_chat_orchestrator`'s `on_timeout` hook).
-        partial_history_ref[:] = [_partial_history]
-
-    # One recovery per turn. A second overflow after a fold means the request is oversized
-    # for a reason folding cannot reach (one enormous tool result, an attachment that
-    # doesn't fit), and re-folding would strip the thread's memory for nothing.
-    compacted = False
-
-    while True:
-        # Same cooperative-cancel check as `report_progress`, at the turn-segment
-        # boundary between an auto-approved tool's continuation and the next model
-        # round-trip (see that function's comment for why this is a redundant,
-        # not primary, stop path).
-        if run.cancel_requested:
-            raise asyncio.CancelledError()
-        try:
-            async with agent.iter(
-                prompt,
-                deps=deps,
-                message_history=message_history,
-                deferred_tool_results=deferred_results,
-                usage_limits=limits,
-                usage=usage,
-            ) as agent_run:
-                await stream_agent_run(
-                    agent_run,
-                    run,
-                    announced=announced,
-                    loop_breaker=loop_breaker,
-                    on_step=report_progress,
-                    on_request_node=_inject_queued,
-                )
-                result = agent_run.result
-        except UsageLimitExceeded as exc:
-            # Hit a usage bound — stop and report state, don't error. The *same* sentence
-            # is both the toast and the persisted stop marker: a bare "usage limit reached"
-            # reads as a provider rate limit (the operator's first guess, and the wrong
-            # one), where this names the bound that actually tripped — one of this run's
-            # own local budgets.
-            detail = usage_limit_message(exc)
-            run.emit(LimitNotice(limit=usage_limit_kind(exc), message=detail))
-            run.block(detail)
-            return _TurnResult(
-                answer=None,
-                messages=_partial_history(),
-                blocked_reason=detail,
-            )
-        except LoopDetected as exc:
-            # No-progress guard tripped — stop and report state, don't error.
-            run.emit(LimitNotice(limit="loop", message=str(exc)))
-            detail = "stopped: repeated an action without making progress"
-            run.block(detail)
-            return _TurnResult(
-                answer=None,
-                messages=_partial_history(),
-                blocked_reason=detail,
-            )
-        except ModelHTTPError as exc:
-            # Context-window overflow. The request that overran is still the tail of the
-            # partial history and would replay on every later turn, so this cannot simply
-            # be reported: fold the thread once and re-send the same request against the
-            # summary. If there is nothing to fold, folding is refused here, or the retry
-            # overruns again, it is a definitive ceiling — stop and name it, rather than
-            # papering over it by silently dropping content.
-            if is_context_overflow(exc):
-                rebuilt = (
-                    None
-                    if compacted or correcting or compaction is None or turn_start is None
-                    else await compact_and_retry(
-                        run, compaction, partial_history=_partial_history(), turn_start=turn_start
-                    )
-                )
-                if rebuilt is not None:
-                    compacted = True
-                    # The resume-without-prompt shape: the library pops the trailing
-                    # request and re-sends its parts, so the very request that overran is
-                    # the one retried — against the folded history in front of it.
-                    prompt = None
-                    message_history = rebuilt
-                    deferred_results = None
-                    continue
-                # Which of the two overflow stops this is travels as the *detail*, not
-                # only as prose in the notice: the client offers "Compact and retry" on
-                # this marker, and a turn that already folded and still overran is the one
-                # case where that button would send the operator round the same loop.
-                detail = (
-                    CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL if compacted else CONTEXT_OVERFLOW_DETAIL
-                )
-                run.emit(
-                    LimitNotice(
-                        limit="context",
-                        message=context_limit_message(run, compacted=compacted),
-                        detail=detail,
-                    )
-                )
-                run.block(detail)
-                return _TurnResult(
-                    answer=None,
-                    messages=_partial_history(),
-                    blocked_reason=detail,
-                )
-            # Rewrite a model-couldn't-load error into something the operator can act
-            # on; let every other HTTP error propagate with its own detail.
-            hint = model_load_hint(exc)
-            if hint is None:
-                raise
-            raise ModelLoadError(hint) from exc
-
-        output = result.output
-        messages = result.all_messages()
-        # Counted off the full replayed history, so hops and segments need no
-        # accumulator — see `turn_metrics`.
-        run.set_metrics(turn_metrics(run, messages, settings=settings))
-        # Two ways a turn can end without being finished: a call awaiting permission, and
-        # a call awaiting an answer (`ask_user`). Both arrive on the same object, and
-        # either one alone means there is more of this turn to run.
-        deferred = isinstance(output, DeferredToolRequests) and (
-            output.approvals or output.calls
-        )
-        if not deferred:
-            # The model finished, but the operator queued more while it was working:
-            # instead of ending the run, continue it with the queued text as the next
-            # user request(s) — same run id, same stream, same usage/loop budget (so
-            # a steady drip of messages still trips the turn's bounds rather than
-            # extending them). `prompt=None` + a history ending in a user request is
-            # the same continuation shape a regenerate uses.
-            pending = run.drain_messages()
-            if pending:
-                message_history = messages + [
-                    ModelRequest(parts=[UserPromptPart(m.text)]) for m in pending
-                ]
-                prompt = None
-                deferred_results = None
-                continue
-            answer = output if isinstance(output, str) else None
-            return _TurnResult(answer=answer, messages=messages)
-
-        # Rule on each deferred *approval* — grants, then the level, then Auto's review.
-        # The rules and their announcement live in `gating.py`; what is left here is what
-        # the turn does with the two piles it hands back. Questions (`output.calls`) are
-        # not put through any of it: a grant, a level and a reviewer all answer "may this
-        # run", and a question is not asking that.
-        settled, manual = await settle_deferred(
-            run,
-            output.approvals,
-            caps=caps,
-            conversation_id=conversation_id,
-            deps=deps,
-            messages=messages,
-            permission=binding.permission,
-        )
-        if manual or output.calls:
-            await park_for_input(
-                run,
-                agent,
-                messages,
-                output,
-                announced,
-                settled=settled,
-                notifications=caps.get_optional(NotificationService),
-                store=store,
-                conversation_id=conversation_id,
-                request_limit=request_limit,
-                binding=binding,
-                vision=vision,
-                # Carried so a resume can recover from an overflow the way this turn would
-                # have: the operator may take hours to answer, and the thread they come
-                # back to is the one that was already near its ceiling.
-                compaction=compaction,
-            )
-            return _TurnResult(answer=None, messages=messages)
-        # Every deferred call settled without the operator — no question was asked, and
-        # every approval was ruled on. Continue the SAME turn inline
-        # (no round-trip), reusing the shared budget/guard/usage above. An auto-run tool
-        # still streams its tool.started/completed, so it stays visible, and a call the
-        # level refused comes back to the model as a denial it can plan around. Defensively
-        # resolve any approval_needed notification still pending for this run — normally
-        # a no-op (this branch only runs when nothing this hop parked), but idempotent
-        # against whatever multi-hop history led here, so nothing is ever left dangling.
-        notifications = caps.get_optional(NotificationService)
-        if notifications is not None:
-            with suppress(Exception):
-                await notifications.resolve_for_run(run.owner_id, run.id)
-        prompt = None
-        message_history = messages
-        deferred_results = DeferredToolResults(approvals=settled)
 
 
 def _should_verify(settings: Any, run: Run) -> bool:
@@ -476,12 +123,12 @@ async def _verify_and_correct(
     run: Run,
     agent: Agent,
     prompt: str,
-    turn: _TurnResult,
+    turn: TurnResult,
     announced: set[str],
     judge: Judge,
     *,
     settings: Settings,
-    caps: ServiceContainer = _NO_CAPS,
+    caps: ServiceContainer = NO_CAPS,
     conversation_id: str | None = None,
     disabled_tools: frozenset[str] = frozenset(),
     partial_history_ref: list[Callable[[], list[ModelMessage]]] | None = None,
@@ -491,7 +138,7 @@ async def _verify_and_correct(
     vision: bool = True,
     drop_ref: list[tuple[int, int]] | None = None,
     context_threshold: float | None = None,
-) -> _TurnResult:
+) -> TurnResult:
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
     A passing answer returns unchanged. Otherwise the correction's full history
@@ -527,7 +174,7 @@ async def _verify_and_correct(
     if drop_ref is not None:
         drop_ref[:] = [clean_drop]
     # One attempt only — no re-verify, so it cannot retry endlessly.
-    corrected = await _drive_turn(
+    corrected = await drive_turn(
         run,
         agent,
         settings=settings,
@@ -554,18 +201,18 @@ async def _verify_and_correct(
     if corrected.answer is None:
         # Hit a bound — the caller finalizes it, but the drop range has to ride along or
         # the rejected answer and the synthetic nudge persist as real transcript.
-        return _TurnResult(
+        return TurnResult(
             answer=None,
             messages=corrected.messages,
             clean_drop=clean_drop,
             blocked_reason=corrected.blocked_reason,
         )
-    return _TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
+    return TurnResult(answer=corrected.answer, messages=corrected.messages, clean_drop=clean_drop)
 
 
 def _finalize(
     run: Run,
-    turn: _TurnResult,
+    turn: TurnResult,
     *,
     store: ConversationStore | None,
     context: PersistContext,
@@ -627,7 +274,7 @@ def _flush_recorder(
     def record(messages: list[ModelMessage], detail: str, context: PersistContext) -> None:
         _finalize(
             run,
-            _TurnResult(answer=None, messages=messages, blocked_reason=detail),
+            TurnResult(answer=None, messages=messages, blocked_reason=detail),
             store=store,
             context=context,
         )
@@ -686,7 +333,7 @@ def build_chat_orchestrator(
     utility_settings: ModelSettings | None = None,
     title_model: Model | None = None,
     title_settings: ModelSettings | None = None,
-    capabilities: ServiceContainer = _NO_CAPS,
+    capabilities: ServiceContainer = NO_CAPS,
     store: ConversationStore | None = None,
     conversation_id: str | None = None,
     context_window: int | None = None,
@@ -783,7 +430,7 @@ def build_chat_orchestrator(
         # early simply sees the empty values, which is the correct record for a turn that
         # stopped before it began.
         # Where this turn's own messages begin in the replayed history. One shared mutable
-        # object because an in-turn fold moves it: `_drive_turn` rewrites it in place, and
+        # object because an in-turn fold moves it: `drive_turn` rewrites it in place, and
         # every reader below reads through it rather than closing over a stale integer.
         turn_start = TurnStart()
         persisted: list | None = None
@@ -1019,7 +666,7 @@ def build_chat_orchestrator(
             model_history = with_tail_context(history, context_texts)
 
         try:
-            turn = await _drive_turn(
+            turn = await drive_turn(
                 run,
                 agent,
                 settings=settings,
@@ -1132,7 +779,7 @@ def build_chat_orchestrator(
             # reach the message history, so this is the only way a reopened conversation
             # can break its footprint down instead of reporting one flat figure.
             #
-            # **Last, and never fatal.** It sits here rather than beside `_drive_turn`
+            # **Last, and never fatal.** It sits here rather than beside `drive_turn`
             # for three reasons, each of which the earlier placement got wrong: it must
             # follow the verifier, whose corrective re-attempt drives further requests
             # and leaves a newer measurement behind; it must follow `_finalize`, so a
@@ -1149,7 +796,7 @@ def build_chat_orchestrator(
                 except Exception:
                     logger.warning("failed to record context overhead", exc_info=True)
         except Exception:
-            # Anything else that escapes `_drive_turn` (a provider error its specific
+            # Anything else that escapes `drive_turn` (a provider error its specific
             # catches don't cover, a tool/dependency raising, …) must still not silently
             # drop the operator's own prompt: persist whatever the turn had produced,
             # carrying a legible marker, before this propagates to the registry's own
@@ -1197,7 +844,7 @@ def build_resume_orchestrator(
     decisions: dict[str, Any],
     *,
     answers: dict[str, str] | None = None,
-    capabilities: ServiceContainer = _NO_CAPS,
+    capabilities: ServiceContainer = NO_CAPS,
     store: ConversationStore | None = None,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> Orchestrator:
@@ -1232,7 +879,7 @@ def build_resume_orchestrator(
         )
         flush.arm()
         try:
-            turn = await _drive_turn(
+            turn = await drive_turn(
                 run,
                 parked.agent,
                 settings=settings,
