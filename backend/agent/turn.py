@@ -81,7 +81,7 @@ class TurnResult:
     # A verifier correction's [reject_idx, nudge_idx] range to drop on persist.
     clean_drop: tuple[int, int] | None = None
     # Set when the turn stopped at a bound (`run.status is blocked`) — the
-    # human-readable reason, carried through to `_finalize` so it can persist a
+    # human-readable reason, carried through to `finalize` so it can persist a
     # marker on the turn's branch node (see `ConversationStore.record`).
     blocked_reason: str | None = None
 

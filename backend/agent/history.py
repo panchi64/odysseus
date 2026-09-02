@@ -79,7 +79,7 @@ def merge_consecutive_requests(messages: list[ModelMessage]) -> list[ModelMessag
     """Collapse adjacent ``ModelRequest``s the way Pydantic AI will anyway, **before**
     ``start`` is measured against the list.
 
-    ``_finalize`` persists ``result.all_messages()[start:]`` with ``start`` the length of
+    ``finalize`` persists ``result.all_messages()[start:]`` with ``start`` the length of
     the history we handed in. That only holds while the library gives the history back at
     the length we supplied it — and it does not: preparing the wire format merges
     consecutive requests (most chat APIs cannot carry two user messages in a row), so

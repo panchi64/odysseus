@@ -1,6 +1,6 @@
 """Persisting a turn that was stopped from outside.
 
-Three things can end a turn without its own code path reaching ``_finalize``:
+Three things can end a turn without its own code path reaching ``finalize``:
 
 - a **wall-clock or inactivity bound** — the registry calls ``run.on_timeout`` and then
   force-cancels the task;
@@ -42,7 +42,7 @@ ERRORED_DETAIL = "an unexpected error stopped this turn"
 
 @dataclass(frozen=True)
 class PersistContext:
-    """Everything ``_finalize`` needs about *where* a turn goes, as opposed to what it
+    """Everything ``finalize`` needs about *where* a turn goes, as opposed to what it
     contains. Rebuilt per flush by the chat orchestrator (whose ``start`` and attachment
     stamps are only known once the turn is under way) and constant for a resume.
 

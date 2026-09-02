@@ -609,7 +609,7 @@ async def delete_conversation(
     # The purging delete `routes/deps.claim_conversation` names, and the one mutator here
     # that was not taking the claim. Deleting under a live run tears the tree, the sandbox
     # and the turn's attachments out from beneath it: the run keeps going, its own
-    # `_finalize` re-creates a ghost cache entry nothing ever evicts, and the turn is
+    # `finalize` re-creates a ghost cache entry nothing ever evicts, and the turn is
     # discarded with no error. 409 instead, like every sibling mutation.
     deps.claim_conversation(request, conversation_id)
     try:

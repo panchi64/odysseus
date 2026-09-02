@@ -475,7 +475,7 @@ async def test_double_cancel_does_not_duplicate_the_persisted_turn(tmp_path):
 async def test_cancel_parked_run_persists_the_parked_turn(tmp_path):
     # Cancelling a *parked* run (RunRegistry.cancel's awaiting_input branch) has no
     # task left to interrupt — a parked turn's persistence is otherwise only ever
-    # recorded on resume (`agent.engine._finalize`'s parked branch just wires resume
+    # recorded on resume (`agent.finalize.finalize`'s parked branch just wires resume
     # context). The engine's `on_park_cancel` hook — the parked counterpart of
     # `on_cancel` — is what persists it instead, so cancelling instead of resuming
     # doesn't silently drop the operator's own prompt (backend-correctness-01).

@@ -65,7 +65,7 @@ async def verify_and_correct(
     """Judge the answer; on failure make a single bounded corrective re-attempt.
 
     A passing answer returns unchanged. Otherwise the correction's full history
-    is returned with a ``clean_drop`` range that ``_finalize`` removes on persist
+    is returned with a ``clean_drop`` range that ``finalize`` removes on persist
     (the rejected answer + the synthetic nudge), so the recorded history reads
     original request → corrected answer. If the correction itself parks for
     approval, the drop range rides on the parked payload so the resume cleans too;

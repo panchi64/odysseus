@@ -78,13 +78,13 @@ from tools import (
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
 from .factory import NO_DORMANT, build_agent
-from .flush import CANCELLED_DETAIL, PersistContext, TurnFlush
+from .finalize import finalize, flush_recorder, parked_context, persist_parked_cancel
+from .flush import PersistContext, TurnFlush
 from .folding import incoming_request, maybe_compact
 from .history import (
     TurnStart,
     drop_dangling_tool_calls,
     merge_consecutive_requests,
-    split_injected_requests,
     with_tail_context,
 )
 from .injections import announce_injection, contributor_id
@@ -103,120 +103,10 @@ from .summarize import (
     build_auto_compact_policy,
 )
 from .title import last_user_text
-from .turn import NO_CAPS, TurnResult, drive_turn
+from .turn import NO_CAPS, drive_turn
 from .verify import should_verify, verify_and_correct
 
 logger = logging.getLogger(__name__)
-
-
-def _finalize(
-    run: Run,
-    turn: TurnResult,
-    *,
-    store: ConversationStore | None,
-    context: PersistContext,
-) -> None:
-    """Close out a turn: persist it, or wire resume context if it parked.
-
-    Shared by the chat and resume orchestrators so the park/answer-None guards
-    are applied *after* the verifier too (a corrective re-attempt can itself park
-    or hit a bound). ``context`` is where the turn goes — see :class:`PersistContext`;
-    its ``clean_drop`` is a verifier correction's message range to drop from the persisted
-    history, and its ``attachment_ids``/``persisted`` carry a turn's attached files (the
-    ids are stamped on the persisted request for chip rendering, and ``persisted`` is the
-    durable content — the attachment markers, plus any retained image — that replaces the
-    live payload in history)."""
-    conversation_id = context.conversation_id
-    if run.status is RunStatus.awaiting_input:
-        # Parked: hand the resume the context to persist the parked turn too.
-        if conversation_id is not None and isinstance(run.parked_payload, ParkedTurn):
-            run.parked_payload.conversation_id = conversation_id
-            run.parked_payload.persist_from = context.start.index
-            run.parked_payload.persist_from_parts = context.start.parts
-            if context.clean_drop is not None:  # re-park: carry the drop range forward
-                run.parked_payload.clean_drop = context.clean_drop
-            run.parked_payload.attachment_ids = list(context.attachment_ids)
-            run.parked_payload.persisted = context.persisted
-        return
-    if turn.answer is None and not turn.blocked_reason:
-        return  # hit a bound with nothing captured, or a cancel — nothing to persist
-    if store is not None and conversation_id is not None:
-        messages = turn.messages
-        if context.clean_drop is not None:
-            reject_idx, nudge_idx = context.clean_drop
-            messages = messages[:reject_idx] + messages[nudge_idx + 1 :]
-        # The store installs the durable `persisted` content and stamps `attachment_ids`
-        # on the turn's user request as it serializes — what the durable blob contains is
-        # the store's concern, not the engine's.
-        # `blocked_reason` stamps the turn's branch node so a reload shows the same
-        # persistent stop marker the live stream rendered (`record` is a no-op for an
-        # empty slice, e.g. a bound hit before any new message accumulated).
-        store.record(
-            conversation_id,
-            split_injected_requests(context.start.slice(messages)),
-            attachment_ids=list(context.attachment_ids),
-            persisted=context.persisted,
-            blocked_reason=turn.blocked_reason,
-            # The run's stopwatch, one entry per response it streamed, in the order the
-            # store will meet them. Recorded on the same call as the messages so a
-            # response and its duration can never be persisted apart.
-            timings=run.timer.responses,
-        )
-
-
-def _flush_recorder(
-    run: Run, store: ConversationStore | None
-) -> Callable[[list[ModelMessage], str, PersistContext], None]:
-    """The closure :class:`TurnFlush` records through — ``_finalize`` with this run's
-    store already bound, so the flush module never has to know the engine's turn type."""
-
-    def record(messages: list[ModelMessage], detail: str, context: PersistContext) -> None:
-        _finalize(
-            run,
-            TurnResult(answer=None, messages=messages, blocked_reason=detail),
-            store=store,
-            context=context,
-        )
-
-    return record
-
-
-def _persist_parked_cancel(run: Run, *, store: ConversationStore | None) -> None:
-    """Persist a parked turn's own messages when the operator cancels it while it is
-    still awaiting an approval decision, instead of its resume-only persistence
-    silently dropping the whole turn (the operator's own prompt included) — the
-    parked counterpart of ``_on_cancel``'s flush for a still-running turn. Wired as
-    ``run.on_park_cancel`` right after the parking ``_finalize`` call populates
-    ``ParkedTurn``'s persistence context, so it's armed before any further ``await``
-    a concurrent cancel could otherwise slip through (see ``park_for_input``'s
-    identical notify-before-park ordering concern). Called by
-    ``RunRegistry.cancel``'s parked branch *after* it has already set the terminal
-    ``cancelled`` status, so ``_finalize`` takes its normal persist branch rather
-    than its still-parked one."""
-    parked = run.parked_payload
-    if not isinstance(parked, ParkedTurn):
-        return
-    _flush_recorder(run, store)(parked.message_history, CANCELLED_DETAIL, _parked_context(parked))
-
-
-def _parked_context(parked: ParkedTurn, turn_start: TurnStart | None = None) -> PersistContext:
-    """Where a parked turn goes — fixed at the moment it parked, so every path that
-    persists it later (a resume's flush hooks, a cancel while still parked) agrees.
-
-    ``turn_start`` is the live boundary a *running* resume holds: a fold during that resume
-    rebuilds the history in front of the turn and moves it. A cancel of a still-parked run
-    passes nothing, because nothing has folded — the payload's own boundary is the answer."""
-    return PersistContext(
-        conversation_id=parked.conversation_id,
-        start=(
-            TurnStart(parked.persist_from, parked.persist_from_parts)
-            if turn_start is None
-            else turn_start
-        ),
-        clean_drop=parked.clean_drop,
-        attachment_ids=parked.attachment_ids,
-        persisted=parked.persisted,
-    )
 
 
 def build_chat_orchestrator(
@@ -336,7 +226,7 @@ def build_chat_orchestrator(
         stamp_ids: list[str] = []
         # Reachable mid-turn so a wall-clock/inactivity bound can flush whatever the
         # turn has produced before the registry force-cancels this task (which would
-        # otherwise interrupt us before we reach `_finalize` below and silently drop
+        # otherwise interrupt us before we reach `finalize` below and silently drop
         # the turn on the next reload — see `RunRegistry._flush_timeout`).
         partial_history_ref: list[Callable[[], list[ModelMessage]]] = []
 
@@ -375,7 +265,7 @@ def build_chat_orchestrator(
             # messages the completed path drops — the rejected answer and the synthetic
             # nudge the operator never sent — or they persist as real transcript and
             # replay to the model on every later turn. `drop_ref` carries the range in
-            # absolute history indices; the hooks above hand `_finalize` an already
+            # absolute history indices; the hooks above hand `finalize` an already
             # sliced list with `start=0`, so rebase it onto that slice.
             if not drop_ref:
                 return None
@@ -392,7 +282,7 @@ def build_chat_orchestrator(
             run,
             messages=_turn_messages_or_prompt,
             context=_flush_context,
-            record=_flush_recorder(run, store),
+            record=flush_recorder(run, store),
         )
         flush.arm()
         # -----------------------------------------------------------------------------
@@ -522,7 +412,7 @@ def build_chat_orchestrator(
         #
         # And *before* anything downstream measures the list: the rebuild has to land ahead
         # of both the dangling-call strip and `turn_start`, because that index is where
-        # `_finalize` slices the turn out of `result.all_messages()` — it must count the
+        # `finalize` slices the turn out of `result.all_messages()` — it must count the
         # list actually handed to the model, not the one this started from.
         incoming = incoming_request(user_prompt, context_texts if prompt is None else [])
         folded = False
@@ -625,7 +515,7 @@ def build_chat_orchestrator(
                         context_threshold=policy.threshold,
                     )
 
-            _finalize(
+            finalize(
                 run,
                 turn,
                 store=store,
@@ -643,7 +533,7 @@ def build_chat_orchestrator(
             )
             # Disarm the flush hooks now the turn is recorded: a wall-clock/inactivity bound
             # or a cancel landing during the post-answer title window (below) must not
-            # re-run `_finalize` and double-record the turn (or stamp a spurious stop on a
+            # re-run `finalize` and double-record the turn (or stamp a spurious stop on a
             # completed answer).
             flush.disarm()
             flush.done = True
@@ -652,9 +542,9 @@ def build_chat_orchestrator(
                 # Arm the park-cancel flush now, before any further `await` — a
                 # concurrent cancel of this now-externally-visible parked run must
                 # find `ParkedTurn`'s persistence context already wired (see
-                # `_persist_parked_cancel`'s docstring for why this can't wait until
+                # `persist_parked_cancel`'s docstring for why this can't wait until
                 # after `_discard_title`'s own await below).
-                run.on_park_cancel = lambda: _persist_parked_cancel(run, store=store)
+                run.on_park_cancel = lambda: persist_parked_cancel(run, store=store)
                 # Parked for approval before producing an answer: abandon the concurrent
                 # namer so its *model call* doesn't outlive the run, and carry the context
                 # forward so the resume names the thread if this cancel got there first
@@ -681,7 +571,7 @@ def build_chat_orchestrator(
             # **Last, and never fatal.** It sits here rather than beside `drive_turn`
             # for three reasons, each of which the earlier placement got wrong: it must
             # follow the verifier, whose corrective re-attempt drives further requests
-            # and leaves a newer measurement behind; it must follow `_finalize`, so a
+            # and leaves a newer measurement behind; it must follow `finalize`, so a
             # thread never carries overhead for a turn whose messages didn't record; and
             # it must not `await` between a park and the `on_park_cancel` arming above,
             # which a concurrent cancel of the now-visible parked run depends on. The
@@ -773,8 +663,8 @@ def build_resume_orchestrator(
         flush = TurnFlush(
             run,
             messages=lambda: partial_history_ref[0]() if partial_history_ref else [],
-            context=lambda: _parked_context(parked, turn_start),
-            record=_flush_recorder(run, store),
+            context=lambda: parked_context(parked, turn_start),
+            record=flush_recorder(run, store),
         )
         flush.arm()
         try:
@@ -809,7 +699,7 @@ def build_resume_orchestrator(
                 turn_start=turn_start,
                 correcting=parked.clean_drop is not None,
             )
-            _finalize(run, turn, store=store, context=_parked_context(parked, turn_start))
+            finalize(run, turn, store=store, context=parked_context(parked, turn_start))
             # Disarm the flush hooks now the turn is recorded — a bound or cancel
             # landing during the title window below must not re-finalize (see the
             # chat orchestrator).
@@ -821,7 +711,7 @@ def build_resume_orchestrator(
                 # the chat orchestrator's identical wiring) and carry the title
                 # context forward to the new parked payload so the eventual
                 # completion still names it.
-                run.on_park_cancel = lambda: _persist_parked_cancel(run, store=store)
+                run.on_park_cancel = lambda: persist_parked_cancel(run, store=store)
                 if isinstance(run.parked_payload, ParkedTurn):
                     run.parked_payload.title = parked.title
             else:

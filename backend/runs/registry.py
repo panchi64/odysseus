@@ -475,7 +475,7 @@ class RunRegistry:
         """Give a parked (awaiting-approval) run the same pre-cancel flush opportunity
         `_flush_cancel` gives a still-running turn. A parked turn's task has already
         exited, so there is nothing to interrupt — but its persistence is otherwise
-        deferred until the eventual resume (see `agent.engine._finalize`'s parked
+        deferred until the eventual resume (see `agent.finalize.finalize`'s parked
         branch), so without this hook, cancelling it instead of resuming it silently
         drops the whole parked turn (the operator's own prompt included) on the next
         reload. Called after `run.status` has already been set to the terminal
