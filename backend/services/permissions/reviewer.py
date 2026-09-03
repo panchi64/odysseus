@@ -41,6 +41,18 @@ prose is downstream of everything it has read, so it can carry an injected argum
 forward in its own words. Fencing it means such an argument arrives as something the
 reviewer reads about, not as something it is told.
 
+**Two things follow from that, and both are about who wrote which byte.** The prompt is
+split down that line rather than by topic: what *this process* derived — the tool's name,
+the paths the walk found, whether the command reaches the network, what could not be read
+— stands in the clear, and every byte the *model* authored — the action's summary, and so
+the command inside it — sits inside the fence with the conversation. And the conversation
+is handed over as **JSON entries, not labelled lines**: a transcript rendered as
+`Operator: …` is a format any message can write, so an assistant turn (or a pasted page
+quoted in one) could open a second "Operator:" line and hand itself the one label the
+rubric treats as authorising. A role that is a JSON field cannot be forged by the text in
+the field beside it. Both fences share one nonce and one preamble, so the reviewer is told
+the rule once and can still see where each block begins.
+
 **Degradation is fail-closed and lives at the caller.** This module returns ``None`` for
 every failure it can have — no model bound, a timeout, an unparseable answer — and never
 a lenient verdict standing in for one. What ``None`` *means* is ``decide.py``'s to say,
@@ -50,6 +62,7 @@ and it says park.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -61,7 +74,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Text
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from core.untrusted import wrap_untrusted
+from core.untrusted import new_nonce, untrusted_fence, untrusted_preamble
 from prompts.utility import COMPACT_MARKER, REVIEW_INSTRUCTIONS
 from services.permissions.capability import Capability
 
@@ -92,13 +105,26 @@ class ReviewVerdict(BaseModel):
 
 
 @dataclass(frozen=True)
+class TranscriptEntry:
+    """One turn of the conversation as the reviewer may read it.
+
+    A role and a text, kept apart, because the prompt renders them as JSON: the label is a
+    field the message's own text cannot reach, which is the whole difference between "the
+    operator said this" and "something claims the operator said this".
+    """
+
+    role: Literal["operator", "assistant"]
+    text: str
+
+
+@dataclass(frozen=True)
 class ReviewRequest:
     """What a reviewer is given: an action's worst case, and the thread that led to it."""
 
     capability: Capability
     #: The recent conversation, already filtered to user and assistant prose
     #: (:func:`review_transcript`). Empty is legitimate — a stateless turn has no thread.
-    transcript: str
+    transcript: Sequence[TranscriptEntry] = ()
 
 
 #: The stage as a function, so the engine holds a reviewer rather than a model and a test
@@ -112,7 +138,7 @@ def review_transcript(
     *,
     limit: int = TRANSCRIPT_MESSAGES,
     chars: int = MESSAGE_CHARS,
-) -> str:
+) -> tuple[TranscriptEntry, ...]:
     """The thread as the reviewer may see it: the operator's requests and the assistant's
     prose, in order, and nothing else.
 
@@ -124,9 +150,9 @@ def review_transcript(
     reviewer should not be weighing when deciding whether the *operator* asked for it.
     And a **compaction summary** is a user-shaped message the operator never wrote: a
     utility model's fold of the earlier thread, tool returns included, which would
-    otherwise carry every one of them back in under the "Operator:" label.
+    otherwise carry every one of them back in wearing the operator's own role.
     """
-    lines: list[str] = []
+    entries: list[TranscriptEntry] = []
     for message in list(messages)[-limit:]:
         if isinstance(message, ModelRequest):
             text = "\n".join(
@@ -135,14 +161,14 @@ def review_transcript(
                 if isinstance(part, UserPromptPart) and not _is_compaction_summary(part)
             ).strip()
             if text:
-                lines.append(f"Operator: {text[:chars]}")
+                entries.append(TranscriptEntry("operator", text[:chars]))
         elif isinstance(message, ModelResponse):
             text = "\n".join(
                 part.content for part in message.parts if isinstance(part, TextPart)
             ).strip()
             if text:
-                lines.append(f"Assistant: {text[:chars]}")
-    return "\n\n".join(lines)
+                entries.append(TranscriptEntry("assistant", text[:chars]))
+    return tuple(entries)
 
 
 def _is_compaction_summary(part: UserPromptPart) -> bool:
@@ -167,32 +193,51 @@ def _prompt_text(part: UserPromptPart) -> str:
 
 
 def review_prompt(request: ReviewRequest) -> str:
-    """The reviewer's one message: the act, then the conversation it came out of.
+    """The reviewer's one message: the structural facts, then everything anyone wrote.
 
-    The act sits *outside* the fence and the conversation inside it. That split is the
-    point: the capability is this process's own description, extracted from a grammar, and
-    the transcript is prose the model wrote after reading whatever it has read.
+    The split is by **author**, not by topic. What stands in the clear is what this
+    process derived — the tool's name, the paths the grammar walk found, whether the
+    action reaches the network, and what could not be read at all. What goes inside the
+    fence is every byte a model produced: the action's summary (which, for a shell action,
+    is the command) and the conversation. Putting the command in the clear was the older
+    shape and the wrong one — a command is a string the model chose, and a reviewer
+    reading it in the clear is reading instructions from the thing it is reviewing.
+
+    The facts are JSON-encoded even though the *labels* are ours to trust, because their
+    values are not: a path is a word the model wrote, and a word with a newline in it
+    could otherwise write a line of its own. That covers the tool's own name too — an
+    operator's MCP server names its tools, not this catalog.
     """
     capability = request.capability
-    lines = [f"Action: {capability.summary}", f"Tool: {capability.tool}"]
-    if capability.writes:
-        lines.append(f"Writes: {', '.join(capability.writes)}")
-    if capability.reads:
-        lines.append(f"Reads: {', '.join(capability.reads)}")
-    if capability.env_writes:
-        lines.append(f"Sets in the environment: {', '.join(capability.env_writes)}")
-    if capability.escapes:
-        lines.append(f"Reaches outside the workspace: {', '.join(capability.escapes)}")
-    if capability.network:
-        lines.append("Reaches the network.")
-    for note in capability.unbounded:
-        lines.append(f"Could not be fully read: {note}")
-    body = "\n".join(lines)
-    if not request.transcript:
-        return f"{body}\n\nThere is no conversation to read: the operator has said nothing."
-    return f"{body}\n\nThe conversation so far:\n" + wrap_untrusted(
-        request.transcript, source="conversation"
+    lines = [f"Tool: {json.dumps(capability.tool)}"]
+    for label, values in (
+        ("Reads", capability.reads),
+        ("Writes", capability.writes),
+        ("Sets in the environment", capability.env_writes),
+        ("Reaches outside the workspace", capability.escapes),
+        ("Could not be fully read", capability.unbounded),
+    ):
+        if values:
+            lines.append(f"{label}: {json.dumps(list(values))}")
+    lines.append(f"Reaches the network: {'yes' if capability.network else 'no'}")
+
+    # One nonce and one preamble across both fences: the rule is the same rule, and the
+    # reviewer that has been told it once does not read it better for being told twice.
+    nonce = new_nonce()
+    lines += ["", untrusted_preamble(nonce), "", "The action, as the model described it:"]
+    lines.append(
+        untrusted_fence(
+            json.dumps({"summary": capability.summary}), nonce, source="tool-call"
+        )
     )
+    lines.append("")
+    if request.transcript:
+        conversation = [{"role": entry.role, "text": entry.text} for entry in request.transcript]
+        lines.append("The conversation so far, oldest first:")
+        lines.append(untrusted_fence(json.dumps(conversation), nonce, source="conversation"))
+    else:
+        lines.append("There is no conversation to read: the operator has said nothing.")
+    return "\n".join(lines)
 
 
 def make_utility_reviewer(

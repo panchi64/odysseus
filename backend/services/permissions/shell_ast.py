@@ -1,4 +1,4 @@
-"""Reading a shell command's worst case off its grammar.
+r"""Reading a shell command's worst case off its grammar.
 
 The half of the capability extraction that has to understand bash. Split from
 ``capability.py`` because the two change for entirely different reasons: this file moves
@@ -19,6 +19,15 @@ been unmaintained since ~2019 and breaks on ordinary bashisms.
 shrink the described worst case to less than the real one, which is the one failure a
 deterministic stage cannot have — its consumer would then clear a command on the strength
 of the part of it that parsed.
+
+**A word is only literal if the shell would hand it over unchanged.** The grammar gives
+back the text as *written*, and the program is handed the text as *expanded* — and between
+the two sit brace expansion, globbing and backslash removal, none of which the tree
+records. `cat .\./etc/passwd`, `cat \/etc/passwd`, `cat {..,}/etc/passwd` and
+`cat .[.]/.[.]/etc/passwd` all read `/etc/passwd` under `/bin/sh` while naming, as written,
+a path with no `..` and no leading slash for a containment check to catch. So a bare word
+carrying any of those characters is not read as a literal at all: it is recorded as
+unbounded, exactly like a `$VAR`, and for the same reason — the value arrives later.
 """
 
 from __future__ import annotations
@@ -46,6 +55,24 @@ _IGNORED = frozenset({"&&", "||", "|", "|&", ";", ";;", "&", "\n", "comment"})
 
 # Argument nodes whose text is fixed at parse time — the only kind whose value we know.
 _LITERAL = frozenset({"word", "number", "raw_string"})
+
+# What the shell still does to a *bare* word after the grammar has read it: brace
+# expansion, globbing, backslash removal, and a backtick's substitution. Any of them makes
+# the string the program receives a different string from the one written here, so a word
+# carrying one is not a literal — see the module docstring for the four commands this set
+# exists for.
+_EXPANDED_UNQUOTED = frozenset("\\{}[]*?`")
+
+# The same question inside double quotes, where quoting has already suppressed globbing and
+# brace expansion. A backslash still escapes and a backtick still substitutes; a single
+# quoted string interprets nothing at all and is therefore always the literal it reads as.
+_EXPANDED_IN_QUOTES = frozenset("\\`")
+
+#: What :func:`command_prefix` keeps: the program and the leading words that say which of
+#: its modes was invoked (`uv run pytest`, `git commit`). Three is where a longer prefix
+#: stops naming the act and starts naming its target, which is the part a grant must not
+#: be scoped to.
+_PREFIX_WORDS = 3
 
 # Constructs whose value is decided at run time, by the shell or by another command.
 # Each is named in the refusal because "which part of this could not be read" is the
@@ -142,25 +169,103 @@ def shell_reach(command: str, *, root: Path | None) -> ShellReach:
     )
 
 
+def strip_comments(command: str) -> str:
+    """``command`` with its shell comments removed.
+
+    A comment changes nothing about what runs — it is text addressed to whoever *reads*
+    the command, which is precisely why it must not ride along into a prompt: it is the
+    one part of a command whose author is writing to the reviewer rather than to the
+    shell. Dropped off the grammar's own `comment` nodes rather than by cutting at `#`,
+    since a `#` inside a quoted argument or a URL fragment is not a comment.
+    """
+    encoded = command.encode()
+    spans: list[tuple[int, int]] = []
+    _collect_comments(_PARSER.parse(encoded).root_node, spans)
+    for start, end in sorted(spans, reverse=True):
+        encoded = encoded[:start] + encoded[end:]
+    text = encoded.decode(errors="replace")
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
+def _collect_comments(node: Node, into: list[tuple[int, int]]) -> None:
+    if node.type == "comment":
+        into.append((node.start_byte, node.end_byte))
+        return
+    for child in node.children:
+        _collect_comments(child, into)
+
+
+def command_prefix(command: str) -> tuple[str, ...] | None:
+    """The leading words that name what ``command`` does, or None when it cannot be read.
+
+    The program plus the non-flag words in front of its first flag, capped — `uv run
+    pytest`, `git commit`, `brew install`. It is what a standing permission can be scoped
+    to without being scoped to one invocation: `pytest tests/test_a.py` and `pytest
+    tests/test_b.py` are the same act on different targets, and an operator saying "stop
+    asking about this" means the act.
+
+    None where nothing may be inferred: a command with an unbounded construct in it (the
+    word that decides the act may be the one we could not read) and one with no command
+    this file can name. A pipeline answers for its *first* command only — the caller that
+    has to hold every stage to a scope walks :attr:`ShellReach.commands` itself.
+    """
+    reach = shell_reach(command, root=None)
+    if reach.unbounded or not reach.commands:
+        return None
+    first = reach.commands[0]
+    words = [first.program]
+    for argument in first.arguments:
+        if is_flag(argument) or len(words) >= _PREFIX_WORDS:
+            break
+        words.append(argument)
+    return tuple(words)
+
+
 def _literal(node: Node) -> str | None:
     """The fixed text of an argument node, or None when it is decided at run time.
 
-    A quoted string counts only when nothing inside it expands: `"foo"` is a literal,
-    `"$HOME/foo"` is not, and telling the two apart is exactly what a regex cannot do.
+    "Decided at run time" covers two kinds of node and not one. The obvious kind is a
+    substitution — `"$HOME/foo"` is not `"foo"`, and telling the two apart is exactly what
+    a regex cannot do. The other is a word the *shell itself* rewrites before the program
+    sees it: a brace, a glob, a bracket class or a backslash escape. Both arrive here as
+    None, because in both cases the text on the command line is not the value.
     """
     if node.type in _LITERAL:
         text = node.text.decode(errors="replace") if node.text else ""
-        return text[1:-1] if node.type == "raw_string" else text
+        if node.type == "raw_string":
+            # Single quotes suppress every expansion there is, so the text between them is
+            # the value however it is spelled.
+            return text[1:-1]
+        return None if _expands(text, _EXPANDED_UNQUOTED) else text
     if node.type == "string":
         if any(child.type in _DYNAMIC for child in node.children):
             return None
-        return node.text.decode(errors="replace").strip('"') if node.text else ""
+        text = node.text.decode(errors="replace") if node.text else ""
+        return None if _expands(text, _EXPANDED_IN_QUOTES) else text.strip('"')
     if node.type == "concatenation":
         parts = [_literal(child) for child in node.children]
         if any(part is None for part in parts):
             return None
         return "".join(part for part in parts if part is not None)
     return None
+
+
+def _expands(text: str, characters: frozenset[str]) -> bool:
+    """Whether the shell would still do something to ``text`` before passing it on."""
+    return any(character in text for character in characters)
+
+
+def _unreadable(node: Node) -> str:
+    """Why this node's text is not a value, in the words the refusal is written in.
+
+    The distinction is worth making because the two answers point at different fixes: a
+    construct we have no rule for is a gap in this module, and a word the shell would
+    rewrite is a command that has to be spelled plainly before anything can vouch for it.
+    """
+    text = node.text.decode(errors="replace") if node.text else ""
+    if _expands(text, _EXPANDED_UNQUOTED):
+        return "a word the shell would expand or unescape"
+    return f"an argument of a kind not read here ({node.type})"
 
 
 class _Walk:
@@ -240,13 +345,23 @@ class _Walk:
         # Every redirect is recorded as a write, the input ones included. `< file` only
         # reads, but calling a read a write can only escalate, and a rule with no
         # exceptions is a rule nobody has to check the exceptions of.
-        for child in node.children:
-            if child.type in _DYNAMIC:
-                self.unbounded.append(_DYNAMIC[child.type])
-                continue
-            target = _literal(child)
-            if target is not None:
-                self._path(target, self.writes)
+        #
+        # Read off the grammar's own `destination` field rather than by scanning the
+        # children for one that happens to be literal: the redirect operator and a leading
+        # file descriptor are children too, and a walk that skipped whatever it could not
+        # read would record `> $OUT` and `> {a,b}` as redirects to nowhere.
+        target = node.child_by_field_name("destination")
+        if target is None:
+            self.unbounded.append(f"a redirect with no destination to read ({node.type})")
+            return
+        if target.type in _DYNAMIC:
+            self.unbounded.append(_DYNAMIC[target.type])
+            return
+        value = _literal(target)
+        if value is None:
+            self.unbounded.append(_unreadable(target))
+            return
+        self._path(value, self.writes)
 
     def _argument(self, node: Node) -> str | None:
         """One argument's literal text, recorded against the worst case as it goes.
@@ -261,7 +376,7 @@ class _Walk:
             return None
         value = _literal(node)
         if value is None:
-            self.unbounded.append(f"an argument of a kind not read here ({node.type})")
+            self.unbounded.append(_unreadable(node))
             return None
         if is_flag(value):
             attached = attached_value(value)

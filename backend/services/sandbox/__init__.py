@@ -27,9 +27,11 @@ from .container import (
     run_subprocess,
 )
 from .detect import detect_sandbox
+from .gitenv import git_config_pins
 from .host import (
     HostConfinement,
     HostExecutionError,
+    host_scratch_dir,
     resolve_confinement,
     run_on_host,
     shutdown_confinement,
@@ -70,6 +72,8 @@ __all__ = [
     "suffixed",
     "HostConfinement",
     "HostExecutionError",
+    "git_config_pins",
+    "host_scratch_dir",
     "resolve_confinement",
     "run_on_host",
     "shutdown_confinement",

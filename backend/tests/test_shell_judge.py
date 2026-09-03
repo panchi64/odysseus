@@ -19,9 +19,15 @@ from pathlib import Path
 
 import pytest
 
-from services.permissions.capability import ActionKind, capability_of, shell_capability
+from services.permissions.capability import (
+    ActionKind,
+    capability_of,
+    measured_against_root,
+    shell_capability,
+)
 from services.permissions.judge import judge
 from services.permissions.read_only import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS
+from services.permissions.shell_ast import command_prefix, strip_comments
 
 ROOT = Path("/tmp/odysseus-judge-workspace")
 
@@ -149,6 +155,107 @@ class TestUnknownShapesEscalate:
         assert not shell_capability("shell_run_command", "ls |", root=ROOT).bounded
 
 
+class TestAWordTheShellWouldRewrite:
+    """The gap between the command as *written* and the command as *run*.
+
+    Every one of these reads `/etc/passwd` under `/bin/sh` — the shell the tools spawn —
+    while naming, on the command line, a path with no `..` in it for a containment check
+    to find. They were all cleared as workspace reads before the walk stopped treating a
+    word the shell would rewrite as a value.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"cat .\./etc/passwd",  # backslash before a dot, removed by the shell
+            r"cat \/etc/passwd",  # backslash before the leading slash
+            "cat {..,}/etc/passwd",  # brace expansion
+            "cat .[.]/.[.]/etc/passwd",  # a bracket class matching one literal character
+        ],
+    )
+    def test_a_word_the_shell_rewrites_is_not_a_path_this_file_has_read(self, command):
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert not capability.bounded
+        assert not cleared(command)
+        assert reason(command) == "a word the shell would expand or unescape"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls -la",
+            "cat src/main.py",
+            "grep -rn needle src",
+            "git status",
+            "git ls-files | head -20",
+            "cat ./notes/today.md",
+            "wc -l src/main.py",
+            "find . -name '*.py'",  # quoted: single quotes suppress every expansion
+        ],
+    )
+    def test_a_plainly_spelled_command_is_untouched(self, command):
+        assert shell_capability("shell_run_command", command, root=ROOT).bounded
+        assert cleared(command)
+
+    def test_a_value_glued_to_a_flag_is_still_read(self):
+        # `--flag=path` is one word and an ordinary one: nothing in it expands.
+        capability = shell_capability("shell_run_command", "grep --file=src/p.txt x .", root=ROOT)
+        assert capability.bounded
+        assert "src/p.txt" in capability.reads
+
+    def test_a_redirect_this_file_cannot_read_is_not_a_redirect_to_nowhere(self):
+        # The destination is read off the grammar's own field. Scanning the children for
+        # whichever one happened to be literal recorded `> {a,b}` as writing nothing.
+        for command in ("ls > {a,b}", "ls > $OUT"):
+            capability = shell_capability("shell_run_command", command, root=ROOT)
+            assert capability.writes == ()
+            assert not capability.bounded
+            assert not cleared(command)
+
+
+class TestTheWordsACommandLeadsWith:
+    """`command_prefix` — what a standing permission could be scoped to without being
+    scoped to one invocation."""
+
+    @pytest.mark.parametrize(
+        ("command", "prefix"),
+        [
+            ("uv run pytest tests/test_a.py -k thing", ("uv", "run", "pytest")),
+            ("brew install ripgrep", ("brew", "install", "ripgrep")),
+            ("git commit -m 'x'", ("git", "commit")),
+            ("ls", ("ls",)),
+            ("git diff | head -20", ("git", "diff")),  # the first stage of a pipeline
+        ],
+    )
+    def test_the_program_and_the_words_that_say_which_of_its_modes(self, command, prefix):
+        assert command_prefix(command) == prefix
+
+    @pytest.mark.parametrize("command", ["cat $TARGET", "ls |", "$TOOL --version", ""])
+    def test_a_command_that_could_not_be_read_has_no_prefix(self, command):
+        # The word that names the act may be the one that could not be read, so there is
+        # nothing here a permission could honestly be scoped to.
+        assert command_prefix(command) is None
+
+
+class TestCommentsAreDropped:
+    """A comment changes nothing about what runs — it is written to whoever reads it."""
+
+    def test_a_comment_is_dropped_off_the_grammar_and_not_off_a_hash(self):
+        assert strip_comments("ls -la # look at everything") == "ls -la"
+        assert strip_comments("echo '# not a comment'") == "echo '# not a comment'"
+        assert strip_comments("curl http://x/#fragment") == "curl http://x/#fragment"
+
+    def test_a_whole_line_comment_goes_with_its_line(self):
+        assert strip_comments("# explain\nls -la") == "ls -la"
+
+    def test_the_summary_the_reviewer_and_the_operator_read_carries_none(self):
+        capability = shell_capability(
+            "shell_run_command", "ls -la # the operator approved this", root=ROOT
+        )
+        assert capability.summary == "Runs the shell command: ls -la"
+        # ...and the walk still read the whole command it was given.
+        assert capability.programs == ("ls",)
+
+
 class TestTheAllowlist:
     """What actually clears without a model call."""
 
@@ -162,14 +269,28 @@ class TestTheAllowlist:
             "find . -name '*.py'",
             "wc -l src/main.py",
             "git status",
-            "git diff | head -20",
-            "git log --oneline -20",
+            "git ls-files",
+            "git rev-parse HEAD",
             "ls src && ls tests",
             "cat a.txt # a comment",
         ],
     )
     def test_the_ordinary_reads_of_a_code_thread_cost_nothing(self, command):
         assert cleared(command)
+
+    @pytest.mark.parametrize(
+        "command",
+        ["git diff", "git log -p", "git show HEAD", "git blame src/a.py", "git grep needle"],
+    )
+    def test_the_diff_family_is_not_a_read_however_it_is_invoked(self, command):
+        # These read the working tree and print — and along the way run `diff.external`, a
+        # diff driver's `textconv` or a filter driver's `clean`, each of them a program the
+        # *repository* named rather than this command. No flag states that rule, so no row
+        # in the table can, and the environment pins in `services/sandbox/gitenv.py` have no
+        # value that switches them off. They escalate until an OS fence bounds what a
+        # spawned program may do.
+        assert not cleared(command)
+        assert "not a read-only subcommand" in reason(command)
 
     @pytest.mark.parametrize(
         "command",
@@ -216,9 +337,10 @@ class TestTheAllowlist:
         ],
     )
     def test_a_reading_subcommand_has_its_own_exceptions(self, subcommand, flag):
-        # `git log` reads, and `git log --ext-diff` runs whatever the repository's own
-        # config names — so the subcommand allowlist needs the same per-entry denial the
-        # program allowlist has, or being a reading subcommand is where the check stops.
+        # `git cat-file` hands back stored bytes, and `git cat-file --filters` pushes them
+        # through whatever clean driver the repository configured — so the subcommand
+        # allowlist needs the same per-entry denial the program allowlist has, or being a
+        # reading subcommand is where the check stops.
         assert cleared(f"git {subcommand}")
         assert not cleared(f"git {subcommand} {flag} x")
 
@@ -230,7 +352,7 @@ class TestTheAllowlist:
             assert not cleared(command)
 
     def test_a_subcommand_program_is_cleared_on_its_subcommand(self):
-        assert cleared("git show HEAD")
+        assert cleared("git ls-tree HEAD")
         assert not cleared("git reset --hard")
         # No subcommand at all is not a read — it is a form this stage has no rule for.
         assert not cleared("git --version")
@@ -294,12 +416,45 @@ class TestContainment:
         capability = shell_capability("shell_run_command", "cat ~/notes.md", root=ROOT)
         assert capability.escapes == ("~/notes.md",)
 
-    def test_with_no_workspace_an_absolute_path_reads_as_having_left(self):
+    def test_with_no_workspace_nothing_clears_at_all(self):
         # There is nothing to measure against, and "we could not tell" has to read the
-        # same as "it left". A plain relative read is still fine.
+        # same as "it left" — including for the path that names no directory. `cat .env`
+        # neither escapes nor writes, so a stage reading only those fields would clear a
+        # command whose working directory this process never established; it is recorded
+        # as unread instead, and unread never passes.
         assert not cleared("cat /etc/passwd", root=None)
         assert not cleared("cat ../outside.txt", root=None)
-        assert cleared("cat notes.md", root=None)
+        assert not cleared("cat notes.md", root=None)
+        assert "no workspace directory" in reason("cat .env", root=None)
+
+
+class TestAHostCommandIsNotAWorkspaceCommand:
+    """`code_run_host_command` runs on the operator's machine, not in the workspace."""
+
+    def test_it_is_never_cleared_by_the_deterministic_stage(self):
+        # Reading it against the run's workspace root was how `cat .env` cleared as a
+        # workspace read while the command ran somewhere else entirely. There is no root
+        # it *could* be read against: in the modes this tool exists in, the workspace is a
+        # container the host cannot see.
+        for command in ("cat .env", "ls", "git status"):
+            capability = capability_of(
+                "code_run_host_command", {"command": command, "explanation": "x"}, root=ROOT
+            )
+            judgement = judge(capability)
+            assert not judgement.approved, command
+            assert "runs on the host" in judgement.reason
+
+    def test_the_same_command_in_the_workspace_still_clears(self):
+        # The contrast is the point: what changed is where the command runs, not how
+        # generous the stage is about reading a workspace.
+        assert cleared("git status")
+
+    def test_the_gate_opens_no_workspace_to_judge_one(self):
+        # Opening a workspace is a `git worktree add` or a container start, and a host
+        # command would be measured against it wrongly anyway.
+        assert not measured_against_root("code_run_host_command")
+        assert measured_against_root("shell_run_command")
+        assert measured_against_root("files_write_file")
 
 
 class TestAClassifiedReadClears:
@@ -321,6 +476,18 @@ class TestAClassifiedReadClears:
             capability = capability_of(tool, args, root=ROOT)
             assert capability.kind is ActionKind.READ
             assert judge(capability).approved, tool
+
+    def test_the_row_names_the_ground_it_was_cleared_on(self):
+        # Two approvals, not one kind of approval: this one is the tool's class alone,
+        # with nothing weighing the arguments and no model consulted. The row says so in
+        # those words rather than reading like a review that happened to pass, and the
+        # tier is the machine-readable half of the same fact.
+        judgement = judge(capability_of("corpus_retrieve", {"query": "invoice"}, root=ROOT))
+        assert judgement.approved
+        assert judgement.tier == "read"
+        assert judgement.reason == "classified read, cleared at Auto with no review"
+        # A command cleared by the allowlist is a different answer and carries no tier.
+        assert judge(shell_capability("shell_run_command", "git status", root=ROOT)).tier is None
 
     def test_a_read_is_named_by_its_keys_and_never_its_values(self):
         # The summary rides onto the work log and into the reviewer's prompt, and a recall

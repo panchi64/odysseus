@@ -4,7 +4,12 @@ what an action would do (:mod:`capability`, :mod:`shell_ast`, :mod:`shell_flags`
 says so (:mod:`judge` over the allowlist in :mod:`read_only`, then :mod:`reviewer`).
 Imported through the package, so a caller names one home for all of it."""
 
-from services.permissions.capability import ActionKind, Capability, capability_of
+from services.permissions.capability import (
+    ActionKind,
+    Capability,
+    capability_of,
+    measured_against_root,
+)
 from services.permissions.decide import (
     Decision,
     ReviewOutcome,
@@ -35,10 +40,11 @@ from services.permissions.reviewer import (
     Reviewer,
     ReviewRequest,
     ReviewVerdict,
+    TranscriptEntry,
     make_utility_reviewer,
     review_transcript,
 )
-from services.permissions.shell_ast import ShellCommand
+from services.permissions.shell_ast import ShellCommand, command_prefix, strip_comments
 
 __all__ = [
     "ACTING_PERMISSIONS",
@@ -60,17 +66,21 @@ __all__ = [
     "ReviewVerdict",
     "Reviewer",
     "ShellCommand",
+    "TranscriptEntry",
     "beyond_scope",
     "blocked_message",
     "capability_of",
+    "command_prefix",
     "decide",
     "judge",
     "make_utility_reviewer",
+    "measured_against_root",
     "permission_level",
     "permission_spec",
     "review",
     "review_refusal",
     "review_transcript",
     "stricter_permission",
+    "strip_comments",
     "tools_beyond_scope",
 ]

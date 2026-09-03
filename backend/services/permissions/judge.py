@@ -33,6 +33,10 @@ operator's own MCP server names can reach this branch.
 - A variable we cannot interpolate never passes, for the same reason as the first: `$X`
   is whatever it is, and the honest reading of an argument whose value arrives at run time
   is that we did not read it.
+- A command with no workspace to measure against never passes, again for that reason. A
+  bare `cat .env` names no directory, so it neither escapes nor writes — and clearing it
+  would be vouching for a file in a directory this process never established. It arrives
+  ``unbounded`` from ``capability.py``, which is where that reading is made.
 
 **What "read-only" means here, and the assumption underneath it.** The programs on the
 list observe and return; the flags that would make one of them do otherwise sit beside it
@@ -43,10 +47,12 @@ are measured against the run's workspace root and anything reaching outside it e
 
 The assumption worth naming: the shell session persists its working directory between
 calls (``tools/shell.py``), and that directory is not visible from here, so a relative
-path is judged as relative to the workspace root. Changing directory is therefore
-deliberately *not* an allowlisted program — a `cd` is an act the reviewer rules on, with
-"moving the working directory outside the workspace" named in its rubric as high risk —
-which is what keeps the deterministic stage's base honest.
+path is judged as relative to the workspace root — and where there is no such root, or
+where the command does not run in it at all (``code_run_host_command``), nothing is
+cleared. Changing directory is therefore deliberately *not* an allowlisted program — a
+`cd` is an act the reviewer rules on, with "moving the working directory outside the
+workspace" named in its rubric as high risk — which is what keeps the deterministic
+stage's base honest.
 """
 
 from __future__ import annotations
@@ -72,6 +78,11 @@ class Judgement:
 
     approved: bool
     reason: str
+    #: *Which* deterministic ground cleared it, when one did — None on an escalation. It
+    #: is a separate field from the reason because the reason is prose for the operator
+    #: and this is a value something else can rule on: two approvals are not the same
+    #: approval, and the one granted to a classified read grants nothing to a command.
+    tier: str | None = None
 
 
 def judge(capability: Capability) -> Judgement:
@@ -89,7 +100,11 @@ def judge(capability: Capability) -> Judgement:
     if capability.unbounded:
         return Judgement(False, capability.unbounded[0])
     if capability.kind is ActionKind.READ:
-        return Judgement(True, "observes and returns, changing nothing")
+        # Named for what it is, on the row the operator reads: a tool whose *class* says
+        # it observes, cleared on that class alone. It is the one approval here that no
+        # model and no rule about arguments took part in, and the row should not let that
+        # pass for the same kind of answer a command gets.
+        return Judgement(True, "classified read, cleared at Auto with no review", tier="read")
     if capability.kind is not ActionKind.SHELL:
         return Judgement(False, "only reads and shell commands can be cleared without a review")
     if capability.env_writes:

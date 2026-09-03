@@ -22,11 +22,13 @@ from the gate having silently failed open.
 **One review pass per batch, and it runs concurrently.** A model turn can defer several
 calls at once, and each is judged on its own — the deterministic stage may clear three and
 send the fourth to the model — but everything a review needs that is *not* per-call is
-built once for the batch: the reviewer (a registry resolution and a model construction)
-and the transcript (a walk of the recent history into one string the reviewer reads
-verbatim). The model calls that remain are independent of one another and each carries a
-timeout measured in seconds, so they are awaited together rather than in a line; a turn
-that deferred four calls waits once, not four times.
+built once for the batch: the reviewer (a registry resolution and a model construction),
+the transcript (a walk of the recent history into role-tagged entries the reviewer reads
+inside an untrusted fence, never as lines it could be talked into believing) and the
+workspace root every path is measured against (:func:`_judged_root`). The model calls
+that remain are independent of one another and each carries a timeout measured in
+seconds, so they are awaited together rather than in a line; a turn that deferred four
+calls waits once, not four times.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic_ai import ToolApproved, ToolDenied
 from pydantic_ai.messages import ModelMessage, ToolCallPart
@@ -48,16 +51,19 @@ from services.permissions import (
     Decision,
     Reviewer,
     ReviewOutcome,
+    TranscriptEntry,
     blocked_message,
     capability_of,
     decide,
     make_utility_reviewer,
+    measured_against_root,
     review,
     review_refusal,
     review_transcript,
 )
 from services.registry import ModelRegistry
 from tools.deps import RunDeps
+from tools.workspace import resolve_run_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +185,7 @@ async def review_batch(
         return {}
     reviewer = await resolve_reviewer(caps, run.owner_id)
     transcript = review_transcript(messages, limit=get_settings().review_transcript_messages)
+    root = await _judged_root(deps, calls)
     outcomes = await gather_bounded(
         [
             review_call(
@@ -186,7 +193,7 @@ async def review_batch(
                 tool_call_id=call.tool_call_id,
                 tool=call.tool_name,
                 args=call.args_as_dict(),
-                deps=deps,
+                root=root,
                 transcript=transcript,
                 reviewer=reviewer,
             )
@@ -195,6 +202,34 @@ async def review_batch(
         _REVIEW_CONCURRENCY,
     )
     return {call.tool_call_id: outcome for call, outcome in zip(calls, outcomes, strict=True)}
+
+
+async def _judged_root(deps: RunDeps, calls: Sequence[ToolCallPart]) -> Path | None:
+    """The directory every path in this batch is measured against.
+
+    **Resolved, not read off the run's memo**, and that is the whole point: the *first*
+    shell command of a turn is deferred before any tool has run, so nothing has opened a
+    workspace yet and the memo is empty. Judging against None is the strictest reading —
+    every absolute or upward path escapes — but on the one call it matters for it is also
+    the *wrong* reading, and it escalated ordinary work that a resolved root clears.
+
+    Once for the batch, and only when a call in it is actually placed against a root
+    (:func:`measured_against_root`). Opening a workspace is a `git worktree add` or a
+    container start; every call in the batch would be judged against the same directory
+    anyway, and a batch of mail sends would pay for one to learn nothing.
+
+    A failure here never ends the turn. The workspace this could not open is the one the
+    approved call would have needed, so the tool will report it in words the model can act
+    on; the judge's job in the meantime is to answer, and with no root it answers strictly.
+    """
+    if not any(measured_against_root(call.tool_name) for call in calls):
+        return None
+    try:
+        workspace = await resolve_run_workspace(deps)
+    except Exception:  # noqa: BLE001 — a judge that raises would abort the operator's turn
+        logger.info("auto review: no workspace to judge against", exc_info=True)
+        return None
+    return workspace.root if workspace is not None else None
 
 
 async def resolve_reviewer(caps: ServiceContainer, owner_id: str) -> Reviewer | None:
@@ -234,19 +269,18 @@ async def review_call(
     tool_call_id: str,
     tool: str,
     args: dict,
-    deps: RunDeps,
-    transcript: str,
+    root: Path | None,
+    transcript: Sequence[TranscriptEntry],
     reviewer: Reviewer | None,
 ) -> ReviewOutcome:
     """Rule on one deferred call at the Auto level, announcing both ends on the stream.
 
-    The workspace root comes off the run's own memoised binding when a tool has already
-    resolved one this turn (``tools/workspace.py``), and is None otherwise — which is not
-    a gap but the strictest reading: with nowhere to measure containment against, every
-    absolute or upward path in a command reads as leaving the workspace and escalates.
+    ``root`` is the run's workspace directory, resolved once for the batch
+    (:func:`_judged_root`), and None where there is none — which is not a gap but the
+    strictest reading: with nowhere to measure containment against, every absolute or
+    upward path in a command reads as leaving the workspace and escalates.
     """
-    workspace = deps.workspace
-    capability = capability_of(tool, args, root=workspace.root if workspace else None)
+    capability = capability_of(tool, args, root=root)
     run.emit(ReviewStarted(tool_call_id=tool_call_id, name=tool, summary=capability.summary))
     outcome = await review(capability, reviewer=reviewer, transcript=transcript)
     verdict = outcome.verdict

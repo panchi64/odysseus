@@ -31,6 +31,14 @@ conversation grant, or — at the one level whose entire meaning is that they as
 their answers to be given for them — through the review. That asymmetry is what keeps
 adding a level from quietly deleting a protection nobody re-examined.
 
+**At Auto, "through the review" includes the review's own deterministic answer**, and for
+a self-gated *read* that answer costs no model call: ``judge.py`` clears a tool the
+shipped catalog classifies as observing on the strength of the class, at the tier it
+records as ``read``. The gate is still answered — by the stage the operator's chosen level
+delegates to — but nothing weighs the arguments, because for that class of tool there is
+nothing in them to weigh. It is the one place where a level's delegation resolves without
+a model, and the review row says so in those words rather than reporting it as a review.
+
 There is exactly one exemption in the other direction, and it is here rather than at a
 call site because both halves of the enforcement need it: the model's own task list is
 writable at every level (:data:`PLANNING_TOOLS`), since a read-only turn whose only

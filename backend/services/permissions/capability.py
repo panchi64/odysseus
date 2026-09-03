@@ -34,7 +34,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from services.permissions.shell_ast import ShellCommand, escapes_workspace, shell_reach
+from services.permissions.shell_ast import (
+    ShellCommand,
+    escapes_workspace,
+    shell_reach,
+    strip_comments,
+)
 from services.tool_sensitivity import EXTERNAL_PREFIX, Sensitivity, classified, sensitivity_of
 
 
@@ -121,20 +126,79 @@ _PATH_ARG: dict[str, str] = {
 }
 
 
+#: Shell-shaped tools whose command does **not** run in the run's workspace.
+#: `code_run_host_command` runs on the operator's own machine, where a sandbox thread's
+#: workspace is a directory the host fence denies outright and a worktree does not exist
+#: at all (the mode registry scopes this tool out of code mode). So there is no root its
+#: paths can honestly be placed against — and placing them against one anyway is exactly
+#: what let `cat .env` read as a workspace file.
+_HOST_COMMAND_TOOLS = frozenset({"code_run_host_command"})
+
+#: What goes on the record when a command's paths could not be placed. Both belong in
+#: ``unbounded`` rather than reading as a clean walk, because that is what they are: every
+#: relative path in the command means *something*, and neither case can say what — which
+#: is the one thing the deterministic stage would have to know to clear it. Two wordings
+#: because the operator reads them on the review row, and "there is no workspace" and
+#: "the workspace is not where this runs" are different facts about their machine.
+_UNPLACED = "there is no workspace directory to measure this command's paths against"
+_UNPLACED_ON_THE_HOST = (
+    "runs on the host, where the workspace this run's paths would be measured against "
+    "is not the directory it starts in"
+)
+
+
+def measured_against_root(tool: str) -> bool:
+    """Whether this tool's worst case depends on where the run's workspace is.
+
+    Only a command that runs *in* that workspace and a file target are placed against a
+    root; every other tool is described by its name, its class and its argument keys, and
+    the answer is the same wherever the run works. A host command is in that second group
+    for a less obvious reason — it runs on the host, not in the workspace, so a root would
+    be the wrong measure rather than a missing one. The caller that has to *open* a
+    workspace to supply the root asks first (``agent/gating.py``): opening one is a `git
+    worktree add` or a container start, and paying it to judge a mail send buys nothing.
+    """
+    if tool in _HOST_COMMAND_TOOLS:
+        return False
+    return tool in _COMMAND_ARG or tool in _PATH_ARG
+
+
 def shell_capability(tool: str, command: str, *, root: Path | None) -> Capability:
-    """One shell command as a capability — the grammar walk, wrapped in the common shape."""
+    """One shell command as a capability — the grammar walk, wrapped in the common shape.
+
+    The summary carries the command **without its comments**. A comment changes nothing
+    about what runs; it is the one part of a command addressed to whoever *reads* it, and
+    both readers here are ones an author might want to talk into something — the reviewer
+    that scores the act, and the operator looking at the approval row. What runs is
+    untouched, and the walk above still read the whole thing.
+
+    **No root is a fact about the reading, not a permissive default.** Absolute and upward
+    paths already read as escapes without one (``escapes_workspace``), but a bare
+    `cat .env` names no directory at all, so nothing escapes and nothing is written — and
+    a stage looking only at those fields would clear a command whose working directory
+    this process never established. It is recorded as unread instead, which escalates the
+    whole capability the way any uninterpreted construct does.
+
+    A host command is read that way **whatever root it is handed**: it runs on the
+    operator's machine rather than in the workspace, so a root here would be a wrong
+    measure rather than a missing one, and the decision belongs where the reading is made
+    rather than at each of the callers that happen to know a root.
+    """
+    on_the_host = tool in _HOST_COMMAND_TOOLS
+    root = None if on_the_host else root
     reach = shell_reach(command, root=root)
+    unplaced = () if root is not None else (_UNPLACED_ON_THE_HOST if on_the_host else _UNPLACED,)
     return Capability(
         tool=tool,
         kind=ActionKind.SHELL,
-        summary=f"Runs the shell command: {command}",
+        summary=f"Runs the shell command: {strip_comments(command)}",
         commands=reach.commands,
         reads=reach.reads,
         writes=reach.writes,
         env_writes=reach.env_writes,
         network=reach.network,
         escapes=reach.escapes,
-        unbounded=reach.unbounded,
+        unbounded=(*reach.unbounded, *unplaced),
     )
 
 

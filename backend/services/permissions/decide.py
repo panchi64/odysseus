@@ -32,6 +32,7 @@ where a reader can see the whole rule at once and where the reviewer cannot read
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
@@ -39,7 +40,12 @@ from typing import Literal
 from services.permissions.capability import Capability
 from services.permissions.judge import judge
 from services.permissions.levels import ApprovalPolicy, beyond_scope, permission_spec
-from services.permissions.reviewer import Reviewer, ReviewRequest, ReviewVerdict
+from services.permissions.reviewer import (
+    Reviewer,
+    ReviewRequest,
+    ReviewVerdict,
+    TranscriptEntry,
+)
 
 
 class Decision(StrEnum):
@@ -128,7 +134,7 @@ async def review(
     capability: Capability,
     *,
     reviewer: Reviewer | None,
-    transcript: str = "",
+    transcript: Sequence[TranscriptEntry] = (),
 ) -> ReviewOutcome:
     """Rule on one call at the Auto level: the deterministic stage, then the model.
 

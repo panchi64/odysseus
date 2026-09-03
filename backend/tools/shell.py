@@ -15,7 +15,11 @@ through the fence. So what protects the operator here is not an OS boundary:
 - **approval on the first command** of a conversation, grantable for the thread, so an
   agent cannot start executing on the host without the operator having said yes once;
 - **`denied_env_patterns`**, which keeps the operator's model API keys out of every
-  spawned environment;
+  spawned environment, and the **git config pins** beside it
+  (``services/sandbox/gitenv.py``), which take the keys that turn an ordinary `git status`
+  into an execution — the filesystem monitor, the pager — back off the repository (the
+  ones with no "off" value, an external diff and the attribute-driven drivers, are the
+  fence's to bound and are named there);
 - the harness's destructive-command denylist (`rm`, `dd`, `mkfs`, `shutdown`, …), which
   its own README is careful to call a guardrail rather than a security boundary;
 - code mode being **explicitly chosen** for a thread and bound to a project the
@@ -42,6 +46,7 @@ host command and a sandbox thread. The check is here too.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_ai import AbstractToolset, RunContext
@@ -50,6 +55,7 @@ from pydantic_ai_harness import Shell
 from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
 
 from services.modes import mode_spec
+from services.sandbox import git_config_pins
 from services.workspace import RunWorkspace
 
 from .deps import RunDeps
@@ -109,6 +115,12 @@ def _toolset_for(root: Path) -> AbstractToolset[RunDeps]:
         persist_cwd=True,
         default_timeout=_TIMEOUT_S,
         max_output_chars=_MAX_OUTPUT_CHARS,
+        # The inherited environment, with the settings a repository must not choose for us
+        # pinned over it (`services/sandbox/gitenv.py`) — otherwise `git status` in a
+        # cloned worktree runs whatever that repository's own config names. Handing the
+        # harness an explicit env does not lose the key filtering: `denied_env_patterns`
+        # is applied over whichever base it is given, so the two compose.
+        env=git_config_pins(os.environ),
         denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
     ).get_toolset()
 

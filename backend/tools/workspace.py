@@ -2,7 +2,10 @@
 
 `services/workspace.py` holds the resolution; this is the half that reads it off
 `RunDeps` and the capability bag, so a tool asks one question and gets one answer rather
-than each reaching for `SandboxSessionManager` and branching on mode itself.
+than each reaching for `SandboxSessionManager` and branching on mode itself. Two
+spellings, one answer: tools hold a `RunContext`, and the approval gate — which has to
+resolve the workspace *before* any tool has run, to judge a command's paths against the
+directory it will actually run in — holds only the run's deps.
 
 The answer is memoised **on the run's own deps**, not in a module-level cache: a code
 turn's first call does real work (`git worktree add`, a branch checkout) and a turn makes
@@ -39,11 +42,26 @@ NO_PROJECT = (
 async def run_workspace(ctx: RunContext[RunDeps]) -> RunWorkspace | None:
     """Where this run's file work happens, or None when it has nowhere to work.
 
+    The tool-facing spelling of :func:`resolve_run_workspace` — a tool holds a
+    ``RunContext``, and unwrapping it at each call site would be one more thing to get
+    right in twenty places.
+    """
+    return await resolve_run_workspace(ctx.deps)
+
+
+async def resolve_run_workspace(deps: RunDeps) -> RunWorkspace | None:
+    """The same answer, for a caller that has the run's deps but no ``RunContext``.
+
+    The approval gate is that caller (``agent/gating.py``): it judges a deferred shell
+    command *before* any tool has run, so reading the memo alone would find it empty and
+    measure the first command of a turn against no workspace at all. It has to be able to
+    resolve one, and it has to get the identical answer the tool will — the memo below is
+    what guarantees the second half.
+
     None is the degrade signal every caller already knows how to handle: a sandbox mode
     with no runtime, a worktree mode with no project bound. A busy worktree raises
     instead — the operator has to be told, not quietly given a different filesystem.
     """
-    deps = ctx.deps
     if deps.workspace is not None:
         return deps.workspace
 

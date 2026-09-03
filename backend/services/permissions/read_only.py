@@ -99,11 +99,6 @@ READ_ONLY_PROGRAMS: Mapping[str, frozenset[str]] = {
 }
 
 
-#: Diff-family options that stop a reading subcommand from only reading: `--output` writes
-#: the diff to a file, and `--ext-diff`/`--textconv` run the external drivers configured in
-#: `.gitattributes` — programs whose names are in the repository, not in this command.
-_GIT_DIFF_ACTIONS = frozenset({"--output", "--ext-diff", "--textconv"})
-
 #: Programs where the *subcommand* is the act, each reading subcommand carrying the flags
 #: that would stop it from only reading. `git` is the one that matters: it is the most-run
 #: program in a code thread and most of what it does is read, but the same binary also
@@ -111,23 +106,32 @@ _GIT_DIFF_ACTIONS = frozenset({"--output", "--ext-diff", "--textconv"})
 #:
 #: A flag **before** the subcommand is refused outright by the rule rather than enumerated
 #: here — see ``judge.py``'s subcommand denial.
+#:
+#: **The diff family is deliberately absent, and this is the narrowest the table has been.**
+#: `diff`, `log`, `show`, `blame` and `grep` were rows here until it became clear no set of
+#: flags can state their rule: `diff.external`, a diff driver's `textconv` and a filter
+#: driver's `clean` each name a *program* that git runs during an ordinary diff, and their
+#: names live in the repository's own `.git/config` and `.gitattributes` rather than in the
+#: command. `--ext-diff`/`--textconv` cover only the forms that ask for that behaviour
+#: explicitly; the configured ones need no flag at all. ``services/sandbox/gitenv.py`` says
+#: why no environment pin switches them off either. So they escalate to the model reviewer
+#: — a model call on `git diff`, against a cleared command that runs whatever a cloned
+#: repository chose — until what a spawned program may *do* is bounded by an OS fence.
 READ_ONLY_SUBCOMMANDS: Mapping[str, Mapping[str, frozenset[str]]] = {
     "git": {
-        "blame": frozenset({"--textconv"}),
         # `--filters` and `--textconv` push the object through the repository's configured
-        # clean/smudge filters, which are programs.
+        # clean/smudge filters, which are programs. Without them `cat-file` hands back the
+        # stored object bytes and runs nothing.
         "cat-file": frozenset({"--filters", "--textconv"}),
         "describe": frozenset(),
-        "diff": _GIT_DIFF_ACTIONS,
-        # `-O`/`--open-files-in-pager` opens every match in the configured pager, which is
-        # a program the repository's own config may name.
-        "grep": frozenset({"-O", "--open-files-in-pager", "--textconv"}),
-        "log": _GIT_DIFF_ACTIONS,
         "ls-files": frozenset(),
         "ls-tree": frozenset(),
         "rev-parse": frozenset(),
-        "shortlog": _GIT_DIFF_ACTIONS,
-        "show": _GIT_DIFF_ACTIONS,
+        # The residual this table cannot state: a repository whose `.gitattributes` names a
+        # clean filter runs it on `status` too, to decide whether a file changed. Dropping
+        # the row would cost the most-run observation in a code thread a model call apiece
+        # and still leave the mechanism live everywhere else, so it stays — bounding what a
+        # spawned program may do is the fence's job, not this table's.
         "status": frozenset(),
     },
 }
