@@ -1,5 +1,6 @@
 import { createSignal, For, Show, type JSX } from "solid-js";
 import { Button, Row, Stack, StatusFlag, Text } from "~/ui";
+import { grantKey } from "../commandScope";
 import { formatArgs } from "../data";
 import type { Approval, ApprovalDecision } from "../model";
 import {
@@ -13,11 +14,13 @@ import {
  * It reports decisions upward rather than submitting them, because it is no longer the
  * whole of what a park can be waiting for: the same park may also hold questions, and the
  * run resumes on one body covering all of it. `ParkDock` owns the submit; this owns the
- * approve/deny state and the per-tool grant opt-in.
+ * approve/deny state and the grant opt-in.
  *
  * Each approval also offers an opt-in "allow for the rest of this conversation" grant
- * (off by default): when checked and approved, the backend records a grant so that tool
- * auto-approves for the rest of the conversation instead of re-prompting.
+ * (off by default): when checked and approved, the backend records a grant so the same
+ * act auto-approves for the rest of the conversation instead of re-prompting. The grant's
+ * scope is the backend's to derive from the parked call — for a tool that runs a command
+ * it is that command, not the tool — and this only asks for one.
  */
 export function ApprovalPanel(props: {
   approvals: Approval[];
@@ -27,6 +30,15 @@ export function ApprovalPanel(props: {
   const [decisions, setDecisions] = createSignal<Record<string, boolean>>({});
   const grant = createGrantToggle();
 
+  // The command an approval would run, when it runs one. The grant it can opt into is
+  // scoped to that act rather than to the tool, so it keys the opt-in and names it.
+  const commandOf = (approval: Approval): string | undefined =>
+    typeof approval.args.command === "string"
+      ? approval.args.command
+      : undefined;
+  const keyOf = (approval: Approval) =>
+    grantKey(approval.name, commandOf(approval), approval.toolCallId);
+
   const emit = () => {
     const decided = decisions();
     props.onChange(
@@ -35,7 +47,7 @@ export function ApprovalPanel(props: {
         .map((a) => ({
           tool_call_id: a.toolCallId,
           approved: decided[a.toolCallId],
-          scope: grant.scope(a.name, decided[a.toolCallId]),
+          scope: grant.scope(keyOf(a), decided[a.toolCallId]),
         })),
       props.approvals.every((a) => a.toolCallId in decided),
     );
@@ -107,9 +119,10 @@ export function ApprovalPanel(props: {
                 </Button>
               </Row>
               <ConversationGrantToggle
-                checked={grant.isAllowed(approval.name)}
+                command={commandOf(approval)}
+                checked={grant.isAllowed(keyOf(approval))}
                 onChange={(v) => {
-                  grant.set(approval.name, v);
+                  grant.set(keyOf(approval), v);
                   emit();
                 }}
               />

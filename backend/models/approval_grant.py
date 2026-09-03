@@ -6,6 +6,11 @@ active the engine resolves that tool's approval requests without re-prompting; a
 or absent grant falls back to the strict per-call approval default. Grants are operator
 policy, not content — structural fields only, so nothing here is vault-sealed — and
 owner-scoped like every record.
+
+A grant on a tool that *runs a command* is scoped narrower than the tool
+(:attr:`ApprovalGrant.command_prefix`): "stop asking me about `uv run pytest`" is what the
+operator means when they tick the box under a test run, and one yes to
+``shell_run_command`` is not a yes to every command a thread will ever want.
 """
 
 from __future__ import annotations
@@ -20,10 +25,15 @@ from models._fields import new_id, utcnow
 
 class ApprovalGrant(SQLModel, table=True):
     __tablename__ = "approval_grants"
-    # One grant per (owner, conversation, tool): re-granting refreshes its expiry.
+    # One grant per (owner, conversation, tool, command prefix): re-granting refreshes its
+    # expiry.
     __table_args__ = (
         UniqueConstraint(
-            "owner_id", "conversation_id", "tool_name", name="uq_approval_grant_scope"
+            "owner_id",
+            "conversation_id",
+            "tool_name",
+            "command_prefix",
+            name="uq_approval_grant_scope",
         ),
     )
 
@@ -32,6 +42,14 @@ class ApprovalGrant(SQLModel, table=True):
     conversation_id: str = Field(index=True)
     # The namespaced tool name auto-approved in this conversation (e.g. "corpus_retrieve").
     tool_name: str
+    # The command this grant is scoped to, as the JSON list of leading words the scope was
+    # read off (`["uv", "run", "pytest"]`); `""` covers the whole tool. Encoded and decoded
+    # in one place (`services/approval_grants.py`) — nothing else sees the JSON.
+    #
+    # **Not nullable, and empty rather than NULL**: SQLite treats NULLs as distinct in a
+    # UNIQUE index, so a nullable column would stop the re-grant upsert's ON CONFLICT from
+    # ever matching a whole-tool grant, and every refresh would insert a second row.
+    command_prefix: str = Field(default="")
     created_at: datetime = Field(default_factory=utcnow)
     # When the grant lapses back to strict per-call approval (UTC).
     expires_at: datetime

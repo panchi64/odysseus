@@ -5,6 +5,35 @@ option, a grant is recorded here; while it is active (non-expired) the engine
 auto-approves that tool's deferred calls in that conversation instead of re-prompting.
 Grants are bounded by a TTL and are visible + revocable. Owner-scoped like every record.
 
+**A grant on a command-running tool names the command.** One yes to ``shell_run_command``
+is not a yes to every command a thread will ever want, and read as one it was the widest
+hole in the level that gives the operator's approvals for them: a single tick under a test
+run switched the per-call decision off for `rm -rf`, `git push` and everything else the
+turn went on to try. So a grant on one of :data:`COMMAND_SCOPED_TOOLS` carries the leading
+words the command was read as (:func:`services.permissions.command_prefixes`) and covers
+only commands whose own leading words are **the same words** — `uv run pytest tests/a.py`
+and `uv run pytest -k x` are the act the operator said yes to; `uv run ruff` is not. Every
+other tool keeps the whole-tool grant it always had, because there is no narrower thing to
+name.
+
+**The words are matched whole, and the act has to be the one that was fenced.** Two
+widenings hide inside a scope that reads as narrow, and :func:`covered_by_grant` refuses
+both. A scope is only as long as the approved command's own leading words, so *begins
+with* would turn one yes to a bare `env` or `uv` into a yes to everything underneath it —
+hence equality. And the same leading words run under a different fence are a different
+act: a redirect or an environment value pointing outside the worktree, or a wider declared
+``reach``, is what decides whether ``tools/shell.py`` confines the process at all, so a
+call that widens either is asked about again. Both tests are applied to what is *recorded*
+as well as to what is matched, so a scope that could never cover anything is never written
+down.
+
+**One whole-tool grant on a command-running tool is still written, deliberately.** A
+scheduled task's ``pre_authorized`` list (``harness/manifests/tasks.py``) seeds a grant per
+tool name into the fresh conversation each unattended execution opens. There is no command
+there to name — the operator wrote the tool name on the task itself, ahead of any turn —
+so the empty scope is the honest record of what they authorized, and narrowing it would
+leave an unattended task parked forever on the tool it was configured to use.
+
 A grant is operator policy, not secret content, so it is stored in the clear (no vault
 sealing). Expiry is enforced in Python after normalizing to UTC, so the round-trip
 through SQLite (which may drop tzinfo) can't make a naive/aware comparison raise.
@@ -12,8 +41,11 @@ through SQLite (which may drop tzinfo) can't make a naive/aware comparison raise
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import Engine, delete
 from sqlmodel import Session, select
@@ -22,6 +54,19 @@ from core.db import in_session, upsert
 from core.serde import as_utc
 from models._fields import new_id, utcnow
 from models.approval_grant import ApprovalGrant
+from services.permissions import command_prefixes, declared_reach
+
+#: The tools whose grant is scoped to a command rather than to the whole tool — the ones
+#: whose call carries the command line the operator is really answering. Named as literals
+#: because ``services/`` sits below ``tools/``; ``tests/test_approval_grants.py`` pins the
+#: set against the catalog's own so a new executing tool cannot quietly inherit a
+#: whole-tool grant.
+COMMAND_SCOPED_TOOLS = frozenset(
+    {"shell_run_command", "shell_start_command", "code_run_host_command"}
+)
+
+#: The argument every one of those tools carries the command line in.
+_COMMAND_ARGUMENT = "command"
 
 
 @dataclass(frozen=True)
@@ -30,14 +75,130 @@ class GrantInfo:
 
     tool_name: str
     expires_at: datetime
+    #: The leading words this grant is scoped to (`("uv", "run", "pytest")`), empty for a
+    #: grant over the whole tool.
+    command_prefix: tuple[str, ...] = ()
 
 
-def covered_by_grant(tool_name: str | None, active: set[str]) -> bool:
-    """Whether a deferred call to ``tool_name`` is covered by a conversation's active
-    grant set. The single rule consulted by both the engine's park-time split and the
-    approve route's resume-time re-validation, so the two paths can't diverge (a future
-    refinement — e.g. per-argument scoping — lands here once)."""
-    return tool_name is not None and tool_name in active
+def encode_prefix(words: Sequence[str]) -> str:
+    """A command scope as the column stores it — a JSON list, or ``""`` for the whole tool.
+
+    JSON rather than the words joined by spaces, even though the walk can never hand back
+    a word carrying whitespace (one that does is unbounded and yields no prefix at all):
+    the column is what a UNIQUE index and an upsert's ``ON CONFLICT`` compare, and an
+    encoding that is only unambiguous because of an invariant two files away is one that
+    stops being unambiguous the day that invariant moves.
+    """
+    return json.dumps(list(words)) if words else ""
+
+
+def decode_prefix(stored: str) -> tuple[str, ...]:
+    """The words a stored scope names — the inverse of :func:`encode_prefix`.
+
+    A value this module did not write (a hand-edited row, a restored backup from a
+    different shape) reads back as a single opaque word, which matches no command rather
+    than as the *empty* scope, which would cover the whole tool. The failure direction
+    matters more than the case is likely.
+    """
+    if not stored:
+        return ()
+    try:
+        decoded = json.loads(stored)
+    except ValueError:
+        return (stored,)
+    if not isinstance(decoded, list) or not all(isinstance(word, str) for word in decoded):
+        return (stored,)
+    return tuple(decoded)
+
+
+def grant_scopes(tool_name: str, args: Mapping[str, Any]) -> list[tuple[str, ...]] | None:
+    """The scopes a "for this conversation" approval of this call should record.
+
+    One empty scope — the whole tool — for everything but a command-running tool. For one
+    of those, one scope per stage of the command line: `git diff | grep x` is two acts, and
+    a grant naming only the first would never cover the call it was recorded from.
+
+    ``None`` when the call runs a command no scope could stand for: one the grammar could
+    not read, one naming a path outside the worktree, or one declaring a reach wider than
+    its tool's own. There is nothing to name in the first and nothing a *later* call could
+    safely be measured against in the other two — and the honest answer to all three is to
+    record no grant at all. Falling back to a whole-tool grant would hand exactly those
+    commands the standing yes this scoping exists to withhold.
+    """
+    if tool_name not in COMMAND_SCOPED_TOOLS:
+        return [()]
+    command = args.get(_COMMAND_ARGUMENT)
+    if not isinstance(command, str):
+        return None
+    if not _reaches_no_further_than_its_tool(tool_name, args):
+        return None
+    prefixes = command_prefixes(command)
+    if not prefixes:
+        return None
+    # Deduplicated, order preserved: `git add . && git commit` is one act named twice.
+    return list(dict.fromkeys(prefixes))
+
+
+def covered_by_grant(
+    tool_name: str | None, args: Mapping[str, Any], grants: Sequence[GrantInfo]
+) -> bool:
+    """Whether a deferred call is covered by a conversation's active grants.
+
+    The single rule consulted by both the engine's park-time split and the approve route's
+    resume-time re-validation, so the two paths can't diverge about what a grant reaches.
+
+    A whole-tool grant covers any call to that tool. A command-scoped one covers a command
+    **every** stage of which leads with exactly some granted scope's words — every stage,
+    because a pipeline runs all of them and a grant on its head is not consent to its tail;
+    and *exactly*, because a scope is only as long as the approved command's own leading
+    words, so a scope of `("env",)` matched as a prefix would cover `env rm -rf /tmp/x`
+    and `env FOO=1 curl …` alike. Equality loses nothing the scoping was for: both sides
+    are read by the same walk, so `("uv", "run", "pytest")` still equals what `uv run
+    pytest -k x` leads with. The words include the command's **flags**
+    (:func:`services.permissions.command_prefixes`), which is what stops one yes to `curl
+    -sS <url>` from standing for `curl -d @.env <elsewhere>`: an option is part of the act,
+    so an invocation flagged differently is a different scope and is asked about again.
+
+    Nothing is covered where the act itself has moved. A command the grammar could not read
+    is covered by nothing (the word that decides the act may be the one that could not be
+    read), nor is one naming a path outside the worktree, nor one declaring a reach wider
+    than its tool's own — the last two are how the same leading words stop running inside
+    the fence, which is most of what the operator was agreeing to.
+    """
+    if tool_name is None:
+        return False
+    scopes = [grant.command_prefix for grant in grants if grant.tool_name == tool_name]
+    if not scopes:
+        return False
+    if any(not scope for scope in scopes):
+        return True
+    command = args.get(_COMMAND_ARGUMENT)
+    if not isinstance(command, str):
+        return False
+    if not _reaches_no_further_than_its_tool(tool_name, args):
+        return False
+    prefixes = command_prefixes(command)
+    if not prefixes:
+        return False
+    return all(prefix in scopes for prefix in prefixes)
+
+
+def _reaches_no_further_than_its_tool(tool_name: str, args: Mapping[str, Any]) -> bool:
+    """Whether this call declared the reach its tool runs at when it declares nothing.
+
+    ``reach`` is the model's own argument on the executing shell tools, and it is what
+    decides the fence the command runs under — ``host`` runs unwrapped, ``network`` opens
+    egress. So `uv run pytest` declared ``host`` is not the act the operator ticked a box
+    under; it is that command with the fence taken off, which is the part of the yes that
+    was doing the work.
+
+    Compared against the tool's own answer with no arguments rather than against the
+    literal ``"workspace"``, because a tool that has no such argument declares the same
+    thing on every call and has nothing here to widen — `code_run_host_command` reaches
+    the host by construction, and measuring it against a value it can never carry would
+    silently retire its grants instead of scoping them.
+    """
+    return declared_reach(tool_name, dict(args)) == declared_reach(tool_name, {})
 
 
 class ApprovalGrantStore:
@@ -45,10 +206,18 @@ class ApprovalGrantStore:
         self._db = db_engine
         self._ttl = timedelta(seconds=ttl_s)
 
-    async def grant(self, owner_id: str, conversation_id: str, tool_name: str) -> datetime:
-        """Record (or refresh) a conversation-scoped auto-approval for ``tool_name``.
-        Returns the new expiry."""
+    async def grant(
+        self,
+        owner_id: str,
+        conversation_id: str,
+        tool_name: str,
+        command_prefix: Sequence[str] = (),
+    ) -> datetime:
+        """Record (or refresh) a conversation-scoped auto-approval for ``tool_name``,
+        scoped to ``command_prefix`` where the tool runs a command. Returns the new
+        expiry."""
         expires_at = utcnow() + self._ttl
+        scope = encode_prefix(command_prefix)
 
         def work(session: Session) -> datetime:
             # Atomic get-or-create over uq_approval_grant_scope: a plain select-then-insert
@@ -62,11 +231,17 @@ class ApprovalGrantStore:
                     owner_id=owner_id,
                     conversation_id=conversation_id,
                     tool_name=tool_name,
+                    command_prefix=scope,
                     created_at=utcnow(),
                     expires_at=expires_at,
                 )
                 .on_conflict_do_update(
-                    index_elements=["owner_id", "conversation_id", "tool_name"],
+                    index_elements=[
+                        "owner_id",
+                        "conversation_id",
+                        "tool_name",
+                        "command_prefix",
+                    ],
                     set_={"expires_at": expires_at},
                 )
             )
@@ -76,7 +251,8 @@ class ApprovalGrantStore:
         return await in_session(self._db, work)
 
     async def list(self, owner_id: str, conversation_id: str) -> list[GrantInfo]:
-        """Live (non-expired) grants in this conversation, for the revocable view."""
+        """Live (non-expired) grants in this conversation — the operator's revocable view,
+        and what both grant-coverage checks are answered against."""
         if not conversation_id:
             return []
         now = utcnow()
@@ -95,7 +271,13 @@ class ApprovalGrantStore:
             # bound — a bulk delete by id, idempotent under a concurrent prune.
             for r in rows:
                 if as_utc(r.expires_at) > now:
-                    live.append(GrantInfo(tool_name=r.tool_name, expires_at=as_utc(r.expires_at)))
+                    live.append(
+                        GrantInfo(
+                            tool_name=r.tool_name,
+                            expires_at=as_utc(r.expires_at),
+                            command_prefix=decode_prefix(r.command_prefix),
+                        )
+                    )
                 else:
                     expired_ids.append(r.id)
             if expired_ids:
@@ -104,12 +286,15 @@ class ApprovalGrantStore:
 
         return await in_session(self._db, work)
 
-    async def active(self, owner_id: str, conversation_id: str) -> set[str]:
-        """The tool names with a live grant in this conversation (the engine's hot path)."""
-        return {g.tool_name for g in await self.list(owner_id, conversation_id)}
-
-    async def revoke(self, owner_id: str, conversation_id: str, tool_name: str) -> None:
-        """Drop a conversation's grant for ``tool_name`` — the next call asks again."""
+    async def revoke(
+        self,
+        owner_id: str,
+        conversation_id: str,
+        tool_name: str,
+        command_prefix: Sequence[str] = (),
+    ) -> None:
+        """Drop one grant — the next call it covered asks again."""
+        scope = encode_prefix(command_prefix)
 
         def work(session: Session) -> None:
             row = session.exec(
@@ -117,6 +302,7 @@ class ApprovalGrantStore:
                 .where(ApprovalGrant.owner_id == owner_id)
                 .where(ApprovalGrant.conversation_id == conversation_id)
                 .where(ApprovalGrant.tool_name == tool_name)
+                .where(ApprovalGrant.command_prefix == scope)
             ).first()
             if row is not None:
                 session.delete(row)

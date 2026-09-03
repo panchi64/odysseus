@@ -2,8 +2,9 @@
 
 The grammar walk (``shell_ast.py``) needs two things from a token that starts with `-`,
 and neither is what the flag *means*. It needs to know that the token is an option rather
-than an operand, so the words a command leads with can be told from the words it acts on
-(:func:`~services.permissions.shell_ast.command_prefix`). And it needs the *value* glued
+than an operand, because a scope keeps every leading word but only counts the operands —
+an option says what the act is, a third operand starts naming what it is done to
+(:func:`~services.permissions.shell_ast.command_prefixes`). And it needs the *value* glued
 to a flag, because a path there is as real as a path standing on its own:
 `--output=/etc/passwd` names a file exactly as `/etc/passwd` does, and a walk that skipped
 every word starting with `-` could not see it.

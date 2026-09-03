@@ -145,7 +145,10 @@ export async function fetchGrants(
   const rows = await api.get<ApprovalGrantDTO[]>(
     `/conversations/${conversationId}/grants`,
   );
-  return rows.map((r) => ({ toolName: r.tool_name }));
+  return rows.map((r) => ({
+    toolName: r.tool_name,
+    commandPrefix: r.command_prefix ?? [],
+  }));
 }
 
 /** The agent's task list for a thread.
@@ -174,13 +177,22 @@ export async function fetchBrowserSession(
   return info.active ? info.url : null;
 }
 
-/** Revoke a conversation auto-approval — the next call to that tool asks again. */
+/** Revoke one conversation auto-approval — the next call it covered asks again.
+ *
+ *  `commandPrefix` says *which* grant on that tool, since a command-running tool can hold
+ *  several at once. Each word is sent as its own `command_prefix` parameter — the list the
+ *  listing gave, word for word, so what the operator revokes is the grant they were shown
+ *  and never one re-derived by splitting a sentence. */
 export async function revokeGrant(
   conversationId: string,
   toolName: string,
+  commandPrefix: string[] = [],
 ): Promise<void> {
+  const scope = commandPrefix
+    .map((word) => `command_prefix=${encodeURIComponent(word)}`)
+    .join("&");
   await api.del(
-    `/conversations/${conversationId}/grants/${encodeURIComponent(toolName)}`,
+    `/conversations/${conversationId}/grants/${encodeURIComponent(toolName)}${scope ? `?${scope}` : ""}`,
   );
 }
 

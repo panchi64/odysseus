@@ -48,7 +48,7 @@ from services.permissions.reviewer import (
     make_utility_reviewer,
     review_transcript,
 )
-from services.permissions.shell_ast import ShellCommand, command_prefix, strip_comments
+from services.permissions.shell_ast import ShellCommand, command_prefixes, strip_comments
 
 __all__ = [
     "ACTING_PERMISSIONS",
@@ -79,7 +79,7 @@ __all__ = [
     "beyond_scope",
     "blocked_message",
     "capability_of",
-    "command_prefix",
+    "command_prefixes",
     "decide",
     "declared_reach",
     "judge",

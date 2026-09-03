@@ -19,7 +19,7 @@ from agent.answers import AnswerError, questions_of, render_answer
 from agent.gating import GrantApproved
 from routes import deps
 from runs import Run, RunStatus, parse_last_event_id, sse_response
-from services.approval_grants import covered_by_grant
+from services.approval_grants import covered_by_grant, grant_scopes
 from services.settings_store import get_inactivity_timeout, get_wall_clock_timeout
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -198,8 +198,30 @@ class ApprovalDecisions(BaseModel):
     answers: list[QuestionAnswer] = Field(default_factory=list)
 
 
+class ApprovalOutcome(BaseModel):
+    """What settling the park did — the resume, and what became of the standing yeses.
+
+    The second half is here because it can differ from what was asked for, silently and
+    for a good reason. A "for this conversation" opt-in on a command no scope could stand
+    for records **nothing** (`services/approval_grants.py`), and a client that assumed
+    otherwise would leave the operator with a ticked box, no chip on the strip and no
+    account of why. So the route says what it wrote and which calls it could not write,
+    and the client is left with something true to say.
+    """
+
+    status: Literal["resuming"] = "resuming"
+    #: The scopes recorded by this call, as the words each names — `[]` for a whole-tool
+    #: grant, and the whole list empty when nothing was asked for.
+    granted: list[list[str]] = Field(default_factory=list)
+    #: The calls whose conversation opt-in could not be scoped, by tool call id. The
+    #: approval itself still stands; only the standing part of it was refused.
+    unscoped: list[str] = Field(default_factory=list)
+
+
 @router.post("/{run_id}/approve", status_code=202)
-async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) -> dict[str, str]:
+async def approve_run(
+    run_id: str, body: ApprovalDecisions, request: Request
+) -> ApprovalOutcome:
     """Settle everything a parked run is awaiting — permissions and answers — then
     resume it.
 
@@ -218,8 +240,8 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     # The operator only decides the calls that weren't already settled without them — by
     # an active conversation grant, or by the thread's permission level refusing outright.
     # Those ride on the parked payload and merge back below.
-    tool_by_id = {call.tool_call_id: call.tool_name for call in parked.requests.approvals}
-    pending = set(tool_by_id) - set(parked.settled)
+    call_by_id = {call.tool_call_id: call for call in parked.requests.approvals}
+    pending = set(call_by_id) - set(parked.settled)
     # The questions are pending too, and unconditionally: nothing settles one ahead of
     # the operator. Both piles are checked against one set because the run resumes once —
     # a body covering only the approvals would resume a turn whose question still has no
@@ -264,9 +286,9 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         call_id for call_id, o in parked.settled.items() if isinstance(o, GrantApproved)
     }
     active = (
-        await grants.active(deps.OPERATOR_ID, parked.conversation_id)
+        await grants.list(deps.OPERATOR_ID, parked.conversation_id)
         if grant_approved and parked.conversation_id is not None
-        else set()
+        else []
     )
     decisions: dict[str, ToolApproved | ToolDenied] = {}
     for call_id, outcome in parked.settled.items():
@@ -280,7 +302,9 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             # call *because* of a grant is marked as the grant's (``agent/gating.py``) and
             # so is not in this branch: what cleared it is revocable, and is re-checked.
             decisions[call_id] = outcome
-        elif covered_by_grant(tool_by_id.get(call_id), active):
+        elif (call := call_by_id.get(call_id)) is not None and covered_by_grant(
+            call.tool_name, call.args_as_dict(), active
+        ):
             decisions[call_id] = ToolApproved()
         else:
             # The grant was revoked or expired while parked; either way it no longer
@@ -289,16 +313,35 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
                 message="This tool's conversation auto-approval is no longer in effect."
             )
 
-    # New "allow for this conversation" grants the operator chose this batch. Deduped:
-    # two calls to the same tool both opting in map to a single grant.
-    to_grant: list[str] = []
+    # New "allow for this conversation" grants the operator chose this batch, as
+    # (tool, command scope) pairs. The scope is derived **here, from the call as it will
+    # actually run** rather than sent by the client: what the operator is saying yes to is
+    # the act about to be taken, and a scope the client could name is a scope it could
+    # widen. That is the call's own arguments, or the ones the operator replaced them with
+    # — an override *is* the act they approved, and scoping the standing yes to the command
+    # they edited away would leave a grant behind for something nobody is going to run. A
+    # command-running tool contributes one grant per stage of its command line, and none at
+    # all when the command could not be read (`services/approval_grants.py`); the ids of
+    # those ride back on the response, since the operator asked for something they did not
+    # get.
+    to_grant: list[tuple[str, tuple[str, ...]]] = []
+    unscoped: list[str] = []
     for decision in body.decisions:
         if decision.approved:
             decisions[decision.tool_call_id] = ToolApproved(override_args=decision.override_args)
             if decision.scope == "conversation" and parked.conversation_id is not None:
-                tool_name = tool_by_id[decision.tool_call_id]
-                if tool_name not in to_grant:
-                    to_grant.append(tool_name)
+                granted_call = call_by_id[decision.tool_call_id]
+                effective = (
+                    decision.override_args
+                    if decision.override_args is not None
+                    else granted_call.args_as_dict()
+                )
+                scopes = grant_scopes(granted_call.tool_name, effective)
+                if scopes is None:
+                    unscoped.append(decision.tool_call_id)
+                for scope in scopes or ():
+                    if (granted_call.tool_name, scope) not in to_grant:
+                        to_grant.append((granted_call.tool_name, scope))
         else:
             decisions[decision.tool_call_id] = ToolDenied(
                 message=decision.message or "The operator denied this action."
@@ -345,8 +388,8 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
     # else their calls wouldn't have been pending).
     conv_id = parked.conversation_id
     if to_grant and conv_id is not None:
-        for tool_name in to_grant:
-            await grants.grant(deps.OPERATOR_ID, conv_id, tool_name)
+        for tool_name, scope in to_grant:
+            await grants.grant(deps.OPERATOR_ID, conv_id, tool_name, scope)
     # A resumed turn runs under the *operator's* bounds, not the registry defaults. Both
     # are settings now, and a continuation that quietly ran unbounded (or under a config
     # default the operator had overridden) would make the setting a half-truth — approval
@@ -362,7 +405,7 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
         is None
     ):
         if to_grant and conv_id is not None:
-            for tool_name in to_grant:
-                await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name)
+            for tool_name, scope in to_grant:
+                await grants.revoke(deps.OPERATOR_ID, conv_id, tool_name, scope)
         raise HTTPException(status_code=409, detail="run could not be resumed")
-    return {"status": "resuming"}
+    return ApprovalOutcome(granted=[list(scope) for _, scope in to_grant], unscoped=unscoped)

@@ -174,8 +174,24 @@ export interface OrphanImageAttachmentsDTO {
 
 export interface ApprovalGrantDTO {
   tool_name: string;
-  // The backend also returns `expires_at`; the strip shows only the tool name, so it's
+  /** The command the grant covers, as the leading words it was read as (`["uv", "run",
+   *  "pytest"]`); empty when it covers the whole tool. The words rather than a joined
+   *  string, because this is also what identifies the grant to the revoke endpoint and it
+   *  has to round-trip exactly — joining is for the label, which is this layer's job. */
+  command_prefix: string[];
+  // The backend also returns `expires_at`; the strip shows only the scope, so it's
   // intentionally not mapped into the seam type.
+}
+
+/** What settling a park did, beyond resuming the run. Only the standing-yes half is read
+ *  here: a "for this conversation" opt-in on a command the backend can scope no grant to
+ *  records nothing, and `unscoped` is how that arrives — the approval itself stood. */
+export interface ApprovalOutcomeDTO {
+  status: string;
+  /** The scopes recorded, each as its words; `[]` for a whole-tool grant. */
+  granted: string[][];
+  /** The tool call ids whose conversation opt-in could not be scoped. */
+  unscoped: string[];
 }
 
 export interface ChatCreatedDTO {

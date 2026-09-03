@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,9 +42,10 @@ from agent.history import TurnStart
 from agent.turn import TurnResult, drive_turn
 from core.container import ServiceContainer
 from core.db import init_db, make_engine
+from models._fields import utcnow
 from prompts.utility import COMPACT_PREAMBLE, REVIEW_INSTRUCTIONS
 from runs import Run, RunRegistry, RunStatus, RunStream
-from services.approval_grants import ApprovalGrantStore
+from services.approval_grants import ApprovalGrantStore, GrantInfo
 from services.conversations import ConversationBinding
 from services.permissions import (
     Decision,
@@ -1038,12 +1040,42 @@ class TestTheSettledPile:
             caps=ServiceContainer.of(grants),
             deps=RunDeps(run=run, owner_id=OWNER, permission="auto"),
             messages=[],
-            granted={"mail_send"},
+            grants=[
+                GrantInfo(tool_name="mail_send", expires_at=utcnow() + timedelta(hours=1))
+            ],
         )
         outcome = outcomes["c1"]
         assert outcome.decision is Decision.ALLOW
         assert outcome.verdict is not None and outcome.verdict.authorization == "neutral"
         assert "standing grant" in outcome.reason
+
+    async def test_a_command_scoped_grant_authorizes_only_its_own_command(self, monkeypatch):
+        # The grant fills the reviewer's `neutral` authorization — but only for the act it
+        # names. `code_run_host_command` always reaches the reviewer, so both calls here
+        # are reviewed and the grant is the only difference between them.
+        monkeypatch.setattr(
+            gating,
+            "resolve_reviewer",
+            lambda caps, owner: _reviewer(verdict("high", "neutral")),
+        )
+        grants = _grant_store()
+        await grants.grant(OWNER, CONV, "code_run_host_command", ("uv", "run", "pytest"))
+        caps = ServiceContainer.of(grants)
+
+        def call(command: str, call_id: str) -> ToolCallPart:
+            return ToolCallPart(
+                tool_name="code_run_host_command",
+                args={"command": command},
+                tool_call_id=call_id,
+            )
+
+        settled, manual = await _settle("auto", [call("uv run pytest -k x", "c1")], caps=caps)
+        assert manual == []
+        assert isinstance(settled["c1"], GrantApproved)
+
+        settled, manual = await _settle("auto", [call("uv run ruff check .", "c2")], caps=caps)
+        assert settled == {}
+        assert [one.tool_call_id for one in manual] == ["c2"]
 
     async def test_a_grant_still_settles_a_call_at_the_levels_that_ask(self):
         # Unchanged where the level's answer was a prompt: Manual and Edit put the call in
@@ -1352,5 +1384,45 @@ class TestTheOperatorsAnswerCarriesTheRestForward:
         # No grant was ever recorded in this conversation, which is what a revoked or
         # expired one looks like by the time the operator answers.
         denial = captured["c1"]
+        assert isinstance(denial, ToolDenied)
+        assert "no longer in effect" in denial.message
+
+    async def test_a_command_scoped_grant_carries_only_its_own_command_forward(
+        self, monkeypatch
+    ):
+        """The resume re-checks the *command*, not just the tool name.
+
+        Both calls were cleared by a grant on `shell_run_command` while the turn ran, and
+        the surviving grant names one act. Re-checking by tool alone would carry the other
+        one through on the strength of a standing yes that was never given for it — the
+        park-time split and this one have to answer the same question.
+        """
+        async with client_app() as (client, app):
+            granted = ToolCallPart(
+                tool_name="shell_run_command",
+                args={"command": "uv run pytest tests/a.py"},
+                tool_call_id="c1",
+            )
+            elsewhere = ToolCallPart(
+                tool_name="shell_run_command",
+                args={"command": "uv run ruff check ."},
+                tool_call_id="c2",
+            )
+            pending = _call("mail_send", "c3")
+            await app.state.approval_grants.grant(
+                OWNER, CONV, "shell_run_command", ("uv", "run", "pytest")
+            )
+            run_id = await _park_a_run(
+                app,
+                _parked(
+                    {"c1": GrantApproved(), "c2": GrantApproved()},
+                    [granted, elsewhere, pending],
+                ),
+            )
+
+            captured = await _approve(client, monkeypatch, run_id, "c3")
+
+        assert isinstance(captured["c1"], ToolApproved)
+        denial = captured["c2"]
         assert isinstance(denial, ToolDenied)
         assert "no longer in effect" in denial.message

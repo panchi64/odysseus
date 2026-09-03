@@ -47,7 +47,7 @@ from core.config import get_settings
 from core.container import ServiceContainer
 from runs import Run
 from runs.events import ReviewCompleted, ReviewStarted
-from services.approval_grants import ApprovalGrantStore, covered_by_grant
+from services.approval_grants import ApprovalGrantStore, GrantInfo, covered_by_grant
 from services.permissions import (
     Decision,
     ReviewBudget,
@@ -126,7 +126,9 @@ async def settle_deferred(
     consent to act in one they have since set to act in nothing, and Plan's whole contract
     is that nothing changes. The resume path reads it the same way (``routes/runs.py``): a
     denial the level made carries forward verbatim, and no grant undoes it. Grants are
-    conversation-scoped, so a stateless turn always asks.
+    conversation-scoped, so a stateless turn always asks — and a grant on a tool that runs
+    a command is scoped to the command's leading words, so a standing yes to `uv run
+    pytest` settles the next test run and nothing else the shell could be asked to do.
 
     **At Auto the grant is not the answer either — it is an input to the review.** The
     level's question there is what a particular call would do, and a grant on
@@ -144,20 +146,20 @@ async def settle_deferred(
     model reviews one turn may spend. Both are threaded from ``drive_turn``, which owns
     everything a turn shares across its segments.
     """
-    granted: set[str] = set()
-    grants = caps.get_optional(ApprovalGrantStore)
-    if grants is not None and conversation_id is not None:
-        granted = await grants.active(run.owner_id, conversation_id)
+    granted: list[GrantInfo] = []
+    store = caps.get_optional(ApprovalGrantStore)
+    if store is not None and conversation_id is not None:
+        granted = await store.list(run.owner_id, conversation_id)
     # Ruled on before anything is reviewed, so the batch knows which calls need a model at
     # all before it pays to resolve one.
-    ruled = [(call, _by_level(permission, call.tool_name, granted)) for call in approvals]
+    ruled = [(call, _by_level(permission, call, granted)) for call in approvals]
     reviewed = await review_batch(
         run,
         [call for call, decision in ruled if decision is Decision.REVIEW],
         caps=caps,
         deps=deps,
         messages=messages,
-        granted=granted,
+        grants=granted,
         turn_start=turn_start,
         budget=budget,
     )
@@ -185,7 +187,7 @@ async def settle_deferred(
     return settled, manual
 
 
-def _by_level(permission: str, tool: str, granted: set[str]) -> Decision:
+def _by_level(permission: str, call: ToolCallPart, granted: Sequence[GrantInfo]) -> Decision:
     """What the thread's level says about one call, with the operator's standing grants
     allowed to answer — but only where the level was asking a question they can answer.
 
@@ -194,11 +196,17 @@ def _by_level(permission: str, tool: str, granted: set[str]) -> Decision:
     skipped: it is the level doing the deciding, and a grant that short-circuited it would
     turn one "allow for this conversation" on a shell tool into a thread where no command
     is ever looked at again. The grant is handed to the review instead.
+
+    The *call*, not just its name, because a grant on a command-running tool is scoped to
+    the command (``services/approval_grants.py``): what settles a call at Manual and Edit
+    is a standing yes to this act, not to everything that tool could be asked to do.
     """
-    decision = decide(permission, tool)
+    decision = decide(permission, call.tool_name)
     if decision in (Decision.BLOCK, Decision.REVIEW):
         return decision
-    return Decision.ALLOW if covered_by_grant(tool, granted) else decision
+    if covered_by_grant(call.tool_name, call.args_as_dict(), granted):
+        return Decision.ALLOW
+    return decision
 
 
 async def review_batch(
@@ -208,7 +216,7 @@ async def review_batch(
     caps: ServiceContainer,
     deps: RunDeps,
     messages: list[ModelMessage],
-    granted: set[str] | None = None,
+    grants: Sequence[GrantInfo] = (),
     turn_start: TurnStart | None = None,
     budget: ReviewBudget | None = None,
 ) -> dict[str, ReviewOutcome]:
@@ -242,7 +250,7 @@ async def review_batch(
                 root=root,
                 transcript=transcript,
                 reviewer=reviewer,
-                granted=covered_by_grant(call.tool_name, granted or set()),
+                granted=covered_by_grant(call.tool_name, call.args_as_dict(), grants),
                 fenced=confinement.active,
                 budget=budget,
             )

@@ -670,12 +670,18 @@ export interface ApprovalDecision {
   scope?: "once" | "conversation";
 }
 
-/** A live conversation-scoped tool auto-approval grant — the operator's
- *  visible + revocable record of what auto-approves for the rest of the thread. The
- *  TTL is backend-owned and not surfaced here (the strip shows the tool name only). */
+/** A live conversation-scoped auto-approval grant — the operator's visible + revocable
+ *  record of what auto-approves for the rest of the thread. The TTL is backend-owned and
+ *  not surfaced here (the strip shows the act, and nothing else). */
 export interface ApprovalGrant {
   /** The namespaced tool name that auto-approves, e.g. "corpus_retrieve". */
   toolName: string;
+  /** The command it is scoped to, as the words it was read as (`["uv", "run", "pytest"]`)
+   *  — empty for the whole tool. A tool that runs a command is granted per act, so one
+   *  thread can hold several grants on the same tool; this is what tells them apart, in
+   *  the chip and in the revoke. Kept as words rather than a sentence because the revoke
+   *  sends it straight back: joining is for the chip's label. */
+  commandPrefix: string[];
 }
 
 /** A conversation's compaction state — the same shape for both reductions. `override` is

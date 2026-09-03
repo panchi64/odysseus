@@ -191,8 +191,8 @@ async def test_run_now_creates_conversation_run_and_seeds_grants(monkeypatch):
         assert row["conversationId"] is not None
         assert "All set" in row["summary"]
 
-        granted = await app.state.approval_grants.active("operator", row["conversationId"])
-        assert granted == {"conversations_search", "corpus_retrieve"}
+        granted = await app.state.approval_grants.list("operator", row["conversationId"])
+        assert {g.tool_name for g in granted} == {"conversations_search", "corpus_retrieve"}
 
         # The task's own bookkeeping reflects the fire too.
         refreshed = (await client.get("/tasks")).json()["items"][0]

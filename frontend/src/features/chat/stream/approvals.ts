@@ -29,6 +29,7 @@ import { createMemo, type Accessor } from "solid-js";
 import { api, isApiError } from "~/lib/api";
 import { toast } from "~/ui";
 import { bumpGrantsRevision } from "../data/conversations";
+import type { ApprovalOutcomeDTO } from "../data/wire";
 import type {
   Approval,
   ApprovalDecision,
@@ -151,15 +152,27 @@ export function createApprovalOps(deps: ApprovalDeps): ApprovalOps {
     if (!msg?.runId) return;
     const decisions = body.decisions ?? [];
     try {
-      await api.post(`/runs/${msg.runId}/approve`, {
-        decisions,
-        answers: body.answers ?? [],
-      });
+      const outcome = await api.post<ApprovalOutcomeDTO>(
+        `/runs/${msg.runId}/approve`,
+        { decisions, answers: body.answers ?? [] },
+      );
       deps.patchById(messageId, optimistic);
       // A recorded conversation grant must show on the strip now, not on the next
       // stream toggle — nudge the grants resource to refetch.
       if (decisions.some((d) => d.scope === "conversation")) {
         bumpGrantsRevision();
+        // ...and say so when the backend recorded nothing. It refuses a standing yes to a
+        // command no scope could stand for — one it cannot read, or one reaching outside
+        // the worktree — which is the right call and the wrong thing to do in silence: the
+        // operator ticked a box, and the only other evidence is a chip that never appears.
+        const refused = outcome?.unscoped?.length ?? 0;
+        if (refused > 0) {
+          toast.info(
+            refused === 1
+              ? "Approved. This command can't be auto-approved on its own, so the agent will ask again."
+              : `Approved. ${refused} of these commands can't be auto-approved on their own, so the agent will ask again.`,
+          );
+        }
       }
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
