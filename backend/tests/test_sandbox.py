@@ -323,7 +323,7 @@ def test_a_scratch_path_someone_else_planted_is_refused(monkeypatch, tmp_path):
     planted = tmp_path / "tmproot"
     planted.mkdir()
     monkeypatch.setattr(host_mod.tempfile, "gettempdir", lambda: str(planted))
-    link = host_mod._scratch_path()
+    link = host_mod.scratch_path()
     link.symlink_to(elsewhere, target_is_directory=True)
     with pytest.raises(HostExecutionError, match="symlink"):
         host_scratch_dir()
@@ -337,7 +337,7 @@ def test_a_scratch_directory_this_process_owns_is_tightened_rather_than_refused(
     root = tmp_path / "tmproot"
     root.mkdir()
     monkeypatch.setattr(host_mod.tempfile, "gettempdir", lambda: str(root))
-    host_mod._scratch_path().mkdir(mode=0o755)
+    host_mod.scratch_path().mkdir(mode=0o755)
     assert stat.S_IMODE(host_scratch_dir().lstat().st_mode) == 0o700
 
 

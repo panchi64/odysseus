@@ -1,26 +1,23 @@
 """Reading one argument token as a flag.
 
-Two things need the same reading of a token, and would drift apart if each did it itself.
-The grammar walk (``shell_ast.py``) needs the *value* glued to a flag, because a path
-there is as real as a path standing on its own: `--output=/etc/passwd` names a file
-exactly as `/etc/passwd` does, and a walk that skipped every word starting with `-` could
-not see it. The allowlist (``read_only.py``) needs the *name*, because a table stating a
-rule about `-o` and then matching raw tokens states nothing at all about `-o/tmp/x` or
-`--output=x` — which is the same flag.
+The grammar walk (``shell_ast.py``) needs two things from a token that starts with `-`,
+and neither is what the flag *means*. It needs to know that the token is an option rather
+than an operand, so the words a command leads with can be told from the words it acts on
+(:func:`~services.permissions.shell_ast.command_prefix`). And it needs the *value* glued
+to a flag, because a path there is as real as a path standing on its own:
+`--output=/etc/passwd` names a file exactly as `/etc/passwd` does, and a walk that skipped
+every word starting with `-` could not see it.
 
-**Where the reading is ambiguous, both readings are taken.** `-oz` is either two short
-flags or `-o` with the value `z`, and nothing short of a per-program option table can say
-which. So a single-dash token contributes *every* letter in it as a candidate flag **and**
-its tail as a candidate value: a denial matches if any reading is denied, and the
-containment check runs if any reading names a path. Picking one reading would mean picking
-the one an attacker gets to choose.
+It lives apart from the walk because it is the one piece of that reading with an ambiguity
+of its own. `-oz` is either two short flags or `-o` carrying the value `z`, and nothing
+short of a per-program option table can say which — so :func:`attached_value` takes the
+reading that names a path where either does, on the principle that picking one reading
+means picking the one an attacker gets to choose.
 
 The one reading this module does **not** attempt is the separate word — `--output x`. That
 would need to know which flags take a value, which is per-program knowledge this file does
 not have; the word stands on its own in the argument list and is read as the ordinary
-argument it looks like. What that leaves open — a flag whose value shifts the position of
-the word after it — is answered where it matters, by refusing to read past a flag at all
-(``read_only.py``'s subcommand rule).
+argument it looks like.
 """
 
 from __future__ import annotations
@@ -33,22 +30,6 @@ _NOT_FLAGS = frozenset({"-", "--"})
 def is_flag(token: str) -> bool:
     """Whether ``token`` is an option rather than an operand."""
     return token.startswith("-") and token not in _NOT_FLAGS
-
-
-def flag_names(token: str) -> frozenset[str]:
-    """Every flag ``token`` could be using — empty when it is not a flag at all.
-
-    A long token is exactly one flag, named up to its `=`. A single-dash token is both
-    what it says (`-delete` is one predicate, not four letters) and every letter in it
-    (`-la` is two flags, and `-oout` is `-o` carrying a value), because the two forms are
-    indistinguishable without knowing the program's options.
-    """
-    if not is_flag(token):
-        return frozenset()
-    name = token.partition("=")[0]
-    if token.startswith("--"):
-        return frozenset({name})
-    return frozenset({name}) | {f"-{letter}" for letter in token[1:]}
 
 
 def attached_value(token: str) -> str | None:

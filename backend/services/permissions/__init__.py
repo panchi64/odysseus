@@ -1,13 +1,17 @@
 """The permission axis: what a level is (:mod:`levels`), what it rules (:mod:`decide`),
 and — at the one level whose meaning is that the operator's answers are given for them —
 what an action would do (:mod:`capability`, :mod:`shell_ast`, :mod:`shell_flags`) and who
-says so (:mod:`judge` over the allowlist in :mod:`read_only`, then :mod:`reviewer`).
-Imported through the package, so a caller names one home for all of it."""
+says so (:mod:`judge`, structurally, then :mod:`reviewer`). Imported through the package,
+so a caller names one home for all of it."""
 
 from services.permissions.capability import (
+    DEFAULT_REACH,
+    REACHES,
     ActionKind,
     Capability,
+    Reach,
     capability_of,
+    declared_reach,
     measured_against_root,
 )
 from services.permissions.decide import (
@@ -19,7 +23,7 @@ from services.permissions.decide import (
     review,
     review_refusal,
 )
-from services.permissions.judge import Judgement, judge
+from services.permissions.judge import Judgement, Tier, judge
 from services.permissions.levels import (
     ACTING_PERMISSIONS,
     DEFAULT_PERMISSION,
@@ -49,9 +53,11 @@ from services.permissions.shell_ast import ShellCommand, command_prefix, strip_c
 __all__ = [
     "ACTING_PERMISSIONS",
     "DEFAULT_PERMISSION",
+    "DEFAULT_REACH",
     "PERMISSIONS",
     "PERMISSION_LEVELS",
     "PLANNING_TOOLS",
+    "REACHES",
     "STRICTEST_PERMISSION",
     "ActionKind",
     "ApprovalPolicy",
@@ -60,18 +66,21 @@ __all__ = [
     "Judgement",
     "PermissionLevel",
     "PermissionSpec",
+    "Reach",
     "ReviewOutcome",
     "ReviewRequest",
     "ReviewStage",
     "ReviewVerdict",
     "Reviewer",
     "ShellCommand",
+    "Tier",
     "TranscriptEntry",
     "beyond_scope",
     "blocked_message",
     "capability_of",
     "command_prefix",
     "decide",
+    "declared_reach",
     "judge",
     "make_utility_reviewer",
     "measured_against_root",

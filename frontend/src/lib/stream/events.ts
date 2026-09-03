@@ -388,24 +388,32 @@ export interface QuestionAsked extends Base {
  *  Announced *before* it is ruled on, so a review that takes a model call reads as work
  *  in progress rather than as a stalled turn. `summary` is the action's worst case as the
  *  backend extracted it — the same words the reviewer is judging, so the operator and the
- *  model are looking at one description rather than two. */
+ *  model are looking at one description rather than two.
+ *
+ *  `reach` is how far a shell command *declared* it needs to go: the worktree, the
+ *  network, or the operator's own machine. Null for every kind of act that declares
+ *  nothing — a mail send, a file write — which is a different fact from declaring the
+ *  widest reach and must not read the same. */
 export interface ReviewStarted extends Base {
   type: "review.started";
   tool_call_id: string;
   name: string;
   summary: string;
+  reach: "workspace" | "network" | "host" | null;
 }
 /** How the review ruled, and on what.
  *
  *  `decision` is what the run then did: `allow` ran the call with no prompt, `ask` parked
  *  it for the operator anyway, `block` refused it outright. It deliberately carries more
- *  than the outcome — `stage` says whether a deterministic allowlist or a model settled
- *  it, and the three axes say what the model saw. "Allowed" alone tells the operator
- *  nothing they can act on; "low risk, neutral authorization, cleared by the shell judge"
- *  lets them tell an over-permissive rule from a well-judged call.
+ *  than the outcome — `stage` says whether the structural judge or a model settled it,
+ *  `tier` on which ground when the judge did, `fenced` whether an OS fence was there to
+ *  hold the command to what it declared, and the three axes say what the model saw.
+ *  "Allowed" alone tells the operator nothing they can act on; "cleared structurally,
+ *  fenced to the worktree" lets them tell an over-permissive rule from a well-judged call.
  *
  *  The axes are null when the model stage never ran — the judge cleared it, or there was
- *  nothing to review with. */
+ *  nothing to review with — and `tier` is null in the mirror case, whenever the model
+ *  settled it. */
 export interface ReviewCompleted extends Base {
   type: "review.completed";
   tool_call_id: string;
@@ -413,6 +421,8 @@ export interface ReviewCompleted extends Base {
   decision: "allow" | "ask" | "block";
   stage: "judge" | "reviewer";
   reason: string;
+  tier: "read" | "sandbox" | "workspace" | "network" | null;
+  fenced: boolean;
   risk: "low" | "high" | "too_destructive" | null;
   authorization: "explicitly_no" | "neutral" | "explicitly_yes" | null;
   correctness: string | null;

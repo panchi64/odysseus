@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from services.permissions.shell_ast import (
     ShellCommand,
@@ -41,6 +41,28 @@ from services.permissions.shell_ast import (
     strip_comments,
 )
 from services.tool_sensitivity import EXTERNAL_PREFIX, Sensitivity, classified, sensitivity_of
+
+#: How far a shell command says it needs to reach, declared by the model on the call and
+#: enforced by the tool that runs it (``tools/shell.py``). It is a *declaration*, not a
+#: measurement: the grammar walk checks it against what the command actually names, and a
+#: fence built to match it is what makes a contradiction fail rather than merely be noted.
+type Reach = Literal["workspace", "network", "host"]
+
+#: The declared values, as a set to validate an argument against.
+REACHES: frozenset[str] = frozenset({"workspace", "network", "host"})
+
+#: What a call that names no reach at all is taken to have declared. It is the executing
+#: tools' own schema default, so an omitted argument is not a missing declaration — it is
+#: the declaration the tool will act on, and the judge has to model what will run.
+DEFAULT_REACH: Reach = "workspace"
+
+#: The tools whose schema actually carries a ``reach`` argument (``tools/shell.py``). Only
+#: for these does an absent argument mean :data:`DEFAULT_REACH`; for every other shell-shaped
+#: tool it means the call declared nothing, which is a different fact and has to read as one
+#: — the reviewer's prompt and the operator's review row both say what was declared, and a
+#: tool with no such argument reporting "workspace" is the chassis putting words in the
+#: model's mouth.
+_REACH_ARG_TOOLS = frozenset({"shell_run_command", "shell_start_command"})
 
 
 class ActionKind(StrEnum):
@@ -68,8 +90,8 @@ class Capability:
 
     Deliberately **not** a verdict. This module says what an action reaches; ``judge.py``
     says whether that is allowed and ``reviewer.py`` says whether it was wanted. Keeping
-    the three apart is what lets the allowlist change without the extraction changing, and
-    what lets a test pin "this command reads these two files" independently of any policy.
+    the three apart is what lets the rule change without the extraction changing, and what
+    lets a test pin "this command reads these two files" independently of any policy.
     """
 
     #: The namespaced tool the operator's model asked for.
@@ -91,6 +113,15 @@ class Capability:
     network: bool = False
     #: Paths that leave the workspace, or that we cannot place inside it.
     escapes: tuple[str, ...] = ()
+    #: How far the call *said* it needs to reach. None for every kind of act that declares
+    #: nothing — a mail send, a file write, an MCP call — which is a different fact from
+    #: declaring the widest reach, and the two must not read the same on a review row.
+    reach: Reach | None = None
+    #: Whether this act runs inside the conversation's own container rather than on the
+    #: host. The container is itself a fence, so an offline call to one is bounded without
+    #: anything here having read its program — which is the only way an interpreter's
+    #: program is ever bounded.
+    sandboxed: bool = False
     #: Why the worst case could not be pinned down — one entry per construct that was not
     #: interpreted. Non-empty means nothing here may be read as complete.
     unbounded: tuple[str, ...] = field(default_factory=tuple)
@@ -163,7 +194,39 @@ def measured_against_root(tool: str) -> bool:
     return tool in _COMMAND_ARG or tool in _PATH_ARG
 
 
-def shell_capability(tool: str, command: str, *, root: Path | None) -> Capability:
+#: Shell-shaped tools whose command runs inside the conversation's own container. The
+#: container is the fence there, so nothing about the command has to be understood for the
+#: act to be bounded — see :attr:`Capability.sandboxed`.
+_SANDBOXED_TOOLS = frozenset({"code_execute"})
+
+
+def declared_reach(tool: str, args: dict[str, Any]) -> Reach | None:
+    """How far this call says it needs to reach, or None when it said nothing.
+
+    Four readings, and each is the conservative one for its case. A **host command**
+    declares ``host`` whatever its arguments say: it runs on the operator's machine, which
+    is the definition of the widest reach. An argument **absent from a tool that has one**
+    is :data:`DEFAULT_REACH` — not a missing declaration but the schema default the tool
+    will actually run under, and reading it as anything else would make every call that
+    left the argument off escalate while running fenced to the worktree anyway. A tool with
+    **no such argument at all** declares nothing, and says so with ``None``: `code_execute`
+    cannot state a reach, so reporting one for it would be this module writing a
+    declaration the model never made. A **value this module does not recognise** is
+    ``host``, and an explicit ``null`` is one of those: the tool's own validation would
+    refuse it, so no such call ever runs, and the widest reading is the only one that
+    cannot be wrong about a call that somehow did.
+    """
+    if tool in _HOST_COMMAND_TOOLS:
+        return "host"
+    if "reach" not in args:
+        return DEFAULT_REACH if tool in _REACH_ARG_TOOLS else None
+    value = args["reach"]
+    return value if value in REACHES else "host"
+
+
+def shell_capability(
+    tool: str, command: str, *, root: Path | None, reach: Reach | None = DEFAULT_REACH
+) -> Capability:
     """One shell command as a capability — the grammar walk, wrapped in the common shape.
 
     The summary carries the command **without its comments**. A comment changes nothing
@@ -183,22 +246,28 @@ def shell_capability(tool: str, command: str, *, root: Path | None) -> Capabilit
     operator's machine rather than in the workspace, so a root here would be a wrong
     measure rather than a missing one, and the decision belongs where the reading is made
     rather than at each of the callers that happen to know a root.
+
+    ``reach`` is what the call *declared*, carried onto the capability unexamined. Checking
+    it against the paths the walk found is a policy question and belongs to the stage that
+    rules (``judge.py``); recording the two side by side is this module's whole job.
     """
     on_the_host = tool in _HOST_COMMAND_TOOLS
     root = None if on_the_host else root
-    reach = shell_reach(command, root=root)
+    walk = shell_reach(command, root=root)
     unplaced = () if root is not None else (_UNPLACED_ON_THE_HOST if on_the_host else _UNPLACED,)
     return Capability(
         tool=tool,
         kind=ActionKind.SHELL,
         summary=f"Runs the shell command: {strip_comments(command)}",
-        commands=reach.commands,
-        reads=reach.reads,
-        writes=reach.writes,
-        env_writes=reach.env_writes,
-        network=reach.network,
-        escapes=reach.escapes,
-        unbounded=(*reach.unbounded, *unplaced),
+        commands=walk.commands,
+        reads=walk.reads,
+        writes=walk.writes,
+        env_writes=walk.env_writes,
+        network=walk.network,
+        escapes=walk.escapes,
+        reach=reach,
+        sandboxed=tool in _SANDBOXED_TOOLS,
+        unbounded=(*walk.unbounded, *unplaced),
     )
 
 
@@ -276,9 +345,10 @@ def _command_capability(
             kind=ActionKind.OPAQUE,
             summary="Runs a program in the conversation's sandbox container",
             network=bool(args.get("network")),
+            sandboxed=True,
             unbounded=("an interpreter's program is not bounded by its arguments",),
         )
-    capability = shell_capability(tool, command, root=root)
+    capability = shell_capability(tool, command, root=root, reach=declared_reach(tool, args))
     if args.get("network") and not capability.network:
         # The sandbox's egress is off unless this call asked for it, and that ask is an
         # argument of the *tool*, not a word in the command — so the grammar walk cannot

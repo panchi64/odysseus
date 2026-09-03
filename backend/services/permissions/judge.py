@@ -1,188 +1,201 @@
-"""The deterministic stage — the answer that costs nothing.
+"""The deterministic stage — the answer that costs nothing, and the shape of it.
 
-Most of what an agent does at the Auto level is looking: `git status`, `ls src`,
-`grep -rn foo .`, `wc -l`. Sending each of those to a model costs a round trip, a second
-of latency and a chance of being wrong about something a grammar already settles. So the
-first stage is a **strict allowlist over an extracted capability** (``capability.py``),
-and only what it declines reaches the reviewer.
+Most of what an agent does at the Auto level is ordinary work inside the directory it was
+given: `git status`, `ls src`, `uv run pytest`, `mkdir -p a/b`, `git commit -m wip`.
+Sending each of those to a model costs a round trip, a second of latency and a chance of
+being wrong about something structure already settles. So the first stage rules
+structurally, and only what it declines reaches the reviewer.
 
 **It has exactly one power: to approve.** A capability this stage does not recognise is
-not refused — it is *escalated*, which is a different thing and the reason the allowlist
-can afford to be as narrow as it is. Narrowing it costs model calls; widening it costs the
+not refused — it is *escalated*, which is a different thing and the reason this file can
+afford to be as strict as it is. Narrowing it costs model calls; widening it costs the
 operator's trust, and only one of those is recoverable.
 
-**Two kinds of act clear here, and the shorter one first.** A call to a tool this
-installation classifies as a *read* (``ActionKind.READ``) is approved outright: the class
-is a claim about the tool itself — it returns something and leaves nothing different
-behind — so there is no argument set that makes it into another kind of act, and no
-reviewer question left to ask. This is what keeps a self-gated recall
-(``corpus_retrieve``, ``conversations_search``) from costing a model call every time, and what
-stops it from parking a run outright on an installation with no utility model bound. The
-class registry is a closed literal pinned against the live catalog by a test, and a name
-it has never heard of resolves to the class that reaches *furthest* — so nothing an
-operator's own MCP server names can reach this branch.
+**There is no list of programs here, and that is the change this file exists to state.**
+An allowlist of read-only programs answers "what will this binary do", which is a question
+about software nobody in this repository maintains — every row was a claim someone had to
+re-check against a man page, and the rows that mattered (`git diff` running whatever
+`diff.external` names) could not be written at all. The question this stage asks now is
+answerable from three facts it can actually establish:
 
-**Everything else is a shell command, and three rules govern it. None has an exception.**
+- **structure** — what the command's syntax names, read off a grammar (``shell_ast.py``):
+  which paths, which redirects, which environment assignments, and every construct that
+  could not be read at all;
+- **a declared reach** — ``workspace``, ``network`` or ``host``, stated by the model on the
+  call itself (:data:`~services.permissions.capability.Reach`);
+- **an OS fence** — whether this host can actually *hold* a process to that reach
+  (``services/sandbox/fence.py``: seatbelt on macOS, bubblewrap on Linux).
 
-- An AST shape we do not recognise never passes. It arrives as
-  :attr:`Capability.unbounded`, which means the extraction is describing *part* of the
-  command — and a part is not something an allowlist can be applied to.
-- An environment assignment never passes. `LD_PRELOAD=… ls` is not `ls`, and the set of
-  variables that change what a program does is open-ended enough that enumerating the
-  dangerous ones is a losing game.
-- A variable we cannot interpolate never passes, for the same reason as the first: `$X`
-  is whatever it is, and the honest reading of an argument whose value arrives at run time
-  is that we did not read it.
-- A command with no workspace to measure against never passes, again for that reason. A
-  bare `cat .env` names no directory, so it neither escapes nor writes — and clearing it
-  would be vouching for a file in a directory this process never established. It arrives
-  ``unbounded`` from ``capability.py``, which is where that reading is made.
+The declaration is what makes the structure decidable and the fence is what holds a command
+to most of it: a command declaring ``workspace`` runs under a profile that permits writing
+the worktree and nothing else and reaching no network, so a write or an egress beyond what
+it declared fails *inside* the fence instead of quietly succeeding. **Reads are the
+exception, and the one place structure carries the whole weight**: the runtime has a read
+denylist and no read allowlist (``services/sandbox/fence.py``), so nothing downstream will
+catch a read outside the worktree that this stage cleared. That is why the extraction
+refuses a word it cannot place as a single path (``shell_ast.py``) rather than measuring it
+optimistically, and why a path that escapes is refused here before anything else is asked.
 
-**What "read-only" means here, and the assumption underneath it.** The programs on the
-list observe and return; the flags that would make one of them do otherwise sit beside it
-in ``read_only.py``, so the table states the whole rule rather than half of it. A denial is
-matched against the *flag* a token names rather than against the token — `-o`, `-oout.txt`
-and `--output=out.txt` are one flag written three ways (``shell_flags.py``). Path arguments
-are measured against the run's workspace root and anything reaching outside it escalates.
+**And it is why "relative to the workspace root" has to stay true.** A shell session
+persists its working directory between calls, so a relative path is judged as relative to
+the root — an assumption that is load-bearing for every command cleared here, and that
+only the fence can keep: its `cd`-persistence shim steps into what the command left the
+shell in **only while that is still under the root** (``services/sandbox/fence.py``). Let
+the tracked directory out of the worktree and every containment answer below is measured
+against a directory the command is no longer in.
 
-The assumption worth naming: the shell session persists its working directory between
-calls (``tools/shell.py``), and that directory is not visible from here, so a relative
-path is judged as relative to the workspace root — and where there is no such root, or
-where the command does not run in it at all (``code_run_host_command``), nothing is
-cleared. Changing directory is therefore deliberately *not* an allowlisted program — a
-`cd` is an act the reviewer rules on, with "moving the working directory outside the
-workspace" named in its rubric as high risk — which is what keeps the deterministic
-stage's base honest.
+This stage's job is to check that the three agree — and to refuse whenever they do not, or
+whenever one of them is missing.
+
+**Four kinds of act clear here, and each on its own ground** (:data:`Tier` records which):
+
+- a **classified read** (``ActionKind.READ``): the class is a claim about the tool itself —
+  it returns something and leaves nothing different behind — so no argument set makes it
+  into another kind of act and there is no reviewer question left to ask. This is what
+  keeps a self-gated recall (``corpus_retrieve``, ``conversations_search``) from costing a
+  model call every time, and what stops it from parking a run outright on an installation
+  with no utility model bound. Only a *classified* name reaches it: an unknown one resolves
+  to the class that reaches furthest, so nothing an operator's own MCP server names can
+  arrive wearing a read's clothes;
+- an **offline sandbox call**: the conversation's container is itself the fence, so the
+  program inside it needs no reading. This is the one branch that clears a capability the
+  extraction marked unbounded, and deliberately: for an interpreter there is no reading of
+  the arguments that would ever bound it, and the boundary was never the arguments;
+- a **contained command** at ``workspace`` — every path it names inside the worktree, no
+  network, and a fence available to hold it there;
+- a **networked command** at ``network``, which additionally requires the operator to have
+  named the domains it may reach.
+
+**Everything else escalates, and the reason says which of the three facts was missing** —
+an unreadable construct, a path outside the worktree, a `host` declaration, a declaration
+the command's own syntax contradicts, a host with no fence, or an empty allowed-domain
+list. That reason is what an operator reads on the review row, and "the system was
+arbitrary" is the reading it exists to prevent.
+
+**Pure, and pure on purpose.** Nothing here probes the host or reads settings: whether a
+fence exists and whether any domain is allowed arrive as arguments, so the same call is
+decidable in a test, at the gate (``agent/gating.py``) and again inside the tool that
+executes it (``tools/shell.py``) — and those three cannot drift into disagreeing about
+what was cleared.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from services.permissions.capability import ActionKind, Capability
-from services.permissions.read_only import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS
-from services.permissions.shell_ast import ShellCommand
-from services.permissions.shell_flags import flag_names, is_flag
+
+#: Which deterministic ground cleared a capability. Not a degree of trust and not an
+#: ordering: they are four different arguments, and the one granted to a classified read
+#: grants nothing to a command. It travels onto the review row and into the tool that
+#: executes the call, which reads it to decide *which fence* to run the command under —
+#: so a tier is a decision something else acts on, not a label.
+type Tier = Literal["read", "sandbox", "workspace", "network"]
 
 
 @dataclass(frozen=True)
 class Judgement:
     """The deterministic stage's answer about one capability.
 
-    ``approved`` is the only field a caller branches on. ``reason`` exists for the other
-    half of the job — an operator watching a benign-looking command escalate needs to be
-    told *which* part of it this stage would not vouch for, or the escalation reads as
-    the system being arbitrary.
+    ``approved`` is the only field a caller has to branch on. ``reason`` exists for the
+    other half of the job — an operator watching a benign-looking command escalate needs to
+    be told *which* part of it this stage would not vouch for. ``tier`` is the same answer
+    in a form something else can rule on (see :data:`Tier`).
     """
 
     approved: bool
     reason: str
-    #: *Which* deterministic ground cleared it, when one did — None on an escalation. It
-    #: is a separate field from the reason because the reason is prose for the operator
-    #: and this is a value something else can rule on: two approvals are not the same
-    #: approval, and the one granted to a classified read grants nothing to a command.
-    tier: str | None = None
+    tier: Tier | None = None
 
 
-def judge(capability: Capability) -> Judgement:
-    """Whether ``capability`` is provably an observation and nothing else.
+def judge(capability: Capability, *, fenced: bool, network_allowed: bool) -> Judgement:
+    """Whether ``capability``'s structure, declaration and fence agree — and at which tier.
 
-    Pure and total. Never raises, never calls out, and never returns ``approved`` for
-    anything it did not fully understand — the three rules in the module docstring are
-    checked before the allowlist is consulted at all, so a command cannot pass on the
-    strength of the part of it that parsed.
+    ``fenced`` says whether this host can confine a process at all
+    (``services/sandbox/fence.py``); ``network_allowed`` whether the operator has named any
+    domain a fenced command may reach. Both are facts about the machine rather than about
+    the call, which is why they are arguments: this function stays pure and total, never
+    raises, never calls out, and never returns ``approved`` for anything it did not fully
+    account for.
 
-    ``unbounded`` is tested ahead of every kind check, including the read one, so a
-    partially-read action is refused *as* a partially-read action: that is the more
-    specific reason, and the reason is what the operator sees on the review row.
+    The two class-settled tiers are tested first, ahead of ``unbounded``, because for both
+    of them the arguments are not what settles the act: a classified read is settled by its
+    tool and a sandboxed call by its container. Every other branch reads the extraction, so
+    a partially-read command is refused *as* one before any of them.
     """
+    if capability.kind is ActionKind.READ:
+        # Named for what it is on the row the operator reads: a tool whose *class* says it
+        # observes, cleared on that class alone. It is the one approval here that no model
+        # and no rule about arguments took part in, and the row should not let that pass
+        # for the same kind of answer a command gets.
+        return Judgement(True, "classified read, cleared at Auto with no review", tier="read")
+    if capability.sandboxed and not capability.network:
+        # The container is the fence: no host filesystem, no egress, and outputs that come
+        # back explicitly. Reading the program would add nothing, which is why this is the
+        # one branch that clears something the extraction could not bound.
+        return Judgement(
+            True, "runs offline in the conversation's own container", tier="sandbox"
+        )
     if capability.unbounded:
         return Judgement(False, capability.unbounded[0])
-    if capability.kind is ActionKind.READ:
-        # Named for what it is, on the row the operator reads: a tool whose *class* says
-        # it observes, cleared on that class alone. It is the one approval here that no
-        # model and no rule about arguments took part in, and the row should not let that
-        # pass for the same kind of answer a command gets.
-        return Judgement(True, "classified read, cleared at Auto with no review", tier="read")
     if capability.kind is not ActionKind.SHELL:
         return Judgement(False, "only reads and shell commands can be cleared without a review")
-    if capability.env_writes:
-        names = ", ".join(capability.env_writes)
-        return Judgement(False, f"sets {names} for the command it runs")
-    if capability.writes:
-        return Judgement(False, f"writes to {capability.writes[0]}")
-    if capability.network:
-        return Judgement(False, "reaches the network")
-    if capability.escapes:
-        return Judgement(False, f"names {capability.escapes[0]}, outside the workspace")
     if not capability.commands:
         return Judgement(False, "runs no command this stage can name")
-    for command in capability.commands:
-        denial = _denial(command)
-        if denial is not None:
-            return Judgement(False, denial)
-    return Judgement(True, "reads the workspace and changes nothing")
+    return _shell_judgement(capability, fenced=fenced, network_allowed=network_allowed)
 
 
-def _denial(command: ShellCommand) -> str | None:
-    """Why ``command`` is not clearable, or None when it is.
+def _shell_judgement(
+    capability: Capability, *, fenced: bool, network_allowed: bool
+) -> Judgement:
+    """A fully-read shell command against the reach it declared.
 
-    A program is looked up by its bare name — a path-qualified invocation (`/bin/ls`,
-    `./ls`) is deliberately *not* the same thing, because the name no longer says which
-    binary runs, and the containment check has already had its say about the path.
+    The order is from the fact that settles most cases to the fact that settles fewest, so
+    the reason an operator reads is the most specific true one: what the command *said* it
+    needs comes before what it names, and both come before whether the host can hold it —
+    a `host` declaration is refused as a declaration rather than as a missing fence.
+
+    **Environment assignments and redirects no longer decide anything here.** `LD_PRELOAD=x
+    ls` is a different program from `ls`, and a fence does not care: whatever it loads is
+    held to the same paths and the same egress as the command that loaded it. Enumerating
+    the variables that change what a program does was always a losing game, and the fence is
+    what stopped it having to be won.
     """
-    subcommands = READ_ONLY_SUBCOMMANDS.get(command.program)
-    if subcommands is not None:
-        return _subcommand_denial(command, subcommands)
-    denied = READ_ONLY_PROGRAMS.get(command.program)
-    if denied is None:
-        return f"runs {command.program}, which is not on the read-only list"
-    return _flag_denial(command.program, command.arguments, denied)
-
-
-def _subcommand_denial(
-    command: ShellCommand, subcommands: Mapping[str, frozenset[str]]
-) -> str | None:
-    """Whether a subcommand-shaped program was invoked in one of its reading forms.
-
-    **Nothing is read past a flag that precedes the subcommand.** Those flags are where the
-    act is redirected rather than described — `--git-dir=` and `--work-tree=` move the
-    repository, `--exec-path=` moves the binaries git runs, `-c` rewrites the config the
-    subcommand obeys, and `-C` moves the directory the whole thing happens in — and a
-    reader that skipped them would answer a question about a command that is not the one
-    being run. Worse, a global flag taking a *separate* value shifts where the subcommand
-    sits, so skipping flags means naming the wrong word as the act. Enumerating git's
-    global options here would be a second table to keep in step with git; refusing to read
-    past one costs a model call on `git --no-pager log` and cannot be wrong.
-
-    The subcommand is therefore the *first* argument, and it must be one of the reading
-    ones, invoked without the flags that would stop it from only reading.
-    """
-    if not command.arguments:
-        return f"runs {command.program} with no subcommand this stage can name"
-    subcommand, *rest = command.arguments
-    if is_flag(subcommand):
-        return (
-            f"runs {command.program} with {subcommand} before its subcommand, "
-            "which can redirect what the subcommand acts on"
+    reach = capability.reach
+    if reach is None:
+        # A shell-shaped call from a tool with no `reach` argument — a `bash` `code_execute`
+        # that asked for the network, today. Nothing was declared, so there is no
+        # declaration to check the structure against and no tier to build a fence from;
+        # saying it declared `host` would be this stage inventing the model's words.
+        return Judgement(False, "declares no reach, so there is nothing here to hold it to")
+    if reach == "host":
+        return Judgement(
+            False, 'declared reach "host", which is the operator\'s own machine unfenced'
         )
-    denied = subcommands.get(subcommand)
-    if denied is None:
-        return f"runs {command.program} {subcommand}, which is not a read-only subcommand"
-    return _flag_denial(f"{command.program} {subcommand}", rest, denied)
-
-
-def _flag_denial(what: str, arguments: Iterable[str], denied: frozenset[str]) -> str | None:
-    """The first denied flag ``arguments`` names, as a refusal — or None when none does.
-
-    Matched against the flags a token *names* rather than against the token, so a rule
-    written once as `-o` also covers `-oout.txt` and `--output=out.txt`. Where a token
-    reads two ways, every reading counts (``shell_flags.py``): the point of the table is
-    that a denied flag cannot be smuggled past it by spelling.
-    """
-    for argument in arguments:
-        used = flag_names(argument) & denied
-        if used:
-            return f"runs {what} with {sorted(used)[0]}, which does more than read"
-    return None
+    if capability.escapes:
+        return Judgement(
+            False, f'declared reach "{reach}" but names {capability.escapes[0]}, outside the '
+            "workspace"
+        )
+    if not fenced:
+        # Nothing about the command is wrong; there is simply nothing here that would hold
+        # it to what it declared, so the declaration buys nothing and the model reviewer
+        # rules with the structural facts in front of it instead.
+        return Judgement(False, "no OS fence is available on this host to hold it to that")
+    if reach == "network":
+        if not network_allowed:
+            return Judgement(
+                False,
+                'declared reach "network", and the operator has allowed no domains for a '
+                "command to reach",
+            )
+        return Judgement(
+            True, "stays inside the worktree and reaches only the allowed domains", tier="network"
+        )
+    if capability.network:
+        # The declaration and the command's own syntax disagree, and the disagreement is
+        # the finding: a fence built for `workspace` would deny the egress anyway, so what
+        # this refusal buys is the operator being told rather than the model being puzzled.
+        return Judgement(False, 'declared reach "workspace" but names a network address')
+    return Judgement(True, "stays inside the worktree and reaches no network", tier="workspace")

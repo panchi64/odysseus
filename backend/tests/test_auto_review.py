@@ -51,6 +51,7 @@ from services.permissions import (
     review_transcript,
 )
 from services.permissions.reviewer import review_prompt
+from services.sandbox import HostConfinement
 from services.workspace import HostFiles, RunWorkspace
 from tools import RunDeps
 
@@ -74,6 +75,21 @@ def verdict(risk: str, authorization: str = "neutral", correctness: str | None =
     return ReviewVerdict(risk=risk, authorization=authorization, correctness=correctness)
 
 
+def pretend_fenced(monkeypatch) -> None:
+    """Tell the gate this host can confine a process, without configuring one.
+
+    The suite runs with host confinement switched off (``conftest``) so no test depends on
+    whether the machine it runs on has the platform primitive. The structural stage clears
+    nothing unfenced — correctly — so a test about anything *else* in the gate has to say
+    which of the two worlds it is in, and this is that.
+    """
+
+    async def available(settings):
+        return HostConfinement(True)
+
+    monkeypatch.setattr(gating.fence, "fence_available", available)
+
+
 class TestTheDeterministicStageComesFirst:
     async def test_a_plain_read_never_reaches_a_model(self):
         seen: list[ReviewRequest] = []
@@ -82,10 +98,19 @@ class TestTheDeterministicStageComesFirst:
             seen.append(request)
             return verdict("low")
 
-        outcome = await review(BENIGN, reviewer=reviewer)
+        outcome = await review(BENIGN, reviewer=reviewer, fenced=True, network_allowed=True)
         assert outcome.decision is Decision.ALLOW
         assert outcome.stage == "judge"
+        assert outcome.tier == "workspace"
         assert seen == []
+
+    async def test_the_same_read_reaches_the_model_where_nothing_can_fence_it(self):
+        # The defaults are the strict reading, and they are the ones a caller that could
+        # not establish a fence gets: a contained command is only *provably* contained
+        # while something is holding it there.
+        outcome = await review(BENIGN, reviewer=reviewer_of(verdict("low")))
+        assert outcome.stage == "reviewer"
+        assert "no OS fence" in judge(BENIGN, fenced=False, network_allowed=False).reason
 
     async def test_what_the_judge_declines_is_handed_on_with_its_reason(self):
         seen: list[ReviewRequest] = []
@@ -100,7 +125,7 @@ class TestTheDeterministicStageComesFirst:
         # ...and where the model stage cannot answer, what the cheap stage would not vouch
         # for rides on the escalation. An operator reading a park needs the reason it was
         # not simply cleared, or the interruption reads as the system being arbitrary.
-        declined = judge(RISKY).reason
+        declined = judge(RISKY, fenced=True, network_allowed=True).reason
         assert declined in (await review(RISKY, reviewer=None)).reason
         assert declined in (await review(RISKY, reviewer=reviewer_of(None))).reason
 
@@ -309,6 +334,14 @@ class TestTheTranscriptTheReviewerSees:
         clear = prompt.split("[BEGIN UNTRUSTED CONTENT")[0]
         assert "Reaches the network: no" in clear
         assert '"/"' in clear
+        # The declaration belongs with the paths: the reviewer's question about it is
+        # structural — does what this command names match what it said it needed — and it
+        # is an enumerated word rather than free text, so there is nothing to write prose
+        # into. An act that declares nothing says nothing here rather than saying "host".
+        assert "Declared reach: workspace" in clear
+        assert "Declared reach" not in review_prompt(
+            ReviewRequest(capability=capability_of("mail_send", {"to": "a@b.c"}), transcript=())
+        )
         # Encoded, name included: an operator's MCP server names its own tools, and a
         # name carrying a newline would otherwise write a line of the clear section.
         assert 'Tool: "shell_run_command"' in clear
@@ -653,6 +686,7 @@ class TestWhatTheBatchIsJudgedAgainst:
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setattr(gating, "resolve_reviewer", lambda caps, owner: _none())
+        pretend_fenced(monkeypatch)
         # Nothing resolved: the path cannot be placed, so it escalates — and with no
         # reviewer bound the operator is interrupted for a plain read of their own file.
         _settled, manual = await _settle("auto", [self._read(tmp_path)])
@@ -674,6 +708,7 @@ class TestWhatTheBatchIsJudgedAgainst:
 
         monkeypatch.setattr(gating, "resolve_reviewer", lambda caps, owner: _none())
         monkeypatch.setattr(gating, "resolve_run_workspace", counting)
+        pretend_fenced(monkeypatch)
         calls = [
             ToolCallPart(
                 tool_name="shell_run_command",

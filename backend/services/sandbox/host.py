@@ -92,20 +92,39 @@ def host_scratch_dir() -> Path:
     where every approved command starts *and* an entry in the fence's write allowlist, so
     whoever controls it controls what a relative path in an approved command resolves to.
     """
-    scratch = _scratch_path()
+    scratch = scratch_path()
     _claim_scratch(scratch)
     return scratch
 
 
-def _scratch_path() -> Path:
+def scratch_path() -> Path:
     """Where the scratch directory sits, without creating or checking anything.
 
-    Split from the claim so the fence's write allowlist can name the path at startup
-    without a squatted directory taking confinement resolution down with it: the refusal
-    belongs to the command that would have run there, not to the process that configures
-    the fence for every later command.
+    Split from the claim so a *profile* can name the path without a squatted directory
+    taking confinement resolution down with it: the refusal belongs to the command that
+    would have run there, not to the process that configures the fence for every later
+    command. Two profiles name it, for opposite reasons — this module's allows writing it
+    (it is where an approved host command starts), and the worktree fence
+    (``fence.py``) denies it, so a command nobody approved cannot plant something in the
+    directory an approved one will run in.
     """
     return Path(tempfile.gettempdir()) / f"odysseus-host-{os.getuid()}"
+
+
+def denied_read_paths(settings: Settings) -> tuple[str, ...]:
+    """The paths no confined command may read, whichever profile is confining it.
+
+    One list with two consumers — the host escape hatch below and the worktree fence
+    (``fence.py``) — because the invariant is a comparison between them: a command the
+    deterministic stage cleared for itself must never be fenced *more loosely* than one the
+    operator read and approved. Two copies of this list could only ever drift into breaking
+    that, and silently.
+
+    The data directory is the entry that matters most, and the one an operator's own
+    ``host_command_deny_read`` would not think to name: it holds the vault, the sealed
+    workspaces and the database, so exposing it would undo at-rest encryption wholesale.
+    """
+    return (*settings.host_command_deny_read, str(Path(settings.data_dir).resolve()))
 
 
 def _claim_scratch(scratch: Path) -> None:
@@ -193,11 +212,7 @@ async def _configure(settings: Settings) -> HostConfinement:
                 "the filesystem deny rules; install it to fence host commands",
             )
         return HostConfinement(False, "the platform's sandbox dependencies are unavailable")
-    # The data directory carries the vault, the sealed workspaces and the database. It is
-    # denied here rather than left to the credential list because it is the one path whose
-    # exposure would undo at-rest encryption wholesale.
-    data_dir = str(Path(settings.data_dir).resolve())
-    deny_read = [*settings.host_command_deny_read, data_dir]
+    deny_read = list(denied_read_paths(settings))
     # Writes are deny-by-default in this runtime, so the allow list is not a hardening knob
     # — it is what keeps an approved command able to do the thing it was approved for. The
     # runtime's own defaults (`/dev/null`, `/dev/stdout`, the tty) come first: without them
@@ -215,7 +230,7 @@ async def _configure(settings: Settings) -> HostConfinement:
         *get_default_write_paths(),
         *settings.host_command_allow_write,
         tempfile.gettempdir(),
-        str(_scratch_path()),
+        str(scratch_path()),
     ]
     # Everything read-denied is write-denied too. Read denial alone would still let a
     # command clobber the vault or an ssh key it could not read.

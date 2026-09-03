@@ -18,11 +18,30 @@ const VERDICT: Record<NonNullable<Review["decision"]>, string> = {
 };
 
 /** Which stage settled it, spelled out. The distinction is the operator's to act on: a
- *  call cleared by the allowlist means the rule is too broad, and one cleared by the
- *  reviewer means the model judged it — two different things to go and change. */
+ *  call cleared structurally means the rule is too broad, and one cleared by the reviewer
+ *  means the model judged it — two different things to go and change. */
 const STAGE: Record<NonNullable<Review["stage"]>, string> = {
-  judge: "Settled by the read-only allowlist, with no model call.",
+  judge: "Settled by its structure, with no model call.",
   reviewer: "Settled by the reviewer.",
+};
+
+/** The ground the structural stage cleared it on. Four different arguments, not four
+ *  degrees of trust — the one granted to a classified read grants nothing to a command,
+ *  which is precisely what an operator auditing the level needs to be able to see. */
+const TIER: Record<NonNullable<Review["tier"]>, string> = {
+  read: "The tool only observes, whatever it is asked for.",
+  sandbox: "It runs offline inside this conversation's own container.",
+  workspace: "Ran fenced to the worktree, with no network.",
+  network: "Ran fenced to the worktree, reaching only the allowed domains.",
+};
+
+/** How far the command said it needs to go. Shown for every reviewed command, cleared or
+ *  not: it is the model's own claim, and reading it beside the verdict is how an operator
+ *  notices a command that declared less than it did. */
+const REACH: Record<NonNullable<Review["reach"]>, string> = {
+  workspace: "Declared reach: the worktree.",
+  network: "Declared reach: the worktree and the network.",
+  host: "Declared reach: your whole machine.",
 };
 
 const RISK: Record<NonNullable<Review["risk"]>, string> = {
@@ -95,12 +114,36 @@ export function ReviewCard(props: {
           <Text variant="micro" tone="default" class="break-words">
             {props.review.summary}
           </Text>
+          <Show when={props.review.reach}>
+            {(reach) => (
+              <Text variant="micro" tone="dim">
+                {REACH[reach()]}
+              </Text>
+            )}
+          </Show>
           <Show when={props.review.stage}>
             {(stage) => (
               <Text variant="micro" tone="dim">
                 {STAGE[stage()]}
               </Text>
             )}
+          </Show>
+          <Show when={props.review.tier}>
+            {(tier) => (
+              <Text variant="micro" tone="dim">
+                {TIER[tier()]}
+              </Text>
+            )}
+          </Show>
+          {/* Said out loud rather than left to be inferred from a missing tier: a host
+              with no sandbox primitive is why an ordinary contained command still had to
+              be asked about, and it is one `brew install` away from being fixed. Only for
+              an act that declared a reach — a fence is nothing to a recall either way. */}
+          <Show when={props.review.reach && props.review.fenced === false}>
+            <Text variant="micro" tone="dim">
+              This machine has no sandbox to fence a command with, so it ran
+              unfenced.
+            </Text>
           </Show>
           <Show when={props.review.risk}>
             {(risk) => (

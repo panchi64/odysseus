@@ -1,16 +1,20 @@
 """The deterministic stage: what it reads off a command, and what it refuses to vouch for.
 
-Three halves, tested apart because they fail apart. The **extraction** says what a command
-would reach; the **allowlist** claims which programs only observe; the **judge** applies
-one to the other. A bug in the first is a command described as less than it is, and a bug
-in the second is a promise about a program that its man page does not make — both of them
-failures the third cannot catch, so most of what is pinned here is the extraction refusing
-to describe and the table's exceptions actually biting, rather than the judge refusing to
-approve.
+Two halves, tested apart because they fail apart. The **extraction** says what a command's
+syntax names; the **judge** checks that against the reach the call declared and the fence
+this host can build. A bug in the first is a command described as less than it is — a
+failure the second cannot catch — so most of what is pinned here is the extraction refusing
+to describe, rather than the judge refusing to approve.
 
 Every "not approved" below is an *escalation*, never a refusal: the call goes to the model
-reviewer. That is what makes the allowlist affordable to keep narrow, and it is why the
-tests are written as "this does not pass the cheap stage" rather than "this is forbidden".
+reviewer. That is what makes the structural stage affordable to keep strict, and it is why
+the tests are written as "this does not pass the cheap stage" rather than "this is
+forbidden".
+
+The helpers default to a host that *can* fence and an operator who has allowed some
+domain, because that is the interesting configuration — the two facts are arguments
+precisely so a test does not depend on the machine it runs on, and the cases where either
+is missing are pinned explicitly.
 """
 
 from __future__ import annotations
@@ -21,23 +25,39 @@ import pytest
 
 from services.permissions.capability import (
     ActionKind,
+    Reach,
     capability_of,
+    declared_reach,
     measured_against_root,
     shell_capability,
 )
-from services.permissions.judge import judge
-from services.permissions.read_only import READ_ONLY_PROGRAMS, READ_ONLY_SUBCOMMANDS
+from services.permissions.judge import Judgement, judge
 from services.permissions.shell_ast import command_prefix, strip_comments
 
 ROOT = Path("/tmp/odysseus-judge-workspace")
 
 
-def cleared(command: str, *, root: Path | None = ROOT) -> bool:
-    return judge(shell_capability("shell_run_command", command, root=root)).approved
+def judged(
+    command: str,
+    *,
+    root: Path | None = ROOT,
+    reach: Reach = "workspace",
+    fenced: bool = True,
+    network_allowed: bool = True,
+) -> Judgement:
+    return judge(
+        shell_capability("shell_run_command", command, root=root, reach=reach),
+        fenced=fenced,
+        network_allowed=network_allowed,
+    )
 
 
-def reason(command: str, *, root: Path | None = ROOT) -> str:
-    return judge(shell_capability("shell_run_command", command, root=root)).reason
+def cleared(command: str, **kwargs) -> bool:
+    return judged(command, **kwargs).approved
+
+
+def reason(command: str, **kwargs) -> str:
+    return judged(command, **kwargs).reason
 
 
 class TestWhatTheWalkReads:
@@ -120,7 +140,7 @@ class TestUnknownShapesEscalate:
     def test_a_construct_with_no_rule_is_recorded_rather_than_skipped(self, command):
         capability = shell_capability("shell_run_command", command, root=ROOT)
         assert not capability.bounded
-        assert not judge(capability).approved
+        assert not cleared(command)
 
     @pytest.mark.parametrize(
         "command",
@@ -134,7 +154,7 @@ class TestUnknownShapesEscalate:
     )
     def test_a_value_decided_at_run_time_is_never_interpolated_away(self, command):
         # The single most tempting shortcut — "it is probably a path in the workspace" —
-        # and the one that turns the allowlist into decoration.
+        # and the one that turns the containment check into decoration.
         assert not shell_capability("shell_run_command", command, root=ROOT).bounded
         assert not cleared(command)
 
@@ -142,12 +162,6 @@ class TestUnknownShapesEscalate:
         capability = shell_capability("shell_run_command", "$TOOL --version", root=ROOT)
         assert capability.programs == ()
         assert not capability.bounded
-
-    def test_an_environment_assignment_never_passes(self):
-        # `LD_PRELOAD=… ls` is not `ls`, and the set of variables that change what a
-        # program does is open-ended enough that enumerating them is a losing game.
-        assert not cleared("LD_PRELOAD=/tmp/x.so ls")
-        assert "LD_PRELOAD" in reason("LD_PRELOAD=/tmp/x.so ls")
 
     def test_a_command_that_does_not_parse_is_read_as_unparsed(self):
         # tree-sitter recovers rather than raising, so a broken command comes back as a
@@ -212,6 +226,67 @@ class TestAWordTheShellWouldRewrite:
             assert not cleared(command)
 
 
+class TestAWordThatIsAWholeCommandLine:
+    """The sequel to the four commands above, and the same failure by a different door.
+
+    Those hid a path from the containment check by spelling it so the *shell* would rewrite
+    it. These hide it by handing it to another program: `sh -c 'cat /etc/passwd'` is one
+    word to the shell, and measuring that word as a relative path places
+    `<root>/cat /etc/passwd` comfortably inside the worktree — so the command cleared at
+    tier `workspace` with no review and no prompt, while `cat /etc/passwd` on its own
+    escalates. The fence cannot be the backstop for it either, since reads are the one half
+    of a declaration it does not hold.
+
+    Telling `sh -c` from `git commit -m` needs to know what the program does with the
+    string, which is the program table this whole design exists without. So the reading is
+    the conservative one — a word that is not a single word is not placed — and a quoted
+    multi-word argument pays a model review it used to get for free.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sh -c 'cat /etc/passwd'",
+            "bash -c 'cat /etc/passwd > leak.txt'",
+            'python3 -c \'print(open("/etc/passwd").read())\'',
+            'python3 -c"print(open(\'/etc/passwd\').read())"',  # glued to the flag, no space
+            "awk 'BEGIN{while((getline l < \"/etc/passwd\")>0) print l}'",
+            "eval 'cat /etc/passwd'",
+            "sh -c 'rm -rf .'",  # and the harness's own `rm` denylist reads the first word
+        ],
+    )
+    def test_a_script_carried_as_an_argument_is_not_a_path_inside_the_worktree(self, command):
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert not capability.bounded
+        assert capability.escapes == ()  # nothing here *looked* like an escape, which is why
+        assert not cleared(command)
+        assert reason(command) == (
+            "an argument that could itself be a command line rather than a word"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "find . -name '*.py'",  # a glob handed to `find` cannot leave the directory
+            "grep -rn needle src",
+            "sed -i s/a/b/ f.txt",
+            "git commit -m wip",
+            "uv run pytest tests/test_a.py",
+        ],
+    )
+    def test_a_single_word_argument_is_still_read_as_one(self, command):
+        # The rule is about words, not about quoting: everything here is one word per
+        # argument, and none of it pays for the case above.
+        assert shell_capability("shell_run_command", command, root=ROOT).bounded
+        assert cleared(command)
+
+    def test_the_price_is_a_review_and_not_a_refusal(self):
+        # A commit message with a space in it is indistinguishable from a script, and this
+        # is what that costs: the model reviewer rules on it instead of the command
+        # clearing for free. An escalation, never a refusal.
+        assert not cleared("git commit -m 'fix the parser'")
+
+
 class TestTheWordsACommandLeadsWith:
     """`command_prefix` — what a standing permission could be scoped to without being
     scoped to one invocation."""
@@ -256,8 +331,14 @@ class TestCommentsAreDropped:
         assert capability.programs == ("ls",)
 
 
-class TestTheAllowlist:
-    """What actually clears without a model call."""
+class TestTheStructuralStage:
+    """What actually clears without a model call, now that no table of programs decides it.
+
+    The claim under test is the one the program allowlist could never make: a command is
+    cleared on its *shape* — every path inside the worktree, nothing reaching the network
+    it did not declare, and a fence to hold it there — whatever binary it happens to name.
+    So the cases that matter most are the ones the old table refused for want of a row.
+    """
 
     @pytest.mark.parametrize(
         "command",
@@ -280,118 +361,192 @@ class TestTheAllowlist:
 
     @pytest.mark.parametrize(
         "command",
-        ["git diff", "git log -p", "git show HEAD", "git blame src/a.py", "git grep needle"],
-    )
-    def test_the_diff_family_is_not_a_read_however_it_is_invoked(self, command):
-        # These read the working tree and print — and along the way run `diff.external`, a
-        # diff driver's `textconv` or a filter driver's `clean`, each of them a program the
-        # *repository* named rather than this command. No flag states that rule, so no row
-        # in the table can, and the environment pins in `services/sandbox/gitenv.py` have no
-        # value that switches them off. They escalate until an OS fence bounds what a
-        # spawned program may do.
-        assert not cleared(command)
-        assert "not a read-only subcommand" in reason(command)
-
-    @pytest.mark.parametrize(
-        "command",
         [
-            "rm -rf build",
-            "git commit -m wip",
-            "git push",
-            "npm install",
-            "python -c 'print(1)'",
+            "uv run pytest",
+            "mkdir -p a/b && touch a/b/c",
+            "git add -A && git commit -m x",
+            "npm run build",
             "sed -i s/a/b/ f.txt",
-            "awk '{print > \"out\"}' f.txt",
-            "xargs rm < list",
             "chmod +x run.sh",
+            "rm -rf build",
+            "ls > out.txt",
+            "git diff",  # the diff family, which no set of flags could ever have cleared
+            "git commit --amend",
+            "./scripts/build.sh",  # a path-qualified program, inside the worktree
+            "LD_PRELOAD=x ls",  # an assignment whose value is not a path at all
         ],
     )
-    def test_anything_that_could_change_something_escalates(self, command):
-        assert not cleared(command)
+    def test_the_ordinary_work_of_a_code_thread_costs_nothing_either(self, command):
+        # Every one of these went to a model reviewer under the program allowlist — most of
+        # them because no row could state their rule, and the reviewer's own rubric then
+        # scored "runs a program" high enough to park. Structure clears them because the
+        # fence, not a claim about the binary, is what bounds them.
+        assert cleared(command)
+        assert judged(command).tier == "workspace"
 
-    def test_a_writing_flag_disqualifies_an_otherwise_reading_program(self):
-        assert cleared("find . -name x")
-        assert not cleared("find . -delete")
-        assert not cleared("find . -exec rm {} ;")
-
-    @pytest.mark.parametrize(
-        ("program", "flag"),
-        [
-            (program, flag)
-            for program, flags in sorted(READ_ONLY_PROGRAMS.items())
-            for flag in sorted(flags)
-        ],
-    )
-    def test_every_exception_the_table_claims_is_one_it_enforces(self, program, flag):
-        # A test per row, derived from the row rather than restating it: an entry whose
-        # denial set is decoration — a flag nothing matches, a program whose set was
-        # emptied — is a program the stage would clear while promising it could not.
-        assert not cleared(f"{program} {flag} x")
-
-    @pytest.mark.parametrize(
-        ("subcommand", "flag"),
-        [
-            (subcommand, flag)
-            for subcommand, flags in sorted(READ_ONLY_SUBCOMMANDS["git"].items())
-            for flag in sorted(flags)
-        ],
-    )
-    def test_a_reading_subcommand_has_its_own_exceptions(self, subcommand, flag):
-        # `git cat-file` hands back stored bytes, and `git cat-file --filters` pushes them
-        # through whatever clean driver the repository configured — so the subcommand
-        # allowlist needs the same per-entry denial the program allowlist has, or being a
-        # reading subcommand is where the check stops.
-        assert cleared(f"git {subcommand}")
-        assert not cleared(f"git {subcommand} {flag} x")
-
-    def test_a_denied_flag_cannot_be_smuggled_past_by_spelling(self):
-        # `-o`, `-oout.txt` and `--output=out.txt` are one flag written three ways. A
-        # table matched against raw tokens states a rule about the first and none at all
-        # about the other two.
-        for command in ("sort -o out", "sort -oout", "sort --output out", "sort --output=out"):
-            assert not cleared(command)
-
-    def test_a_subcommand_program_is_cleared_on_its_subcommand(self):
-        assert cleared("git ls-tree HEAD")
-        assert not cleared("git reset --hard")
-        # No subcommand at all is not a read — it is a form this stage has no rule for.
-        assert not cleared("git --version")
+    def test_an_environment_assignment_is_no_longer_a_refusal(self):
+        # `LD_PRELOAD=… ls` is a different program from `ls`, and the fence does not care:
+        # whatever it loads is held to the same paths and the same egress as the command
+        # that loaded it. Enumerating the variables that change what a program does was
+        # always a losing game; this is what stopped it having to be won.
+        assert cleared("LD_PRELOAD=x ls")
+        assert not cleared("LD_PRELOAD=x ls", fenced=False)
 
     @pytest.mark.parametrize(
         "command",
         [
-            "git --git-dir=other/.git log",  # a repository that is not this one
-            "git --exec-path=bin log",  # the binaries git itself runs
-            "git -c core.pager=x log",  # the config the subcommand obeys
-            "git -C src status",  # the directory the whole thing happens in
-            "git --no-pager log",  # harmless, and indistinguishable from the rest
+            "LD_PRELOAD=/tmp/evil.so ls",
+            "GIT_DIR=/etc git status",
+            "GIT_DIR=../../other/.git git log",
+            "PATH=/tmp/evil ls",
+            "FOO=~/secrets ls",
+            "env LD_PRELOAD=/tmp/x.so ls",  # the same thing spelled as an argument
         ],
     )
-    def test_nothing_is_read_past_a_flag_before_the_subcommand(self, command):
-        # Every one of these stays inside the workspace, so containment says nothing about
-        # them: what refuses them is the rule that a global flag redirects the act, and
-        # that a global flag taking a separate value moves where the subcommand even sits.
+    def test_an_assignments_value_is_a_path_like_any_other(self, command):
+        # The variable *name* was never the interesting half. Recording only it left the
+        # escaping path out of the structural facts entirely — so not merely unchecked, but
+        # invisible to the reviewer an escalation would have gone to. `env`-prefixed spells
+        # it as an argument instead, where `LD_PRELOAD=/tmp/x.so` read as one relative path
+        # lands comfortably inside the worktree unless the reading looks past the `=`.
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert capability.escapes, command
         assert not cleared(command)
+        assert "outside the workspace" in reason(command)
 
     @pytest.mark.parametrize(
-        "command",
+        "command", ["~/evil.sh", "../outside/evil.sh", "/bin/ls", "/etc/../bin/ls"]
+    )
+    def test_the_program_is_measured_like_every_other_path(self, command):
+        # Running a file is reading it, and reads are the half no fence bounds — so a
+        # program named by path is exactly the containment question `cat` asks, one word
+        # to the left. Every one of these cleared at tier `workspace` while the identical
+        # path written as an operand was refused.
+        assert shell_capability("shell_run_command", command, root=ROOT).escapes == (command,)
+        assert not cleared(command)
+        assert "outside the workspace" in reason(command)
+
+    def test_a_bare_program_name_is_not_a_path_and_is_not_measured(self):
+        # The other half, and the reason this is not simply "refuse anything with a
+        # program in it": `ls` resolves through `PATH`, which is not a path the command
+        # named — while `./scripts/build.sh` is one, and is inside the worktree.
+        for command in ("ls -la", "git status", "./scripts/build.sh"):
+            assert cleared(command), command
+
+    @pytest.mark.parametrize(
+        ("command", "fragment"),
         [
-            "date -s 2020-01-01",  # a bare operand sets the clock on BSD
-            "hostname newhost",  # ...and here too
-            "uniq in.txt out.txt",  # the second operand is an output file
+            ("cat ../secrets", "outside the workspace"),
+            ("cd ..", "outside the workspace"),
+            ("cat $TARGET", "not known here"),
+            ("ls |", "could not parse"),
         ],
     )
-    def test_a_program_whose_writing_form_is_not_a_flag_is_not_on_the_list(self, command):
-        # The table can only state a rule about flags, so a program that writes from an
-        # operand cannot be described by one — and half a rule is worse than no row.
+    def test_each_refusal_names_the_fact_that_was_missing(self, command, fragment):
+        # The reason is what an operator reads on the review row when a benign-looking
+        # command escalates; "the system was arbitrary" is the reading it exists to prevent.
         assert not cleared(command)
-        assert "not on the read-only list" in reason(command)
+        assert fragment in reason(command)
 
-    def test_a_path_qualified_invocation_is_not_the_allowlisted_program(self):
-        # `/bin/ls` and `./ls` are different binaries as far as the name says, and the
-        # containment check has already had its say about the path.
-        assert not cleared("/bin/ls")
-        assert not cleared("./ls")
+    def test_a_change_of_directory_is_still_measured(self):
+        # `cd ..` names a path like any other operand, and the walk reads it as one — which
+        # is what keeps a `cd` out of the worktree from being the one act that clears
+        # because nobody thought of it as a path.
+        assert cleared("cd src")
+        assert not cleared("cd ..")
+
+    def test_a_host_declaration_is_never_cleared_here(self):
+        assert not cleared("ls", reach="host")
+        assert 'declared reach "host"' in reason("ls", reach="host")
+
+    def test_a_declaration_the_command_contradicts_escalates(self):
+        # The fence built for `workspace` would deny the egress anyway; what this refusal
+        # buys is the operator being told rather than the model being puzzled.
+        assert not cleared("curl https://example.com")
+        assert "names a network address" in reason("curl https://example.com")
+        assert not cleared("cat /etc/passwd", reach="network")
+        assert 'declared reach "network" but names /etc/passwd' in reason(
+            "cat /etc/passwd", reach="network"
+        )
+
+    def test_a_network_command_clears_only_against_a_non_empty_allowed_list(self):
+        assert judged("curl https://example.com", reach="network").tier == "network"
+        refused = judged("curl https://example.com", reach="network", network_allowed=False)
+        assert not refused.approved
+        assert "allowed no domains" in refused.reason
+
+    def test_without_a_fence_nothing_structural_clears(self):
+        # The declaration buys nothing on a host that cannot hold a process to it, so the
+        # model reviewer rules instead — with the same structural facts in front of it.
+        for command in ("ls -la", "uv run pytest", "git status"):
+            assert not cleared(command, fenced=False)
+        assert "no OS fence" in reason("ls -la", fenced=False)
+
+    def test_a_read_and_a_sandbox_call_clear_with_no_fence_at_all(self):
+        # The two tiers a fence has nothing to do with: one is settled by the tool's class,
+        # the other by the container the call already runs inside.
+        read = judge(
+            capability_of("corpus_retrieve", {"query": "x"}), fenced=False, network_allowed=False
+        )
+        assert read.approved and read.tier == "read"
+        sandboxed = judge(
+            capability_of("code_execute", {"code": "print(1)"}),
+            fenced=False,
+            network_allowed=False,
+        )
+        assert sandboxed.approved and sandboxed.tier == "sandbox"
+
+    def test_a_sandbox_call_that_asks_for_the_network_is_not_bounded_by_its_container(self):
+        networked = judge(
+            capability_of("code_execute", {"code": "print(1)", "network": True}),
+            fenced=True,
+            network_allowed=True,
+        )
+        assert not networked.approved
+
+
+class TestTheDeclarationIsReadOffTheCall:
+    """`reach` arrives from the model, so how an absent or unknown value reads is policy."""
+
+    def test_an_absent_argument_is_the_schema_default_the_tool_will_run_under(self):
+        # The executing tools default `reach` to `workspace`, so an omitted argument is not
+        # a missing declaration — reading it as anything else would escalate every call
+        # that left it off while the command ran fenced to the worktree anyway.
+        assert declared_reach("shell_run_command", {"command": "ls"}) == "workspace"
+
+    @pytest.mark.parametrize("value", ["everywhere", "", None, 3, "Workspace"])
+    def test_a_value_this_module_does_not_recognise_is_the_widest_one(self, value):
+        assert declared_reach("shell_run_command", {"command": "ls", "reach": value}) == "host"
+
+    def test_a_host_command_declares_the_host_whatever_its_arguments_say(self):
+        assert (
+            declared_reach("code_run_host_command", {"command": "ls", "reach": "workspace"})
+            == "host"
+        )
+
+    def test_a_tool_with_no_such_argument_declares_nothing_rather_than_the_default(self):
+        # `code_execute` has no `reach` argument to leave off, so reading its absence as
+        # the executing tools' schema default would be the chassis writing a declaration
+        # the model never made — and it would then be printed to the reviewer and rendered
+        # on the operator's review row as if it had.
+        assert declared_reach("code_execute", {"code": "echo hi", "language": "bash"}) is None
+        assert capability_of("code_execute", {"code": "echo hi", "language": "bash"}).reach is None
+        assert capability_of("shell_run_command", {"command": "ls"}).reach == "workspace"
+
+    def test_a_command_that_declared_nothing_is_refused_as_that_and_not_as_a_host_command(self):
+        # The bash `code_execute` that asked for the network: its container stops being the
+        # fence, so it reaches this stage — and the reason has to say what is actually
+        # missing, since "declared reach host" would be a sentence about a call that
+        # declared no reach at all.
+        judgement = judge(
+            capability_of(
+                "code_execute", {"code": "echo hi", "language": "bash", "network": True}, root=ROOT
+            ),
+            fenced=True,
+            network_allowed=True,
+        )
+        assert not judgement.approved
+        assert judgement.reason == "declares no reach, so there is nothing here to hold it to"
 
 
 class TestContainment:
@@ -440,7 +595,7 @@ class TestAHostCommandIsNotAWorkspaceCommand:
             capability = capability_of(
                 "code_run_host_command", {"command": command, "explanation": "x"}, root=ROOT
             )
-            judgement = judge(capability)
+            judgement = judge(capability, fenced=True, network_allowed=True)
             assert not judgement.approved, command
             assert "runs on the host" in judgement.reason
 
@@ -475,19 +630,24 @@ class TestAClassifiedReadClears:
         ):
             capability = capability_of(tool, args, root=ROOT)
             assert capability.kind is ActionKind.READ
-            assert judge(capability).approved, tool
+            assert judge(capability, fenced=False, network_allowed=False).approved, tool
 
     def test_the_row_names_the_ground_it_was_cleared_on(self):
-        # Two approvals, not one kind of approval: this one is the tool's class alone,
+        # Four approvals, not one kind of approval: this one is the tool's class alone,
         # with nothing weighing the arguments and no model consulted. The row says so in
         # those words rather than reading like a review that happened to pass, and the
         # tier is the machine-readable half of the same fact.
-        judgement = judge(capability_of("corpus_retrieve", {"query": "invoice"}, root=ROOT))
+        judgement = judge(
+            capability_of("corpus_retrieve", {"query": "invoice"}, root=ROOT),
+            fenced=True,
+            network_allowed=True,
+        )
         assert judgement.approved
         assert judgement.tier == "read"
         assert judgement.reason == "classified read, cleared at Auto with no review"
-        # A command cleared by the allowlist is a different answer and carries no tier.
-        assert judge(shell_capability("shell_run_command", "git status", root=ROOT)).tier is None
+        # A command cleared structurally is a different answer and says so in its tier —
+        # which is what the tool that executes it reads to pick the fence to run it under.
+        assert judged("git status").tier == "workspace"
 
     def test_a_read_is_named_by_its_keys_and_never_its_values(self):
         # The summary rides onto the work log and into the reviewer's prompt, and a recall
@@ -522,7 +682,9 @@ class TestTheOtherKindsOfAction:
             ("external_notion_create_page", {"title": "x"}),
             ("files_write_file", {"path": "a.txt", "content": "x"}),
         ):
-            assert not judge(capability_of(tool, args, root=ROOT)).approved
+            assert not judge(
+                capability_of(tool, args, root=ROOT), fenced=True, network_allowed=True
+            ).approved
 
     def test_an_interpreter_program_is_not_bounded_by_its_arguments(self):
         capability = capability_of("code_execute", {"code": "print(1)"}, root=ROOT)
@@ -554,21 +716,3 @@ class TestTheOtherKindsOfAction:
         assert capability.writes == ("src/a.py",)
         assert capability.escapes == ()
         assert capability_of("files_write_file", {"path": "/etc/hosts"}, root=ROOT).escapes
-
-
-class TestTheTablesStayHonest:
-    """The allowlist is a claim about programs, and a claim can rot."""
-
-    def test_no_program_is_on_both_tables(self):
-        # A program whose subcommand decides is not also a program that always reads;
-        # listing it twice would make one of the two rules unreachable and silent.
-        assert not set(READ_ONLY_PROGRAMS) & set(READ_ONLY_SUBCOMMANDS)
-
-    def test_every_denied_flag_is_a_flag(self):
-        # A "writing flag" that does not start with `-` could never match an argument,
-        # so it would read as a guarantee while doing nothing.
-        denials = [*READ_ONLY_PROGRAMS.values()]
-        denials += [flags for by_subcommand in READ_ONLY_SUBCOMMANDS.values()
-                    for flags in by_subcommand.values()]
-        for flags in denials:
-            assert all(flag.startswith("-") for flag in flags)

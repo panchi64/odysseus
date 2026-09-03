@@ -1,0 +1,346 @@
+"""The OS fence a worktree command runs inside, built per call from what it declared.
+
+``host.py`` fences the *host* escape hatch — one profile, configured once, denying the
+credential paths and the data directory. This builds a **narrower** profile for a command
+the deterministic stage cleared (``services/permissions/judge.py``): writes confined to
+the worktree, egress either off entirely or limited to the operator's allowed domains, and
+the repository's own metadata protected by path rather than by a table of git subcommands.
+
+**Why the fence is what made the allowlist unnecessary.** A read-only program table has to
+answer "what will this binary do", and for the commands that matter it cannot: `git status`
+runs whatever a repository's `.gitattributes` names as a clean filter, `git diff` runs
+`diff.external`, and no flag and no environment pin states either rule (``gitenv.py`` says
+why). Bounding what a *spawned program may do* answers all of them at once, and answers
+them for `make`, `npm run` and a test suite too — none of which any table could have
+enumerated. So the tier the judge assigns names a profile here, and the tool that executes
+the call builds it: what runs can never exceed what was declared.
+
+**It lives beside the host confinement rather than with the judge**, because it imports
+``sandbox_runtime`` and reads the filesystem, and the judge is pure. The judge decides
+*whether*; this decides *what the boundary is*.
+
+**Deny beats allow in both runtimes**, and the profiles below are written for that. On
+macOS the generated seatbelt profile emits every allow rule before every deny rule and the
+last match wins (``sandbox_runtime/macos_sandbox.py``); on Linux a denied path is re-bound
+read-only over the writable bind (``linux_sandbox.py``). So a narrow allow *inside* a broad
+deny is not a thing that can be expressed — the sibling paths are listed explicitly
+instead, and writes are deny-by-default, so what is not named is already denied.
+
+**Linux binds paths that exist.** ``bwrap`` skips a bind whose source is missing, so a
+lock file git has not created yet cannot be allowed by name there; the directory holding it
+is allowed instead, which is wider (every branch ref rather than this thread's) and is the
+platform's price for a `git commit` that works. macOS matches on the path string and needs
+no such widening, so it does not get it.
+
+**What this bounds, and what it does not.** Writes are deny-by-default with an allowlist,
+and egress is allowlist-only — those two are the fence's, and they hold whatever a command
+does once it is running. **Reads are not**: ``sandbox_runtime``'s filesystem config carries
+a read *denylist* and no read allowlist at all, so a fenced command can still read anything
+on the host outside the paths named in ``deny_read``. Reads are therefore bounded upstream
+or not at all — the structural stage refuses a command that names a path outside the
+worktree, and refuses a word it cannot place as a single path
+(``services/permissions/shell_ast.py``). Nothing here is a second line under that one, and
+a docstring implying otherwise would be the most expensive kind of wrong.
+
+**Which is exactly why the `cd`-persistence shim is contained.** The shell session
+remembers its working directory between calls, and the structural stage measures every
+relative path against the *worktree root* — so a command that moved the tracked directory
+outside the worktree would leave every later containment claim measured against the wrong
+place, with nothing downstream to catch the reads. The shim below therefore steps into
+what the fenced shell recorded only while it is still under the root
+(:class:`CwdCapture`).
+"""
+
+from __future__ import annotations
+
+import shlex
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from core.config import Settings
+
+from .host import HostConfinement, resolve_confinement, scratch_path
+
+if TYPE_CHECKING:  # pragma: no cover - import-time cost, not behaviour
+    from sandbox_runtime import SandboxRuntimeConfig
+
+#: Files under the *common* git directory that a worktree command must never write, each
+#: because writing it would let a command choose what a later command runs, or would edit
+#: history the agent's own branch has no business touching. Named as paths rather than as
+#: git subcommands: `git config`, a shell redirect and a Python script are the same write.
+#:
+#: ``refs/tags`` and ``refs/remotes`` are here and ``refs/heads`` is not, and the asymmetry
+#: is forced: a commit has to write exactly one path under ``refs/heads``, deny beats allow
+#: in both runtimes, and a deny on the parent would take the allow with it. See
+#: :func:`workspace_profile` for what that leaves reachable in a plain checkout.
+_PROTECTED_GIT = (
+    "config",
+    "hooks",
+    "packed-refs",
+    "info",
+    "refs/tags",
+    "refs/remotes",
+    "logs/refs/remotes",
+)
+
+
+@dataclass(frozen=True)
+class GitDirs:
+    """Where a worktree's git metadata actually lives — its own, and the repository's.
+
+    A linked worktree has two directories and they are usually not siblings:
+    ``<root>/.git`` is a *file* pointing at a private directory under the main checkout
+    (``…/.git/worktrees/<name>``), and that directory's ``commondir`` points at the shared
+    one holding the objects, the refs and the config. A profile that fenced only the
+    worktree would leave the operator's own repository wide open; one that denied the whole
+    common directory would make `git commit` impossible. Both paths are needed, and reading
+    them off the checkout is the only way to be right about a repository we did not create.
+    """
+
+    #: The worktree's own metadata: HEAD, the index, its reflogs. Writable — it is this
+    #: thread's, and throwing the branch away throws it away too.
+    private: Path
+    #: The repository's shared metadata: objects, refs, config, hooks. Writable only in
+    #: the few places a commit has to land.
+    common: Path
+
+    @classmethod
+    def read(cls, root: Path) -> GitDirs | None:
+        """The two directories for the checkout at ``root``, or None when it is not one.
+
+        None is not an error: a workspace that is not a git checkout is fenced to its own
+        directory and nothing else, which is the right answer and needs no git paths at all.
+        """
+        marker = root / ".git"
+        try:
+            if marker.is_dir():
+                return cls(private=marker, common=marker)
+            pointer = marker.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if not pointer.startswith("gitdir:"):
+            return None
+        private = Path(pointer.removeprefix("gitdir:").strip())
+        if not private.is_absolute():
+            private = (root / private).resolve()
+        try:
+            common_text = (private / "commondir").read_text(encoding="utf-8").strip()
+        except OSError:
+            # A repository with no `commondir` is one whose private directory *is* the
+            # common one — the shape `git init` produces before any worktree is added.
+            return cls(private=private, common=private)
+        common = Path(common_text)
+        if not common.is_absolute():
+            common = (private / common).resolve()
+        return cls(private=private, common=common)
+
+
+async def fence_available(settings: Settings) -> HostConfinement:
+    """Whether this host can confine a process, resolving the primitive if it has not been.
+
+    The same process-global singleton the host escape hatch uses (:func:`resolve_confinement`
+    — one sandbox per interpreter, configured once and cached), asked here under the name
+    the permission layer thinks in. A ``False`` answer carries the reason, which is what
+    the tool tells the model when a command runs unfenced.
+    """
+    return await resolve_confinement(settings)
+
+
+def workspace_profile(
+    root: Path,
+    git: GitDirs | None,
+    branch: str | None,
+    *,
+    allowed_domains: tuple[str, ...] | list[str] = (),
+    deny_read: tuple[str, ...] | list[str] = (),
+    allow_write: tuple[str, ...] | list[str] = (),
+    linux: bool = False,
+) -> SandboxRuntimeConfig:
+    """The profile a command declared ``workspace`` or ``network`` runs under.
+
+    Writable: the worktree itself, the OS temp root (a build, a test runner and the shell
+    tool's own working-directory capture all need it), the four places a commit has to
+    land — the object store, the worktree's private metadata, and this thread's branch ref
+    and reflog — and ``allow_write``, the operator's own additions
+    (``Settings.worktree_command_allow_write``).
+
+    ``allow_write`` is a *separate* setting from the host hatch's, and the asymmetry is the
+    point: a host command is one the operator read and approved, so its list may be as
+    broad as `~`; a `workspace` command is one nobody was asked about, so the same breadth
+    here would be the fence dissolved. What it is seeded with is the build caches, which
+    are the difference between this tier clearing `uv run pytest` and `uv run pytest`
+    failing to initialise its cache — see the setting for what is deliberately left out.
+
+    Denied inside what *is* writable: the host escape hatch's scratch directory, and the
+    repository's config, hooks, packed refs, ``info``, tags and remotes. The scratch
+    directory is the cwd every operator-approved host command starts in and resolves its
+    relative paths against, so a command that needed no approval must not be able to leave
+    something in it. The git paths are named as paths rather than as git subcommands:
+    `git config`, a shell redirect and a Python script are the same write.
+
+    **How far "the operator's other branches are out of reach" actually goes.** In a linked
+    worktree — the shape code mode always produces — the whole common directory is outside
+    every allow, so another branch's ref is unreachable because nothing named it. In a plain
+    checkout the common directory *is* ``<root>/.git``, inside the worktree allow, and the
+    one ref a commit must write lives under ``refs/heads`` beside all the others: deny beats
+    allow in both runtimes, so denying the parent would deny this thread's own branch too,
+    and there is no third rule to write. So in that shape another branch stays writable, and
+    saying so is better than a docstring that reads as a promise.
+
+    ``allowed_domains`` is empty for ``workspace`` and the operator's list for ``network``.
+    It can only *narrow*: the runtime filters proxied requests against the global config's
+    own list, so a per-call list wider than that one buys nothing.
+
+    ``deny_read`` is the host hatch's own list (``host.denied_read_paths``), restated
+    because a per-call profile *replaces* the global one rather than narrowing it. Every
+    entry is denied for writing too — read denial alone would still let a command clobber
+    the vault or a key it could not read — mirroring what the host profile does.
+
+    ``linux`` widens the branch-ref allows to their directories, because ``bwrap`` cannot
+    bind a path that does not exist yet — see the module docstring.
+    """
+    from sandbox_runtime import FilesystemConfig, NetworkConfig, SandboxRuntimeConfig
+
+    allowed = [str(root), tempfile.gettempdir(), *allow_write]
+    deny_write = [str(scratch_path()), *deny_read]
+    if git is not None:
+        allowed += [str(git.common / "objects"), str(git.private)]
+        allowed += _branch_writes(git.common, branch, linux=linux)
+        deny_write += [str(git.common / name) for name in _PROTECTED_GIT]
+    return SandboxRuntimeConfig(
+        network=NetworkConfig(allowed_domains=list(allowed_domains)),
+        filesystem=FilesystemConfig(
+            deny_read=list(deny_read), allow_write=allowed, deny_write=deny_write
+        ),
+    )
+
+
+def _branch_writes(common: Path, branch: str | None, *, linux: bool) -> list[str]:
+    """The ref and reflog paths a commit on ``branch`` writes, and their lock files.
+
+    A commit updates exactly one branch, so exactly one ref is opened for writing — and it
+    is opened through a `.lock` beside it, which is why each path is named twice. With no
+    branch known there is nothing to name: the command can still read and write the
+    worktree, and a commit fails inside the fence with a note it can act on.
+    """
+    if not branch:
+        return []
+    refs = common / "refs" / "heads" / branch
+    logs = common / "logs" / "refs" / "heads" / branch
+    if linux:
+        # The lock is created *in* the directory, and bwrap can only bind what exists.
+        return [str(refs.parent), str(logs.parent)]
+    return [str(refs), f"{refs}.lock", str(logs), f"{logs}.lock"]
+
+
+#: The failures a denied write or a denied read surfaces as. Sniffed rather than read off
+#: the runtime's own violation record, because that record is filled by a macOS-only kernel
+#: log monitor which has to be started at global initialisation and does not observe every
+#: denial even then — so a note that depended on it would be a note that never appeared.
+#: A false positive costs one advisory line under an unrelated permission error.
+_DENIALS = ("Operation not permitted", "Permission denied", "Read-only file system")
+
+_FENCE_NOTE = (
+    "\n\n[fence] This command ran inside an OS fence built from the reach it declared: it "
+    "may write the worktree and reach only the domains that reach allows. A permission "
+    "failure above is that boundary, not a broken command — work inside the worktree, or "
+    "declare the reach this command actually needs and run it again."
+)
+
+
+@dataclass(frozen=True)
+class CwdCapture:
+    """Where the fenced shell records its working directory, and the root it may keep.
+
+    The two travel together because neither is safe alone. The file is what carries a `cd`
+    across the fence; the root is what stops that channel from moving the shell session's
+    *tracked* directory out of the worktree — after which every relative path the judge
+    measures against ``workspace.root`` would be resolved by the command somewhere else
+    entirely, and `cat secrets.txt` would clear as contained while reading another
+    directory's file. The harness deliberately made its own capture file unaddressable so
+    command output could not spoof the tracked cwd; this restores that property for the
+    one channel the fence forced open.
+    """
+
+    file: Path
+    root: Path
+
+
+async def wrap(
+    command: str, profile: SandboxRuntimeConfig, *, cwd: CwdCapture | None = None
+) -> str:
+    """``command``, rewritten to run under ``profile``.
+
+    ``cwd`` restores the one thing the fence would otherwise take away. The shell tool
+    tracks `cd` between calls by appending its own ``pwd > …`` to whatever it is handed
+    (``pydantic_ai_harness``), and that suffix lands *outside* the fenced shell — where it
+    would record the directory the tool started in and quietly undo every `cd` the model
+    wrote. So the fenced shell records its own working directory to a temp file (the temp
+    root is writable inside the fence) and the outer shell steps into it — **but only when
+    it is still inside the worktree**, since what the outer shell ends in is what the
+    session persists (see :class:`CwdCapture`).
+
+    Both spellings of the root are accepted, because the two ends disagree about it on
+    macOS: the tool starts the shell at the path it was given and `pwd` reports the one
+    the kernel resolved, so `/tmp/wt` and `/private/tmp/wt` are the same directory under
+    two names and a single-pattern check would silently stop tracking `cd` at all.
+
+    The wrapper ends by *setting* the inner exit code rather than exiting on it: the tool's
+    own capture runs after everything here, and an `exit` would take the whole shell down
+    before it could.
+    """
+    from sandbox_runtime import SandboxManager
+
+    inner = command
+    if cwd is not None:
+        quoted = shlex.quote(str(cwd.file))
+        inner = f"{command}\n__odysseus_ec=$?\npwd > {quoted}\nexit $__odysseus_ec"
+    fenced = await SandboxManager.wrap_with_sandbox(inner, custom_config=profile)
+    if cwd is None:
+        return fenced
+    return (
+        f"{fenced}\n"
+        "__odysseus_ec=$?\n"
+        f"if [ -s {quoted} ]; then\n"
+        f'  __odysseus_cwd="$(cat {quoted})"\n'
+        f"  case \"$__odysseus_cwd\" in {_contained_patterns(cwd.root)})"
+        ' cd "$__odysseus_cwd" 2>/dev/null || : ;; esac\n'
+        "fi\n"
+        "( exit $__odysseus_ec )"
+    )
+
+
+def _contained_patterns(root: Path) -> str:
+    """The `case` alternatives matching ``root`` and anything under it, both spellings.
+
+    Quoted through :func:`shlex.quote` so a root carrying a glob character matches
+    literally rather than as a pattern — the one place in this string where the difference
+    is the whole check.
+    """
+    roots = dict.fromkeys((str(root), str(Path(root).resolve())))
+    return "|".join(
+        pattern for name in roots for pattern in (shlex.quote(name), f"{shlex.quote(name)}/*")
+    )
+
+
+def annotate(output: str) -> str:
+    """``output`` with a line under it saying that a permission failure was the fence.
+
+    A denied write surfaces to the command as a bare `Operation not permitted`, which reads
+    as a broken tool rather than as a boundary — and the model's next move on a broken tool
+    is to try it again, or to work around it. The note is what lets it see the fence and
+    redeclare its reach instead. Appended to the whole tool result rather than to a stderr
+    stream of its own, because the shell tool hands back one labelled string and splitting
+    it apart to re-join it would invent a seam.
+
+    **Written here rather than read off the runtime**, which is the part worth stating.
+    ``sandbox_runtime`` does keep a violation store, and it is filled by a macOS-only
+    monitor over the kernel log that must be enabled when the process-wide sandbox is
+    initialised — it records nothing on Linux, and on macOS it did not record an ordinary
+    denied write when it was tried. A note nobody ever sees is worse than no note, so this
+    one is deterministic: it says what the boundary *is* rather than which rule fired, and
+    it is right on both platforms.
+    """
+    return output + _FENCE_NOTE if any(denial in output for denial in _DENIALS) else output

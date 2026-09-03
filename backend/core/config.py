@@ -164,9 +164,35 @@ class Settings(BaseSettings):
     # operator explicitly approved *this* command, and refusing to run it because a
     # platform primitive is missing would break the one case the tool exists for.
     host_command_sandbox_enabled: bool = True
-    # Egress allowlist for those commands. Empty means no network at all — widen it
-    # deliberately, per domain, rather than reaching for the disable switch above.
-    host_command_allowed_domains: tuple[str, ...] = ()
+    # Egress allowlist, for those commands *and* for a worktree command that declares
+    # `reach="network"` (`services/sandbox/fence.py`). It is the operator's list, and it
+    # bounds both — a per-call profile can only narrow it, since the runtime filters
+    # proxied requests against this global list whatever a single call asked for.
+    #
+    # Seeded with the package registries, because the alternative default is worse than it
+    # looks: an empty list means no command may declare a network reach at all, so every
+    # `uv sync` and `npm ci` goes to a model reviewer that has no way to make the network
+    # safer than this list already does. These are the hosts a build fetches from, they
+    # serve versioned artifacts, and an operator who wants none of it empties the list.
+    #
+    # **The seed widens the approved host hatch too, and that is not a side effect to
+    # discover later.** One list, one global runtime config: the same names an approved
+    # `code_run_host_command` may reach. Where the previous empty default meant such a
+    # command reached nothing at all, it can now reach these — `github.com` included, which
+    # is a general-purpose upload endpoint (a gist, a push) and not only a place to fetch
+    # from. That is the price of the worktree tier being usable, paid on a command the
+    # operator read and approved; an operator who would rather not pay it empties the list
+    # and lets the reviewer rule on every networked command instead.
+    host_command_allowed_domains: tuple[str, ...] = (
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "github.com",
+        "objects.githubusercontent.com",
+        "crates.io",
+        "static.crates.io",
+        "proxy.golang.org",
+    )
     # Read-denied even under approval. The data directory is added to this at runtime
     # because it holds the vault, the sealed workspaces and the database: the agent must
     # never read its own encrypted store from the host, whatever it was approved to do.
@@ -178,6 +204,28 @@ class Settings(BaseSettings):
     # egress allowlist, which are the exfiltration paths. The credential paths above are
     # additionally write-denied, so a confined command can neither read nor clobber them.
     host_command_allow_write: tuple[str, ...] = ("~", "/tmp", "/var/tmp")
+    # The same knob for the *worktree* fence (`services/sandbox/fence.py`), and a separate
+    # list rather than a reuse of the one above, because the two are approved differently:
+    # a host command is one the operator read, and a worktree command at `reach="workspace"`
+    # is one nobody was asked about. Widening this one to `~` would mean an unreviewed
+    # command may write anywhere in the operator's home, which is the fence dissolved.
+    #
+    # So the seed is the build caches and nothing else. Every one of them is content the
+    # tool would re-download rather than something the operator wrote, and without them the
+    # ordinary work this tier exists to clear does not run at all: `uv` fails to initialise
+    # `~/.cache/uv`, `npm ci` cannot write `~/.npm/_cacache`, `cargo` cannot write its
+    # registry. Deliberately *not* here are the sibling paths that name a program to run —
+    # `~/.cargo/config.toml`, `~/.gradle/init.gradle`, `~/.npmrc` — since a fence a command
+    # can write its way out of is not one.
+    worktree_command_allow_write: tuple[str, ...] = (
+        "~/.cache",
+        "~/Library/Caches",
+        "~/.npm/_cacache",
+        "~/.bun/install/cache",
+        "~/.cargo/registry",
+        "~/.cargo/git",
+        "~/go/pkg/mod",
+    )
 
     # Meta-loop. The no-progress guard trips after this many identical tool
     # calls in a turn. The verifier (a post-turn judge + one bounded corrective

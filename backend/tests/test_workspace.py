@@ -23,10 +23,13 @@ from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
+import services.sandbox.host as host_module
+import tools.shell as shell_module
+from core.config import Settings
 from core.container import ServiceContainer
 from runs import Run, RunStream
 from services.projects import ProjectStore, WorktreeManager
-from services.sandbox import SandboxError, SandboxSessionManager
+from services.sandbox import HostConfinement, SandboxError, SandboxSessionManager
 from services.workspace import (
     SANDBOX_MOUNT,
     WORKTREE_SCRATCH,
@@ -307,6 +310,195 @@ class TestShellRecoverableFailures:
 
         # And the turn is still usable afterwards — a retry left nothing broken behind it.
         assert "ok" in str(await run("echo ok"))
+
+
+class TestShellDeclaresAndEnforcesItsReach:
+    """The model says how far a command needs to go; the tool holds it to that.
+
+    The enforcement is here rather than at the permission gate on purpose: a declaration
+    is a statement about the command, so it costs nothing to hold a command to its own
+    statement at *every* level — including one the operator approved by hand, which never
+    passed a gate at all.
+    """
+
+    async def _run(self, tmp_path, monkeypatch, command: str, **args):
+        root = await _repo(tmp_path / "project")
+        caps = _caps(tmp_path, {"proj-1": root})
+        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="code")
+        ctx.tool_call_approved = True
+        toolset = shell_toolset()
+        tools = await toolset.get_tools(ctx)
+        wrapped: list[str] = []
+
+        async def recording(command, profile, *, cwd=None):
+            # Returned unchanged so the command still runs; what is under test is whether
+            # the fence was asked for it at all, and with which profile.
+            wrapped.append(command)
+            self.profile = profile
+            self.cwd = cwd
+            return command
+
+        monkeypatch.setattr(shell_module.fence, "wrap", recording)
+        result = await toolset.call_tool(
+            "run_command", {"command": command, **args}, ctx, tools["run_command"]
+        )
+        return wrapped, str(result)
+
+    def _fenced_host(self, monkeypatch) -> None:
+        async def available(settings):
+            return HostConfinement(True)
+
+        monkeypatch.setattr(shell_module.fence, "fence_available", available)
+
+    async def test_the_declaration_is_offered_to_the_model_with_the_workspace_default(
+        self, tmp_path
+    ):
+        caps = _caps(tmp_path, {"proj-1": tmp_path})
+        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="code")
+        tool = (await shell_toolset().get_tools(ctx))["run_command"]
+        schema = tool.tool_def.parameters_json_schema
+        reach = schema["properties"]["reach"]
+        assert "reach" not in schema.get("required", [])
+        assert reach.get("default") == "workspace"
+        # The description explains the fence and never the permission level: one string
+        # ships at all four, so a promise about an approval outcome is wrong at three.
+        assert "fence" in str(reach.get("description", "")).lower()
+        assert "approv" not in str(reach.get("description", "")).lower()
+
+    async def test_a_contained_command_runs_inside_the_fence(self, tmp_path, monkeypatch):
+        self._fenced_host(monkeypatch)
+        wrapped, output = await self._run(tmp_path, monkeypatch, "echo ok")
+        assert wrapped == ["echo ok"]
+        assert "ok" in output
+
+    async def test_a_host_declaration_is_run_as_the_approver_read_it(
+        self, tmp_path, monkeypatch
+    ):
+        # `host` is the declaration that asks for no fence, and it has already been
+        # approved *as that*: wrapping it in one anyway would break the act somebody said
+        # yes to, which is the opposite of enforcing the declaration.
+        self._fenced_host(monkeypatch)
+        wrapped, output = await self._run(tmp_path, monkeypatch, "echo ok", reach="host")
+        assert wrapped == []
+        assert "ok" in output
+
+    async def test_a_command_the_structure_contradicts_is_not_fenced_either(
+        self, tmp_path, monkeypatch
+    ):
+        # It escalated to a reviewer or to the operator, who ruled on the command as
+        # written; there is no tier here to build a profile from.
+        self._fenced_host(monkeypatch)
+        wrapped, _output = await self._run(tmp_path, monkeypatch, "echo ok > /etc/nope")
+        assert wrapped == []
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo $(printf ok)",  # a nested command, unreadable rather than escaping
+            "sh -c 'echo ok'",  # an argument that could itself be a command line
+            "echo 'two words'",  # ...and the same shape spelled innocently
+        ],
+    )
+    async def test_a_command_the_judge_could_not_read_is_still_fenced(
+        self, tmp_path, monkeypatch, command
+    ):
+        # The lever this closes: the judge declines these for being *unreadable*, not for
+        # reaching anywhere, and a fence keyed off the judgement alone would have let any
+        # command escape it by being written so nothing could read it — the model choosing
+        # whether the OS boundary applies. What it declared is still a statement about the
+        # command, and a reviewer who allowed it was never asked about the fence.
+        self._fenced_host(monkeypatch)
+        wrapped, _output = await self._run(tmp_path, monkeypatch, command)
+        assert wrapped == [command]
+
+    async def test_the_directory_capture_carries_the_root_it_may_not_leave(
+        self, tmp_path, monkeypatch
+    ):
+        # What the outer shell ends in is what the session persists, so the capture is
+        # gated on the worktree root — otherwise a `cd` out of it would leave every later
+        # relative path judged against a directory the command is no longer in.
+        self._fenced_host(monkeypatch)
+        await self._run(tmp_path, monkeypatch, "echo ok")
+        assert self.cwd is not None
+        # The same root the profile's write allow is built from — one directory, two uses,
+        # and a capture gated on a different one would gate on nothing.
+        assert str(self.cwd.root) in self.profile.filesystem.allow_write
+
+    async def test_without_a_primitive_the_command_runs_unfenced(self, tmp_path, monkeypatch):
+        # The suite runs with confinement off, so this is the default path: nothing clears
+        # structurally, and nothing is wrapped in a fence that does not exist.
+        wrapped, output = await self._run(tmp_path, monkeypatch, "echo ok")
+        assert wrapped == []
+        assert "ok" in output
+
+
+@pytest.mark.fence
+class TestAFencedCommandStillBehavesLikeAShell:
+    """The whole glue, once: the tool's fence wrap, the harness's own checks, a real spawn.
+
+    Everything above stops at the wrapper's string. What is not provable there is the part
+    with two authors — the harness appends its own `pwd > …` to whatever it is handed, and
+    that suffix lands *outside* the sandboxed shell, where it would record the directory
+    the tool started in and quietly undo every `cd` the model wrote. So this runs commands
+    for real and asks the two questions a broken shim answers wrongly while every string
+    assertion still passes: does a `cd` survive to the next call, and does a failing
+    command still come back as failed.
+    """
+
+    async def _session(self, tmp_path: Path, monkeypatch):
+        settings = Settings(data_dir=tmp_path / "data", host_command_sandbox_enabled=True)
+        confinement = await host_module._configure(settings)
+        if not confinement.active:
+            pytest.skip(f"no host sandbox primitive here: {confinement.reason}")
+        # The real `fence_available` reads a process-global that the suite deliberately
+        # leaves unresolved; the settings are the tool's own lookup, and both have to say
+        # the same thing or the command would be judged fenced and run bare.
+        monkeypatch.setattr(host_module, "_resolved", confinement)
+        monkeypatch.setattr(shell_module, "get_settings", lambda: settings)
+        root = await _repo(tmp_path / "project")
+        caps = _caps(tmp_path, {"proj-1": root})
+        ctx = _ctx(caps, conversation_id="conv-a", project_id="proj-1", mode="code")
+        ctx.tool_call_approved = True
+        toolset = shell_toolset()
+        tools = await toolset.get_tools(ctx)
+
+        async def run(command: str) -> str:
+            return str(
+                await toolset.call_tool(
+                    "run_command", {"command": command}, ctx, tools["run_command"]
+                )
+            )
+
+        return run
+
+    async def test_a_cd_survives_to_the_next_fenced_command(self, tmp_path, monkeypatch):
+        run = await self._session(tmp_path, monkeypatch)
+        assert "Operation not permitted" not in await run("mkdir -p sub && cd sub")
+        assert "/sub" in await run("pwd")
+
+    async def test_a_denial_reaches_the_model_as_the_fence_and_not_as_a_broken_tool(
+        self, tmp_path, monkeypatch
+    ):
+        # Also the proof that the two tests either side of this one ran fenced at all: the
+        # repository's `config` is the one path denied *inside* an allowed one, so a
+        # failure here cannot come from anything but the profile. And the note is what
+        # turns `Operation not permitted` into something the model can act on — without it
+        # its next move on an apparently broken tool is to try again.
+        run = await self._session(tmp_path, monkeypatch)
+        # Spelled with a bare word rather than a path: `/tmp/x` would leave the worktree,
+        # which the structural stage refuses outright, and the command would then run
+        # *unfenced* as the thing a reviewer or the operator ruled on.
+        output = await run("git config core.fsmonitor sneaky")
+        assert "Operation not permitted" in output
+        assert "[fence]" in output and "declare the reach" in output
+
+    async def test_a_failing_command_still_comes_back_failed(self, tmp_path, monkeypatch):
+        # The wrapper *sets* the inner exit code rather than exiting on it, so that the
+        # harness's own suffix can still run. Getting that backwards makes every fenced
+        # command look successful.
+        run = await self._session(tmp_path, monkeypatch)
+        assert "1" in await run("false")
+        assert "ok" in await run("echo ok")
 
 
 # --- the host-side staging adapter ---------------------------------------------------

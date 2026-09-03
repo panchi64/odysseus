@@ -6,11 +6,13 @@ this module's whole job. :func:`settle_deferred` walks the batch and returns the
 the turn continues on — the calls settled without a human, and the ones that need one —
 so ``turn.py`` is left with control flow rather than policy.
 
-``services/permissions`` owns the rules: what an action reaches, whether a deterministic
-allowlist clears it, and what a model's three scores add up to. None of that knows about
-runs, streams or capability bags, and it should not. This module is the seam between the
-two: it resolves the reviewer from the run's capabilities, hands the rules everything they
-need, and announces what happened on the run's own event stream.
+``services/permissions`` owns the rules: what an action reaches, whether its structure
+clears it, and what a model's three scores add up to. None of that knows about runs,
+streams or capability bags, and it should not. This module is the seam between the two: it
+resolves the reviewer from the run's capabilities, hands the rules everything they need —
+including the two facts about *this host* the structural stage cannot look up for itself,
+whether a fence can be built and whether any domain is allowed — and announces what
+happened on the run's own event stream.
 
 **Why the announcement is not optional.** Auto's whole proposition is that the operator's
 approvals are given for them. That is only acceptable if it is *visible* — so a reviewed
@@ -62,6 +64,7 @@ from services.permissions import (
     review_transcript,
 )
 from services.registry import ModelRegistry
+from services.sandbox import fence
 from tools.deps import RunDeps
 from tools.workspace import resolve_run_workspace
 
@@ -183,9 +186,15 @@ async def review_batch(
     """
     if not calls:
         return {}
+    settings = get_settings()
     reviewer = await resolve_reviewer(caps, run.owner_id)
-    transcript = review_transcript(messages, limit=get_settings().review_transcript_messages)
+    transcript = review_transcript(messages, limit=settings.review_transcript_messages)
     root = await _judged_root(deps, calls)
+    # Whether this host can fence a process at all is a property of the machine, not of the
+    # call: resolved once for the batch, from the same process-global primitive the tool
+    # will build its profile out of, so the gate and the tool cannot disagree about whether
+    # a command was held to what it declared.
+    confinement = await fence.fence_available(settings)
     outcomes = await gather_bounded(
         [
             review_call(
@@ -196,6 +205,8 @@ async def review_batch(
                 root=root,
                 transcript=transcript,
                 reviewer=reviewer,
+                fenced=confinement.active,
+                network_allowed=bool(settings.host_command_allowed_domains),
             )
             for call in calls
         ],
@@ -272,17 +283,34 @@ async def review_call(
     root: Path | None,
     transcript: Sequence[TranscriptEntry],
     reviewer: Reviewer | None,
+    fenced: bool,
+    network_allowed: bool,
 ) -> ReviewOutcome:
     """Rule on one deferred call at the Auto level, announcing both ends on the stream.
 
     ``root`` is the run's workspace directory, resolved once for the batch
     (:func:`_judged_root`), and None where there is none — which is not a gap but the
     strictest reading: with nowhere to measure containment against, every absolute or
-    upward path in a command reads as leaving the workspace and escalates.
+    upward path in a command reads as leaving the workspace and escalates. ``fenced`` and
+    ``network_allowed`` are the two facts about the host the structural stage needs and
+    cannot look up for itself.
     """
     capability = capability_of(tool, args, root=root)
-    run.emit(ReviewStarted(tool_call_id=tool_call_id, name=tool, summary=capability.summary))
-    outcome = await review(capability, reviewer=reviewer, transcript=transcript)
+    run.emit(
+        ReviewStarted(
+            tool_call_id=tool_call_id,
+            name=tool,
+            summary=capability.summary,
+            reach=capability.reach,
+        )
+    )
+    outcome = await review(
+        capability,
+        reviewer=reviewer,
+        transcript=transcript,
+        fenced=fenced,
+        network_allowed=network_allowed,
+    )
     verdict = outcome.verdict
     run.emit(
         ReviewCompleted(
@@ -294,6 +322,8 @@ async def review_call(
             decision=_WIRE_DECISION[outcome.decision],
             stage=outcome.stage,
             reason=outcome.reason,
+            tier=outcome.tier,
+            fenced=fenced,
             risk=verdict.risk if verdict else None,
             authorization=verdict.authorization if verdict else None,
             correctness=verdict.correctness if verdict else None,

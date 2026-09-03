@@ -209,3 +209,77 @@ test("the after-fold blocked detail is the backend's exact string", () => {
   );
   expect(CONTEXT_OVERFLOW_AFTER_FOLD_DETAIL).not.toBe(CONTEXT_OVERFLOW_DETAIL);
 });
+
+describe("a review's two frames", () => {
+  // The pair the operator reads when the chassis answered for them. What is pinned here
+  // is that the *grounds* survive the fold, not just the verdict: the declared reach
+  // arrives on the opening frame and the tier and the fence arrive on the closing one,
+  // and a card that showed only "allowed" would tell them nothing to act on.
+  const started = (
+    reach: "workspace" | "network" | "host" | null,
+  ): RunEvent => ({
+    type: "review.started",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name: "shell_run_command",
+    summary: "Runs the shell command: uv run pytest",
+    reach,
+  });
+
+  const completed = (
+    tier: "read" | "sandbox" | "workspace" | "network" | null,
+    fenced: boolean,
+  ): RunEvent => ({
+    type: "review.completed",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name: "shell_run_command",
+    decision: "allow",
+    stage: "judge",
+    reason: "stays inside the worktree and reaches no network",
+    tier,
+    fenced,
+    risk: null,
+    authorization: null,
+    correctness: null,
+  });
+
+  const review = (messages: ChatMessage[]) =>
+    messages.find((m) => m.id === "a1")?.blocks?.[0];
+
+  test("the declared reach lands with the row that opens", () => {
+    const h = harness(turn());
+    h.fold(started("network"));
+    const block = review(h.messages);
+    expect(block?.kind).toBe("review");
+    expect(block?.kind === "review" && block.review.reach).toBe("network");
+    // Nothing is decided yet — the row exists so a review that costs a model call reads
+    // as work in flight rather than as a stalled turn.
+    expect(block?.kind === "review" && block.review.decision).toBeUndefined();
+  });
+
+  test("the ground and the fence land with the verdict", () => {
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(completed("workspace", true));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.tier).toBe("workspace");
+    expect(block?.kind === "review" && block.review.fenced).toBe(true);
+    expect(block?.kind === "review" && block.review.decision).toBe("allow");
+  });
+
+  test("a null tier is an absence, and an unfenced host is a fact worth keeping", () => {
+    // Null on the wire means the model stage settled it, so there is no structural
+    // ground to name; `fenced: false` is the separate, actionable fact that this
+    // machine could not have held the command to what it declared.
+    const h = harness(turn());
+    h.fold(started(null));
+    h.fold(completed(null, false));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.tier).toBeUndefined();
+    expect(block?.kind === "review" && block.review.reach).toBeUndefined();
+    expect(block?.kind === "review" && block.review.fenced).toBe(false);
+  });
+});

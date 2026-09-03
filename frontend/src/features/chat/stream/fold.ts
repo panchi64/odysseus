@@ -258,6 +258,7 @@ export function createFolder(
               toolCallId: ev.tool_call_id,
               name: ev.name,
               summary: ev.summary,
+              reach: ev.reach ?? undefined,
             },
           });
         });
@@ -269,6 +270,11 @@ export function createFolder(
           b.review.decision = ev.decision;
           b.review.stage = ev.stage;
           b.review.reason = ev.reason;
+          // How the call was bounded, not merely whether it was allowed: the tier says
+          // which structural ground cleared it, and `fenced` says whether this host could
+          // hold it there at all — the answer to "why did an ordinary command still ask?"
+          b.review.tier = ev.tier ?? undefined;
+          b.review.fenced = ev.fenced;
           // Null on the wire means the model stage never ran — the deterministic judge
           // cleared it, or there was nothing to review with. Undefined here so the card
           // renders the axes only when there are axes.

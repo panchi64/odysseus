@@ -354,9 +354,18 @@ export interface Review {
   name: string;
   /** The action's worst case, in the same words the reviewer judged. */
   summary: string;
+  /** How far a shell command said it needs to go. Undefined for acts that declare
+   *  nothing at all, which is not the same as declaring the widest reach. */
+  reach?: "workspace" | "network" | "host";
   decision?: "allow" | "ask" | "block";
-  /** Which stage settled it: the deterministic allowlist, or the model. */
+  /** Which stage settled it: the structural judge, or the model. */
   stage?: "judge" | "reviewer";
+  /** On which ground the judge cleared it, when it did. */
+  tier?: "read" | "sandbox" | "workspace" | "network";
+  /** Whether an OS fence was available to hold the command to what it declared. False is
+   *  why an ordinary contained command reached a reviewer, and it is the operator's to
+   *  fix — so it is shown rather than inferred from the absence of a tier. */
+  fenced?: boolean;
   reason?: string;
   risk?: "low" | "high" | "too_destructive";
   authorization?: "explicitly_no" | "neutral" | "explicitly_yes";

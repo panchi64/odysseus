@@ -220,6 +220,13 @@ def review_prompt(request: ReviewRequest) -> str:
         if values:
             lines.append(f"{label}: {json.dumps(list(values))}")
     lines.append(f"Reaches the network: {'yes' if capability.network else 'no'}")
+    if capability.reach is not None:
+        # The one model-authored value that stands in the clear, and it can: it is an
+        # enumerated word this process re-derived from the call, not free text, so there is
+        # no string here for an author to write a line of prose into. It belongs beside the
+        # paths rather than inside the fence because the reviewer's question about it is
+        # structural — does what this command names match what it said it needed.
+        lines.append(f"Declared reach: {capability.reach}")
 
     # One nonce and one preamble across both fences: the rule is the same rule, and the
     # reviewer that has been told it once does not read it better for being told twice.

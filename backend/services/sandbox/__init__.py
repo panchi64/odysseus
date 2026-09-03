@@ -31,6 +31,7 @@ from .gitenv import git_config_pins
 from .host import (
     HostConfinement,
     HostExecutionError,
+    denied_read_paths,
     host_scratch_dir,
     resolve_confinement,
     run_on_host,
@@ -72,6 +73,7 @@ __all__ = [
     "suffixed",
     "HostConfinement",
     "HostExecutionError",
+    "denied_read_paths",
     "git_config_pins",
     "host_scratch_dir",
     "resolve_confinement",

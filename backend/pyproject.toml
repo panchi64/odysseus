@@ -115,4 +115,8 @@ testpaths = ["tests"]
 addopts = "-n auto -m 'not container'"
 markers = [
     "container: needs a container runtime and pulls an image; excluded from the default run",
+    # Unlike `container` these run by default: they cost milliseconds and reach nothing
+    # off this machine. The mark is there so a host without the primitive can deselect
+    # them explicitly, and so `-m fence` names the set that proves the profile holds.
+    "fence: needs the host's OS sandbox primitive (sandbox-exec / bwrap + ripgrep); skips without it",
 ]

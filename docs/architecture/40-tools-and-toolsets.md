@@ -195,11 +195,14 @@ a deferred call at the Auto level
   │                    (shell_ast.py walks the real bash grammar via tree-sitter-bash)
   │                  a file write: the one resolved target path
   │                  an MCP call: the connector, the tool, and the argument KEYS
-  → judge.py         a strict read-only allowlist over that capability.  Its only power
-  │                    is to APPROVE; everything else escalates rather than being refused.
-  │                    An unrecognised AST shape, an env assignment, or a variable it
-  │                    cannot interpolate never passes — the extraction was incomplete,
-  │                    and an allowlist cannot be applied to part of a command.
+  → judge.py         a STRUCTURAL stage over that capability — no list of programs.
+  │                    Three facts have to agree: what the syntax names, the `reach` the
+  │                    model DECLARED on the call, and whether this host has an OS fence
+  │                    to hold it there (services/sandbox/fence.py).  Contained +
+  │                    declared + fenced clears at that tier.  Its only power is to
+  │                    APPROVE; everything else escalates rather than being refused —
+  │                    a `host` declaration, a path outside the worktree, an AST shape
+  │                    it could not read, or a host with no fence.
   → reviewer.py      one structured call on the `utility` model, scoring three axes:
   │                    risk           low | high | too_destructive
   │                    authorization  explicitly_no | neutral | explicitly_yes
@@ -210,7 +213,8 @@ a deferred call at the Auto level
 
 Four properties are load-bearing and each is there for a reason that is easy to lose:
 
-- **The cheap stage settles the common case.** `git status`, `ls src`, `grep -rn foo .` clear with no model call at all. That is what makes the allowlist affordable to keep narrow — narrowing it costs latency, widening it costs the operator's trust, and only one of those is recoverable.
+- **The cheap stage settles the common case.** `git status`, `ls src`, `grep -rn foo .`, `uv run pytest`, `git commit -m x` clear with no model call at all — on their *shape*, whatever binary they happen to name. That is what makes the stage affordable to keep strict: narrowing it costs latency, widening it costs the operator's trust, and only one of those is recoverable.
+- **The fence bounds writes and egress, and deliberately not reads.** `sandbox_runtime` carries a read denylist and no read allowlist, so a cleared command can still read outside the worktree by a route its words did not name. Containment is therefore checked in the judge before anything else, and the extraction refuses any word it cannot place as a single path — a program named by path and an environment assignment's value included.
 - **The reviewer is told the rubric and never the passing score.** The combination lives in `decide.py` and is written down nowhere the model can read it. A reviewer that knows the threshold optimises for the threshold, which turns three independent observations into one negotiated verdict.
 - **Its transcript carries user and assistant messages only — never tool results.** Everything the model has read from a file, a page or an MCP server is content someone else wrote, and a reviewer that saw it could be argued into approving the very call that untrusted text asked for. Same posture `XC-SEC-5` takes everywhere else, applied to the one call whose output is a permission. What it *does* see is fenced as untrusted on top of that.
 - **Every failure parks.** No utility model bound, a reviewer timeout, an unparseable answer — all of them return the call to the operator. This is the one place in the codebase where the conservative branch has to be the default (`XC-DEG-*`): a review that cannot run is not a review that passes.

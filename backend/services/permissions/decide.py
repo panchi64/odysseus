@@ -38,7 +38,7 @@ from enum import StrEnum
 from typing import Literal
 
 from services.permissions.capability import Capability
-from services.permissions.judge import judge
+from services.permissions.judge import Tier, judge
 from services.permissions.levels import ApprovalPolicy, beyond_scope, permission_spec
 from services.permissions.reviewer import (
     Reviewer,
@@ -108,7 +108,7 @@ def blocked_message(level: str, tool: str) -> str:
 
 
 # --- Auto's review ------------------------------------------------------------------
-#: Which stage settled a review — the deterministic allowlist, or the model.
+#: Which stage settled a review — the structural judge, or the model.
 type ReviewStage = Literal["judge", "reviewer"]
 
 
@@ -128,6 +128,11 @@ class ReviewOutcome:
     #: The model stage's three axes, when it ran. None when the deterministic stage
     #: settled it, or when the model stage could not be reached at all.
     verdict: ReviewVerdict | None = None
+    #: Which deterministic ground cleared it, when one did — None on everything the model
+    #: stage settled. It rides onto the review row beside the reason because "cleared, and
+    #: it ran fenced to the worktree" and "cleared, because the tool only observes" are
+    #: different assurances, and an operator auditing the level has to tell them apart.
+    tier: Tier | None = None
 
 
 async def review(
@@ -135,8 +140,16 @@ async def review(
     *,
     reviewer: Reviewer | None,
     transcript: Sequence[TranscriptEntry] = (),
+    fenced: bool = False,
+    network_allowed: bool = False,
 ) -> ReviewOutcome:
     """Rule on one call at the Auto level: the deterministic stage, then the model.
+
+    ``fenced`` and ``network_allowed`` are the two facts about the *host* the deterministic
+    stage needs and cannot look up for itself (``judge.py`` is pure). Both default to the
+    strict reading — no fence, no permitted domain — because a caller that could not say
+    is a caller with nothing to hold a command to, and the cost of being wrong that way is
+    a model call rather than an act nobody cleared.
 
     The combination, stated once here and written down nowhere the reviewer can read it
     (``reviewer.py``):
@@ -154,9 +167,11 @@ async def review(
     veto on "this looks like the wrong path" would be second-guessing the model's work
     rather than ruling on its permission, and those are different jobs.
     """
-    verdict_of_judge = judge(capability)
+    verdict_of_judge = judge(capability, fenced=fenced, network_allowed=network_allowed)
     if verdict_of_judge.approved:
-        return ReviewOutcome(Decision.ALLOW, "judge", verdict_of_judge.reason)
+        return ReviewOutcome(
+            Decision.ALLOW, "judge", verdict_of_judge.reason, tier=verdict_of_judge.tier
+        )
     if reviewer is None:
         # No utility model bound, or none reachable from here. The conservative branch is
         # the default at exactly this point, because the alternative is an action nobody

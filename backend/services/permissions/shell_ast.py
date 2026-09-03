@@ -28,6 +28,35 @@ records. `cat .\./etc/passwd`, `cat \/etc/passwd`, `cat {..,}/etc/passwd` and
 a path with no `..` and no leading slash for a containment check to catch. So a bare word
 carrying any of those characters is not read as a literal at all: it is recorded as
 unbounded, exactly like a `$VAR`, and for the same reason — the value arrives later.
+
+**And a word is only an operand if the program reads it as one.** `sh -c 'cat /etc/passwd'`
+is a single word to the shell and a whole command line to `sh`; `python3 -c "print(open('…')
+.read())"` is a program; `awk 'BEGIN{while((getline l < "/etc/passwd")>0) print l}'` is a
+script. Measuring any of them as one relative path places `<root>/cat /etc/passwd` inside
+the worktree and calls the command contained, which is how the containment check was walked
+straight past. Telling those apart from `git commit -m 'fix the parser'` needs to know what
+the *program* does with the string — the question this file exists to stop asking, because
+answering it is the program table that was removed. So the reading is structural and
+conservative: a literal argument carrying whitespace or the punctuation a parser reads as
+syntax (:data:`_COMPOSITE`) is not a word this walk can place, and is recorded as unbounded.
+The price is that a quoted multi-word argument escalates to the model reviewer instead of
+clearing for free; the alternative price was `sh -c` running unreviewed.
+
+**Every word a command line carries is measured, not only the operands.** The program
+itself (`~/evil.sh`, `/etc/../bin/ls`) and an environment assignment's value
+(`GIT_DIR=../../other/.git`, `LD_PRELOAD=/abs/x.so`) are paths as plainly as anything
+after `cat`, and a walk that recorded only operands and redirect destinations handed all
+of them a clean containment check — while refusing the identical path one position to the
+right. A *bare* program name is the one exception and not an oversight: `ls` resolves
+through `PATH`, which this command line did not write.
+
+**What that does *not* cover, stated so nobody reads more into it.** The walk bounds what a
+command's own words name. A command that takes its paths from *bytes* at run time —
+`xargs cat < list`, a script the model just wrote — names nothing this file can read, and no
+grammar could. The fence is the answer for that class, and it is a partial one: it bounds
+writes and egress, not reads (``services/sandbox/fence.py``). So a fenced ``workspace``
+command can still read outside the worktree by a route its words did not name — it just
+cannot send what it read anywhere, or write anywhere but the worktree.
 """
 
 from __future__ import annotations
@@ -68,6 +97,14 @@ _EXPANDED_UNQUOTED = frozenset("\\{}[]*?`")
 # quoted string interprets nothing at all and is therefore always the literal it reads as.
 _EXPANDED_IN_QUOTES = frozenset("\\`")
 
+# What separates an *operand* from a string some program will parse for itself: whitespace,
+# and the punctuation a command line or an expression language is written in. A word
+# carrying one of these is not placed against the workspace — see the module docstring for
+# the `sh -c` class of command this exists for. Deliberately *not* the glob characters:
+# `find . -name '*.py'` hands `*.py` to `find` as a pattern to match names with, and it can
+# no more leave the directory than a bare word can.
+_COMPOSITE = frozenset(" \t\n\r;|&<>()$`")
+
 #: What :func:`command_prefix` keeps: the program and the leading words that say which of
 #: its modes was invoked (`uv run pytest`, `git commit`). Three is where a longer prefix
 #: stops naming the act and starts naming its target, which is the part a grant must not
@@ -84,6 +121,12 @@ _DYNAMIC = {
     "process_substitution": "a nested command substituted as a file",
     "arithmetic_expansion": "an arithmetic expansion",
 }
+
+#: What goes on the record for a word the program it is handed to may parse for itself. It
+#: names the doubt rather than the program, because the program is exactly what this file
+#: refuses to reason about: `sh -c 'cat /etc/passwd'` and `git commit -m 'fix the parser'`
+#: are the same shape, and only one of them is a command line.
+_COMPOSITE_UNREAD = "an argument that could itself be a command line rather than a word"
 
 
 @dataclass(frozen=True)
@@ -255,6 +298,11 @@ def _expands(text: str, characters: frozenset[str]) -> bool:
     return any(character in text for character in characters)
 
 
+def _composite(value: str) -> bool:
+    """Whether ``value`` is more than the one word a containment check can measure."""
+    return _expands(value, _COMPOSITE)
+
+
 def _unreadable(node: Node) -> str:
     """Why this node's text is not a value, in the words the refusal is written in.
 
@@ -316,12 +364,7 @@ class _Walk:
         arguments: list[str] = []
         for child in node.children:
             if child.type == "variable_assignment":
-                name = child.child_by_field_name("name")
-                self.env_writes.append(
-                    name.text.decode(errors="replace")
-                    if name and name.text
-                    else "an environment variable"
-                )
+                self._assignment(child)
             elif child.type == "command_name":
                 # The command name is the one word that decides everything else, so a name
                 # this module cannot read is not a command with an unknown name — it is
@@ -332,6 +375,15 @@ class _Walk:
                     # string, and an empty program is not a program with a short name.
                     program = None
                     self.unbounded.append("a program name assembled at run time")
+                else:
+                    # **The program is a path argument too, and the first one.** A walk
+                    # that measured only operands handed `~/evil.sh`, `../outside/evil.sh`
+                    # and `/etc/../bin/ls` a clean containment check while refusing the
+                    # very same paths written after `cat` — and running a file is reading
+                    # it, which is the half no fence bounds. A *bare* name is deliberately
+                    # not measured: it resolves through `PATH`, which is not a path this
+                    # command named (:func:`_names_a_path` is what tells the two apart).
+                    self._reach(program)
             elif child.type == "file_redirect":
                 self._redirect(child)
             else:
@@ -340,6 +392,37 @@ class _Walk:
                     arguments.append(word)
         if program is not None:
             self.commands.append(ShellCommand(program, tuple(arguments)))
+
+    def _assignment(self, node: Node) -> None:
+        """One `NAME=value` prefix: the name for the record, the value for containment.
+
+        Recording only the name is what let `GIT_DIR=../../other/.git git log` and
+        `LD_PRELOAD=/abs/x.so ls` read as fully contained commands — the escaping path
+        sat in the half nobody measured, so it was missing from the facts a reviewer
+        would have been shown too, not merely from the check. The value is measured
+        exactly like an operand, because that is what it is: a word this command line
+        hands to whatever it runs.
+        """
+        name = node.child_by_field_name("name")
+        self.env_writes.append(
+            name.text.decode(errors="replace") if name and name.text else "an environment variable"
+        )
+        value = node.child_by_field_name("value")
+        if value is None:
+            # `NAME=` with nothing after it — the grammar gives no value node, and there
+            # is no path in an empty string.
+            return
+        if value.type in _DYNAMIC:
+            self.unbounded.append(_DYNAMIC[value.type])
+            return
+        literal = _literal(value)
+        if literal is None:
+            self.unbounded.append(_unreadable(value))
+            return
+        if _composite(literal):
+            self.unbounded.append(_COMPOSITE_UNREAD)
+            return
+        self._reach(literal)
 
     def _redirect(self, node: Node) -> None:
         # Every redirect is recorded as a write, the input ones included. `< file` only
@@ -370,6 +453,12 @@ class _Walk:
         and `-o/etc/passwd` name that file as plainly as writing it on its own would, and
         a walk that dismissed every word starting with `-` could not see either. What the
         flag *means* is not this file's question; that the word it carries is a path is.
+
+        A word that is not a single operand is not measured as one. Whether
+        `'cat /etc/passwd'` is a command line or a commit message is a fact about the
+        program receiving it, and reading it as a relative path places it comfortably
+        inside the worktree — which is how every `sh -c` cleared. It is recorded as
+        unbounded instead, and the reviewer rules on it.
         """
         if node.type in _DYNAMIC:
             self.unbounded.append(_DYNAMIC[node.type])
@@ -377,6 +466,9 @@ class _Walk:
         value = _literal(node)
         if value is None:
             self.unbounded.append(_unreadable(node))
+            return None
+        if _composite(value):
+            self.unbounded.append(_COMPOSITE_UNREAD)
             return None
         if is_flag(value):
             attached = attached_value(value)
@@ -387,7 +479,24 @@ class _Walk:
         return value
 
     def _reach(self, word: str) -> None:
-        """What one word — an operand, or the value carried on a flag — would touch."""
+        """What one word — a program, an operand, or a flag's value — would touch.
+
+        A word shaped `NAME=value` is measured twice: whole, and again from after its
+        first `=`. `env LD_PRELOAD=/tmp/x.so ls` puts the assignment in an *argument*
+        rather than in the shell's own assignment prefix, and `LD_PRELOAD=/tmp/x.so` read
+        as one path is a relative one that lands comfortably inside the worktree — so the
+        escaping half is visible only to a reading that looks past the `=`. A URL is left
+        whole: its query string is full of `=` and none of it is a path.
+        """
+        self._measure(word)
+        if "://" in word:
+            return
+        name, separator, value = word.partition("=")
+        if separator and name and value:
+            self._measure(value)
+
+    def _measure(self, word: str) -> None:
+        """One string, placed: an address off this machine, a path, or neither."""
         if "://" in word:
             self.network = True
         elif _names_a_path(word):

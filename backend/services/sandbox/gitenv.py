@@ -30,14 +30,14 @@ keys cannot even be named from here — the driver's name is whatever the reposi
 `.gitattributes` says. Blanking the attributes wholesale (``GIT_ATTR_SOURCE`` at the
 empty tree) does stop all three, and stops git-lfs and end-of-line normalisation with
 them: it would trade a repository that can run a program for a repository the agent
-silently commits raw blobs into. So those keys are the fence's to answer — it bounds what
-a spawned program may *do*, instead of guessing what git might be asked to run.
+silently commits raw blobs into.
 
-**Until that fence exists, the second half of the answer is not to clear those commands at
-all.** `git diff`, `git log`, `git show`, `git blame` and `git grep` are no longer read-only
-subcommands (``services/permissions/read_only.py``), so at the Auto level they reach the
-model reviewer rather than being approved deterministically. That is the honest reading of
-what these pins close: the two keys below, and nothing about the drivers.
+**So those keys are the fence's to answer, and it does.** ``fence.py`` bounds what a
+spawned program may *do* — which is the only formulation that covers a program the
+repository named, a program the build named, and a program nobody named — instead of
+guessing what git might be asked to run. What the pins below still buy is the case the
+fence cannot see: they keep a poisoned `core.fsmonitor` from being *launched* at all, and
+they keep a pager from blocking on a pipe. Two keys, and nothing about the drivers.
 """
 
 from __future__ import annotations
