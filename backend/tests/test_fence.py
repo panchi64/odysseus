@@ -150,6 +150,31 @@ class TestTheProfileIsTwoListsOfPaths:
         profile = workspace_profile(tmp_path, None, None, deny_read=("~/.ssh", "/data"))
         assert profile.filesystem.deny_read == ["~/.ssh", "/data"]
 
+    def test_the_seed_names_the_operators_other_credentials_too(self):
+        # The list a fenced command is actually held to, and the fence has no read
+        # *allowlist* — so this is the whole of what stops a contained command reading a
+        # standing credential and a networked one sending it. Pinned because it is a
+        # security seed, and a seed nothing reads back is one that quietly shrinks.
+        from core.config import Settings
+        from services.sandbox import denied_read_paths
+
+        denied = denied_read_paths(Settings())
+        for path in (
+            "~/.ssh",
+            "~/.aws",
+            "~/.gnupg",
+            "~/.config/gh",
+            "~/.netrc",
+            "~/.docker",
+            "~/.kube",
+            "~/.config/gcloud",
+            "~/.azure",
+            "~/Library/Keychains",
+            "~/.zsh_history",
+            "~/.bash_history",
+        ):
+            assert path in denied, path
+
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 class TestGitDirsReadsARealCheckout:
@@ -451,6 +476,53 @@ class TestTheFenceActuallyHolds:
         code, _output = await self._fenced(f"echo pwned > {planted}", worktree, dirs)
         assert code != 0
         assert not planted.exists()
+
+
+class TestWhichFenceTheToolBuilds:
+    """`tools/shell.py`'s own choice: the *declaration* picks the profile, and only two
+    answers lift the fence — both of them somebody's explicit yes."""
+
+    async def _profile(self, tmp_path, monkeypatch, *, reach, domains=()):
+        from services.sandbox import HostConfinement
+        from services.workspace import HostFiles, RunWorkspace
+        from tools import shell as shell_tool
+
+        settings = Settings(host_command_allowed_domains=domains)
+        monkeypatch.setattr(shell_tool, "get_settings", lambda: settings)
+
+        async def available(_settings):
+            return HostConfinement(True)
+
+        monkeypatch.setattr(shell_tool.fence, "fence_available", available)
+        workspace = RunWorkspace(
+            root=tmp_path, kind="worktree", files=HostFiles(tmp_path), branch=BRANCH
+        )
+        toolset = shell_tool._ShellToolset()  # noqa: SLF001 — the unit under test
+        return await toolset._profile("run_command", "uv sync", reach, workspace)  # noqa: SLF001
+
+    async def test_an_empty_allowed_list_still_means_no_network(self, tmp_path, monkeypatch):
+        # The setting reads as a tightening and had to behave as one. Read as "no list to
+        # hold it to", an emptied list lifted the fence altogether for every approved
+        # networked command — no write confinement, no read denials, and the full network
+        # — so the operator who wanted less got the loosest execution path in the product.
+        profile = await self._profile(tmp_path, monkeypatch, reach="network")
+        assert profile is not None
+        assert profile.network.allowed_domains == []
+        assert _allow(profile)  # ...and it is still confined to the worktree
+
+    async def test_a_permitted_domain_is_what_the_egress_is_bound_to(
+        self, tmp_path, monkeypatch
+    ):
+        profile = await self._profile(
+            tmp_path, monkeypatch, reach="network", domains=("pypi.org",)
+        )
+        assert profile is not None
+        assert profile.network.allowed_domains == ["pypi.org"]
+
+    async def test_a_host_declaration_is_the_one_that_asks_for_the_machine(
+        self, tmp_path, monkeypatch
+    ):
+        assert await self._profile(tmp_path, monkeypatch, reach="host") is None
 
 
 def _linux() -> bool:

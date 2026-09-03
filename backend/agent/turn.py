@@ -2,10 +2,10 @@
 
 The loop around ``agent.iter()`` — the segment structure of a turn (the initial model
 pass, then a continuation for every batch of deferred calls that settles without the
-operator), the one usage budget / no-progress guard / usage accumulator they share, the
-live gauge frame as each response lands, mid-run steering drained at both boundaries, and
-the four ways a turn stops that are *state* rather than errors: a usage bound, the loop
-breaker, a context overflow, and a call that needs the operator.
+operator), the one usage budget / no-progress guard / usage accumulator / review budget
+they share, the live gauge frame as each response lands, mid-run steering drained at both
+boundaries, and the four ways a turn stops that are *state* rather than errors: a usage
+bound, the loop breaker, a context overflow, and a call that needs the operator.
 
 It is its own file because it is the one thing both orchestrators and the verifier's
 corrective re-attempt run: ``engine.py`` sequences a run around it and ``verify.py`` calls
@@ -46,6 +46,7 @@ from runs import LimitNotice, Run
 from services.conversations import ConversationBinding, ConversationStore
 from services.modes import mode_spec
 from services.notifications import NotificationService
+from services.permissions import ReviewBudget
 from tools import RunDeps
 
 from .compaction_context import CompactionContext
@@ -113,7 +114,9 @@ async def drive_turn(
     *this turn's* own messages begin — held as one shared mutable object because an in-turn
     fold moves it. Every reader of that boundary (the completed persist, the flush hooks, a
     park) reads it through this object, so a fold cannot leave one of them slicing against
-    the pre-fold history.
+    the pre-fold history. The Auto review reads it too, for a different question with the
+    same answer: which of these messages are the request this turn is being asked to
+    authorize against (``gating.py``).
 
     ``compaction`` is what this turn may fold with, or ``None`` for a turn that cannot fold
     (a stateless run, or compaction switched off). ``correcting`` marks a verifier's
@@ -165,6 +168,12 @@ async def drive_turn(
     # (or grow the call stack) by deferring on each hop; it trips the loop/usage stop.
     loop_breaker = LoopBreaker(repeat_threshold=settings.loop_repeat_threshold)
     usage = RunUsage()
+    # And ONE review budget, for the same reason: at the Auto level every hop's deferred
+    # calls are reviewed, and a model that keeps reaching past the level's ceiling would
+    # otherwise spend a utility-model round trip per call for as long as the turn runs.
+    # Past the cap the calls park — the operator is asked the question the review was
+    # answering for them, which is what every other degrade here does.
+    review_budget = ReviewBudget(limit=settings.review_max_per_turn)
 
     def report_progress(history: list[ModelMessage]) -> None:
         # A live context/usage frame as each model response lands, so the operator's context
@@ -362,6 +371,10 @@ async def drive_turn(
             deps=deps,
             messages=messages,
             permission=binding.permission,
+            # Where this turn's own messages begin, so the review is given the request
+            # that opened it however many tool round trips have run since.
+            turn_start=turn_start,
+            budget=review_budget,
         )
         if manual or output.calls:
             await park_for_input(

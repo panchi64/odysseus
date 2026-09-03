@@ -228,7 +228,7 @@ describe("a review's two frames", () => {
   });
 
   const completed = (
-    tier: "read" | "sandbox" | "workspace" | "network" | null,
+    tier: "read" | "sandbox" | "workspace" | null,
     fenced: boolean,
   ): RunEvent => ({
     type: "review.completed",
@@ -268,6 +268,81 @@ describe("a review's two frames", () => {
     expect(block?.kind === "review" && block.review.tier).toBe("workspace");
     expect(block?.kind === "review" && block.review.fenced).toBe(true);
     expect(block?.kind === "review" && block.review.decision).toBe("allow");
+  });
+
+  const unrecoverable = (name: string): RunEvent => ({
+    type: "review.completed",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name,
+    decision: "ask",
+    stage: "reviewer",
+    reason: "too_destructive risk, authorization neutral",
+    tier: null,
+    fenced: true,
+    risk: "too_destructive",
+    authorization: "neutral",
+    correctness: null,
+  });
+
+  const asked = (name: string, command?: string): RunEvent => ({
+    type: "approval.required",
+    seq: ++seq,
+    ts: "",
+    tool_call_id: "t1",
+    name,
+    args: command ? { command } : {},
+    summary: `Runs ${name}`,
+    explanation: null,
+  });
+
+  const blockOf = (messages: ChatMessage[], kind: string) =>
+    messages.find((m) => m.id === "a1")?.blocks?.find((b) => b.kind === kind);
+
+  test("what the review found rides onto the card that asks", () => {
+    // The reviewer's own refusal became a park, so `too_destructive` is a finding the
+    // operator now has to read *while deciding* — not on a collapsed row above the prompt.
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(unrecoverable("mail_send"));
+    h.fold(asked("mail_send"));
+    const block = blockOf(h.messages, "approval");
+    expect(block?.kind === "approval" && block.approval.risk).toBe(
+      "too_destructive",
+    );
+    expect(block?.kind === "approval" && block.approval.reviewReason).toBe(
+      "too_destructive risk, authorization neutral",
+    );
+  });
+
+  test("it rides onto the terminal too, which is where the shell asks", () => {
+    // `git commit --amend` and `rm -rf build` are the acts that earn the word, and every
+    // one of them renders as a terminal rather than as an approval card — so a finding
+    // carried only onto the latter would never be seen on the calls it was written for.
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    h.fold(unrecoverable("shell_run_command"));
+    h.fold(asked("shell_run_command", "git commit --amend"));
+    const block = blockOf(h.messages, "host_command");
+    expect(block?.kind === "host_command" && block.command.risk).toBe(
+      "too_destructive",
+    );
+    expect(block?.kind === "host_command" && block.command.reviewReason).toBe(
+      "too_destructive risk, authorization neutral",
+    );
+  });
+
+  test("an approval with no review behind it carries no verdict", () => {
+    // Every level but Auto: nothing ruled on it first, so there is nothing to show and
+    // the card must not imply a review happened.
+    const h = harness(turn());
+    h.fold(asked("mail_send"));
+    const block = blockOf(h.messages, "approval");
+    expect(block?.kind === "approval" && block.approval.risk).toBeUndefined();
+    expect(
+      block?.kind === "approval" && block.approval.reviewReason,
+    ).toBeUndefined();
   });
 
   test("a null tier is an absence, and an unfenced host is a fact worth keeping", () => {

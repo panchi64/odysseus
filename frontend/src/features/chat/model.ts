@@ -125,6 +125,15 @@ export interface Approval {
   summary: string;
   /** Longer plain-language explanation, when the tool provides one. */
   explanation?: string;
+  /** What a review made of this call before it was handed over, copied off the matching
+   *  `review.completed`. Present only at the Auto level, where the chassis tried to answer
+   *  first — and `too_destructive` is why this is carried at all: the reviewer's own
+   *  refusal became a park, so the one thing it can say about an irreversible act is said
+   *  here, on the card where the operator is deciding. */
+  risk?: "low" | "high" | "too_destructive";
+  /** The review's account of its verdict, in its own words — the axes it scored and, when
+   *  a standing grant supplied the authorization, that it did. */
+  reviewReason?: string;
   /** True once submitting a decision for this approval 409'd — the run had
    *  already resumed elsewhere (a second tab, a retried request) by the time
    *  this decision landed. Non-interactive: a refetch reconciles the transcript
@@ -182,6 +191,12 @@ export interface HostCommand {
   command: string;
   /** Plain-language description of the effect, shown for the approval decision. */
   explanation?: string;
+  /** What a review made of this command before it was handed over, copied off the
+   *  matching `review.completed` — the same two fields an `Approval` carries, for the
+   *  same reason. A terminal is where the shell commands land, and the shell is where
+   *  `too_destructive` actually shows up (`git commit --amend`, `rm -rf build`). */
+  risk?: "low" | "high" | "too_destructive";
+  reviewReason?: string;
   phase: HostCommandPhase;
   /** Captured output streams, present once the command has run. */
   exitCode?: number;
@@ -361,7 +376,7 @@ export interface Review {
   /** Which stage settled it: the structural judge, or the model. */
   stage?: "judge" | "reviewer";
   /** On which ground the judge cleared it, when it did. */
-  tier?: "read" | "sandbox" | "workspace" | "network";
+  tier?: "read" | "sandbox" | "workspace";
   /** Whether an OS fence was available to hold the command to what it declared. False is
    *  why an ordinary contained command reached a reviewer, and it is the operator's to
    *  fix — so it is shown rather than inferred from the absence of a tier. */

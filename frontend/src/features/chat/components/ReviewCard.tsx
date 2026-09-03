@@ -14,6 +14,8 @@ import { ProcessRow, Sep, createAdoptedOpen } from "./ProcessRow";
 const VERDICT: Record<NonNullable<Review["decision"]>, string> = {
   allow: "allowed without asking you",
   ask: "handed to you",
+  // No review produces this any more — an act it judged unrecoverable is handed over
+  // instead — but a thread reviewed before that changed still replays the word.
   block: "refused",
 };
 
@@ -25,14 +27,15 @@ const STAGE: Record<NonNullable<Review["stage"]>, string> = {
   reviewer: "Settled by the reviewer.",
 };
 
-/** The ground the structural stage cleared it on. Four different arguments, not four
+/** The ground the structural stage cleared it on. Three different arguments, not three
  *  degrees of trust — the one granted to a classified read grants nothing to a command,
- *  which is precisely what an operator auditing the level needs to be able to see. */
+ *  which is precisely what an operator auditing the level needs to be able to see. There
+ *  is no networked ground: a command that reaches out is always the reviewer's, whatever
+ *  domains are allowed. */
 const TIER: Record<NonNullable<Review["tier"]>, string> = {
   read: "The tool only observes, whatever it is asked for.",
   sandbox: "It runs offline inside this conversation's own container.",
   workspace: "Ran fenced to the worktree, with no network.",
-  network: "Ran fenced to the worktree, reaching only the allowed domains.",
 };
 
 /** How far the command said it needs to go. Shown for every reviewed command, cleared or

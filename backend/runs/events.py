@@ -708,7 +708,11 @@ class ReviewCompleted(_Body):
     """How the review ruled, on the three axes it ruled on.
 
     ``decision`` is the outcome the run then took — ``allow`` ran the call without a
-    prompt, ``ask`` parked it for the operator anyway, ``block`` refused it outright. It
+    prompt, ``ask`` parked it for the operator anyway. ``block``, which refused the call
+    outright, is no longer produced: an act the reviewer judged unrecoverable parks like
+    anything else it will not clear, since that is the one act the operator most needs put
+    in front of them. The word stays in the vocabulary because it is already written into
+    the stored events of threads reviewed before that changed. It
     carries deliberately more than the outcome: ``stage`` says whether the structural judge
     or a model settled it, ``tier`` says on which ground when the judge did, ``fenced``
     whether an OS fence was there to hold the command to what it declared, and the three
@@ -726,7 +730,7 @@ class ReviewCompleted(_Body):
     decision: Literal["allow", "ask", "block"]
     stage: Literal["judge", "reviewer"]
     reason: str
-    tier: Literal["read", "sandbox", "workspace", "network"] | None = None
+    tier: Literal["read", "sandbox", "workspace"] | None = None
     #: Whether this host could confine the command at all. False is why an ordinary
     #: contained command reached a model reviewer, and it is the operator's to fix.
     fenced: bool = False

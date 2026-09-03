@@ -274,9 +274,11 @@ async def approve_run(run_id: str, body: ApprovalDecisions, request: Request) ->
             # Settled on grounds a grant has nothing to do with, and so nothing to
             # re-validate against: a refusal the permission level made when the turn
             # parked (the operator was never asked, and a grant recorded since covers a
-            # tool the level does not permit at all), or a call Auto's review cleared —
-            # which leaves no grant behind, and would be denied by a grant check that
-            # took its silence for a revocation.
+            # tool the level does not permit at all), or a call Auto's review cleared on
+            # its own grounds — which leaves no grant behind, and would be denied by a
+            # grant check that took its silence for a revocation. A review that cleared a
+            # call *because* of a grant is marked as the grant's (``agent/gating.py``) and
+            # so is not in this branch: what cleared it is revocable, and is re-checked.
             decisions[call_id] = outcome
         elif covered_by_grant(tool_by_id.get(call_id), active):
             decisions[call_id] = ToolApproved()

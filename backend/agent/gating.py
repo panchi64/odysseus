@@ -10,9 +10,8 @@ so ``turn.py`` is left with control flow rather than policy.
 clears it, and what a model's three scores add up to. None of that knows about runs,
 streams or capability bags, and it should not. This module is the seam between the two: it
 resolves the reviewer from the run's capabilities, hands the rules everything they need —
-including the two facts about *this host* the structural stage cannot look up for itself,
-whether a fence can be built and whether any domain is allowed — and announces what
-happened on the run's own event stream.
+including the fact about *this host* the structural stage cannot look up for itself,
+whether a fence can be built — and announces what happened on the run's own event stream.
 
 **Why the announcement is not optional.** Auto's whole proposition is that the operator's
 approvals are given for them. That is only acceptable if it is *visible* — so a reviewed
@@ -51,6 +50,7 @@ from runs.events import ReviewCompleted, ReviewStarted
 from services.approval_grants import ApprovalGrantStore, covered_by_grant
 from services.permissions import (
     Decision,
+    ReviewBudget,
     Reviewer,
     ReviewOutcome,
     TranscriptEntry,
@@ -60,13 +60,14 @@ from services.permissions import (
     make_utility_reviewer,
     measured_against_root,
     review,
-    review_refusal,
     review_transcript,
 )
 from services.registry import ModelRegistry
 from services.sandbox import fence
 from tools.deps import RunDeps
 from tools.workspace import resolve_run_workspace
+
+from .history import TurnStart
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +84,15 @@ class GrantApproved(ToolApproved):
 
     The approve route re-validates what a parked turn settled without the operator, because
     a grant can be revoked — or lapse by TTL — while the run waits. Only a *grant's*
-    approval has anything to re-validate, though: Auto's review leaves no grant behind, so
-    a review-cleared call re-checked against the grants comes back uncovered and is denied
-    a call the operator was never offered and never refused.
+    approval has anything to re-validate, though: a review that cleared a call on its own
+    grounds leaves no grant behind, so re-checking it against the grants comes back
+    uncovered and denies a call the operator was never offered and never refused.
+
+    **A review can still produce one.** At Auto a grant is an input rather than the answer,
+    but where it is what supplied the authorization the allow rests on the same revocable
+    thing an Edit-level grant approval does (``ReviewOutcome.by_grant``) — so it is marked
+    the same way and re-checked the same way when the operator answers the rest of the
+    batch.
 
     The mark rides on the decision rather than beside it because the decision is the only
     part of the settled pile that crosses into the parked payload, and a provenance kept
@@ -102,6 +109,8 @@ async def settle_deferred(
     deps: RunDeps,
     messages: list[ModelMessage],
     permission: str,
+    turn_start: TurnStart | None = None,
+    budget: ReviewBudget | None = None,
 ) -> tuple[dict[str, ToolApproved | ToolDenied], list[ToolCallPart]]:
     """Rule on every call this hop deferred, returning ``(settled, manual)``.
 
@@ -119,9 +128,21 @@ async def settle_deferred(
     denial the level made carries forward verbatim, and no grant undoes it. Grants are
     conversation-scoped, so a stateless turn always asks.
 
-    Two refusals, not one, because a model that read them as the same fact would take the
-    wrong next step: the level does not permit this act at all (the operator already
-    answered by choosing the level), or the Auto review found it unrecoverable.
+    **At Auto the grant is not the answer either — it is an input to the review.** The
+    level's question there is what a particular call would do, and a grant on
+    ``shell_run_command`` is not an answer to that for every command in the thread. So a
+    granted call is reviewed like any other and the grant rides along as the operator's
+    authorization (:func:`services.permissions.review`); what it buys is the yes a
+    high-risk act needs, not a way past the judge — and not a way past a review that could
+    not run at all, which parks whatever the grants say. An allow the grant's authorization
+    is what produced is recorded as the grant's (:class:`GrantApproved`), so the resume
+    path re-checks it if the operator revokes while the rest of the batch waits.
+
+    ``turn_start`` and ``budget`` belong to the *turn* rather than to this batch: the first
+    is where the turn's own messages begin, so the reviewer can be given the request that
+    opened it however many tools have run since, and the second is the ceiling on how many
+    model reviews one turn may spend. Both are threaded from ``drive_turn``, which owns
+    everything a turn shares across its segments.
     """
     granted: set[str] = set()
     grants = caps.get_optional(ApprovalGrantStore)
@@ -136,6 +157,9 @@ async def settle_deferred(
         caps=caps,
         deps=deps,
         messages=messages,
+        granted=granted,
+        turn_start=turn_start,
+        budget=budget,
     )
     settled: dict[str, ToolApproved | ToolDenied] = {}
     manual: list[ToolCallPart] = []
@@ -144,16 +168,17 @@ async def settle_deferred(
         if outcome is not None:
             decision = outcome.decision
         if decision is Decision.ALLOW:
-            # Reviewed, or covered by a grant — and which of the two is recorded, because
-            # only the second is still worth re-checking when the operator answers.
-            settled[call.tool_call_id] = (
-                ToolApproved() if outcome is not None else GrantApproved()
-            )
+            # Reviewed, or resting on a grant — and which of the two is recorded, because
+            # only the second is still worth re-checking when the operator answers. A
+            # review that leant on the grant for its authorization counts as the second:
+            # what cleared the call is revocable, so the resume path has to see that.
+            by_grant = outcome is None or outcome.by_grant
+            settled[call.tool_call_id] = GrantApproved() if by_grant else ToolApproved()
         elif decision is Decision.BLOCK:
+            # Only a level refuses outright; the review's own refusals became parks, since
+            # an act nobody can undo is the one the operator most needs to be shown.
             settled[call.tool_call_id] = ToolDenied(
-                message=review_refusal(call.tool_name, outcome.reason)
-                if outcome is not None
-                else blocked_message(permission, call.tool_name)
+                message=blocked_message(permission, call.tool_name)
             )
         else:
             manual.append(call)
@@ -162,11 +187,18 @@ async def settle_deferred(
 
 def _by_level(permission: str, tool: str, granted: set[str]) -> Decision:
     """What the thread's level says about one call, with the operator's standing grants
-    allowed to answer — but only where the level was asking a question."""
+    allowed to answer — but only where the level was asking a question they can answer.
+
+    Two levels' answers stand whatever the grants say. A refusal already carries the
+    operator's answer in the level they chose. And a **review** is not a prompt to be
+    skipped: it is the level doing the deciding, and a grant that short-circuited it would
+    turn one "allow for this conversation" on a shell tool into a thread where no command
+    is ever looked at again. The grant is handed to the review instead.
+    """
     decision = decide(permission, tool)
-    if decision is not Decision.BLOCK and covered_by_grant(tool, granted):
-        return Decision.ALLOW
-    return decision
+    if decision in (Decision.BLOCK, Decision.REVIEW):
+        return decision
+    return Decision.ALLOW if covered_by_grant(tool, granted) else decision
 
 
 async def review_batch(
@@ -176,6 +208,9 @@ async def review_batch(
     caps: ServiceContainer,
     deps: RunDeps,
     messages: list[ModelMessage],
+    granted: set[str] | None = None,
+    turn_start: TurnStart | None = None,
+    budget: ReviewBudget | None = None,
 ) -> dict[str, ReviewOutcome]:
     """Review every call the level sent to review, by ``tool_call_id``.
 
@@ -188,7 +223,9 @@ async def review_batch(
         return {}
     settings = get_settings()
     reviewer = await resolve_reviewer(caps, run.owner_id)
-    transcript = review_transcript(messages, limit=settings.review_transcript_messages)
+    transcript = review_transcript(
+        messages, turn_start=turn_start, limit=settings.review_transcript_entries
+    )
     root = await _judged_root(deps, calls)
     # Whether this host can fence a process at all is a property of the machine, not of the
     # call: resolved once for the batch, from the same process-global primitive the tool
@@ -205,8 +242,9 @@ async def review_batch(
                 root=root,
                 transcript=transcript,
                 reviewer=reviewer,
+                granted=covered_by_grant(call.tool_name, granted or set()),
                 fenced=confinement.active,
-                network_allowed=bool(settings.host_command_allowed_domains),
+                budget=budget,
             )
             for call in calls
         ],
@@ -283,17 +321,18 @@ async def review_call(
     root: Path | None,
     transcript: Sequence[TranscriptEntry],
     reviewer: Reviewer | None,
+    granted: bool = False,
     fenced: bool,
-    network_allowed: bool,
+    budget: ReviewBudget | None = None,
 ) -> ReviewOutcome:
     """Rule on one deferred call at the Auto level, announcing both ends on the stream.
 
     ``root`` is the run's workspace directory, resolved once for the batch
     (:func:`_judged_root`), and None where there is none — which is not a gap but the
     strictest reading: with nowhere to measure containment against, every absolute or
-    upward path in a command reads as leaving the workspace and escalates. ``fenced`` and
-    ``network_allowed`` are the two facts about the host the structural stage needs and
-    cannot look up for itself.
+    upward path in a command reads as leaving the workspace and escalates. ``fenced`` is
+    the fact about the host the structural stage needs and cannot look up for itself, and
+    ``granted`` whether the operator's standing grant covers this tool.
     """
     capability = capability_of(tool, args, root=root)
     run.emit(
@@ -308,8 +347,9 @@ async def review_call(
         capability,
         reviewer=reviewer,
         transcript=transcript,
+        granted=granted,
         fenced=fenced,
-        network_allowed=network_allowed,
+        budget=budget,
     )
     verdict = outcome.verdict
     run.emit(
@@ -334,7 +374,10 @@ async def review_call(
 
 #: The outcomes a review can produce, on the wire. `REVIEW` is deliberately absent: it is
 #: the question, not an answer, and a review that returned it would be a bug rather than
-#: a fourth case to render.
+#: a fourth case to render. `BLOCK` is the mirror image — no review returns it any more,
+#: since an unrecoverable act parks instead — and it stays because the word is already in
+#: the stored events of every thread that was reviewed before that changed, and a client
+#: still has to render those.
 _WIRE_DECISION: dict[Decision, str] = {
     Decision.ALLOW: "allow",
     Decision.ASK: "ask",

@@ -36,6 +36,19 @@ aimed at the wrong thing.
   right way round: after a compaction the reviewer reads only the turns since, which is
   less to authorize on, and less authorization parks.
 
+  **And the per-turn context riding on the operator's own prompt.** The chassis appends
+  volatile context — today the agent's own task list — to the tail of the turn's user
+  prompt (``agent/prelude.py``), so a *model-authored* string arrives inside the one
+  message this file labels ``operator``. Only the leading item of a prompt is the
+  operator's (:func:`_prompt_text`); a plan the model wrote after reading a poisoned page
+  is not an authorization however the transport arranged it.
+
+- **The turn's opening request is always in it.** Authorization is a question about what
+  the operator asked for, and the answer is in the message that started the turn — the
+  first thing a window counted from the end drops once the turn has run a few tools. So it
+  is taken off the turn boundary and kept, and the window is spent on what came after
+  (:func:`review_transcript`).
+
 Even so, the transcript that *is* shown goes inside an untrusted fence: the assistant's
 prose is downstream of everything it has read, so it can carry an injected argument
 forward in its own words. Fencing it means such an argument arrives as something the
@@ -66,7 +79,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -80,14 +93,23 @@ from services.permissions.capability import Capability
 
 logger = logging.getLogger(__name__)
 
-#: How much of the thread the reviewer reads, in messages, counted from the end. The
-#: operator's intent for the call in flight is in the recent turns; the whole thread would
-#: cost tokens and latency to re-establish something the last few exchanges already say.
-TRANSCRIPT_MESSAGES = 12
+#: How much of the thread the reviewer reads, counted from the end in **prose entries** —
+#: the operator's and the assistant's own words — rather than in messages. Counting
+#: messages was the bug it is named after: a tool round trip is two of them, so after six
+#: tool calls the window held nothing but tool traffic, the prompt said "the operator has
+#: said nothing", and every high-risk act parked. What the reviewer needs from the thread
+#: is what was *said*, and this is a budget over exactly that.
+TRANSCRIPT_ENTRIES = 12
 
 #: Per-message cap, so one pasted file in a user message cannot crowd out the ten turns
 #: around it. Generous enough that an ordinary request survives whole.
 MESSAGE_CHARS = 2_000
+
+
+#: Whether the operator asked for an act, as the reviewer read the thread. Named because
+#: ``decide.py`` computes with it — a standing grant can stand in for the reviewer's answer
+#: — and a second spelling of the three words there would be a second place to change.
+type Authorization = Literal["explicitly_no", "neutral", "explicitly_yes"]
 
 
 class ReviewVerdict(BaseModel):
@@ -99,7 +121,7 @@ class ReviewVerdict(BaseModel):
     #: value that overrules everything else — see ``decide.py``.
     risk: Literal["low", "high", "too_destructive"] = "high"
     #: Whether the operator asked for it. Only the operator's own messages count.
-    authorization: Literal["explicitly_no", "neutral", "explicitly_yes"] = "neutral"
+    authorization: Authorization = "neutral"
     #: What about the act does not match the request, in a sentence. None ⇒ it matches.
     correctness: str | None = Field(default=None, max_length=400)
 
@@ -133,10 +155,25 @@ class ReviewRequest:
 type Reviewer = Callable[[ReviewRequest], Awaitable[ReviewVerdict | None]]
 
 
+class TurnBoundary(Protocol):
+    """Where the current turn's own messages begin, as far as this module needs to know.
+
+    The engine's ``agent.history.TurnStart`` is what is passed, and it is deliberately not
+    imported: ``services`` sits below ``agent``, and the only thing wanted here is the one
+    question that object already answers. Structural typing keeps the dependency pointing
+    the way the layer map says it must.
+    """
+
+    def slice(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        """``messages`` from the turn's boundary on."""
+        ...  # pragma: no cover — a Protocol body, never executed
+
+
 def review_transcript(
     messages: Sequence[ModelMessage],
     *,
-    limit: int = TRANSCRIPT_MESSAGES,
+    turn_start: TurnBoundary | None = None,
+    limit: int = TRANSCRIPT_ENTRIES,
     chars: int = MESSAGE_CHARS,
 ) -> tuple[TranscriptEntry, ...]:
     """The thread as the reviewer may see it: the operator's requests and the assistant's
@@ -151,9 +188,45 @@ def review_transcript(
     And a **compaction summary** is a user-shaped message the operator never wrote: a
     utility model's fold of the earlier thread, tool returns included, which would
     otherwise carry every one of them back in wearing the operator's own role.
+
+    **What survives the trim is chosen twice over, and the first choice is the important
+    one.** ``turn_start`` is where this turn's own messages begin, so the operator's
+    request(s) that opened it are taken out first and always kept — the reviewer's single
+    most load-bearing input is the thing it is being asked to authorize *against*, and it
+    is also the entry a window counted from the end loses first, since a turn that has run
+    fourteen tools has pushed it far out of reach. Everything else is the most recent
+    ``limit`` entries of prose.
+
+    **The order that comes back is chronological, because the prompt says it is.** Only an
+    opening entry the window has already *dropped* is put back, and it is put back in
+    front: having fallen out of a window counted from the end, it is by construction older
+    than everything left in one. An opening entry the window still holds keeps its own
+    place. Hoisting it instead — which is what deduplicating opening-first did — moved the
+    turn's request ahead of strictly older messages, so a superseded instruction read as
+    the last thing the operator said.
     """
+    entries = _prose(messages, chars)
+    opening = (
+        tuple(
+            entry
+            for entry in _prose(turn_start.slice(list(messages)), chars)
+            if entry.role == "operator"
+        )
+        if turn_start is not None
+        else ()
+    )
+    window = entries[-limit:] if limit > 0 else ()
+    kept: dict[TranscriptEntry, None] = dict.fromkeys(
+        entry for entry in opening if entry not in window
+    )
+    kept.update(dict.fromkeys(window))
+    return tuple(kept)
+
+
+def _prose(messages: Sequence[ModelMessage], chars: int) -> tuple[TranscriptEntry, ...]:
+    """Every message that carries somebody's own words, as one entry each, in order."""
     entries: list[TranscriptEntry] = []
-    for message in list(messages)[-limit:]:
+    for message in messages:
         if isinstance(message, ModelRequest):
             text = "\n".join(
                 _prompt_text(part)
@@ -185,11 +258,27 @@ def _is_compaction_summary(part: UserPromptPart) -> bool:
 
 
 def _prompt_text(part: UserPromptPart) -> str:
-    """A user part's words. Multimodal content arrives as a list whose non-text items are
-    binary — an image, a document — and have no place in a text transcript."""
+    """The **operator's own words** in a user part, and nothing else that rides in it.
+
+    A list content is not a multi-part message the operator typed — it is their one prompt
+    with everything the chassis appended to it behind: attachment markers, image bytes, and
+    the per-turn tail context (``agent/prelude.py``). That last one is the reason this is a
+    positional read rather than a join. The tail context includes the agent's **own** task
+    list, written by the model through ``plan_write_plan``, and joining the list would hand
+    it to the reviewer inside the entry labelled ``operator`` — the exact forgery the JSON
+    roles exist to prevent, except with the chassis supplying the label, so nothing would
+    have to be forged. A task the model wrote after reading a poisoned page would then read
+    as the operator's own instruction, on the turn's opening request, which is pinned into
+    every review of that turn.
+
+    The operator's prompt is at position 0 or it is not in the part at all: everything the
+    prelude adds is appended. So that is what is read, and a non-string there (a bare image
+    turn) contributes nothing.
+    """
     if isinstance(part.content, str):
         return part.content
-    return "\n".join(item for item in part.content if isinstance(item, str))
+    first = part.content[0] if part.content else ""
+    return first if isinstance(first, str) else ""
 
 
 def review_prompt(request: ReviewRequest) -> str:

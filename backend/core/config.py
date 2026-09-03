@@ -170,19 +170,20 @@ class Settings(BaseSettings):
     # proxied requests against this global list whatever a single call asked for.
     #
     # Seeded with the package registries, because the alternative default is worse than it
-    # looks: an empty list means no command may declare a network reach at all, so every
-    # `uv sync` and `npm ci` goes to a model reviewer that has no way to make the network
-    # safer than this list already does. These are the hosts a build fetches from, they
-    # serve versioned artifacts, and an operator who wants none of it empties the list.
+    # looks: an empty list means a `uv sync` or an `npm ci` the reviewer *approved* still
+    # cannot reach the index it needs, so the approval buys a command that fails. These
+    # are the hosts a build fetches from, they serve versioned artifacts, and an operator
+    # who wants none of it empties the list. It is not what *clears* such a command —
+    # every networked command goes to the reviewer whatever this list holds
+    # (`services/permissions/judge.py`); this is only what an approved one is held to.
     #
     # **The seed widens the approved host hatch too, and that is not a side effect to
     # discover later.** One list, one global runtime config: the same names an approved
     # `code_run_host_command` may reach. Where the previous empty default meant such a
     # command reached nothing at all, it can now reach these — `github.com` included, which
     # is a general-purpose upload endpoint (a gist, a push) and not only a place to fetch
-    # from. That is the price of the worktree tier being usable, paid on a command the
-    # operator read and approved; an operator who would rather not pay it empties the list
-    # and lets the reviewer rule on every networked command instead.
+    # from. That is the price of a build being able to fetch what it needs, paid on a
+    # command someone approved; an operator who would rather not pay it empties the list.
     host_command_allowed_domains: tuple[str, ...] = (
         "pypi.org",
         "files.pythonhosted.org",
@@ -196,7 +197,28 @@ class Settings(BaseSettings):
     # Read-denied even under approval. The data directory is added to this at runtime
     # because it holds the vault, the sealed workspaces and the database: the agent must
     # never read its own encrypted store from the host, whatever it was approved to do.
-    host_command_deny_read: tuple[str, ...] = ("~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh")
+    #
+    # The rest of the list is the operator's *other* credentials, and it is deliberately
+    # longer than the obvious four. The fence has a read denylist and no read allowlist,
+    # so this is the only thing standing between a fenced command and a file outside the
+    # worktree — and a command that reaches the network is a command that can send what it
+    # read. Everything named here is a standing credential (a registry login, a cluster
+    # token, a cloud session) or a shell history, which is where the ones nobody meant to
+    # store end up.
+    host_command_deny_read: tuple[str, ...] = (
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.config/gh",
+        "~/.netrc",
+        "~/.docker",
+        "~/.kube",
+        "~/.config/gcloud",
+        "~/.azure",
+        "~/Library/Keychains",
+        "~/.zsh_history",
+        "~/.bash_history",
+    )
     # Writes are **deny-by-default** under the confinement, so this list is what makes the
     # tool usable at all — an approved "change my host" command that cannot write anything
     # would fail confusingly rather than safely. Kept broad on purpose (the operator read
@@ -250,11 +272,17 @@ class Settings(BaseSettings):
     # therefore parks, like every other way the review can fail. `review_max_tokens` is
     # the output cap, sized like the title call's: reasoning is requested off, but a
     # runtime that ignores the lever reasons anyway and the cap has to leave room for a
-    # think block plus three short fields. `review_transcript_messages` is how much of the
-    # thread the reviewer reads, counted from the end.
+    # think block plus three short fields. `review_transcript_entries` is how much of the
+    # thread the reviewer reads, counted from the end in **entries of prose** — the
+    # operator's and the assistant's own words — rather than in messages, since a single
+    # tool round trip is two messages and a window measured in those held nothing but tool
+    # traffic after a few calls. The turn's opening request is always included on top of
+    # it. `review_max_per_turn` caps how many *model* reviews one turn may spend: a
+    # structurally-cleared command costs none, and past the cap the calls park.
     review_timeout_s: float = 30.0
     review_max_tokens: int = 2048
-    review_transcript_messages: int = 12
+    review_transcript_entries: int = 12
+    review_max_per_turn: int = 12
 
     # Web search. `web_search_result_limit` caps results from the SearXNG provider;
     # `web_search_timeout_s` bounds one query (its own budget, not the fetch timeout).

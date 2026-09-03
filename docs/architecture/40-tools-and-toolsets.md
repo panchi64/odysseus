@@ -201,13 +201,17 @@ a deferred call at the Auto level
   │                    to hold it there (services/sandbox/fence.py).  Contained +
   │                    declared + fenced clears at that tier.  Its only power is to
   │                    APPROVE; everything else escalates rather than being refused —
-  │                    a `host` declaration, a path outside the worktree, an AST shape
-  │                    it could not read, or a host with no fence.
+  │                    a `host` declaration, a `network` declaration (always, whatever
+  │                    the operator's allowed-domains list holds: the fence bounds no
+  │                    reads, so egress is how what a command read leaves the machine),
+  │                    a path outside the worktree, an AST shape it could not read, or
+  │                    a host with no fence.
   → reviewer.py      one structured call on the `utility` model, scoring three axes:
   │                    risk           low | high | too_destructive
   │                    authorization  explicitly_no | neutral | explicitly_yes
   │                    correctness    a sentence, or null
-  → decide.py        too_destructive blocks.  low runs unless the operator said no.
+  → decide.py        too_destructive PARKS — the operator is asked, never refused for
+                     them.  low runs unless the operator said no.
                      high runs only on an explicit yes.  Everything else parks.
 ```
 
@@ -228,7 +232,7 @@ Four properties are load-bearing and each is there for a reason that is easy to 
 1. The turn loop assembles `RunDeps` (run, owner, disabled-tool set, capability handles) — `agent/turn.py:drive_turn`.
 2. `build_agent_toolsets()` produces the gated, namespaced stack; the `Agent` is built with it (`deps_type=RunDeps`, `output_type=[str, DeferredToolRequests]`).
 3. The model runs its multi-step loop; for each call, the `_enabled_gate` and tool args are evaluated against `ctx.deps`. A non-sensitive tool executes and may emit `tool.progress`.
-4. A **sensitive** tool does *not* execute — the turn ends with `DeferredToolRequests`. The engine rules on each deferred call: a standing conversation grant runs it, the thread's permission level refuses or parks it, and at the Auto level the review settles it (§4.5). What is still unanswered parks (§4.1) and waits for `POST …/approve`.
+4. A **sensitive** tool does *not* execute — the turn ends with `DeferredToolRequests`. The engine rules on each deferred call: the thread's permission level refuses or parks it, a standing conversation grant answers the levels that would have asked, and at the Auto level the review settles it — with the grant riding into that review as the operator's authorization rather than skipping it (§4.5). What is still unanswered parks (§4.1) and waits for `POST …/approve`.
 5. `execute_code` runs in the sandbox if present, else reports disabled (§4.2); `run_host_command` always parks for approval first.
 
 The result: the spec's entire access-control surface (`AE-2` categories, `AE-3` sensitivity + enable/disable, `AE-4` model-discerns) is a **dozen lines of toolset composition plus a per-tool `requires_approval` flag** — keyed on one deps object, with every harder case (host exec, scheduled tasks, external tools) reusing the *same* deferred-tool pause rather than inventing new control flow.

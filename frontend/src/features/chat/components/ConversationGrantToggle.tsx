@@ -27,7 +27,17 @@ export function createGrantToggle() {
 }
 
 /** The opt-in grant control itself — one canonical label and shape for both the
- *  generic approval card and the host-command terminal. */
+ *  generic approval card and the host-command terminal.
+ *
+ *  The label says what a grant *is* — a standing yes to this tool for this thread —
+ *  and deliberately not what will happen because of it. What a grant buys depends on
+ *  the thread's permission level, which is the backend's to decide and can change
+ *  between the moment this is ticked and the next call: at Manual and Edit it settles
+ *  the call outright, while at Auto it feeds the review as the operator's
+ *  authorization and an unrecoverable act still comes back to be asked about. The old
+ *  copy ("Allow for the rest of this conversation") promised the first of those at
+ *  every level, which is a promise the chassis breaks at the one that is becoming the
+ *  default. */
 export function ConversationGrantToggle(props: {
   checked?: boolean;
   disabled?: boolean;
@@ -35,7 +45,7 @@ export function ConversationGrantToggle(props: {
 }): JSX.Element {
   return (
     <Checkbox
-      label="Allow for the rest of this conversation"
+      label="Don't ask again for this tool in this conversation"
       checked={props.checked}
       disabled={props.disabled}
       onChange={props.onChange}

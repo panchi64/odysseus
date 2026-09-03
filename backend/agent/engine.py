@@ -360,6 +360,9 @@ def build_chat_orchestrator(
                         # of the window a fold would have fired at, whether or not this
                         # turn is one that *could* fold.
                         context_threshold=setup.policy.threshold,
+                        # The correction is this turn continuing, so a call it defers is
+                        # reviewed against the same opening request the first pass was.
+                        turn_start=setup.turn_start,
                     )
 
             finalize(

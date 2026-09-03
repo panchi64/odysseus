@@ -167,6 +167,18 @@ function Terminal(props: {
               {c().explanation}
             </Text>
           </Show>
+          {/* What the Auto review found, when one ran. `too_destructive` is the whole
+              reason it is here: the review used to refuse such a command itself, and now
+              it hands it over — so the finding has to arrive with the command rather than
+              on a collapsed row above it. */}
+          <Show when={c().risk === "too_destructive"}>
+            <Row gap={2} align="center">
+              <StatusFlag status="alert">Cannot be undone</StatusFlag>
+              <Text variant="micro" tone="warn" class="break-words">
+                {c().reviewReason}
+              </Text>
+            </Row>
+          </Show>
           <Show
             when={!decidedPending()}
             fallback={

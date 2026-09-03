@@ -11,10 +11,9 @@ reviewer. That is what makes the structural stage affordable to keep strict, and
 the tests are written as "this does not pass the cheap stage" rather than "this is
 forbidden".
 
-The helpers default to a host that *can* fence and an operator who has allowed some
-domain, because that is the interesting configuration — the two facts are arguments
-precisely so a test does not depend on the machine it runs on, and the cases where either
-is missing are pinned explicitly.
+The helpers default to a host that *can* fence, because that is the interesting
+configuration — the fact is an argument precisely so a test does not depend on the machine
+it runs on, and the case where it is missing is pinned explicitly.
 """
 
 from __future__ import annotations
@@ -43,12 +42,10 @@ def judged(
     root: Path | None = ROOT,
     reach: Reach = "workspace",
     fenced: bool = True,
-    network_allowed: bool = True,
 ) -> Judgement:
     return judge(
         shell_capability("shell_run_command", command, root=root, reach=reach),
         fenced=fenced,
-        network_allowed=network_allowed,
     )
 
 
@@ -469,11 +466,19 @@ class TestTheStructuralStage:
             "cat /etc/passwd", reach="network"
         )
 
-    def test_a_network_command_clears_only_against_a_non_empty_allowed_list(self):
-        assert judged("curl https://example.com", reach="network").tier == "network"
-        refused = judged("curl https://example.com", reach="network", network_allowed=False)
-        assert not refused.approved
-        assert "allowed no domains" in refused.reason
+    def test_a_networked_command_is_always_the_reviewers(self):
+        # The fence bounds writes and egress and cannot bound *reads* — the runtime has a
+        # read denylist and no read allowlist — so a command cleared for the worktree can
+        # already read whatever the operator can, and a command that reaches out is the
+        # only way any of it leaves. An allowed-domains list does not settle that: the
+        # seeded hosts take uploads as readily as they serve downloads. So the declaration
+        # escalates whatever the operator has allowed, and the list stays what an approved
+        # command is *held to* rather than what clears it.
+        for command in ("curl https://example.com", "git push origin main", "uv sync"):
+            judgement = judged(command, reach="network")
+            assert not judgement.approved, command
+            assert judgement.reason == "reaches the network; the reviewer decides"
+            assert judgement.tier is None
 
     def test_without_a_fence_nothing_structural_clears(self):
         # The declaration buys nothing on a host that cannot hold a process to it, so the
@@ -485,22 +490,14 @@ class TestTheStructuralStage:
     def test_a_read_and_a_sandbox_call_clear_with_no_fence_at_all(self):
         # The two tiers a fence has nothing to do with: one is settled by the tool's class,
         # the other by the container the call already runs inside.
-        read = judge(
-            capability_of("corpus_retrieve", {"query": "x"}), fenced=False, network_allowed=False
-        )
+        read = judge(capability_of("corpus_retrieve", {"query": "x"}), fenced=False)
         assert read.approved and read.tier == "read"
-        sandboxed = judge(
-            capability_of("code_execute", {"code": "print(1)"}),
-            fenced=False,
-            network_allowed=False,
-        )
+        sandboxed = judge(capability_of("code_execute", {"code": "print(1)"}), fenced=False)
         assert sandboxed.approved and sandboxed.tier == "sandbox"
 
     def test_a_sandbox_call_that_asks_for_the_network_is_not_bounded_by_its_container(self):
         networked = judge(
-            capability_of("code_execute", {"code": "print(1)", "network": True}),
-            fenced=True,
-            network_allowed=True,
+            capability_of("code_execute", {"code": "print(1)", "network": True}), fenced=True
         )
         assert not networked.approved
 
@@ -543,7 +540,6 @@ class TestTheDeclarationIsReadOffTheCall:
                 "code_execute", {"code": "echo hi", "language": "bash", "network": True}, root=ROOT
             ),
             fenced=True,
-            network_allowed=True,
         )
         assert not judgement.approved
         assert judgement.reason == "declares no reach, so there is nothing here to hold it to"
@@ -595,7 +591,7 @@ class TestAHostCommandIsNotAWorkspaceCommand:
             capability = capability_of(
                 "code_run_host_command", {"command": command, "explanation": "x"}, root=ROOT
             )
-            judgement = judge(capability, fenced=True, network_allowed=True)
+            judgement = judge(capability, fenced=True)
             assert not judgement.approved, command
             assert "runs on the host" in judgement.reason
 
@@ -630,17 +626,15 @@ class TestAClassifiedReadClears:
         ):
             capability = capability_of(tool, args, root=ROOT)
             assert capability.kind is ActionKind.READ
-            assert judge(capability, fenced=False, network_allowed=False).approved, tool
+            assert judge(capability, fenced=False).approved, tool
 
     def test_the_row_names_the_ground_it_was_cleared_on(self):
-        # Four approvals, not one kind of approval: this one is the tool's class alone,
+        # Three approvals, not one kind of approval: this one is the tool's class alone,
         # with nothing weighing the arguments and no model consulted. The row says so in
         # those words rather than reading like a review that happened to pass, and the
         # tier is the machine-readable half of the same fact.
         judgement = judge(
-            capability_of("corpus_retrieve", {"query": "invoice"}, root=ROOT),
-            fenced=True,
-            network_allowed=True,
+            capability_of("corpus_retrieve", {"query": "invoice"}, root=ROOT), fenced=True
         )
         assert judgement.approved
         assert judgement.tier == "read"
@@ -682,9 +676,7 @@ class TestTheOtherKindsOfAction:
             ("external_notion_create_page", {"title": "x"}),
             ("files_write_file", {"path": "a.txt", "content": "x"}),
         ):
-            assert not judge(
-                capability_of(tool, args, root=ROOT), fenced=True, network_allowed=True
-            ).approved
+            assert not judge(capability_of(tool, args, root=ROOT), fenced=True).approved
 
     def test_an_interpreter_program_is_not_bounded_by_its_arguments(self):
         capability = capability_of("code_execute", {"code": "print(1)"}, root=ROOT)

@@ -374,20 +374,25 @@ class _ShellToolset(WorkspaceToolset):
         unwrapped would let any command escape the fence by being written so nothing could
         read it, and the reviewer that then allowed it was never asked about the fence.
 
-        There are exactly three ways out and each is somebody's explicit yes. A `host`
+        There are exactly two ways out and each is somebody's explicit yes. A `host`
         declaration asks for the unfenced machine, which is what the approver was shown. A
         declaration the command's own syntax **contradicts** — a `workspace` command naming
         `/etc/passwd` or a URL — was approved in the words it was read in, and fencing it to
-        the reach it plainly does not have would break that act rather than bound it. And a
-        `network` reach with no allowed domain has no egress list to be held to at all.
+        the reach it plainly does not have would break that act rather than bound it.
+
+        **An empty allowed-domains list is not one of them.** A `network` declaration with
+        nothing allowed still runs fenced, with no egress at all — the command fails at the
+        boundary and says so, which is the whole point of the declaration. Reading the empty
+        list as "no list to hold it to" and lifting the fence inverted the setting: an
+        operator who empties it to reach *less* would have handed every approved networked
+        command the loosest execution path there is, write confinement and the host hatch's
+        own read denials included.
         """
         settings = get_settings()
         confinement = await fence.fence_available(settings)
         if not confinement.active or reach == "host":
             return None
         allowed = settings.host_command_allowed_domains
-        if reach == "network" and not allowed:
-            return None
         capability = capability_of(
             f"{_NAMESPACE}{name}", {"command": command, "reach": reach}, root=workspace.root
         )

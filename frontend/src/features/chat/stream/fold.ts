@@ -294,17 +294,27 @@ export function createFolder(
         // the wire — default it once here, in the mapper, so no consumer of the
         // stored block has to guard a `Object.keys(args)` or an `args.command`.
         const args: Record<string, unknown> = ev.args ?? {};
+        // At Auto the chassis tried to answer this call first, and what it found rides
+        // onto whichever card ends up asking: a park is now the whole of what an
+        // unrecoverable act produces, so the reviewer's `too_destructive` would otherwise
+        // be visible only on a collapsed row above the prompt being answered. Both
+        // surfaces take it, because the commands that earn that word are shell commands
+        // and those are the ones that render as a terminal.
         if (terminalResult(ev.name)) {
-          patchById(assistantId, (m) =>
+          patchById(assistantId, (m) => {
+            const review = findReview(m, ev.tool_call_id)?.review;
             upsertHost(m, ev.tool_call_id, ev.name, {
               command: typeof args.command === "string" ? args.command : "",
               explanation: ev.explanation ?? undefined,
+              risk: review?.risk,
+              reviewReason: review?.reason,
               phase: "pending",
-            }),
-          );
+            });
+          });
           break;
         }
         patchById(assistantId, (m) => {
+          const review = findReview(m, ev.tool_call_id)?.review;
           (m.blocks ?? (m.blocks = [])).push({
             kind: "approval",
             id: `approval-${ev.tool_call_id}`,
@@ -314,6 +324,8 @@ export function createFolder(
               args,
               summary: ev.summary,
               explanation: ev.explanation ?? undefined,
+              risk: review?.risk,
+              reviewReason: review?.reason,
             },
           });
         });

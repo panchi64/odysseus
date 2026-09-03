@@ -57,6 +57,13 @@ export function ApprovalPanel(props: {
                 <StatusFlag status="warn" dot>
                   {approval.name}
                 </StatusFlag>
+                {/* The one thing a reviewer can say that changes how this decision should
+                    be read. It used to refuse such a call outright, which kept the
+                    operator out of the decision they most need to be in; now the call
+                    arrives here, and the finding has to arrive with it. */}
+                <Show when={approval.risk === "too_destructive"}>
+                  <StatusFlag status="alert">Cannot be undone</StatusFlag>
+                </Show>
                 <Show when={approval.toolCallId in decisions()}>
                   <StatusFlag status={decision() ? "nominal" : "alert"}>
                     {decision() ? "Approved" : "Denied"}
@@ -69,6 +76,11 @@ export function ApprovalPanel(props: {
               <Show when={approval.explanation}>
                 <Text variant="micro" tone="dim">
                   {approval.explanation}
+                </Text>
+              </Show>
+              <Show when={approval.risk === "too_destructive"}>
+                <Text variant="micro" tone="warn">
+                  {approval.reviewReason}
                 </Text>
               </Show>
               <Show when={Object.keys(approval.args).length > 0}>

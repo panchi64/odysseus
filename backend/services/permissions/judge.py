@@ -47,7 +47,7 @@ against a directory the command is no longer in.
 This stage's job is to check that the three agree — and to refuse whenever they do not, or
 whenever one of them is missing.
 
-**Four kinds of act clear here, and each on its own ground** (:data:`Tier` records which):
+**Three kinds of act clear here, and each on its own ground** (:data:`Tier` records which):
 
 - a **classified read** (``ActionKind.READ``): the class is a claim about the tool itself —
   it returns something and leaves nothing different behind — so no argument set makes it
@@ -62,21 +62,27 @@ whenever one of them is missing.
   extraction marked unbounded, and deliberately: for an interpreter there is no reading of
   the arguments that would ever bound it, and the boundary was never the arguments;
 - a **contained command** at ``workspace`` — every path it names inside the worktree, no
-  network, and a fence available to hold it there;
-- a **networked command** at ``network``, which additionally requires the operator to have
-  named the domains it may reach.
+  network, and a fence available to hold it there.
+
+**A ``network`` declaration is not a fourth one, and the asymmetry is deliberate.** The
+fence bounds writes and egress and cannot bound *reads*, so a command cleared at
+``workspace`` can already read whatever the operator's account can — and the only way that
+leaves the machine is a command that reaches out. An allowed-domains list does not make
+that safe: the seed names hosts that accept uploads as readily as they serve downloads, so
+`git push` of copied data is inside it. So every networked command goes to the model
+reviewer, whatever the operator has allowed, and the allowed list stays what the *fence*
+holds an approved one to (``tools/shell.py``) rather than what clears it.
 
 **Everything else escalates, and the reason says which of the three facts was missing** —
 an unreadable construct, a path outside the worktree, a `host` declaration, a declaration
-the command's own syntax contradicts, a host with no fence, or an empty allowed-domain
-list. That reason is what an operator reads on the review row, and "the system was
-arbitrary" is the reading it exists to prevent.
+the command's own syntax contradicts, a host with no fence, or a reach into the network.
+That reason is what an operator reads on the review row, and "the system was arbitrary" is
+the reading it exists to prevent.
 
 **Pure, and pure on purpose.** Nothing here probes the host or reads settings: whether a
-fence exists and whether any domain is allowed arrive as arguments, so the same call is
-decidable in a test, at the gate (``agent/gating.py``) and again inside the tool that
-executes it (``tools/shell.py``) — and those three cannot drift into disagreeing about
-what was cleared.
+fence exists arrives as an argument, so the same call is decidable in a test, at the gate
+(``agent/gating.py``) and again inside the tool that executes it (``tools/shell.py``) —
+and those three cannot drift into disagreeing about what was cleared.
 """
 
 from __future__ import annotations
@@ -87,11 +93,11 @@ from typing import Literal
 from services.permissions.capability import ActionKind, Capability
 
 #: Which deterministic ground cleared a capability. Not a degree of trust and not an
-#: ordering: they are four different arguments, and the one granted to a classified read
+#: ordering: they are three different arguments, and the one granted to a classified read
 #: grants nothing to a command. It travels onto the review row and into the tool that
 #: executes the call, which reads it to decide *which fence* to run the command under —
 #: so a tier is a decision something else acts on, not a label.
-type Tier = Literal["read", "sandbox", "workspace", "network"]
+type Tier = Literal["read", "sandbox", "workspace"]
 
 
 @dataclass(frozen=True)
@@ -109,15 +115,14 @@ class Judgement:
     tier: Tier | None = None
 
 
-def judge(capability: Capability, *, fenced: bool, network_allowed: bool) -> Judgement:
+def judge(capability: Capability, *, fenced: bool) -> Judgement:
     """Whether ``capability``'s structure, declaration and fence agree — and at which tier.
 
     ``fenced`` says whether this host can confine a process at all
-    (``services/sandbox/fence.py``); ``network_allowed`` whether the operator has named any
-    domain a fenced command may reach. Both are facts about the machine rather than about
-    the call, which is why they are arguments: this function stays pure and total, never
-    raises, never calls out, and never returns ``approved`` for anything it did not fully
-    account for.
+    (``services/sandbox/fence.py``). It is a fact about the machine rather than about the
+    call, which is why it is an argument: this function stays pure and total, never raises,
+    never calls out, and never returns ``approved`` for anything it did not fully account
+    for.
 
     The two class-settled tiers are tested first, ahead of ``unbounded``, because for both
     of them the arguments are not what settles the act: a classified read is settled by its
@@ -143,12 +148,10 @@ def judge(capability: Capability, *, fenced: bool, network_allowed: bool) -> Jud
         return Judgement(False, "only reads and shell commands can be cleared without a review")
     if not capability.commands:
         return Judgement(False, "runs no command this stage can name")
-    return _shell_judgement(capability, fenced=fenced, network_allowed=network_allowed)
+    return _shell_judgement(capability, fenced=fenced)
 
 
-def _shell_judgement(
-    capability: Capability, *, fenced: bool, network_allowed: bool
-) -> Judgement:
+def _shell_judgement(capability: Capability, *, fenced: bool) -> Judgement:
     """A fully-read shell command against the reach it declared.
 
     The order is from the fact that settles most cases to the fact that settles fewest, so
@@ -178,21 +181,18 @@ def _shell_judgement(
             False, f'declared reach "{reach}" but names {capability.escapes[0]}, outside the '
             "workspace"
         )
+    if reach == "network":
+        # The one declaration that is never settled here, and not because it is unreadable:
+        # the fence has no read allowlist, so a command cleared for the worktree can read
+        # anything the operator can, and reaching out is the only way any of it leaves. An
+        # allowed-domains list narrows where it may go and not what it may send, so who
+        # approves an egress stays a judgement about the conversation.
+        return Judgement(False, "reaches the network; the reviewer decides")
     if not fenced:
         # Nothing about the command is wrong; there is simply nothing here that would hold
         # it to what it declared, so the declaration buys nothing and the model reviewer
         # rules with the structural facts in front of it instead.
         return Judgement(False, "no OS fence is available on this host to hold it to that")
-    if reach == "network":
-        if not network_allowed:
-            return Judgement(
-                False,
-                'declared reach "network", and the operator has allowed no domains for a '
-                "command to reach",
-            )
-        return Judgement(
-            True, "stays inside the worktree and reaches only the allowed domains", tier="network"
-        )
     if capability.network:
         # The declaration and the command's own syntax disagree, and the disagreement is
         # the finding: a fence built for `workspace` would deny the egress anyway, so what

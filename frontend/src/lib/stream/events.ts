@@ -404,7 +404,10 @@ export interface ReviewStarted extends Base {
 /** How the review ruled, and on what.
  *
  *  `decision` is what the run then did: `allow` ran the call with no prompt, `ask` parked
- *  it for the operator anyway, `block` refused it outright. It deliberately carries more
+ *  it for the operator anyway. `block` — refused outright — is no longer produced: an act
+ *  the reviewer judged unrecoverable is put in front of the operator like anything else it
+ *  will not clear. The word stays because it is already written into the stored events of
+ *  threads reviewed before that changed. It deliberately carries more
  *  than the outcome — `stage` says whether the structural judge or a model settled it,
  *  `tier` on which ground when the judge did, `fenced` whether an OS fence was there to
  *  hold the command to what it declared, and the three axes say what the model saw.
@@ -421,7 +424,7 @@ export interface ReviewCompleted extends Base {
   decision: "allow" | "ask" | "block";
   stage: "judge" | "reviewer";
   reason: string;
-  tier: "read" | "sandbox" | "workspace" | "network" | null;
+  tier: "read" | "sandbox" | "workspace" | null;
   fenced: boolean;
   risk: "low" | "high" | "too_destructive" | null;
   authorization: "explicitly_no" | "neutral" | "explicitly_yes" | null;
