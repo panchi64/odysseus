@@ -288,9 +288,11 @@ def review_prompt(request: ReviewRequest) -> str:
     process derived — the tool's name, the paths the grammar walk found, whether the
     action reaches the network, and what could not be read at all. What goes inside the
     fence is every byte a model produced: the action's summary (which, for a shell action,
-    is the command) and the conversation. Putting the command in the clear was the older
-    shape and the wrong one — a command is a string the model chose, and a reviewer
-    reading it in the clear is reading instructions from the thing it is reviewing.
+    is the command), its ``detail`` where the tool has one, and the conversation. Putting
+    the command in the clear was the older shape and the wrong one — a command is a string
+    the model chose, and a reviewer reading it in the clear is reading instructions from
+    the thing it is reviewing. The same holds for a projected argument: quoting a delegated
+    task or a stated reason is how the reviewer rules on it, and quoting is not trusting.
 
     The facts are JSON-encoded even though the *labels* are ours to trust, because their
     values are not: a path is a word the model wrote, and a word with a newline in it
@@ -308,7 +310,30 @@ def review_prompt(request: ReviewRequest) -> str:
     ):
         if values:
             lines.append(f"{label}: {json.dumps(list(values))}")
-    lines.append(f"Reaches the network: {'yes' if capability.network else 'no'}")
+    # The container line first, because the rubric's `low` turns on it: an interpreter's
+    # program is not bounded by anything here, but the container it runs in bounds what the
+    # program can reach, and the reviewer has no other way to tell that call from one on
+    # the operator's own machine.
+    lines.append(
+        "Runs inside the conversation's sandbox container: "
+        f"{'yes' if capability.sandboxed else 'no'}"
+    )
+    # And the network fact is named for **which** of that field's two producers is speaking
+    # (`capability.py`). For a sandboxed call it is the container's egress switch, not
+    # something read out of the call's text — a program that was never parsed names no
+    # address, and reporting the switch under that label would be a mislabelled
+    # measurement, which is the one input this rubric tells the reviewer to trust over the
+    # model's own words. For a command it is what the grammar walk saw written in it, and
+    # that is genuinely not the same question as "does this reach the network": `git push`,
+    # `npm publish` and `scp host:/path` all write no address, so the label says what was
+    # seen and the rubric says in the same breath that seeing none proves nothing.
+    if capability.sandboxed:
+        lines.append(
+            "Can reach the network from that container: "
+            f"{'yes' if capability.network else 'no'}"
+        )
+    else:
+        lines.append(f"Names a network address: {'yes' if capability.network else 'no'}")
     if capability.reach is not None:
         # The one model-authored value that stands in the clear, and it can: it is an
         # enumerated word this process re-derived from the call, not free text, so there is
@@ -321,11 +346,14 @@ def review_prompt(request: ReviewRequest) -> str:
     # reviewer that has been told it once does not read it better for being told twice.
     nonce = new_nonce()
     lines += ["", untrusted_preamble(nonce), "", "The action, as the model described it:"]
-    lines.append(
-        untrusted_fence(
-            json.dumps({"summary": capability.summary}), nonce, source="tool-call"
-        )
-    )
+    # `detail` is the act's own content where the tool has some worth reading — a delegated
+    # task, a program, the reason given for opening a credential (`capability.py`). It is a
+    # second JSON field rather than more of the summary, and absent rather than null where
+    # there is none: a reviewer reading `"detail": null` learns nothing and pays for it.
+    described = {"summary": capability.summary}
+    if capability.detail is not None:
+        described["detail"] = capability.detail
+    lines.append(untrusted_fence(json.dumps(described), nonce, source="tool-call"))
     lines.append("")
     if request.transcript:
         conversation = [{"role": entry.role, "text": entry.text} for entry in request.transcript]

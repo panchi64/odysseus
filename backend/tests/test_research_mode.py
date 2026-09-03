@@ -118,9 +118,9 @@ class TestInheritingTheParentsRope:
     async def test_a_parent_that_may_not_act_opens_a_thread_that_may_not_either(
         self, monkeypatch
     ):
-        """Research mode starts a *fresh* thread at Edit. A thread the agent opened is not
-        fresh: the operator approved one `research_start` in a Plan thread, not a standing
-        level for a second thread to act at."""
+        """Research mode starts a *fresh* thread at the default level. A thread the agent
+        opened is not fresh: the operator approved one `research_start` in a Plan thread,
+        not a standing level for a second thread to act at."""
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch)
             started = await _threads(app).start(
@@ -130,16 +130,21 @@ class TestInheritingTheParentsRope:
             assert binding.permission == "plan"
             await _settle(app, started.run_id)
 
-    async def test_a_parent_with_more_rope_does_not_raise_the_new_thread(self, monkeypatch):
-        """The other direction: taking the *stricter* of the two, so an Auto parent still
-        opens a thread at what research mode asks for rather than at review-everything."""
+    async def test_a_parent_that_stops_at_the_boundary_narrows_the_new_thread_too(
+        self, monkeypatch
+    ):
+        """The same rule between two levels that can both act. Research mode's own default
+        is the widest level there is, so *every* parent can only narrow what it opens: an
+        Edit parent gets an Edit thread rather than one that reviews its own way past the
+        workspace boundary."""
         async with client_app() as (_client, app):
             patch_model_resolution(monkeypatch)
             started = await _threads(app).start(
-                "operator", "Why?", parent=ParentThread(permission="auto")
+                "operator", "Why?", parent=ParentThread(permission="edit")
             )
             binding = await app.state.conversations.binding(started.conversation_id)
             assert binding.permission == "edit"
+            assert mode_spec("research").default_permission != "edit"  # or this pins nothing
             await _settle(app, started.run_id)
 
     async def test_no_parent_level_leaves_the_modes_default(self, monkeypatch):

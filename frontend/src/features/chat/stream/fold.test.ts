@@ -217,6 +217,7 @@ describe("a review's two frames", () => {
   // and a card that showed only "allowed" would tell them nothing to act on.
   const started = (
     reach: "workspace" | "network" | "host" | null,
+    detail: string | null = null,
   ): RunEvent => ({
     type: "review.started",
     seq: ++seq,
@@ -224,6 +225,7 @@ describe("a review's two frames", () => {
     tool_call_id: "t1",
     name: "shell_run_command",
     summary: "Runs the shell command: uv run pytest",
+    detail,
     reach,
   });
 
@@ -258,6 +260,26 @@ describe("a review's two frames", () => {
     // Nothing is decided yet — the row exists so a review that costs a model call reads
     // as work in flight rather than as a stalled turn.
     expect(block?.kind === "review" && block.review.decision).toBeUndefined();
+  });
+
+  test("the content the reviewer ruled on lands with it", () => {
+    // For the tools whose act is not written in one line — a delegated task, a skill's
+    // replacement text — the reviewer is given a `detail` beyond the summary. The row is
+    // where the operator checks a decision made in their place, so it is shown the same
+    // material rather than a paraphrase of it.
+    const h = harness(turn());
+    h.fold(started(null, "task: read the docs"));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.detail).toBe(
+      "task: read the docs",
+    );
+  });
+
+  test("and most tools have none, which renders nothing rather than empty", () => {
+    const h = harness(turn());
+    h.fold(started("workspace"));
+    const block = review(h.messages);
+    expect(block?.kind === "review" && block.review.detail).toBeUndefined();
   });
 
   test("the ground and the fence land with the verdict", () => {

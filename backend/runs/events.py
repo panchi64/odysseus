@@ -692,15 +692,18 @@ class ReviewStarted(_Body):
     tool call simply appearing to have been made.
 
     ``summary`` is the action's extracted worst case, in the same words the reviewer is
-    judging and the operator can read. ``reach`` is how far a shell command *declared* it
-    needs to go — the worktree, the network, or the host — and is null for every kind of
-    act that declares nothing, which is a different fact from declaring the widest reach.
-    Additive to v1; no bump."""
+    judging and the operator can read. ``detail`` is the act's own content where the tool
+    has some worth reading — a delegated task, a program, the reason given for opening a
+    credential — and null where there is none, which is most tools. ``reach`` is how far a
+    shell command *declared* it needs to go — the worktree, the network, or the host — and
+    is null for every kind of act that declares nothing, which is a different fact from
+    declaring the widest reach. Additive to v1; no bump."""
 
     type: Literal["review.started"] = "review.started"
     tool_call_id: str
     name: str
     summary: str
+    detail: str | None = None
     reach: Literal["workspace", "network", "host"] | None = None
 
 

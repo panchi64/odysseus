@@ -390,6 +390,12 @@ export interface QuestionAsked extends Base {
  *  backend extracted it — the same words the reviewer is judging, so the operator and the
  *  model are looking at one description rather than two.
  *
+ *  `detail` is the act's own content where the tool has some worth reading — the task
+ *  handed to a sub-agent, the words a skill is being rewritten with, the reason given for
+ *  opening a credential. Null where there is none, which is most tools. It is the part of
+ *  the call the reviewer ruled on beyond the summary, so the operator can read the same
+ *  thing rather than a one-line paraphrase of it.
+ *
  *  `reach` is how far a shell command *declared* it needs to go: the worktree, the
  *  network, or the operator's own machine. Null for every kind of act that declares
  *  nothing — a mail send, a file write — which is a different fact from declaring the
@@ -399,6 +405,7 @@ export interface ReviewStarted extends Base {
   tool_call_id: string;
   name: string;
   summary: string;
+  detail: string | null;
   reach: "workspace" | "network" | "host" | null;
 }
 /** How the review ruled, and on what.

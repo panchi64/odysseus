@@ -117,6 +117,21 @@ export function ReviewCard(props: {
           <Text variant="micro" tone="default" class="break-words">
             {props.review.summary}
           </Text>
+          {/* The rest of what the reviewer read — a delegated task, the replacement text
+              of a skill, a stated reason for opening a credential. The operator is being
+              shown the material the decision was made on, not a paraphrase of it, so it
+              keeps the line breaks the model wrote it with. */}
+          <Show when={props.review.detail}>
+            {(detail) => (
+              <Text
+                variant="micro"
+                tone="dim"
+                class="whitespace-pre-wrap break-words"
+              >
+                {detail()}
+              </Text>
+            )}
+          </Show>
           <Show when={props.review.reach}>
             {(reach) => (
               <Text variant="micro" tone="dim">

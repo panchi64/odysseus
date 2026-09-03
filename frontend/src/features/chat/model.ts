@@ -369,6 +369,11 @@ export interface Review {
   name: string;
   /** The action's worst case, in the same words the reviewer judged. */
   summary: string;
+  /** The act's own content where the tool has some worth reading — a delegated task, the
+   *  words a skill is being rewritten with, the reason given for opening a credential.
+   *  Undefined for most tools. Shown because the reviewer ruled on it: a decision made in
+   *  the operator's place should be reviewable on the same material. */
+  detail?: string;
   /** How far a shell command said it needs to go. Undefined for acts that declare
    *  nothing at all, which is not the same as declaring the widest reach. */
   reach?: "workspace" | "network" | "host";
@@ -618,13 +623,27 @@ export const PERMISSION_LEVELS: readonly PermissionLevelSpec[] = [
   {
     id: "auto",
     label: "Auto",
-    description: "Acts on its own, reviewed, and asks only on doubt.",
+    description:
+      "Acts on its own inside the worktree, reviewed beyond it, asks only on doubt.",
   },
 ];
 
 /** The level a thread runs at when nothing says otherwise — the backend's
- *  `DEFAULT_PERMISSION`, which is also each mode's default today. */
-export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = "edit";
+ *  `DEFAULT_PERMISSION`, which is also each mode's default today.
+ *
+ *  Auto reaches no further than Edit; it differs in who answers at the boundary, and
+ *  what it settles on its own is contained offline work an OS sandbox holds to the
+ *  worktree. This is the default for a **new** thread only — an existing one arrives
+ *  with its own stored level and keeps it. */
+export const DEFAULT_PERMISSION_LEVEL: PermissionLevel = "auto";
+
+/** The level that does the least — the backend's `STRICTEST_PERMISSION`, and where every
+ *  reading that is *not yet known* lands. A level rides every send and the backend
+ *  persists what it is sent, so an unknown one has to resolve somewhere that cannot widen
+ *  a thread the operator already narrowed. Distinct from the default on purpose: the
+ *  default is what a thread with no level yet *starts* at, which is a different question
+ *  from what to do about one whose level exists and has not arrived. */
+export const STRICTEST_PERMISSION_LEVEL: PermissionLevel = "plan";
 
 /** Whatever the wire said, as a level this build has a rule for.
  *
@@ -639,7 +658,7 @@ export function permissionLevel(value: string | undefined): PermissionLevel {
   if (!value) return DEFAULT_PERMISSION_LEVEL;
   return PERMISSION_LEVELS.some((spec) => spec.id === value)
     ? (value as PermissionLevel)
-    : "plan";
+    : STRICTEST_PERMISSION_LEVEL;
 }
 
 /** One decision in an approval response (mirrors the backend's shape). */

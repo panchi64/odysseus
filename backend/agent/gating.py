@@ -348,6 +348,7 @@ async def review_call(
             tool_call_id=tool_call_id,
             name=tool,
             summary=capability.summary,
+            detail=capability.detail,
             reach=capability.reach,
         )
     )

@@ -25,6 +25,22 @@ can do" are the same fact: it returns something and leaves nothing different beh
 whatever its arguments say. Those calls are described from the class alone
 (:attr:`ActionKind.READ`) — not because reading arguments would be hard, but because
 there is nothing in them left to find.
+
+**Between "read off a grammar" and "named by its argument keys" sits a third reading, and
+it lives next door** (``projections.py``): the per-tool table that says how one of this
+installation's *own* tools presents itself, because describing a mail send by its keys
+alone ("Calls mail_send with arguments body, subject, to") leaves the reviewer's third
+axis, ``correctness``, with nothing to rule on. That table is a separate module for the
+reason it is a table at all — it changes when a shipped tool's arguments change, which is
+not when this file's reading of a *deferred call* changes, and the question a security
+reader has of it ("does anything quote a mail body") is one they should be able to answer
+by reading one file.
+
+**A projection makes a review better informed; it never makes one unnecessary.** These
+capabilities stay :attr:`ActionKind.OPAQUE` with a non-empty :attr:`Capability.unbounded`,
+because quoting four arguments of a mail send does not turn the far side of a mail server
+into something this process read. Nothing here can be cleared by ``judge.py``, before or
+after — only the amount the model reviewer has to work with changed.
 """
 
 from __future__ import annotations
@@ -34,6 +50,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
+from services.permissions.projections import describe
 from services.permissions.shell_ast import (
     ShellCommand,
     escapes_workspace,
@@ -101,6 +118,17 @@ class Capability:
     #: the review events and into the reviewer's prompt, so it is the same sentence the
     #: operator reads and the model is judged against — two wordings would be two facts.
     summary: str
+    #: The act's own model-authored content, where a tool has some worth reading and it is
+    #: too long for a line — a delegated task, a research question, a program, the reason
+    #: given for opening a credential. None where there is none, which is most tools.
+    #:
+    #: Kept apart from :attr:`summary` rather than appended to it because the two are read
+    #: in different places and by different rules: the summary is the line on the operator's
+    #: review row and the one sentence the reviewer scores against, while this is the body
+    #: it may need in order to say whether the act matches the request. Both ride inside the
+    #: reviewer's untrusted fence (``reviewer.py``) — a projection quotes the model's own
+    #: words, and quoting them is not the same as trusting them.
+    detail: str | None = None
     #: Every command a shell action would run, in the order they appear.
     commands: tuple[ShellCommand, ...] = ()
     #: Paths the action names for reading.
@@ -109,7 +137,13 @@ class Capability:
     writes: tuple[str, ...] = ()
     #: Environment variables the command sets for what it runs.
     env_writes: tuple[str, ...] = ()
-    #: Whether the action names something off this machine (a URL, a network redirect).
+    #: Whether this act can reach off the machine at all — and it has **two** producers,
+    #: which is why it is not named "names an address". For a command, it is what the
+    #: grammar walk saw written in it (a URL, a network redirect). For a call into the
+    #: conversation's container, it is the egress *switch* that call flipped, since the
+    #: program itself was never read. Anything reporting this to a reader has to say which
+    #: of the two it is looking at (``reviewer.py``) — a measurement the reviewer is told
+    #: outranks the model's own text has to be true of the act in front of it.
     network: bool = False
     #: Paths that leave the workspace, or that we cannot place inside it.
     escapes: tuple[str, ...] = ()
@@ -310,20 +344,27 @@ def capability_of(tool: str, args: dict[str, Any], *, root: Path | None = None) 
         # Only a *classified* name qualifies. An unknown one resolves to the class that
         # reaches furthest (`tool_sensitivity`), so nothing an operator's own MCP server
         # names can arrive here wearing a read's clothes.
-        return Capability(
-            tool=tool,
-            kind=ActionKind.READ,
-            summary=f"Reads with {tool}, using {_arg_shape(args)}",
+        #
+        # A projection here is for the **operator's row**, not for a ruling: the class has
+        # already settled the act, and `kind` stays READ so it still clears with no review.
+        # What it buys is that the row says which page was opened rather than which
+        # argument keys were passed.
+        summary, detail = describe(
+            tool, args, fallback=f"Reads with {tool}, using {_arg_shape(args)}"
         )
+        return Capability(tool=tool, kind=ActionKind.READ, summary=summary, detail=detail)
 
+    summary, detail = describe(tool, args, fallback=f"Calls {tool} with {_arg_shape(args)}")
     return Capability(
         tool=tool,
         kind=ActionKind.OPAQUE,
-        summary=f"Calls {tool} with {_arg_shape(args)}",
-        # The name and the argument keys are the *whole* of what was read, and an action
-        # whose effect is its own is by definition not written in them. Leaving this empty
-        # would make `bounded` — the property whose entire job is to say "the fields here
-        # describe the whole act" — answer True about an act nothing here described.
+        summary=summary,
+        detail=detail,
+        # A projection quotes more of the call; it does not turn the far side of a mail
+        # server or a sub-agent's whole catalog into something this process read. So the
+        # reason stands whether or not one applied — and `bounded`, the property whose
+        # entire job is to say "the fields here describe the whole act", keeps answering
+        # False about an act nothing here bounded.
         unbounded=("this tool's effect is not written in its arguments",),
     )
 
@@ -340,11 +381,22 @@ def _command_capability(
             unbounded=("the call carries no command to read",),
         )
     if tool == "code_execute" and args.get("language", "python") != "bash":
+        language, network = args.get("language", "python"), bool(args.get("network"))
+        summary, detail = describe(
+            tool,
+            # The two schema defaults filled in, for the reason `declared_reach` fills in
+            # its own: an omitted argument is not an absent fact but the value the tool
+            # will run under, and both the review row and the reviewer are describing what
+            # is about to happen rather than what was typed.
+            {**args, "language": language, "network": network},
+            fallback="Runs a program in the conversation's sandbox container",
+        )
         return Capability(
             tool=tool,
             kind=ActionKind.OPAQUE,
-            summary="Runs a program in the conversation's sandbox container",
-            network=bool(args.get("network")),
+            summary=summary,
+            detail=detail,
+            network=network,
             sandboxed=True,
             unbounded=("an interpreter's program is not bounded by its arguments",),
         )

@@ -23,17 +23,26 @@ import {
 export function PermissionControl(props: {
   level: PermissionLevel;
   onLevelChange: (level: PermissionLevel) => void;
+  /** The thread's stored level has not arrived yet, so the level in hand is a placeholder
+   *  (`permissionSeat.ts`). The control says so instead of naming it: the placeholder is
+   *  the strictest level, and rendering it would claim on every thread open that the
+   *  thread is at Plan — indistinguishable, for the second it lasts, from one that is. */
+  pending?: boolean;
 }): JSX.Element {
-  const description = createMemo(
-    () =>
-      PERMISSION_LEVELS.find((spec) => spec.id === props.level)?.description ??
-      "",
+  const description = createMemo(() =>
+    props.pending
+      ? "Reading this thread's permission level…"
+      : (PERMISSION_LEVELS.find((spec) => spec.id === props.level)
+          ?.description ?? ""),
   );
 
   return (
     <Tooltip delay={600} side="top" label={description()}>
       <Select
-        value={props.level}
+        // No value matches while pending, so the placeholder is what shows.
+        value={props.pending ? "" : props.level}
+        placeholder="LEVEL…"
+        disabled={props.pending}
         onChange={(v) => props.onLevelChange(permissionLevel(v))}
         options={PERMISSION_LEVELS.map((spec) => ({
           value: spec.id,

@@ -26,6 +26,7 @@ from services.approval_grants import (
     covered_by_grant,
     grant_scopes,
 )
+from services.conversations import ConversationBinding
 from services.permissions import DEFAULT_PERMISSION, PERMISSION_LEVELS
 from tools import RunDeps, build_agent_toolsets
 from tools.conversations import conversations_toolset
@@ -138,6 +139,14 @@ def _types(run: Run) -> list[str]:
     return [e.body.type for e in run.stream.replay()]
 
 
+#: The level these engine tests are about. Named rather than left to the default, which
+#: is Auto now: there a grant is an *input to a review* rather than a settlement of its
+#: own (`services/permissions`), so a thread that took the default would be testing the
+#: review's fail-closed park instead of the grant path. `test_auto_review.py` owns that
+#: half; this file owns the levels where a grant settles a call by itself.
+ASKING_LEVEL = ConversationBinding(permission="edit")
+
+
 def _danger_orchestrator(store: ApprovalGrantStore):
     return build_chat_orchestrator(
         "delete the thing",
@@ -145,6 +154,7 @@ def _danger_orchestrator(store: ApprovalGrantStore):
         categories=_danger_categories(),
         capabilities=ServiceContainer.of(store),
         conversation_id=CONV,
+        binding=ASKING_LEVEL,
     )
 
 
@@ -194,6 +204,7 @@ async def test_granted_runaway_tool_still_trips_the_turn_guard():
         categories=_danger_categories(),
         capabilities=ServiceContainer.of(store),
         conversation_id=CONV,
+        binding=ASKING_LEVEL,
     )
     run = reg.submit(kind="chat", owner_id=OWNER, orchestrator=orch, conversation_id=CONV)
     await asyncio.wait_for(run.wait(), timeout=10)

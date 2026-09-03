@@ -179,6 +179,16 @@ class TestTheKnobs:
     def test_every_mode_starts_a_thread_at_a_level_that_exists(self):
         assert all(spec.default_permission in PERMISSION_LEVELS for spec in MODES.values())
 
+    def test_a_fresh_thread_starts_at_auto(self):
+        """The default reaches no further than Edit — the two share a ceiling — and moves
+        only *who answers* at that boundary: a structural judge and a fence rule on the
+        contained offline work, and everything past the worktree still reaches the
+        operator. Pinned because it is the one value here an operator feels immediately."""
+        assert DEFAULT_PERMISSION == "auto"
+        spec = PERMISSIONS[DEFAULT_PERMISSION]
+        assert spec.approval_policy is ApprovalPolicy.REVIEW
+        assert spec.ceiling is PERMISSIONS["edit"].ceiling
+
     def test_the_levels_that_can_act_are_the_ones_that_reach_past_reading(self):
         # Derived from the ceiling rather than named, so a fifth preset is a row in the
         # registry and every caller that means "the levels that can act" follows it.
@@ -485,14 +495,20 @@ class TestTheLiveControl:
             resp = await client.post(f"/conversations/{conversation_id}/plan/accept")
             assert resp.status_code == 200
             body = resp.json()
-            assert body["permission_level"] == "edit"
+            # Where an accept with no level named lands is the registry's answer, not a
+            # word this route or this test spells out — a thread that accepts a plan
+            # carries on at whatever a fresh thread would have run at.
+            assert body["permission_level"] == DEFAULT_PERMISSION
             # The plan the operator agreed to rides in the seed, so the transcript records
             # what was accepted rather than whatever the list says later.
             assert "rewrite the parser" in body["prompt"]
             detail = await client.get(f"/conversations/{conversation_id}")
-            assert detail.json()["permission_level"] == "edit"
+            assert detail.json()["permission_level"] == DEFAULT_PERMISSION
 
-    async def test_accepting_can_choose_the_unattended_level(self, monkeypatch):
+    async def test_accepting_can_choose_a_level_other_than_the_default(self, monkeypatch):
+        """The named level wins over the default. Named as Edit because that is the choice
+        that means something now that the default is Auto: the operator accepting a plan
+        but wanting to be asked at the workspace boundary anyway."""
         patch_model_resolution(monkeypatch, output_text="here is the plan")
         async with client_app() as (client, app):
             created = await client.post("/chat", json={"prompt": "plan it"})
@@ -501,9 +517,10 @@ class TestTheLiveControl:
             await app.state.conversation_plans.replace("operator", conversation_id, _a_plan())
 
             resp = await client.post(
-                f"/conversations/{conversation_id}/plan/accept", json={"level": "auto"}
+                f"/conversations/{conversation_id}/plan/accept", json={"level": "edit"}
             )
-            assert resp.json()["permission_level"] == "auto"
+            assert resp.json()["permission_level"] == "edit"
+            assert "edit" != DEFAULT_PERMISSION  # or this pins nothing
 
     async def test_accepting_offers_exactly_the_levels_that_can_act(self, monkeypatch):
         """Which levels those are is the registry's answer, not a pair the route spells

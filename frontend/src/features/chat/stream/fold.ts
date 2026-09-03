@@ -258,6 +258,10 @@ export function createFolder(
               toolCallId: ev.tool_call_id,
               name: ev.name,
               summary: ev.summary,
+              // What the reviewer was given beyond the one-line summary, for the tools
+              // that have any. Undefined rather than null, so the card renders the block
+              // only when there is one.
+              detail: ev.detail ?? undefined,
               reach: ev.reach ?? undefined,
             },
           });
