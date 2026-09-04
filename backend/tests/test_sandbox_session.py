@@ -1261,6 +1261,7 @@ async def test_ordinary_code_failure_is_not_mistaken_for_a_runtime_fault(tmp_pat
 
 
 # --- live container (only when a real runtime is present) --------------------
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_live_session_persists_files_across_calls(tmp_path):
     vault = await _vault(tmp_path)

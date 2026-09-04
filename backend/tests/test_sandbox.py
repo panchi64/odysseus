@@ -345,6 +345,7 @@ async def test_confinement_denies_reading_the_data_directory(tmp_path):
 
 
 # --- container integration (only when a real runtime is present) -------------
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_container_runs_python_in_isolation():
     sandbox = ContainerSandbox()
@@ -357,6 +358,7 @@ async def test_container_runs_python_in_isolation():
 _DNS_PROBE = "import socket; socket.gethostbyname('pypi.org'); print('reached')"
 
 
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_no_egress_by_default():
     sandbox = ContainerSandbox()
@@ -364,6 +366,7 @@ async def test_no_egress_by_default():
     assert not result.ok  # no route, no DNS — the lookup raises and exits non-zero
 
 
+@pytest.mark.container
 @pytest.mark.skipif(not _runtime_ready(), reason="no usable container runtime")
 async def test_egress_when_requested():
     sandbox = ContainerSandbox()
