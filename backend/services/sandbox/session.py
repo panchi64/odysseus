@@ -34,7 +34,6 @@ import asyncio
 import io
 import logging
 import os
-import re
 import secrets
 import shutil
 import tarfile
@@ -48,7 +47,7 @@ from typing import Protocol
 from core.concurrency import gather_bounded
 from core.vault import Vault
 
-from .base import SandboxError, SandboxResult, SandboxSpec, contained_path
+from .base import SandboxError, SandboxResult, SandboxSpec, contained_path, safe_key
 from .container import (
     _BACKSTOP_GRACE_S,
     IMAGE_PULL_TIMEOUT_S,
@@ -66,8 +65,6 @@ from .preview import PreviewHandle, launch_preview, stop_preview_container
 from .reconcile import reconcile as reconcile_leftovers
 
 logger = logging.getLogger(__name__)
-
-_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 # How many reaped sessions are sealed concurrently (tar+gzip+AEAD is CPU/IO work
 # off-thread) — bounded so a mass reap doesn't itself thrash the host, but no longer
@@ -95,11 +92,6 @@ _MOUNT_RELEASE_BUDGET_S = 10.0
 # the next slice, which is soon enough for directories that have already sat in the
 # clear since the crash.
 _ORPHAN_SEALS_PER_SWEEP = 2 * _SEAL_CONCURRENCY
-
-
-def _safe_key(key: str) -> str:
-    """A container/dir-safe token for a conversation id (leading char guaranteed)."""
-    return "s" + _SAFE.sub("-", key)
 
 
 class LiveWork(Protocol):
@@ -786,7 +778,7 @@ class SandboxSessionManager:
     def existing(self, key: str) -> SandboxSession | None:
         """The live session for a conversation if one exists, **without creating** it,
         so a turn that never touched the sandbox triggers no workspace/history work."""
-        return self._sessions.get(_safe_key(key))
+        return self._sessions.get(safe_key(key))
 
     async def acquire(self, key: str, *, holder: LiveWork | None = None) -> SandboxSession:
         """The session for a conversation, created (object only) on first use. If this
@@ -807,7 +799,7 @@ class SandboxSessionManager:
         before it returns, which makes the ceiling a policy instead of an accident. Nothing
         is lost by the reap: a reaped session's files are sealed and restored the next time
         that conversation runs code, exactly as after an idle reap."""
-        safe = _safe_key(key)
+        safe = safe_key(key)
         evicted: list[_Detached] = []
         while True:
             async with self._lock:
@@ -959,7 +951,7 @@ class SandboxSessionManager:
     ) -> PreviewHandle:
         """Start (or replace) the conversation's live preview and index its token."""
         session = await self.acquire(key)
-        safe = _safe_key(key)
+        safe = safe_key(key)
         token = secrets.token_urlsafe(32)
         # Launch outside the manager lock — the readiness wait must not stall other
         # conversations; the session's own lock marks it busy so the reaper defers.
@@ -1010,7 +1002,7 @@ class SandboxSessionManager:
 
     async def stop_preview(self, key: str) -> None:
         """Tear down the conversation's preview, leaving the exec session intact."""
-        safe = _safe_key(key)
+        safe = safe_key(key)
         async with self._lock:
             session = self._sessions.get(safe)
             self._drop_preview_tokens(safe)
@@ -1032,7 +1024,7 @@ class SandboxSessionManager:
         for this key we wait for that first, and a concurrent ``acquire()`` for
         this key waits for us in turn — so nothing ever recreates a session onto
         files we're in the middle of removing (sandbox-02)."""
-        safe = _safe_key(key)
+        safe = safe_key(key)
         my_event = asyncio.Event()
         session: SandboxSession | None = None
         while True:
@@ -1211,7 +1203,7 @@ class SandboxSessionManager:
             path.name
             for path in sorted(self._work_root.iterdir())
             if path.is_dir()
-            and path.name.startswith("s")  # `_safe_key`'s prefix — never a scratch dir
+            and path.name.startswith("s")  # `safe_key`'s prefix — never a scratch dir
             and path.name not in self._sessions
             and path.name not in self._tearing_down
         ]

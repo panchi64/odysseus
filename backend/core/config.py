@@ -155,6 +155,29 @@ class Settings(BaseSettings):
         ".cache", "dist", "build", "*.pyc", "*.pyo", "*.egg-info",
     )
 
+    # The one network allowlist, and the only one. Both fences read it: the proxy sidecar
+    # that is a container workspace's only route off its internal network, and the OS-level
+    # confinement the code-mode shell and the approved host command run under. Two lists
+    # would mean a hole in whichever one nobody remembered to widen. An entry matches that
+    # host exactly — `github.com` is not `gist.github.com`; the subdomain form is spelled
+    # `*.github.com`, which is why the seeds below name each host they need.
+    #
+    # Seeded with the package registries and source hosts, because the fence is tuned for
+    # exfiltration and not for compute: installing a dependency and cloning a repository
+    # are what a workspace is *for*, and an allowlist that made them feel dangerous would
+    # only teach the operator to switch it off. Anything else is asked for per call and
+    # approved per call (`services/egress.py`).
+    egress_allowed_domains: tuple[str, ...] = (
+        "pypi.org", "files.pythonhosted.org",
+        "registry.npmjs.org", "registry.yarnpkg.com",
+        "github.com", "api.github.com", "codeload.github.com",
+        "objects.githubusercontent.com", "raw.githubusercontent.com",
+        "deb.debian.org", "security.debian.org",
+        "crates.io", "static.crates.io", "index.crates.io",
+        "proxy.golang.org", "sum.golang.org",
+        "huggingface.co", "cdn-lfs.huggingface.co",
+    )
+
     # The approved host-command escape hatch, confined. Approval is consent to the
     # command the operator read, not to whatever it might reach afterwards, so the
     # process is additionally fenced at the OS level (seatbelt on macOS, bubblewrap on
@@ -162,9 +185,6 @@ class Settings(BaseSettings):
     # operator explicitly approved *this* command, and refusing to run it because a
     # platform primitive is missing would break the one case the tool exists for.
     host_command_sandbox_enabled: bool = True
-    # Egress allowlist for those commands. Empty means no network at all — widen it
-    # deliberately, per domain, rather than reaching for the disable switch above.
-    host_command_allowed_domains: tuple[str, ...] = ()
     # Read-denied even under approval. The data directory is added to this at runtime
     # because it holds the vault, the sealed workspaces and the database: the agent must
     # never read its own encrypted store from the host, whatever it was approved to do.

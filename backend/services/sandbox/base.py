@@ -16,12 +16,26 @@ the capability is *absent* (``None``), never a silent host fallback.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.exceptions import OdysseusError
+
+_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_key(key: str) -> str:
+    """A container/dir-safe token for a workspace key (leading char guaranteed).
+
+    Here rather than beside the session manager because the key names more than a
+    container: the egress policy derives the allowlist directory a fence bind-mounts from
+    the same key, and a second spelling of "safe" would file a workspace's allowlist
+    under a different name from the workspace.
+    """
+    return "s" + _SAFE.sub("-", key)
 
 
 class SandboxError(OdysseusError):

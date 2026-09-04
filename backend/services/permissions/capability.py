@@ -206,6 +206,13 @@ def _command_capability(
             summary=f"Runs {tool} with no command given",
             unbounded=("the call carries no command to read",),
         )
+    # Both `args.get("network")` reads below exist only for `code_execute`'s `network`
+    # argument, and they die with it: once egress is asked for by its own gated tool
+    # instead of a flag on the run, there is no argument left to read and both go. They
+    # stay until then because deleting them early would silently shrink the reach the
+    # judge and the operator's card report for a call that really did ask for egress.
+    # The grammar walk's own `network` — a URL named in the command — is not this, and
+    # outlives the argument.
     if tool == "code_execute" and args.get("language", "python") != "bash":
         return Capability(
             tool=tool,

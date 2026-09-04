@@ -135,10 +135,21 @@ async def _configure(settings: Settings) -> HostConfinement:
     # Everything read-denied is write-denied too. Read denial alone would still let a
     # command clobber the vault or an ssh key it could not read.
     deny_write = list(deny_read)
+    # Imported here rather than at module scope: `services.egress` reads `safe_key` out of
+    # this package, so the two only meet at call time.
+    from services.egress import normalise_domain
+
+    # Through the same funnel an approved domain goes through, so what an operator wrote
+    # in the setting means the same thing at both fences. Left raw, `Files.PythonHosted.org`
+    # or a pasted URL would be allowed by the container's proxy and refused here.
+    domains = [normalise_domain(d) for d in settings.egress_allowed_domains]
     try:
         await SandboxManager.initialize(
             SandboxRuntimeConfig(
-                network=NetworkConfig(allowed_domains=list(settings.host_command_allowed_domains)),
+                # The same allowlist the container fence reads. An approved command is
+                # still only approved for what the operator read; where it may *reach* is
+                # one installation-wide policy, not a second list that drifts from it.
+                network=NetworkConfig(allowed_domains=domains),
                 filesystem=FilesystemConfig(
                     deny_read=deny_read, allow_write=allow_write, deny_write=deny_write
                 ),

@@ -13,8 +13,8 @@ import services.sandbox.session as session_mod
 from core.config import Settings
 from core.vault import Vault
 from services.sandbox import ContainerSandbox, PreviewHandle, SandboxSessionManager
+from services.sandbox.base import safe_key
 from services.sandbox.container import await_http_serving
-from services.sandbox.session import _safe_key
 
 _EXCLUDES = Settings().sandbox_session_seal_excludes
 
@@ -77,7 +77,7 @@ async def test_starting_a_second_preview_replaces_the_first(tmp_path, fake_launc
 async def test_resolve_preview_keeps_the_session_warm(tmp_path, fake_launch):
     mgr = _manager(tmp_path, await _vault(tmp_path))
     handle = await mgr.start_preview("conv-a", ["srv"], 8000)
-    session = mgr._sessions[_safe_key("conv-a")]
+    session = mgr._sessions[safe_key("conv-a")]
 
     session._last_used = 0.0  # pretend it went idle
     mgr.resolve_preview(handle.token)

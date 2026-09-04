@@ -23,7 +23,7 @@ from models.task import TaskOutcome, TaskOutput
 from routes import tasks as tasks_routes
 from routes.chat import compose_turn, resolve_turn_models
 from runs import Run, RunRegistry, RunStatus
-from services.approval_grants import ApprovalGrantStore
+from services.approval_grants import ONCE_ONLY_TOOLS, ApprovalGrantStore
 from services.conversations import ConversationStore
 from services.notifications import NotificationService
 from services.offline import OfflineModeService
@@ -105,6 +105,11 @@ async def _build(ctx: HarnessContext) -> FeatureRuntime:
             view.owner_id, title=view.title
         )
         for tool_name in view.pre_authorized:
+            # A once-only tool is once-only here too. This is the other door onto the same
+            # table, and the unattended run is exactly where a standing grant on a per-call
+            # gate would do its damage: nobody is reading what it covers.
+            if tool_name in ONCE_ONLY_TOOLS:
+                continue
             await grants.grant(view.owner_id, conversation_id, tool_name)
 
         waiter: asyncio.Future[Run] = asyncio.get_running_loop().create_future()

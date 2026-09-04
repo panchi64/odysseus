@@ -48,6 +48,7 @@ from services.api_token_store import ApiTokenStore
 from services.approval_grants import ApprovalGrantStore
 from services.conversations import ConversationStore
 from services.credential_store import CredentialStore
+from services.egress import EgressPolicy
 from services.embeddings import RegistryEmbedder
 from services.plans import ConversationPlans
 from services.registry import ModelRegistry
@@ -240,6 +241,11 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # Conversation-scoped tool auto-approval grants — part of the approval posture,
     # so it stays core beside the run substrate the approvals park on.
     app.state.approval_grants = ApprovalGrantStore(engine, settings.approval_grant_ttl_s)
+    # The one egress allowlist both fences read — the container's proxy sidecar and the
+    # OS-level confinement. Beside the approval grants because it is the same posture seen
+    # from the other side: that store remembers which *tools* may run without asking, this
+    # one which *domains* they may reach once running.
+    app.state.egress = EgressPolicy(engine, settings.data_dir, settings.egress_allowed_domains)
     # Seal the columns that predate their own encryption: the migration that added
     # the sealed column ran before unlock with no key, so the healing happens here
     # once unlocked (XC-SEC-3).
@@ -284,6 +290,7 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
         app.state.credentials,
         app.state.settings_store,
         app.state.approval_grants,
+        app.state.egress,
         app.state.api_tokens,
     ):
         container.add(handle)
@@ -294,6 +301,9 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
     # split, and the sandbox backs code execution. Everything else reaches the bag
     # through its own manifest's `capabilities` export.
     agent_capabilities.add(app.state.approval_grants)
+    # ...and the egress policy beside it: the tool that asks for a domain is an agent tool,
+    # and the fences that read the allowlist wrap the agent's own execution.
+    agent_capabilities.add(app.state.egress)
     # Delegation resolves the `utility` model for its sub-agents through the same
     # `resolve_background` rule titling and verification use, so a delegate is cheap by
     # construction rather than by a second policy.

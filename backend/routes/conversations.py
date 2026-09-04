@@ -636,6 +636,14 @@ async def delete_conversation(
                 await sandbox.purge(conversation_id)
             except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
                 logger.warning("sandbox purge failed for %s", conversation_id, exc_info=True)
+        # The domains the operator opened for this thread, and the allowlist file the
+        # fences read them from. Same reasoning as the workspace above, and best-effort for
+        # the same reason — but unconditional, because the policy exists whether or not a
+        # container runtime does.
+        try:
+            await deps.egress(request).forget(conversation_id)
+        except Exception:  # noqa: BLE001 — best-effort; the DB delete already succeeded
+            logger.warning("egress purge failed for %s", conversation_id, exc_info=True)
     finally:
         deps.release_conversation(request, conversation_id)
 

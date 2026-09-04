@@ -193,6 +193,10 @@ SENSITIVITY_CLASSES: Mapping[Sensitivity, frozenset[str]] = {
             "calendar_create_event",
             "calendar_delete_event",
             "calendar_update_event",
+            # Widens where a workspace may reach on the network. Nothing leaves the box
+            # when it is called, and everything the box holds can once it has been —
+            # which is the effect, and it is on the outside.
+            "code_request_egress",
             # Reversible, and still on the far side of the operator's mail server.
             "mail_mark",
             "mail_reply",
