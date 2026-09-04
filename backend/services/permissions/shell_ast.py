@@ -34,13 +34,16 @@ is a single word to the shell and a whole command line to `sh`; `python3 -c "pri
 .read())"` is a program; `awk 'BEGIN{while((getline l < "/etc/passwd")>0) print l}'` is a
 script. Measuring any of them as one relative path places `<root>/cat /etc/passwd` inside
 the worktree and calls the command contained, which is how the containment check was walked
-straight past. Telling those apart from `git commit -m 'fix the parser'` needs to know what
-the *program* does with the string — the question this file exists to stop asking, because
-answering it is the program table that was removed. So the reading is structural and
-conservative: a literal argument carrying whitespace or the punctuation a parser reads as
-syntax (:data:`_COMPOSITE`) is not a word this walk can place, and is recorded as unbounded.
-The price is that a quoted multi-word argument escalates to the model reviewer instead of
-clearing for free; the alternative price was `sh -c` running unreviewed.
+straight past. Telling those apart from `git commit -m 'fix the parser'` by *program*
+needs to know what the program does with the string — the question this file exists to
+stop asking, because answering it is the program table that was removed. Telling them apart
+by what the words **name** needs no table: a quoted argument with spaces in it is measured
+word by word, so `sh -c 'cat /etc/passwd'` is refused for the `/etc/passwd` it carries and
+the commit message, carrying no path at all, clears. An argument carrying the punctuation a
+parser reads as syntax (:data:`_COMPOSITE`) — `python3 -c 'print(open(…))'` — is not a word
+this walk can place at all, and is recorded as unbounded. What that leaves is a script
+whose every word stays inside the worktree, which is exactly what the fence was built to
+hold.
 
 **Every word a command line carries is measured, not only the operands.** The program
 itself (`~/evil.sh`, `/etc/../bin/ls`) and an environment assignment's value
@@ -61,6 +64,7 @@ cannot send what it read anywhere, or write anywhere but the worktree.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,25 +89,35 @@ _IGNORED = frozenset({"&&", "||", "|", "|&", ";", ";;", "&", "\n", "comment"})
 # Argument nodes whose text is fixed at parse time — the only kind whose value we know.
 _LITERAL = frozenset({"word", "number", "raw_string"})
 
-# What the shell still does to a *bare* word after the grammar has read it: brace
-# expansion, globbing, backslash removal, and a backtick's substitution. Any of them makes
-# the string the program receives a different string from the one written here, so a word
-# carrying one is not a literal — see the module docstring for the four commands this set
-# exists for.
-_EXPANDED_UNQUOTED = frozenset("\\{}[]*?`")
+# What the shell still does to a *bare* word after the grammar has read it and that this
+# walk cannot follow: brace expansion, a bracket class, backslash removal, and a backtick's
+# substitution. Any of them makes the string the program receives a different string from
+# the one written here, so a word carrying one is not a literal — see the module docstring
+# for the four commands this set exists for.
+_EXPANDED_UNQUOTED = frozenset("\\{}[]`")
+
+# The two glob characters are *not* in that set, because what they expand to is bounded in
+# a way a brace or a backslash is not: a pattern matches names inside the directory its
+# fixed prefix names, and nothing else. `src/*.py` reaches `src/` and no further, which is
+# a containment question this walk can already answer (:meth:`_Walk._glob`). The one way a
+# pattern leaves its directory is by matching `..`, and `/bin/sh` lets a segment do that
+# only when it starts with a literal dot (`.[.]`, `.?`, `.*`) — so that shape stays unread.
+_GLOB = frozenset("*?")
 
 # The same question inside double quotes, where quoting has already suppressed globbing and
 # brace expansion. A backslash still escapes and a backtick still substitutes; a single
 # quoted string interprets nothing at all and is therefore always the literal it reads as.
 _EXPANDED_IN_QUOTES = frozenset("\\`")
 
-# What separates an *operand* from a string some program will parse for itself: whitespace,
-# and the punctuation a command line or an expression language is written in. A word
-# carrying one of these is not placed against the workspace — see the module docstring for
-# the `sh -c` class of command this exists for. Deliberately *not* the glob characters:
+# The punctuation a command line or an expression language is written in. A word carrying
+# one of these is not placed against the workspace at all — see the module docstring for the
+# `sh -c` class of command this exists for. Whitespace is deliberately *not* here: a quoted
+# argument with spaces in it is read word by word instead (:meth:`_Walk._reach_words`), so
+# that `git commit -m 'fixed the parser'` clears and `sh -c 'cat /etc/passwd'` is refused
+# for the path it carries rather than for the space beside it. Nor are the glob characters:
 # `find . -name '*.py'` hands `*.py` to `find` as a pattern to match names with, and it can
 # no more leave the directory than a bare word can.
-_COMPOSITE = frozenset(" \t\n\r;|&<>()$`")
+_COMPOSITE = frozenset(";|&<>()$`")
 
 #: How many *operands* :func:`command_prefixes` keeps: the program and the leading words
 #: that say which of its modes was invoked (`uv run pytest`, `git commit`). Three is where
@@ -123,11 +137,23 @@ _DYNAMIC = {
     "arithmetic_expansion": "an arithmetic expansion",
 }
 
-#: What goes on the record for a word the program it is handed to may parse for itself. It
-#: names the doubt rather than the program, because the program is exactly what this file
-#: refuses to reason about: `sh -c 'cat /etc/passwd'` and `git commit -m 'fix the parser'`
-#: are the same shape, and only one of them is a command line.
-_COMPOSITE_UNREAD = "an argument that could itself be a command line rather than a word"
+#: What goes on the record for a word carrying syntax the program it is handed to may run.
+#: It names the doubt rather than the program, because the program is exactly what this
+#: file refuses to reason about: `python3 -c 'print(1)'` and `git commit -m 'fix (again)'`
+#: are the same shape, and only one of them is a program.
+_COMPOSITE_UNREAD = "an argument carrying shell syntax that a program could run as a command line"
+
+#: And for a word the shell — this one, or the one it is handed to — would rewrite first.
+_EXPANDS_UNREAD = "a word the shell would expand or unescape"
+
+#: A pattern segment that could match the parent directory: `/bin/sh` lets `.?`, `.*` and
+#: `.[.]` match `..`, and a pattern that can name `..` can name anything above it.
+_PARENT_GLOB_UNREAD = "a pattern that could match the parent directory"
+
+#: What separates one path-shaped fragment from the next inside a word of a quoted script:
+#: anything a path is not written with. Quotes, commas, colons and brackets are what a
+#: program's own syntax puts beside a path, and every one of them is a boundary here.
+_PATH_FRAGMENT = re.compile(r"[^\w./~*?-]+")
 
 #: The same doubt about the word that decides everything else. Separate wording because a
 #: program is not an argument, and the operator reading the refusal wants to know which.
@@ -299,14 +325,17 @@ def _leading_words(command: ShellCommand) -> tuple[str, ...]:
     that *reached* the cap covers the same act on another target — which is the case the
     cap exists for.
 
-    An empty argument ends the prefix as the cap does. `git commit ""` is `git commit` with
-    a target that happens to be empty, and carrying the empty word into the scope would put
-    a member in it that names nothing and that no display of the scope could show.
+    An empty argument ends the prefix as the cap does, and so does one carrying whitespace.
+    `git commit ""` is `git commit` with a target that happens to be empty, and carrying the
+    empty word into the scope would put a member in it that names nothing and that no
+    display of the scope could show; `git commit -m 'fixed the parser'` is `git commit -m`
+    with a message for a target, and a message is the part of the act a scope exists to
+    leave out — so the scope ends before it, and stands for a commit with *any* message.
     """
     words = [command.program]
     operands = 1
     for argument in command.arguments:
-        if not argument or operands >= _PREFIX_WORDS:
+        if not argument or operands >= _PREFIX_WORDS or any(c.isspace() for c in argument):
             break
         words.append(argument)
         if not is_flag(argument):
@@ -362,7 +391,7 @@ def _unreadable(node: Node) -> str:
     """
     text = node.text.decode(errors="replace") if node.text else ""
     if _expands(text, _EXPANDED_UNQUOTED):
-        return "a word the shell would expand or unescape"
+        return _EXPANDS_UNREAD
     return f"an argument of a kind not read here ({node.type})"
 
 
@@ -425,12 +454,14 @@ class _Walk:
                     # string, and an empty program is not a program with a short name.
                     program = None
                     self.unbounded.append("a program name assembled at run time")
-                elif _composite(program):
-                    # The same refusal :meth:`_argument` makes, for the same reason and
-                    # with more riding on it: `'my prog'` is not one word, so it is
-                    # neither a path this walk can place (it read as a *relative* one,
-                    # landing comfortably inside the worktree) nor a name a standing
-                    # permission could be scoped to.
+                elif _composite(program) or any(c.isspace() for c in program):
+                    # Stricter than the refusal :meth:`_argument` makes, because more
+                    # rides on it: `'my prog'` is not one word, so it is neither a path
+                    # this walk can place (it read as a *relative* one, landing
+                    # comfortably inside the worktree) nor a name a standing permission
+                    # could be scoped to — and unlike an argument, a program is not
+                    # something to read word by word, since which of its words runs is
+                    # exactly what is not known.
                     program = None
                     self.unbounded.append(_COMPOSITE_PROGRAM_UNREAD)
                 else:
@@ -480,6 +511,10 @@ class _Walk:
         if _composite(literal):
             self.unbounded.append(_COMPOSITE_UNREAD)
             return
+        words = literal.split()
+        if len(words) > 1:
+            self._reach_words(words)
+            return
         self._reach(literal)
 
     def _redirect(self, node: Node) -> None:
@@ -515,8 +550,10 @@ class _Walk:
         A word that is not a single operand is not measured as one. Whether
         `'cat /etc/passwd'` is a command line or a commit message is a fact about the
         program receiving it, and reading it as a relative path places it comfortably
-        inside the worktree — which is how every `sh -c` cleared. It is recorded as
-        unbounded instead, and the reviewer rules on it.
+        inside the worktree — which is how every `sh -c` cleared. So a quoted argument
+        with spaces in it is measured **word by word** (:meth:`_reach_words`): the path it
+        carries is refused as the path it is, and a commit message carrying none clears.
+        One carrying the syntax a program would *run* is not placed at all.
         """
         if node.type in _DYNAMIC:
             self.unbounded.append(_DYNAMIC[node.type])
@@ -528,6 +565,10 @@ class _Walk:
         if _composite(value):
             self.unbounded.append(_COMPOSITE_UNREAD)
             return None
+        words = value.split()
+        if len(words) > 1:
+            self._reach_words(words)
+            return value
         if is_flag(value):
             attached = attached_value(value)
             if attached is not None:
@@ -553,12 +594,59 @@ class _Walk:
         if separator and name and value:
             self._measure(value)
 
+    def _reach_words(self, words: list[str]) -> None:
+        """A quoted argument's words, each measured as the program it is handed to might.
+
+        `sh -c 'cat /etc/passwd'` and `git commit -m 'fixed the parser'` are the same
+        shape to the grammar, and telling them apart by *program* is the table this file
+        exists without. Telling them apart by what the words *name* needs no table: the
+        first carries a path outside the worktree and the second carries none, so the
+        first is refused for the path and the second clears. A word the inner shell would
+        rewrite (`\\/etc/passwd`, `{..,}/x`) is refused as unread, exactly as it would be
+        on the outer command line — the escape is the same escape one shell deeper.
+        """
+        for word in words:
+            if _expands(word, _EXPANDED_UNQUOTED):
+                self.unbounded.append(_EXPANDS_UNREAD)
+                return
+            if "://" in word:
+                self.network = True
+                continue
+            # A program's own quoting and punctuation can glue a path to a word — `open F,
+            # "/etc/passwd"` carries the path inside a pair of quotes, and measured whole
+            # the word is a *relative* path that lands inside the worktree. So the word is
+            # split on everything a path cannot contain and every fragment is placed.
+            for fragment in _PATH_FRAGMENT.split(word):
+                if fragment:
+                    self._measure(fragment)
+
     def _measure(self, word: str) -> None:
-        """One string, placed: an address off this machine, a path, or neither."""
+        """One string, placed: an address off this machine, a pattern, a path, or none."""
         if "://" in word:
             self.network = True
+        elif _expands(word, _GLOB):
+            self._glob(word)
         elif _names_a_path(word):
             self._path(word, self.reads)
+
+    def _glob(self, pattern: str) -> None:
+        """A pattern, placed by the directory it matches inside.
+
+        Expansion happens in the directory the fixed part of the pattern names — `src/*.py`
+        matches under `src/`, `*` under the working directory — so that fixed part is what
+        is measured for containment, and it is measured exactly as an operand naming that
+        directory would be. What is refused rather than measured is a segment that could
+        match `..`: `/bin/sh` matches `.?`, `.*` and `.[.]` against the parent directory,
+        and a pattern that can climb one level can climb every level above it.
+        """
+        for segment in pattern.split("/"):
+            if _expands(segment, _GLOB) and segment.startswith("."):
+                self.unbounded.append(_PARENT_GLOB_UNREAD)
+                return
+        fixed = pattern[: min(pattern.index(c) for c in _GLOB if c in pattern)]
+        directory = fixed[: fixed.rfind("/") + 1]
+        if directory:
+            self._path(directory, self.reads)
 
     def _path(self, raw: str, into: list[str]) -> None:
         into.append(raw)

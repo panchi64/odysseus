@@ -119,24 +119,42 @@ def grant_scopes(tool_name: str, args: Mapping[str, Any]) -> list[tuple[str, ...
     a grant naming only the first would never cover the call it was recorded from.
 
     ``None`` when the call runs a command no scope could stand for: one the grammar could
-    not read, one naming a path outside the worktree, or one declaring a reach wider than
-    its tool's own. There is nothing to name in the first and nothing a *later* call could
-    safely be measured against in the other two — and the honest answer to all three is to
-    record no grant at all. Falling back to a whole-tool grant would hand exactly those
-    commands the standing yes this scoping exists to withhold.
+    not read, or one naming a path outside the worktree. There is nothing to name in the
+    first and nothing a *later* call could safely be measured against in the second — and
+    the honest answer to both is to record no grant at all. Falling back to a whole-tool
+    grant would hand exactly those commands the standing yes this scoping exists to
+    withhold.
+
+    A reach wider than the tool's own is *part of the scope* rather than a reason to record
+    nothing (:func:`_reach_marker`). At Auto the only shell calls that ever park are the
+    ones declaring ``host`` or ``network`` — so a scoping that refused them would leave the
+    operator's "allow for this conversation" with nothing it could ever apply to.
     """
     if tool_name not in COMMAND_SCOPED_TOOLS:
         return [()]
+    scopes = _scopes_of(tool_name, args)
+    if scopes is None:
+        return None
+    # Deduplicated, order preserved: `git add . && git commit` is one act named twice.
+    return list(dict.fromkeys(scopes))
+
+
+def _scopes_of(tool_name: str, args: Mapping[str, Any]) -> list[tuple[str, ...]] | None:
+    """Every scope this call's command line names, or None when it names none.
+
+    One per stage of the pipeline, each led by the reach marker where the call declared a
+    reach wider than its tool's own. Used on both sides — the scope a grant *records* and
+    the scopes a later call is *matched* by — so the two are the same reading by
+    construction.
+    """
     command = args.get(_COMMAND_ARGUMENT)
     if not isinstance(command, str):
-        return None
-    if not _reaches_no_further_than_its_tool(tool_name, args):
         return None
     prefixes = command_prefixes(command)
     if not prefixes:
         return None
-    # Deduplicated, order preserved: `git add . && git commit` is one act named twice.
-    return list(dict.fromkeys(prefixes))
+    marker = _reach_marker(tool_name, args)
+    return [(*marker, *prefix) for prefix in prefixes]
 
 
 def covered_by_grant(
@@ -172,33 +190,34 @@ def covered_by_grant(
         return False
     if any(not scope for scope in scopes):
         return True
-    command = args.get(_COMMAND_ARGUMENT)
-    if not isinstance(command, str):
+    called = _scopes_of(tool_name, args)
+    if not called:
         return False
-    if not _reaches_no_further_than_its_tool(tool_name, args):
-        return False
-    prefixes = command_prefixes(command)
-    if not prefixes:
-        return False
-    return all(prefix in scopes for prefix in prefixes)
+    return all(scope in scopes for scope in called)
 
 
-def _reaches_no_further_than_its_tool(tool_name: str, args: Mapping[str, Any]) -> bool:
-    """Whether this call declared the reach its tool runs at when it declares nothing.
+def _reach_marker(tool_name: str, args: Mapping[str, Any]) -> tuple[str, ...]:
+    """The word a scope leads with when the call declared a reach wider than its tool's own.
 
     ``reach`` is the model's own argument on the executing shell tools, and it is what
     decides the fence the command runs under — ``host`` runs unwrapped, ``network`` opens
     egress. So `uv run pytest` declared ``host`` is not the act the operator ticked a box
-    under; it is that command with the fence taken off, which is the part of the yes that
-    was doing the work.
+    under a fenced run of; it is that command with the fence taken off, which is the part
+    of the yes that was doing the work. The marker makes the two different scopes: a grant
+    recorded under a ``host`` run covers ``host`` runs of the same words and nothing
+    narrower or wider, and a grant recorded under the fence never covers a run without it.
 
-    Compared against the tool's own answer with no arguments rather than against the
-    literal ``"workspace"``, because a tool that has no such argument declares the same
-    thing on every call and has nothing here to widen — `code_run_host_command` reaches
-    the host by construction, and measuring it against a value it can never carry would
-    silently retire its grants instead of scoping them.
+    Spelled ``@host`` rather than as a bare word so it cannot collide with a program name,
+    and only present where the reach *is* wider — compared against the tool's own answer
+    with no arguments rather than against the literal ``"workspace"``, because a tool with
+    no such argument declares the same thing on every call and has nothing to widen:
+    `code_run_host_command` reaches the host by construction, and marking every one of its
+    scopes would say nothing a reader did not already know.
     """
-    return declared_reach(tool_name, dict(args)) == declared_reach(tool_name, {})
+    reach = declared_reach(tool_name, dict(args))
+    if reach is None or reach == declared_reach(tool_name, {}):
+        return ()
+    return (f"@{reach}",)
 
 
 class ApprovalGrantStore:

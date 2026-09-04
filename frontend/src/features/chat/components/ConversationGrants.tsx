@@ -56,7 +56,13 @@ export function ConversationGrants(props: {
   // A tool that runs a command holds one grant per act, so the tool name alone would put
   // two indistinguishable chips side by side and revoke the wrong one. Joining the words
   // is presentation and stops here: the revoke sends the words themselves.
-  const label = (g: ApprovalGrant) => g.commandPrefix.join(" ") || g.toolName;
+  // A scope recorded under a wider reach leads with `@host` / `@network` (the backend's
+  // marker), which reads better as a suffix: "brew install wget (host)".
+  const label = (g: ApprovalGrant) => {
+    const [head, ...rest] = g.commandPrefix;
+    if (head?.startsWith("@")) return `${rest.join(" ")} (${head.slice(1)})`;
+    return g.commandPrefix.join(" ") || g.toolName;
+  };
 
   // Which grant a row *is*, for the optimistic removal below. Compared word by word rather
   // than through the label, so two scopes cannot collapse into one on the way to a string.

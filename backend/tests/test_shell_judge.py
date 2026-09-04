@@ -234,32 +234,76 @@ class TestAWordThatIsAWholeCommandLine:
     escalates. The fence cannot be the backstop for it either, since reads are the one half
     of a declaration it does not hold.
 
-    Telling `sh -c` from `git commit -m` needs to know what the program does with the
-    string, which is the program table this whole design exists without. So the reading is
-    the conservative one — a word that is not a single word is not placed — and a quoted
-    multi-word argument pays a model review it used to get for free.
+    Telling `sh -c` from `git commit -m` by *program* needs to know what the program does
+    with the string, which is the program table this whole design exists without. Telling
+    them apart by what the words *name* needs no table: a quoted argument is measured word
+    by word, so the script is refused for the path it carries and the commit message,
+    carrying none, clears. An argument carrying the syntax a program would run is not
+    placed at all.
     """
+
+    @pytest.mark.parametrize(
+        ("command", "escape"),
+        [
+            ("sh -c 'cat /etc/passwd'", "/etc/passwd"),
+            ("eval 'cat /etc/passwd'", "/etc/passwd"),
+            ("bash -c 'cat ../outside.txt'", "../outside.txt"),
+            ("sh -c 'cat ~/.ssh/id_rsa'", "~/.ssh/id_rsa"),
+            ("perl -e 'open F, \"/etc/passwd\"'", "/etc/passwd"),  # glued to a quote
+        ],
+    )
+    def test_a_path_inside_a_quoted_script_is_the_path_it_is(self, command, escape):
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert capability.bounded  # every word was read; one of them left the worktree
+        assert escape in capability.escapes
+        assert not cleared(command)
+        assert reason(command).startswith('declared reach "workspace" but names')
 
     @pytest.mark.parametrize(
         "command",
         [
-            "sh -c 'cat /etc/passwd'",
             "bash -c 'cat /etc/passwd > leak.txt'",
             'python3 -c \'print(open("/etc/passwd").read())\'',
             'python3 -c"print(open(\'/etc/passwd\').read())"',  # glued to the flag, no space
             "awk 'BEGIN{while((getline l < \"/etc/passwd\")>0) print l}'",
-            "eval 'cat /etc/passwd'",
-            "sh -c 'rm -rf .'",  # and the harness's own `rm` denylist reads the first word
+            "sh -c 'cat${IFS}/etc/passwd'",
+            "sh -c 'ls; cat /etc/passwd'",
         ],
     )
-    def test_a_script_carried_as_an_argument_is_not_a_path_inside_the_worktree(self, command):
+    def test_a_script_carrying_syntax_is_not_placed_at_all(self, command):
         capability = shell_capability("shell_run_command", command, root=ROOT)
         assert not capability.bounded
-        assert capability.escapes == ()  # nothing here *looked* like an escape, which is why
         assert not cleared(command)
         assert reason(command) == (
-            "an argument that could itself be a command line rather than a word"
+            "an argument carrying shell syntax that a program could run as a command line"
         )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"sh -c 'cat \/etc/passwd'",  # the inner shell removes the backslash
+            "sh -c 'cat {..,}/etc/passwd'",  # and expands the brace
+        ],
+    )
+    def test_a_word_the_inner_shell_would_rewrite_is_refused_one_shell_deeper(self, command):
+        assert not cleared(command)
+        assert reason(command) == "a word the shell would expand or unescape"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit -m 'fixed the parser'",
+            "git commit -m 'see docs/notes.md for the shape'",
+            "pytest -k 'not slow'",
+            "echo 'hello world' >> notes.md",
+            "sh -c 'rm -rf .'",  # contained, and fenced to the worktree when it runs
+        ],
+    )
+    def test_a_quoted_argument_whose_words_stay_inside_clears(self, command):
+        # The breadth this rule buys: a commit message is the most common quoted argument
+        # a code thread writes, and it pays no review for having spaces in it.
+        assert shell_capability("shell_run_command", command, root=ROOT).bounded
+        assert cleared(command)
 
     @pytest.mark.parametrize(
         "command",
@@ -277,11 +321,46 @@ class TestAWordThatIsAWholeCommandLine:
         assert shell_capability("shell_run_command", command, root=ROOT).bounded
         assert cleared(command)
 
-    def test_the_price_is_a_review_and_not_a_refusal(self):
-        # A commit message with a space in it is indistinguishable from a script, and this
-        # is what that costs: the model reviewer rules on it instead of the command
-        # clearing for free. An escalation, never a refusal.
-        assert not cleared("git commit -m 'fix the parser'")
+    def test_the_scope_of_a_quoted_message_ends_before_the_message(self):
+        # A message is the target of a commit, and a scope names the act and not its
+        # target: one yes to `git commit -m 'fixed the parser'` stands for a commit with
+        # any message, which is the act the operator ticked the box under.
+        assert command_prefixes("git commit -m 'fixed the parser'") == (("git", "commit", "-m"),)
+
+
+class TestAPatternIsPlacedByItsDirectory:
+    """A glob expands inside the directory its fixed part names, and nowhere else."""
+
+    @pytest.mark.parametrize(
+        ("command", "read"),
+        [
+            ("cat *.py", None),
+            ("ls src/*.log", "src/"),
+            ("rm -rf build/*", "build/"),
+            ("cat src/**/*.py", "src/"),
+            ("cat x.*", None),  # the dot is not leading, so this cannot match `..`
+        ],
+    )
+    def test_a_pattern_inside_the_worktree_clears(self, command, read):
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert capability.bounded
+        assert cleared(command)
+        if read is not None:
+            assert read in capability.reads
+
+    @pytest.mark.parametrize("command", ["cat /etc/*", "cat ../*", "ls ~/*.txt"])
+    def test_a_pattern_whose_directory_is_outside_escalates(self, command):
+        capability = shell_capability("shell_run_command", command, root=ROOT)
+        assert capability.bounded
+        assert capability.escapes
+        assert not cleared(command)
+
+    @pytest.mark.parametrize("command", ["cat .*/x", "ls .?/x", "cat ./.*"])
+    def test_a_segment_that_could_match_the_parent_is_not_read(self, command):
+        # `/bin/sh` matches `.?` and `.*` against `..`, and a pattern that can climb one
+        # level can climb every level above it.
+        assert not cleared(command)
+        assert reason(command) == "a pattern that could match the parent directory"
 
 
 class TestTheWordsACommandLeadsWith:

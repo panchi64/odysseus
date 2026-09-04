@@ -136,7 +136,9 @@ class TestTheProfileIsTwoListsOfPaths:
     def test_a_thread_with_no_branch_names_no_ref_at_all(self, tmp_path):
         git = GitDirs(private=tmp_path / "private", common=tmp_path / "common")
         allowed = _allow(workspace_profile(tmp_path, git, None))
-        assert not [path for path in allowed if "refs" in path]
+        # No branch ref and no branch reflog — `packed-refs.lock` is allowed regardless,
+        # since every ref update takes it and a commit is not the only thing that does.
+        assert not [path for path in allowed if "refs/heads" in path]
 
     def test_linux_allows_the_directory_because_bubblewrap_binds_what_exists(self, tmp_path):
         # `bwrap` skips a bind whose source is missing, so the `.lock` git has not created
@@ -443,6 +445,9 @@ class TestTheFenceActuallyHolds:
         ):
             code, output = await self._fenced(command, worktree, dirs)
             assert code == 0, f"{command}: {output}"
+            # Cleanly, too: a commit that lands but prints `error: Unable to create
+            # packed-refs.lock` reads to the model as a commit that did not.
+            assert "error:" not in output, f"{command}: {output}"
         assert (worktree / "inside.txt").read_text().strip() == "hello"
         code, output = await _run("git log --oneline", worktree)
         assert "second" in output, output

@@ -1056,7 +1056,9 @@ class TestTheRubricWithoutTheScore:
         # The rubric describes its own inputs, so it drifts from `review_prompt` silently
         # unless something holds the two together. Each label below is one the prompt
         # writes in the clear, and the reviewer is told to weigh it.
-        unreadable = capability_of("shell_run_command", {"command": "cat *"}, root=WORKSPACE)
+        unreadable = capability_of(
+            "shell_run_command", {"command": "cat $TARGET"}, root=WORKSPACE
+        )
         clear = review_prompt(ReviewRequest(capability=unreadable, transcript=())).split(
             "[BEGIN UNTRUSTED CONTENT"
         )[0]

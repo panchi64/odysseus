@@ -395,6 +395,18 @@ class TestACommandScopedGrant:
             is False
         )
 
+    def test_a_grant_recorded_under_a_wider_reach_covers_that_reach_and_no_other(self):
+        # The one that makes grants usable at Auto at all: `brew install wget` declared
+        # `host` parks, the operator ticks the box, and the next identical call is covered
+        # — while the same words fenced, or declared `network`, are asked about again.
+        held = _grants(("shell_run_command", ("@host", "brew", "install", "wget")))
+        covers = lambda reach: covered_by_grant(  # noqa: E731 — one line, one meaning
+            "shell_run_command", {"command": "brew install wget", "reach": reach}, held
+        )
+        assert covers("host") is True
+        assert covers("workspace") is False
+        assert covers("network") is False
+
     def test_a_scope_covers_its_own_words_and_not_what_follows_them(self):
         # A scope is only as long as the approved command's own leading words, so matching
         # by *prefix* would turn one yes to a bare wrapper into a yes to everything under
@@ -501,11 +513,18 @@ class TestTheScopeAnApprovalRecords:
         assert grant_scopes("shell_run_command", {"command": command}) is None
 
     @pytest.mark.parametrize("reach", ["host", "network"])
-    def test_a_command_declaring_a_wider_reach_records_nothing(self, reach):
-        assert (
-            grant_scopes("shell_run_command", {"command": "uv run pytest", "reach": reach})
-            is None
-        )
+    def test_a_command_declaring_a_wider_reach_records_the_reach_in_its_scope(self, reach):
+        # At Auto these are the only shell calls that ever park, so a scoping that refused
+        # them would leave "allow for this conversation" with nothing to apply to. The
+        # reach leads the scope instead, so the grant stands for *that* run and no other.
+        assert grant_scopes("shell_run_command", {"command": "uv run pytest", "reach": reach}) == [
+            (f"@{reach}", "uv", "run", "pytest")
+        ]
+
+    def test_the_tools_own_reach_is_not_written_into_the_scope(self):
+        assert grant_scopes(
+            "shell_run_command", {"command": "uv run pytest", "reach": "workspace"}
+        ) == [("uv", "run", "pytest")]
 
     def test_a_host_tool_still_records_its_own_reach(self):
         # `code_run_host_command` reaches the host by construction and carries no `reach`

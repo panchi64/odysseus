@@ -247,6 +247,13 @@ def workspace_profile(
     if git is not None:
         allowed += [str(git.common / "objects"), str(git.private)]
         allowed += _branch_writes(git.common, branch, linux=linux)
+        # The lock, not the file. Every ref update takes `packed-refs.lock` to check
+        # whether the ref it is moving has a packed copy to retire; with the lock denied
+        # the commit still lands but git prints an error for it on every single commit,
+        # which the model reads as a failed commit. Allowing the lock lets that check run;
+        # rewriting `packed-refs` itself is still a rename onto a denied path, so
+        # `git pack-refs` and a branch deletion fail exactly as before.
+        allowed.append(str(git.common / "packed-refs.lock"))
         deny_write += [str(git.common / name) for name in _PROTECTED_GIT]
         deny_write += _pointer_writes(root, git)
     return SandboxRuntimeConfig(
