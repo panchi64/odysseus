@@ -112,28 +112,66 @@ class GitDirs:
 
         None is not an error: a workspace that is not a git checkout is fenced to its own
         directory and nothing else, which is the right answer and needs no git paths at all.
+
+        **The pointer is checked against the repository it claims rather than followed on
+        trust, and that check is a security boundary.** ``<root>/.git`` is a file *inside*
+        the worktree, so a command this fence cleared can rewrite it — and what it names
+        becomes the **next** command's write allowlist. Without a check, two commands that
+        each stay inside the worktree (write a line, copy it over `.git`) hand a third an
+        allow on any directory on the host, which is the one thing the fence exists to make
+        impossible. The check is git's own layout: a linked worktree's private directory is
+        always ``<common>/worktrees/<name>``, so both halves of the pointer have to agree
+        about which repository this is, and making them agree about a directory we may not
+        already write means first creating a directory *inside* it — the very write being
+        attempted. A pointer that does not describe that shape contributes no git paths at
+        all: a commit then fails inside the fence, visibly and redeclarably, which is the
+        cheap half of the trade.
+
+        **Every way of being wrong ends as ``None``, and the file's *bytes* are one of the
+        ways.** This runs on every shell call of a thread and no caller above it catches
+        anything, so a pointer that raises would stop the tool working at all rather than
+        stop it believing one file — and a hostile pointer is exactly where that would be
+        arranged. Two shapes raise rather than returning: bytes that are not UTF-8, and a
+        path carrying a NUL, which the filesystem calls reject as a ``ValueError`` and not
+        as an ``OSError``. So the reads are lenient about encoding and every error either
+        kind is caught here, in one place, rather than at each call that might produce one.
         """
-        marker = root / ".git"
         try:
-            if marker.is_dir():
-                return cls(private=marker, common=marker)
-            pointer = marker.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
+            return cls._read(root)
+        except (OSError, ValueError):
             return None
+
+    @classmethod
+    def _read(cls, root: Path) -> GitDirs | None:
+        """:meth:`read` without the degrade, so every failure has exactly one handler."""
+        marker = root / ".git"
+        if marker.is_dir():
+            # A plain checkout: the metadata is inside the worktree, so it is exactly as
+            # trustworthy as the worktree, and there is no pointer to be lied to by.
+            return cls(private=marker, common=marker)
+        pointer = marker.read_text(encoding="utf-8", errors="replace").strip()
         if not pointer.startswith("gitdir:"):
             return None
         private = Path(pointer.removeprefix("gitdir:").strip())
         if not private.is_absolute():
             private = (root / private).resolve()
-        try:
-            common_text = (private / "commondir").read_text(encoding="utf-8").strip()
-        except OSError:
-            # A repository with no `commondir` is one whose private directory *is* the
-            # common one — the shape `git init` produces before any worktree is added.
-            return cls(private=private, common=private)
-        common = Path(common_text)
+        # A missing `commondir` raises past this method: it means this is not the
+        # linked-worktree shape the check below can verify — a `--separate-git-dir`
+        # checkout, a submodule, or a forgery. None of the three is what code mode
+        # creates, so none of them gets git paths.
+        common_text = (private / "commondir").read_text(encoding="utf-8", errors="replace")
+        common = Path(common_text.strip())
         if not common.is_absolute():
             common = (private / common).resolve()
+        if not private.is_dir() or not common.is_dir():
+            return None
+        if private.parent.name != "worktrees":
+            return None
+        # Resolved on both sides because only one of them has been through `resolve()`
+        # above, and on macOS `/tmp` and `/private/tmp` are the same directory under two
+        # names — comparing the spellings would refuse every real worktree there.
+        if private.parent.parent.resolve() != common.resolve():
+            return None
         return cls(private=private, common=common)
 
 
@@ -173,12 +211,13 @@ def workspace_profile(
     are the difference between this tier clearing `uv run pytest` and `uv run pytest`
     failing to initialise its cache — see the setting for what is deliberately left out.
 
-    Denied inside what *is* writable: the host escape hatch's scratch directory, and the
-    repository's config, hooks, packed refs, ``info``, tags and remotes. The scratch
-    directory is the cwd every operator-approved host command starts in and resolves its
-    relative paths against, so a command that needed no approval must not be able to leave
-    something in it. The git paths are named as paths rather than as git subcommands:
-    `git config`, a shell redirect and a Python script are the same write.
+    Denied inside what *is* writable: the host escape hatch's scratch directory, the
+    repository's config, hooks, packed refs, ``info``, tags and remotes, and the two
+    pointer files this profile was itself derived from (:func:`_pointer_writes`). The
+    scratch directory is the cwd every operator-approved host command starts in and
+    resolves its relative paths against, so a command that needed no approval must not be
+    able to leave something in it. The git paths are named as paths rather than as git
+    subcommands: `git config`, a shell redirect and a Python script are the same write.
 
     **How far "the operator's other branches are out of reach" actually goes.** In a linked
     worktree — the shape code mode always produces — the whole common directory is outside
@@ -209,12 +248,35 @@ def workspace_profile(
         allowed += [str(git.common / "objects"), str(git.private)]
         allowed += _branch_writes(git.common, branch, linux=linux)
         deny_write += [str(git.common / name) for name in _PROTECTED_GIT]
+        deny_write += _pointer_writes(root, git)
     return SandboxRuntimeConfig(
         network=NetworkConfig(allowed_domains=list(allowed_domains)),
         filesystem=FilesystemConfig(
             deny_read=list(deny_read), allow_write=allowed, deny_write=deny_write
         ),
     )
+
+
+def _pointer_writes(root: Path, git: GitDirs) -> list[str]:
+    """The files this profile was *derived from*, denied so a command cannot rewrite them.
+
+    :meth:`GitDirs.read` follows two pointers to find every git path above — the worktree's
+    ``.git`` file, and the ``commondir`` inside the private directory it names — and both
+    of those sit inside what this same profile makes writable (the worktree root; the
+    worktree's own metadata). Rewriting one escapes nothing *now*; it changes what the
+    **next** command's fence is built from, which is the same escape one call later. A
+    fence whose own inputs are writable by what it fences is not a fence, so the inputs are
+    denied. `GitDirs.read` refuses a pointer that does not describe this repository as
+    well: this stops the rewrite, that stops a rewrite from being believed.
+
+    A plain checkout has neither file — ``.git`` *is* the metadata directory there, written
+    on every commit — and denying it would deny the commit with it. Nothing points anywhere
+    in that shape, so there is nothing here to hold.
+    """
+    marker = root / ".git"
+    if git.private == marker:
+        return []
+    return [str(marker), str(git.private / "commondir")]
 
 
 def _branch_writes(common: Path, branch: str | None, *, linux: bool) -> list[str]:

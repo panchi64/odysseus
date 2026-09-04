@@ -115,6 +115,24 @@ class TestTheProfileIsTwoListsOfPaths:
         assert str(tmp_path / ".git" / "refs" / "heads") not in denied
         assert str(tmp_path) in _allow(profile)
 
+    def test_the_pointers_the_profile_was_built_from_are_not_writable(self, tmp_path):
+        # The escape this closes takes two commands, each of which stays inside the
+        # worktree and clears structurally: write a line, copy it over `.git`. Nothing has
+        # escaped yet — but the *next* command's profile is built by reading that file, so
+        # the third command gets an allow on whatever the second one named. A fence whose
+        # own inputs are writable by what it fences is not one.
+        git = GitDirs(private=tmp_path / "private", common=tmp_path / "common")
+        denied = _deny(workspace_profile(tmp_path, git, BRANCH))
+        assert str(tmp_path / ".git") in denied
+        assert str(git.private / "commondir") in denied
+
+    def test_a_plain_checkout_has_no_pointer_to_hold(self, tmp_path):
+        # There `.git` *is* the metadata directory, written on every commit, and a denial
+        # is a subpath in both runtimes — so denying it would deny the commit with it.
+        # Nothing points anywhere in that shape, so there is nothing to protect.
+        git = GitDirs(private=tmp_path / ".git", common=tmp_path / ".git")
+        assert str(tmp_path / ".git") not in _deny(workspace_profile(tmp_path, git, BRANCH))
+
     def test_a_thread_with_no_branch_names_no_ref_at_all(self, tmp_path):
         git = GitDirs(private=tmp_path / "private", common=tmp_path / "common")
         allowed = _allow(workspace_profile(tmp_path, git, None))
@@ -194,13 +212,7 @@ class TestGitDirsReadsARealCheckout:
         run("git", "commit", "-m", "first")
         return repo
 
-    def test_a_plain_checkout_has_one_directory_serving_as_both(self, tmp_path):
-        repo = self._repo(tmp_path)
-        dirs = GitDirs.read(repo)
-        assert dirs is not None
-        assert dirs.private == dirs.common == repo / ".git"
-
-    def test_a_linked_worktree_has_two_and_neither_is_under_the_checkout(self, tmp_path):
+    def _worktree(self, tmp_path: Path) -> Path:
         repo = self._repo(tmp_path)
         worktree = tmp_path / "wt"
         subprocess.run(
@@ -209,6 +221,17 @@ class TestGitDirsReadsARealCheckout:
             check=True,
             capture_output=True,
         )
+        return worktree
+
+    def test_a_plain_checkout_has_one_directory_serving_as_both(self, tmp_path):
+        repo = self._repo(tmp_path)
+        dirs = GitDirs.read(repo)
+        assert dirs is not None
+        assert dirs.private == dirs.common == repo / ".git"
+
+    def test_a_linked_worktree_has_two_and_neither_is_under_the_checkout(self, tmp_path):
+        worktree = self._worktree(tmp_path)
+        repo = tmp_path / "repo"
         dirs = GitDirs.read(worktree)
         assert dirs is not None
         # `.git` is a file pointing elsewhere: a profile fenced to the worktree alone would
@@ -217,6 +240,35 @@ class TestGitDirsReadsARealCheckout:
         assert dirs.common == repo / ".git"
         assert dirs.private == repo / ".git" / "worktrees" / "wt"
         assert (dirs.common / "objects").is_dir()
+
+    def test_a_pointer_that_does_not_describe_this_repository_reads_as_none(self, tmp_path):
+        # The second half of the same escape: even where the pointer file *can* be
+        # rewritten (an earlier command, an unfenced host command, an operator's own
+        # mistake), what it says is only believed when the two halves agree about which
+        # repository this is — git writes a linked worktree's metadata at
+        # `<common>/worktrees/<name>`, and forging that shape for a directory we may not
+        # already write means first creating a directory inside it.
+        worktree = self._worktree(tmp_path)
+        target = tmp_path / "target"
+        target.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {target}\n")
+        assert GitDirs.read(worktree) is None
+        # ...and the same attempt wearing git's own layout, forged where it is writable.
+        forged = tmp_path / "forged" / "worktrees" / "wt"
+        forged.mkdir(parents=True)
+        (forged / "commondir").write_text(f"{target}\n")
+        (worktree / ".git").write_text(f"gitdir: {forged}\n")
+        assert GitDirs.read(worktree) is None
+
+    def test_a_pointer_that_is_not_even_text_reads_as_none(self, tmp_path):
+        # Declining to believe a file must not mean *raising* on it: this runs on every
+        # shell call of a thread and nothing above it catches, so a `commondir` of
+        # arbitrary bytes would break the tool itself rather than the forgery.
+        worktree = self._worktree(tmp_path)
+        dirs = GitDirs.read(worktree)
+        assert dirs is not None
+        (dirs.private / "commondir").write_bytes(b"\xff\xfe\x00../..")
+        assert GitDirs.read(worktree) is None
 
     def test_a_directory_that_is_not_a_checkout_reads_as_none(self, tmp_path):
         # Not an error: a workspace that is not a repository is fenced to itself, which is
@@ -462,6 +514,24 @@ class TestTheFenceActuallyHolds:
         code, output = await self._fenced("git tag sneaky", worktree, dirs)
         assert code != 0, output
         assert not (dirs.common / "refs" / "tags" / "sneaky").exists()
+
+    async def test_a_command_cannot_rewrite_what_the_next_fence_is_built_from(self, tmp_path):
+        # Reproduced end to end before the denial existed: two commands that each stay
+        # inside the worktree and clear structurally (`printf x > tpl`, `cp tpl .git`)
+        # left `.git` naming any directory on the host, and the *next* cleared command ran
+        # with that directory in its write allowlist. Both spellings are tried, because a
+        # denial that only caught the redirect would leave `cp` as the whole escape.
+        await _fence_or_skip(tmp_path)
+        worktree, dirs = await self._worktree(tmp_path)
+        pointer = (worktree / ".git").read_text()
+        (worktree / "tpl").write_text(f"gitdir: {tmp_path}\n")
+        for command in (f"cp tpl {worktree / '.git'}", f"printf x > {worktree / '.git'}"):
+            code, output = await self._fenced(command, worktree, dirs)
+            assert code != 0, output
+        assert (worktree / ".git").read_text() == pointer
+        commondir = dirs.private / "commondir"
+        code, output = await self._fenced(f"printf x > {commondir}", worktree, dirs)
+        assert code != 0, output
 
     async def test_the_directory_approved_host_commands_run_in_is_out_of_reach(self, tmp_path):
         # It is under the OS temp root, which the profile allows wholesale, so this is a
