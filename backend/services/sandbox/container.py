@@ -1,15 +1,23 @@
 """The container-runtime sandbox backend — the portable default.
 
-Drives a Docker- or Podman-compatible CLI to run a command in a locked-down
-container with the host shut out: ``--network none`` by default, ``--cap-drop
-ALL``, ``--security-opt no-new-privileges``, a **read-only root** with a writable
-``/work`` (the workspace) and a small ``tmpfs`` for scratch, and explicit
-memory/PID/CPU caps. No host environment is passed — only ``spec.env``.
+Drives a Docker- or Podman-compatible CLI to run a command in a container with
+the host shut out: ``--network none`` by default, ``--cap-drop ALL``,
+``--security-opt no-new-privileges``, ``--user uid:gid`` (never the image's
+root), and explicit memory/PID/CPU caps. No host environment is passed — only
+``spec.env``.
 
-The workspace is a host-side directory bind-mounted at ``/work``: the container
-reads/writes only there, and the operator's real files are never mounted, so the
-box cannot reach the host filesystem. The one-shot ``run`` uses a throwaway temp
-dir; ``run_in`` operates over a caller-owned directory (the live-session path).
+What the fence is *for* is exfiltration, not inconvenience. The wall that matters
+is the one at the edge: the operator's real files are never mounted, and egress
+is off unless the caller asks for it. Inside, what the box may write is decided
+by ordinary file permissions and nothing else — the image's own tree is
+root-owned and the box is not root, so ``/usr`` and friends stay unwritable
+whether or not we ask the runtime for a read-only root, and the writable ground
+is ``/work``, ``/tmp`` and the paths the image already left world-writable.
+
+The workspace is a host-side directory bind-mounted at ``/work``: the only path
+whose writes outlive the container, and the only place the host and the box
+share. The one-shot ``run`` uses a throwaway temp dir; ``run_in`` operates over
+a caller-owned directory (the live-session path).
 
 We talk to the CLI over ``asyncio`` subprocesses (no SDK dependency — keeps the
 runtime portable across hosts and the dependency surface small). The runtime
@@ -105,9 +113,15 @@ def detached_run_argv(
     return [runtime, "run", "--detach", "--name", name, *flags, image, *command]
 
 
-async def force_remove_container(runtime: str, name: str) -> None:
+async def force_remove_container(runtime: str, name: str, *, timeout_s: float = 30.0) -> None:
     """Best-effort ``runtime rm --force`` of a container — a missing one is fine.
-    The single teardown primitive for every container we name (session + preview)."""
+    The single teardown primitive for every container we name (session + preview).
+
+    Bounded, because a daemon that accepts the connection and never answers (a
+    container whose mount is wedged, a Docker Desktop mid-restart) would otherwise
+    park the caller here forever — and the callers are app startup and the reaper,
+    neither of which may hang on a runtime having a bad day. Giving up only abandons
+    the local client; the removal, if it lands at all, lands without us."""
     try:
         proc = await asyncio.create_subprocess_exec(
             runtime,
@@ -117,9 +131,16 @@ async def force_remove_container(runtime: str, name: str) -> None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await proc.wait()
     except (OSError, ValueError):
-        pass
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+    except TimeoutError:
+        _kill(proc)
+        logger.info("sandbox: gave up removing container %s after %.0fs", name, timeout_s)
+    except asyncio.CancelledError:
+        _kill(proc)
+        raise
 
 
 def discover_runtime(preferred: str | None = None) -> str | None:
@@ -188,11 +209,11 @@ async def await_http_serving(
     )
 
 
-# Workspace-relative dirs the env defaults point at, created host-side before a
-# run (see ``prepare_workspace``) because the container's root is read-only.
+# Workspace-relative dirs the env defaults point at, created host-side before a run
+# (see ``prepare_workspace``) so the very first command already finds them.
 # ``.tmp`` backs ``TMPDIR`` (a missing one makes ``mktemp`` fail and Python's
-# ``tempfile`` fall back to the tiny ``/tmp`` tmpfs); ``.home`` backs ``HOME`` so
-# tool caches/config keyed off ``$HOME`` have somewhere writable. Both are sealed
+# ``tempfile`` fall back to the in-memory ``/tmp`` tmpfs); ``.home`` backs ``HOME``
+# so tool caches/config keyed off ``$HOME`` have somewhere writable. Both are sealed
 # out (see ``Settings.sandbox_session_seal_excludes``), so they're scratch — kept
 # off the encrypted archive and recreated each run.
 _TMP_SUBDIR = ".tmp"
@@ -207,23 +228,26 @@ def workspace_owner() -> str:
     ``CAP_DAC_OVERRIDE`` — so an in-container *root* (uid 0) is bound by ordinary
     permission bits and, owning none of ``/work``, cannot write it: every install
     redirect (``TMPDIR``, pip's ``--user`` target/cache) then fails, ``tempfile``
-    falls back to the tiny ``/tmp`` tmpfs, and a real install dies with ENOSPC
-    despite ample disk. Running the box as the workspace's owner makes ``/work``
+    falls back to the ``/tmp`` tmpfs, and nothing the agent installs survives the
+    container. Running the box as the workspace's owner makes ``/work``
     writable without re-granting any capability, and keeps files the agent creates
     owned by this process so the seal/restore can read them."""
     return f"{os.getuid()}:{os.getgid()}"
 
 
 def workspace_env_defaults(workdir: str) -> dict[str, str]:
-    """Package-manager env so installs land in the writable workspace, not the
-    read-only root: pip's ``--user`` target, its caches, the build temp, and a
-    writable ``HOME`` all redirect under ``workdir`` (the persisted bind-mount).
-    Without this a plain ``pip install`` tries to write the immutable root and fails.
+    """Package-manager env so installs land in the *persistent* workspace rather
+    than the container's throwaway layer: pip's ``--user`` target, its caches, the
+    build temp, and a writable ``HOME`` all redirect under ``workdir`` (the
+    bind-mount). Without this a plain ``pip install`` targets a system site-packages
+    the non-root box does not own — and anything it did land would vanish with the
+    container, so the agent would reinstall on every reap.
 
     ``PIP_USER`` makes a flagless ``pip install`` target user-site
     (``PYTHONUSERBASE``), which Python auto-adds to ``sys.path``; ``TMPDIR`` keeps
-    wheel builds off the tiny ``/tmp`` tmpfs (``prepare_workspace`` creates it
-    first). ``HOME`` is the catch-all for tools that key caches/config off ``$HOME``
+    wheel builds on the bind-mount rather than the ``/tmp`` tmpfs
+    (``prepare_workspace`` creates it first). ``HOME`` is the catch-all for tools
+    that key caches/config off ``$HOME``
     — it points at a seal-excluded subdir so that state stays writable but is
     dropped on reap instead of bloating the encrypted archive.
 
@@ -245,10 +269,10 @@ def prepare_workspace(workspace: Path) -> None:
     """Create the writable scratch subdirs the env defaults reference before a run.
 
     ``TMPDIR`` must pre-exist — ``mktemp`` errors and ``tempfile`` falls back to the
-    small tmpfs when it's missing; ``HOME`` must exist or some tools refuse to start.
-    pip creates its own ``--user``/cache dirs. The container's read-only root can't
-    ``mkdir`` these, so we do it host-side on the bind-mount (changes are visible
-    live in the running session container)."""
+    tmpfs when it's missing; ``HOME`` must exist or some tools refuse to start. pip
+    creates its own ``--user``/cache dirs. Done host-side because the seal drops both
+    dirs and the box may already be running when the next call arrives — writes to
+    the bind-mount show up live inside it, so nothing has to be restarted."""
     for sub in (_TMP_SUBDIR, _HOME_SUBDIR):
         (workspace / sub).mkdir(parents=True, exist_ok=True)
 
@@ -265,7 +289,22 @@ def hardened_flags(
     publish_port: int | None = None,
 ) -> list[str]:
     """The isolation flags shared by every container we launch — egress off unless
-    asked, all capabilities dropped, immutable root, only the workspace writable.
+    asked, all capabilities dropped, never the image's root, and resource caps.
+
+    Deliberately *not* here: a read-only root. It bought no containment that
+    ``--user`` below does not already buy — the image's tree is root-owned and
+    this box is not root, so ``/usr`` stays unwritable either way — while turning
+    every world-writable scratch path (``/var/tmp``, ``/dev/shm``) into an error
+    the agent could not act on. Those paths are writable again now, on the
+    container's own overlay, and nothing here caps them: the flags below bound
+    memory, CPU and processes, never bytes on the operator's disk.
+
+    The ``/tmp`` tmpfs stays for what it *does* bound — it is RAM, charged to this
+    box's memory cap and handed back whole when the box dies, so scratch written
+    there can never outlive the run that made it.
+
+    The caps are host protection, not agent restriction: one runaway box must not
+    take the operator's machine down with it.
 
     ``publish_port`` (the live-preview path only) maps an in-container port out to
     an OS-assigned host port bound to loopback, so only this host reaches the
@@ -277,15 +316,20 @@ def hardened_flags(
         "ALL",
         # Run as the workspace's host owner (this process), not the image's root:
         # with all caps dropped there's no CAP_DAC_OVERRIDE, so an in-container root
-        # couldn't write the uid-owned /work and installs would fall back to the
-        # tiny /tmp tmpfs and fail with ENOSPC. See ``workspace_owner``.
+        # couldn't write the uid-owned /work and installs would fail. This is also
+        # why system package managers (apt) can never work here — they need root
+        # plus capabilities the box does not have. See ``workspace_owner``.
         "--user",
         workspace_owner(),
         "--security-opt",
         "no-new-privileges",
-        "--read-only",  # root fs immutable; only the mount + tmpfs are writable
+        # A gigabyte of scratch, not the old 64m, so a wheel build or an unpack that
+        # lands here has room. It is RAM, though — tmpfs pages are charged to this
+        # container's memory cap, so a run that filled it would be OOM-killed rather
+        # than told ENOSPC. The bulk scratch the agent actually gets is TMPDIR on the
+        # /work mount (see ``workspace_env_defaults``), which is real disk.
         "--tmpfs",
-        "/tmp:rw,size=64m",
+        "/tmp:rw,size=1g",
         "--memory",
         memory,
         "--cpus",
@@ -386,9 +430,9 @@ class ContainerSandbox(Sandbox):
         *,
         runtime: str | None = None,
         image: str = "python:3.12-slim",
-        memory: str = "512m",
-        cpus: str = "1.0",
-        pids_limit: int = 256,
+        memory: str = "4g",
+        cpus: str = "2.0",
+        pids_limit: int = 1024,
         workdir: str = "/work",
     ) -> None:
         self._runtime = runtime
@@ -429,13 +473,23 @@ class ContainerSandbox(Sandbox):
             env=spec.env,
         )
 
-    def _run_argv(self, runtime: str, spec: SandboxSpec, mount: Path) -> list[str]:
-        """The locked-down throwaway ``run`` command line — host shut out."""
+    def _run_argv(
+        self, runtime: str, spec: SandboxSpec, mount: Path, *, name: str | None = None
+    ) -> list[str]:
+        """The locked-down throwaway ``run`` command line — host shut out.
+
+        ``name`` is what makes a throwaway box *findable*. ``--rm`` collects it on a
+        clean exit, but killing the client does not kill the container, so a cancelled
+        call or a dead process leaves one running over a caller-owned workspace — and
+        an anonymous container is one no boot reconciliation and no teardown can ever
+        name. A caller that runs over a directory it means to keep passes a name."""
+        named = ["--name", name] if name is not None else []
         return [
             runtime,
             "run",
             "--rm",
             "--interactive",  # so stdin can be piped in
+            *named,
             *self._flags(spec, mount),
             self.image,
             *with_in_container_timeout(list(spec.command), spec.timeout_s),
@@ -448,20 +502,26 @@ class ContainerSandbox(Sandbox):
             prepare_workspace(workspace)  # a fresh temp dir has none of the scratch dirs
             return await self.run_in(workspace, spec)
 
-    async def run_in(self, workspace: Path, spec: SandboxSpec) -> SandboxResult:
+    async def run_in(
+        self, workspace: Path, spec: SandboxSpec, *, name: str | None = None
+    ) -> SandboxResult:
         """Run the spec in a throwaway container over a caller-owned workspace.
 
         Copies named inputs in and outputs back out; the workspace itself persists
         for the caller (the live-session network path reuses its session dir). The
         caller owns workspace prep (``prepare_workspace``) — the session path has
-        already done it via ``_ensure_workspace``, so we don't repeat it here."""
+        already done it via ``_ensure_workspace``, so we don't repeat it here.
+
+        ``name`` labels the box so it can be found again — see :meth:`_run_argv`. A
+        caller that passes one owns clearing a leftover of the same name first; the
+        create fails outright while one is still around."""
         runtime = self.runtime
         if runtime is None:  # disappeared since detection — fail closed, don't host-run
             raise SandboxError("no container runtime available")
 
         self._write_inputs(workspace, spec)
         backstop_timed_out, exit_code, out, err = await run_subprocess(
-            self._run_argv(runtime, spec, workspace),
+            self._run_argv(runtime, spec, workspace, name=name),
             stdin=spec.stdin,
             timeout_s=spec.timeout_s + _BACKSTOP_GRACE_S,
         )

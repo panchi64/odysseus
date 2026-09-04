@@ -17,6 +17,15 @@ Two execution paths keep egress off by default without a fragile live-network
 toggle: ordinary calls ``exec`` into the no-network session container; a call
 that asks for the network runs as a one-shot ``--network bridge`` container over
 the *same* workspace, so a fetched package lands in files the session then sees.
+
+Nothing here is pre-created. A container is worth having only once a conversation
+is actually running code in it, and an idle box kept warm for a conversation that
+never arrives is a process the operator did not ask for. What *is* done at boot is
+:mod:`services.sandbox.reconcile` — the containers and networks a previous process
+left running are ours, and nothing else will ever collect them. The plaintext
+workspaces that same crash stranded are collected here instead, by the idle sweep
+(:meth:`SandboxSessionManager._seal_orphans`), since sealing them needs a vault
+that is still locked at boot.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ import re
 import secrets
 import shutil
 import tarfile
+import threading
 import time
 from collections.abc import Iterable
 from fnmatch import fnmatch
@@ -53,6 +63,7 @@ from .container import (
     with_in_container_timeout,
 )
 from .preview import PreviewHandle, launch_preview, stop_preview_container
+from .reconcile import reconcile as reconcile_leftovers
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +80,21 @@ _SEAL_CONCURRENCY = 3
 # and one rebuild-and-retry after a fault in the runtime itself. A third would be waiting
 # out a container runtime that is genuinely broken, on the agent's clock.
 _RUNTIME_FAULT_ATTEMPTS = 2
+
+# Total wall clock one session's teardown may spend removing the boxes that could
+# still hold its workspace mounted. A whole batch of them is tombstoned while this
+# runs, and every `acquire()` for those conversations waits behind it with nothing to
+# show the operator — so a runtime that has stopped answering costs a bounded pause,
+# and what it did not manage to remove is left to the next boot's reconciliation.
+_MOUNT_RELEASE_BUDGET_S = 10.0
+
+# How many stranded plaintext workspaces one sweep adopts. Every key in a batch is
+# tombstoned for the whole batch, and an `acquire()` that lands on a tombstone waits
+# with nothing to show the operator — so the batch is kept to a couple of seal rounds
+# rather than however many a crashed process happened to leave. The next sweep takes
+# the next slice, which is soon enough for directories that have already sat in the
+# clear since the crash.
+_ORPHAN_SEALS_PER_SWEEP = 2 * _SEAL_CONCURRENCY
 
 
 def _safe_key(key: str) -> str:
@@ -99,11 +125,9 @@ async def _start_idle_container(
     ``sleep infinity`` so later ``exec`` calls have something to land on. Returns ``None``
     on success, or the runtime's stderr on failure.
 
-    Both callers come through here — a conversation's own container and a pre-warmed
-    spare — because these flags *are* the sandbox's containment: no network, a memory and
-    CPU cap, a pid limit, and exactly one bind mount. Spelled out per call site, that set
-    has two places to drift, and a spare that came up softer than a session's container is
-    a hole no test would notice.
+    A function rather than an inline argv because these flags *are* the containment —
+    no network, resource caps, exactly one bind mount — and a second spelling of them
+    somewhere else is a hole no test would notice.
     """
     argv = detached_run_argv(
         runtime,
@@ -201,14 +225,38 @@ def _seal_workspace(workspace: Path, excludes: Iterable[str], vault: Vault) -> b
     return vault.encrypt_bytes(buf.getvalue())
 
 
+def _partial_marker(workspace: Path) -> Path:
+    """The flag that says: this directory is a *fragment* of the sealed archive, and
+    the archive is the complete copy.
+
+    Both directions between archive and plaintext are multi-step, and the process can
+    die between the steps — mid-extract on a restore, mid-``rmtree`` after a seal.
+    Either leaves a directory indistinguishable, from the outside, from a workspace an
+    unclean shutdown stranded whole. That only became dangerous once something started
+    adopting such directories on sight (:meth:`SandboxSessionManager._seal_orphans`):
+    sealing a fragment back over the archive it came from destroys every file the
+    interrupted step never reached. A sibling of the workspace rather than a file
+    inside it, so it can never end up in an archive.
+    """
+    return workspace.with_name(workspace.name + ".partial")
+
+
 def _restore_workspace(blob: bytes, workspace: Path, vault: Vault) -> None:
+    marker = _partial_marker(workspace)
     try:
         raw = vault.decrypt_bytes(blob)
+        # The marker goes down *before* the directory it describes. Dying between the
+        # two the other way round leaves an empty, unmarked workspace beside a complete
+        # archive — which is precisely the shape the orphan sweep adopts and seals back
+        # over that archive, losing every file the conversation owned.
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
         workspace.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
             tar.extractall(workspace, filter="data")  # 'data' guards path traversal
     except Exception as exc:  # noqa: BLE001 — a damaged seal is a legible failure, not a crash
         raise SandboxError(f"could not restore the sandbox workspace: {exc}") from exc
+    marker.unlink(missing_ok=True)
 
 
 class SandboxSession:
@@ -230,6 +278,12 @@ class SandboxSession:
         self.sealed = sealed
         self.container = f"odysseus-sbx-{key}"
         self._preview_container = f"odysseus-pre-{key}"
+        # The per-call egress box is named for the same reason the other two are:
+        # `--rm` collects it on a clean exit, but killing the client kills no
+        # container, so a cancelled network call leaves one running over this very
+        # workspace. Anonymous, it would be a box no teardown and no boot
+        # reconciliation could ever name — see `_release_mounts`.
+        self._egress_container = f"odysseus-egress-{key}"
         self._backend = backend
         self._vault = vault
         self._excludes = tuple(excludes)
@@ -239,6 +293,18 @@ class SandboxSession:
         self._preview: PreviewHandle | None = None
         self._last_used = time.monotonic()
         self._lock = asyncio.Lock()
+        # Guards the two multi-step disk transitions on this workspace against each
+        # other: the seal (`_seal_and_clear`, run off-thread) and the restore/repair
+        # (`_ensure_workspace`). They are reachable at the same instant because the
+        # file tools deliberately take no session lock — a run parked on an approval
+        # can be reaped and sealed while it still holds this session object, and its
+        # next write would then repair the very directory the seal thread is walking.
+        # Interleaved, the two leave a torn workspace with no fragment marker on it,
+        # which the orphan sweep would seal straight over the good archive. A thread
+        # lock rather than the asyncio one because both sides are synchronous and one
+        # of them does not run on the loop at all; it is uncontended except in exactly
+        # that race.
+        self._disk = threading.Lock()
         self._holders: list[LiveWork] = []
 
     @property
@@ -306,15 +372,6 @@ class SandboxSession:
     def idle_seconds(self, now: float) -> float:
         return now - self._last_used
 
-    def _adopt_running_container(self, *, container: str, runtime: str) -> None:
-        """Wire this session onto an already-running container (a claimed spare,
-        sandbox-06) instead of the one ``_ensure_up`` would otherwise lazily
-        start. The session was constructed over the spare's own workspace dir —
-        the one the container's bind mount was established on."""
-        self.container = container
-        self._runtime = runtime
-        self._running = True
-
     async def _await_image_ready(self) -> None:
         """Wait out an in-flight background image pull before creating a
         container, rather than let the create step's own implicit pull race a
@@ -350,7 +407,15 @@ class SandboxSession:
             # `_ensure_up` below — otherwise this container's own implicit pull can
             # race the much shorter exec timeout on a genuinely cold boot (sandbox-01).
             await self._await_image_ready()
-            return await self._backend.run_in(self.workspace, spec)
+            runtime = self._backend.runtime
+            if runtime is not None:
+                # Clear a leftover of the same name before claiming it — the create
+                # fails outright while one is around, and a cancelled call leaves one
+                # (see `_egress_container`). Same reason `_ensure_up` does it.
+                await force_remove_container(runtime, self._egress_container)
+            return await self._backend.run_in(
+                self.workspace, spec, name=self._egress_container
+            )
         # Two attempts, because a fault in the *runtime* (dead/broken container, daemon
         # hiccup, stale workdir mount) is not a fault in the code the model asked to run.
         # The workspace holds all durable state and the container is disposable, so a
@@ -456,12 +521,12 @@ class SandboxSession:
     async def shutdown(self) -> None:
         """Kill the container and seal the workspace (when the vault is unlocked)."""
         async with self._lock:
-            # Tear the preview's container down first — it holds the workspace mount
-            # the seal is about to archive.
+            # Every box comes down before the archive goes on: each of them has this
+            # workspace bind-mounted at /work, and sealing under a live mount archives
+            # a torn tree and sends the box's later writes to a deleted inode.
             await self._stop_preview_locked()
-            if self._running:
-                await self._kill()
-                self._running = False
+            await self._release_mounts()
+            self._running = False
             if self.workspace.exists() and self._vault.is_unlocked:
                 # Off-thread: tar+gzip+AEAD of a workspace must not block the loop.
                 await asyncio.to_thread(self._seal_and_clear)
@@ -469,21 +534,75 @@ class SandboxSession:
             # reaping while locked, so a later (unlocked) reap seals it.
 
     def _seal_and_clear(self) -> None:
-        self.sealed.parent.mkdir(parents=True, exist_ok=True)
-        self.sealed.write_bytes(_seal_workspace(self.workspace, self._excludes, self._vault))
-        shutil.rmtree(self.workspace, ignore_errors=True)
+        """Archive the workspace and remove the plaintext — the only writer of the
+        sealed copy, and the only place that decides an existing archive may be
+        replaced.
+
+        The one directory that must never be archived is a fragment (see
+        :func:`_partial_marker`): it holds *less* than the archive it came from, so
+        sealing it would drop every file the interrupted step had not reached yet,
+        irrecoverably. There the archive wins and the fragment is simply dropped.
+        Anything else is the conversation's current state and is sealed exactly as it
+        stands — a workspace the agent was asked to empty included, since a deletion
+        the operator asked for has to stick.
+
+        Held under ``_disk`` for the whole archive-and-remove, so a file tool arriving
+        on this same session mid-seal waits it out rather than repairing the directory
+        underneath us (see ``_disk``)."""
+        with self._disk:
+            marker = _partial_marker(self.workspace)
+            if self.sealed.exists() and marker.exists():
+                logger.info(
+                    "sandbox: %s is a fragment of its own sealed archive — keeping the "
+                    "archive and dropping the plaintext",
+                    self.workspace.name,
+                )
+            else:
+                self.sealed.parent.mkdir(parents=True, exist_ok=True)
+                self.sealed.write_bytes(
+                    _seal_workspace(self.workspace, self._excludes, self._vault)
+                )
+            # Only now is the directory expendable: whatever survives the rmtree is a
+            # fragment of an archive that is already on disk.
+            marker.touch()
+            shutil.rmtree(self.workspace, ignore_errors=True)
+            marker.unlink(missing_ok=True)
 
     async def discard(self) -> None:
         """Stop and kill this session's containers **without sealing** — the
         un-sealing counterpart to :meth:`shutdown`, run when a conversation is being
-        deleted. Kills the preview + exec containers (releasing the workspace mount)
-        so the manager can then delete the files; it touches no disk itself, so disk
-        cleanup has a single home (:meth:`SandboxSessionManager._purge_disk`)."""
+        deleted. Kills every container holding the workspace mount so the manager can
+        then delete the files; it touches no disk itself, so disk cleanup has a single
+        home (:meth:`SandboxSessionManager._purge_disk`)."""
         async with self._lock:
             await self._stop_preview_locked()
-            if self._running:
-                await self._kill()
-                self._running = False
+            await self._release_mounts()
+            self._running = False
+
+    async def _release_mounts(self) -> None:
+        """Remove every container that could still have this workspace bind-mounted at
+        ``/work``, under one wall-clock budget for the lot.
+
+        All three names, unconditionally, because "this session started it" is not the
+        same question as "something is holding the mount". A cancelled network call
+        leaves its egress box running (the client dies, the container does not); the
+        orphan sweep builds a session over a directory some *earlier* process left
+        behind, whose exec and preview boxes may still be alive with that very
+        directory mounted; and boot reconciliation, which would normally have cleared
+        those, is skipped whenever the runtime was not up yet. Best-effort and bounded,
+        like every other removal — a daemon that has stopped answering must not park a
+        teardown that a batch of tombstoned conversations is waiting on."""
+        runtime = self._backend.runtime
+        if runtime is None:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _MOUNT_RELEASE_BUDGET_S
+        for name in (self.container, self._preview_container, self._egress_container):
+            left = deadline - loop.time()
+            if left <= 0:
+                logger.info("sandbox %s: gave up releasing the workspace mounts", self.key)
+                return
+            await force_remove_container(runtime, name, timeout_s=left)
 
     def collect_text_files(
         self, *, max_file_bytes: int = 262_144, max_files: int = 2000
@@ -537,16 +656,27 @@ class SandboxSession:
         return self.workspace
 
     def _ensure_workspace(self) -> None:
-        if not self.workspace.exists():
-            if self.sealed.exists():
-                if not self._vault.is_unlocked:
-                    raise SandboxError("cannot restore the sandbox workspace: vault is locked")
-                _restore_workspace(self.sealed.read_bytes(), self.workspace, self._vault)
-            else:
-                self.workspace.mkdir(parents=True, exist_ok=True)
-        # The build-temp dir is dropped from the seal, so recreate it every time —
-        # a missing TMPDIR breaks mktemp and silently shrinks pip's scratch space.
-        prepare_workspace(self.workspace)
+        # Under `_disk`, so a seal in flight finishes before we judge what is on disk:
+        # the branch below throws a fragment away and restores over it, which against a
+        # half-done seal would be two writers on one directory. See `_disk`.
+        with self._disk:
+            marker = _partial_marker(self.workspace)
+            if marker.exists():
+                # A restore or a post-seal cleanup that never finished. The archive is
+                # the whole copy, so throw the fragment away and let the restore below
+                # run again rather than hand the agent half its files.
+                shutil.rmtree(self.workspace, ignore_errors=True)
+                marker.unlink(missing_ok=True)
+            if not self.workspace.exists():
+                if self.sealed.exists():
+                    if not self._vault.is_unlocked:
+                        raise SandboxError("cannot restore the sandbox workspace: vault is locked")
+                    _restore_workspace(self.sealed.read_bytes(), self.workspace, self._vault)
+                else:
+                    self.workspace.mkdir(parents=True, exist_ok=True)
+            # The build-temp dir is dropped from the seal, so recreate it every time —
+            # a missing TMPDIR breaks mktemp and silently shrinks pip's scratch space.
+            prepare_workspace(self.workspace)
 
     async def _ensure_up(self) -> None:
         if self._running:
@@ -580,29 +710,6 @@ class SandboxSession:
         await force_remove_container(runtime, self.container)
 
 
-class _Spare:
-    """An idle, conversation-unattached container pre-created off the critical
-    path (sandbox-06) — same hardening as an ordinary session, ``sleep
-    infinity``-parked over a neutral, never-written-to workspace. A cold
-    ``acquire()`` claims one instead of paying the container-create round trip:
-    the session adopts the container *and its workspace directory in place* —
-    the dir is never renamed onto the conversation's canonical path, because a
-    host-side rename under a live bind mount breaks it on VM-backed runtimes
-    (Docker Desktop on macOS shares mounts by path, not dentry; every later
-    ``exec`` then dies with an OCI cwd fault). Only a truly cold conversation
-    (no plaintext workspace, no sealed archive) is eligible — adopting a spare's
-    empty dir over existing state would skip the restore and the next reap would
-    seal the empty dir over the real archive."""
-
-    __slots__ = ("container", "workspace", "runtime", "created")
-
-    def __init__(self, *, container: str, workspace: Path, runtime: str) -> None:
-        self.container = container
-        self.workspace = workspace
-        self.runtime = runtime
-        self.created = time.monotonic()
-
-
 #: A session taken out of the live map and awaiting its seal, with the event that
 #: releases whoever is waiting on *that* key's teardown. See ``_detach``.
 type _Detached = tuple[str, SandboxSession, asyncio.Event]
@@ -632,8 +739,6 @@ class SandboxSessionManager:
         reap_interval_s: float,
         excludes: Iterable[str],
         preview_startup_timeout_s: float = 20.0,
-        spare_enabled: bool = True,
-        spare_count: int = 1,
         max_sessions: int = 8,
     ) -> None:
         self._backend = backend
@@ -644,8 +749,6 @@ class SandboxSessionManager:
         self._reap_interval = reap_interval_s
         self._excludes = tuple(excludes)
         self._preview_startup_timeout_s = preview_startup_timeout_s
-        self._spare_enabled = spare_enabled
-        self._spare_count = spare_count
         # How many conversations may hold a live container at once. The idle TTL bounds
         # a session in *time*; this bounds the set in *count*, which the TTL alone never
         # does — a dozen threads worked on in rotation each stay inside the window and
@@ -667,13 +770,7 @@ class SandboxSessionManager:
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
         self._warm: asyncio.Task | None = None
-        # The pre-warmed spare pool (sandbox-06) — coordinates with the same
-        # background image pull a cold session waits on, so a spare is never
-        # created before the image it needs is actually cached.
         self._image_warmup = ImageWarmup()
-        self._spares: list[_Spare] = []
-        self._spare_seq = 0
-        self._replenish_task: asyncio.Task | None = None
         # Seals in flight, owned by the manager rather than by whoever triggered them —
         # see `_tear_down`. Held so they are not garbage-collected mid-archive and so
         # `stop` can drain them.
@@ -692,9 +789,8 @@ class SandboxSessionManager:
         return self._sessions.get(_safe_key(key))
 
     async def acquire(self, key: str, *, holder: LiveWork | None = None) -> SandboxSession:
-        """The session for a conversation, created (object only) on first use —
-        claiming a pre-warmed spare (sandbox-06) if one is available. If this key
-        is mid-teardown from a concurrent sweep/purge, waits for THAT teardown
+        """The session for a conversation, created (object only) on first use. If this
+        key is mid-teardown from a concurrent sweep/purge, waits for THAT teardown
         specifically rather than racing a second session onto the same workspace
         path; every other key proceeds immediately (sandbox-02).
 
@@ -719,11 +815,8 @@ class SandboxSessionManager:
                 if session is None:
                     other = self._tearing_down.get(safe)
                     if other is None:
-                        spare = self._claim_spare(safe)
-                        session = self._new_session(safe, spare=spare)
+                        session = self._new_session(safe)
                         self._sessions[safe] = session
-                        if spare is not None:
-                            self._kick_replenish()
                         # Only a *new* arrival applies the cap: finding a session already
                         # live is the steady state, and re-reaping on every tool call
                         # would make the cap a per-call sweep.
@@ -850,37 +943,16 @@ class SandboxSessionManager:
 
         await gather_bounded([seal(*item) for item in detached], _SEAL_CONCURRENCY)
 
-    def _claim_spare(self, safe: str) -> _Spare | None:
-        """Pop a spare for this key, but only for a **truly cold** conversation —
-        no plaintext workspace and no sealed archive on disk. An adopted spare
-        keeps its own (empty) workspace, so adopting over existing state would
-        bypass ``_ensure_workspace``'s restore, and the next reap would then seal
-        the near-empty spare dir over the real archive, destroying it."""
-        if not self._spares:
-            return None
-        has_state = (self._work_root / safe).exists() or (
-            self._sealed_root / f"{safe}.tar.enc.gz"
-        ).exists()
-        return None if has_state else self._spares.pop()
-
-    def _new_session(self, safe: str, *, spare: _Spare | None) -> SandboxSession:
-        # An adopted spare keeps its own workspace dir: its container's bind
-        # mount was established on that path, and renaming a mounted dir on the
-        # host breaks the mount on VM-backed runtimes (Docker Desktop on macOS
-        # resolves shared mounts by path, not dentry) — every later exec would
-        # die with an OCI cwd fault.
-        session = SandboxSession(
+    def _new_session(self, safe: str) -> SandboxSession:
+        return SandboxSession(
             safe,
-            workspace=spare.workspace if spare is not None else self._work_root / safe,
+            workspace=self._work_root / safe,
             sealed=self._sealed_root / f"{safe}.tar.enc.gz",
             backend=self._backend,
             vault=self._vault,
             excludes=self._excludes,
             warmup=self._image_warmup,
         )
-        if spare is not None:
-            session._adopt_running_container(container=spare.container, runtime=spare.runtime)
-        return session
 
     async def start_preview(
         self, key: str, command: list[str], port: int
@@ -977,26 +1049,31 @@ class SandboxSessionManager:
         try:
             if session is not None:
                 await session.discard()
-            workspace = session.workspace if session is not None else None
-            await asyncio.to_thread(self._purge_disk, safe, workspace)
+            await asyncio.to_thread(self._purge_disk, safe)
         finally:
             async with self._lock:
                 self._tearing_down.pop(safe, None)
             my_event.set()
 
-    def _purge_disk(self, safe: str, workspace: Path | None = None) -> None:
-        # A live session's workspace may not sit at the canonical path (an adopted
-        # spare keeps its own dir), so remove both it and the canonical dir.
-        if workspace is not None:
-            shutil.rmtree(workspace, ignore_errors=True)
-        shutil.rmtree(self._work_root / safe, ignore_errors=True)
+    def _purge_disk(self, safe: str) -> None:
+        workspace = self._work_root / safe
+        shutil.rmtree(workspace, ignore_errors=True)
+        _partial_marker(workspace).unlink(missing_ok=True)
         (self._sealed_root / f"{safe}.tar.enc.gz").unlink(missing_ok=True)
 
+    async def reconcile(self) -> None:
+        """Clear what the previous process left behind — see
+        :mod:`services.sandbox.reconcile`, which owns the whole of it because it needs
+        none of this manager's state."""
+        await reconcile_leftovers(self._backend.runtime, self._work_root)
+
     async def start(self) -> None:
-        """Launch the idle reaper and warm the shared container image in the
-        background. A boot status line for code execution and previews is logged
-        here (both share this manager's runtime + image); the image pull runs off
-        the critical path so app startup is never blocked, then logs when ready."""
+        """Reconcile what the last process left behind, then launch the idle reaper
+        and warm the shared container image in the background. A boot status line for
+        code execution and previews is logged here (both share this manager's runtime
+        + image); the image pull runs off the critical path so app startup is never
+        blocked, then logs when ready."""
+        await self.reconcile()
         self._reaper = asyncio.create_task(self._reaper_loop())
         runtime = self._backend.runtime
         image = self._backend.image
@@ -1008,9 +1085,8 @@ class SandboxSessionManager:
         """Pull the latest container image so the first code run / preview doesn't
         pay the pull cost. Best-effort: a failure leaves the image to be pulled
         lazily on first use rather than blocking or crashing startup. Resolves
-        ``_image_warmup`` either way, so any session waiting on it (sandbox-01)
-        and the spare pool (sandbox-06, which only pre-creates once the image is
-        confirmed cached) both unblock."""
+        ``_image_warmup`` either way, so a session waiting on it (sandbox-01)
+        unblocks instead of hanging on a pull that has already finished."""
         self._image_warmup.start_pulling()
         runtime = self._backend.runtime
         if runtime is None:  # disappeared since detection — nothing to warm
@@ -1032,56 +1108,9 @@ class SandboxSessionManager:
                 image,
             )
         self._image_warmup.mark_done(ready)
-        self._kick_replenish()
-
-    def _kick_replenish(self) -> None:
-        """Top the spare pool back up in the background — after the image is
-        confirmed ready, after a spare is claimed, and after a stale one is
-        reaped. A no-op while a replenish is already in flight."""
-        if not self._spare_enabled:
-            return
-        if self._replenish_task is None or self._replenish_task.done():
-            self._replenish_task = asyncio.create_task(self._replenish_spares())
-
-    async def _replenish_spares(self) -> None:
-        """Create idle, conversation-unattached containers up to ``spare_count``
-        (sandbox-06), entirely off the request path. Waits for the image to be
-        confirmed ready first (never races the boot pull); if the image turned
-        out unavailable, skips silently — the ordinary lazy per-conversation path
-        will report the real reason when something actually tries to use it."""
-        if not self._spare_enabled or self._image_warmup.pending or not self._image_warmup.ready:
-            return
-        runtime = self._backend.runtime
-        if runtime is None:
-            return
-        while len(self._spares) < self._spare_count:
-            try:
-                spare = await self._create_spare(runtime)
-            except SandboxError:
-                logger.warning("sandbox: could not pre-warm a spare container", exc_info=True)
-                return
-            self._spares.append(spare)
-
-    async def _create_spare(self, runtime: str) -> _Spare:
-        """One idle spare: a hardened container over a fresh, neutral workspace
-        directory that nothing has written to yet, kept alive with the same
-        ``sleep infinity`` pattern a session's own container uses."""
-        self._spare_seq += 1
-        token = secrets.token_hex(4)
-        name = f"odysseus-sbx-spare-{self._spare_seq}-{token}"
-        workspace = self._work_root / f"_spare-{self._spare_seq}-{token}"
-        workspace.mkdir(parents=True, exist_ok=True)
-        prepare_workspace(workspace)
-        err = await _start_idle_container(self._backend, runtime, name, workspace)
-        if err is not None:
-            shutil.rmtree(workspace, ignore_errors=True)
-            raise SandboxError(
-                f"failed to pre-warm a spare container: {err.decode('utf-8', 'replace')}"
-            )
-        return _Spare(container=name, workspace=workspace, runtime=runtime)
 
     async def stop(self) -> None:
-        for task in (self._reaper, self._warm, self._replenish_task):
+        for task in (self._reaper, self._warm):
             if task is not None:
                 task.cancel()
                 try:
@@ -1090,7 +1119,6 @@ class SandboxSessionManager:
                     pass
         self._reaper = None
         self._warm = None
-        self._replenish_task = None
         # Drained, never cancelled: a seal interrupted mid-archive leaves a workspace
         # neither sealed nor plaintext-free. Drained *before* taking the lock, which is
         # what each of them needs to release its own tombstone.
@@ -1104,10 +1132,6 @@ class SandboxSessionManager:
                     pass
             self._sessions.clear()
             self._previews.clear()
-            spares, self._spares = self._spares, []
-        for spare in spares:
-            await force_remove_container(spare.runtime, spare.container)
-            await asyncio.to_thread(shutil.rmtree, spare.workspace, ignore_errors=True)
 
     async def _reaper_loop(self) -> None:
         while True:
@@ -1138,14 +1162,56 @@ class SandboxSessionManager:
             # A per-key tombstone in `_tearing_down` lets that *same* key's acquire/
             # purge wait for its own teardown specifically, never anyone else's.
             detached = self._detach(stale)
-            stale_spares = [s for s in self._spares if now - s.created >= self._idle_ttl]
-            for spare in stale_spares:
-                self._spares.remove(spare)
 
         await self._tear_down(detached)
+        await self._seal_orphans()
 
-        for spare in stale_spares:
-            await force_remove_container(spare.runtime, spare.container)
-            await asyncio.to_thread(shutil.rmtree, spare.workspace, ignore_errors=True)
-        if stale_spares:
-            self._kick_replenish()
+    async def _seal_orphans(self) -> None:
+        """Seal cold plaintext workspaces that belong to no session.
+
+        A workspace directory with no live session and no teardown in flight is
+        the residue of a process that died before its own seal ran — and every
+        moment it sits there in the clear is a moment the vault's at-rest promise
+        is not being kept. This is the only thing that keeps that promise for such a
+        directory: boot cannot, because the vault is locked then, so the sweep picks
+        it up at the first unlock instead.
+
+        The seal goes through a throwaway session and the ordinary detach path
+        rather than a direct ``_seal_workspace`` call, so it inherits all three of
+        the protections that path carries: the tombstone protocol — an ``acquire()``
+        for that key arriving mid-archive waits for it instead of minting a session
+        onto the directory being read out from under it; the release of that same
+        tombstone in a ``finally``, whatever the seal does or how it is cancelled;
+        and :meth:`SandboxSession._seal_and_clear`'s refusal to let a fragment
+        overwrite the archive it came from. The dead process's containers come off
+        the directory inside that leg too — see
+        :meth:`SandboxSession._release_mounts`. Only called with the vault unlocked
+        — see :meth:`_sweep`."""
+        orphans: list[_Detached] = []
+        async with self._lock:
+            for safe in self._orphan_keys()[:_ORPHAN_SEALS_PER_SWEEP]:
+                event = asyncio.Event()
+                self._tearing_down[safe] = event
+                orphans.append((safe, self._new_session(safe), event))
+        if not orphans:
+            return
+        logger.info(
+            "sandbox: sealing %d workspace(s) left behind by an unclean shutdown",
+            len(orphans),
+        )
+        await self._tear_down(orphans)
+
+    def _orphan_keys(self) -> list[str]:
+        """Workspace dirs under ``_work_root`` that no session and no teardown owns.
+        Called under the manager lock — one directory listing, so the two maps it
+        reads cannot shift underneath the answer."""
+        if not self._work_root.exists():
+            return []
+        return [
+            path.name
+            for path in sorted(self._work_root.iterdir())
+            if path.is_dir()
+            and path.name.startswith("s")  # `_safe_key`'s prefix — never a scratch dir
+            and path.name not in self._sessions
+            and path.name not in self._tearing_down
+        ]

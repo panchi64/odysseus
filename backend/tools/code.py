@@ -190,8 +190,12 @@ def _execute_description(settings: Settings) -> str:
         "Your working directory is `/work` (where your shell starts). It is writable "
         "and persists across calls in this conversation: files you write and packages "
         "you install stay there, so you can run something, hit an error, fix it, and "
-        "re-run without starting over. The rest of the filesystem is read-only, and "
-        "`/tmp` is small and temporary — keep anything that matters in your working "
+        "re-run without starting over. `/tmp` is a small RAM disk, so what you put "
+        "there is charged against your memory cap below rather than to disk — unpack "
+        "or build anything sizeable under your working directory instead. You are not "
+        "root here, so the system directories belong to the OS and stay as they are; "
+        "the few scratch paths outside your working directory that do accept writes "
+        "are thrown away with the machine. Keep anything that matters in your working "
         "directory. After a long stretch of inactivity the machine is reclaimed: your "
         "files are kept and restored, but installed packages may need reinstalling.\n\n"
         "The `files_*` tools act on this same working directory: use them to read, "
@@ -201,10 +205,15 @@ def _execute_description(settings: Settings) -> str:
         "this tool, not a shell flag: writing it inside the command string does "
         "nothing. Install Python packages with `pip install <pkg>` (a `bash` call "
         "with `network=True`); they land in your working directory and import on "
-        "later calls without needing the network again. pip is the only installer "
-        "here — the OS itself is read-only, so `apt` and other system package "
-        "managers do not work. Use the machine freely for computation, scripting, "
-        "and iterating toward a working result.\n\n"
+        "later calls without needing the network again. `pip` is what the machine "
+        "ships with; anything else you want (`uv`, for instance) you install with it "
+        "first — a package's command lands in `/work/.local/bin`, which is not on your "
+        "`PATH`, so invoke it by that full path (`/work/.local/bin/uv ...`) or as "
+        "`python -m <pkg>`. System package managers are not an option — `apt` and "
+        "friends need root, which you do not have here, so they fail however you "
+        "invoke them; when you need a tool, reach for the language-level package that "
+        "provides it. Use the machine freely for computation, scripting, and iterating "
+        "toward a working result.\n\n"
         f"It is capped at {settings.sandbox_memory} memory, {settings.sandbox_cpus} "
         f"CPU, and {settings.sandbox_pids_limit} processes/threads — exceeding memory "
         "gets the run killed, exceeding the CPU cap only throttles it (the run keeps "
@@ -254,7 +263,7 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             timeout_s=timeout_s,
         )
         try:
-            session = await sessions.acquire(ctx.deps.sandbox_key, holder=ctx.deps.run)
+            session = await sessions.acquire(ctx.deps.workspace_key, holder=ctx.deps.run)
             # A cold container takes a beat to spin up — longer still the first
             # time, when the image must be pulled. Announce that wait so the run
             # reads as the environment starting, not the model stalling; a warm

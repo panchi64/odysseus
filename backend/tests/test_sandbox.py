@@ -123,11 +123,15 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     assert "--cap-drop ALL" in joined
     # Runs as the workspace's host owner, not the image's root: with all caps
     # dropped an in-container root can't write the uid-owned /work, so installs
-    # fall back to the tiny /tmp tmpfs and die with ENOSPC.
+    # fall back to the /tmp tmpfs and nothing the agent installs survives.
     assert f"--user {os.getuid()}:{os.getgid()}" in joined
     assert "--security-opt no-new-privileges" in joined
-    assert "--read-only" in joined
-    assert "--pids-limit 256" in joined
+    # No read-only root. It bought nothing `--user` does not already buy — the image's
+    # tree is root-owned and this box is not root — while turning every world-writable
+    # scratch path into an error the agent could not act on.
+    assert "--read-only" not in joined
+    assert "--tmpfs /tmp:rw,size=1g" in joined
+    assert "--pids-limit 1024" in joined
     assert f"{tmp_path}:/work" in joined  # copies mounted, not host files
     # The command is preserved verbatim at the tail, wrapped by the in-container
     # timeout, which the image precedes.
@@ -266,6 +270,31 @@ async def test_cancelling_a_runtime_command_kills_the_child(monkeypatch):
     [child] = spawned
     # Reaped promptly rather than outliving the run — `wait` would hang out to the
     # sleep's full 30s if the child had merely been abandoned.
+    await asyncio.wait_for(child.wait(), timeout=5)
+    assert child.returncode is not None
+
+
+async def test_force_remove_gives_up_on_a_daemon_that_never_answers(monkeypatch):
+    # Removal is what boot reconciliation and the reaper both run, and a container whose
+    # mount is wedged makes the daemon take the call and never answer. Unbounded, that
+    # parks app startup with nothing in the log; bounded, boot moves on and the next one
+    # tries again.
+    spawned: list[asyncio.subprocess.Process] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def hanging_exec(*_argv, **kwargs):
+        proc = await real_exec("sleep", "30", **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", hanging_exec)
+
+    async with asyncio.timeout(10):  # the assertion is that this returns at all
+        await container_mod.force_remove_container("docker", "odysseus-sbx-wedged", timeout_s=0.1)
+
+    [child] = spawned
+    # Killed, not merely abandoned — an orphaned client per stuck container would
+    # outlive every boot that hit one.
     await asyncio.wait_for(child.wait(), timeout=5)
     assert child.returncode is not None
 

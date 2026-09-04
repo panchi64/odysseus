@@ -30,6 +30,20 @@ from services.search import DedupeSets
 from services.workspace import RunWorkspace
 
 
+def default_workspace_key(conversation_id: str | None, run: Run | None) -> str:
+    """The key a run's workspace hangs off when nothing hands it one: the conversation
+    when there is one, else the run itself (a stateless turn).
+
+    A function rather than a line written out at each site because the turn prelude
+    resolves a workspace of its own — to stage attachments into — before any tool has
+    run, and the two derivations drifting apart would stage the operator's files into a
+    different workspace from the one the agent then works in. Empty for a run-less
+    ``RunDeps``, which only tests construct."""
+    if run is None:
+        return ""
+    return conversation_id or run.id
+
+
 @dataclass
 class RunDeps:
     run: Run
@@ -74,13 +88,17 @@ class RunDeps:
     # reason as the two above — and deliberately per *run* rather than per conversation:
     # "I already read this" is a fact about the investigation in flight, not a durable one.
     web_dedupe: DedupeSets = field(default_factory=DedupeSets, repr=False, compare=False)
+    # The key everything about this run's workspace hangs off: its container session,
+    # its preview, its staged artifacts. The conversation when there is one, else the
+    # run (a stateless turn). A real field rather than a derived property because a
+    # child workspace is a *fork* of its parent's, and delegation has to be able to
+    # hand a sub-agent a different one; left empty at construction it fills itself in
+    # below, so the ordinary case still needs no argument at any call site.
+    workspace_key: str = ""
 
-    @property
-    def sandbox_key(self) -> str:
-        """The key a conversation's sandbox session and its artifacts share — the
-        conversation when there is one, else the run (a stateless turn). Defined
-        once so the code and preview tools can never key them differently."""
-        return self.conversation_id or self.run.id
+    def __post_init__(self) -> None:
+        if not self.workspace_key:
+            self.workspace_key = default_workspace_key(self.conversation_id, self.run)
 
 
 # A feature-contributed dynamic instruction (a manifest's `instructions` export): the

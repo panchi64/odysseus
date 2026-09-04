@@ -88,7 +88,7 @@ class BrowserToolset(ReboundToolset):
         sessions = ctx.deps.caps.get_optional(BrowserSessionManager)
         if sessions is None:
             return _UNAVAILABLE
-        key = ctx.deps.sandbox_key
+        key = ctx.deps.workspace_key
         live = await sessions.acquire(key)
         if live is None:
             return _UNAVAILABLE

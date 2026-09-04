@@ -11,7 +11,7 @@ See docs/architecture/README.md (Pillar III, §2.2).
 from __future__ import annotations
 
 from .builtin import builtin_toolset
-from .deps import InstructionProvider, PromptContextProvider, RunDeps
+from .deps import InstructionProvider, PromptContextProvider, RunDeps, default_workspace_key
 from .tool_search import dormant_index_instructions, tool_search_capability
 from .toolsets import CORE_GATED_TOOLS, build_agent_toolsets, core_categories
 
@@ -23,6 +23,7 @@ __all__ = [
     "build_agent_toolsets",
     "CORE_GATED_TOOLS",
     "core_categories",
+    "default_workspace_key",
     "dormant_index_instructions",
     "tool_search_capability",
 ]

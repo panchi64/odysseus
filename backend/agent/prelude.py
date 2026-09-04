@@ -40,7 +40,7 @@ from services.projects import ProjectStore, WorktreeManager
 from services.sandbox import SandboxSessionManager
 from services.uploads import UploadStore
 from services.workspace import resolve_workspace
-from tools import PromptContextProvider
+from tools import PromptContextProvider, default_workspace_key
 
 from .attachments import resolve_attachments
 from .compaction_context import CompactionContext, resolve_max_input_tokens
@@ -191,7 +191,7 @@ async def prepare_turn(
                 mode=binding.mode,
                 project_id=binding.project_id,
                 conversation_id=conversation_id,
-                sandbox_key=conversation_id or run.id,
+                workspace_key=default_workspace_key(conversation_id, run),
                 owner_id=run.owner_id,
                 sessions=caps.get_optional(SandboxSessionManager),
                 projects=caps.get_optional(ProjectStore),

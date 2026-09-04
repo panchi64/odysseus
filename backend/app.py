@@ -258,8 +258,6 @@ async def _wire(app: FastAPI, settings: Settings, lifecycle: LifecycleRegistry) 
             reap_interval_s=settings.sandbox_session_reap_interval_s,
             excludes=settings.sandbox_session_seal_excludes,
             preview_startup_timeout_s=settings.sandbox_preview_startup_timeout_s,
-            spare_enabled=settings.sandbox_spare_enabled,
-            spare_count=settings.sandbox_spare_count,
             max_sessions=settings.sandbox_max_sessions,
         )
         if backend is not None

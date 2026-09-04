@@ -336,7 +336,7 @@ class TestResolveWorkspace:
                 mode="normal",
                 project_id=None,
                 conversation_id="c",
-                sandbox_key="c",
+                workspace_key="c",
                 owner_id=OWNER,
                 sessions=None,
                 projects=None,

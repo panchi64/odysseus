@@ -115,7 +115,7 @@ class RunWorkspace:
 
 
 async def sandbox_workspace(
-    sessions: SandboxSessionManager, sandbox_key: str, *, holder: LiveWork | None = None
+    sessions: SandboxSessionManager, workspace_key: str, *, holder: LiveWork | None = None
 ) -> RunWorkspace:
     """The conversation's container workspace. Raises `SandboxError` when it can't be
     opened (no runtime, a locked vault, an unreadable seal) — the caller degrades.
@@ -124,7 +124,7 @@ async def sandbox_workspace(
     live-session cap from displacing a container the run is still working in between two
     of its tool calls — the seal drops `node_modules`, `.venv` and `.git`, so a shell that
     just installed or cloned would find them gone on its next call."""
-    session = await sessions.acquire(sandbox_key, holder=holder)
+    session = await sessions.acquire(workspace_key, holder=holder)
     return RunWorkspace(root=session.ensure_workspace(), kind="sandbox", files=session)
 
 
@@ -187,7 +187,7 @@ async def resolve_workspace(
     mode: str,
     project_id: str | None,
     conversation_id: str | None,
-    sandbox_key: str,
+    workspace_key: str,
     owner_id: str,
     sessions: SandboxSessionManager | None,
     projects: ProjectStore | None,
@@ -230,7 +230,7 @@ async def resolve_workspace(
     if sessions is None:
         return None
     try:
-        return await sandbox_workspace(sessions, sandbox_key, holder=holder)
+        return await sandbox_workspace(sessions, workspace_key, holder=holder)
     except SandboxError:
         logger.debug("workspace: no sandbox workspace available", exc_info=True)
         return None
