@@ -7,13 +7,21 @@ and continues, because what these tests are about is what the tool does once it 
 
 from __future__ import annotations
 
-from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, ToolApproved
+from pydantic_ai import (
+    Agent,
+    DeferredToolRequests,
+    DeferredToolResults,
+    RunContext,
+    ToolApproved,
+)
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
 from agent import ParkedTurn, build_chat_orchestrator, build_resume_orchestrator, stream_agent_run
 from core.config import Settings
 from core.container import ServiceContainer
 from runs import Run, RunRegistry, RunStatus, RunStream
+from services.egress import EgressPolicy
 from services.sandbox import SandboxError, SandboxResult, SandboxSessionManager, SandboxSpec
 from tools import RunDeps, build_agent_toolsets
 from tools import code as code_module
@@ -72,6 +80,20 @@ class FakeSessionManager:
         return self.session
 
 
+class FakeEgressPolicy:
+    """Records each grant and answers with the workspace's whole allowlist, the way the
+    real policy does — the seeded entry stands in for the installation-wide list."""
+
+    def __init__(self) -> None:
+        self.granted: list[tuple[str, list[str]]] = []
+        self.allowed = {"pypi.org"}
+
+    async def allow(self, key: str, domains) -> frozenset[str]:
+        self.granted.append((key, list(domains)))
+        self.allowed |= set(domains)
+        return frozenset(self.allowed)
+
+
 def _bodies(run: Run):
     return [e.body for e in run.stream.replay()]
 
@@ -85,15 +107,25 @@ def _one_tool_agent(tool: str) -> Agent:
     )
 
 
-def _one_tool_deps(run: Run, sessions) -> RunDeps:
+def _one_tool_deps(run: Run, sessions, egress=None, *, delegated_approved: bool = False) -> RunDeps:
     caps = ServiceContainer()
     if sessions is not None:
         # The fake manager registers under the class the code tools resolve.
         caps.add(sessions, as_type=SandboxSessionManager)
-    return RunDeps(run=run, owner_id="operator", caps=caps, conversation_id="conv-1")
+    if egress is not None:
+        caps.add(egress, as_type=EgressPolicy)
+    return RunDeps(
+        run=run,
+        owner_id="operator",
+        caps=caps,
+        conversation_id="conv-1",
+        delegated_approved=delegated_approved,
+    )
 
 
-async def _run_one_tool(tool: str, *, sessions=None) -> Run:
+async def _run_one_tool(
+    tool: str, *, sessions=None, egress=None, delegated_approved: bool = False
+) -> Run:
     """Drive a single code tool through an agent and return the finished Run.
 
     Two passes, because running a program reaches past every permission level's write
@@ -105,7 +137,7 @@ async def _run_one_tool(tool: str, *, sessions=None) -> Run:
     """
     agent = _one_tool_agent(tool)
     run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
-    deps = _one_tool_deps(run, sessions)
+    deps = _one_tool_deps(run, sessions, egress, delegated_approved=delegated_approved)
     announced: set[str] = set()
     async with agent.iter("go", deps=deps) as agent_run:
         await stream_agent_run(agent_run, run, announced=announced)
@@ -150,11 +182,10 @@ async def test_execute_code_runs_in_the_conversation_session():
     # and the next one — the seal drops `node_modules`, `.venv` and `.git` by design.
     assert manager.acquired == "conv-1"
     assert manager.holder is run
-    # It ran in that session, with network off, via the python interpreter.
+    # It ran in that session, via the python interpreter.
     assert len(manager.session.specs) == 1
     spec = manager.session.specs[0]
     assert spec.command[:2] == ["python", "-c"]
-    assert spec.network is False
     # The result reached the model, once the call was approved.
     completed = next(b for b in _bodies(run) if b.type == "tool.completed")
     assert completed.result["stdout"] == "hello from box"
@@ -254,10 +285,10 @@ async def test_pid_cap_hint_is_distinguished_from_plain_nonzero(monkeypatch):
 
 
 async def test_missing_module_hint_states_the_exact_install_mechanics():
-    # The failure mode this guards: the model knows it must install but botches
-    # the mechanics (network=True inside the code string, hallucinated pip flags).
-    # The hint states the exact next call, including that `network` is a tool
-    # argument, not part of the command.
+    # The failure mode this guards: the model knows it must install but botches the
+    # mechanics (hallucinated pip flags, an install folded into the failing call). The
+    # registries are reachable already, so the hint is a plain install and nothing else —
+    # no network flag to get wrong.
     stderr = (
         "Traceback (most recent call last):\n"
         '  File "<string>", line 1, in <module>\n'
@@ -266,21 +297,49 @@ async def test_missing_module_hint_states_the_exact_install_mechanics():
     failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
     hint = (await _run_canned(result=failing))["error"]
     assert "pip install matplotlib" in hint
-    assert "network=True" in hint
-    assert "not part of the command" in hint
+    assert "network" not in hint.lower()
 
 
-async def test_offline_fetch_hint_points_at_the_network_tool_argument():
-    # A pip/fetch attempt without egress fails with resolution errors; the hint
-    # names the `network=True` tool argument as the fix (the run had network off).
+async def test_a_blocked_host_points_at_the_egress_request():
+    # The proxy's own refusal. The hint has to name the recoverable next call, because
+    # the code is fine and a model told only "connection refused" rewrites it instead.
+    denied = SandboxResult(
+        exit_code=1,
+        stdout="",
+        stderr="urllib.error.HTTPError: HTTP Error 403: odysseus-egress: denied",
+    )
+    hint = (await _run_canned(result=denied))["error"]
+    assert "code_request_egress" in hint
+    assert "allowlist" in hint
+
+
+async def test_a_resolution_failure_points_at_the_same_egress_request():
+    # The other spelling of one refusal: a client that never reaches the proxy prints a
+    # name-resolution or connection error, and it must not read as a different problem.
     stderr = (
         "WARNING: Retrying... Temporary failure in name resolution\n"
-        "ERROR: No matching distribution found for matplotlib\n"
+        "ERROR: No matching distribution found for internal-mirror\n"
     )
     failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
     hint = (await _run_canned(result=failing))["error"]
-    assert "network=True" in hint
-    assert "argument" in hint
+    assert "code_request_egress" in hint
+    assert "retry this same code unchanged" in hint
+
+
+async def test_a_misspelled_package_is_not_diagnosed_as_a_blocked_host():
+    # The registries are reachable, so pip's resolution summary is what a typo prints
+    # against an index it reached perfectly well. Reading it as a fence would send the
+    # model to spend an operator approval on a domain it already has, and it would never
+    # learn the package name is wrong.
+    stderr = (
+        "ERROR: Could not find a version that satisfies the requirement pandsa "
+        "(from versions: none)\n"
+        "ERROR: No matching distribution found for pandsa\n"
+    )
+    failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
+    hint = (await _run_canned(result=failing))["error"]
+    assert "code_request_egress" not in hint
+    assert "stderr" in hint  # the ordinary non-zero hint, pointing at the real error
 
 
 async def test_fallback_hint_points_at_the_stream_that_holds_the_error():
@@ -312,6 +371,20 @@ async def test_execute_description_states_the_live_config_caps(monkeypatch):
     assert "come back whole" in description
 
 
+async def test_execute_describes_a_reachable_machine_and_the_one_way_to_widen_it():
+    """The blast-radius model, said where the model decides whether to call: compute and
+    installing are free, and the only thing that has to be asked for is a host off the
+    allowlist. A description still offering a `network` flag would send the model looking
+    for an argument that no longer exists."""
+    description = code_module.code_toolset().tools["execute"].description
+
+    assert "code_request_egress" in description
+    assert "network=True" not in description
+    assert "read-only" not in description.lower()
+    # apt cannot work under `--user` with every capability dropped, whatever else changes.
+    assert "apt" in description and "not an option" in description
+
+
 async def test_execute_points_at_the_file_tools_without_reciting_them():
     """The catalog already hands the model every `files_*` tool with its own description;
     naming all six again here bought a second copy of that text on every turn. What the
@@ -324,6 +397,49 @@ async def test_execute_points_at_the_file_tools_without_reciting_them():
         assert recited not in description
     # The machine itself is still described only here.
     assert "/work" in description and "pip" in description
+
+
+# --- asking for a host off the allowlist -------------------------------------
+
+
+async def test_request_egress_records_and_returns_domains():
+    # The one exit the fence actually guards, and the whole of what the tool does: hand
+    # the named domains to the policy under *this workspace's* key, and answer with
+    # everything reachable afterwards so the model doesn't have to ask a second time.
+    policy = FakeEgressPolicy()
+    run = await _run_one_tool("code_request_egress", egress=policy)
+
+    assert len(policy.granted) == 1
+    key, domains = policy.granted[0]
+    assert key == "conv-1"  # the workspace key, so a fork's grant lands on the fork
+    result = next(b for b in _bodies(run) if b.type == "tool.completed").result
+    assert result["allowed"] == sorted({"pypi.org", *domains})
+
+
+async def test_request_egress_is_not_offered_inside_a_delegation():
+    # A delegate's run was approved as one act, so there is no operator left to ask.
+    # Whether a call pauses is settled from the tool definition before the function runs,
+    # so a body that refused would refuse only *after* the operator had been stopped —
+    # the tool is withheld instead, and the child reports the host it could not reach.
+    run = Run(id="t", kind="chat", owner_id="operator", stream=RunStream())
+    toolset = code_toolset()
+
+    delegated = _one_tool_deps(run, None, FakeEgressPolicy(), delegated_approved=True)
+    ctx = RunContext(deps=delegated, model=TestModel(), usage=RunUsage())
+    assert "request_egress" not in await toolset.get_tools(ctx)
+
+    ordinary = _one_tool_deps(run, None, FakeEgressPolicy())
+    ctx = RunContext(deps=ordinary, model=TestModel(), usage=RunUsage())
+    assert "request_egress" in await toolset.get_tools(ctx)
+
+
+async def test_request_egress_degrades_without_a_policy():
+    # Same contract as a missing sandbox runtime: the tool says so and the model adapts.
+    run = await _run_one_tool("code_request_egress")
+
+    result = next(b for b in _bodies(run) if b.type == "tool.completed").result
+    assert result["ok"] is False
+    assert "allowlist" in result["error"]
 
 
 # --- output is returned whole ------------------------------------------------

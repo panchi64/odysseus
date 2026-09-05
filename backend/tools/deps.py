@@ -95,6 +95,11 @@ class RunDeps:
     # hand a sub-agent a different one; left empty at construction it fills itself in
     # below, so the ordinary case still needs no argument at any call site.
     workspace_key: str = ""
+    # Whether this run is a delegate whose work the operator already approved as one act.
+    # A tool whose whole job is to ask the operator something has nobody to ask inside such
+    # a run — the conversation belongs to the parent — so it is withheld from one rather
+    # than offered and left to strand the child on a question no one will see.
+    delegated_approved: bool = False
 
     def __post_init__(self) -> None:
         if not self.workspace_key:

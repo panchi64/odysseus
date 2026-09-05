@@ -29,6 +29,7 @@ async def test_statically_marked_tools_are_scopes():
         body = (await client.get("/tools/approval-scopes")).json()
     names = _names(body)
     assert {
+        "code_request_egress",
         "code_run_host_command",
         "mail_send",
         "mail_reply",

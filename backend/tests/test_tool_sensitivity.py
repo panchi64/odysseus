@@ -45,16 +45,9 @@ def _classified() -> set[str]:
     return {name for names in SENSITIVITY_CLASSES.values() for name in names}
 
 
-#: Classified before the tool carrying the name is registered — the egress policy landed
-#: ahead of the tool that asks it for a domain. Asserted *absent* below, so the day that
-#: tool is registered this set has to be emptied rather than quietly outliving its reason.
-_AHEAD_OF_THE_TOOL = {"code_request_egress"}
-
-
 class TestEveryToolIsClassified:
     def test_every_classified_name_is_a_real_tool(self):
-        assert _AHEAD_OF_THE_TOOL.isdisjoint(_catalog_names())
-        assert _classified() - _AHEAD_OF_THE_TOOL <= _catalog_names()
+        assert _classified() <= _catalog_names()
 
     def test_every_real_tool_is_classified(self):
         # The half that rots. A new tool with no class would be silently treated as an

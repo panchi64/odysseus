@@ -53,10 +53,12 @@ DEFAULT_MODE: ModeId = "normal"
 
 
 #: The tool categories that belong to some modes and not others, with the namespaced names
-#: each contributes. A category absent from this mapping is admitted by every mode — the
-#: overwhelming majority, and the reason this is a short list rather than a per-mode
+#: withheld along with each. A category absent from this mapping is admitted by every mode
+#: — the overwhelming majority, and the reason this is a short list rather than a per-mode
 #: catalog. Names are ``f"{category}_{tool}"``, which is what the enabled gate matches and
-#: what the model is offered.
+#: what the model is offered. A name a category registers but does not list here is offered
+#: everywhere; ``tests/test_modes.py`` pins the few that are deliberately left out, so one
+#: forgotten by accident still fails there.
 MODE_SCOPED_TOOLS: Mapping[str, frozenset[str]] = {
     # Code mode's two categories: a shell rooted in the worktree, and the repository's own
     # coding-assistant asset inventory. Registered like every other category and simply
@@ -77,6 +79,10 @@ MODE_SCOPED_TOOLS: Mapping[str, frozenset[str]] = {
     # the failure the one-workspace rule exists to prevent; `code_run_host_command` goes
     # with it because its own sandboxed fence is a different (and, in a worktree,
     # redundant) boundary.
+    # `code_request_egress` is registered in the same category and deliberately *not*
+    # withheld with it: it widens the one allowlist both fences read, and code mode's
+    # shell is fenced by that same list. Withheld, that mode would have an exit it cannot
+    # request — a wall rather than a gate, which is the one shape this fence must not take.
     "code": frozenset({"code_execute", "code_run_host_command"}),
 }
 

@@ -152,6 +152,12 @@ class EgressPolicy:
         Every domain is normalised before anything is written, so a batch carrying one
         unusable entry is refused whole rather than half-applied — the operator approved
         a set, and a partial grant is not the set they read.
+
+        The file the fences read is rewritten here, not left to the next thing that
+        happens to call :meth:`materialise`. A grant exists to unblock a request that is
+        about to be retried, and a fence still reading the allowlist as it stood before
+        the approval refuses that retry — which reads, to whoever is watching, as an
+        approval that did nothing.
         """
         if not key:
             raise InvalidInputError("egress is granted to a workspace; none was named")
@@ -179,6 +185,7 @@ class EgressPolicy:
                 )
 
         await in_session(self._db, work)
+        await self.materialise(key)
         return await self.allowed_for(key)
 
     async def forget(self, conversation_id: str) -> None:

@@ -6,6 +6,11 @@ contained it carries no host-level risk and the agent computes freely.
 its request must carry a plain-language ``explanation`` the operator can judge
 without reading the command.
 
+``code_request_egress`` is the third, and the only one that widens anything: compute
+is free inside the box, but reaching a host the allowlist does not name is an exit,
+so it is asked for by name and approved per call. Nothing else here is gated on the
+network — the walls around a workspace are not the thing worth guarding.
+
 ``code_execute``'s description is the **only** place the model is told what machine
 a run happens on — said where it is deciding whether to call, and nowhere else, so
 a thread with no sandbox is never handed a description of one.
@@ -21,10 +26,12 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic_ai import FunctionToolset, RunContext
+from pydantic_ai import FunctionToolset, RunContext, ToolDefinition
 
 from core.config import Settings, get_settings
+from core.exceptions import InvalidInputError
 from runs import ToolProgress
+from services.egress import EgressPolicy
 from services.sandbox import (
     HostExecutionError,
     SandboxError,
@@ -56,17 +63,22 @@ _PID_CAP_MARKERS = (
 # failure, and the one worth deterministic install mechanics at the failure point.
 _MISSING_MODULE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
 
-# What a fetch/install attempt prints when the run had no egress — the symptom of
-# forgetting the `network=True` tool argument (or putting it inside the command
-# string, where it does nothing).
+# What the workspace's proxy puts in the body of a refusal, so a blocked host is legible
+# in the tool's own output rather than only in the proxy's log.
+_EGRESS_DENIED_MARKER = "odysseus-egress: denied"
+
+# The other face of the same refusal. A client that never gets as far as the proxy — or
+# one that reports a refused CONNECT as a dead connection — prints a resolution or
+# connection failure instead, so both spellings have to key the same hint. Only errors
+# naming the *connection* belong here: pip's own "no matching distribution" summary is
+# what a misspelled package name prints against a registry it reached perfectly well, and
+# answering that with "ask the operator for pypi.org" is a loop rather than a hint.
 _NO_NETWORK_MARKERS = (
     "temporary failure in name resolution",
     "name or service not known",
     "network is unreachable",
     "could not resolve host",
     "failed to establish a new connection",
-    "no matching distribution found",
-    "could not find a version that satisfies",
 )
 
 
@@ -75,8 +87,10 @@ def _looks_like_pid_cap(stderr: str) -> bool:
     return "fork" in low and any(marker in low for marker in _PID_CAP_MARKERS)
 
 
-def _looks_like_no_network(output: str) -> bool:
+def _looks_like_egress_denied(output: str) -> bool:
     low = output.lower()
+    if _EGRESS_DENIED_MARKER in low:
+        return True
     return any(marker in low for marker in _NO_NETWORK_MARKERS)
 
 
@@ -88,15 +102,14 @@ def _failure_hint(
     *,
     memory: str,
     pids_limit: int,
-    network: bool,
     sandboxed: bool,
 ) -> str:
     """A short, plain reason for a failed run, naming the actual configured cap that
     was most likely hit — stderr is often empty for a hard kill, so being precise
     matters more here than for an ordinary non-zero exit. For the two recoverable
-    sandbox failures (a missing package, a run that needed egress) it states the
-    exact next call to make, because the fix lives in the *tool arguments*, not in
-    the code the model would otherwise keep mutating."""
+    sandbox failures (a missing package, a host off the allowlist) it states the exact
+    next call to make, because the fix lives in *another call*, not in the code the
+    model would otherwise keep mutating."""
     if timed_out:
         return "It exceeded the time limit and was killed; reduce the work or raise timeout_s."
     if exit_code == 137:  # SIGKILL
@@ -118,15 +131,14 @@ def _failure_hint(
                 f"The Python package providing `{module}` is not installed on your "
                 f"machine. Install it first with a separate call — language='bash', "
                 f"code='pip install {module}' (or the PyPI package that provides that "
-                "module), and network=True — then re-run this code unchanged. "
-                "`network` is an argument of this tool call, not part of the command."
+                "module) — then re-run this code unchanged."
             )
-        if not network and _looks_like_no_network(stderr + "\n" + stdout):
+        if _looks_like_egress_denied(stderr + "\n" + stdout):
             return (
-                "This run had no internet access — egress is off unless the "
-                "`network=True` tool argument is set. Retry with network=True passed "
-                "as an argument of this tool call; writing it inside the command "
-                "string does nothing."
+                "That host is not on your egress allowlist, so the connection was "
+                "refused before it left your machine — the code itself is fine. Call "
+                "`code_request_egress(domains=[...], reason=...)` naming the hosts you "
+                "need and why, and once it is approved retry this same code unchanged."
             )
     if _looks_like_pid_cap(stderr):
         return (
@@ -143,14 +155,10 @@ def _failure_hint(
     return f"It exited with a non-zero status ({exit_code}) and produced no output."
 
 
-def _exec_result(
-    result, settings: Settings, *, sandboxed: bool, network: bool = True
-) -> dict:
+def _exec_result(result, settings: Settings, *, sandboxed: bool) -> dict:
     """Shape an execution result for the model: an explicit success flag, stdout and
     stderr **whole**, and on failure a legible hint naming which configured cap was
-    likely hit. ``network`` is whether the run actually had egress (the host always
-    does), so the no-egress hint only fires when turning the tool argument on would
-    genuinely fix it.
+    likely hit.
 
     The output is not trimmed. A blanket cap fired on every run whether or not the
     context was under any pressure, and it cost the model the middle of exactly the
@@ -171,7 +179,6 @@ def _exec_result(
             result.stderr,
             memory=settings.sandbox_memory,
             pids_limit=settings.sandbox_pids_limit,
-            network=network,
             sandboxed=sandboxed,
         )
     return payload
@@ -187,33 +194,32 @@ def _execute_description(settings: Settings) -> str:
         "computer — a private Linux machine that is yours alone (it is not the "
         "operator's host). It runs a Debian userland with `python`, `bash`, and "
         "the usual command-line tools on the path.\n\n"
-        "Your working directory is `/work` (where your shell starts). It is writable "
-        "and persists across calls in this conversation: files you write and packages "
-        "you install stay there, so you can run something, hit an error, fix it, and "
-        "re-run without starting over. `/tmp` is a small RAM disk, so what you put "
-        "there is charged against your memory cap below rather than to disk — unpack "
-        "or build anything sizeable under your working directory instead. You are not "
-        "root here, so the system directories belong to the OS and stay as they are; "
-        "the few scratch paths outside your working directory that do accept writes "
-        "are thrown away with the machine. Keep anything that matters in your working "
-        "directory. After a long stretch of inactivity the machine is reclaimed: your "
-        "files are kept and restored, but installed packages may need reinstalling.\n\n"
+        "Your working directory is `/work` (where your shell starts), and it persists "
+        "across calls in this conversation: files you write and packages you install "
+        "stay there, so you can run something, hit an error, fix it, and re-run without "
+        "starting over. `/tmp` is a RAM disk, so what you put there is charged against "
+        "your memory cap below rather than to disk — unpack or build anything sizeable "
+        "under your working directory instead. You are not root here, so the system "
+        "directories belong to the OS and stay as they are; the few scratch paths "
+        "outside your working directory that do accept writes are thrown away with the "
+        "machine. Keep anything that matters in your working directory. After a long "
+        "stretch of inactivity the machine is reclaimed: your files are kept and "
+        "restored, but installed packages may need reinstalling.\n\n"
         "The `files_*` tools act on this same working directory: use them to read, "
         "write, edit, search and list it, and use this tool to run things.\n\n"
-        "There is no internet unless you set the `network=True` argument on the "
-        "tool call — do so to fetch packages or data. `network` is an argument of "
-        "this tool, not a shell flag: writing it inside the command string does "
-        "nothing. Install Python packages with `pip install <pkg>` (a `bash` call "
-        "with `network=True`); they land in your working directory and import on "
-        "later calls without needing the network again. `pip` is what the machine "
-        "ships with; anything else you want (`uv`, for instance) you install with it "
-        "first — a package's command lands in `/work/.local/bin`, which is not on your "
-        "`PATH`, so invoke it by that full path (`/work/.local/bin/uv ...`) or as "
-        "`python -m <pkg>`. System package managers are not an option — `apt` and "
-        "friends need root, which you do not have here, so they fail however you "
-        "invoke them; when you need a tool, reach for the language-level package that "
-        "provides it. Use the machine freely for computation, scripting, and iterating "
-        "toward a working result.\n\n"
+        "The package registries and GitHub are already reachable, so fetching from them "
+        "needs no permission — install as freely as you like. Any other host is refused "
+        "until you ask for it: call `code_request_egress` with the domains you need and "
+        "why, and once it is approved retry the same code unchanged. `pip` is what the "
+        "machine ships with; anything else you want (`uv`, for instance, or a `git` to "
+        "clone with) you install with it first — a "
+        "package's command lands in `/work/.local/bin`, which is not on your `PATH`, so "
+        "invoke it by that full path (`/work/.local/bin/uv ...`) or as `python -m "
+        "<pkg>`. System package managers are not an option — `apt` and friends need "
+        "root, which you do not have here, so they fail however you invoke them; when "
+        "you need a tool, reach for the language-level package that provides it. Use "
+        "the machine freely for computation, scripting, and iterating toward a working "
+        "result.\n\n"
         f"It is capped at {settings.sandbox_memory} memory, {settings.sandbox_cpus} "
         f"CPU, and {settings.sandbox_pids_limit} processes/threads — exceeding memory "
         "gets the run killed, exceeding the CPU cap only throttles it (the run keeps "
@@ -242,7 +248,6 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         code: str,
         language: Literal["python", "bash"] = "python",
         stdin: str | None = None,
-        network: bool = False,
         timeout_s: float = 30.0,
     ) -> dict:
         # The model-facing description is generated by `_execute_description` above
@@ -259,7 +264,6 @@ def code_toolset() -> FunctionToolset[RunDeps]:
         spec = SandboxSpec(
             command=[*_INTERPRETERS[language], code],
             stdin=stdin,
-            network=network,
             timeout_s=timeout_s,
         )
         try:
@@ -267,12 +271,11 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             # A cold container takes a beat to spin up — longer still the first
             # time, when the image must be pulled. Announce that wait so the run
             # reads as the environment starting, not the model stalling; a warm
-            # session runs at once and needs no notice. A network call always
-            # spins a fresh throwaway container, so it's a cold start too. When
-            # the boot-time image pull is still in flight, say so truthfully
-            # (a minutes-long download reads very differently from an ordinary
-            # few-hundred-ms container start).
-            if ctx.tool_call_id and (spec.network or not session.is_warm):
+            # session runs at once and needs no notice. When the boot-time image
+            # pull is still in flight, say so truthfully (a minutes-long download
+            # reads very differently from an ordinary few-hundred-ms container
+            # start).
+            if ctx.tool_call_id and not session.is_warm:
                 downloading = getattr(sessions, "image_warmup_pending", False)
                 partial = (
                     "Downloading the sandbox image, this first run can take a "
@@ -288,7 +291,55 @@ def code_toolset() -> FunctionToolset[RunDeps]:
             # Any sandbox/infra failure comes back as something the model can act
             # on — it never escapes to crash the run.
             return {"ok": False, "error": f"Your computer could not run the code: {exc}"}
-        return _exec_result(result, settings, sandboxed=True, network=network)
+        return _exec_result(result, settings, sandboxed=True)
+
+    async def _only_where_there_is_someone_to_ask(
+        ctx: RunContext[RunDeps], tool_def: ToolDefinition
+    ) -> ToolDefinition | None:
+        """Withhold the request from a delegated run.
+
+        Asking is the whole of what this tool does, and a delegate has nobody to ask: its
+        work was approved as one act, in a conversation that belongs to its parent.
+        Whether a call pauses is settled from the tool definition *before* the function
+        runs, so a body that answered "report this upwards" would only ever be reached
+        after an operator had already been stopped for it. Withholding is the honest form
+        of the same fact, and the child then does what it would have done anyway — say in
+        its report which host it could not reach.
+        """
+        return None if ctx.deps.delegated_approved else tool_def
+
+    @toolset.tool(requires_approval=True, prepare=_only_where_there_is_someone_to_ask)
+    async def request_egress(ctx: RunContext[RunDeps], domains: list[str], reason: str) -> dict:
+        """Ask the operator to let your machine reach one or more hosts it cannot reach
+        yet — a package index, an API, a site you need to download from.
+
+        The package registries and GitHub are already allowed, so you only need this for
+        somewhere else. Name the hosts as domains (``api.example.com``); a domain matches
+        that host exactly, and ``*.example.com`` is the form that covers its subdomains.
+        A URL is accepted and reduced to its host.
+
+        ``reason`` is shown to the operator, in your words, as the whole of what they
+        have to go on — say what you are fetching and what it is for.
+
+        Approval is per request: it is never granted standing, so a later call naming a
+        different host asks again. What *is* remembered is the domain — once approved it
+        stays reachable for the rest of this conversation, so retry the code that failed
+        rather than asking a second time. The result lists everything you may now reach.
+        """
+        policy = ctx.deps.caps.get_optional(EgressPolicy)
+        if policy is None:
+            return {
+                "ok": False,
+                "error": "Egress cannot be widened right now: no allowlist is "
+                "configured. Work with the hosts you can already reach.",
+            }
+        try:
+            allowed = await policy.allow(ctx.deps.workspace_key, domains)
+        except InvalidInputError as exc:
+            # The operator has already approved by the time a domain is parsed, so a
+            # malformed one must come back as something to fix rather than fail the turn.
+            return {"ok": False, "error": str(exc)}
+        return {"allowed": sorted(allowed)}
 
     @toolset.tool(requires_approval=True)
     async def run_host_command(

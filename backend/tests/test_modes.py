@@ -31,6 +31,14 @@ def _catalog() -> list:
     return tool_catalog(full_tool_categories())
 
 
+#: Names that belong to a scoped category and are still offered in every mode. One entry:
+#: `code_request_egress` widens the single allowlist both fences read, and code mode's own
+#: shell is fenced by it — withholding it there would leave that mode an exit it cannot
+#: ask for. Listed here so the exception is a decision that has to be restated, not a
+#: name someone forgot.
+_OFFERED_IN_EVERY_MODE = {"code_request_egress"}
+
+
 class TestTheNamesAreReal:
     def test_every_scoped_name_exists_in_the_catalog(self):
         names = {t.name for t in _catalog()}
@@ -40,10 +48,15 @@ class TestTheNamesAreReal:
     def test_a_scoped_category_lists_every_tool_it_registers(self):
         # The direction that actually rots. A tool added to `shell` or `code` and not
         # added here would be offered in every mode, including the ones whose whole point
-        # is that they cannot reach it.
+        # is that they cannot reach it — unless it is one of the deliberate exceptions,
+        # which have to be named above before they are allowed to be missing.
+        names = {t.name for t in _catalog()}
+        assert _OFFERED_IN_EVERY_MODE <= names
         for category, scoped in MODE_SCOPED_TOOLS.items():
             registered = {t.name for t in _catalog() if t.category == category}
-            assert registered == scoped, f"{category} has drifted from the registry"
+            unlisted = registered - scoped
+            assert unlisted <= _OFFERED_IN_EVERY_MODE, f"{category} has drifted from the registry"
+            assert scoped <= registered, f"{category} withholds a tool it does not register"
 
     def test_a_scoped_category_is_a_real_category(self):
         categories = set(full_tool_categories())

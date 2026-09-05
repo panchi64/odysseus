@@ -117,6 +117,7 @@ _PINNED_CATALOG = {
     "calendar_list_calendars",
     "calendar_update_event",
     "code_execute",
+    "code_request_egress",
     "code_run_host_command",
     "conversations_read",
     "conversations_search",
