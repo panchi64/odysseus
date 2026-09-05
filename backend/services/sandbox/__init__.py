@@ -34,8 +34,9 @@ from .host import (
     run_on_host,
     shutdown_confinement,
 )
+from .manager import SandboxSessionManager
 from .preview import PreviewHandle
-from .session import LiveWork, SandboxSession, SandboxSessionManager
+from .session import LiveWork, SandboxSession
 from .staging import (
     STAGE_DIR,
     safe_name,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import services.sandbox.manager as manager_mod
 import services.sandbox.reconcile as reconcile_mod
 import services.sandbox.session as session_mod
 from core.config import Settings
@@ -24,13 +25,13 @@ from services.sandbox import (
     SandboxSpec,
 )
 from services.sandbox.base import safe_key
-from services.sandbox.session import (
-    ImageWarmup,
-    _excluded,
-    _partial_marker,
-    _restore_workspace,
-    _seal_workspace,
+from services.sandbox.seal import (
+    excluded,
+    partial_marker,
+    restore_workspace,
+    seal_workspace,
 )
+from services.sandbox.session import ImageWarmup
 
 from .test_sandbox import _runtime_ready
 
@@ -76,11 +77,11 @@ def test_safe_key_is_container_safe():
 
 
 def test_excluded_drops_envs_and_caches_only():
-    assert _excluded(".venv", _EXCLUDES)
-    assert _excluded("pkg/__pycache__/x.pyc", _EXCLUDES)
-    assert _excluded("node_modules", _EXCLUDES)
-    assert not _excluded("analysis.py", _EXCLUDES)
-    assert not _excluded("output/chart.png", _EXCLUDES)
+    assert excluded(".venv", _EXCLUDES)
+    assert excluded("pkg/__pycache__/x.pyc", _EXCLUDES)
+    assert excluded("node_modules", _EXCLUDES)
+    assert not excluded("analysis.py", _EXCLUDES)
+    assert not excluded("output/chart.png", _EXCLUDES)
 
 
 # --- write_file: staging a file into the workspace (no runtime needed) --------
@@ -126,9 +127,9 @@ async def test_seal_round_trip_keeps_files_drops_bloat(tmp_path):
     (work / "__pycache__").mkdir()
     (work / "__pycache__" / "m.pyc").write_bytes(b"junk")
 
-    sealed = _seal_workspace(work, _EXCLUDES, vault)
+    sealed = seal_workspace(work, _EXCLUDES, vault)
     restored = tmp_path / "restored"
-    _restore_workspace(sealed, restored, vault)
+    restore_workspace(sealed, restored, vault)
 
     assert (restored / "analysis.py").read_text() == "print('hi')"
     assert (restored / "sub" / "out.txt").read_text() == "result"
@@ -143,9 +144,9 @@ async def test_seal_drops_symlinks_so_one_bad_link_cant_brick_restore(tmp_path):
     (work / "real.txt").write_text("keep me")
     (work / "evil").symlink_to("/etc/passwd")  # an absolute link the agent could plant
 
-    sealed = _seal_workspace(work, _EXCLUDES, vault)
+    sealed = seal_workspace(work, _EXCLUDES, vault)
     restored = tmp_path / "restored"
-    _restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
+    restore_workspace(sealed, restored, vault)  # must NOT raise on the bad link
 
     assert (restored / "real.txt").read_text() == "keep me"  # the real file survives
     assert not (restored / "evil").exists()  # the symlink was never archived
@@ -183,7 +184,7 @@ async def test_run_wraps_an_unexpected_error_as_sandbox_error(tmp_path, monkeypa
 async def test_restoring_a_damaged_seal_raises_sandbox_error(tmp_path):
     vault = await _vault(tmp_path)
     with pytest.raises(SandboxError):
-        _restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
+        restore_workspace(b"not a valid sealed archive", tmp_path / "out", vault)
 
 
 # --- lazy acquisition --------------------------------------------------------
@@ -911,14 +912,14 @@ async def test_sweep_adopts_stranded_workspaces_a_slice_at_a_time(tmp_path):
     # opens the last one, so a sweep takes a slice and the next sweep takes the rest.
     vault = await _vault(tmp_path)
     manager = _manager(tmp_path, vault)
-    keys = [safe_key(f"conv-{i}") for i in range(session_mod._ORPHAN_SEALS_PER_SWEEP + 2)]
+    keys = [safe_key(f"conv-{i}") for i in range(manager_mod._ORPHAN_SEALS_PER_SWEEP + 2)]
     for safe in keys:
         (manager._work_root / safe).mkdir(parents=True)
         (manager._work_root / safe / "notes.txt").write_text("plaintext")
 
     await manager._sweep()
     sealed_first = [k for k in keys if (manager._sealed_root / f"{k}.tar.enc.gz").exists()]
-    assert len(sealed_first) == session_mod._ORPHAN_SEALS_PER_SWEEP
+    assert len(sealed_first) == manager_mod._ORPHAN_SEALS_PER_SWEEP
     assert not manager._tearing_down  # and every tombstone in the slice is released
 
     await manager._sweep()
@@ -1045,13 +1046,13 @@ def _archive_of(manager, vault, safe: str, files: dict[str, str]):
         (source / name).write_text(text)
     sealed = manager._sealed_root / f"{safe}.tar.enc.gz"
     sealed.parent.mkdir(parents=True, exist_ok=True)
-    sealed.write_bytes(_seal_workspace(source, _EXCLUDES, vault))
+    sealed.write_bytes(seal_workspace(source, _EXCLUDES, vault))
     shutil.rmtree(source)
     return sealed
 
 
 def _restored(sealed, vault, dest) -> set[str]:
-    _restore_workspace(sealed.read_bytes(), dest, vault)
+    restore_workspace(sealed.read_bytes(), dest, vault)
     return {p.name for p in dest.iterdir()}
 
 
@@ -1067,13 +1068,13 @@ async def test_a_fragment_of_a_restore_never_overwrites_the_archive_it_came_from
     workspace = manager._work_root / safe
     workspace.mkdir(parents=True)
     (workspace / "a.txt").write_text("first")
-    _partial_marker(workspace).touch()
+    partial_marker(workspace).touch()
 
     await manager._sweep()
 
     assert _restored(sealed, vault, tmp_path / "check") == {"a.txt", "b.txt"}
     assert not workspace.exists()  # the fragment is still cleared from disk
-    assert not _partial_marker(workspace).exists()
+    assert not partial_marker(workspace).exists()
 
 
 async def test_a_workspace_the_agent_emptied_seals_as_empty(tmp_path):
@@ -1105,13 +1106,13 @@ async def test_a_marked_fragment_is_thrown_away_and_restored_from_the_archive(tm
     workspace = manager._work_root / safe
     workspace.mkdir(parents=True)
     (workspace / "a.txt").write_text("half-written")
-    _partial_marker(workspace).touch()
+    partial_marker(workspace).touch()
 
     session = await manager.acquire("conv-frag")
 
     assert session.read_file("a.txt") == b"first"
     assert session.read_file("b.txt") == b"second"
-    assert not _partial_marker(workspace).exists()
+    assert not partial_marker(workspace).exists()
 
 
 async def test_a_restore_marks_the_fragment_before_it_creates_anything(tmp_path, monkeypatch):
@@ -1134,9 +1135,9 @@ async def test_a_restore_marks_the_fragment_before_it_creates_anything(tmp_path,
     monkeypatch.setattr(Path, "mkdir", die_creating_the_workspace)
 
     with pytest.raises(SandboxError):
-        _restore_workspace(sealed.read_bytes(), workspace, vault)
+        restore_workspace(sealed.read_bytes(), workspace, vault)
 
-    assert _partial_marker(workspace).exists()
+    assert partial_marker(workspace).exists()
 
 
 async def test_a_file_write_racing_a_seal_waits_it_out_instead_of_tearing_the_workspace(
@@ -1152,13 +1153,13 @@ async def test_a_file_write_racing_a_seal_waits_it_out_instead_of_tearing_the_wo
     session = await manager.acquire("conv-race")
     session.ensure_workspace()
     (session.workspace / "notes.txt").write_text("what the seal captures")
-    real_seal = session_mod._seal_workspace
+    real_seal = session_mod.seal_workspace
 
     def slow_seal(workspace, excludes, vault):
         time.sleep(0.2)  # a real tar+gzip+AEAD is seconds; this is the same window
         return real_seal(workspace, excludes, vault)
 
-    monkeypatch.setattr(session_mod, "_seal_workspace", slow_seal)
+    monkeypatch.setattr(session_mod, "seal_workspace", slow_seal)
 
     sealing = asyncio.create_task(session.shutdown())
     await asyncio.sleep(0.05)  # let the seal thread get well inside the archive
@@ -1168,7 +1169,7 @@ async def test_a_file_write_racing_a_seal_waits_it_out_instead_of_tearing_the_wo
     # are there and nothing is half-removed.
     assert (session.workspace / "notes.txt").read_text() == "what the seal captures"
     assert (session.workspace / "late.txt").read_bytes() == b"x"
-    assert not _partial_marker(session.workspace).exists()
+    assert not partial_marker(session.workspace).exists()
 
 
 async def test_sweep_does_not_touch_a_workspace_its_own_session_still_holds(tmp_path):
