@@ -26,10 +26,15 @@ from .conftest import egress_policy
 
 
 # --- the predicate ----------------------------------------------------------
-def test_a_plain_domain_covers_the_host_and_its_subdomains():
+def test_a_plain_domain_covers_that_host_and_nothing_under_it():
+    # The same reading the host confinement gives the same list — a plain entry there is
+    # an exact match — and the one the approval card states. A plain entry that admitted
+    # every subdomain would turn one innocuous-looking host into anything anyone can
+    # publish under it.
     assert _allowed("pypi.org", ["pypi.org"])
-    assert _allowed("files.pypi.org", ["pypi.org"])
-    assert _allowed("a.b.pypi.org", ["pypi.org"])
+    assert not _allowed("files.pypi.org", ["pypi.org"])
+    assert not _allowed("a.b.pypi.org", ["pypi.org"])
+    assert _allowed("files.pypi.org", ["pypi.org", "files.pypi.org"])
 
 
 def test_a_plain_domain_does_not_cover_a_lookalike_suffix():
@@ -93,8 +98,9 @@ async def test_the_policys_own_output_parses_and_matches(tmp_path):
     await policy.materialise("conv-1")
     domains = Allowlist(str(policy.allow_dir("conv-1"))).domains()
 
-    assert _allowed("files.pypi.org", domains)
+    assert _allowed("pypi.org", domains)
     assert _allowed("cdn.example.com", domains)
+    assert not _allowed("files.pypi.org", domains)  # the plain entry is that host alone
     assert not _allowed("evil.com", domains)
 
 

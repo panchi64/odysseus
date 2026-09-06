@@ -8,9 +8,11 @@ is the contract the model sees.
 
 **The fence is required here.** Every command is wrapped by the same OS-level confinement
 an approved host command runs under — the credential paths and the data directory
-unreadable, writes landing in the worktree and the build caches, egress only to the
-installation's allowlist. Unlike the host hatch, which degrades and says so because the
-operator approved *that specific command*, this refuses when the platform has no
+unreadable, writes landing in the worktree and the build caches, egress off the machine
+only to the installation's allowlist (loopback stays open, so a dev server and its tests
+work; ``services/sandbox/host.py`` states what that leaves reachable). Unlike the host
+hatch, which degrades and says so because the operator approved *that specific command*,
+this refuses when the platform has no
 primitive: nobody consented to an unfenced agent shell, and a code conversation is a long
 stretch of commands nobody reads one by one.
 

@@ -57,10 +57,13 @@ def parse_allowlist(text: str) -> tuple[str, ...]:
 def _allowed(host: str, domains: Iterable[str]) -> bool:
     """Whether ``host`` is covered by the allowlist.
 
-    A plain entry covers the host itself *and* its subdomains — an operator who allowed
-    ``example.com`` did not mean to leave ``www.example.com`` refused. A ``*.example.com``
-    entry covers the subdomains only, which is the whole of what distinguishes the two
-    forms: it is how an operator allows a CDN's shards without allowing its apex.
+    A plain entry is that host and nothing else; ``*.example.com`` is the form that covers
+    subdomains, and only those (the apex is spelled separately when it is wanted). The
+    narrow reading is the one the *other* fence can enforce — ``sandbox_runtime`` matches
+    a plain pattern exactly — and the two must agree, because one list with two meanings
+    is a hole in whichever fence reads it wider. It is also the reading the operator was
+    shown: an approval for ``github.io`` that quietly admitted every page anyone can
+    publish under it would be a card that did not say what it granted.
     """
     name = host.strip().rstrip(".").lower()
     for entry in domains:
@@ -68,7 +71,7 @@ def _allowed(host: str, domains: Iterable[str]) -> bool:
             base = entry[2:]
             if base and name.endswith(f".{base}"):
                 return True
-        elif name == entry or name.endswith(f".{entry}"):
+        elif name == entry:
             return True
     return False
 

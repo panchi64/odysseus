@@ -4,9 +4,17 @@ Two paths execute on the operator's real machine: the code-mode shell, working i
 project's throwaway worktree, and ``code_run_host_command``, the approval-gated exception
 that exists for when the host itself must change. Both are fenced the same way, by
 ``sandbox-runtime`` (seatbelt on macOS, bubblewrap on Linux, no container): credential
-paths and the data directory are unreadable, writes are deny-by-default, and egress goes
-only to allowlisted domains. :func:`confine` is that fence, applied per command;
-:func:`resolve_confinement` is the once-per-process machinery behind it.
+paths and the data directory are unreadable, writes are deny-by-default, and egress to the
+*outside* goes only to allowlisted domains. :func:`confine` is that fence, applied per
+command; :func:`resolve_confinement` is the once-per-process machinery behind it.
+
+**Loopback is outside the allowlist, deliberately and not for free.** A dev server, its
+test suite and every tool that talks to one are compute, so the profile permits
+``localhost``. What that also permits is whatever else listens there — including the
+loopback ports this application publishes for its own managed containers, some of which
+(the web-fetch browser's DevTools port) speak an unauthenticated protocol that can fetch
+on a command's behalf. So the honest statement of this fence is that it bounds where a
+command may reach *off the machine*, not that everything it can reach is on the list.
 
 **Approval is not the only thing holding the line.** What the operator read and agreed
 to is the command; what a command can *reach* once running is a separate question, and
@@ -149,7 +157,10 @@ async def _configure(settings: Settings) -> HostConfinement:
                 # one installation-wide policy, not a second list that drifts from it.
                 # `allow_local_binding` because a dev server or a test suite opening a
                 # localhost socket is compute, not egress — and it is read off this global
-                # config at wrap time, so a per-call config could not supply it.
+                # config at wrap time, so a per-call config could not supply it. It is
+                # all-or-nothing (the profile emits one `localhost:*` rule), which is why
+                # the module docstring states the residual rather than the allowlist
+                # covering everything a command can reach.
                 network=NetworkConfig(allowed_domains=domains, allow_local_binding=True),
                 filesystem=FilesystemConfig(
                     deny_read=deny_read, allow_write=allow_write, deny_write=list(deny_read)

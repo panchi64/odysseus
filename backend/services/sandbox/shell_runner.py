@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import fnmatch
 import functools
 import os
 import re
@@ -33,12 +32,9 @@ from typing import IO, Concatenate, Protocol
 
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai_harness._output import truncate_tail
-from pydantic_ai_harness.shell._capability import (
-    _DEFAULT_DENIED_COMMANDS,
-    LLM_API_KEY_ENV_PATTERNS,
-)
+from pydantic_ai_harness.shell._capability import _DEFAULT_DENIED_COMMANDS
 
-from .process import kill_tree, spawn_confined, terminate_tree
+from .process import filtered_env, kill_tree, spawn_confined, terminate_tree
 
 #: Destructive programs (`rm`, `dd`, `mkfs`, `shutdown`, …) refused by name. Taken from the
 #: harness rather than restated: it is a guardrail against a slip, not a boundary — the
@@ -249,7 +245,7 @@ class FencedShell:
             deny_read=self._deny_read,
         )
         return await spawn_confined(
-            fenced, cwd=self._cwd, env=_filtered_env(), stdout=out, stderr=err
+            fenced, cwd=self._cwd, env=filtered_env(), stdout=out, stderr=err
         )
 
     def _with_cwd_capture(self, command: str) -> tuple[str, Path]:
@@ -300,18 +296,6 @@ def _check(command: str) -> None:
         return
     if tokens and tokens[0] in _DENIED_COMMANDS:
         raise PermissionError(f"Command {tokens[0]!r} is denied.")
-
-
-def _filtered_env() -> dict[str, str]:
-    """The parent environment without the operator's model credentials. Not a boundary
-    either — a same-user process can reach the parent's environment through the OS — but
-    the fence denies the paths those keys are *stored* at, and this keeps them out of the
-    one place a command reads without even trying."""
-    return {
-        name: value
-        for name, value in os.environ.items()
-        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in LLM_API_KEY_ENV_PATTERNS)
-    }
 
 
 def _stream_files(prefix: str) -> tuple[IO[bytes], IO[bytes]]:

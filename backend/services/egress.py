@@ -69,9 +69,10 @@ def normalise_domain(raw: str) -> str:
     empty string; an address rather than a name, in any of the spellings a resolver
     accepts (``1.2.3.4``, ``127.1``, ``2130706433``) — the fences match names, and a bare
     address is precisely how a name check gets walked around; a bare top level (``com``,
-    ``*.com``), which is most of the web behind a card that reads like one host; and any
+    ``*.com``), which is most of the web behind a card that reads like one host; any
     wildcard but a leading ``*.`` — ``*`` and ``a.*.com`` look like one host and match a
-    great many.
+    great many; and a ``@``, because the host of ``pypi.org@evil.example.com`` is the half
+    nobody reads, and the whole content of this approval is *which host*.
     """
     text = raw.strip().lower()
     if not text:
@@ -85,7 +86,13 @@ def normalise_domain(raw: str) -> str:
         text = rest
     for separator in ("/", "?", "#"):  # path, query, fragment
         text = text.split(separator, 1)[0]
-    text = text.rpartition("@")[2]  # userinfo
+    if "@" in text:
+        # Not dropped the way a path is. Userinfo puts the real host *after* the `@`, so
+        # `pypi.org@evil.example.com` grants one host while the approval card — which
+        # echoes what the model asked for — reads as another.
+        raise InvalidInputError(
+            f"{raw!r} carries a `@`: name the host on its own, without credentials"
+        )
     if text.startswith("["):  # a bracketed IPv6 literal, refused below
         host = text[1:].partition("]")[0]
     else:
@@ -145,6 +152,15 @@ class EgressPolicy:
         as having done nothing.
         """
         self._shared[key] = with_key
+
+    def unshare(self, key: str) -> None:
+        """Forget a fork's alias, once the workspace behind it is gone.
+
+        Called from the purge that deletes a fork, because nothing else ever names that
+        key again: the delegation id lives only in the call that took it, so an entry
+        left here is a pair of strings the process keeps until it exits, one per
+        delegation, forever."""
+        self._shared.pop(key, None)
 
     def _fenced_by(self, key: str) -> str:
         return self._shared.get(key, key)
@@ -219,7 +235,7 @@ class EgressPolicy:
             return
         # Dropped first, so this deletes what the conversation itself was granted rather
         # than following a fork's alias into the grants of the parent that outlives it.
-        self._shared.pop(conversation_id, None)
+        self.unshare(conversation_id)
 
         def work(session: Session) -> None:
             session.execute(

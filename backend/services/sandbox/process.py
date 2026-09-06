@@ -14,11 +14,14 @@ server must not leave it running once the run that started it is gone.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import os
 import signal
 from collections.abc import Mapping
 from pathlib import Path
 from typing import IO
+
+from pydantic_ai_harness.shell._capability import LLM_API_KEY_ENV_PATTERNS
 
 from core.exceptions import OdysseusError
 
@@ -73,6 +76,20 @@ async def terminate_tree(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
+def filtered_env() -> dict[str, str]:
+    """The parent environment without the operator's model credentials. Not a boundary —
+    a same-user process can reach the parent's environment through the OS — but the fence
+    denies the paths those keys are *stored* at, and this keeps them out of the one place
+    a command reads without even trying. Both host-side paths spawn through it: a key
+    denied to the shell and handed to the approved command would be the same secret
+    guarded on one route and not the other."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in LLM_API_KEY_ENV_PATTERNS)
+    }
+
+
 async def spawn_confined(
     command: str,
     *,
@@ -114,6 +131,11 @@ async def run_on_host(
     :func:`services.sandbox.host.resolve_confinement`) and passed in rather than looked up
     here, so the tool reports the same fence it asked for. ``None`` runs the command
     unconfined.
+
+    ``env`` defaults to :func:`filtered_env` rather than to the backend's own — the fence
+    denies the *paths* the operator's model keys live at and says nothing about the
+    environment, so inheriting it whole would hand them to the one command an operator
+    approved without ever being shown that it could read them.
     """
     if confinement is not None and confinement.active:
         try:
@@ -129,7 +151,7 @@ async def run_on_host(
         proc = await spawn_confined(
             command,
             cwd=cwd,
-            env=env,
+            env=env if env is not None else filtered_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

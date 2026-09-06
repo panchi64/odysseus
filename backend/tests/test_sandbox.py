@@ -362,6 +362,19 @@ async def test_the_hatch_runs_where_and_with_what_it_was_told(tmp_path):
     assert "carried" in result.stdout
 
 
+async def test_the_hatch_does_not_hand_the_operators_model_keys_to_the_command(monkeypatch):
+    # The fence denies the paths those keys are *stored* at and says nothing about the
+    # environment, so an inherited one puts them in the transcript of the single command
+    # the operator approved without ever being shown that it could read them. The
+    # code-mode shell already filters; the hatch is the more guarded path of the two.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-for-the-command")
+    monkeypatch.setenv("ODYSSEUS_TEST_MARKER", "kept")
+    result = await run_on_host("echo [$OPENAI_API_KEY] [$ODYSSEUS_TEST_MARKER]")
+    assert result.ok
+    assert "sk-not-for-the-command" not in result.stdout
+    assert "kept" in result.stdout  # only the credentials go, not the whole environment
+
+
 async def test_confining_one_command_leaves_what_every_other_one_reaches_alone(monkeypatch):
     # One proxy serves every confined process here, and it filters each request against
     # the *process-global* configuration. So teaching it a caller's domains would widen

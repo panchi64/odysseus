@@ -79,7 +79,7 @@ async def test_a_workspaceless_run_gets_the_global_list_and_cannot_be_granted(tm
         ("example.com:8443", "example.com"),
         ("example.com.", "example.com"),
         ("  example.com  ", "example.com"),
-        ("https://user:pw@example.com:443/x?y=1#z", "example.com"),
+        ("https://example.com:443/x?y=1#z", "example.com"),
         ("*.example.com", "*.example.com"),
         ("HTTPS://*.Example.com/", "*.example.com"),
         ("sub.example.co.uk", "sub.example.co.uk"),
@@ -118,6 +118,10 @@ def test_normalisation_keeps_the_host_and_drops_everything_else(raw, expected):
         # Addresses in the spellings a resolver still expands.
         "127.1",
         "2130706433",
+        # Userinfo: the host is the half *after* the `@`, so the card reads as the
+        # allowlisted name and the grant is somebody else's.
+        "pypi.org@evil.example.net",
+        "https://user:pw@example.com",
         # An embedded newline would be a second line in the file the fences read.
         "good.example.com\n#x",
         "pypi.org\n.evil.example.net",

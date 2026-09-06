@@ -208,10 +208,9 @@ class SandboxSessionManager:
         session, and — for a fork — the parent it was copied from, mid-work by the very
         fact that it has just delegated. Beyond those, only a session nobody is using is a
         candidate — see :attr:`SandboxSession.is_displaceable` for the three ways that is
-        decided. The cap is a resource ceiling, not a deadline: if everything live is in
-        use the set simply runs over, and the ordinary idle sweep collects the overflow
-        once the work finishes; the same choice ``ConversationStore._trim_cache`` makes
-        about pinned trees, for the same reason.
+        decided. The cap is a resource ceiling, not a deadline: if everything live is in use
+        the set simply runs over and the idle sweep collects the overflow once the work
+        finishes — the same choice ``ConversationStore._trim_cache`` makes for pinned trees.
 
         Reaping also *seals*, so it needs the vault key. With the vault locked there is
         nothing to do but run over the cap: tearing a container down without sealing would
@@ -341,14 +340,13 @@ class SandboxSessionManager:
     ) -> SandboxSession:
         """A delegated agent's own session, over a copy of ``parent_key``'s workspace.
 
-        The child is a full session — its own network, sidecar and container, like any
-        other — over a warm copy of the parent's files and behind the *parent's*
-        allowlist: a delegated agent reaches exactly what the conversation that delegated
-        to it reaches, and a grant approved for one is not a second thing to approve for
-        the other. ``holder`` is the child's run, and passing it keeps the fork out of the
-        cap's reach: displacing a fork means discarding it (nothing here is ever sealed),
-        so an unclaimed one is work the operator would lose. It claims the *parent* too,
-        which is mid-work by the very fact that it has just delegated."""
+        The child is a full session — its own network, sidecar and container — over a warm
+        copy of the parent's files and behind the *parent's* allowlist: a delegated agent
+        reaches what the conversation that delegated to it reaches, and a grant approved for
+        one is not a second thing to approve for the other. ``holder`` is the child's run,
+        and passing it keeps the fork out of the cap's reach — displacing one means
+        discarding it, nothing here being sealed — and claims the *parent*, mid-work
+        by the very fact that it has just delegated."""
         parent = await self.acquire(parent_key, holder=holder)
         safe = safe_key(child_key)
         # Both halves have to agree on the key: a domain approved during the delegated
@@ -367,11 +365,11 @@ class SandboxSessionManager:
         try:
             # The parent's own call: the copy must hold the lock a seal takes — `clone_into`.
             child.fork_manifest = await asyncio.to_thread(parent.clone_into, child.workspace)
-        except Exception:
-            # A fork with no copy is a session nobody can use, and reap-bait left in the map.
-            async with self._lock:
-                self._sessions.pop(safe, None)
-            await asyncio.to_thread(self._purge_disk, safe)
+        except BaseException:
+            # A fork with no copy is a session nobody can use, and reap-bait left in the map
+            # over a *plaintext* copy nothing seals — and a Stop into the copy, the longest
+            # await here, is not an `Exception`. `purge` takes the alias down with it.
+            await asyncio.shield(self.purge(child_key))
             raise
         return child
 
@@ -381,28 +379,26 @@ class SandboxSessionManager:
         Deleted whichever way the merge *went*: a report of conflicts has already told the
         caller which paths did not come across, and keeping a second copy of the parent's
         files in the hope someone revisits them is how disks fill up. A merge that produced
-        no report at all — a vault re-locked while the delegated agent worked, an operator
-        pressing Stop mid-walk — is the other case: the fork is put back, being the only
-        copy of that agent's work with nothing reported for anyone to act on. Only a *fork*
-        may be the child, precisely because deleting it is the last thing this does: handed
-        an ordinary conversation's key — a caller with its arguments the wrong way round —
-        everything that conversation holds would read as new work, land in another's
-        workspace, and go with its archive; handed one key twice, the merge would wait out
-        the teardown it is itself holding."""
+        no report at all — a vault re-locked mid-delegation, a Stop mid-walk — is the other
+        case: the fork is put back, being the only copy of that agent's work with nothing
+        reported for anyone to act on. Only a *fork* may be the child, precisely because
+        deleting it is the last thing this does: an ordinary conversation's key, from a
+        caller with its arguments the wrong way round, would land everything that
+        conversation holds in another's workspace and then go with its archive; one key
+        twice would wait out the teardown it is itself holding."""
         safe = safe_key(child_key)
         async with self._lock:
             child = self._sessions.get(safe)
             if child is None or not child.ephemeral or safe == safe_key(parent_key):
                 raise SandboxError(f"there is no forked workspace for {child_key!r}")
             # Out of the live map for the whole merge: a fork displaced meanwhile is
-            # *deleted* rather than sealed, leaving this walk an empty directory to report
-            # as a clean landing.
+            # *deleted*, leaving this walk an empty directory to report as a clean landing.
             detached = self._detach([safe])
         try:
             # Every box comes down before the walk, for the reason `shutdown` drops them
             # before an archive: they hold this workspace at /work, so a walk under a live
-            # mount copies half-written files — and paths a box swung after the walk judged
-            # them, onto host files it cannot itself see.
+            # mount copies half-written files — and a box brought up after it writes onto
+            # host files the walk has already judged.
             await child.discard()
             parent = await self.acquire(parent_key)
             work = child.ensure_workspace()
@@ -510,6 +506,9 @@ class SandboxSessionManager:
                 await session.discard()
             await asyncio.to_thread(self._purge_disk, safe)
         finally:
+            # A fork's allowlist alias ends with the workspace it named — nothing ever
+            # looks that key up again. An ordinary conversation never has one.
+            self._egress.unshare(key)
             async with self._lock:
                 self._tearing_down.pop(safe, None)
             my_event.set()

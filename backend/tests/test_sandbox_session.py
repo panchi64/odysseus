@@ -1028,6 +1028,43 @@ async def test_a_fork_whose_copy_fails_releases_the_sessions_it_displaced(tmp_pa
     await asyncio.wait_for(manager.acquire("conv-other"), 2.0)
 
 
+async def test_a_fork_stopped_mid_copy_leaves_no_session_over_a_half_copy(tmp_path, monkeypatch):
+    # The copy is the longest await a fork has, so an operator's Stop lands there far more
+    # often than any error does — and a cancellation is not an `Exception`. Left in the
+    # map, the entry counts against the cap and its half-copied *plaintext* fork sits in
+    # the clear until the parent's run goes terminal and a sweep passes.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+
+    def stopped(*_args):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(session_mod, "clone_workspace", stopped)
+    with pytest.raises(asyncio.CancelledError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert safe_key(_CHILD) not in manager._sessions
+    assert not (tmp_path / "sandbox" / "work" / safe_key(_CHILD)).exists()
+
+
+async def test_purging_a_fork_drops_the_allowlist_alias_it_borrowed(tmp_path):
+    # A fork is fenced by its parent's allowlist, and that alias is remembered in memory.
+    # Nothing ever names the child key again — the delegation id lives only in the call
+    # that took it — so an alias kept past the purge is one more dead pair of strings per
+    # delegation for the life of the process.
+    vault = await _vault(tmp_path)
+    manager, _parent, _child = await _forked(tmp_path, vault)
+    policy = manager._egress
+    await policy.allow("conv-parent", ["example.com"])
+    assert "example.com" in await policy.allowed_for(_CHILD)
+
+    await manager.purge(_CHILD)
+
+    assert "example.com" not in await policy.allowed_for(_CHILD)
+
+
 async def test_forking_the_same_key_twice_is_refused(tmp_path):
     vault = await _vault(tmp_path)
     manager, _parent, _child = await _forked(tmp_path, vault)
