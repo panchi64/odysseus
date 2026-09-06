@@ -335,6 +335,17 @@ async def test_a_resolution_failure_points_at_the_same_egress_request():
     assert "retry this same code unchanged" in hint
 
 
+async def test_a_refused_tunnel_points_at_the_same_egress_request():
+    # HTTPS is the common case, and there the marker never reaches the client: a refused
+    # CONNECT carries no body, so all urllib prints is the tunnel failure. Seen on a
+    # real proxy sidecar — the plain-HTTP marker test alone would leave this hint silent
+    # for most of what the agent actually fetches.
+    stderr = "urllib.error.URLError: <urlopen error Tunnel connection failed: 403 Forbidden>\n"
+    failing = SandboxResult(exit_code=1, stdout="", stderr=stderr)
+    hint = (await _run_canned(result=failing))["error"]
+    assert "code_request_egress" in hint
+
+
 async def test_a_misspelled_package_is_not_diagnosed_as_a_blocked_host():
     # The registries are reachable, so pip's resolution summary is what a typo prints
     # against an index it reached perfectly well. Reading it as a fence would send the

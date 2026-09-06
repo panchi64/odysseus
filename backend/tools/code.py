@@ -77,6 +77,12 @@ _NO_NETWORK_MARKERS = (
     "network is unreachable",
     "could not resolve host",
     "failed to establish a new connection",
+    # A refused CONNECT. Most fetches are HTTPS, and there the marker never reaches the
+    # client — a tunnel refusal carries no body — so the refusal is legible only in these
+    # phrasings: urllib, urllib3 and pip say the first, curl one of the other two.
+    "tunnel connection failed",
+    "connect tunnel failed",
+    "from proxy after connect",
 )
 
 
