@@ -1,13 +1,19 @@
 """The execution-sandbox capability — interface, value types, and errors.
 
-Every bit of agent-invoked code or shell execution runs *through* this interface,
-isolated from the host. The invariant the interface promises: the executed code
-sees only **copies** of the files explicitly handed to it (``SandboxSpec.files``),
-cannot read or modify the host filesystem / processes / environment, and reaches
-the network only through the allowlisting proxy its workspace is fenced by (see
+Container-backed execution runs *through* this interface, isolated from the host.
+The invariant it promises: the executed code sees only **copies** of the files
+explicitly handed to it (``SandboxSpec.files``), cannot read or modify the host
+filesystem / processes / environment, and reaches the network only through the
+allowlisting proxy its workspace is fenced by (see
 :mod:`services.sandbox.sidecar`) — never directly, and never at all on this
 interface's own one-shot path. Outputs return explicitly (stdout/stderr +
 copied-out files); nothing escapes the box as a side effect.
+
+Not everything the agent runs arrives here, and saying otherwise would overstate
+the invariant: a coding thread's shell and the approved host command execute on
+the operator's own machine under OS-level confinement
+(:mod:`services.sandbox.host`), which fences the same domains and hides the
+credential paths, but is a different boundary from this one.
 
 Pluggable by design: :class:`Sandbox` is the seam, the default backend is a
 container runtime (``container.ContainerSandbox``), and a fake is injected in

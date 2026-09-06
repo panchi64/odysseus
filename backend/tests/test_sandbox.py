@@ -119,7 +119,9 @@ def test_run_argv_is_locked_down_by_default(tmp_path):
     sandbox = ContainerSandbox(runtime="docker", image="img:1")
     argv = sandbox._run_argv("docker", SandboxSpec(command=["echo", "hi"]), tmp_path)
     joined = " ".join(argv)
-    assert "--network none" in joined  # egress off by default
+    # The one-shot path belongs to no workspace, so there is no allowlist to fence it
+    # against and no sidecar to route through: it gets no interface at all.
+    assert "--network none" in joined
     assert "--cap-drop ALL" in joined
     # Runs as the workspace's host owner, not the image's root: with all caps
     # dropped an in-container root can't write the uid-owned /work, so installs

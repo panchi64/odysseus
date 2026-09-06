@@ -1,10 +1,15 @@
-"""Execution-sandbox capability — isolated code/shell execution for the agent.
+"""Execution-sandbox capability — where the agent's code runs, and what it may reach.
 
-The default is the sandboxed path (``Sandbox`` + ``ContainerSandbox``), built so
-that when code-execution tools land they are safe by construction; ``host`` is the
-single, deliberately-separate, approval-gated escape hatch to the real host. The
-agent reaches it through a per-conversation :class:`SandboxSessionManager`, which
-keeps a container warm for iterative work and reaps it when idle.
+The default is the container path (``Sandbox`` + ``ContainerSandbox``), reached
+through a per-conversation :class:`SandboxSessionManager` that keeps a container
+warm for iterative work and reaps it when idle. What that container may reach is
+decided at its network edge, not by its walls: an ``--internal`` network whose only
+exit is the allowlisting proxy in ``sidecar``.
+
+``host`` is the other half — the OS-level confinement everything that runs *outside*
+a container is wrapped in, reading the same domain allowlist. Two callers land there:
+the code-mode shell, which refuses without a fence, and the approval-gated escape
+hatch for when the operator's own machine has to change, which degrades and says so.
 """
 
 from __future__ import annotations
