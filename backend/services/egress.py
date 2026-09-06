@@ -130,9 +130,28 @@ class EgressPolicy:
         # at boot: an operator who wrote one believes it is allowed, and silently dropping
         # it would leave them debugging the fence instead of their typo.
         self._global = frozenset(normalise_domain(d) for d in global_domains)
+        # Forked workspace key → the key whose allowlist it is actually fenced by. See
+        # `share`. In memory only: a fork does not outlive the process that took it.
+        self._shared: dict[str, str] = {}
+
+    def share(self, key: str, with_key: str) -> None:
+        """Fence one workspace by another's allowlist — what a fork is.
+
+        A delegated agent reaches exactly what the conversation that delegated to it
+        reaches: its sidecar mounts the parent's directory, and a grant the operator
+        approves for one is not a second thing to approve for the other. So both halves
+        have to agree on which key the grant belongs to — a row written under the child's
+        own key would materialise a file nothing has mounted, and the approval would read
+        as having done nothing.
+        """
+        self._shared[key] = with_key
+
+    def _fenced_by(self, key: str) -> str:
+        return self._shared.get(key, key)
 
     async def allowed_for(self, key: str) -> frozenset[str]:
         """Everything the workspace behind ``key`` may reach."""
+        key = self._fenced_by(key)
         if not key:
             return self._global
 
@@ -159,6 +178,7 @@ class EgressPolicy:
         the approval refuses that retry — which reads, to whoever is watching, as an
         approval that did nothing.
         """
+        key = self._fenced_by(key)
         if not key:
             raise InvalidInputError("egress is granted to a workspace; none was named")
         wanted = sorted({normalise_domain(d) for d in domains})
@@ -197,6 +217,9 @@ class EgressPolicy:
         """
         if not conversation_id:
             return
+        # Dropped first, so this deletes what the conversation itself was granted rather
+        # than following a fork's alias into the grants of the parent that outlives it.
+        self._shared.pop(conversation_id, None)
 
         def work(session: Session) -> None:
             session.execute(
@@ -213,7 +236,7 @@ class EgressPolicy:
         """The directory bind-mounted into this workspace's fence. Derived from the same
         ``safe_key`` the session manager names containers and workspaces with, so a
         workspace and its allowlist can never end up under two different tokens."""
-        return self.dir_for(safe_key(key))
+        return self.dir_for(safe_key(self._fenced_by(key)))
 
     def dir_for(self, safe: str) -> Path:
         """The allowlist directory an already-``safe_key``-ed name maps to.

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import threading
 import time
@@ -36,6 +35,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Protocol
 
+from core.fork import MergeReport
 from core.vault import Vault
 
 from .base import SandboxError, SandboxResult, SandboxSpec, contained_path
@@ -51,8 +51,9 @@ from .container import (
     runtime_fault_line,
     with_in_container_timeout,
 )
+from .fork import clone_workspace, fork_marker, manifest_of, merge_workspace
 from .preview import PreviewHandle, launch_preview, stop_preview_container
-from .seal import excluded, partial_marker, restore_workspace, seal_workspace
+from .seal import partial_marker, restore_workspace, seal_workspace, walk_files
 from .sidecar import (
     create_internal_network,
     network_name,
@@ -62,6 +63,7 @@ from .sidecar import (
     start_egress_sidecar,
     stop_egress_sidecar,
 )
+from .warmup import ImageWarmup
 
 logger = logging.getLogger(__name__)
 
@@ -130,57 +132,6 @@ async def _start_idle_container(
     return None if code == 0 else err
 
 
-class ImageWarmup:
-    """Coordinates the background image pull (the manager's ``_warm_image``)
-    with a session's first container create, so a cold ``_ensure_up``/
-    ``start_preview`` never races an implicit ``docker run`` pull against its own
-    short create-timeout (sandbox-01). One instance per manager, shared by every
-    session it mints; a bare :class:`SandboxSession` used without one (e.g. direct
-    unit construction) simply skips the coordination — see ``warmup=None``.
-
-    Defaults to "nothing to wait for" (``ready``, not ``pending``) until
-    :meth:`start_pulling` says otherwise — so a manager that's never actually
-    started warming (e.g. most unit tests, which construct one without calling
-    :meth:`~services.sandbox.manager.SandboxSessionManager.start`) behaves exactly as
-    it did before this coordination existed, rather than waiting on a pull that will
-    never run."""
-
-    def __init__(self) -> None:
-        self._done = asyncio.Event()
-        self._done.set()
-        self.ready = True
-
-    @property
-    def pending(self) -> bool:
-        """True only while a background pull is actually in flight."""
-        return not self._done.is_set()
-
-    def start_pulling(self) -> None:
-        """Call right before kicking off the background pull — flips to
-        pending so a concurrent create knows to wait rather than assume
-        readiness."""
-        self.ready = False
-        self._done.clear()
-
-    def mark_done(self, ready: bool) -> None:
-        self.ready = ready
-        self._done.set()
-
-    async def wait(self, timeout_s: float) -> bool:
-        """Wait up to ``timeout_s`` for the pull to resolve. Returns whether the
-        image is now known ready. A caller that times out here still sees
-        ``pending`` True afterwards, distinguishing "still pulling" (worth a
-        clear retry message) from "resolved and confirmed missing" (let the
-        ordinary create attempt run and report its own real error)."""
-        if not self.pending:
-            return self.ready
-        try:
-            await asyncio.wait_for(self._done.wait(), timeout=timeout_s)
-        except TimeoutError:
-            return False
-        return self.ready
-
-
 class SandboxSession:
     """One conversation's live container plus its persistent workspace."""
 
@@ -196,10 +147,19 @@ class SandboxSession:
         excludes: Iterable[str],
         proxy_image: str = "python:alpine",
         warmup: ImageWarmup | None = None,
+        ephemeral: bool = False,
     ) -> None:
         self.key = key
         self.workspace = workspace
         self.sealed = sealed
+        # A fork taken for a delegated agent: a copy of a workspace that is already
+        # archived under its parent's key. It is discarded rather than sealed wherever
+        # an ordinary session would seal — see :meth:`shutdown`.
+        self.ephemeral = ephemeral
+        # The parent's files as they stood when this fork was taken, ``{relpath: sha256}``
+        # — what :func:`services.sandbox.fork.merge_workspace` decides against. Empty on
+        # every session that is not a fork.
+        self.fork_manifest: dict[str, str] = {}
         # The host-side directory holding this workspace's allowlist, bind-mounted into
         # the sidecar. Owned by the egress policy, which rewrites it whenever the operator
         # approves a domain — the fence re-reads it, so a grant lands without a restart.
@@ -231,8 +191,9 @@ class SandboxSession:
         # which the orphan sweep would seal straight over the good archive. A thread
         # lock rather than the asyncio one because both sides are synchronous and one
         # of them does not run on the loop at all; it is uncontended except in exactly
-        # that race.
-        self._disk = threading.Lock()
+        # that race. Reentrant because `merge_fork` holds it across a restore that takes
+        # it too.
+        self._disk = threading.RLock()
         self._holders: list[LiveWork] = []
 
     @property
@@ -448,6 +409,12 @@ class SandboxSession:
             await self._stop_preview_locked()
             await self._release_mounts()
             self._running = False
+            if self.ephemeral:
+                # A fork's files were either merged back by now or abandoned, and an
+                # archive of them would be a second at-rest copy of the parent's
+                # workspace under a key nothing will ever ask for again.
+                await asyncio.to_thread(self._drop_workspace)
+                return
             if self.workspace.exists() and self._vault.is_unlocked:
                 # Off-thread: tar+gzip+AEAD of a workspace must not block the loop.
                 await asyncio.to_thread(self._seal_and_clear)
@@ -489,12 +456,23 @@ class SandboxSession:
             shutil.rmtree(self.workspace, ignore_errors=True)
             marker.unlink(missing_ok=True)
 
+    def _drop_workspace(self) -> None:
+        """Remove a fork's plaintext, and the markers that describe it.
+
+        Under ``_disk`` like the seal it replaces: a file tool arriving on this session
+        mid-teardown must wait rather than repair the directory being removed."""
+        with self._disk:
+            shutil.rmtree(self.workspace, ignore_errors=True)
+            fork_marker(self.workspace).unlink(missing_ok=True)
+            partial_marker(self.workspace).unlink(missing_ok=True)
+
     async def discard(self) -> None:
         """Stop and kill this session's containers **without sealing** — the
         un-sealing counterpart to :meth:`shutdown`, run when a conversation is being
-        deleted. Kills every container holding the workspace mount so the manager can
-        then delete the files; it touches no disk itself, so disk cleanup has a single
-        home (``SandboxSessionManager._purge_disk``)."""
+        deleted and before a fork's files are read back into its parent. Kills every
+        container holding the workspace mount so what comes next — the manager's delete,
+        or the merge's walk — has the directory to itself; it touches no disk itself, so
+        disk cleanup has a single home (``SandboxSessionManager._purge_disk``)."""
         async with self._lock:
             await self._stop_preview_locked()
             await self._release_mounts()
@@ -538,31 +516,23 @@ class SandboxSession:
         if not root.exists():
             return {}
         files: dict[str, bytes] = {}
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted(d for d in dirnames if not excluded(d, self._excludes))
-            for name in sorted(filenames):
-                if len(files) >= max_files:
-                    return files
-                full = Path(dirpath) / name
-                if full.is_symlink():
+        for rel, full in walk_files(root, self._excludes):
+            if len(files) >= max_files:
+                return files
+            try:
+                if full.stat().st_size > max_file_bytes:
                     continue
-                rel = full.relative_to(root).as_posix()
-                if excluded(rel, self._excludes):
-                    continue
-                try:
-                    if full.stat().st_size > max_file_bytes:
-                        continue
-                    data = full.read_bytes()
-                except OSError:
-                    continue
-                if b"\x00" in data:
-                    continue  # NUL byte ⇒ binary (a NUL is valid UTF-8, so the
-                    # decode check below wouldn't catch it) — history is text only
-                try:
-                    data.decode("utf-8")
-                except UnicodeDecodeError:
-                    continue  # binary — skipped (history is code + text diffs)
-                files[rel] = data
+                data = full.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in data:
+                continue  # NUL byte ⇒ binary (a NUL is valid UTF-8, so the
+                # decode check below wouldn't catch it) — history is text only
+            try:
+                data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue  # binary — skipped (history is code + text diffs)
+            files[rel] = data
         return files
 
     def ensure_workspace(self) -> Path:
@@ -576,6 +546,41 @@ class SandboxSession:
         self._ensure_workspace()
         self.touch()
         return self.workspace
+
+    def clone_into(self, child: Path) -> dict[str, str]:
+        """Copy this workspace onto a fork's path, and record what it held at that moment.
+
+        Blocking IO; call it off the event loop. ``_disk`` is held for the whole
+        materialise-copy-and-hash, exactly as :meth:`merge_fork` holds it for the walk:
+        a seal landing mid-copy rmtree's the very tree being read, which is either an
+        error that kills the delegation or — worse — a torn copy whose manifest would
+        record the tear as the fork point, so the merge back would read the parent's
+        surviving files as never having existed.
+
+        The manifest is hashed from the *copy*, which is the fork point by construction:
+        re-reading this workspace afterwards would record a write it took since the clone
+        as the base, and the merge back would then undo that write with the child's older
+        copy.
+        """
+        with self._disk:
+            self._ensure_workspace()
+            clone_workspace(self.workspace, child)
+            self.touch()
+            return manifest_of(child, self._excludes)
+
+    def merge_fork(self, child: Path, manifest: Mapping[str, str]) -> MergeReport:
+        """Land what a fork of this workspace changed, and report what could not.
+
+        Blocking IO; call it off the event loop. ``_disk`` is held for the whole
+        walk-and-copy, with the workspace materialised *inside* that hold: a seal landing
+        mid-merge archives a torn tree, and one that finished first leaves the merge
+        recreating a few files where a whole workspace used to be — plaintext, unmarked,
+        and exactly the shape the orphan sweep seals back over the good archive."""
+        with self._disk:
+            self._ensure_workspace()
+            return merge_workspace(
+                child=child, parent=self.workspace, manifest=manifest, excludes=self._excludes
+            )
 
     def _ensure_workspace(self) -> None:
         # Under `_disk`, so a seal in flight finishes before we judge what is on disk:

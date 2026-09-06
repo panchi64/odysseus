@@ -22,7 +22,9 @@ thread — minutes of reinstall before the agent does anything useful, and no re
 short of deleting the thread. Sharing one per project keeps those caches warm, which is
 most of the reason to code on the host at all. The cost is that only one coding
 conversation can hold a project at a time; that is enforced rather than allowed to
-silently interleave two threads over one checkout.
+silently interleave two threads over one checkout. A *delegated child* of the holding
+conversation is the one exception — it gets its own checkout beside the parent's, still
+owned by the same conversation (see :mod:`services.projects.fork`).
 
 **Worktrees live outside ``data_dir``.** An approved host command is fenced by
 ``services/sandbox/host.py``, which denies reads of the whole data directory — the vault,
@@ -39,7 +41,9 @@ not the agent mid-turn.
 **A merge releases the project.** The holder map is what enforces one coding thread per
 checkout, and `discard` used to be the only thing that cleared it — so a merged thread
 kept the project locked forever, and the busy message told the operator to do the very
-thing they had just done. Merging hands the project back.
+thing they had just done. Merging hands the project back. Merging a *fork* back does
+not: that is one delegated agent's work rejoining its parent, and the parent is still
+working.
 
 A last thing worth knowing because it will otherwise be discovered halfway through a
 session: a worktree branches from the project's base ref, so **uncommitted work in the
@@ -55,12 +59,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.exceptions import InvalidInputError
+from core.fork import MergeReport
+
+from .fork import add_child_worktree, child_path_for, discard_children, merge_child_back
+from .repo import (
+    AUTHOR,
+    WorktreeError,
+    WorktreeState,
+    branch_for,
+    child_branch_for,
+    commit_worktree,
+    run_git,
+    run_git_ok,
+)
 
 logger = logging.getLogger(__name__)
-
-#: Branch namespace. One per coding conversation, so a branch is self-describing and a
-#: stale one is obvious.
-BRANCH_PREFIX = "ody/"
 
 
 class WorktreeBusyError(Exception):
@@ -69,17 +82,6 @@ class WorktreeBusyError(Exception):
     Refused rather than queued or silently shared: two threads interleaving edits over
     one checkout would corrupt both their mental models of the tree.
     """
-
-
-class WorktreeError(Exception):
-    """A git operation failed, with git's own message."""
-
-
-@dataclass(frozen=True)
-class WorktreeState:
-    path: Path
-    branch: str
-    base_ref: str
 
 
 @dataclass(frozen=True)
@@ -91,49 +93,6 @@ class Diff:
     insertions: int
     deletions: int
     patch: str
-
-
-#: The identity every commit this layer makes is attributed to. It is the chassis
-#: committing on the agent's behalf, and it should read that way in `git log`.
-_AUTHOR = ("-c", "user.name=Odysseus", "-c", "user.email=odysseus@localhost")
-
-
-async def _git(cwd: Path, *args: str) -> tuple[int, str, str]:
-    """One git invocation. Fixed argv, no shell — a project path is operator content and
-    must never be word-split or interpolated into a command line.
-
-    A missing `cwd` comes back as a failed git call rather than an `OSError`: the
-    operator can move or delete a project directory at any time, and every caller here
-    already knows how to handle "git said no" while none of them expects an exception
-    from a path that existed a moment ago.
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git",
-            *args,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except (OSError, NotADirectoryError) as exc:
-        return 1, "", f"{cwd} is not reachable: {exc}"
-    out, err = await proc.communicate()
-    return (
-        proc.returncode or 0,
-        out.decode("utf-8", "replace"),
-        err.decode("utf-8", "replace"),
-    )
-
-
-async def _git_ok(cwd: Path, *args: str) -> str:
-    code, out, err = await _git(cwd, *args)
-    if code != 0:
-        raise WorktreeError((err or out).strip() or f"git {' '.join(args)} failed")
-    return out
-
-
-def branch_for(conversation_id: str) -> str:
-    return f"{BRANCH_PREFIX}{conversation_id}"
 
 
 class WorktreeManager:
@@ -148,6 +107,10 @@ class WorktreeManager:
     def path_for(self, project_id: str) -> Path:
         return self._root / project_id
 
+    def fork_path(self, project_id: str, conversation_id: str, delegation_id: str) -> Path:
+        """Where a delegated child of this conversation checks out."""
+        return child_path_for(self._root, project_id, conversation_id, delegation_id)
+
     def holder(self, project_id: str) -> str | None:
         return self._holders.get(project_id)
 
@@ -157,7 +120,7 @@ class WorktreeManager:
             del self._holders[project_id]
 
     async def is_repo(self, root: Path) -> bool:
-        code, _, _ = await _git(root, "rev-parse", "--is-inside-work-tree")
+        code, _, _ = await run_git(root, "rev-parse", "--is-inside-work-tree")
         return code == 0
 
     async def ensure_repo(self, root: Path, *, confirmed: bool) -> bool:
@@ -174,21 +137,11 @@ class WorktreeManager:
                 f"{root} is not a git repository. Coding mode needs one so your work can "
                 "be kept separate — confirm to create it."
             )
-        await _git_ok(root, "init")
-        await _git_ok(root, "add", "-A")
+        await run_git_ok(root, "init")
+        await run_git_ok(root, "add", "-A")
         # `--allow-empty` so an empty directory still gets the base commit a worktree
         # must branch from.
-        await _git_ok(
-            root,
-            "-c",
-            "user.name=Odysseus",
-            "-c",
-            "user.email=odysseus@localhost",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "Initial commit",
-        )
+        await run_git_ok(root, *AUTHOR, "commit", "--allow-empty", "-m", "Initial commit")
         logger.info("projects: initialised a git repository at %s", root)
         return True
 
@@ -202,12 +155,7 @@ class WorktreeManager:
         a second turn in the same thread simply re-acquires.
         """
         async with self._lock:
-            holder = self._holders.get(project_id)
-            if holder is not None and holder != conversation_id:
-                raise WorktreeBusyError(
-                    "Another coding conversation is currently working in this project. "
-                    "Finish or merge that one first."
-                )
+            self._require_free(project_id, conversation_id)
 
             if not await self.is_repo(root):
                 raise InvalidInputError(
@@ -221,9 +169,9 @@ class WorktreeManager:
 
             # Branch first (idempotent): `worktree add` on an existing branch must not
             # try to create it again.
-            code, _, _ = await _git(root, "rev-parse", "--verify", branch)
+            code, _, _ = await run_git(root, "rev-parse", "--verify", branch)
             if code != 0:
-                await _git_ok(root, "branch", branch, base_ref)
+                await run_git_ok(root, "branch", branch, base_ref)
 
             if (path / ".git").exists():
                 # Commit whatever the previous holder left behind **before** switching.
@@ -231,16 +179,102 @@ class WorktreeManager:
                 # often than not — and `git checkout` carries uncommitted files across, so
                 # without this one thread's half-finished work lands on another thread's
                 # branch, or the checkout fails outright with a raw git error.
-                await self._commit_worktree(path, "Agent changes (carried forward)")
-                await _git_ok(path, "checkout", branch)
+                await commit_worktree(path, "Agent changes (carried forward)")
+                await run_git_ok(path, "checkout", branch)
             else:
                 # A directory left behind by a previous run with no .git is not a
                 # worktree — remove the registration and re-add rather than failing.
-                await _git(root, "worktree", "prune")
-                await _git_ok(root, "worktree", "add", str(path), branch)
+                await run_git(root, "worktree", "prune")
+                await run_git_ok(root, "worktree", "add", str(path), branch)
 
             self._holders[project_id] = conversation_id
             return WorktreeState(path=path, branch=branch, base_ref=base_ref)
+
+    def _require_free(self, project_id: str, conversation_id: str) -> None:
+        """Refuse when *another* conversation is working in this project. Called under
+        the lock. A conversation's own delegated children pass, which is what lets a
+        child checkout exist beside its parent's."""
+        holder = self._holders.get(project_id)
+        if holder is not None and holder != conversation_id:
+            raise WorktreeBusyError(
+                "Another coding conversation is currently working in this project. "
+                "Finish or merge that one first."
+            )
+
+    def _require_held(self, project_id: str, conversation_id: str) -> None:
+        """Refuse a fork or a merge back unless this conversation is *holding* the
+        project. Called under the lock.
+
+        Holding it is the only thing that says what is checked out at ``path_for``:
+        `acquire` is what puts the shared worktree on this conversation's branch, and
+        both `merge` and `discard` hand the project back — leaving that checkout on
+        somebody else's branch, or detached. Forking from there would commit another
+        thread's working tree and cut the child from a stale branch; merging back would
+        land the delegated work on whatever happened to be checked out.
+        """
+        holder = self._holders.get(project_id)
+        if holder == conversation_id:
+            return
+        self._require_free(project_id, conversation_id)
+        raise WorktreeError(
+            "this conversation is not working in this project right now — open it for "
+            "coding first, so a delegated agent forks from what it describes"
+        )
+
+    async def fork(
+        self, *, project_id: str, root: Path, conversation_id: str, delegation_id: str
+    ) -> WorktreeState:
+        """A delegated child's own checkout, cut from this conversation's branch.
+
+        The parent is snapshotted first, so the child opens on the files the parent's
+        transcript describes — a child branched off the last commit would be handed a
+        tree that contradicts the instructions it was given. See
+        :mod:`services.projects.fork` for what "warm" costs and why.
+        """
+        async with self._lock:
+            self._require_held(project_id, conversation_id)
+            parent_path = self.path_for(project_id)
+            if not (parent_path / ".git").exists():
+                raise WorktreeError(
+                    "this conversation has no checkout to fork — it has not worked in "
+                    "this project yet"
+                )
+            await commit_worktree(parent_path, "Agent changes (forked from)")
+            branch = child_branch_for(conversation_id, delegation_id)
+            child = self.fork_path(project_id, conversation_id, delegation_id)
+            child.parent.mkdir(parents=True, exist_ok=True)
+            await add_child_worktree(
+                root=root,
+                parent_path=parent_path,
+                child=child,
+                branch=branch,
+                parent_branch=branch_for(conversation_id),
+            )
+            # The holder map is untouched on purpose: a fork is the same conversation
+            # working in two places, not a second thread taking the checkout — and the
+            # conversation already holds it, which is what `_require_held` just said.
+            return WorktreeState(path=child, branch=branch, base_ref=branch_for(conversation_id))
+
+    async def merge_back(
+        self, *, project_id: str, root: Path, conversation_id: str, delegation_id: str
+    ) -> MergeReport:
+        """Land a delegated child's branch in its **parent's** worktree.
+
+        Not in the operator's tree: that one is still only ever written by the merge
+        they press themselves. A conflict aborts and keeps the child intact — see
+        :func:`services.projects.fork.merge_child_back`.
+        """
+        async with self._lock:
+            self._require_held(project_id, conversation_id)
+            child = self.fork_path(project_id, conversation_id, delegation_id)
+            if not (child / ".git").exists():
+                raise WorktreeError("that delegated checkout no longer exists")
+            return await merge_child_back(
+                root=root,
+                parent_path=self.path_for(project_id),
+                child=child,
+                branch=child_branch_for(conversation_id, delegation_id),
+            )
 
     async def branch_from(self, root: Path, *, source_id: str, conversation_id: str) -> None:
         """Cut this conversation's branch from **another conversation's**, for a fork.
@@ -252,12 +286,12 @@ class WorktreeManager:
         branch from the base ref on its first coding turn, which is correct: there was
         nothing there to preserve.
         """
-        await _git_ok(root, "rev-parse", "--verify", branch_for(source_id))
+        await run_git_ok(root, "rev-parse", "--verify", branch_for(source_id))
         target = branch_for(conversation_id)
-        code, _, _ = await _git(root, "rev-parse", "--verify", target)
+        code, _, _ = await run_git(root, "rev-parse", "--verify", target)
         if code == 0:
             return  # already cut — forking twice must not fail the second time
-        await _git_ok(root, "branch", target, branch_for(source_id))
+        await run_git_ok(root, "branch", target, branch_for(source_id))
 
     async def snapshot(self, project_id: str, *, conversation_id: str) -> bool:
         """Commit whatever the agent has changed in the worktree onto its branch.
@@ -277,30 +311,7 @@ class WorktreeManager:
         """
         if self._holders.get(project_id) != conversation_id:
             return False
-        return await self._commit_worktree(self.path_for(project_id))
-
-    async def _commit_worktree(self, path: Path, message: str | None = None) -> bool:
-        """Stage and commit everything in ``path``, or return False if it was clean.
-
-        Best-effort by design: a worktree that isn't there, or a git that refuses, must
-        not take down the read that asked for this. `.odysseus/` ignores itself, so the
-        agent's staged attachments and skill bundles never reach the operator's diff.
-        """
-        if not (path / ".git").exists():
-            return False
-        await _git(path, "add", "-A")
-        # `diff --cached --quiet` exits 0 when nothing is staged — the cheapest way to
-        # ask "is there anything to commit" without parsing porcelain.
-        clean, _, _ = await _git(path, "diff", "--cached", "--quiet")
-        if clean == 0:
-            return False
-        code, out, err = await _git(
-            path, *_AUTHOR, "commit", "-m", message or "Agent changes"
-        )
-        if code != 0:
-            logger.warning("worktree: could not commit %s: %s", path, (err or out).strip())
-            return False
-        return True
+        return await commit_worktree(self.path_for(project_id))
 
     async def diff(
         self, root: Path, *, base_ref: str, conversation_id: str, project_id: str
@@ -314,8 +325,8 @@ class WorktreeManager:
         # Three dots: changes on the branch since it diverged, not changes the base has
         # made since — the operator wants to review the agent's work, not their own.
         spec = f"{base_ref}...{branch}"
-        patch = await _git_ok(root, "diff", spec)
-        stat = await _git_ok(root, "diff", "--shortstat", spec)
+        patch = await run_git_ok(root, "diff", spec)
+        stat = await run_git_ok(root, "diff", "--shortstat", spec)
         return Diff(
             branch=branch,
             files_changed=_stat_field(stat, "file"),
@@ -337,15 +348,12 @@ class WorktreeManager:
 
         Snapshots first for the same reason `diff` does, then releases the project so a
         second coding conversation can take it: without that, a project stays locked to
-        its first thread forever and the busy message ("finish or merge that one first")
-        names an escape that does not work.
+        its first thread forever and the busy message names an escape that does not work.
         """
         await self.snapshot(project_id, conversation_id=conversation_id)
         await self._require_base_checked_out(root, base_ref)
         branch = branch_for(conversation_id)
-        out = await _git_ok(
-            root, *_AUTHOR, "merge", "--no-ff", branch, "-m", f"Merged {branch}"
-        )
+        out = await run_git_ok(root, *AUTHOR, "merge", "--no-ff", branch, "-m", f"Merged {branch}")
         self.release(project_id, conversation_id)
         return out
 
@@ -359,7 +367,7 @@ class WorktreeManager:
         """
         if base_ref == "HEAD":
             return
-        code, current, _ = await _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        code, current, _ = await run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
         if code != 0:
             return  # not a state we can read; let the merge itself report the problem
         current = current.strip()
@@ -372,22 +380,29 @@ class WorktreeManager:
             )
 
     async def discard(self, root: Path, *, project_id: str, conversation_id: str) -> None:
-        """Throw the branch away. Best-effort and idempotent — this runs when a
-        conversation is deleted, and a half-set-up thread must not block that."""
+        """Throw the branch away, and every delegated checkout cut from it. Best-effort
+        and idempotent — this runs when a conversation is deleted, and a half-set-up
+        thread must not block that."""
+        await discard_children(
+            root=root,
+            worktrees_dir=self._root,
+            project_id=project_id,
+            conversation_id=conversation_id,
+        )
         branch = branch_for(conversation_id)
         path = self.path_for(project_id)
         if self._holders.get(project_id) == conversation_id:
             # Throw the working tree away with the branch. Without this the discarded
             # thread's uncommitted files survive the checkout below and get carried onto
             # whichever branch is taken up next — the operator said discard, so discard.
-            await _git(path, "reset", "--hard")
-            await _git(path, "clean", "-fd")
+            await run_git(path, "reset", "--hard")
+            await run_git(path, "clean", "-fd")
             # Park the worktree off the branch so it can be deleted. `--detach` rather
             # than the base ref by name: the base is normally checked out in the *main*
             # working tree, and git refuses to have one branch checked out twice.
-            await _git(path, "checkout", "--detach")
+            await run_git(path, "checkout", "--detach")
             del self._holders[project_id]
-        await _git(root, "branch", "-D", branch)
+        await run_git(root, "branch", "-D", branch)
 
 
 def _stat_field(shortstat: str, word: str) -> int:

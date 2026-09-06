@@ -16,8 +16,9 @@ workspace is.
 from __future__ import annotations
 
 import io
+import os
 import tarfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -29,6 +30,27 @@ from .base import SandboxError
 def excluded(arcname: str, excludes: Iterable[str]) -> bool:
     parts = Path(arcname).parts
     return any(fnmatch(part, pat) for part in parts for pat in excludes)
+
+
+def walk_files(root: Path, excludes: Iterable[str]) -> Iterator[tuple[str, Path]]:
+    """Every file an archive of ``root`` would keep, as ``(relpath, path)``, in order.
+
+    Here beside :func:`excluded` because three readers now need the same answer — the
+    history snapshot, the fork's manifest, and the merge back — and a walk that kept a
+    different set from the one the seal keeps would report changes to files that vanish
+    on the next reap. Symlinks are skipped for the reason the seal drops them: the agent
+    can plant one anywhere, and following it leaves the workspace.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not excluded(d, excludes))
+        for name in sorted(filenames):
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                continue
+            rel = full.relative_to(root).as_posix()
+            if excluded(rel, excludes):
+                continue
+            yield rel, full
 
 
 def seal_workspace(workspace: Path, excludes: Iterable[str], vault: Vault) -> bytes:

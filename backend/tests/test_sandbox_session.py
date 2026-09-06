@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -26,13 +27,14 @@ from services.sandbox import (
     SandboxSpec,
 )
 from services.sandbox.base import safe_key
+from services.sandbox.fork import fork_marker
 from services.sandbox.seal import (
     excluded,
     partial_marker,
     restore_workspace,
     seal_workspace,
 )
-from services.sandbox.session import ImageWarmup
+from services.sandbox.warmup import ImageWarmup
 
 from .conftest import egress_policy
 from .test_sandbox import _runtime_ready
@@ -794,6 +796,305 @@ async def test_stopped_tokens_are_pruned_after_their_ttl(tmp_path, monkeypatch):
 
     assert manager.preview_status("tok-1") == "unknown"  # aged out
     assert manager.preview_status("tok-2") == "stopped"  # freshly tombstoned
+
+
+# --- forking a workspace for a delegated agent -------------------------------
+_CHILD = "conv-parent#d1"
+
+
+async def _forked(tmp_path, vault, **overrides):
+    """A parent mid-session — files, and an environment that cost minutes — and the
+    fork taken out of it."""
+    manager = _manager(tmp_path, vault, **overrides)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    (parent.workspace / "notes.txt").write_text("what the parent wrote")
+    (parent.workspace / "keep.txt").write_text("still wanted")
+    (parent.workspace / ".venv" / "lib").mkdir(parents=True)
+    (parent.workspace / ".venv" / "lib" / "big.so").write_bytes(b"x" * 1000)
+    child = await manager.fork("conv-parent", _CHILD)
+    return manager, parent, child
+
+
+async def test_fork_copies_the_parents_workspace_including_what_a_seal_drops(tmp_path):
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+
+    assert (child.workspace / "notes.txt").read_text() == "what the parent wrote"
+    # The seal drops a virtualenv because it is rebuildable; a fork keeps it because
+    # rebuilding it is the minutes the delegated agent would spend before its first
+    # useful command.
+    assert (child.workspace / ".venv" / "lib" / "big.so").read_bytes() == b"x" * 1000
+    assert child.workspace != parent.workspace
+    # A delegated agent may reach exactly what the conversation that delegated to it may.
+    assert child._egress_dir == manager._egress.allow_dir("conv-parent")
+    # And a domain approved during the delegated run is written to that same directory,
+    # not to one nothing has mounted — which would read as an approval that did nothing.
+    assert manager._egress.allow_dir(_CHILD) == child._egress_dir
+    # The record the merge decides against: the parent as it stood, minus the bloat the
+    # merge never walks.
+    assert child.fork_manifest.keys() == {"notes.txt", "keep.txt"}
+
+
+async def test_a_fork_holds_the_parent_still_for_the_whole_copy(tmp_path, monkeypatch):
+    # The copy reads the parent's directory for as long as a warm workspace takes. A seal
+    # landing in that window rmtree's the tree mid-read: either an error that kills the
+    # delegation, or a torn copy whose manifest records the tear as the fork point — and
+    # the merge back would then read the parent's surviving files as never having existed.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    real_clone = session_mod.clone_workspace
+    locked: list[bool] = []
+
+    def watched(source, dest):
+        locked.append(_held_elsewhere(parent._disk))
+        real_clone(source, dest)
+
+    monkeypatch.setattr(session_mod, "clone_workspace", watched)
+    delegated = _Work()
+    await manager.fork("conv-parent", _CHILD, holder=delegated)
+
+    assert locked == [True]  # the lock a seal takes is held across the copy
+    # And the cap cannot displace the parent out from under the copy either.
+    assert parent.is_claimed
+
+
+def _held_elsewhere(lock: threading.RLock) -> bool:
+    """Whether ``lock`` is taken — asked from another thread, because it is reentrant and
+    the thread holding it would happily take it a second time."""
+    answer: list[bool] = []
+
+    def ask() -> None:
+        taken = lock.acquire(blocking=False)
+        if taken:
+            lock.release()
+        answer.append(not taken)
+
+    probe = threading.Thread(target=ask)
+    probe.start()
+    probe.join()
+    return answer[0]
+
+
+async def test_a_fork_is_ephemeral_and_its_shutdown_leaves_no_archive(tmp_path):
+    # Its files are a copy of a workspace that already has an archive under the parent's
+    # key; a second one would be the same bytes at rest under a key nothing reopens.
+    vault = await _vault(tmp_path)
+    _manager_, _parent, child = await _forked(tmp_path, vault)
+    assert child.ephemeral
+
+    await child.shutdown()
+
+    assert not child.sealed.exists()
+    assert not child.workspace.exists()
+    assert not fork_marker(child.workspace).exists()
+
+
+async def test_merge_back_lands_the_childs_work_and_purges_the_fork(tmp_path):
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+    child.write_file("notes.txt", b"what the delegated agent changed")
+    child.write_file("report/out.md", b"and something new")
+
+    report = await manager.merge_back(_CHILD, "conv-parent")
+
+    assert report.merged
+    assert report.files == ["notes.txt", "report/out.md"]
+    assert (parent.workspace / "notes.txt").read_bytes() == b"what the delegated agent changed"
+    assert (parent.workspace / "report" / "out.md").read_bytes() == b"and something new"
+    # The fork is gone with it — a second copy of the parent's files kept "just in case"
+    # is how a disk fills up, and what was refused is in the report.
+    assert safe_key(_CHILD) not in manager._sessions
+    assert not child.workspace.exists()
+    assert not child.sealed.exists()
+
+
+async def test_merge_back_drops_the_childs_boxes_before_it_walks(tmp_path, monkeypatch):
+    # They have the fork bind-mounted at /work, and the delegated agent is free to leave a
+    # process running in there. Walking under a live mount copies whatever that process is
+    # halfway through writing — and gives it the window to swing a path the host-side walk
+    # has already judged onto a host file the box itself cannot see.
+    removed_at_walk: list[list[str]] = []
+    removed: list[str] = []
+
+    async def fake_force_remove(_runtime, name: str, **_kwargs) -> None:
+        removed.append(name)
+
+    _fake_runtime_calls(monkeypatch)
+    monkeypatch.setattr(session_mod, "force_remove_container", fake_force_remove)
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault, backend=_pinned_backend())
+    child.write_file("notes.txt", b"what the delegated agent changed")
+    real_merge = parent.merge_fork
+
+    def watched(*args):
+        removed_at_walk.append(list(removed))
+        return real_merge(*args)
+
+    monkeypatch.setattr(parent, "merge_fork", watched)
+    await manager.merge_back(_CHILD, "conv-parent")
+
+    assert child.container in removed_at_walk[0]
+    assert child._preview_container in removed_at_walk[0]
+
+
+async def test_merge_back_refuses_to_overwrite_what_the_parent_changed_meanwhile(tmp_path):
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+    parent.write_file("notes.txt", b"what the parent did while it waited")
+    child.write_file("notes.txt", b"what the child did")
+    child.write_file("fresh.txt", b"only the child touched this")
+    (child.workspace / "keep.txt").unlink()
+
+    report = await manager.merge_back(_CHILD, "conv-parent")
+
+    assert not report.merged
+    assert report.conflicts == ["notes.txt"]
+    assert (parent.workspace / "notes.txt").read_bytes() == b"what the parent did while it waited"
+    # A conflict on one path does not hold the rest of the work hostage.
+    assert report.files == ["fresh.txt"]
+    assert (parent.workspace / "fresh.txt").exists()
+    # A deletion is reported and never applied: the child dropping a file is not
+    # evidence the parent wanted it gone.
+    assert report.deleted == ["keep.txt"]
+    assert (parent.workspace / "keep.txt").read_text() == "still wanted"
+
+
+async def test_a_merge_refuses_to_write_through_a_symlink_out_of_the_workspace(tmp_path):
+    # The agent in the box can point a symlink anywhere, and the merge is the one writer
+    # in this path that runs on the host — outside every fence, and past the gate a merge
+    # is supposed to be.
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (parent.workspace / "docs").symlink_to(outside)
+    child.write_file("docs/stolen.txt", b"this must never leave the workspace")
+
+    report = await manager.merge_back(_CHILD, "conv-parent")
+
+    assert report.conflicts == ["docs/stolen.txt"]
+    assert not (outside / "stolen.txt").exists()
+
+
+async def test_a_merge_that_never_reported_keeps_the_fork(tmp_path, monkeypatch):
+    # A fork has no archive, so deleting it on a merge that produced no report — the
+    # vault re-locked while the delegated agent worked, the operator pressing Stop
+    # mid-walk — would lose every file that agent wrote, with nothing said about what
+    # landed and no second copy to retry from.
+    vault = await _vault(tmp_path)
+    manager, parent, child = await _forked(tmp_path, vault)
+    child.write_file("notes.txt", b"what the delegated agent changed")
+
+    def boom(*_args):
+        raise SandboxError("cannot restore the sandbox workspace: vault is locked")
+
+    monkeypatch.setattr(parent, "merge_fork", boom)
+    with pytest.raises(SandboxError):
+        await manager.merge_back(_CHILD, "conv-parent")
+
+    assert (child.workspace / "notes.txt").read_bytes() == b"what the delegated agent changed"
+    # Back in the map with its tombstone released, so the merge can simply be asked for
+    # again rather than the fork being stranded behind an event nothing will set.
+    assert manager._sessions[safe_key(_CHILD)] is child
+    assert not manager._tearing_down
+    monkeypatch.undo()
+    assert (await asyncio.wait_for(manager.merge_back(_CHILD, "conv-parent"), 2.0)).merged
+
+
+async def test_a_fork_whose_copy_fails_releases_the_sessions_it_displaced(tmp_path, monkeypatch):
+    # Those sessions are already out of the live map with a teardown tombstone each.
+    # Abandoned there, every later acquire for them waits on an event nothing will set,
+    # and their containers and plaintext workspaces are in no map a sweep can reach.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault, max_sessions=2)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    await manager.acquire("conv-other")
+
+    def boom(*_args):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(session_mod, "clone_workspace", boom)
+    with pytest.raises(OSError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert not manager._tearing_down
+    assert safe_key(_CHILD) not in manager._sessions
+    # The displaced conversation comes back rather than waiting forever on its own
+    # teardown.
+    await asyncio.wait_for(manager.acquire("conv-other"), 2.0)
+
+
+async def test_forking_the_same_key_twice_is_refused(tmp_path):
+    vault = await _vault(tmp_path)
+    manager, _parent, _child = await _forked(tmp_path, vault)
+    # One key names one delegation; minting a second session onto the same directory
+    # would give two agents one workspace and no way to tell their work apart.
+    with pytest.raises(SandboxError):
+        await manager.fork("conv-parent", _CHILD)
+
+
+async def test_a_fork_is_not_displaced_by_the_cap_while_its_run_is_live(tmp_path):
+    # Displacing a fork discards it — nothing here is ever sealed — so an unclaimed one
+    # is work the operator would simply lose.
+    vault = await _vault(tmp_path)
+    manager, _parent, child = await _forked(tmp_path, vault, max_sessions=1)
+    delegated = _Work()
+    child.hold(delegated)
+
+    await manager.acquire("conv-other")
+
+    assert safe_key(_CHILD) in manager._sessions
+    assert (child.workspace / "notes.txt").exists()
+
+
+async def test_taking_a_fork_does_not_displace_the_parent_it_was_forked_from(tmp_path):
+    # The conversation that just delegated is the one demonstrably mid-work. Sealing it
+    # to make room for its own child would hand it back, on the very turn it is waiting
+    # on that child, a workspace missing everything the seal drops.
+    vault = await _vault(tmp_path)
+    manager, parent, _child = await _forked(tmp_path, vault, max_sessions=1)
+
+    assert parent.key in manager._sessions
+    assert (parent.workspace / "notes.txt").exists()
+
+
+async def test_the_sweep_leaves_a_fork_whose_run_is_still_live_alone(tmp_path):
+    # Reaping an ordinary session is lossless — it seals, and the next run restores — so
+    # the sweep collects a run parked on an unanswered approval. A fork has no archive to
+    # come back through, and the merge that followed would report an empty workspace as
+    # having landed.
+    vault = await _vault(tmp_path)
+    manager, _parent, child = await _forked(tmp_path, vault, idle_ttl_s=0.0)
+    child.hold(_Work())
+
+    await manager._sweep()
+
+    assert safe_key(_CHILD) in manager._sessions
+    assert (child.workspace / "notes.txt").exists()
+
+
+async def test_the_sweep_discards_a_stranded_fork_instead_of_sealing_it(tmp_path):
+    # What a crash leaves of a delegation: a plaintext copy of a parent workspace that
+    # is already archived under its own key. Sealing it would file that duplicate at
+    # rest forever, under a key no conversation will ever open again.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    safe = safe_key("conv-parent#d9")
+    stranded = manager._work_root / safe
+    stranded.mkdir(parents=True)
+    (stranded / "notes.txt").write_text("a delegated agent's leftovers")
+    fork_marker(stranded).touch()
+
+    await manager._sweep()
+
+    assert not (manager._sealed_root / f"{safe}.tar.enc.gz").exists()
+    assert not stranded.exists()
+    assert not fork_marker(stranded).exists()
+    assert not manager._tearing_down
 
 
 # --- boot reconciliation + sealing what an unclean shutdown left --------------
