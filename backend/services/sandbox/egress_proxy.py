@@ -43,6 +43,12 @@ FORWARD_PORT = 3129
 #: Written into a refusal's body so a denial is legible in whatever the agent ran,
 #: rather than an unexplained 403 from "some proxy".
 DENIED_MARKER = "odysseus-egress: denied"
+#: The most of a request head the proxy will hold before answering. The head is buffered
+#: whole so the ``Host:`` line can be re-stated from the authority, and what drives it is
+#: code the agent wrote: a client sending headers without end would otherwise grow the
+#: buffer until the sidecar's memory cap killed it, taking the workspace's only exit with
+#: it and leaving nothing to notice or rebuild it.
+_MAX_HEAD_BYTES = 64 * 1024
 
 # Mirrors core.ssrf — keep in lockstep (a test enforces parity).
 _SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")  # RFC 6598 CGNAT / Tailscale
@@ -251,7 +257,12 @@ async def _handle_http(
     # an approval for one domain answering as another is the one thing a name-based
     # fence cannot allow.
     head = bytearray()
+    received = 0
     while (line := await client_r.readline()) not in (b"\r\n", b"", b"\n"):
+        received += len(line)
+        if received > _MAX_HEAD_BYTES:
+            await _respond(client_w, "431 Request Header Fields Too Large")
+            return
         lower = line.lower()
         if lower.startswith((b"proxy-", b"connection:", b"host:")):
             continue

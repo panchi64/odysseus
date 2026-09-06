@@ -1074,6 +1074,22 @@ async def test_forking_the_same_key_twice_is_refused(tmp_path):
         await manager.fork("conv-parent", _CHILD)
 
 
+async def test_a_refused_fork_leaves_no_allowlist_alias(tmp_path):
+    # A fork refused before it has a session goes through no purge, and the purge is
+    # what drops the alias — so it must not have been written yet. One dead pair of
+    # strings per refused delegation for the life of the process is the leak otherwise.
+    vault = await _vault(tmp_path)
+    manager = _manager(tmp_path, vault)
+    parent = await manager.acquire("conv-parent")
+    parent.ensure_workspace()
+    manager._tearing_down[safe_key(_CHILD)] = asyncio.Event()
+
+    with pytest.raises(SandboxError):
+        await manager.fork("conv-parent", _CHILD)
+
+    assert manager._egress._fenced_by(_CHILD) == _CHILD
+
+
 async def test_a_fork_is_not_displaced_by_the_cap_while_its_run_is_live(tmp_path):
     # Displacing a fork discards it — nothing here is ever sealed — so an unclaimed one
     # is work the operator would simply lose.

@@ -151,6 +151,19 @@ async def _dispatch_once(directory, subnets, raw: bytes) -> bytes:
     return reply
 
 
+async def test_an_endless_request_head_is_refused_rather_than_buffered(tmp_path):
+    # The head is held whole so `Host:` can be re-stated from the authority, and what
+    # sends it is code the agent wrote. Unbounded, a client streaming headers would grow
+    # that buffer until the sidecar's memory cap killed the workspace's only exit.
+    (tmp_path / ALLOW_FILE).write_text("pypi.org\n")
+    header = b"X-Padding: " + b"a" * 1000 + b"\r\n"
+    oversized = b"GET http://pypi.org/simple HTTP/1.1\r\n" + header * 70  # ~70 KiB of head
+    reply = await _dispatch_once(
+        tmp_path, (ipaddress.ip_network("127.0.0.0/8"),), oversized + b"\r\n"
+    )
+    assert reply.startswith(b"HTTP/1.1 431")
+
+
 async def test_a_peer_outside_the_workspace_network_is_refused(tmp_path):
     # The sidecar keeps a leg on the host's default bridge, so every other container
     # there can address its proxy. Only this workspace's own network may use it.

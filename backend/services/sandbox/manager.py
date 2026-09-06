@@ -349,9 +349,6 @@ class SandboxSessionManager:
         by the very fact that it has just delegated."""
         parent = await self.acquire(parent_key, holder=holder)
         safe = safe_key(child_key)
-        # Both halves have to agree on the key: a domain approved during the delegated
-        # run, written under the child's own, would materialise an unmounted file.
-        self._egress.share(child_key, parent_key)
         async with self._lock:
             if safe in self._sessions or safe in self._tearing_down:
                 raise SandboxError(f"a workspace already exists for {child_key!r}")
@@ -359,6 +356,9 @@ class SandboxSessionManager:
             self._sessions[safe] = child
             child.hold(holder)
             evicted = self._detach(self._over_cap(keep={safe, parent.key}))
+        # Both halves have to agree on the key — a grant written under the child's own would
+        # materialise an unmounted file. After the map, so a refusal above leaves no alias.
+        self._egress.share(child_key, parent_key)
         # Before the copy, not after: what this displaced is already out of the live map
         # behind a tombstone, and a failed copy would strand its acquires on an unset event.
         await self._tear_down(evicted)
